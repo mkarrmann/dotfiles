@@ -1,7 +1,3 @@
-echo Hello World from ~/.bashrc 👋
-
-eval "$(pyenv init -)"
-
 export DATACHAT_ROOT=$HOME/work/datachat
 export GOPATH=${DATACHAT_ROOT}/web/web_server
 export PATH=$PATH:${GOPATH}/bin
@@ -9,7 +5,6 @@ export DATACHAT_FILE_SYS=$HOME/work/datachat/app_data
 export no_proxy="*"
 
 set -o vi
-bind ",,":vi-movement-mode
 
 # Alias definitions.
 # You may want to put all your additions into a separate file like
@@ -20,3 +15,6 @@ if [ -f ~/.bash_aliases ]; then
     . ~/.bash_aliases
 fi
 
+export PYENV_ROOT="$HOME/.pyenv"
+export PATH="$PYENV_ROOT/bin:$PATH"
+eval "$(pyenv init -)"
