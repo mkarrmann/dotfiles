@@ -4,6 +4,8 @@ export PATH=$PATH:${GOPATH}/bin
 export DATACHAT_FILE_SYS=$HOME/work/datachat/app_data
 export no_proxy="*"
 
+source ${DATACHAT_ROOT}/build/managedb-migration.sh 
+
 if [ -f /etc/bash_completion ]; then
   . /etc/bash_completion
 fi
