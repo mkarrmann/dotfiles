@@ -14,6 +14,10 @@ if [ -f ~/.bash_aliases ]; then
     . ~/.bash_aliases
 fi
 
+if [ -f ~/.local_rc ]; then
+    . ~/.local_rc
+fi
+
 export PYENV_ROOT="$HOME/.pyenv"
 # Add pyenv shims to PATH only once.
 if [[ ! "$PATH" =~ "$PYENV_ROOT/bin" ]]; then
