@@ -18,9 +18,13 @@ if [ -f ~/.local_rc ]; then
     . ~/.local_rc
 fi
 
-export PYENV_ROOT="$HOME/.pyenv"
-# Add pyenv shims to PATH only once.
-if [[ ! "$PATH" =~ "$PYENV_ROOT/bin" ]]; then
-    export PATH="$PYENV_ROOT/bin:$PYENV_ROOT/shims:$PATH"
+# Check if pyenv is installed
+command -v pyenv >> /dev/null
+if [ $? -eq 0 ]; then
+	export PYENV_ROOT="$HOME/.pyenv"
+	# Add pyenv shims to PATH only once.
+	if [[ ! "$PATH" =~ "$PYENV_ROOT/bin" ]]; then
+	    export PATH="$PYENV_ROOT/bin:$PYENV_ROOT/shims:$PATH"
+	fi
+	eval "$(pyenv init -)"
 fi
-eval "$(pyenv init -)"
