@@ -18,6 +18,10 @@ if [ -f ~/.local_rc ]; then
     . ~/.local_rc
 fi
 
+if [ -f ~/.bash_functions ]; then
+    . ~/.bash_functions
+fi
+
 # Check if pyenv is installed
 command -v pyenv >> /dev/null
 if [ $? -eq 0 ]; then
@@ -28,3 +32,24 @@ if [ $? -eq 0 ]; then
 	fi
 	eval "$(pyenv init -)"
 fi
+
+# >>> conda initialize >>>
+# !! Contents within this block are managed by 'conda init' !!
+__conda_setup="$('/home/mkarrmann/miniconda3/bin/conda' 'shell.bash' 'hook' 2> /dev/null)"
+if [ $? -eq 0 ]; then
+    eval "$__conda_setup"
+else
+    if [ -f "/home/mkarrmann/miniconda3/etc/profile.d/conda.sh" ]; then
+        . "/home/mkarrmann/miniconda3/etc/profile.d/conda.sh"
+    else
+        export PATH="/home/mkarrmann/miniconda3/bin:$PATH"
+    fi
+fi
+unset __conda_setup
+# <<< conda initialize <<<
+
+. "$HOME/.cargo/env"
+export PYENV_ROOT="$HOME/.pyenv"
+command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"
+eval "$(pyenv init -)"
+export PATH=$GOPATH/bin:$PATH
