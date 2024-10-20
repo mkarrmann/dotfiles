@@ -1,4 +1,4 @@
-; This is the only thing I've ever done with AutoHotKey, and I don't really know what I'm doing. I mostly just glued things together I found online (credit given below). I'm sure this could be cleaned up substantially.
+﻿; This is the only thing I've ever done with AutoHotKey, and I don't really know what I'm doing. I mostly just glued things together I found online (credit given below). I'm sure this could be cleaned up substantially.
 ; Credit for this section: Joe Winograd https://www.experts-exchange.com/articles/33932/Keyboard-shortcuts-hotkeys-to-move-mouse-in-multi-monitor-configuration-AutoHotkey-Script.html
 
 #Warn,UseUnsetLocal ; warning on uninitialized variables
@@ -29,6 +29,7 @@ IdentifyMilliseconds:=IdentifySeconds*1000 ; Sleep time is in milliseconds
 
 SysGet,OrigNumMons,MonitorCount ; original number of monitors when script was run
 
+^!s::Suspend  ; Press Ctrl+Alt+S to suspend or resume the script
 
 ConfigureInitialTray:
 Menu,Tray,NoStandard ; do not use standard AutoHotkey context menu

@@ -1,4 +1,6 @@
-#Requires AutoHotkey v2.0
+﻿#Requires AutoHotkey v2.0
 #SingleInstance Force ; replace old instance immediately
 
-^j::Click
+^!s::Suspend  ; Press Ctrl+Alt+S to suspend or resume the script
+
+^Space::Click
