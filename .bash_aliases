@@ -6,5 +6,4 @@ alias gc="git commit"
 alias ga="git add"
 alias gd="git diff"
 alias sl="ls"
-alias v="vim"
-
+alias v="nvim"

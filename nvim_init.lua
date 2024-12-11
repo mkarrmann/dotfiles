@@ -1,5 +1,28 @@
 local vim = vim -- best to get the "undefined variable" warning just one place
 
+-- Define data directory
+local data_dir = vim.fn.stdpath('data') .. '/site'
+
+-- Check if plug.vim exists, if not install it
+if vim.fn.empty(vim.fn.glob(data_dir .. '/autoload/plug.vim')) == 1 then
+  -- Download plug.vim using curl
+  vim.fn.system({
+    'curl',
+    '-fLo',
+    data_dir .. '/autoload/plug.vim',
+    '--create-dirs',
+    'https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim'
+  })
+
+  -- Install plugins on VimEnter
+  vim.api.nvim_create_autocmd('VimEnter', {
+    callback = function()
+      vim.cmd [[PlugInstall --sync]]
+      vim.cmd [[source $MYVIMRC]]
+    end
+  })
+end
+
 local Plug = vim.fn['plug#']
 
 vim.call('plug#begin')
@@ -15,7 +38,7 @@ end
 vim.opt.clipboard = "unnamedplus"
 vim.g.mapleader = ','
 
--- TODO make more configurable (and confirm this even works as expected)
+-- TODO make more configurable
 vim.api.nvim_create_autocmd("FileType", {
         pattern = "python",
         callback = function()
@@ -25,12 +48,13 @@ vim.api.nvim_create_autocmd("FileType", {
 
 if vim.g.vscode then
         -- See https://github.com/vscode-neovim/vscode-neovim/issues/1902#issuecomment-2151329542
-        vim.api.nvim_set_keymap(
-                'n',
-                '<space>',
-                [[<Cmd>lua require('vscode').call('vspacecode.space')<CR>]],
-                { noremap = true, silent = true }
-        )
+		-- Actually, now just let vscode totally handle this
+        -- vim.api.nvim_set_keymap(
+        --         'n',
+        --         '<C-space>',
+        --         [[<Cmd>lua require('vscode').call('vspacecode.space')<CR>]],
+        --         { noremap = true, silent = true }
+        -- )
 
 
         -- See https://github.com/vscode-neovim/vscode-neovim/issues/1902#issuecomment-2073831492
