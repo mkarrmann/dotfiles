@@ -1,7 +1,3 @@
-if [ -f ~/.localrc ]; then
-  source ~/.localrc
-fi
-
 if [ -f /etc/bash_completion ]; then
   . /etc/bash_completion
 fi
@@ -49,6 +45,10 @@ shopt -s histappend
 
 export EDITOR=nvim
 export PATH=$PATH:$HOME/bin
+
+if [ -f ~/.localrc ]; then
+  source ~/.localrc
+fi
 
 #THIS MUST BE AT THE END OF THE FILE FOR SDKMAN TO WORK!!!
 export SDKMAN_DIR="$HOME/.sdkman"
