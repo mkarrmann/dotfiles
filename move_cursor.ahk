@@ -1,6 +1,7 @@
 ﻿; This is the only thing I've ever done with AutoHotKey, and I don't really know what I'm doing. I mostly just glued things together I found online (credit given below). I'm sure this could be cleaned up substantially.
 ; Credit for this section: Joe Winograd https://www.experts-exchange.com/articles/33932/Keyboard-shortcuts-hotkeys-to-move-mouse-in-multi-monitor-configuration-AutoHotkey-Script.html
 
+#Requires AutoHotkey v2.0
 #Warn,UseUnsetLocal ; warning on uninitialized variables
 #NoEnv ; avoid checking empty variables to see if they are environment variables
 #SingleInstance Force ; replace old instance immediately

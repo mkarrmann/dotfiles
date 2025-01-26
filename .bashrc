@@ -2,6 +2,12 @@ if [ -f /etc/bash_completion ]; then
   . /etc/bash_completion
 fi
 
+source ~/.git-prompt.sh
+export PS1="\[\e[32m\]\${PWD}\[\e[95m\] \$(__git_ps1) \[\033[00m\] \$ "
+
+source /usr/share/bash-completion/completions/git
+source ~/.bash_completions/kubectl.sh
+
 # Alias definitions.
 # You may want to put all your additions into a separate file like
 # ~/.bash_aliases, instead of adding them here directly.
@@ -48,6 +54,20 @@ export PATH=$PATH:$HOME/bin
 
 if [ -f ~/.localrc ]; then
   source ~/.localrc
+
+vsclean
+fix-code
+
+
+# Check if pyenv is installed
+command -v pyenv >> /dev/null
+if [ $? -eq 0 ]; then
+	export PYENV_ROOT="$HOME/.pyenv"
+	# Add pyenv shims to PATH only once.
+	if [[ ! "$PATH" =~ "$PYENV_ROOT/bin" ]]; then
+	    export PATH="$PYENV_ROOT/bin:$PYENV_ROOT/shims:$PATH"
+	fi
+	eval "$(pyenv init -)"
 fi
 
 #THIS MUST BE AT THE END OF THE FILE FOR SDKMAN TO WORK!!!

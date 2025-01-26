@@ -1,0 +1,453 @@
+{
+  "extensions.experimental.affinity": {
+    "asvetliakov.vscode-neovim": 1
+  },
+  "editor.rulers": [
+    79,
+    80,
+    88,
+    100,
+    120,
+  ],
+  "editor.detectIndentation": false,
+  "javascript.validate.enable": false,
+  "editor.semanticHighlighting.enabled": true,
+  "editor.autoClosingBrackets": "never",
+  "editor.autoClosingQuotes": "never",
+  "files.insertFinalNewline": true,
+  "yaml.format.enable": true,
+  "terminal.integrated.allowChords": false,
+  "[json]": {
+    "editor.defaultFormatter": "vscode.json-language-features",
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+  "[jsonc]": {
+    "editor.defaultFormatter": "vscode.json-language-features",
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+  "[javascript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+  "[sql]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 4
+  },
+  "[typescript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml",
+    "editor.insertSpaces": true,
+    "editor.tabSize": 4
+  },
+  "[ini]": {
+    "editor.defaultFormatter": "DavidWang.ini-for-vscode",
+    "editor.insertSpaces": true,
+    "editor.tabSize": 4
+  },
+  "[yaml]": {
+    "editor.defaultFormatter": "redhat.vscode-yaml",
+    "editor.autoIndent": "advanced",
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+  "[helm]": {
+    "editor.defaultFormatter": "redhat.vscode-yaml",
+    "editor.autoIndent": "advanced",
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+  "[dockercompose]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.autoIndent": "advanced",
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+  "[python]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 4,
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnPaste": false,
+    "editor.formatOnType": true,
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit"
+    },
+  },
+  "[csharp]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 4,
+  },
+  "[scss]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+  "[dockerfile]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 4,
+  },
+  "[shellscript]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 4,
+  },
+  "[groovy]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2,
+  },
+  "todohighlight.keywords": [
+    {
+      "text": "TODO:",
+      "color": "white",
+      "border": "1px solid red",
+      "borderRadius": "1px",
+      "backgroundColor": "rgba(0,0,0,.2)",
+    },
+    {
+      "text": "TODO",
+      "color": "white",
+      "border": "1px solid red",
+      "borderRadius": "1px",
+      "backgroundColor": "rgba(0,0,0,.2)",
+    },
+    {
+      "text": "Todo",
+      "color": "white",
+      "border": "1px solid red",
+      "borderRadius": "1px",
+      "backgroundColor": "rgba(0,0,0,.2)",
+    },
+    {
+      "text": "Todo:",
+      "color": "white",
+      "border": "1px solid red",
+      "borderRadius": "2px",
+      "backgroundColor": "rgba(0,0,0,.2)",
+    }
+  ],
+  "todohighlight.isCaseSensitive": true,
+  "editor.bracketPairColorization.enabled": true,
+  "kite.showWelcomeNotificationOnStartup": false,
+  "vim.handleKeys": {
+    "<C-c>": false,
+    "<C-x>": false,
+    "<C-a>": false,
+    "<C-z>": false,
+    "<C-f>": false,
+    "<cmd-c>": false,
+    "<cmd-x>": false,
+    "<cmd-a>": false,
+    "<cmd-y>": false,
+    "<cmd-z>": false
+  },
+  "code-runner.executorMap": {
+    "c": "date && cd $dir && pwd && make && ./$dir$fileNameWithoutExt",
+    "cpp": "date && cd $dir && pwd && make && ./$fileNameWithoutExt",
+    "python": "date && cd $dir && pwd && python3 $fileName"
+  },
+  "code-runner.runInTerminal": true,
+  "code-runner.saveFileBeforeRun": true,
+  "python.terminal.activateEnvironment": false,
+  "python.analysis.typeCheckingMode": "standard",
+  "git.autofetch": true,
+  "go.useLanguageServer": true,
+  "cSpell.userWords": [
+    "bamfunds",
+    "fastapi",
+    "fastavro",
+    "given",
+    "Hypercorn",
+    "Idempotency",
+    "Instrumentator",
+    "keymaster",
+    "lognormal",
+    "mkarrmann",
+    "permissioning",
+    "PYDANTIC",
+    "sadd",
+    "sdiff",
+    "starlette",
+    "Subcharts",
+    "ujson",
+    "Unadded",
+    "uvicorn",
+    "uvloop"
+  ],
+  "editor.suggestSelection": "first",
+  "python.languageServer": "Pylance",
+  "gitlens.hovers.currentLine.over": "line",
+  "explorer.confirmDelete": false,
+  "go.toolsManagement.autoUpdate": true,
+  "editor.largeFileOptimizations": false,
+  "javascript.updateImportsOnFileMove.enabled": "always",
+  "editor.cursorStyle": "line",
+  "editor.lineNumbers": "on",
+  "editor.wordSeparators": "/\\()\"':,.;<>~!@#$%^&*|+=[]{}`?-",
+  "editor.wordWrap": "off",
+  "editor.tabSize": 4,
+  "editor.insertSpaces": false,
+  "redhat.telemetry.enabled": true,
+  "security.workspace.trust.untrustedFiles": "open",
+  "editor.inlineSuggest.enabled": true,
+  "github.copilot.enable": {
+    "*": false,
+    "plaintext": true,
+    "markdown": true,
+    "scminput": false,
+    "yaml": true,
+    "python": true
+  },
+  "keyboard.dispatch": "keyCode",
+  "vs-kubernetes": {
+    "vscode-kubernetes.helm-path.linux": "/home/mkarrmann/.local/state/vs-kubernetes/tools/helm/linux-amd64/helm",
+    "vscode-kubernetes.minikube-path.linux": "/home/mkarrmann/.vs-kubernetes/tools/minikube/linux-amd64/minikube",
+    "vscode-kubernetes.minikube-path.mac": "/Users/matt/.vs-kubernetes/tools/minikube/darwin-arm64/minikube",
+    "vscode-kubernetes.helm-path.mac": "/Users/matt/.vs-kubernetes/tools/helm/darwin-arm64/helm",
+    "vscode-kubernetes.kubectl-path.mac": "/Users/matt/.vs-kubernetes/tools/kubectl/kubectl",
+    "vs-kubernetes.crd-code-completion": "enabled"
+  },
+  "vspacecode.bindingOverrides": [
+    {
+      "keys": "b.2",
+      "name": "Go to second buffer",
+      "type": "command",
+      "command": "workbench.action.openEditorAtIndex2"
+    },
+    {
+      "keys": "b.3",
+      "name": "Go to third buffer",
+      "type": "command",
+      "command": "workbench.action.openEditorAtIndex3"
+    },
+    {
+      "keys": "b.4",
+      "name": "Go to fourth buffer",
+      "type": "command",
+      "command": "workbench.action.openEditorAtIndex4"
+    },
+    {
+      "keys": "b.5",
+      "name": "Go to fifth buffer",
+      "type": "command",
+      "command": "workbench.action.openEditorAtIndex5"
+    },
+    {
+      "keys": "b.6",
+      "name": "Go to sixth buffer",
+      "type": "command",
+      "command": "workbench.action.openEditorAtIndex6"
+    },
+    {
+      "keys": "b.7",
+      "name": "Go to seventh buffer",
+      "type": "command",
+      "command": "workbench.action.openEditorAtIndex7"
+    },
+    {
+      "keys": "b.8",
+      "name": "Go to eighth buffer",
+      "type": "command",
+      "command": "workbench.action.openEditorAtIndex8"
+    },
+    {
+      "keys": "b.9",
+      "name": "Go to ninth buffer",
+      "type": "command",
+      "command": "workbench.action.openEditorAtIndex9"
+    },
+    {
+      "keys": "b.L",
+      "name": "Split editor into right window",
+      "type": "command",
+      "command": "workbench.action.splitEditorRight"
+    },
+    {
+      "keys": "b.H",
+      "name": "Split editor into left window",
+      "type": "command",
+      "command": "workbench.action.splitEditorLeft"
+    },
+    {
+      "keys": "a",
+      "name": "Todoist",
+      "type": "bindings",
+      "bindings": [
+        {
+          "key": "i",
+          "name": "Capture Inbox",
+          "type": "command",
+          "command": "extension.todoistCaptureId",
+          "args": 2056013927
+        },
+        {
+          "key": "p",
+          "name": "Capture Project",
+          "type": "command",
+          "command": "extension.todoistCaptureProject"
+        },
+        {
+          "key": "g",
+          "name": "Capture Gerry",
+          "type": "command",
+          "command": "extension.todoistCaptureId",
+          "args": 2240335203
+        },
+        {
+          "key": "w",
+          "name": "Capture Work",
+          "type": "command",
+          "command": "extension.todoistCaptureId",
+          "args": 2240410392
+        },
+        {
+          "key": "I",
+          "name": "Todos Inbox",
+          "type": "command",
+          "command": "extension.todoistTodosId",
+          "args": 2056013927
+        },
+        {
+          "key": "P",
+          "name": "Todos Project",
+          "type": "command",
+          "command": "extension.todoistTodosProject"
+        },
+        {
+          "key": "G",
+          "name": "Todos Gerry",
+          "type": "command",
+          "command": "extension.todoistTodosId",
+          "args": 2240335203
+        },
+        {
+          "key": "W",
+          "name": "Todos Work",
+          "type": "command",
+          "command": "extension.todoistTodosId",
+          "args": 2240410392
+        }
+      ]
+    }
+  ],
+  "editor.accessibilityPageSize": 12,
+  "editor.fontSize": 14,
+  "editor.smoothScrolling": true,
+  "editor.cursorSurroundingLines": 25,
+  "workbench.list.smoothScrolling": true,
+  "settingsSync.keybindingsPerPlatform": false,
+  "terminal.integrated.scrollback": 50000,
+  "terminal.integrated.shellIntegration.history": 5000,
+  "terminal.integrated.profiles.linux": {
+    "tmux": {
+      "path": "bash",
+      "args": [
+        "-c",
+        // tmux doesn't allow . in session name
+        "tmux new -ADs ${PWD}" // TODO incorporate ${PWD##*/} to also shorten name
+      ]
+    }
+  },
+  "terminal.integrated.defaultProfile.linux": "tmux",
+  "terminal.integrated.automationProfile.linux": {
+    "path": "tmux"
+  },
+  "editor.accessibilitySupport": "off",
+  "terminal.integrated.enableMultiLinePasteWarning": false,
+  "githubPullRequests.pullBranch": "never",
+  "todoist.apiToken": "1c2c2c7f5dc249fd5e1297f5bb3b3e48367b456b",
+  "editor.stickyScroll.enabled": true,
+  "todoist.projectId": 2056013927,
+  "workbench.colorTheme": "Default High Contrast",
+  "remote.SSH.remotePlatform": {
+    "ald-ue1-dev771": "linux",
+    "coder-vscode--mkarrmann--matt-karrmann-keyword-dbt": "linux",
+    "coder-vscode--mkarrmann--matt-karrmann-keyword-dbt--main": "linux",
+    "coder-vscode--mkarrmann--keymaster": "linux",
+    "coder-vscode--mkarrmann--keymaster--main": "linux"
+  },
+  "github.gitProtocol": "ssh",
+  "win-ca.inject": "append",
+  "remote.SSH.configFile": "C:\\Users\\mkarmann\\.ssh\\config",
+  "workbench.tree.renderIndentGuides": "always",
+  "workbench.tree.indent": 12,
+  "explorer.confirmDragAndDrop": false,
+  "yaml.format.bracketSpacing": false,
+  "prettier.ignorePath": ".vscode/.prettierignore",
+  "gitlens.remotes": [
+    {
+      "domain": "github-app",
+      "protocol": "https",
+      "type": "GitHub"
+    }
+  ],
+  "jupyter.askForKernelRestart": false,
+  "python.testing.autoTestDiscoverOnSaveEnabled": true,
+  "window.title": "${rootName}${separator}${appName}",
+  "workbench.editor.enablePreview": false,
+  "launch": {
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "type": "node",
+        "request": "launch",
+        "name": "Launch Program",
+        "program": "${file}",
+        "cwd": "${workspaceRoot}",
+        "runtimeExecutable": "/usr/local/bin/node"
+      }
+    ]
+  },
+  "git.terminalAuthentication": false,
+  "editor.glyphMargin": true,
+  "flake8.args": [
+    "--config=.flake8"
+  ],
+  "settingsSync.ignoredExtensions": [
+    "ms-azuretools.vscode-docker"
+  ],
+  "remote.SSH.serverInstallPath": {
+    "ald-ue1-dev771": "/local",
+    "coder-vscode--mkarrmann--keymaster": "/home/data",
+  },
+  "docker.contexts.label": "DockerEndpoint",
+  "docker.contexts.description": [
+    "Description",
+    "DockerEndpoint",
+    "Name"
+  ],
+  "cSpell.diagnosticLevel": "Warning",
+  "cSpell.showAutocompleteSuggestions": true,
+  "cSpell.enableFiletypes": [
+    "helm"
+  ],
+  "makefile.configureOnOpen": false,
+  "files.saveConflictResolution": "overwriteFileOnDisk",
+  "window.zoomLevel": -2,
+  "docker.commands.runInteractive": "${config:docker.dockerPath} run --rm -it ${exposedPorts} ${tag}",
+  "docker.commands.attach": "${config:docker.dockerPath} exec -it ${containerId} ${shellCommand}",
+  "docker.containers.label": "ContainerName",
+  "remote.SSH.connectTimeout": 1800,
+  "docker.containers.description": [
+    "Ports",
+    "RepositoryNameAndTag",
+    "Status"
+  ],
+  "gitlens.worktrees.defaultLocation": "/local/mkarrmann/repos/worktrees",
+  "ruff.format.args": [
+    "--config",
+    "lint.ignore=[\"F401\"]"
+  ],
+  "coder.binaryDestination": "/home/data/coder",
+  "files.autoSave": "afterDelay",
+  "editor.formatOnType": true,
+  "github.copilot.editor.enableAutoCompletions": true,
+  "ruff.format.preview": true,
+  "terraform.experimentalFeatures.validateOnSave": true,
+  "vscode-neovim.neovimExecutablePaths.win32": "C:\\tools\\neovim\\nvim-win64\\bin\\nvim.exe",
+  "vscode-neovim.neovimInitVimPaths.win32": "C:\\tools\\neovim\\nvim-win64\\init.lua"
+}
