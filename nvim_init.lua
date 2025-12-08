@@ -27,6 +27,7 @@ local Plug = vim.fn['plug#']
 
 vim.call('plug#begin')
 Plug('smoka7/hop.nvim')
+Plug('mbbill/undotree')
 vim.call('plug#end')
 
 local status_ok, hop = pcall(require, "hop")
