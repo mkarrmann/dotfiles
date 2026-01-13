@@ -25,3 +25,6 @@ elif [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
            https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim'
 fi
 
+mkdir -p ~/.config/wofi
+ln -s wofi_config ~/.config/wofi/config
+

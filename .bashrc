@@ -19,9 +19,18 @@ if [ -f ~/.bash_functions ]; then
     . ~/.bash_functions
 fi
 
+if [ -f ~/.inputrc ]; then
+    bind -f ~/.inputrc
+fi
+
+if [ -f ~/.screenrc ]; then
+    . ~/.screenrc
+fi
+
+
 # TODO merge with Meta's prompt
-#source ~/.git-prompt.sh
-#export PS1="\[\e[32m\]\${PWD}\[\e[95m\] \$(__git_ps1) \[\033[00m\] \$ "
+source ~/.git-prompt.sh
+export PS1="\[\e[32m\]\${PWD}\[\e[95m\] \$(__git_ps1) \[\033[00m\] \$ "
 
 # Keep oodles of command history (see https://fburl.com/bashhistory).
 # This tells Bash not to limit the size of the history file.
@@ -48,7 +57,7 @@ export PROMPT_COMMAND="history -a; $PROMPT_COMMAND"
 shopt -s histappend
 
 export EDITOR=nvim
-export PATH=$PATH:$HOME/bin
+export PATH=$PATH:$HOME/.local/bin:$HOME/bin
 
 # Check if pyenv is installed
 command -v pyenv >> /dev/null
@@ -61,6 +70,7 @@ if [ $? -eq 0 ]; then
        eval "$(pyenv init -)"
 fi
 
+set -o vi
 
 #THIS MUST BE AT THE END OF THE FILE FOR SDKMAN TO WORK!!!
 export SDKMAN_DIR="$HOME/.sdkman"

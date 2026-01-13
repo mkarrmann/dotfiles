@@ -1,0 +1,4 @@
+# Up/Down: search history entries that start with what you've typed so far
+"\e[A": history-search-backward
+"\e[B": history-search-forward
+
