@@ -39,7 +39,9 @@ __prompt_command() {
 PROMPT_COMMAND="__prompt_command${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 
 # ---- base prompt text (can be overridden by localrc) ----
-: "${PROMPT_BASE:='[\u@\h \w'}"
+#: "${PROMPT_BASE:='[\u@\h \w'}"
+PROMPT_BASE=${PROMPT_BASE:-'[\w'}
+
 
 # ---- build PS1 once (PS1 reads $__PROMPT_* dynamically each prompt) ----
 PS1='\[\033[0;33m\]'                 # yellow
