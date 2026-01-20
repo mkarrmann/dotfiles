@@ -1,6 +1,6 @@
-# Auto-start tmux on interactive shells
-if [[ -z "$TMUX" && -n "$PS1" ]] && command -v tmux >/dev/null 2>&1; then
-  exec tmux new -A -s main
+# Make /etc/paths + /etc/paths.d apply even in non-login shells (tmux panes)
+if [ -x /usr/libexec/path_helper ]; then
+  eval "$(/usr/libexec/path_helper -s)"
 fi
 
 if [ -f ~/.localrc ]; then
