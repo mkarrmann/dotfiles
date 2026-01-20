@@ -1,3 +1,8 @@
+# Auto-start tmux on interactive shells
+if [[ -z "$TMUX" && -n "$PS1" ]]; then
+  exec tmux new -A -s main
+fi
+
 if [ -f ~/.localrc ]; then
   source ~/.localrc
 fi
