@@ -7,6 +7,54 @@ if [ -f ~/.localrc ]; then
   source ~/.localrc
 fi
 
+# START: Setup PS1
+
+# --- optional git prompt (fallback) ---
+if [[ -f ~/.git-prompt.sh ]]; then
+  source ~/.git-prompt.sh
+fi
+
+# ---- SCM provider wrapper (localrc wins, git fallback, else empty) ----
+__prompt_scm() {
+  if declare -F _scm_prompt >/dev/null 2>&1; then
+    _scm_prompt
+  elif declare -F __git_ps1 >/dev/null 2>&1; then
+    __git_ps1 " (%s)"
+  else
+    printf ""
+  fi
+}
+
+# ---- run before each prompt ----
+__prompt_command() {
+  __PROMPT_STATUS=$?
+  __PROMPT_SCM="$(__prompt_scm)"
+
+  # Optional: publish per-pane SCM info to tmux
+  if [[ -n "$TMUX" && -n "$TMUX_PANE" ]]; then
+    tmux setenv -g "TMUX_LOC_${TMUX_PANE#%}" "$__PROMPT_SCM"
+  fi
+}
+
+PROMPT_COMMAND="__prompt_command${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+
+# ---- base prompt text (can be overridden by localrc) ----
+: "${PROMPT_BASE:='[\u@\h \w'}"
+
+# ---- build PS1 once (PS1 reads $__PROMPT_* dynamically each prompt) ----
+PS1='\[\033[0;33m\]'                 # yellow
+PS1+="${PROMPT_BASE}"                # e.g. [user@host cwd
+PS1+='${__PROMPT_SCM}'               # SCM string computed by PROMPT_COMMAND
+PS1+=']\[\033[0m\] '                 # close bracket + reset
+
+PS1+='\[\033[1;31m\]${__PROMPT_STATUS}\[\033[0m\] '  # red exit code
+PS1+='\[\033[0;32m\]\D{%H:%M:%S}\[\033[0m\] '         # green time
+PS1+='\$ '
+
+export PS1
+
+# END: Setup PS1
+
 if [ -f /etc/bash_completion ]; then
   . /etc/bash_completion
 fi
@@ -34,8 +82,8 @@ fi
 
 
 # TODO merge with Meta's prompt
-source ~/.git-prompt.sh
-export PS1="\[\e[32m\]\${PWD}\[\e[95m\] \$(__git_ps1) \[\033[00m\] \$ "
+#source ~/.git-prompt.sh
+#export PS1="\[\e[32m\]\${PWD}\[\e[95m\] \$(__git_ps1) \[\033[00m\] \$ "
 
 # Keep oodles of command history (see https://fburl.com/bashhistory).
 # This tells Bash not to limit the size of the history file.
