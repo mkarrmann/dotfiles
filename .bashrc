@@ -1,5 +1,5 @@
 # Auto-start tmux on interactive shells
-if [[ -z "$TMUX" && -n "$PS1" ]]; then
+if [[ -z "$TMUX" && -n "$PS1" ]] && command -v tmux >/dev/null 2>&1; then
   exec tmux new -A -s main
 fi
 
