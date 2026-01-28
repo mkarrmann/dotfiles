@@ -2,5 +2,6 @@ default partial alphanumeric_keys
 xkb_symbols "basic" {
     include "us(basic)"
     // minus key: 1st=-  2nd=_  3rd=–  4th=—
+    // i.e. Minus and Minus + Shift work as before. Alt + Minus -> en-dash (e.g. 90–99), Alt + Shift + Minus -> em-dash (I also have a Glove80 binding to make this easier. Note: this is also the standard MacOS binding)
     key <AE11> { [ minus, underscore, endash, emdash ] };
 };
