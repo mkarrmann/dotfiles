@@ -1,0 +1,6 @@
+default partial alphanumeric_keys
+xkb_symbols "basic" {
+    include "us(basic)"
+    // minus key: 1st=-  2nd=_  3rd=–  4th=—
+    key <AE11> { [ minus, underscore, endash, emdash ] };
+};
