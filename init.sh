@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 DOTFILES_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+SKIPPED_FILES=()
 
 link_one() {
   local src="$1"
@@ -12,10 +14,9 @@ link_one() {
     exit 1
   fi
 
-  # Fail if destination already exists (file/dir/symlink, including broken symlink)
   if [[ -e "$dst" || -L "$dst" ]]; then
-    echo "ERROR: destination already exists: $dst" >&2
-    exit 1
+    SKIPPED_FILES+=("$dst")
+    return 0
   fi
 
   ln -s "$src" "$dst"
@@ -61,5 +62,13 @@ if [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
     # Still need to call :PlugInstall inside of nvim to get all dependencies
     sh -c 'curl -fLo "${XDG_DATA_HOME:-$HOME/.local/share}"/nvim/site/autoload/plug.vim --create-dirs \
            https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim'
+fi
+
+if [[ ${#SKIPPED_FILES[@]} -gt 0 ]]; then
+  echo ""
+  echo "Skipped (already exist):"
+  for f in "${SKIPPED_FILES[@]}"; do
+    echo "  $f"
+  done
 fi
 
