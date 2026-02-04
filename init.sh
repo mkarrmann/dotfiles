@@ -57,6 +57,7 @@ link_one "$DOTFILES_DIR/wofi_config" "$HOME/.config/wofi/config"
 mkdir -p "$HOME/.claude/projects" "$HOME/.claude/rules"
 link_one "$DOTFILES_DIR/claude_config/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
 link_one "$DOTFILES_DIR/claude_config/rules/personal-style.md" "$HOME/.claude/rules/personal-style.md"
+link_one "$DOTFILES_DIR/claude_config/statusline.sh" "$HOME/.claude/statusline.sh"
 
 # TODO look into using hammerspoon again
 # link_one "$DOTFILES_DIR/hammerspoon.lua" "$HOME/.hammerspoon/init.lua"
