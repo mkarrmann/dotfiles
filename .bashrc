@@ -27,10 +27,9 @@ __prompt_scm() {
 
 # ---- run before each prompt ----
 __prompt_command() {
-  __PROMPT_STATUS=$?
+  # NOTE: __PROMPT_STATUS is captured at the start of PROMPT_COMMAND, not here
   __PROMPT_SCM="$(__prompt_scm)"
 
-  # Optional: publish per-pane SCM info to tmux
   if [[ -n "$TMUX" && -n "$TMUX_PANE" ]]; then
     tmux setenv -g "TMUX_LOC_${TMUX_PANE#%}" "$__PROMPT_SCM"
   fi
@@ -98,7 +97,7 @@ export HISTCONTROL=ignoredups
 # WARNING: If you change HISTFILE, make sure you are not exporting HISTFILE — that negates the benefits of changing HISTFILE in the first place.
 HISTFILE=~/.bash_history_actual
 # This makes Bash append new commands to the history file every time it displays a prompt (i.e., after every command finishes). Without this, appending won't happen until Bash exits. Use this if you want a newly-opened terminal to see the history from other still-open terminals.
-export PROMPT_COMMAND="history -a; $PROMPT_COMMAND"
+export PROMPT_COMMAND="__PROMPT_STATUS=\$?; history -a; $PROMPT_COMMAND"
 
 # for tmux resurrect
 #HISTS_DIR=$HOME/.bash_history.d
