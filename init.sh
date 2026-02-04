@@ -63,10 +63,12 @@ link_one "$DOTFILES_DIR/claude_config/rules/personal-style.md" "$HOME/.claude/ru
 
 
 if [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
-    # Installs vim plug (need to install manually on other platforms)
-    # Still need to call :PlugInstall inside of nvim to get all dependencies
-    sh -c 'curl -fLo "${XDG_DATA_HOME:-$HOME/.local/share}"/nvim/site/autoload/plug.vim --create-dirs \
-           https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim'
+    PLUG_VIM="${XDG_DATA_HOME:-$HOME/.local/share}/nvim/site/autoload/plug.vim"
+    if [[ ! -e "$PLUG_VIM" ]]; then
+        curl -fLo "$PLUG_VIM" --create-dirs \
+            https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim
+        echo "installed vim-plug"
+    fi
 fi
 
 if [[ ${#SKIPPED_FILES[@]} -gt 0 ]]; then
