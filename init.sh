@@ -25,11 +25,15 @@ link_one() {
 
 # Top-level dotfiles
 for f in \
-  .bash_aliases \
+  .shellrc \
+  .shell_aliases \
+  .shell_functions \
   .bashrc \
+  .bash_profile \
+  .zshrc \
+  .zprofile \
   .screenrc \
   .inputrc \
-  .bash_profile \
   .tmux.conf \
   .git-prompt.sh
 do

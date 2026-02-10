@@ -1,14 +1,10 @@
-# Make /etc/paths + /etc/paths.d apply even in non-login shells (tmux panes)
-if [ -x /usr/libexec/path_helper ]; then
-  eval "$(/usr/libexec/path_helper -s)"
-fi
-
-if [ -f ~/.localrc ]; then
-  source ~/.localrc
-fi
-
 # If not running interactively, don't do anything
 [[ $- != *i* ]] && return
+
+# Shared config (env, PATH, aliases, functions, tool init)
+if [[ -f ~/.shellrc ]]; then
+  source ~/.shellrc
+fi
 
 # START: Setup PS1
 
@@ -44,7 +40,6 @@ PROMPT_COMMAND="__prompt_command${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 #: "${PROMPT_BASE:='[\u@\h \w'}"
 PROMPT_BASE=${PROMPT_BASE:-'[\w'}
 
-
 # ---- build PS1 once (PS1 reads $__PROMPT_* dynamically each prompt) ----
 PS1='\[\033[0;33m\]'                 # yellow
 PS1+="${PROMPT_BASE}"                # e.g. [user@host cwd
@@ -62,20 +57,6 @@ export PS1
 if [ -f /etc/bash_completion ]; then
   . /etc/bash_completion
 fi
-
-# Alias definitions.
-# You may want to put all your additions into a separate file like
-# ~/.bash_aliases, instead of adding them here directly.
-# See /usr/share/doc/bash-doc/examples in the bash-doc package.
-
-if [ -f ~/.bash_aliases ]; then
-    . ~/.bash_aliases
-fi
-
-if [ -f ~/.bash_functions ]; then
-    . ~/.bash_functions
-fi
-
 
 # TODO merge with Meta's prompt
 #source ~/.git-prompt.sh
@@ -104,25 +85,3 @@ export PROMPT_COMMAND="__PROMPT_STATUS=\$?; history -a; $PROMPT_COMMAND"
 # https://web.archive.org/web/20150908175333/http://briancarper.net/blog/248/
 #export PROMPT_COMMAND="history -a; history -n; $PROMPT_COMMAND"
 shopt -s histappend
-
-export EDITOR=nvim
-export PATH=$PATH:$HOME/.local/bin:$HOME/bin
-
-# Check if pyenv is installed
-command -v pyenv >> /dev/null
-if [ $? -eq 0 ]; then
-       export PYENV_ROOT="$HOME/.pyenv"
-       # Add pyenv shims to PATH only once.
-       if [[ ! "$PATH" =~ "$PYENV_ROOT/bin" ]]; then
-           export PATH="$PYENV_ROOT/bin:$PYENV_ROOT/shims:$PATH"
-       fi
-       eval "$(pyenv init -)"
-fi
-
-set -o vi
-
-#THIS MUST BE AT THE END OF THE FILE FOR SDKMAN TO WORK!!!
-export SDKMAN_DIR="$HOME/.sdkman"
-if [ -s "$HOME/.sdkman/bin/sdkman-init.sh" ]; then
-  . "$HOME/.sdkman/bin/sdkman-init.sh"
-fi

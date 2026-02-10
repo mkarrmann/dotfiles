@@ -1,0 +1,41 @@
+# Shared interactive shell config — sourced by both .bashrc and .zshrc
+
+# Make /etc/paths + /etc/paths.d apply even in non-login shells (tmux panes)
+if [ -x /usr/libexec/path_helper ]; then
+  eval "$(/usr/libexec/path_helper -s)"
+fi
+
+if [ -f ~/.localrc ]; then
+  source ~/.localrc
+fi
+
+if [ -f ~/.shell_aliases ]; then
+  . ~/.shell_aliases
+fi
+
+if [ -f ~/.shell_functions ]; then
+  . ~/.shell_functions
+fi
+
+export EDITOR=nvim
+export PATH=$PATH:$HOME/.local/bin:$HOME/bin
+
+# Check if pyenv is installed
+command -v pyenv >> /dev/null
+if [ $? -eq 0 ]; then
+       export PYENV_ROOT="$HOME/.pyenv"
+       # Add pyenv shims to PATH only once.
+       case "$PATH" in
+         *"$PYENV_ROOT/bin"*) ;;
+         *) export PATH="$PYENV_ROOT/bin:$PYENV_ROOT/shims:$PATH" ;;
+       esac
+       eval "$(pyenv init -)"
+fi
+
+set -o vi
+
+#THIS MUST BE AT THE END OF THE FILE FOR SDKMAN TO WORK!!!
+export SDKMAN_DIR="$HOME/.sdkman"
+if [ -s "$HOME/.sdkman/bin/sdkman-init.sh" ]; then
+  . "$HOME/.sdkman/bin/sdkman-init.sh"
+fi
