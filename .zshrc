@@ -1,6 +1,12 @@
 # If not running interactively, don't do anything
 [[ ! -o interactive ]] && return
 
+# Oh My Zsh
+export ZSH="$HOME/.oh-my-zsh"
+ZSH_THEME=""
+plugins=(git vi-mode)
+source $ZSH/oh-my-zsh.sh
+
 # Shared config (env, PATH, aliases, functions, tool init)
 if [[ -f ~/.shellrc ]]; then
   source ~/.shellrc
@@ -57,9 +63,3 @@ setopt INC_APPEND_HISTORY
 setopt EXTENDED_HISTORY
 setopt HIST_IGNORE_DUPS
 
-# Keybindings: vi mode history-search on Up/Down (equivalent of .inputrc)
-bindkey '\e[A' history-search-backward
-bindkey '\e[B' history-search-forward
-
-# Completion
-autoload -Uz compinit && compinit
