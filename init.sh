@@ -76,6 +76,11 @@ if [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
     fi
 fi
 
+if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
+    KEEP_ZSHRC=yes sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+    echo "installed oh-my-zsh"
+fi
+
 if [[ ${#SKIPPED_FILES[@]} -gt 0 ]]; then
   echo ""
   echo "Skipped (already exist):"
