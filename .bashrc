@@ -7,6 +7,9 @@ if [ -f ~/.localrc ]; then
   source ~/.localrc
 fi
 
+# If not running interactively, don't do anything
+[[ $- != *i* ]] && return
+
 # START: Setup PS1
 
 # --- optional git prompt (fallback) ---
@@ -71,14 +74,6 @@ fi
 
 if [ -f ~/.bash_functions ]; then
     . ~/.bash_functions
-fi
-
-if [ -f ~/.inputrc ]; then
-    bind -f ~/.inputrc
-fi
-
-if [ -f ~/.screenrc ]; then
-    . ~/.screenrc
 fi
 
 
