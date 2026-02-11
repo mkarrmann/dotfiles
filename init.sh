@@ -65,6 +65,10 @@ shopt -u nullglob
 mkdir -p "$HOME/.config/wofi"
 link_one "$DOTFILES_DIR/wofi_config" "$HOME/.config/wofi/config"
 
+# sway
+mkdir -p "$HOME/.config/sway"
+link_one "$DOTFILES_DIR/sway_config" "$HOME/.config/sway/config"
+
 # Claude Code
 mkdir -p "$HOME/.claude/projects" "$HOME/.claude/rules"
 link_one "$DOTFILES_DIR/claude_config/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
@@ -87,4 +91,3 @@ if [[ ${#SKIPPED_FILES[@]} -gt 0 ]]; then
     echo "  $f"
   done
 fi
-
