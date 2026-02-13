@@ -26,6 +26,9 @@ end
 local Plug = vim.fn['plug#']
 
 local local_init_path = vim.fn.stdpath('config') .. '/local.lua'
+if vim.fn.filereadable(local_init_path) == 0 then
+	local_init_path = vim.env.HOME .. '/.config/nvim/local.lua'
+end
 local local_init = nil
 if vim.fn.filereadable(local_init_path) == 1 then
 	local_init = dofile(local_init_path)
