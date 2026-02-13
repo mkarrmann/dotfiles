@@ -141,42 +141,35 @@ if status_ok then
 end
 
 -- 99 (ThePrimeagen) config
-local nn_ok, _99 = pcall(require, "99")
-if nn_ok then
-	local cwd = vim.uv.cwd()
-	local basename = vim.fs.basename(cwd)
-	_99.setup({
-		provider = _99.Providers.ClaudeCodeProvider,
-		logger = {
-			level = _99.DEBUG,
-			path = "/tmp/" .. basename .. ".99.debug",
-			print_on_error = true,
-		},
-		completion = {
-			source = "cmp",
-		},
-		md_files = {
-			"AGENT.md",
-		},
-	})
+-- TODO: 99 doesn't work in VSCode Neovim (floating windows unsupported)
+if not vim.g.vscode then
+	local nn_ok, _99 = pcall(require, "99")
+	if nn_ok then
+		local cwd = vim.uv.cwd()
+		local basename = vim.fs.basename(cwd)
+		_99.setup({
+			provider = _99.Providers.ClaudeCodeProvider,
+			logger = {
+				level = _99.DEBUG,
+				path = "/tmp/" .. basename .. ".99.debug",
+				print_on_error = true,
+			},
+			completion = {
+				source = "cmp",
+			},
+			md_files = {
+				"AGENT.md",
+			},
+		})
 
-	if vim.g.vscode then
-		vim.keymap.set("v", "<leader>9v", function()
-			vim.ui.input({ prompt = "99> " }, function(input)
-				if input and input ~= "" then
-					_99.visual({ additional_prompt = input })
-				end
-			end)
-		end)
-	else
 		vim.keymap.set("v", "<leader>9v", function()
 			_99.visual()
 		end)
-	end
 
-	vim.keymap.set("v", "<leader>9s", function()
-		_99.stop_all_requests()
-	end)
+		vim.keymap.set("v", "<leader>9s", function()
+			_99.stop_all_requests()
+		end)
+	end
 end
 
 if not vim.g.vscode then
