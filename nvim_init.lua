@@ -25,17 +25,24 @@ end
 
 local Plug = vim.fn['plug#']
 
+local local_init_path = vim.fn.stdpath('config') .. '/local.lua'
+local local_init = nil
+if vim.fn.filereadable(local_init_path) == 1 then
+	local_init = dofile(local_init_path)
+end
+
 vim.call('plug#begin')
 Plug('smoka7/hop.nvim')
 Plug('mbbill/undotree')
 Plug('hrsh7th/nvim-cmp')
 Plug('ThePrimeagen/99')
 Plug('neovim/nvim-lspconfig')
-Plug('nvimtools/none-ls.nvim')
 Plug('nvim-lua/plenary.nvim')
 Plug('nvim-telescope/telescope.nvim')
 Plug('hrsh7th/cmp-nvim-lsp')
-Plug('/usr/share/fb-editor-support/nvim', { ['as'] = 'meta.nvim' })
+if local_init and local_init.plugins then
+	local_init.plugins(Plug)
+end
 vim.call('plug#end')
 
 vim.opt.clipboard = "unnamedplus"
@@ -173,19 +180,6 @@ if nn_ok then
 end
 
 if not vim.g.vscode then
-	local meta_ok, meta = pcall(require, "meta")
-	if meta_ok then
-		meta.setup()
-	end
-
-	vim.lsp.enable({
-		"cppls@meta",
-		"fb-pyright-ls@meta",
-		"pyre@meta",
-		"buck2@meta",
-		"linttool@meta",
-	})
-
 	vim.api.nvim_create_autocmd("LspAttach", {
 		callback = function(ev)
 			local opts = { buffer = ev.buf }
@@ -213,20 +207,15 @@ if not vim.g.vscode then
 		})
 	end
 
-	local telescope_ok, telescope = pcall(require, "telescope")
+	local telescope_ok = pcall(require, "telescope")
 	if telescope_ok then
 		local builtin = require("telescope.builtin")
-		vim.keymap.set("n", "<leader>p", function()
-			telescope.extensions.myles.myles()
-		end)
-		vim.keymap.set("n", "<leader>sg", function()
-			telescope.extensions.biggrep.s()
-		end)
-		vim.keymap.set("n", "<leader>sr", function()
-			telescope.extensions.biggrep.r()
-		end)
 		vim.keymap.set("n", "<leader>sf", function()
 			builtin.live_grep()
 		end)
+	end
+
+	if local_init and local_init.setup then
+		local_init.setup()
 	end
 end
