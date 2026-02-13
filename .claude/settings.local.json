@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(for f in *.cinc)",
+      "Bash(do sed -i '/^from typing import/{ n; /^$/d }' \"$f\")",
+      "Bash(done)",
+      "Bash(hg revert:*)",
+      "Bash(for rev in 95e31a2db3ef 7457631e7e6e c7a4482a30ff 51055f3d75de)",
+      "Bash(for rev in 21526bcfb72e a09e0695f3f2 d6947b44633d 32c13dfeeadc)",
+      "Bash(with-proxy curl:*)",
+      "Bash(source ~/.bashrc)",
+      "Bash(source ~/.zshrc)",
+      "Bash(source ~/.profile)",
+      "Bash(https_proxy=http://fwdproxy:8080 curl -s https://raw.githubusercontent.com/ThePrimeagen/99/master/README.md)",
+      "Bash(curl:*)",
+      "Bash(fwdproxy-config:*)"
+    ]
+  }
+}
