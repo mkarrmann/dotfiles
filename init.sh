@@ -67,7 +67,7 @@ link_one "$DOTFILES_DIR/claude_config/statusline.sh" "$HOME/.claude/statusline.s
 # link_one "$DOTFILES_DIR/hammerspoon.lua" "$HOME/.hammerspoon/init.lua"
 
 
-if [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
+if [[ "$(uname -s)" == Linux* ]]; then
     PLUG_VIM="${XDG_DATA_HOME:-$HOME/.local/share}/nvim/site/autoload/plug.vim"
     if [[ ! -e "$PLUG_VIM" ]]; then
         curl -fLo "$PLUG_VIM" --create-dirs \
