@@ -30,6 +30,12 @@ Plug('smoka7/hop.nvim')
 Plug('mbbill/undotree')
 Plug('hrsh7th/nvim-cmp')
 Plug('ThePrimeagen/99')
+Plug('neovim/nvim-lspconfig')
+Plug('nvimtools/none-ls.nvim')
+Plug('nvim-lua/plenary.nvim')
+Plug('nvim-telescope/telescope.nvim')
+Plug('hrsh7th/cmp-nvim-lsp')
+Plug('/usr/share/fb-editor-support/nvim', { ['as'] = 'meta.nvim' })
 vim.call('plug#end')
 
 vim.opt.clipboard = "unnamedplus"
@@ -154,4 +160,63 @@ if nn_ok then
 	vim.keymap.set("v", "<leader>9s", function()
 		_99.stop_all_requests()
 	end)
+end
+
+if not vim.g.vscode then
+	local meta_ok, meta = pcall(require, "meta")
+	if meta_ok then
+		meta.setup()
+	end
+
+	vim.lsp.enable({
+		"cppls@meta",
+		"fb-pyright-ls@meta",
+		"pyre@meta",
+		"buck2@meta",
+		"linttool@meta",
+	})
+
+	vim.api.nvim_create_autocmd("LspAttach", {
+		callback = function(ev)
+			local opts = { buffer = ev.buf }
+			vim.keymap.set("n", "gd", vim.lsp.buf.definition, opts)
+			vim.keymap.set("n", "gD", vim.lsp.buf.declaration, opts)
+			vim.keymap.set("n", "gr", vim.lsp.buf.references, opts)
+			vim.keymap.set("n", "gi", vim.lsp.buf.implementation, opts)
+			vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)
+			vim.keymap.set("n", "<leader>rn", vim.lsp.buf.rename, opts)
+			vim.keymap.set("n", "<leader>ca", vim.lsp.buf.code_action, opts)
+			vim.keymap.set("n", "[d", vim.diagnostic.goto_prev, opts)
+			vim.keymap.set("n", "]d", vim.diagnostic.goto_next, opts)
+			vim.keymap.set("n", "<leader>e", vim.diagnostic.open_float, opts)
+		end,
+	})
+
+	local cmp_ok, cmp = pcall(require, "cmp")
+	local cmp_lsp_ok, cmp_nvim_lsp = pcall(require, "cmp_nvim_lsp")
+	if cmp_ok and cmp_lsp_ok then
+		cmp_nvim_lsp.default_capabilities()
+		cmp.setup({
+			sources = cmp.config.sources({
+				{ name = "nvim_lsp" },
+			}),
+		})
+	end
+
+	local telescope_ok, telescope = pcall(require, "telescope")
+	if telescope_ok then
+		local builtin = require("telescope.builtin")
+		vim.keymap.set("n", "<leader>p", function()
+			telescope.extensions.myles.myles()
+		end)
+		vim.keymap.set("n", "<leader>sg", function()
+			telescope.extensions.biggrep.s()
+		end)
+		vim.keymap.set("n", "<leader>sr", function()
+			telescope.extensions.biggrep.r()
+		end)
+		vim.keymap.set("n", "<leader>sf", function()
+			builtin.live_grep()
+		end)
+	end
 end
