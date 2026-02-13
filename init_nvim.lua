@@ -4,13 +4,8 @@ local Plug = vim.fn['plug#']
 
 vim.call('plug#begin')
 Plug('smoka7/hop.nvim')
+Plug('ThePrimeagen/99')
 vim.call('plug#end')
-
-local status_ok, hop = pcall(require, "hop")
-
-if not status_ok then
-	return
-end
 
 vim.opt.clipboard = "unnamedplus"
 vim.g.mapleader = ','
@@ -22,6 +17,8 @@ vim.api.nvim_create_autocmd("FileType", {
 		vim.o.textwidth = 88
 	end
 })
+
+local status_ok, hop = pcall(require, "hop")
 
 if vim.g.vscode then
 	-- See https://github.com/vscode-neovim/vscode-neovim/issues/1902#issuecomment-2151329542
@@ -55,52 +52,77 @@ if vim.g.vscode then
 end
 
 -- easymotion plugin (hop) config
-hop.setup {
-	keys = 'etovxqpdygfblzhckisuran'
-}
+if status_ok then
+	hop.setup {
+		keys = 'etovxqpdygfblzhckisuran'
+	}
 
-local opts = {
-	silent = true,
-	noremap = true,
-	callback = nil,
-	desc = nil,
-}
+	local opts = {
+		silent = true,
+		noremap = true,
+		callback = nil,
+		desc = nil,
+	}
 
+	local directions = require('hop.hint').HintDirection
 
-local directions = require('hop.hint').HintDirection
+	local bindings = {
+		{
+			mode = 'n',
+			mapping = '<Leader>f',
+			desc = '',
+			func = function() hop.hint_char1({ direction = directions.AFTER_CURSOR, current_line_only = false }) end
+		},
+		{
+			mode = 'n',
+			mapping = '<Leader>F',
+			desc = '',
+			func = function() hop.hint_char1({ direction = directions.BEFORE_CURSOR, current_line_only = false }) end
+		},
+		{
+			mode = 'n',
+			mapping = '<Leader>t',
+			desc = '',
+			func = function() hop.hint_char1({ direction = directions.AFTER_CURSOR, current_line_only = false, hint_offset = -1 }) end
+		},
+		{
+			mode = 'n',
+			mapping = '<Leader>T',
+			desc = '',
+			func = function() hop.hint_char1({ direction = directions.BEFORE_CURSOR, current_line_only = false, hint_offset = 1 }) end
+		},
+	}
 
+	for _, binding in pairs(bindings) do
+		-- table.foreach(bindings, function(idx, binding)
+		opts.callback = binding.func
+		opts.desc = binding.desc
+		vim.api.nvim_set_keymap(binding.mode, binding.mapping, '', opts)
+	end
+end
 
-local bindings = {
-	{
-		mode = 'n',
-		mapping = '<Leader>f',
-		desc = '',
-		func = function() hop.hint_char1({ direction = directions.AFTER_CURSOR, current_line_only = false }) end
-	},
-	{
-		mode = 'n',
-		mapping = '<Leader>F',
-		desc = '',
-		func = function() hop.hint_char1({ direction = directions.BEFORE_CURSOR, current_line_only = false }) end
-	},
-	{
-		mode = 'n',
-		mapping = '<Leader>t',
-		desc = '',
-		func = function() hop.hint_char1({ direction = directions.AFTER_CURSOR, current_line_only = false, hint_offset = -1 }) end
-	},
-	{
-		mode = 'n',
-		mapping = '<Leader>T',
-		desc = '',
-		func = function() hop.hint_char1({ direction = directions.BEFORE_CURSOR, current_line_only = false, hint_offset = 1 }) end
-	},
-}
+-- 99 (ThePrimeagen) config
+local nn_ok, _99 = pcall(require, "99")
+if nn_ok then
+	local cwd = vim.uv.cwd()
+	local basename = vim.fs.basename(cwd)
+	_99.setup({
+		provider = _99.ClaudeCodeProvider,
+		logger = {
+			level = _99.DEBUG,
+			path = "/tmp/" .. basename .. ".99.debug",
+			print_on_error = true,
+		},
+		md_files = {
+			"AGENT.md",
+		},
+	})
 
+	vim.keymap.set("v", "<leader>9v", function()
+		_99.visual()
+	end)
 
-for _, binding in pairs(bindings) do
-	-- table.foreach(bindings, function(idx, binding)
-	opts.callback = binding.func
-	opts.desc = binding.desc
-	vim.api.nvim_set_keymap(binding.mode, binding.mapping, '', opts)
+	vim.keymap.set("v", "<leader>9s", function()
+		_99.stop_all_requests()
+	end)
 end
