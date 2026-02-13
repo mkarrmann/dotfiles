@@ -133,7 +133,7 @@ if nn_ok then
 	local cwd = vim.uv.cwd()
 	local basename = vim.fs.basename(cwd)
 	_99.setup({
-		provider = _99.ClaudeCodeProvider,
+		provider = _99.Providers.ClaudeCodeProvider,
 		logger = {
 			level = _99.DEBUG,
 			path = "/tmp/" .. basename .. ".99.debug",
