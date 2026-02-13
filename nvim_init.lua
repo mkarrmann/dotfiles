@@ -153,9 +153,19 @@ if nn_ok then
 		},
 	})
 
-	vim.keymap.set("v", "<leader>9v", function()
-		_99.visual()
-	end)
+	if vim.g.vscode then
+		vim.keymap.set("v", "<leader>9v", function()
+			vim.ui.input({ prompt = "99> " }, function(input)
+				if input and input ~= "" then
+					_99.visual({ additional_prompt = input })
+				end
+			end)
+		end)
+	else
+		vim.keymap.set("v", "<leader>9v", function()
+			_99.visual()
+		end)
+	end
 
 	vim.keymap.set("v", "<leader>9s", function()
 		_99.stop_all_requests()
