@@ -13,7 +13,9 @@
       "Bash(source ~/.profile)",
       "Bash(https_proxy=http://fwdproxy:8080 curl -s https://raw.githubusercontent.com/ThePrimeagen/99/master/README.md)",
       "Bash(curl:*)",
-      "Bash(fwdproxy-config:*)"
+      "Bash(fwdproxy-config:*)",
+      "Bash(nvim:*)",
+      "Bash(dotsync2 paths list:*)"
     ]
   }
 }
