@@ -45,6 +45,10 @@ Plug('nvim-telescope/telescope.nvim')
 Plug('hrsh7th/cmp-nvim-lsp')
 Plug('MunifTanjim/nui.nvim')
 Plug('amitds1997/remote-nvim.nvim')
+Plug('nvim-treesitter/nvim-treesitter', { ['do'] = ':TSUpdate' })
+Plug('nvim-treesitter/nvim-treesitter-context')
+Plug('lukas-reineke/indent-blankline.nvim')
+Plug('xiyaowong/virtcolumn.nvim')
 if local_init and local_init.plugins then
 	local_init.plugins(Plug)
 end
@@ -52,7 +56,19 @@ vim.call('plug#end')
 
 vim.opt.clipboard = "unnamedplus"
 vim.g.mapleader = ','
+vim.g.virtcolumn_char = "▕"
 vim.opt.number = true
+vim.opt.relativenumber = true
+vim.opt.signcolumn = "yes"
+vim.opt.statuscolumn = table.concat({
+	"%s",
+	"%C",
+	"%=",
+	"%{printf('%4d', v:lnum)}",
+	" ",
+	"%{printf('%3d', v:relnum)}",
+	" ",
+})
 vim.opt.scrolloff = 25
 vim.opt.colorcolumn = "79,80,88,100,120"
 vim.opt.tabstop = 4
@@ -243,5 +259,35 @@ if not vim.g.vscode then
 
 	if local_init and local_init.setup then
 		local_init.setup()
+	end
+
+	local ts_ok, ts_configs = pcall(require, "nvim-treesitter.configs")
+	if ts_ok then
+		ts_configs.setup({
+			highlight = { enable = true },
+			indent = { enable = true },
+		})
+	end
+
+	local ts_ctx_ok, ts_context = pcall(require, "treesitter-context")
+	if ts_ctx_ok then
+		ts_context.setup({
+			max_lines = 5,
+			trim_scope = "outer",
+			mode = "cursor",
+			separator = "─",
+		})
+		vim.keymap.set("n", "<leader>tc", "<cmd>TSContextToggle<cr>")
+	end
+
+	local ibl_ok, ibl = pcall(require, "ibl")
+	if ibl_ok then
+		ibl.setup({
+			indent = { char = "▏" },
+			scope = { enabled = true, show_start = false, show_end = false },
+			exclude = {
+				filetypes = { "help", "terminal", "dashboard" },
+			},
+		})
 	end
 end
