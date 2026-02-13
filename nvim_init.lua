@@ -43,6 +43,8 @@ Plug('neovim/nvim-lspconfig')
 Plug('nvim-lua/plenary.nvim')
 Plug('nvim-telescope/telescope.nvim')
 Plug('hrsh7th/cmp-nvim-lsp')
+Plug('MunifTanjim/nui.nvim')
+Plug('amitds1997/remote-nvim.nvim')
 if local_init and local_init.plugins then
 	local_init.plugins(Plug)
 end
@@ -209,6 +211,11 @@ if not vim.g.vscode then
 		vim.keymap.set("n", "<leader>sf", function()
 			builtin.live_grep()
 		end)
+	end
+
+	local remote_ok, remote_nvim = pcall(require, "remote-nvim")
+	if remote_ok then
+		remote_nvim.setup()
 	end
 
 	if local_init and local_init.setup then
