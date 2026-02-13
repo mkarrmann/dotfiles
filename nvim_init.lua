@@ -52,12 +52,35 @@ vim.call('plug#end')
 
 vim.opt.clipboard = "unnamedplus"
 vim.g.mapleader = ','
+vim.opt.number = true
+vim.opt.scrolloff = 25
+vim.opt.colorcolumn = "79,80,88,100,120"
+vim.opt.tabstop = 4
+vim.opt.shiftwidth = 4
+vim.opt.smoothscroll = true
 
--- TODO make more configurable (and confirm this even works as expected)
 vim.api.nvim_create_autocmd("FileType", {
 	pattern = "python",
 	callback = function()
 		vim.o.textwidth = 88
+	end
+})
+
+vim.api.nvim_create_autocmd("FileType", {
+	pattern = { "json", "jsonc", "javascript", "typescript", "yaml", "helm", "scss", "groovy", "dockercompose" },
+	callback = function()
+		vim.bo.expandtab = true
+		vim.bo.tabstop = 2
+		vim.bo.shiftwidth = 2
+	end
+})
+
+vim.api.nvim_create_autocmd("FileType", {
+	pattern = { "python", "sql", "toml", "ini", "dockerfile", "sh" },
+	callback = function()
+		vim.bo.expandtab = true
+		vim.bo.tabstop = 4
+		vim.bo.shiftwidth = 4
 	end
 })
 
