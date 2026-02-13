@@ -41,8 +41,16 @@ do
 done
 
 # Neovim
-mkdir -p "$HOME/.config/nvim"
+mkdir -p "$HOME/.config/nvim" "$HOME/.config/nvim/lua/config" "$HOME/.config/nvim/lua/plugins"
 link_one "$DOTFILES_DIR/nvim_init.lua" "$HOME/.config/nvim/init.lua"
+shopt -s nullglob
+for f in "$DOTFILES_DIR/nvim/lua/config/"*.lua; do
+  link_one "$f" "$HOME/.config/nvim/lua/config/$(basename "$f")"
+done
+for f in "$DOTFILES_DIR/nvim/lua/plugins/"*.lua; do
+  link_one "$f" "$HOME/.config/nvim/lua/plugins/$(basename "$f")"
+done
+shopt -u nullglob
 
 # ~/bin (link each file individually; fail if any target exists)
 mkdir -p "$HOME/bin"
@@ -66,15 +74,6 @@ link_one "$DOTFILES_DIR/claude_config/statusline.sh" "$HOME/.claude/statusline.s
 # TODO look into using hammerspoon again
 # link_one "$DOTFILES_DIR/hammerspoon.lua" "$HOME/.hammerspoon/init.lua"
 
-
-if [[ "$(uname -s)" == Linux* ]]; then
-    PLUG_VIM="${XDG_DATA_HOME:-$HOME/.local/share}/nvim/site/autoload/plug.vim"
-    if [[ ! -e "$PLUG_VIM" ]]; then
-        curl -fLo "$PLUG_VIM" --create-dirs \
-            https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim
-        echo "installed vim-plug"
-    fi
-fi
 
 if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
     KEEP_ZSHRC=yes sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
