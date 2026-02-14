@@ -17,7 +17,8 @@
       "Bash(nvim:*)",
       "Bash(dotsync2 paths list:*)",
       "Bash(gh api:*)",
-      "Bash(https_proxy=http://fwdproxy:8080 curl -sL https://raw.githubusercontent.com/amitds1997/remote-nvim.nvim/main/README.md)"
+      "Bash(https_proxy=http://fwdproxy:8080 curl -sL https://raw.githubusercontent.com/amitds1997/remote-nvim.nvim/main/README.md)",
+      "Bash(claude:*)"
     ]
   }
 }
