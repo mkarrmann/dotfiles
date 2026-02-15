@@ -72,14 +72,14 @@ link_one "$DOTFILES_DIR/sway_config" "$HOME/.config/sway/config"
 # Claude Code
 mkdir -p "$HOME/.claude/projects" "$HOME/.claude/rules"
 link_one "$DOTFILES_DIR/claude_config/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
-link_one "$DOTFILES_DIR/claude_config/rules/global-development-preferences.md" "$HOME/.claude/rules/global-development-preferences.md"
+link_one "$DOTFILES_DIR/agent_config/global-development-preferences.md" "$HOME/.claude/rules/global-development-preferences.md"
 link_one "$DOTFILES_DIR/claude_config/rules/personal-style.md" "$HOME/.claude/rules/personal-style.md"
 link_one "$DOTFILES_DIR/claude_config/statusline.sh" "$HOME/.claude/statusline.sh"
 
 # Codex
 mkdir -p "$HOME/.codex/rules"
 link_one "$DOTFILES_DIR/codex_config/config.toml" "$HOME/.codex/config.toml"
-link_one "$DOTFILES_DIR/claude_config/rules/global-development-preferences.md" "$HOME/.codex/rules/global-development-preferences.md"
+link_one "$DOTFILES_DIR/agent_config/global-development-preferences.md" "$HOME/.codex/rules/global-development-preferences.md"
 link_one "$DOTFILES_DIR/codex_config/rules/default.rules" "$HOME/.codex/rules/default.rules"
 
 # TODO look into using hammerspoon again
