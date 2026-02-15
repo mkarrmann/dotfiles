@@ -1,0 +1,13 @@
+model = "gpt-5.3-codex"
+model_reasoning_effort = "high"
+model_instructions_file = "/home/matt/.codex/rules/global-development-preferences.md"
+project_doc_fallback_filenames = ["CLAUDE.md"]
+
+[projects."/home/matt"]
+trust_level = "untrusted"
+
+[projects."/home/matt/dotfiles"]
+trust_level = "trusted"
+
+[projects."/home/matt/.config/nvim"]
+trust_level = "trusted"
