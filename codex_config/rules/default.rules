@@ -25,3 +25,4 @@ prefix_rule(pattern=["/usr/bin/zsh", "-c", "timeout 3s snap list 2>/dev/null | r
 prefix_rule(pattern=["/usr/bin/zsh", "-lc", "rg -n \"^Name=Google Chrome$|^Exec=.*chrome\" ~/.local/share/applications /usr/local/share/applications /usr/share/applications 2>/dev/null"], decision="allow")
 prefix_rule(pattern=["/usr/bin/zsh", "-lc", "rg -n \"relaunch|Relaunch|update|critical\" ~/.config/google-chrome/'Local State' ~/.config/google-chrome/Default/Preferences 2>/dev/null | head -n 80"], decision="allow")
 prefix_rule(pattern=["/home/matt/dotfiles/init.sh"], decision="allow")
+prefix_rule(pattern=["rm", "-f", "/home/matt/.claude/rules/personal-style.md"], decision="allow")

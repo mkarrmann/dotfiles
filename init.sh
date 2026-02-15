@@ -73,7 +73,6 @@ link_one "$DOTFILES_DIR/sway_config" "$HOME/.config/sway/config"
 mkdir -p "$HOME/.claude/projects" "$HOME/.claude/rules"
 link_one "$DOTFILES_DIR/claude_config/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
 link_one "$DOTFILES_DIR/agent_config/global-development-preferences.md" "$HOME/.claude/rules/global-development-preferences.md"
-link_one "$DOTFILES_DIR/claude_config/rules/personal-style.md" "$HOME/.claude/rules/personal-style.md"
 link_one "$DOTFILES_DIR/claude_config/statusline.sh" "$HOME/.claude/statusline.sh"
 
 # Codex
