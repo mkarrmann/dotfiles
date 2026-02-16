@@ -15,3 +15,7 @@ vim.opt.statuscolumn = table.concat({
 	"%{printf('%3d', v:relnum)}",
 	" ",
 })
+
+-- Disable concealment globally
+vim.opt.conceallevel = 0
+vim.opt.concealcursor = ""
