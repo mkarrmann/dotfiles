@@ -74,6 +74,14 @@ mkdir -p "$HOME/.claude/projects" "$HOME/.claude/rules"
 link_one "$DOTFILES_DIR/claude_config/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
 link_one "$DOTFILES_DIR/agent_config/global-development-preferences.md" "$HOME/.claude/rules/global-development-preferences.md"
 link_one "$DOTFILES_DIR/claude_config/statusline.sh" "$HOME/.claude/statusline.sh"
+# Ensure settings.json has the statusline command configured (preserving other settings)
+CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+if [[ ! -f "$CLAUDE_SETTINGS" ]]; then
+  echo '{}' > "$CLAUDE_SETTINGS"
+fi
+tmp=$(jq '.statusLine = {"type": "command", "command": "~/.claude/statusline.sh"}' "$CLAUDE_SETTINGS") \
+  && echo "$tmp" > "$CLAUDE_SETTINGS" \
+  && echo "set statusLine.command in $CLAUDE_SETTINGS"
 
 # Codex
 mkdir -p "$HOME/.codex/rules"
