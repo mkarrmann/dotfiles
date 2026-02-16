@@ -83,13 +83,21 @@ tmp=$(jq '.statusLine = {"type": "command", "command": "~/.claude/statusline.sh"
   && echo "$tmp" > "$CLAUDE_SETTINGS" \
   && echo "set statusLine.command in $CLAUDE_SETTINGS"
 
-# Codex (templated — replace __HOME__ with actual $HOME)
+# Codex
 mkdir -p "$HOME/.codex/rules"
+
+# Portable settings (templated) + machine-local overrides (config.local.toml)
 sed "s|__HOME__|$HOME|g" "$DOTFILES_DIR/codex_config/config.toml" > "$HOME/.codex/config.toml"
+if [[ -f "$HOME/.codex/config.local.toml" ]]; then
+  echo "" >> "$HOME/.codex/config.toml"
+  cat "$HOME/.codex/config.local.toml" >> "$HOME/.codex/config.toml"
+fi
 echo "generated $HOME/.codex/config.toml"
+
+# Shared development rules
 link_one "$DOTFILES_DIR/agent_config/global-development-preferences.md" "$HOME/.codex/rules/global-development-preferences.md"
-sed "s|__HOME__|$HOME|g" "$DOTFILES_DIR/codex_config/rules/default.rules" > "$HOME/.codex/rules/default.rules"
-echo "generated $HOME/.codex/rules/default.rules"
+
+# default.rules is machine-specific — managed by Codex itself
 
 # TODO look into using hammerspoon again
 # link_one "$DOTFILES_DIR/hammerspoon.lua" "$HOME/.hammerspoon/init.lua"
