@@ -1,4 +1,9 @@
-require("lazy").setup({
+local spec
+if vim.g.vscode then
+	spec = {
+		{ import = "plugins" },
+	}
+else
 	spec = {
 		{ "LazyVim/LazyVim", import = "lazyvim.plugins" },
 		{ import = "lazyvim.plugins.extras.coding.nvim-cmp" },
@@ -8,7 +13,11 @@ require("lazy").setup({
 		{ import = "lazyvim.plugins.extras.ui.treesitter-context" },
 		{ import = "lazyvim.plugins.extras.ai.claudecode" },
 		{ import = "plugins" },
-	},
+	}
+end
+
+require("lazy").setup({
+	spec = spec,
 	defaults = {
 		lazy = false,
 		version = false,
