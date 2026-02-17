@@ -97,7 +97,7 @@ build_java_full() {
     if ! $SKIP_OSS; then
         echo "==> Building presto-trunk (OSS)..."
         pushd "${DEV_HOME}/presto-trunk" > /dev/null
-        mvn $MVN_CLEAN $MVN_GOAL "${MVN_TEST_FLAGS[@]}" -pl '!presto-docs' "${OSS_OPTS[@]}"
+        mvn $MVN_CLEAN $MVN_GOAL "${MVN_TEST_FLAGS[@]}" "${OSS_OPTS[@]}"
         popd > /dev/null
     else
         echo "==> Skipping presto-trunk (-T)"
