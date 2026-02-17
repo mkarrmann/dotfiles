@@ -1,0 +1,249 @@
+#!/bin/bash
+set -e
+
+# presto-build: Local development build tool for Presto Java and C++.
+# Supports module builds, full builds, local C++ builds, tests, and checkstyle.
+#
+# When sourced by another script (e.g. presto-deploy), exports configuration
+# and functions without executing the main flow.
+
+# === Library mode ===
+_PRESTO_BUILD_SOURCED=false
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+    _PRESTO_BUILD_SOURCED=true
+fi
+
+# === Configuration ===
+FBCODE_HOME="${FBCODE_HOME:-$HOME/fbsource/fbcode}"
+DEV_HOME="${FBCODE_HOME}/github"
+BUILD_ROOT="${BUILD_ROOT:-/data/users/${USER}/builds}"
+
+# === Maven flags ===
+COMMON_OPTS=(
+    -Dmaven.gitcommitid.skip=true
+    -Dlicense.report.skip=true
+    -Djava.net.preferIPv6Addresses=true
+    -DskipUI
+    -Dos.detected.name=linux
+    -Dos.detected.arch=x86_64
+    -Dos.detected.classifier=linux-x86_64
+    -Dout-of-tree-build=true
+    -T 48
+)
+
+OSS_OPTS=(
+    "${COMMON_OPTS[@]}"
+    -Dmaven.javadoc.skip=true
+    "-Dout-of-tree-build-root=${BUILD_ROOT}/presto-trunk"
+)
+
+FB_OPTS=(
+    "${COMMON_OPTS[@]}"
+    -DuseParallelDependencyResolution=false
+    -nsu
+    -DwithPlugins=true
+    "-Dout-of-tree-build-root=${BUILD_ROOT}/presto-facebook-trunk"
+)
+
+# === Shared functions ===
+
+eden_prefetch() {
+    echo "==> Eden prefetch..."
+    eden prefetch \
+        'fbcode/github/presto-facebook-trunk/**' \
+        'fbcode/github/presto-trunk/**' 2>/dev/null || true
+}
+
+detect_repo() {
+    if [[ "$PWD" == *"presto-facebook-trunk"* ]]; then
+        echo "fb"
+    elif [[ "$PWD" == *"presto-trunk"* ]]; then
+        echo "oss"
+    else
+        echo ""
+    fi
+}
+
+resolve_cpp_targets() {
+    case "$CPP_MODE" in
+        dev)  CPP_TARGET="";                        CPP_BUCK_MODE="";;
+        opt)  CPP_TARGET="presto.presto_cpp";       CPP_BUCK_MODE="@mode/opt";;
+        bolt) CPP_TARGET="presto.presto_cpp_bolt";  CPP_BUCK_MODE="";;
+        asan) CPP_TARGET="presto.presto_cpp_asan";  CPP_BUCK_MODE="@mode/opt-asan";;
+        tsan) CPP_TARGET="presto.presto_cpp_tsan";  CPP_BUCK_MODE="@mode/opt-tsan";;
+        dbgo) CPP_TARGET="presto.presto_cpp_dbgo";  CPP_BUCK_MODE="@mode/dbgo";;
+    esac
+}
+
+build_java_module() {
+    local repo
+    repo=$(detect_repo)
+    if [ -z "$repo" ]; then
+        echo "Error: cannot detect repo from CWD ($PWD)"
+        echo "       Run from within presto-trunk or presto-facebook-trunk"
+        exit 1
+    fi
+
+    echo "==> Building module(s): $MODULES (repo: $repo, goal: ${MVN_CLEAN:+clean }${MVN_GOAL})..."
+
+    if [ "$repo" = "fb" ]; then
+        mvn $MVN_CLEAN $MVN_GOAL "${MVN_TEST_FLAGS[@]}" -pl "$MODULES" -am "${FB_OPTS[@]}"
+    else
+        mvn $MVN_CLEAN $MVN_GOAL "${MVN_TEST_FLAGS[@]}" -pl "$MODULES" -am "${OSS_OPTS[@]}"
+    fi
+}
+
+build_java_full() {
+    if ! $SKIP_OSS; then
+        echo "==> Building presto-trunk (OSS)..."
+        pushd "${DEV_HOME}/presto-trunk" > /dev/null
+        mvn $MVN_CLEAN $MVN_GOAL "${MVN_TEST_FLAGS[@]}" -pl '!presto-docs' "${OSS_OPTS[@]}"
+        popd > /dev/null
+    else
+        echo "==> Skipping presto-trunk (-T)"
+    fi
+
+    echo "==> Building presto-facebook-trunk..."
+    pushd "${DEV_HOME}/presto-facebook-trunk" > /dev/null
+    mvn $MVN_CLEAN $MVN_GOAL "${MVN_TEST_FLAGS[@]}" -pl presto-facebook -am "${FB_OPTS[@]}"
+    popd > /dev/null
+}
+
+build_cpp_local() {
+    resolve_cpp_targets
+    echo "==> Building C++ binary (mode: $CPP_MODE)..."
+    local cmd=(buck2 build)
+    [ -n "$CPP_BUCK_MODE" ] && cmd+=("$CPP_BUCK_MODE")
+    cmd+=("fbcode//fb_presto_cpp:main")
+    "${cmd[@]}"
+    echo "    C++ binary built successfully"
+}
+
+# === Exit if sourced ===
+if $_PRESTO_BUILD_SOURCED; then
+    return 0
+fi
+
+# === Flags ===
+MODULES=""
+SKIP_OSS=false
+NATIVE=false
+CPP_MODE=""
+INCREMENTAL=false
+RUN_TESTS=false
+SKIP_CHECKSTYLE=""
+QUIET=""
+VERBOSE=""
+
+# === Usage ===
+usage() {
+    cat <<'EOF'
+Usage: presto-build [options]
+
+MODULE BUILD (fast iteration):
+  -l <modules>       Build specific module(s) (comma-separated, like mvn -pl)
+                     Auto-detects repo from CWD
+
+FULL BUILD (default when no -l):
+  (no flags)         Build both presto-trunk + presto-facebook-trunk
+  -T                 Skip presto-trunk (when only FB code changed)
+
+C++ BUILD (local only):
+  -n                 Build C++ native binary (buck2 build)
+  -m <mode>          C++ build mode (default: dev)
+                     Available: dev, opt, asan, tsan, dbgo
+
+BUILD MODIFIERS:
+  -I                 Incremental (skip 'clean' phase)
+  -t                 Run tests (mvn test -P ci) instead of install
+  -C                 Skip checkstyle (-Dair.check.skip-all)
+  -q                 Quiet Maven output
+  -V                 Verbose Maven output
+  -h                 Help
+
+EXAMPLES:
+  presto-build -l presto-main              Module build (auto-detect repo)
+  presto-build                             Full Java build (OSS + FB)
+  presto-build -T                          Full build, skip OSS
+  presto-build -n                          Java + local C++ dev binary
+  presto-build -n -m asan                  Java + local C++ ASAN binary
+  presto-build -t -l presto-main           Run tests for a module
+  presto-build -C                          Full build, skip checkstyle
+EOF
+    exit "${1:-0}"
+}
+
+# === Argument parsing ===
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -l) MODULES="$2"; shift 2;;
+        -T) SKIP_OSS=true; shift;;
+        -n) NATIVE=true; shift;;
+        -m) CPP_MODE="$2"; shift 2;;
+        -I) INCREMENTAL=true; shift;;
+        -t) RUN_TESTS=true; shift;;
+        -C) SKIP_CHECKSTYLE="-Dair.check.skip-all"; shift;;
+        -q) QUIET="-q"; shift;;
+        -V) VERBOSE="-X"; shift;;
+        -h) usage 0;;
+        *)  echo "Error: unknown option '$1'"; usage 1;;
+    esac
+done
+
+# === Validation ===
+if [ -n "$CPP_MODE" ] && ! $NATIVE; then
+    echo "Error: -m requires -n (C++ build)"
+    exit 1
+fi
+
+if $NATIVE && [ -n "$CPP_MODE" ]; then
+    case "$CPP_MODE" in
+        dev|opt|asan|tsan|dbgo) ;;
+        bolt) echo "Error: bolt mode requires fbpkg pipeline; use presto-deploy instead"; exit 1;;
+        *) echo "Error: unknown C++ mode '$CPP_MODE'. Available: dev, opt, asan, tsan, dbgo"; exit 1;;
+    esac
+fi
+
+# Default C++ mode for local builds
+if $NATIVE && [ -z "$CPP_MODE" ]; then
+    CPP_MODE="dev"
+fi
+
+# === Apply modifiers to Maven opts ===
+for arr in OSS_OPTS FB_OPTS; do
+    [ -n "$SKIP_CHECKSTYLE" ] && eval "${arr}+=(\"$SKIP_CHECKSTYLE\")"
+    [ -n "$QUIET" ] && eval "${arr}+=(\"$QUIET\")"
+    [ -n "$VERBOSE" ] && eval "${arr}+=(\"$VERBOSE\")"
+done
+
+# Maven goal configuration
+if $RUN_TESTS; then
+    MVN_GOAL="test"
+    MVN_TEST_FLAGS=(-P ci)
+else
+    MVN_GOAL="install"
+    MVN_TEST_FLAGS=(-DskipTests)
+fi
+
+MVN_CLEAN=""
+$INCREMENTAL || MVN_CLEAN="clean"
+
+# === Ensure build dirs exist ===
+mkdir -p "${BUILD_ROOT}/presto-trunk" "${BUILD_ROOT}/presto-facebook-trunk"
+
+# === Main ===
+eden_prefetch
+
+# Step 1: Java build
+if [ -n "$MODULES" ]; then
+    build_java_module
+else
+    build_java_full
+fi
+
+# Step 2: C++ build (local only)
+if $NATIVE; then
+    build_cpp_local
+fi
+
+echo "==> Done."

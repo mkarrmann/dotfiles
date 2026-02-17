@@ -1,0 +1,249 @@
+#!/bin/bash
+set -e
+
+# presto-test: Unified test dispatcher for Presto clusters.
+# Wraps verifier, goshadow, BEEST, shadow A/B, and CLI spot-checks
+# with cluster validation and sensible defaults.
+
+# === Usage ===
+usage() {
+    cat <<'EOF'
+Usage: presto-test <type> -c <cluster> [options]
+
+TYPES:
+  cli          Interactive CLI or spot-check query
+  verifier     Regression suite against control cluster
+  goshadow     Replay queries (from paste, logs, or live)
+  beest        Querybank test suite
+  shadow       Performance comparison (Shadow A/B)
+
+COMMON OPTIONS:
+  -c <cluster>          Target cluster (required)
+  --skip-validation     Skip cluster reachability check
+  -h                    Help
+
+CLI OPTIONS:
+  -e <query>            Execute query (omit for interactive shell)
+
+VERIFIER OPTIONS:
+  --control <cluster>   Control cluster for comparison
+  --suite <suite>       Test suite name
+
+GOSHADOW OPTIONS:
+  -p <paste_id>         Replay queries from a Paste
+  --mode <mode>         logs | live (default: paste mode if -p given)
+  --env <source>        Source environment (required for logs/live mode)
+  --start <time>        Start time for logs mode (e.g., "2026-01-14 14:00")
+  --end <time>          End time for logs mode
+  --concurrent <n>      Max concurrent queries (default: 200)
+
+BEEST OPTIONS:
+  --suite <suite>       Test suite name
+  --ids <id,...>        Specific test case IDs (comma-separated)
+
+SHADOW OPTIONS:
+  --query-file <file>   Query file path
+  --tag <tag>           Unique run tag
+  --threads <n>         Replayer threads (default: 200)
+
+EXAMPLES:
+  presto-test cli -c my_cluster
+  presto-test cli -c my_cluster -e "SELECT count(*) FROM hive.default.t"
+  presto-test verifier -c my_cluster
+  presto-test verifier -c my_cluster --control atn1_batch1 --suite atn1_default
+  presto-test goshadow -c my_cluster -p 12345
+  presto-test goshadow -c my_cluster --mode logs --env prod_cluster --start "2026-01-14 14:00" --end "2026-01-14 16:00"
+  presto-test goshadow -c my_cluster --mode live --env prod_cluster
+  presto-test beest -c my_cluster --suite my_suite
+  presto-test beest -c my_cluster --ids 115315,127316
+  presto-test shadow -c my_cluster --query-file /tmp/queries.sql --tag my_test
+EOF
+    exit "${1:-0}"
+}
+
+if [ $# -eq 0 ]; then
+    usage 1
+fi
+
+# === Parse test type ===
+TEST_TYPE="$1"
+shift
+
+case "$TEST_TYPE" in
+    cli|verifier|goshadow|beest|shadow) ;;
+    -h) usage 0;;
+    *) echo "Error: unknown test type '$TEST_TYPE'"; echo "Available: cli, verifier, goshadow, beest, shadow"; exit 1;;
+esac
+
+# === Parse options ===
+CLUSTER=""
+SKIP_VALIDATION=false
+
+# CLI
+QUERY=""
+
+# Verifier
+CONTROL_CLUSTER=""
+VERIFIER_SUITE=""
+
+# goshadow
+PASTE_ID=""
+GOSHADOW_MODE=""
+GOSHADOW_ENV=""
+GOSHADOW_START=""
+GOSHADOW_END=""
+CONCURRENT=200
+
+# BEEST
+BEEST_SUITE=""
+BEEST_IDS=""
+
+# Shadow
+QUERY_FILE=""
+SHADOW_TAG=""
+THREADS=200
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -c) CLUSTER="$2"; shift 2;;
+        --skip-validation) SKIP_VALIDATION=true; shift;;
+        -h) usage 0;;
+
+        # CLI
+        -e) QUERY="$2"; shift 2;;
+
+        # Verifier
+        --control) CONTROL_CLUSTER="$2"; shift 2;;
+        --suite) VERIFIER_SUITE="$2"; BEEST_SUITE="$2"; shift 2;;
+
+        # goshadow
+        -p) PASTE_ID="$2"; shift 2;;
+        --mode) GOSHADOW_MODE="$2"; shift 2;;
+        --env) GOSHADOW_ENV="$2"; shift 2;;
+        --start) GOSHADOW_START="$2"; shift 2;;
+        --end) GOSHADOW_END="$2"; shift 2;;
+        --concurrent) CONCURRENT="$2"; shift 2;;
+
+        # BEEST
+        --ids) BEEST_IDS="$2"; shift 2;;
+
+        # Shadow
+        --query-file) QUERY_FILE="$2"; shift 2;;
+        --tag) SHADOW_TAG="$2"; shift 2;;
+        --threads) THREADS="$2"; shift 2;;
+
+        *) echo "Error: unknown option '$1'"; usage 1;;
+    esac
+done
+
+# === Validate cluster ===
+if [ -z "$CLUSTER" ]; then
+    echo "Error: -c <cluster> is required"
+    exit 1
+fi
+
+if ! $SKIP_VALIDATION; then
+    echo "==> Validating cluster $CLUSTER..."
+    if ! presto --smc "$CLUSTER" --execute "SELECT 1" > /dev/null 2>&1; then
+        echo "Error: cluster $CLUSTER is not reachable"
+        echo "       Check deployment status or use --skip-validation to bypass"
+        exit 1
+    fi
+    echo "    Cluster is reachable"
+fi
+
+# === Dispatch ===
+case "$TEST_TYPE" in
+    cli)
+        if [ -n "$QUERY" ]; then
+            echo "==> Running query on $CLUSTER..."
+            presto --smc "$CLUSTER" --execute "$QUERY"
+        else
+            echo "==> Opening interactive CLI on $CLUSTER..."
+            presto --smc "$CLUSTER"
+        fi
+        ;;
+
+    verifier)
+        echo "==> Running verifier on $CLUSTER..."
+        local_args=("$CLUSTER")
+
+        if [ -n "$CONTROL_CLUSTER" ]; then
+            local_args+=(--ctl-cluster "$CONTROL_CLUSTER")
+        fi
+        if [ -n "$VERIFIER_SUITE" ]; then
+            local_args+=(--test-suites "$VERIFIER_SUITE")
+        fi
+
+        pt verifier run "${local_args[@]}"
+        echo "    Results: search 'presto verifier results' on internal tools"
+        ;;
+
+    goshadow)
+        echo "==> Running goshadow on $CLUSTER..."
+        local_args=(--target "$CLUSTER" --run-as-current-user --max-concurrent-query "$CONCURRENT")
+
+        if [ -n "$PASTE_ID" ]; then
+            local_args+=(--queryid-paste "P${PASTE_ID#P}")
+        elif [ -n "$GOSHADOW_MODE" ]; then
+            local_args+=(--mode "$GOSHADOW_MODE")
+
+            if [ -z "$GOSHADOW_ENV" ]; then
+                echo "Error: --env is required for goshadow $GOSHADOW_MODE mode"
+                exit 1
+            fi
+            local_args+=(--environment "$GOSHADOW_ENV")
+
+            if [ "$GOSHADOW_MODE" = "logs" ]; then
+                if [ -z "$GOSHADOW_START" ] || [ -z "$GOSHADOW_END" ]; then
+                    echo "Error: --start and --end are required for goshadow logs mode"
+                    exit 1
+                fi
+                local_args+=(--start "$GOSHADOW_START" --end "$GOSHADOW_END")
+            fi
+        else
+            echo "Error: goshadow requires either -p <paste_id> or --mode <logs|live>"
+            exit 1
+        fi
+
+        goshadow "${local_args[@]}"
+        ;;
+
+    beest)
+        echo "==> Running BEEST on $CLUSTER..."
+        local_args=(--cluster "$CLUSTER" --namespace beest_ftw)
+
+        if [ -n "$BEEST_SUITE" ]; then
+            local_args+=(--suite "$BEEST_SUITE")
+        fi
+
+        if [ -n "$BEEST_IDS" ]; then
+            IFS=',' read -ra id_array <<< "$BEEST_IDS"
+            pt beest run "${local_args[@]}" "${id_array[@]}"
+        else
+            pt beest run "${local_args[@]}"
+        fi
+        ;;
+
+    shadow)
+        echo "==> Running Shadow A/B on $CLUSTER..."
+
+        if [ -z "$QUERY_FILE" ]; then
+            echo "Error: --query-file is required for shadow mode"
+            exit 1
+        fi
+        if [ -z "$SHADOW_TAG" ]; then
+            echo "Error: --tag is required for shadow mode"
+            exit 1
+        fi
+
+        presto-shadow --mode logs --target "$CLUSTER" \
+            --query-file "$QUERY_FILE" \
+            --tag "$SHADOW_TAG" \
+            --replayer-threads "$THREADS"
+
+        echo "    Analyze results via Bento notebook N150290"
+        ;;
+esac
+
+echo "==> Done."

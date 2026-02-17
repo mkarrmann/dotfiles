@@ -1,0 +1,291 @@
+#!/bin/bash
+set -e
+
+# presto-deploy: Builds, packages, and deploys Presto to remote clusters.
+# Sources presto-build for shared Maven config and build functions.
+
+# === Source build script for config and functions ===
+BUILD_SCRIPT="$HOME/.claude/skills/presto-build/presto-build"
+if [ ! -f "$BUILD_SCRIPT" ]; then
+    echo "Error: presto-build skill not found at $BUILD_SCRIPT"
+    echo "       Install presto-build skill first."
+    exit 1
+fi
+source "$BUILD_SCRIPT"
+
+# === Deploy-specific config ===
+DEPLOY_LOG="/tmp/presto_dev_deploy.log"
+
+# === Flags ===
+MODULES=""
+SKIP_OSS=false
+NATIVE=false
+CPP_MODE=""
+JAVA_FBPKG=""
+BUILD_JAVA=true
+INCREMENTAL=false
+SKIP_CHECKSTYLE=""
+QUIET=""
+VERBOSE=""
+DEPLOY_CLUSTER=""
+DEPLOY_REASON=""
+
+# === Deploy state ===
+CPP_FBPKG_HASH=""
+PRESTO_FBPKG_HASH=""
+PRESTO_VERSION=""
+
+# === Usage ===
+usage() {
+    cat <<'EOF'
+Usage: presto-deploy [options]
+
+BUILD + DEPLOY (default):
+  (no flags)         Build OSS + FB, deploy to Nexus, create fbpkg
+  -T                 Skip presto-trunk rebuild
+  -C                 Skip checkstyle during build
+  -I                 Incremental build (skip clean)
+
+DEPLOY ONLY (skip build):
+  -J <fbpkg_hash>    Skip build, use existing Java fbpkg hash
+
+C++ PACKAGING:
+  -n                 Build and package C++ native worker
+  -m <mode>          C++ fbpkg mode (default: opt)
+                     Available: opt, bolt, asan, tsan, dbgo
+                     (dev not available — cannot be packaged)
+
+CLUSTER DEPLOYMENT:
+  -c <cluster>       Deploy to cluster after packaging
+  -r <reason>        Deployment reason string (used with -c)
+
+OUTPUT:
+  -q                 Quiet Maven output
+  -V                 Verbose Maven output
+  -h                 Help
+
+EXAMPLES:
+  presto-deploy                            Full build + deploy + fbpkg
+  presto-deploy -T                         Skip OSS, build FB + deploy + fbpkg
+  presto-deploy -n                         Hybrid build (Java + C++ opt)
+  presto-deploy -n -m bolt                 Hybrid with BOLT C++
+  presto-deploy -J abc123                  Skip build, use existing Java fbpkg
+  presto-deploy -J abc123 -n              Hybrid with existing Java fbpkg
+  presto-deploy -c my_cluster -r "test X"  Build + deploy + push to cluster
+EOF
+    exit "${1:-0}"
+}
+
+# === Argument parsing ===
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -T) SKIP_OSS=true; shift;;
+        -C) SKIP_CHECKSTYLE="-Dair.check.skip-all"; shift;;
+        -I) INCREMENTAL=true; shift;;
+        -J) JAVA_FBPKG="$2"; BUILD_JAVA=false; shift 2;;
+        -n) NATIVE=true; shift;;
+        -m) CPP_MODE="$2"; shift 2;;
+        -c) DEPLOY_CLUSTER="$2"; shift 2;;
+        -r) DEPLOY_REASON="$2"; shift 2;;
+        -q) QUIET="-q"; shift;;
+        -V) VERBOSE="-X"; shift;;
+        -h) usage 0;;
+        *)  echo "Error: unknown option '$1'"; usage 1;;
+    esac
+done
+
+# === Validation ===
+if [ -n "$JAVA_FBPKG" ]; then
+    if $SKIP_OSS || $INCREMENTAL || [ -n "$SKIP_CHECKSTYLE" ]; then
+        echo "Error: -J (existing fbpkg) is mutually exclusive with build flags (-T, -I, -C)"
+        exit 1
+    fi
+fi
+
+if [ -n "$CPP_MODE" ] && ! $NATIVE; then
+    echo "Error: -m requires -n (C++ build)"
+    exit 1
+fi
+
+if $NATIVE && [ -n "$CPP_MODE" ]; then
+    case "$CPP_MODE" in
+        opt|bolt|asan|tsan|dbgo) ;;
+        dev) echo "Error: dev mode cannot be packaged; use presto-build for local C++ dev builds"; exit 1;;
+        *) echo "Error: unknown C++ mode '$CPP_MODE'. Available: opt, bolt, asan, tsan, dbgo"; exit 1;;
+    esac
+fi
+
+# Default C++ mode for packaging
+if $NATIVE && [ -z "$CPP_MODE" ]; then
+    CPP_MODE="opt"
+fi
+
+if [ -n "$DEPLOY_REASON" ] && [ -z "$DEPLOY_CLUSTER" ]; then
+    echo "Error: -r (reason) requires -c (cluster)"
+    exit 1
+fi
+
+# === Apply modifiers to Maven opts ===
+for arr in OSS_OPTS FB_OPTS; do
+    [ -n "$SKIP_CHECKSTYLE" ] && eval "${arr}+=(\"$SKIP_CHECKSTYLE\")"
+    [ -n "$QUIET" ] && eval "${arr}+=(\"$QUIET\")"
+    [ -n "$VERBOSE" ] && eval "${arr}+=(\"$VERBOSE\")"
+done
+
+# Build always uses install goal with tests skipped
+MVN_GOAL="install"
+MVN_TEST_FLAGS=(-DskipTests)
+MVN_CLEAN=""
+$INCREMENTAL || MVN_CLEAN="clean"
+
+# === Deploy functions ===
+
+build_cpp_fbpkg() {
+    resolve_cpp_targets
+    echo "==> Building C++ fbpkg (mode: $CPP_MODE, target: $CPP_TARGET)..."
+    local output
+    output=$(fbpkg build "fbcode//fb_presto_cpp:${CPP_TARGET}")
+    CPP_FBPKG_HASH=$(echo "$output" | grep "^${CPP_TARGET}:" | cut -d ':' -f 2)
+    if [ -z "$CPP_FBPKG_HASH" ]; then
+        echo "Error: C++ fbpkg build failed — could not extract hash"
+        echo "$output"
+        exit 1
+    fi
+    echo "    Built ${CPP_TARGET}:${CPP_FBPKG_HASH}"
+}
+
+mvn_deploy() {
+    echo "==> Deploying to Nexus..."
+
+    local deploy_opts=(
+        -pl presto-facebook
+        -DskipTests
+        "${COMMON_OPTS[@]}"
+        "-Dout-of-tree-build-root=${BUILD_ROOT}/presto-facebook-trunk"
+    )
+    [ -n "$QUIET" ] && deploy_opts+=("$QUIET")
+    [ -n "$VERBOSE" ] && deploy_opts+=("$VERBOSE")
+
+    pushd "${DEV_HOME}/presto-facebook-trunk" > /dev/null
+    set +e
+    mvn deploy "${deploy_opts[@]}" > "$DEPLOY_LOG" 2>&1
+    local deploy_exit_code=$?
+    set -e
+    popd > /dev/null
+
+    if [ $deploy_exit_code -ne 0 ] || grep -q "BUILD FAILURE" "$DEPLOY_LOG"; then
+        echo "Error: mvn deploy failed. See $DEPLOY_LOG"
+        exit 1
+    fi
+
+    PRESTO_VERSION=$(grep 'Uploaded to fb-nexus-snapshots' "$DEPLOY_LOG" \
+        | grep '.tar.gz' \
+        | sed 's/.*\/presto-facebook-\(.*\).tar.gz.*/\1/')
+
+    if [ -z "$PRESTO_VERSION" ]; then
+        echo "Error: could not extract PRESTO_VERSION from deploy log"
+        exit 1
+    fi
+
+    echo "    Deployed version: $PRESTO_VERSION"
+}
+
+package_java() {
+    echo "==> Packaging Java fbpkg for $PRESTO_VERSION..."
+    local output
+    output=$(pt build fbpkg presto "$PRESTO_VERSION")
+    local fbpkg_line
+    fbpkg_line=$(echo "$output" | grep "Built presto.presto")
+    PRESTO_FBPKG_HASH=$(echo "$fbpkg_line" | sed -e 's/.*(presto.presto:\(.*\)).*/\1/')
+
+    if [ -z "$PRESTO_FBPKG_HASH" ]; then
+        echo "Error: could not extract fbpkg hash from pt build output"
+        echo "$output"
+        exit 1
+    fi
+
+    echo "    $fbpkg_line"
+}
+
+build_hybrid() {
+    resolve_cpp_targets
+    echo "==> Building hybrid package..."
+    echo "    Java: presto.presto:${PRESTO_FBPKG_HASH}"
+    echo "    C++:  ${CPP_TARGET}:${CPP_FBPKG_HASH}"
+
+    local hybrid_args=(-c "$CPP_FBPKG_HASH" -p "$PRESTO_FBPKG_HASH")
+    if [ "$CPP_MODE" != "opt" ] && [ -n "$CPP_TARGET" ]; then
+        hybrid_args+=(-k "$CPP_TARGET")
+    fi
+
+    "${FBCODE_HOME}/fb_presto_cpp/scripts/build.sh" "${hybrid_args[@]}"
+}
+
+deploy_to_cluster() {
+    if [ -z "$DEPLOY_CLUSTER" ]; then
+        return
+    fi
+
+    local version="${PRESTO_FBPKG_HASH}"
+    local reason="${DEPLOY_REASON:-deployed by presto-deploy}"
+
+    echo "==> Deploying to cluster $DEPLOY_CLUSTER (version: $version)..."
+    pt pcm deploy -l -c "$DEPLOY_CLUSTER" -pv "$version" -r "$reason" -f
+}
+
+verify_deployment() {
+    if [ -z "$DEPLOY_CLUSTER" ]; then
+        return
+    fi
+
+    echo "==> Verifying deployment on $DEPLOY_CLUSTER..."
+    presto --smc "$DEPLOY_CLUSTER" --execute "SELECT version()"
+}
+
+# === Ensure build dirs exist ===
+mkdir -p "${BUILD_ROOT}/presto-trunk" "${BUILD_ROOT}/presto-facebook-trunk"
+
+# === Main ===
+eden_prefetch
+
+# Step 1: Java build (unless -J)
+if $BUILD_JAVA; then
+    build_java_full
+fi
+
+# Step 2: C++ fbpkg (if hybrid)
+if $NATIVE; then
+    build_cpp_fbpkg
+fi
+
+# Step 3: Deploy to Nexus (unless -J)
+if $BUILD_JAVA; then
+    mvn_deploy
+fi
+
+# Step 4: Package Java fbpkg
+if [ -n "$JAVA_FBPKG" ]; then
+    PRESTO_FBPKG_HASH="$JAVA_FBPKG"
+    echo "==> Using existing Java fbpkg: $PRESTO_FBPKG_HASH"
+elif [ -n "$PRESTO_VERSION" ]; then
+    package_java
+fi
+
+# Step 5: Hybrid merge (if both Java + C++ fbpkgs)
+if $NATIVE && [ -n "$PRESTO_FBPKG_HASH" ] && [ -n "$CPP_FBPKG_HASH" ]; then
+    build_hybrid
+fi
+
+# Step 6: Deploy to cluster (if -c)
+deploy_to_cluster
+
+# Step 7: Verify deployment (if -c)
+verify_deployment
+
+echo "==> Done."
+if [ -n "$PRESTO_FBPKG_HASH" ]; then
+    echo "    Java fbpkg: presto.presto:${PRESTO_FBPKG_HASH}"
+fi
+if [ -n "$CPP_FBPKG_HASH" ]; then
+    echo "    C++ fbpkg: ${CPP_TARGET}:${CPP_FBPKG_HASH}"
+fi
