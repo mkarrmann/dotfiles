@@ -22,4 +22,12 @@ vim.api.nvim_create_autocmd("TermOpen", {
 	end,
 })
 
+-- Force full redraw on tmux pane switch. Without this, TUIs running in Neovim
+-- terminal buffers (e.g. Claude Code) render with stale screen content overlapping.
+vim.api.nvim_create_autocmd("FocusGained", {
+	callback = function()
+		vim.cmd("redraw!")
+	end,
+})
+
 pcall(require, "config.local")
