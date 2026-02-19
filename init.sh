@@ -70,10 +70,17 @@ mkdir -p "$HOME/.config/sway"
 link_one "$DOTFILES_DIR/sway_config" "$HOME/.config/sway/config"
 
 # Claude Code
-mkdir -p "$HOME/.claude/projects" "$HOME/.claude/rules"
+mkdir -p "$HOME/.claude/projects" "$HOME/.claude/rules" "$HOME/.claude/hooks"
 link_one "$DOTFILES_DIR/claude_config/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
 link_one "$DOTFILES_DIR/agent_config/global-development-preferences.md" "$HOME/.claude/rules/global-development-preferences.md"
 link_one "$DOTFILES_DIR/claude_config/statusline.sh" "$HOME/.claude/statusline.sh"
+# Hooks
+shopt -s nullglob
+for src in "$DOTFILES_DIR/claude_config/hooks/"*; do
+  base="$(basename "$src")"
+  link_one "$src" "$HOME/.claude/hooks/$base"
+done
+shopt -u nullglob
 # Skills (shared between Claude Code and Codex)
 mkdir -p "$HOME/.claude/skills"
 shopt -s nullglob
@@ -87,9 +94,22 @@ CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 if [[ ! -f "$CLAUDE_SETTINGS" ]]; then
   echo '{}' > "$CLAUDE_SETTINGS"
 fi
-tmp=$(jq '.statusLine = {"type": "command", "command": "~/.claude/statusline.sh"}' "$CLAUDE_SETTINGS") \
+tmp=$(jq '
+  .statusLine = {"type": "command", "command": "~/.claude/statusline.sh"} |
+  .hooks.PreToolUse = [
+    {
+      "matcher": "Edit|Write",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 ~/.claude/hooks/accept-source-controlled-edits.py"
+        }
+      ]
+    }
+  ]
+' "$CLAUDE_SETTINGS") \
   && echo "$tmp" > "$CLAUDE_SETTINGS" \
-  && echo "set statusLine.command in $CLAUDE_SETTINGS"
+  && echo "configured statusLine and hooks in $CLAUDE_SETTINGS"
 
 # Codex
 mkdir -p "$HOME/.codex/rules"
