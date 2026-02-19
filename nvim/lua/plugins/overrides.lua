@@ -28,10 +28,8 @@ return {
 	{
 		"coder/claudecode.nvim",
 		opts = {
-			terminal = {
-				env = {
-					EDITOR = "nvim --server " .. (vim.v.servername or "") .. " --remote-wait",
-				},
+			env = {
+				EDITOR = "nvim --server " .. (vim.v.servername or "") .. " --remote-wait",
 			},
 		},
 	},
