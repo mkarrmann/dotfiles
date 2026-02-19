@@ -26,6 +26,16 @@ return {
 		},
 	},
 	{
+		"coder/claudecode.nvim",
+		opts = {
+			terminal = {
+				env = {
+					EDITOR = "nvim --server " .. (vim.v.servername or "") .. " --remote-wait",
+				},
+			},
+		},
+	},
+	{
 		"folke/flash.nvim",
 		keys = {
 			{ "s", mode = { "n", "x", "o" }, false },
