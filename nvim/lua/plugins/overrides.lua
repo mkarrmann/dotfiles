@@ -29,7 +29,7 @@ return {
 		"coder/claudecode.nvim",
 		opts = {
 			env = {
-				EDITOR = "nvim --server " .. (vim.v.servername or "") .. " --remote-wait",
+				EDITOR = vim.fn.expand("~/bin/nvim-edit-in-tab"),
 			},
 		},
 	},

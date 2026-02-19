@@ -1,0 +1,32 @@
+#!/bin/bash
+# Opens files in the parent Neovim instance as a new tab, then waits for
+# the tab to be closed. Used as $EDITOR inside Neovim terminal buffers
+# (e.g., Claude Code via claudecode.nvim) to avoid spawning a nested Neovim,
+# which causes terminal rendering corruption on exit.
+set -euo pipefail
+
+FILE="${1:?Usage: $0 <file>}"
+
+# Fall back to regular nvim when not inside a Neovim terminal
+if [ -z "${NVIM:-}" ]; then
+	exec nvim "$FILE"
+fi
+
+SENTINEL="/tmp/.nvim-editor-wait-$$"
+trap 'rm -f "$SENTINEL"' EXIT
+
+REAL_FILE=$(realpath "$FILE")
+
+# Escape for Lua single-quoted string literals (\ -> \\, ' -> \')
+lua_esc() { printf '%s' "$1" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g"; }
+
+LF=$(lua_esc "$REAL_FILE")
+LS=$(lua_esc "$SENTINEL")
+
+nvim --server "$NVIM" --remote-expr \
+	"luaeval(\"require('config.editor_tab').open_and_signal('$LF', '$LS')\")" \
+	>/dev/null 2>&1
+
+while [ ! -f "$SENTINEL" ]; do
+	sleep 0.1
+done
