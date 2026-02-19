@@ -136,6 +136,11 @@ if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
     echo "installed oh-my-zsh"
 fi
 
+if [[ ! -d "$HOME/.tmux/plugins/tpm" ]]; then
+    git clone https://github.com/tmux-plugins/tpm "$HOME/.tmux/plugins/tpm"
+    echo "installed tpm (run prefix + I in tmux to install plugins)"
+fi
+
 if [[ ${#SKIPPED_FILES[@]} -gt 0 ]]; then
   echo ""
   echo "Skipped (already exist):"
