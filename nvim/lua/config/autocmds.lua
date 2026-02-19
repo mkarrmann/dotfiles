@@ -26,11 +26,9 @@ vim.api.nvim_create_autocmd("TermOpen", {
 	end,
 })
 
--- Force full redraw on focus gain or terminal re-entry. Needed because:
--- 1. Tmux pane switches don't relay full screen content (FocusGained)
--- 2. Neovim doesn't fully repaint terminal buffers after overlapping
---    floats/splits close, e.g. Ctrl+g editor in Claude Code (TermEnter)
-vim.api.nvim_create_autocmd({ "FocusGained", "TermEnter" }, {
+-- Force full redraw on tmux pane switch. Without this, TUIs running in Neovim
+-- terminal buffers (e.g. Claude Code) render with stale screen content overlapping.
+vim.api.nvim_create_autocmd("FocusGained", {
 	callback = function()
 		vim.cmd("redraw!")
 	end,
