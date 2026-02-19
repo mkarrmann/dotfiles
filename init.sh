@@ -138,7 +138,16 @@ fi
 
 if [[ ! -d "$HOME/.tmux/plugins/tpm" ]]; then
     git clone https://github.com/tmux-plugins/tpm "$HOME/.tmux/plugins/tpm"
-    echo "installed tpm (run prefix + I in tmux to install plugins)"
+    echo "installed tpm"
+fi
+
+if [[ -x "$HOME/.tmux/plugins/tpm/bin/install_plugins" ]]; then
+    if command -v tmux &>/dev/null; then
+        "$HOME/.tmux/plugins/tpm/bin/install_plugins" && echo "installed tmux plugins" \
+            || echo "WARNING: tmux plugin install failed" >&2
+    else
+        echo "WARNING: tmux not found, skipping plugin install (run prefix + I in tmux later)" >&2
+    fi
 fi
 
 if [[ ${#SKIPPED_FILES[@]} -gt 0 ]]; then
