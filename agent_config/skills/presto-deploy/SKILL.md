@@ -1,9 +1,19 @@
 ---
 name: presto-deploy
-description: Use when deploying Presto to Nexus, creating fbpkg packages, building hybrid (Java+C++) packages, reserving Katchin test clusters, or deploying to a remote cluster. Depends on presto-build skill for build configuration. See presto-test for post-deployment validation.
+description: Use when deploying Presto to Nexus, creating fbpkg packages, building hybrid (Java+C++) packages, reserving Katchin test clusters, or deploying to a remote cluster. Depends on presto-build skill for build configuration. See presto-e2e-test for post-deployment validation.
 ---
 
 # Presto Deploy
+
+## CRITICAL: Test Clusters Only
+
+**You must NEVER deploy to production clusters.** You may only deploy to Katchin test clusters that you have personally reserved. Before every deployment, verify:
+
+1. **The cluster is a test cluster.** Test cluster names contain `test`, `verifier`, or `katchin` (e.g., `dkl1_batchtest_bgm_3`, `atn1_verifier_t6_2`). If a cluster name does not clearly indicate it is a test cluster, **stop and ask the user to confirm**.
+2. **You have an active reservation.** Run `pt pcm test-cluster list` and confirm the target cluster shows your reservation. If it does not, **do not deploy**.
+3. **The TW config path is the test config.** When using `tw update`, always use the Katchin test config at `tupperware/config/presto/testing/katchin.tw` — never `tupperware/config/presto/presto.tw` or any other production config.
+
+If there is any ambiguity about whether a cluster is a test cluster, **do not deploy**. Ask the user.
 
 ## Overview
 
@@ -16,8 +26,8 @@ Handles the full Nexus deploy, fbpkg packaging, and cluster deployment pipeline.
 **Depends on:** `~/.claude/skills/presto-build/presto-build` (sourced for Maven config and build functions)
 
 **Related skills:**
-- `presto-build` — Local development builds, module builds, tests
-- `presto-test` — Post-deployment validation (verifier, goshadow, BEEST)
+- `presto-build` — Local builds, unit tests, and checkstyle
+- `presto-e2e-test` — End-to-end testing against remote clusters (correctness verification, performance regression)
 
 ## Workflow
 
@@ -77,45 +87,187 @@ When `-n` is specified, the script builds a C++ fbpkg via `fbpkg build fbcode//f
 
 When both Java and C++ fbpkgs are produced, the script delegates to `fb_presto_cpp/scripts/build.sh` which merges them into a single `presto.presto` package containing the Java coordinator and C++ worker binary.
 
-## Cluster Operations
+## Cluster Reservation
 
-### Reservation
+A test cluster must be reserved before deploying to it.
+
+**`pt pcm test-cluster`** — the current tool:
+
+```bash
+# List available test clusters
+pt pcm test-cluster list
+pt pcm test-cluster list --available-only
+pt pcm test-cluster list -r <region> -m <machine_type>
+
+# Reserve a test cluster (defaults: 3 hours, 50 workers)
+pt pcm test-cluster reserve --request-reason "<reason>"
+
+# Reserve with specific duration, worker count, region, machine type
+pt pcm test-cluster reserve -d "2 days" -w 10 -r <region> -m <machine_type> \
+    --request-reason "<reason>"
+
+# Reserve a specific cluster
+pt pcm test-cluster reserve -c <cluster_name> -d "48 hours" --request-reason "<reason>"
+
+# Extend a reservation
+pt pcm test-cluster extend -c <cluster_name> -a "12 hours" --request-reason "<reason>"
+
+# Release a reservation
+pt pcm test-cluster release -c <cluster_name>
+```
+
+Machine types: `T1`, `T10`, `T6`, `T6F`, `T1_BGM`, `T10_SPR`, `T2`, `T2_TRN`.
+Categories: `Warehouse Batch`, `Warehouse Batch Testing`.
+
+**`pt reservation list`** — older tool, still useful for listing clusters filtered by service type:
 
 ```bash
 pt reservation list
-pt reservation reserve <cluster_name> <duration>
-pt reservation extend <cluster_name> <duration>
-pt reservation release <cluster_name>
+pt reservation list --reserved
+pt reservation list --service PRESTISSIMO
 ```
 
-Katchin dashboard: search "Katchin" on internal tools.
+`pt reservation reserve` and `release` are deprecated — use `pt pcm test-cluster` instead.
 
-### Deployment methods
+### Cluster Sizing
 
-**Via presto-deploy (recommended):**
+**Production batch clusters typically run 300 workers** (T1_BGM) or 150 workers (T2_TRN). Several Presto configuration parameters are derived from or scale with worker count, so running tests on a significantly smaller cluster produces different behavior. The default reservation is 50 workers — this is sufficient for correctness testing but **not for performance testing**.
+
+**Worker-count-dependent configurations:**
+
+| Config | How it scales | Impact of mismatch |
+|--------|---------------|-------------------|
+| `query.initial-hash-partitions` | `get_hash_partitions(worker_count, driver_count)`, capped at 333 | Fewer workers → fewer partitions → larger partitions → different shuffle/join behavior |
+| `sink.max-buffer-size` | `ceil(0.64 * hash_partitions)` MB | Scales with hash partitions |
+| Effective total query memory | `query.max-memory-per-node * worker_count` | 10 workers × 14GB = 140GB vs 300 workers × 14GB = 4.2TB — queries that fit in production may OOM or spill heavily on small clusters |
+| `minimum_required_workers_active` | `worker_count * 0.75` | Small clusters start faster |
+| Total cluster parallelism | `worker_count * task_threads` | 10 BGM workers = 1,700 threads vs 300 = 51,000 |
+
+**Fixed configurations** (do NOT scale with worker count): `join-max-broadcast-table-size` (1GB), per-worker memory limits, per-worker spill limits (300GB), task thread counts.
+
+**Sizing recommendations:**
+
+| Test purpose | Recommended workers (`-w`) | Why |
+|---|---|---|
+| Correctness (BEEST, verifier) | 10-50 | Plan shapes may differ but correctness should hold |
+| Performance A/B (goshadow/perfrun) | 100-300 | Need production-like hash partitions, memory, and parallelism for representative signal |
+| Quick smoke test | 10 | Just checking it runs |
+
+For A/B comparisons, what matters most is that both arms use the **same** cluster size — relative comparisons are valid even on a smaller cluster. But use at least 100 workers on BGM if you want results that generalize to production.
+
+### Region Selection
+
+Cluster region matters for two reasons:
+
+1. **BEEST synthetic data availability:** BEEST synthetic data is replicated to local namespaces across regions, but not all suites have data everywhere. Prefer common regions (`atn`, `ftw`, `pnb`, `rcd`) where data is most likely present. Less common regions (`dkl`, `maz`, `mwg`, `ncg`) may be missing data for some suites.
+
+2. **Cross-region reads:** Batch test clusters have `allowed_fb_regions` restricted to their local region (set in `batch_native.cinc` line 647). This means queries cannot access data in other regions — they'll fail with `PRISM_REGION_NOT_ALLOWED`. Katchin verifier clusters allow all regions by default (`allowed_fb_regions = "*"` via `utils.cinc` line 958).
+
+### Reservation Checklist
+
+Before reserving, determine:
+
+| Consideration | Flag | Guidance |
+|---|---|---|
+| **Worker count** | `-w` | 10 for correctness, 100-300 for perf |
+| **Region** | `-r` | Prefer `atn`, `ftw`, `pnb`, `rcd` for BEEST; match production region for goshadow |
+| **Machine type** | `-m` | `T1_BGM` for standard batch (most common production type) |
+| **Duration** | `-d` | Correctness: 2-3h. Perf A/B: 6-8h (deploy + control run + experiment run). |
+| **Category** | `--category` | `"Warehouse Batch Testing"` for Prestissimo batch clusters |
 
 ```bash
-presto-deploy -c <cluster> -r "testing feature X"
+# Typical performance testing reservation
+pt pcm test-cluster reserve -w 300 -r rcd -m T1_BGM -d "8 hours" \
+    --request-reason "Performance A/B: <description>"
+
+# Typical correctness testing reservation
+pt pcm test-cluster reserve -w 10 --request-reason "BEEST correctness: <description>"
 ```
 
-**Via pt tools (manual):**
+### Modifying Cluster Config for Testing
+
+Some tests require cluster-wide config changes that cannot be set via session properties (e.g., `internal-communication.https.required`, `allowed_fb_regions`). The workflow:
+
+1. **Modify the TW config file** (e.g., `batch_native.cinc`) with a cluster-specific conditional:
+   ```python
+   # Example: disable HTTPS for a specific cluster
+   secure_internal_communications=cluster_name != "<your_cluster>",
+
+   # Example: allow cross-region access for BEEST testing
+   allowed_fb_regions="*" if cluster_name == "<your_cluster>" else [region_prefix_to_name_mapping[region]],
+   ```
+2. **Validate:** `tw validate ~/fbsource/fbcode/tupperware/config/presto/testing/batch_test.tw`
+3. **Deploy with local config:** `echo "yes" | pt pcm deploy -c <cluster> -pv <version> -r "<reason>" -l -f`
+   - `-l` uses your local TW config (required — without it, the config changes won't take effect)
+   - Note: `tw job update` may be blocked by AI agent policy; `pt pcm deploy -l` works around this
+4. **Always revert the config change when done.**
+
+## Deploying to a Test Cluster
+
+Always deploy as fast as possible. Test clusters have no real traffic, so there is no reason for gradual rollouts, drain timeouts, or canary checks.
+
+### Recommended: `tw update` + `apply-task-ops`
+
+This is the fastest deployment method. It pushes the update and immediately forces all tasks to restart simultaneously:
 
 ```bash
-pt pcm deploy -l -c <cluster_name> -pv <version> -r "reason" -f
-```
+# 1. Verify this is a test cluster you have reserved
+pt pcm test-cluster list | grep <cluster_name>
 
-**Via tw update (direct TW manipulation):**
-
-```bash
+# 2. Push the update (uses the TESTING config — never use presto.tw)
 PRESTO_VERSION=<version> tw update \
   ~/fbsource/fbcode/tupperware/config/presto/testing/katchin.tw \
-  '.*<cluster_name>.*(coordinator|worker|resource_manager)' --fast
+  '.*<cluster_name>.*(coordinator|worker|resource_manager)' --force
+
+# 3. Immediately force all tasks to restart (bypasses slow incremental rollout)
+tw task-control apply-task-ops --all-ops --silent tsp_<region>/presto/<cluster_name>.worker
+tw task-control apply-task-ops --all-ops --silent tsp_<region>/presto/<cluster_name>.coordinator
+tw task-control apply-task-ops --all-ops --silent tsp_<region>/presto/<cluster_name>.resource_manager
+
+# 4. Verify deployment
+presto --smc <cluster_name> --execute "SELECT version()"
 ```
+
+Without step 3, TW rolls out incrementally (e.g., 10% of tasks at a time with cooldown periods), which can take 30+ minutes for no benefit on a test cluster.
+
+`tw task-control show-task-ops <job_handle>` shows pending operations if you want to inspect before applying.
+
+Note: `tw update --fast` is **deprecated** under Spec 2.0. The `apply-task-ops` pattern above is its replacement.
+
+### Alternative: `pt pcm deploy` with drain timeout override
+
+If using `pt pcm deploy`, the drain timeout defaults to **2700 seconds (45 minutes)**. Always override it to 0 on test clusters:
+
+```bash
+pt pcm deploy -c <cluster> -pv <version> -r "test" -f -ni -dt 0
+```
+
+- `-dt 0` — skip drain timeout (default: 2700s, the single biggest time sink)
+- `-f` — force redeployment even if version already matches
+- `-ni` — skip interactive prompts
+- `-l` — use local TW config (avoids config propagation delay)
+
+### Restart without version change
+
+When you only need to restart tasks (e.g., after a config-only change):
+
+```bash
+tw restart --fast --kill tsp_<region>/presto/<cluster_name>.worker
+```
+
+- `--fast` — restart all tasks simultaneously
+- `--kill` — SIGKILL, skip graceful shutdown (no real traffic to drain on test clusters)
 
 ### Verify deployment
 
 ```bash
 presto --smc <cluster_name> --execute "SELECT version()"
+```
+
+If the cluster is still restarting, this will fail with connection refused. Check task status with:
+
+```bash
+tw job status tsp_<region>/presto/<cluster_name>.*
 ```
 
 ## Common Issues
@@ -125,5 +277,6 @@ presto --smc <cluster_name> --execute "SELECT version()"
 | `mvn deploy` fails with auth error | Check Nexus credentials: `cat ~/.m2/settings.xml` |
 | fbpkg build fails | Ensure `mvn deploy` succeeded; check `/tmp/presto_dev_deploy.log` |
 | C++ fbpkg hash empty | Check `fbpkg build fbcode//fb_presto_cpp:<target>` output directly |
-| Cluster shows old version after deploy | Wait for TW jobs to restart; check `tw job status tsp_pnb/presto/<cluster>.*` |
+| Cluster shows old version after deploy | Did you run `apply-task-ops`? If so, wait for tasks to restart; check `tw job status` |
 | `presto --smc` connection refused | Cluster may still be restarting; check TW job health |
+| Deploy seems stuck / rolling slowly | Run `tw task-control apply-task-ops --all-ops` on each job handle |

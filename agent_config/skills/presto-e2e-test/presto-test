@@ -211,7 +211,10 @@ case "$TEST_TYPE" in
 
     beest)
         echo "==> Running BEEST on $CLUSTER..."
-        local_args=(--cluster "$CLUSTER" --namespace beest_ftw)
+        # Derive namespace from cluster region prefix if not specified.
+        # pt beest run auto-resolves namespace from cluster's allowed regions
+        # when --namespace is omitted, so we omit it to let that logic work.
+        local_args=(--cluster "$CLUSTER")
 
         if [ -n "$BEEST_SUITE" ]; then
             local_args+=(--suite "$BEEST_SUITE")
