@@ -5,7 +5,9 @@
 export ZSH="$HOME/.oh-my-zsh"
 ZSH_THEME=""
 plugins=(git vi-mode)
-source $ZSH/oh-my-zsh.sh
+if [[ -f $ZSH/oh-my-zsh.sh ]]; then
+  source $ZSH/oh-my-zsh.sh
+fi
 
 # Shared config (env, PATH, aliases, functions, tool init)
 if [[ -f ~/.shellrc ]]; then
