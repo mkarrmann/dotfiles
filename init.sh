@@ -106,6 +106,56 @@ tmp=$(jq '
         }
       ]
     }
+  ] |
+  .hooks.Stop = [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash ~/.claude/hooks/tmux-notify.sh"
+        }
+      ]
+    }
+  ] |
+  .hooks.Notification = [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash ~/.claude/hooks/tmux-notify.sh"
+        }
+      ]
+    }
+  ] |
+  .hooks.UserPromptSubmit = [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash ~/.claude/hooks/tmux-notify.sh"
+        }
+      ]
+    }
+  ] |
+  .hooks.SessionStart = [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash ~/.claude/hooks/tmux-notify.sh"
+        }
+      ]
+    }
+  ] |
+  .hooks.SessionEnd = [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash ~/.claude/hooks/tmux-notify.sh"
+        }
+      ]
+    }
   ]
 ' "$CLAUDE_SETTINGS") \
   && echo "$tmp" > "$CLAUDE_SETTINGS" \
