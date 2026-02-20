@@ -52,6 +52,7 @@ There are three testing tools, each with different query sources and tradeoffs. 
 | Feature area (metalake, nimble, deltoid) | BEEST feature suites (see catalog below) | goshadow with filtered queries |
 | Join behavior | BEEST join suites + Verifier | `pt shadow perfrun` |
 | Session property toggle | BEEST with `-s prop=value` | `pt shadow perfrun -cs "prop=old" -es "prop=new"` |
+| Server config toggle (e.g., HTTPS, auth) | BEEST + Verifier | Manual goshadow A/B with redeploy between arms (not `pt shadow perfrun`); see `presto-deploy` "Modifying Cluster Config for Testing" |
 | Quick smoke test | `presto_smoke_test` (5 tests) or CLI spot-check | N/A |
 
 **Step 2: How confident do you need to be?**
@@ -381,6 +382,7 @@ However, in sequential A/B on the **same cluster**, shadow tables from the contr
 | Custom `--target-client-tags` not in stats | Tags may not appear in `client_tags` | Use the goshadow run ID (printed at completion) to filter query stats |
 | `tw job update` blocked by AI agent policy | Server-side policy blocks TW mutations | Use `pt pcm deploy -l` with local TW config instead |
 | Not verifying the config took effect | Change may not have propagated | After deploying, spot-check a query or inspect worker config before running the full suite |
+| Config-only A/B (not session property) | Requires redeployment between arms; adds time for cluster restart | Use post-construction override in `katchin.tw` + `pt pcm deploy -l`; see `presto-deploy` "Modifying Cluster Config for Testing" |
 
 ### Automated: `pt shadow perfrun`
 
