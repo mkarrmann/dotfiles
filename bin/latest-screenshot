@@ -1,0 +1,11 @@
+#!/bin/zsh
+dir="${HOME}/screenshots"
+
+latest=$(ls -t "$dir" 2>/dev/null | head -1)
+
+if [[ -z "$latest" ]]; then
+  echo "No screenshots found in $dir" >&2
+  exit 1
+fi
+
+echo "${dir}/${latest}"
