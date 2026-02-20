@@ -165,12 +165,18 @@ tmp=$(jq '
 mkdir -p "$HOME/.codex/rules"
 
 # Portable settings (templated) + machine-local overrides (config.local.toml)
-sed "s|__HOME__|$HOME|g" "$DOTFILES_DIR/codex_config/config.toml" > "$HOME/.codex/config.toml"
+codex_config="$HOME/.codex/config.toml"
+codex_existed=$([[ -f "$codex_config" ]] && echo true || echo false)
+sed "s|__HOME__|$HOME|g" "$DOTFILES_DIR/codex_config/config.toml" > "$codex_config"
 if [[ -f "$HOME/.codex/config.local.toml" ]]; then
-  echo "" >> "$HOME/.codex/config.toml"
-  cat "$HOME/.codex/config.local.toml" >> "$HOME/.codex/config.toml"
+  echo "" >> "$codex_config"
+  cat "$HOME/.codex/config.local.toml" >> "$codex_config"
 fi
-echo "generated $HOME/.codex/config.toml"
+if $codex_existed; then
+  echo "updated $codex_config"
+else
+  echo "generated $codex_config"
+fi
 
 # Shared development rules
 link_one "$DOTFILES_DIR/agent_config/global-development-preferences.md" "$HOME/.codex/rules/global-development-preferences.md"
