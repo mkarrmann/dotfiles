@@ -129,6 +129,7 @@ cn() {
     _start_bg_session "$name" "$prompt" ""
   else
     echo "$name" > ~/.claude-next-name
+    [ -n "$TMUX" ] && tmux rename-window "$name" 2>/dev/null
     claude
   fi
 }
@@ -161,6 +162,7 @@ cr() {
     echo "Resuming session ${sid:0:8}... (${name}) interactively..."
     # Pre-set name so if session was compacted (new UUID), the hook inherits the name
     echo "$name" > ~/.claude-next-name
+    [ -n "$TMUX" ] && tmux rename-window "$name" 2>/dev/null
     claude --resume "$sid"
     local exit_code=$?
     # Clean up: if compacted, hook already consumed it; if normal resume, it's orphaned
