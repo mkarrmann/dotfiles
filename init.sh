@@ -61,15 +61,6 @@ for src in "$DOTFILES_DIR/bin/"*; do
 done
 shopt -u nullglob
 
-# Screenshots (for Claude Code image sharing via VS Code Explorer drag-and-drop)
-mkdir -p "$HOME/screenshots"
-# Symlink into VS Code workspace roots so the folder is visible in the Explorer sidebar
-for ws_root in "$HOME/fbsource" "$HOME/fbsource2"; do
-  if [[ -d "$ws_root" ]]; then
-    link_one "$HOME/screenshots" "$ws_root/screenshots"
-  fi
-done
-
 # wofi
 mkdir -p "$HOME/.config/wofi"
 link_one "$DOTFILES_DIR/wofi_config" "$HOME/.config/wofi/config"
