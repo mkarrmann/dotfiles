@@ -14,7 +14,21 @@ local function get_session_id()
 	return sid and sid:match("^%s*(.-)%s*$")
 end
 
-local function rename_session(name)
+local next_name_file = vim.fn.expand("~/.claude-next-name")
+
+local function start_named_session(name)
+	local f = io.open(next_name_file, "w")
+	if not f then
+		vim.notify("Cannot write " .. next_name_file, vim.log.levels.ERROR)
+		return
+	end
+	f:write(name)
+	f:close()
+	if vim.env.TMUX then
+		vim.fn.system("tmux rename-window " .. vim.fn.shellescape(name))
+	end
+	vim.cmd("ClaudeCode")
+end
 	local sid = get_session_id()
 	if not sid or sid == "" then
 		vim.notify("No active Claude session found", vim.log.levels.WARN)
@@ -101,6 +115,17 @@ return {
 		"coder/claudecode.nvim",
 		keys = {
 			{
+				"<leader>an",
+				function()
+					vim.ui.input({ prompt = "New session name: " }, function(name)
+						if name and name ~= "" then
+							start_named_session(name)
+						end
+					end)
+				end,
+				desc = "New named Claude session",
+			},
+			{
 				"<leader>aN",
 				function()
 					vim.ui.input({ prompt = "Session name: " }, function(name)
@@ -118,6 +143,19 @@ return {
 			},
 		},
 		init = function()
+			vim.api.nvim_create_user_command("ClaudeCodeNew", function(opts)
+				local name = opts.args
+				if name == "" then
+					vim.ui.input({ prompt = "New session name: " }, function(input)
+						if input and input ~= "" then
+							start_named_session(input)
+						end
+					end)
+				else
+					start_named_session(name)
+				end
+			end, { nargs = "?", desc = "Start a new named Claude session" })
+
 			vim.api.nvim_create_user_command("ClaudeCodeName", function(opts)
 				local name = opts.args
 				if name == "" then
