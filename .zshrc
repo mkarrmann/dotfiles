@@ -65,3 +65,8 @@ setopt INC_APPEND_HISTORY
 setopt EXTENDED_HISTORY
 setopt HIST_IGNORE_DUPS
 
+# Local zsh-only config (not source-controlled)
+if [[ -f ~/.zshrc.local ]]; then
+  source ~/.zshrc.local
+fi
+
