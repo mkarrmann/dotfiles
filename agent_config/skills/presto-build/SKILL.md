@@ -19,6 +19,25 @@ Local development build tool for Presto Java and C++ codebases.
 - `presto-deploy` — Nexus deployment, fbpkg packaging, cluster deployment
 - `presto-test` — Post-deployment validation (verifier, goshadow, BEEST)
 
+## IMPORTANT: When NOT to Build
+
+**Building C++ from source takes ~3 hours** (128K+ buck2 actions for an opt build). Before building, ask: **do I actually need a new binary, or can I reuse an existing one?**
+
+- **Deploying to a test cluster for testing?** → Do NOT build. Use `pt pcm deploy -pv <release_version>`. See `presto-deploy` skill.
+- **Running an A/B test toggling a config property?** → Do NOT build. Both arms use the same binary. Just deploy and toggle config.
+- **Testing Java-only code changes?** → Build Java only. Do NOT build C++. Workers already have a C++ binary from `cpp-prod`.
+- **Testing C++ code changes?** → This is the ONLY case where building C++ from source is necessary.
+
+**Build durations** (empirical, on devvm with RE):
+
+| Build type | Command | Duration |
+|---|---|---|
+| Java module (incremental) | `presto-build -I -l <module>` | ~5 min |
+| Java FB trunk only | `presto-build -T` | ~15 min |
+| Java full (OSS + FB) | `presto-build` | ~30 min |
+| C++ dev (local, no opt) | `presto-build -n` | ~15 min |
+| C++ opt (fbpkg) | `presto-deploy -n` | **~3 hours** |
+
 ## Quick Reference
 
 | Task | Command |
@@ -96,15 +115,31 @@ presto-build -n -m tsan          # thread sanitizer
 presto-build -n -m dbgo          # debug optimized
 ```
 
-| Mode | Buck mode | Use case |
-|------|-----------|----------|
-| dev | (none) | Local iteration (default) |
-| opt | `@mode/opt` | Optimized local testing |
-| asan | `@mode/opt-asan` | Memory error detection |
-| tsan | `@mode/opt-tsan` | Data race detection |
-| dbgo | `@mode/dbgo` | Debug with optimization |
+| Mode | Buck mode | Optimization | LTO | BOLT PGO | FDO | Use case |
+|------|-----------|---|---|---|---|---|
+| dev | (none) | -O0 | No | No | No | Local iteration (default, fast) |
+| opt | `@mode/opt` | -O3 | No | No | No | Optimized local testing; fair for A/B comparisons |
+| asan | `@mode/opt-asan` | -O3 | No | No | No | Memory error detection |
+| tsan | `@mode/opt-tsan` | -O3 | No | No | No | Data race detection |
+| dbgo | `@mode/dbgo` | -Og | No | No | No | Debug with optimization |
 
-`bolt` mode is not available for local builds — it requires the fbpkg pipeline. Use `presto-deploy -n -m bolt` instead.
+`bolt` mode is not available for local builds — it requires the fbpkg pipeline (`presto-deploy -n -m bolt`). BOLT uses `@mode/opt-clang-thinlto` which enables LTO, and the Prestissimo binary target has a BOLT profile that activates under LTO. See `presto-deploy` for details on when bolt vs opt matters.
+
+**`@mode/opt` is PGO-free.** The default AutoFDO profile was removed from fbcode in August 2024, and Prestissimo is not registered in the centralized AutoFDO refresh pipeline. BOLT only activates under LTO modes. So `@mode/opt` gives you -O3 with no profile-guided optimizations of any kind.
+
+### C++ fbpkg Packaging
+
+When packaging C++ for deployment (via `presto-deploy -n` or manually), `fbpkg build` is used instead of `buck2 build`:
+
+```bash
+fbpkg build fbcode//fb_presto_cpp:presto.presto_cpp          # opt (default)
+fbpkg build fbcode//fb_presto_cpp:presto.presto_cpp_bolt     # bolt
+fbpkg build fbcode//fb_presto_cpp:presto.presto_cpp_asan     # asan
+```
+
+**`fbpkg build` rejects untracked files in the repo.** If you have local `etc-local/` dirs or other untracked files, move them out of the repo before running `fbpkg build`, then restore them after. Common offenders:
+- `fbcode/fb_presto_cpp/etc-local/`
+- `fbcode/github/presto-facebook-trunk/presto-facebook-main/etc-local/`
 
 ## Maven Flag Reference
 
