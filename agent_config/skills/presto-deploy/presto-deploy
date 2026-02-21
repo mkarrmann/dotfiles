@@ -239,7 +239,8 @@ verify_deployment() {
     fi
 
     echo "==> Verifying deployment on $DEPLOY_CLUSTER..."
-    presto --smc "$DEPLOY_CLUSTER" --execute "SELECT version()"
+    # Use system.runtime.nodes — version() function doesn't exist in Prestissimo
+    presto --smc "$DEPLOY_CLUSTER" --execute "SELECT node_version FROM system.runtime.nodes LIMIT 1"
 }
 
 # === Ensure build dirs exist ===
@@ -253,22 +254,45 @@ if $BUILD_JAVA; then
     build_java_full
 fi
 
-# Step 2: C++ fbpkg (if hybrid)
-if $NATIVE; then
-    build_cpp_fbpkg
-fi
+# Step 2: C++ fbpkg and Nexus deploy
+# When building both, these are independent and can run in parallel.
+# The C++ build runs in a subshell, so we use a temp file to pass back the hash.
+CPP_HASH_FILE=$(mktemp)
+trap "rm -f $CPP_HASH_FILE" EXIT
 
-# Step 3: Deploy to Nexus (unless -J)
-if $BUILD_JAVA; then
+if $NATIVE && $BUILD_JAVA; then
+    echo "==> Starting C++ fbpkg build and Nexus deploy in parallel..."
+    (build_cpp_fbpkg && echo "$CPP_FBPKG_HASH" > "$CPP_HASH_FILE") &
+    CPP_PID=$!
+
+    mvn_deploy
+    package_java
+
+    echo "==> Waiting for C++ fbpkg build..."
+    if ! wait $CPP_PID; then
+        echo "Error: C++ fbpkg build failed"
+        exit 1
+    fi
+    CPP_FBPKG_HASH=$(cat "$CPP_HASH_FILE")
+    if [ -z "$CPP_FBPKG_HASH" ]; then
+        echo "Error: C++ fbpkg build produced no hash"
+        exit 1
+    fi
+    echo "    C++ fbpkg ready: ${CPP_TARGET}:${CPP_FBPKG_HASH}"
+elif $NATIVE; then
+    build_cpp_fbpkg
+elif $BUILD_JAVA; then
     mvn_deploy
 fi
 
-# Step 4: Package Java fbpkg
-if [ -n "$JAVA_FBPKG" ]; then
-    PRESTO_FBPKG_HASH="$JAVA_FBPKG"
-    echo "==> Using existing Java fbpkg: $PRESTO_FBPKG_HASH"
-elif [ -n "$PRESTO_VERSION" ]; then
-    package_java
+# Step 3: Package Java fbpkg (if not already done in parallel path above)
+if ! $NATIVE || ! $BUILD_JAVA; then
+    if [ -n "$JAVA_FBPKG" ]; then
+        PRESTO_FBPKG_HASH="$JAVA_FBPKG"
+        echo "==> Using existing Java fbpkg: $PRESTO_FBPKG_HASH"
+    elif [ -n "$PRESTO_VERSION" ]; then
+        package_java
+    fi
 fi
 
 # Step 5: Hybrid merge (if both Java + C++ fbpkgs)

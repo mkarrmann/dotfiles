@@ -90,28 +90,17 @@ When building from source (only when existing packages won't work):
 
 ```dot
 digraph deploy {
-  "Build Java" -> "Build C++ fbpkg" [label="if -n (parallel)"];
-  "Build Java" -> "Deploy to Nexus" [label="(parallel)"];
-  "Build C++ fbpkg" -> "Hybrid merge";
+  "Build Java" -> "C++ fbpkg + Nexus deploy (parallel)" [label="if -n"];
+  "Build Java" -> "Deploy to Nexus" [label="if no -n"];
+  "C++ fbpkg + Nexus deploy (parallel)" -> "Hybrid merge";
   "Deploy to Nexus" -> "Package Java fbpkg";
-  "Package Java fbpkg" -> "Hybrid merge";
+  "Package Java fbpkg" -> "Deploy to cluster" [label="if -c"];
   "Hybrid merge" -> "Deploy to cluster" [label="if -c"];
   "Deploy to cluster" -> "Verify version";
 }
 ```
 
-**Parallelization:** The C++ fbpkg build (~3 hours) and the Nexus deploy + Java fbpkg packaging (~10 minutes) are independent after the Java build completes. The `presto-deploy` script currently runs them sequentially. When building from source, consider running the C++ build in a separate terminal to save time:
-
-```bash
-# Terminal 1: C++ fbpkg (slow)
-fbpkg build fbcode//fb_presto_cpp:presto.presto_cpp
-
-# Terminal 2: Nexus deploy + Java fbpkg (fast)
-presto-deploy -q   # builds Java, deploys to Nexus, creates Java fbpkg
-
-# After both complete: hybrid merge
-fb_presto_cpp/scripts/build.sh -c <cpp_hash> -p <java_hash>
-```
+When `-n` (hybrid) is specified with a Java build, the script automatically parallelizes the C++ fbpkg build (~3 hours) with the Nexus deploy + Java fbpkg packaging (~10 minutes). No manual intervention needed.
 
 ## Quick Reference
 
