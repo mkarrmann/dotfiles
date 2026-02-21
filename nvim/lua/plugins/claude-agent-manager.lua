@@ -29,6 +29,8 @@ local function start_named_session(name)
 	end
 	vim.cmd("ClaudeCode")
 end
+
+local function rename_session(name)
 	local sid = get_session_id()
 	if not sid or sid == "" then
 		vim.notify("No active Claude session found", vim.log.levels.WARN)
