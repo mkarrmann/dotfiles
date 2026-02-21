@@ -83,6 +83,13 @@ mkdir -p "$HOME/.claude/projects" "$HOME/.claude/rules" "$HOME/.claude/hooks"
 link_one "$DOTFILES_DIR/claude_config/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
 link_one "$DOTFILES_DIR/agent_config/global-development-preferences.md" "$HOME/.claude/rules/global-development-preferences.md"
 link_one "$DOTFILES_DIR/claude_config/statusline.sh" "$HOME/.claude/statusline.sh"
+# Agent Manager
+mkdir -p "$HOME/.claude/agent-manager/bin" "$HOME/.claude/statusline.d"
+for src in "$DOTFILES_DIR/claude_config/agent-manager/"*.sh; do
+  base="$(basename "$src")"
+  link_one "$src" "$HOME/.claude/agent-manager/bin/$base"
+done
+link_one "$DOTFILES_DIR/claude_config/agent-manager/statusline-ext.sh" "$HOME/.claude/statusline.d/agent-manager.sh"
 # Hooks
 shopt -s nullglob
 for src in "$DOTFILES_DIR/claude_config/hooks/"*; do
@@ -124,6 +131,15 @@ tmp=$(jq '
           "command": "bash ~/.claude/hooks/tmux-notify.sh"
         }
       ]
+    },
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "[ -f ~/.claude/agent-manager/bin/agent-tracker.sh ] && cat | bash ~/.claude/agent-manager/bin/agent-tracker.sh idle || cat > /dev/null",
+          "timeout": 10
+        }
+      ]
     }
   ] |
   .hooks.Notification = [
@@ -132,6 +148,15 @@ tmp=$(jq '
         {
           "type": "command",
           "command": "bash ~/.claude/hooks/tmux-notify.sh"
+        }
+      ]
+    },
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "[ -f ~/.claude/agent-manager/bin/agent-tracker.sh ] && cat | bash ~/.claude/agent-manager/bin/agent-tracker.sh idle || cat > /dev/null",
+          "timeout": 5
         }
       ]
     }
@@ -144,6 +169,15 @@ tmp=$(jq '
           "command": "bash ~/.claude/hooks/tmux-notify.sh"
         }
       ]
+    },
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "[ -f ~/.claude/agent-manager/bin/agent-tracker.sh ] && cat | bash ~/.claude/agent-manager/bin/agent-tracker.sh active || cat > /dev/null",
+          "timeout": 5
+        }
+      ]
     }
   ] |
   .hooks.SessionStart = [
@@ -152,6 +186,15 @@ tmp=$(jq '
         {
           "type": "command",
           "command": "bash ~/.claude/hooks/tmux-notify.sh"
+        }
+      ]
+    },
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "[ -f ~/.claude/agent-manager/bin/agent-tracker.sh ] && cat | bash ~/.claude/agent-manager/bin/agent-tracker.sh register || cat > /dev/null",
+          "timeout": 10
         }
       ]
     }

@@ -20,6 +20,9 @@ fi
 export EDITOR=nvim
 export PATH=$PATH:$HOME/.local/bin:$HOME/bin
 
+# Claude Agent Manager
+[ -f ~/.claude/agent-manager/bin/shell-functions.sh ] && source ~/.claude/agent-manager/bin/shell-functions.sh
+
 # Check if pyenv is installed
 command -v pyenv >> /dev/null
 if [ $? -eq 0 ]; then
