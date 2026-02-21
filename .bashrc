@@ -85,10 +85,6 @@ export PROMPT_COMMAND="__PROMPT_STATUS=\$?; history -a; $PROMPT_COMMAND"
 # https://web.archive.org/web/20150908175333/http://briancarper.net/blog/248/
 #export PROMPT_COMMAND="history -a; history -n; $PROMPT_COMMAND"
 shopt -s histappend
-
-# Claude Agent Manager
-[ -f ~/.claude/agent-manager/bin/shell-functions.sh ] && source ~/.claude/agent-manager/bin/shell-functions.sh
-
 # Local bash-only config (not source-controlled)
 if [[ -f ~/.bashrc.local ]]; then
   source ~/.bashrc.local
