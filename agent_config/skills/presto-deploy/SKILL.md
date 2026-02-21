@@ -335,22 +335,20 @@ This is the same pattern already used in `katchin.tw` for catalog and other per-
 
 ##### For dynamically-reserved batch test clusters (batch_test.tw)
 
-`batch_test.tw` does NOT have a `cluster_job_configs` dict. It delegates config generation to `batch.get_warehouse_batch_jobs()` and `batch_native.get_warehouse_batch_native_jobs()`, which return finished TW job objects. You cannot easily add per-cluster post-construction overrides in `batch_test.tw` itself.
+`batch_test.tw` does NOT have a `cluster_job_configs` dict. It delegates config generation to `batch.get_warehouse_batch_jobs()` and `batch_native.get_warehouse_batch_native_jobs()`. **Config is frozen via `freeze_config_files()` and serialized into a `CONFIG_BLOB` env variable before the jobs are returned.** You cannot modify config on the returned Job objects — it will silently have no effect.
 
-**Approach: Modify the helper `.cinc` that generates configs.** For Prestissimo clusters, edit `include/tupperware_configs/warehouse/batch_native.cinc`. For Java clusters, edit `include/tupperware_configs/warehouse/batch.cinc`. Add a cluster-specific override after the config object is constructed inside those functions. Look for where `config_files` is populated and add your override there, gated on the cluster name.
-
-**Alternative approach: Add a post-construction override block in `batch_test.tw` itself.** The `warehouse_batch_jobs` variable is a list of TW job objects. You can iterate over them after they're built and modify config for a specific cluster:
+**Approach: Modify `batch_native.cinc` before the freeze.** For Prestissimo clusters, edit `include/bootstrap_configs/warehouse/batch_native.cinc`. Add a cluster-specific override inside `get_native_batch_bootstrap_configs()`, **before** the `freeze_config_files()` call (~line 776), after the existing per-cluster overrides (e.g., the `nha1_batch_bgm_4` block at ~line 767):
 
 ```python
-# In batch_test.tw, after line 69 (after both job lists are built):
-for job in warehouse_batch_jobs:
-    if "<your_cluster>" in job.name:
-        # Modify config.properties for this job
-        # The exact attribute path depends on the job object structure
-        pass
+    # Example: disable HTTPS for a specific test cluster
+    if cluster_name == "<your_cluster>":
+        for ptype in ["coordinator", "worker"]:
+            bootstrap_configs.config_files[ptype]["config.properties"].update(
+                {"internal-communication.https.required": "false"}
+            )
 ```
 
-This requires understanding the TW job object structure. Inspect the return value of `get_warehouse_batch_native_jobs()` to determine the correct attribute path. **Always validate with `tw validate` after making changes.**
+For Java clusters, the equivalent file is `include/tupperware_configs/warehouse/batch.cinc`.
 
 #### How `pt pcm deploy -l` Works
 
@@ -359,7 +357,7 @@ The `-l` / `--use-local-config` flag deploys the **entire TW config from your lo
 #### Workflow
 
 1. **Modify the TW config file** using one of the approaches above.
-2. **Validate:** `tw validate ~/fbsource/fbcode/tupperware/config/presto/testing/katchin.tw`
+2. **Validate:** `tw validate ~/fbsource/fbcode/tupperware/config/presto/testing/<your_tw_file>.tw` (use the `.tw` file that manages your cluster — see "Which TW Config File Manages Your Cluster?" above). If you modified a `.cinc` file, validate the `.tw` file that imports it.
 3. **Deploy with local config:** `echo "yes" | pt pcm deploy -c <cluster> -pv <version> -r "<reason>" -l -f`
    - Note: `tw job update` may be blocked by AI agent policy; `pt pcm deploy -l` works around this
 4. **Verify the change took effect** (see below).

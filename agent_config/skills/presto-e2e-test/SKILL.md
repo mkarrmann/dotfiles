@@ -673,6 +673,7 @@ timeout -k <kill_grace> <duration> <command>
 
 | Problem | Fix |
 |---------|-----|
+| `presto --smc` "Oncall must be specified" | Batch clusters require `--oncall <oncall_name>` (e.g., `--oncall presto_release_internal`) |
 | Cluster unreachable during validation | Check deployment; use `--skip-validation` to bypass |
 | goshadow auth errors | Script adds `--run-as-current-user` automatically |
 | Verifier: no control cluster | Specify `--control <cluster>` explicitly |
