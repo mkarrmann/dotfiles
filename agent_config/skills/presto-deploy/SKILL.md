@@ -155,6 +155,20 @@ pt reservation list --service PRESTISSIMO
 
 For A/B comparisons, what matters most is that both arms use the **same** cluster size — relative comparisons are valid even on a smaller cluster. But use at least 100 workers on BGM if you want results that generalize to production.
 
+### Build Type for Performance Testing
+
+For A/B performance comparisons, use `opt` (default), **not `bolt`**. BOLT's profile-guided optimization (PGO) is trained on production code paths, so it disproportionately optimizes whichever behavior is dominant in production. If you're testing whether a code path change (e.g., disabling TLS, changing a shuffle algorithm) improves performance, BOLT will have already optimized the *current* path — biasing results toward the control arm and underestimating the treatment's benefit.
+
+`opt` builds apply the same optimization level uniformly across all code paths, giving a fair comparison.
+
+```bash
+# Default — opt build (fair for A/B)
+presto-deploy -n -c <cluster> -r "Performance A/B arm"
+
+# BOLT build — unfair for A/B, only use for production deployment
+presto-deploy -n -m bolt -c <cluster> -r "Production-representative perf"
+```
+
 ### Region Selection
 
 Cluster region matters for two reasons:
