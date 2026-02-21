@@ -51,3 +51,11 @@ fi
 # Build the status line with colors and emojis
 echo -e "${CYAN}🖥️  ${HOSTNAME}${RESET} | ${BLUE}📁 ${DIR_NAME}${RESET} | ${GREEN}🤖 ${MODEL_ID}${RESET} | ${YELLOW}💰 \$${COST_FORMATTED}${RESET} ${MAGENTA}⏱️  ${TOTAL_DURATION_SEC}s/${API_DURATION_SEC}s${RESET} ${GREEN}✏️  +${LINES_ADDED}${RESET} ${DARK_RED}❌ -${LINES_REMOVED}${RESET} | ${CYAN}📊 ${PCT_COLOR}${USED_PCT}%${RESET} ${CYAN}ctx:${CTX_TOKENS_FMT}/${CTX_SIZE_FMT} out:${OUTPUT_FMT}${RESET}"
 
+# Run statusline extensions (each receives the JSON input via stdin)
+STATUSLINE_EXT_DIR="$HOME/.claude/statusline.d"
+if [ -d "$STATUSLINE_EXT_DIR" ]; then
+  for ext in "$STATUSLINE_EXT_DIR"/*.sh; do
+    [ -f "$ext" ] && echo "$input" | bash "$ext"
+  done
+fi
+
