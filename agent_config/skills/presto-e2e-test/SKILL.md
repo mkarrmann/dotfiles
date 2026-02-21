@@ -294,7 +294,9 @@ The script automatically sets `--namespace` based on the cluster's region (auto-
 
 Compares query performance between a control build and an experiment build. Both builds must be deployed to the **same** cluster (different clusters have different hardware/load, making cross-cluster comparison unreliable).
 
-**CRITICAL: Do NOT use BOLT builds for comparison testing.** BOLT applies profile-guided optimization trained on *current* production code paths. If the experiment changes hot paths (e.g., HTTPS toggle, serialization format), BOLT unfairly favors the control. Always use `opt` builds for both arms.
+**Build type matters for binary-comparison A/B tests** (comparing different Presto versions or code changes). BOLT applies profile-guided optimization trained on *current* production code paths, which unfairly favors whichever binary matches production behavior. Use `opt` builds for both arms in binary comparisons. See `presto-deploy` "Build Type for Performance Testing" for details.
+
+**For config-toggle A/B tests** (same binary, different config — e.g., HTTPS on/off, session property change), build type doesn't matter because both arms use the identical binary. PGO bias cancels out. Just deploy with `pt pcm deploy -pv <release_version>` — the `cpp-prod` worker binary (currently bolt) is used for both arms.
 
 ### Rigor vs Speed
 
@@ -375,7 +377,7 @@ However, in sequential A/B on the **same cluster**, shadow tables from the contr
 
 | Pitfall | Impact | Mitigation |
 |---------|--------|------------|
-| BOLT builds | Unfair optimization for control config | Use `opt` builds for both arms |
+| BOLT builds in binary A/B | Unfair optimization for control code paths | Use `opt` builds; not an issue for config-toggle A/B (same binary) |
 | CTAS table collision in sequential runs | Experiment CTAS short-circuits with 0 CPU | Filter in analysis or clean up shadow tables between runs |
 | Wall time as metric | Confounded by queuing, scheduling, run ordering | Use `total_split_cpu_time_ms`; wall time is unreliable in sequential A/B |
 | Single run, small effect | 5-10% natural variance masks small effects | Run each condition twice, or increase query count |

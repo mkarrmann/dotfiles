@@ -29,25 +29,95 @@ Handles the full Nexus deploy, fbpkg packaging, and cluster deployment pipeline.
 - `presto-build` — Local builds, unit tests, and checkstyle
 - `presto-e2e-test` — End-to-end testing against remote clusters (correctness verification, performance regression)
 
+## CRITICAL: Prefer Existing fbpkgs Over Building from Source
+
+**Always check for existing fbpkg versions before building from source.** Building a hybrid package from source takes 3+ hours (C++ opt compilation alone is ~3 hours). In most cases, a suitable package already exists.
+
+**Decision tree:**
+
+1. **No code changes to test?** → Use `pt pcm deploy -pv <version>` with an existing release version. This deploys in minutes.
+2. **Java-only changes?** → Build Java, reuse existing C++ fbpkg. Use `presto-deploy` (Java only, no `-n`).
+3. **C++ changes?** → Must build C++. Use `presto-deploy -n`. This is the only case that requires a full ~3-hour build.
+
+### Finding Existing Packages
+
+The `presto.presto` fbpkg has two variants: **Java-only** (~3.5 GB) and **hybrid** (~5-7 GB, containing both Java coordinator and C++ `presto_server` binary). Only hybrids work for Prestissimo clusters.
+
+**How `pt pcm deploy -pv` works for Prestissimo clusters:**
+
+For Prestissimo (native) clusters, the TW config (`batch_test.tw`) ignores the `-pv` version for worker packages and instead resolves the C++ hybrid from the `cpp-prod` tag (`presto.presto:cpp-prod`). The `-pv` version only affects the Java coordinator. This means **for config-toggle A/B tests (same binary, different config), just use `pt pcm deploy -pv <any_release_version>`** — the C++ worker binary comes from `cpp-prod` regardless.
+
+```bash
+# Check what cpp-prod currently points to
+fbpkg info presto.presto:cpp-prod
+# → Shows the current production hybrid (typically a bolt build)
+
+# Deploy to a Prestissimo test cluster — workers get cpp-prod automatically
+pt pcm deploy -c <cluster> -pv 0.297-edge11 -r "<reason>" -f -ni -dt 0
+```
+
+**When you need a specific C++ binary** (e.g., testing C++ code changes, or explicitly needing an opt build), you must build a hybrid from source or find an existing hybrid ephemeral:
+
+```bash
+# List recent hybrid ephemerals (contain both Java + C++ binary)
+# Hybrids have "presto.presto_cpp-<hash>" in their tags
+fbpkg versions presto.presto 2>&1 | grep "presto.presto_cpp-" | head -10
+
+# IMPORTANT: These are built by individual engineers from arbitrary revisions.
+# To verify provenance, check the VCS info:
+fbpkg info presto.presto:<hash> 2>&1 | grep -E "(Build User|Revision|Upstream)"
+# Trunk builds have Revision == Upstream and Build User == twsvcscm (CI) or a known release engineer
+
+# Distinguish opt vs bolt hybrids by version tag:
+#   ".cpp-bolt-" in tag  →  bolt (BOLT PGO, avoid for A/B)
+#   ".cpp-<user>-" in tag  →  opt (no PGO)
+
+# CI-built packages (fbcode-revision-*) are Java-only, NOT hybrids
+```
+
+**fbpkg package naming:**
+
+| Package | Contents | Size | Use case |
+|---------|----------|------|----------|
+| `presto.presto` (Java-only) | Java coordinator only | ~3.5 GB | Tagged `prod`, `stable`, `fbcode-ci-latest` |
+| `presto.presto` (hybrid) | Java coordinator + C++ worker | ~5-7 GB | Tagged `cpp-prod`, or `.cpp-<user>-`/`.cpp-bolt-` version tags |
+| `presto.presto_cpp` | C++ opt worker only | ~4.7 GB | Intermediate artifact; many ephemerals built daily |
+| `presto.presto_cpp_bolt` | C++ BOLT worker only | ~3.1 GB | Production-optimized intermediate |
+
 ## Workflow
+
+When building from source (only when existing packages won't work):
 
 ```dot
 digraph deploy {
-  "Build Java" -> "Build C++ fbpkg" [label="if -n"];
-  "Build Java" -> "Deploy to Nexus";
-  "Build C++ fbpkg" -> "Deploy to Nexus";
+  "Build Java" -> "Build C++ fbpkg" [label="if -n (parallel)"];
+  "Build Java" -> "Deploy to Nexus" [label="(parallel)"];
+  "Build C++ fbpkg" -> "Hybrid merge";
   "Deploy to Nexus" -> "Package Java fbpkg";
-  "Package Java fbpkg" -> "Hybrid merge" [label="if -n"];
-  "Package Java fbpkg" -> "Deploy to cluster" [label="if -c"];
+  "Package Java fbpkg" -> "Hybrid merge";
   "Hybrid merge" -> "Deploy to cluster" [label="if -c"];
   "Deploy to cluster" -> "Verify version";
 }
+```
+
+**Parallelization:** The C++ fbpkg build (~3 hours) and the Nexus deploy + Java fbpkg packaging (~10 minutes) are independent after the Java build completes. The `presto-deploy` script currently runs them sequentially. When building from source, consider running the C++ build in a separate terminal to save time:
+
+```bash
+# Terminal 1: C++ fbpkg (slow)
+fbpkg build fbcode//fb_presto_cpp:presto.presto_cpp
+
+# Terminal 2: Nexus deploy + Java fbpkg (fast)
+presto-deploy -q   # builds Java, deploys to Nexus, creates Java fbpkg
+
+# After both complete: hybrid merge
+fb_presto_cpp/scripts/build.sh -c <cpp_hash> -p <java_hash>
 ```
 
 ## Quick Reference
 
 | Task | Command |
 |------|---------|
+| **Deploy existing release** | **`pt pcm deploy -c <cluster> -pv <version> -r "<reason>" -f -ni -dt 0`** |
 | Full build + deploy + fbpkg | `presto-deploy` |
 | Skip OSS rebuild | `presto-deploy -T` |
 | Hybrid (Java + C++ opt) | `presto-deploy -n` |
@@ -159,13 +229,26 @@ For A/B comparisons, what matters most is that both arms use the **same** cluste
 
 For A/B performance comparisons, use `opt` (default), **not `bolt`**. BOLT's profile-guided optimization (PGO) is trained on production code paths, so it disproportionately optimizes whichever behavior is dominant in production. If you're testing whether a code path change (e.g., disabling TLS, changing a shuffle algorithm) improves performance, BOLT will have already optimized the *current* path — biasing results toward the control arm and underestimating the treatment's benefit.
 
-`opt` builds apply the same optimization level uniformly across all code paths, giving a fair comparison.
+Prestissimo's build modes and their PGO characteristics:
+
+| Mode | Optimization | LTO | BOLT PGO | FDO | Fair for A/B? |
+|---|---|---|---|---|---|
+| `@mode/opt` | -O3 | No | No | No | **Yes** |
+| `@mode/opt-clang-thinlto` | -O3 | ThinLTO | **Yes** (trained on prod) | No | No |
+| `bolt` fbpkg mode | -O3 | ThinLTO | **Yes** | No | No |
+
+`@mode/opt` is the clean optimized mode — no profile-guided optimizations of any kind. The default AutoFDO profile was removed from fbcode in August 2024, Prestissimo is not registered in the centralized AutoFDO refresh pipeline, and BOLT only activates under LTO modes. The `presto.presto_cpp` fbpkg is built with `@mode/opt`, so it's PGO-free.
+
+**Important nuance for config-toggle A/B tests** (e.g., HTTPS on/off, session property change): The PGO concern only applies when *comparing different binaries*. When both arms use the same binary and you're only toggling config, PGO bias cancels out — both arms have identical optimization. In this case, just use `pt pcm deploy -pv <release_version>`, which deploys the `cpp-prod` binary (currently bolt) to both arms. No need to build from source.
 
 ```bash
-# Default — opt build (fair for A/B)
+# Config-toggle A/B (same binary, different config) — just deploy any release
+pt pcm deploy -c <cluster> -pv 0.297-edge11 -r "Config A/B arm" -f -ni -dt 0
+
+# Binary-comparison A/B (different code) — must use opt, not bolt
 presto-deploy -n -c <cluster> -r "Performance A/B arm"
 
-# BOLT build — unfair for A/B, only use for production deployment
+# BOLT — unfair for binary A/B, fine for config A/B
 presto-deploy -n -m bolt -c <cluster> -r "Production-representative perf"
 ```
 
@@ -202,6 +285,17 @@ pt pcm test-cluster reserve -w 10 --request-reason "BEEST correctness: <descript
 
 Some tests require cluster-wide config changes that cannot be set via session properties (e.g., `internal-communication.https.required`, `allowed_fb_regions`). This section explains the config architecture and how to make these changes.
 
+#### Which TW Config File Manages Your Cluster?
+
+**This is critical.** Modifying the wrong file will silently have no effect — your config change won't be applied but everything will appear to work. The experiment will run with both arms having identical config.
+
+| Cluster type | How you got it | TW config file | Override approach |
+|---|---|---|---|
+| **Statically-defined Katchin** (`atn6_prestotest2`, `ftw2_prestotest_ec1`, `atn1crossenginetest1`) | Hardcoded in `katchin.tw` | `testing/katchin.tw` | Post-construction override on `cluster_job_configs` dict (see below) |
+| **Dynamically-reserved batch test** (`pnb1_batchtest_bgm_2`, `rcd1_batchtest_bgm_1`, etc.) | `pt pcm test-cluster reserve` | `testing/batch_test.tw` | Must modify the `.cinc` helper that generates configs (see below) |
+
+**How to verify which file manages your cluster:** Check the deploy log output. `pt pcm deploy` prints `Creating NUJ for ... from spec file at .../config/presto/testing/<file>.tw`. If it says `batch_test.tw`, do NOT put overrides in `katchin.tw`.
+
 #### Tupperware Config Architecture
 
 Presto cluster config is generated by Python code in `tupperware/config/presto/`. The generation flow:
@@ -215,15 +309,21 @@ Presto cluster config is generated by Python code in `tupperware/config/presto/`
 
 | File | Role |
 |------|------|
-| `testing/katchin.tw` | Katchin test cluster definitions; per-cluster overrides |
+| `testing/katchin.tw` | Statically-defined Katchin test clusters only (`atn6_prestotest2`, etc.); supports direct post-construction overrides |
+| `testing/batch_test.tw` | All dynamically-reserved batch test clusters (from `pt pcm test-cluster reserve`); delegates to helper `.cinc` files |
+| `include/tupperware_configs/warehouse/batch_native.cinc` | Generates Prestissimo batch cluster configs; modify here for dynamically-reserved Prestissimo clusters |
+| `include/tupperware_configs/warehouse/batch.cinc` | Generates Java batch cluster configs |
 | `include/configgen.cinc` | Core config generation helpers (`enable_https()`, `enable_auth()`, etc.) |
 | `include/presto.cinc` | `WarehouseConfig` / `WarehouseBatchConfig` classes — assembles all config |
 | `include/warehouse_config.cinc` | Shared/coordinator/worker `config.properties` defaults (ports, exchange, memory) |
-| `include/bootstrap_configs/warehouse/batch.cinc` | Production batch cluster defaults |
 
 All paths relative to `tupperware/config/presto/`.
 
 #### Override Approaches
+
+##### For statically-defined Katchin clusters (katchin.tw)
+
+`katchin.tw` builds config objects into a `cluster_job_configs` dict, which supports direct post-construction overrides:
 
 **Approach 1: Constructor-level override.** Modify the parameter passed to the config constructor. This changes config at generation time but may trigger validation constraints:
 
@@ -243,6 +343,25 @@ if cluster == "<your_cluster>":
 ```
 
 This is the same pattern already used in `katchin.tw` for catalog and other per-cluster overrides.
+
+##### For dynamically-reserved batch test clusters (batch_test.tw)
+
+`batch_test.tw` does NOT have a `cluster_job_configs` dict. It delegates config generation to `batch.get_warehouse_batch_jobs()` and `batch_native.get_warehouse_batch_native_jobs()`, which return finished TW job objects. You cannot easily add per-cluster post-construction overrides in `batch_test.tw` itself.
+
+**Approach: Modify the helper `.cinc` that generates configs.** For Prestissimo clusters, edit `include/tupperware_configs/warehouse/batch_native.cinc`. For Java clusters, edit `include/tupperware_configs/warehouse/batch.cinc`. Add a cluster-specific override after the config object is constructed inside those functions. Look for where `config_files` is populated and add your override there, gated on the cluster name.
+
+**Alternative approach: Add a post-construction override block in `batch_test.tw` itself.** The `warehouse_batch_jobs` variable is a list of TW job objects. You can iterate over them after they're built and modify config for a specific cluster:
+
+```python
+# In batch_test.tw, after line 69 (after both job lists are built):
+for job in warehouse_batch_jobs:
+    if "<your_cluster>" in job.name:
+        # Modify config.properties for this job
+        # The exact attribute path depends on the job object structure
+        pass
+```
+
+This requires understanding the TW job object structure. Inspect the return value of `get_warehouse_batch_native_jobs()` to determine the correct attribute path. **Always validate with `tw validate` after making changes.**
 
 #### How `pt pcm deploy -l` Works
 
@@ -309,8 +428,8 @@ tw task-control apply-task-ops --all-ops --silent tsp_<region>/presto/<cluster_n
 tw task-control apply-task-ops --all-ops --silent tsp_<region>/presto/<cluster_name>.coordinator
 tw task-control apply-task-ops --all-ops --silent tsp_<region>/presto/<cluster_name>.resource_manager
 
-# 4. Verify deployment
-presto --smc <cluster_name> --execute "SELECT version()"
+# 4. Verify deployment (use node_version for Prestissimo — version() doesn't exist)
+presto --smc <cluster_name> --oncall <oncall> --execute "SELECT node_version FROM system.runtime.nodes LIMIT 1"
 ```
 
 Without step 3, TW rolls out incrementally (e.g., 10% of tasks at a time with cooldown periods), which can take 30+ minutes for no benefit on a test cluster.
@@ -346,8 +465,14 @@ tw restart --fast --kill tsp_<region>/presto/<cluster_name>.worker
 ### Verify deployment
 
 ```bash
+# Java Presto clusters
 presto --smc <cluster_name> --execute "SELECT version()"
+
+# Prestissimo clusters (version() function does not exist)
+presto --smc <cluster_name> --oncall <oncall> --execute "SELECT node_version FROM system.runtime.nodes LIMIT 1"
 ```
+
+Note: batch clusters require `--oncall <oncall_name>` (e.g., `--oncall presto_release_internal`).
 
 If the cluster is still restarting, this will fail with connection refused. Check task status with:
 
@@ -361,6 +486,7 @@ tw job status tsp_<region>/presto/<cluster_name>.*
 |---------|-----|
 | `mvn deploy` fails with auth error | Check Nexus credentials: `cat ~/.m2/settings.xml` |
 | fbpkg build fails | Ensure `mvn deploy` succeeded; check `/tmp/presto_dev_deploy.log` |
+| `fbpkg build` refuses to run (dirty repo) | `fbpkg build` rejects untracked files. Move `etc-local/` dirs out of repo before building, restore after. |
 | C++ fbpkg hash empty | Check `fbpkg build fbcode//fb_presto_cpp:<target>` output directly |
 | Cluster shows old version after deploy | Did you run `apply-task-ops`? If so, wait for tasks to restart; check `tw job status` |
 | `presto --smc` connection refused | Cluster may still be restarting; check TW job health |
