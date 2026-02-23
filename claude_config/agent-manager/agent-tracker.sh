@@ -14,7 +14,7 @@ if [ -z "$AGENTS_FILE" ]; then
   fi
 fi
 LOCK_FILE="$(dirname "$AGENTS_FILE")/.agents.lock"
-MAX_ENTRIES=15
+MAX_ENTRIES=50
 LOG_DIR="$HOME/.claude/agent-manager/logs"
 LOG_FILE="$LOG_DIR/agent-tracker.log"
 

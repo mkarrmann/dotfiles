@@ -142,8 +142,26 @@ format_line() {
   fi
 }
 
+# How many stopped/done/stale sessions to show
+MAX_INACTIVE=3
+
 current_line=""
-other_lines=()
+live_lines=()
+inactive_lines=()
+
+is_live_status() {
+  local status="$1" age_min="$2"
+  # Stale sessions are inactive even if their status looks live
+  if [ -n "$age_min" ] && [ "$age_min" -ge 30 ]; then
+    case "$status" in
+      "⚡ active"|"🟡 idle"|"🟢 interactive"|"🔄 resumed") return 1 ;;
+    esac
+  fi
+  case "$status" in
+    "⚡ active"|"🟡 idle"|"🟢 interactive"|"🔄 resumed"|"🔵 bg:running") return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 while IFS='|' read -r _ name status od sid desc started updated _; do
   name=$(echo "$name" | xargs)
@@ -157,20 +175,44 @@ while IFS='|' read -r _ name status od sid desc started updated _; do
 
   if [ -n "$current_sid" ] && [[ "$current_sid" == "$sid"* || "$sid" == "$current_sid"* ]]; then
     if [ -n "$current_line" ]; then
-      other_lines+=("$current_line")
+      live_lines+=("$current_line")
     fi
     current_line="$name|(this session)|$od|$desc|$updated"
   else
-    other_lines+=("$name|$status|$od|$desc|$updated")
+    local age_min=""
+    age_min=$(age_minutes_from_ts "$updated")
+    if is_live_status "$status" "$age_min"; then
+      live_lines+=("$name|$status|$od|$desc|$updated")
+    else
+      inactive_lines+=("$name|$status|$od|$desc|$updated")
+    fi
   fi
 done < <(tail -n +5 "$agents_source")
 
+# Current session first
 if [ -n "$current_line" ]; then
   IFS='|' read -r name status od desc updated <<< "$current_line"
   format_line ">" "$name" "$status" "$od" "$desc" "$updated"
 fi
 
-for line in "${other_lines[@]}"; do
+# All live sessions
+for line in "${live_lines[@]}"; do
   IFS='|' read -r name status od desc updated <<< "$line"
   format_line " " "$name" "$status" "$od" "$desc" "$updated"
 done
+
+# Most recent inactive sessions, up to limit
+inactive_shown=0
+for line in "${inactive_lines[@]}"; do
+  [ "$inactive_shown" -ge "$MAX_INACTIVE" ] && break
+  IFS='|' read -r name status od desc updated <<< "$line"
+  format_line " " "$name" "$status" "$od" "$desc" "$updated"
+  inactive_shown=$((inactive_shown + 1))
+done
+
+# Show count of hidden sessions if any were truncated
+inactive_total=${#inactive_lines[@]}
+if [ "$inactive_total" -gt "$MAX_INACTIVE" ]; then
+  hidden=$((inactive_total - MAX_INACTIVE))
+  printf "  ${DIM}(+%d more — run 'agents' to see all)${RESET}\n" "$hidden"
+fi
