@@ -23,6 +23,33 @@ link_one() {
   echo "linked $dst -> $src"
 }
 
+sync_link_dir() {
+  local src_dir="$1"
+  local dst_dir="$2"
+  local pattern="$3"
+
+  mkdir -p "$dst_dir"
+
+  shopt -s nullglob
+  for src in "$src_dir"/$pattern; do
+    link_one "$src" "$dst_dir/$(basename "$src")"
+  done
+  shopt -u nullglob
+
+  # Remove stale links previously created from this managed source directory.
+  shopt -s nullglob
+  for dst in "$dst_dir"/$pattern; do
+    if [[ -L "$dst" ]]; then
+      target="$(readlink "$dst")"
+      if [[ "$target" == "$src_dir/"* ]] && [[ ! -e "$target" ]]; then
+        rm "$dst"
+        echo "removed stale link $dst -> $target"
+      fi
+    fi
+  done
+  shopt -u nullglob
+}
+
 # Top-level dotfiles
 for f in \
   .shellrc \
@@ -43,14 +70,8 @@ done
 # Neovim
 mkdir -p "$HOME/.config/nvim" "$HOME/.config/nvim/lua/config" "$HOME/.config/nvim/lua/plugins"
 link_one "$DOTFILES_DIR/nvim_init.lua" "$HOME/.config/nvim/init.lua"
-shopt -s nullglob
-for f in "$DOTFILES_DIR/nvim/lua/config/"*.lua; do
-  link_one "$f" "$HOME/.config/nvim/lua/config/$(basename "$f")"
-done
-for f in "$DOTFILES_DIR/nvim/lua/plugins/"*.lua; do
-  link_one "$f" "$HOME/.config/nvim/lua/plugins/$(basename "$f")"
-done
-shopt -u nullglob
+sync_link_dir "$DOTFILES_DIR/nvim/lua/config" "$HOME/.config/nvim/lua/config" "*.lua"
+sync_link_dir "$DOTFILES_DIR/nvim/lua/plugins" "$HOME/.config/nvim/lua/plugins" "*.lua"
 
 # ~/bin (link each file individually; fail if any target exists)
 mkdir -p "$HOME/bin"
