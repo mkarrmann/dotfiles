@@ -24,6 +24,7 @@ CONTEXT_WINDOW_SIZE=$(echo "$input" | jq -r '.context_window.context_window_size
 OUTPUT_TOKENS=$(echo "$input" | jq -r '.context_window.total_output_tokens')
 USED_PCT=$(echo "$input" | jq -r '.context_window.used_percentage')
 CTX_TOKENS=$(echo "$input" | jq -r '.context_window.current_usage | .input_tokens + .cache_creation_input_tokens + .cache_read_input_tokens')
+SESSION_ID=$(echo "$input" | jq -r '.session_id // empty')
 # Get short directory name (just the last component)
 DIR_NAME=$(basename "$CURRENT_DIR")
 # Format duration values (convert ms to seconds for readability)
@@ -49,7 +50,7 @@ else
   PCT_COLOR=$GREEN
 fi
 # Build the status line with colors and emojis
-echo -e "${CYAN}🖥️  ${HOSTNAME}${RESET} | ${BLUE}📁 ${DIR_NAME}${RESET} | ${GREEN}🤖 ${MODEL_ID}${RESET} | ${YELLOW}💰 \$${COST_FORMATTED}${RESET} ${MAGENTA}⏱️  ${TOTAL_DURATION_SEC}s/${API_DURATION_SEC}s${RESET} ${GREEN}✏️  +${LINES_ADDED}${RESET} ${DARK_RED}❌ -${LINES_REMOVED}${RESET} | ${CYAN}📊 ${PCT_COLOR}${USED_PCT}%${RESET} ${CYAN}ctx:${CTX_TOKENS_FMT}/${CTX_SIZE_FMT} out:${OUTPUT_FMT}${RESET}"
+echo -e "${CYAN}🖥️  ${HOSTNAME}${RESET} | ${BLUE}📁 ${DIR_NAME}${RESET} | ${GREEN}🤖 ${MODEL_ID}${RESET} | ${MAGENTA}🔑 ${SESSION_ID}${RESET} | ${YELLOW}💰 \$${COST_FORMATTED}${RESET} ${MAGENTA}⏱️  ${TOTAL_DURATION_SEC}s/${API_DURATION_SEC}s${RESET} ${GREEN}✏️  +${LINES_ADDED}${RESET} ${DARK_RED}❌ -${LINES_REMOVED}${RESET} | ${CYAN}📊 ${PCT_COLOR}${USED_PCT}%${RESET} ${CYAN}ctx:${CTX_TOKENS_FMT}/${CTX_SIZE_FMT} out:${OUTPUT_FMT}${RESET}"
 
 # Run statusline extensions (each receives the JSON input via stdin)
 STATUSLINE_EXT_DIR="$HOME/.claude/statusline.d"
