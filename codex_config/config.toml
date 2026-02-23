@@ -1,4 +1,6 @@
 model = "gpt-5.3-codex"
-model_reasoning_effort = "xhigh"
-model_instructions_file = "__HOME__/.codex/rules/global-development-preferences.md"
-project_doc_fallback_filenames = ["CLAUDE.md"]
+[projects."/home/matt/dotfiles"]
+trust_level = "trusted"
+
+[notice.model_migrations]
+"gpt-5.2-codex" = "gpt-5.3-codex"
