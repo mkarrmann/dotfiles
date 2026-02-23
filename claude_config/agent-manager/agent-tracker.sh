@@ -5,7 +5,14 @@
 
 set -euo pipefail
 
-AGENTS_FILE="${CLAUDE_AGENTS_FILE:-$HOME/.claude/agents.md}"
+AGENTS_FILE="${CLAUDE_AGENTS_FILE:-}"
+if [ -z "$AGENTS_FILE" ]; then
+  if [ -f "$HOME/gdrive/AGENTS.md" ]; then
+    AGENTS_FILE="$HOME/gdrive/AGENTS.md"
+  else
+    AGENTS_FILE="$HOME/.claude/agents.md"
+  fi
+fi
 LOCK_FILE="$(dirname "$AGENTS_FILE")/.agents.lock"
 MAX_ENTRIES=30
 LOG_DIR="$HOME/.claude/agent-manager/logs"

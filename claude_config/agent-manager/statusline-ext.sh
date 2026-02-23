@@ -2,7 +2,14 @@
 # Statusline extension: agent tracking rows from AGENTS.md
 # Location of AGENTS.md is controlled by CLAUDE_AGENTS_FILE env var.
 
-AGENTS_FILE="${CLAUDE_AGENTS_FILE:-$HOME/.claude/agents.md}"
+AGENTS_FILE="${CLAUDE_AGENTS_FILE:-}"
+if [ -z "$AGENTS_FILE" ]; then
+  if [ -f "$HOME/gdrive/AGENTS.md" ]; then
+    AGENTS_FILE="$HOME/gdrive/AGENTS.md"
+  else
+    AGENTS_FILE="$HOME/.claude/agents.md"
+  fi
+fi
 CACHE_FILE="$HOME/.claude/agent-manager/.agents-cache"
 CACHE_TTL=10
 
