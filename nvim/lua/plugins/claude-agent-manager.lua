@@ -143,6 +143,17 @@ return {
 				show_agents,
 				desc = "List Claude agents",
 			},
+			{
+				"<leader>aR",
+				function()
+					vim.ui.input({ prompt = "Session ID: " }, function(id)
+						if id and id ~= "" then
+							vim.cmd("ClaudeCode --resume " .. id)
+						end
+					end)
+				end,
+				desc = "Resume Claude session by ID",
+			},
 		},
 		init = function()
 			vim.api.nvim_create_user_command("ClaudeCodeNew", function(opts)
