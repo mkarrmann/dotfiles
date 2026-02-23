@@ -42,4 +42,5 @@ export SDKMAN_DIR="$HOME/.sdkman"
 if [ -s "$HOME/.sdkman/bin/sdkman-init.sh" ]; then
   . "$HOME/.sdkman/bin/sdkman-init.sh"
 fi
-export PATH="$HOME/.cargo/bin"
+export PATH="$HOME/.cargo/bin:$PATH"
+export PATH="$HOME/.local/share/bob/nvim-bin:$PATH"
