@@ -12,7 +12,6 @@ ORANGE='\033[38;5;208m'
 DARK_RED='\033[0;31m'
 RESET='\033[0m'
 # Extract values using jq
-HOSTNAME=$(hostname)
 CURRENT_DIR=$(echo "$input" | jq -r '.workspace.current_dir')
 MODEL_ID=$(echo "$input" | jq -r '.model.id')
 TOTAL_COST=$(echo "$input" | jq -r '.cost.total_cost_usd')
@@ -50,7 +49,7 @@ else
   PCT_COLOR=$GREEN
 fi
 # Build the status line with colors and emojis
-echo -e "${CYAN}🖥️  ${HOSTNAME}${RESET} | ${BLUE}📁 ${DIR_NAME}${RESET} | ${GREEN}🤖 ${MODEL_ID}${RESET} | ${MAGENTA}🔑 ${SESSION_ID}${RESET} | ${YELLOW}💰 \$${COST_FORMATTED}${RESET} ${MAGENTA}⏱️  ${TOTAL_DURATION_SEC}s/${API_DURATION_SEC}s${RESET} ${GREEN}✏️  +${LINES_ADDED}${RESET} ${DARK_RED}❌ -${LINES_REMOVED}${RESET} | ${CYAN}📊 ${PCT_COLOR}${USED_PCT}%${RESET} ${CYAN}ctx:${CTX_TOKENS_FMT}/${CTX_SIZE_FMT} out:${OUTPUT_FMT}${RESET}"
+echo -e "${BLUE}📁 ${DIR_NAME}${RESET} | ${GREEN}🤖 ${MODEL_ID}${RESET} | ${MAGENTA}🔑 ${SESSION_ID}${RESET} | ${YELLOW}💰 \$${COST_FORMATTED}${RESET} ${MAGENTA}⏱️  ${TOTAL_DURATION_SEC}s/${API_DURATION_SEC}s${RESET} ${GREEN}✏️  +${LINES_ADDED}${RESET} ${DARK_RED}❌ -${LINES_REMOVED}${RESET} | ${CYAN}📊 ${PCT_COLOR}${USED_PCT}%${RESET} ${CYAN}ctx:${CTX_TOKENS_FMT}/${CTX_SIZE_FMT} out:${OUTPUT_FMT}${RESET}"
 
 # Run statusline extensions (each receives the JSON input via stdin)
 STATUSLINE_EXT_DIR="$HOME/.claude/statusline.d"
