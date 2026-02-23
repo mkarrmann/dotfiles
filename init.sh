@@ -251,6 +251,25 @@ if [[ -x "$HOME/.tmux/plugins/tpm/bin/install_plugins" ]]; then
     fi
 fi
 
+if ! command -v cargo &>/dev/null; then
+    if command -v curl &>/dev/null; then
+        curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal \
+            && echo "installed cargo (via rustup)" \
+            || echo "WARNING: cargo install via rustup failed" >&2
+    elif command -v brew &>/dev/null; then
+        brew install rust && echo "installed cargo (via brew rust)" \
+            || echo "WARNING: cargo install via brew failed" >&2
+    else
+        echo "WARNING: cargo not found and no installer available (need curl or brew)" >&2
+    fi
+fi
+
+if [[ -f "$HOME/.cargo/env" ]]; then
+    # Load cargo for the current run after a fresh rustup install.
+    . "$HOME/.cargo/env"
+fi
+
 if ! command -v bob &>/dev/null; then
     if command -v cargo &>/dev/null; then
         cargo install bob-nvim && echo "installed bob" \
