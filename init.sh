@@ -254,7 +254,7 @@ fi
 if ! command -v cargo &>/dev/null; then
     if command -v curl &>/dev/null; then
         curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
-            | sh -s -- -y --profile minimal \
+            | sh -s -- -y --profile minimal --no-modify-path \
             && echo "installed cargo (via rustup)" \
             || echo "WARNING: cargo install via rustup failed" >&2
     elif command -v brew &>/dev/null; then
