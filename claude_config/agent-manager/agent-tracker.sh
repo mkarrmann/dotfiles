@@ -73,6 +73,66 @@ prune() {
   mv "$tmpfile" "$AGENTS_FILE"
 }
 
+STALE_THRESHOLD_MINUTES=60
+
+# Mark stale sessions: any active-like session not updated in >STALE_THRESHOLD_MINUTES gets stopped
+mark_stale() {
+  local now_epoch
+  now_epoch=$(date +%s)
+  local year
+  year=$(date +%Y)
+  local changed=false
+  local tmpfile="${AGENTS_FILE}.tmp"
+
+  cp "$AGENTS_FILE" "$tmpfile"
+
+  while IFS='|' read -r _ name status od sid desc started updated _; do
+    status_trimmed=$(echo "$status" | xargs)
+    updated_trimmed=$(echo "$updated" | xargs)
+    sid_trimmed=$(echo "$sid" | xargs)
+
+    [ -z "$sid_trimmed" ] && continue
+    [ -z "$updated_trimmed" ] && continue
+
+    case "$status_trimmed" in
+      "⚡ active"|"🟡 idle"|"🟢 interactive"|"🔄 resumed") ;;
+      *) continue ;;
+    esac
+
+    local updated_epoch
+    updated_epoch=$(date -d "${year}-${updated_trimmed}" +%s 2>/dev/null)
+    [ -z "$updated_epoch" ] && continue
+
+    local age_minutes=$(( (now_epoch - updated_epoch) / 60 ))
+
+    if [ "$age_minutes" -lt 0 ]; then
+      age_minutes=$(( age_minutes + 525960 ))
+    fi
+
+    if [ "$age_minutes" -ge "$STALE_THRESHOLD_MINUTES" ]; then
+      local ts
+      ts=$(now)
+      _log "  mark_stale: sid=${sid_trimmed:0:8} age=${age_minutes}m — marking stopped"
+      awk -v sid="$sid_trimmed" -v ts="$ts" -F'|' 'BEGIN{OFS="|"} {
+        if (index($5, sid) > 0) {
+          $3 = " ⏹️ stopped "
+          $8 = " " ts " "
+        }
+        print
+      }' "$tmpfile" > "${tmpfile}.2"
+      mv "${tmpfile}.2" "$tmpfile"
+      changed=true
+    fi
+  done < <(tail -n +5 "$AGENTS_FILE")
+
+  if $changed; then
+    mv "$tmpfile" "$AGENTS_FILE"
+    sort_agents
+  else
+    rm -f "$tmpfile"
+  fi
+}
+
 is_subagent() {
   local tp="$1"
   [[ "$tp" == */subagents/* ]]
@@ -165,6 +225,9 @@ cmd_register() {
 
   (
     flock -w 5 200 || exit 0
+
+    # Clean up stale sessions while we hold the lock
+    mark_stale
 
     if [ -f ~/.claude-resuming ]; then
       _log "  startup: phantom detected after flock — skipping"

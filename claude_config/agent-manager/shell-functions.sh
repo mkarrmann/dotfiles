@@ -26,8 +26,21 @@ _claude_session_exit() {
 
 unalias claude 2>/dev/null
 claude() {
+  # Install HUP trap so exit handler fires even if terminal is killed
+  local _old_hup_trap
+  _old_hup_trap=$(trap -p HUP)
+  trap '_claude_session_exit' HUP
+
   command claude --dangerously-skip-permissions "$@"
   local exit_code=$?
+
+  # Restore previous HUP trap
+  if [ -n "$_old_hup_trap" ]; then
+    eval "$_old_hup_trap"
+  else
+    trap - HUP
+  fi
+
   if [[ -z "${CLAUDE_BG_ACTIVE:-}" ]]; then
     local is_print=false
     for arg in "$@"; do
@@ -287,21 +300,81 @@ cclean() {
         return 1
       fi
       local count
-      count=$(grep -cE '\| ⏹️ stopped \||\| 💀 bg:done \|' "$AGENTS_FILE" 2>/dev/null || echo 0)
+      count=$(grep -cE '\| ⏹️ stopped \||\| ✅ bg:done \|' "$AGENTS_FILE" 2>/dev/null || echo 0)
       if [ "$count" -eq 0 ]; then
         echo "No stopped or bg:done sessions to clean."
         return 0
       fi
       local tmpfile="${AGENTS_FILE}.tmp"
-      grep -vE '\| ⏹️ stopped \||\| 💀 bg:done \|' "$AGENTS_FILE" > "$tmpfile"
+      grep -vE '\| ⏹️ stopped \||\| ✅ bg:done \|' "$AGENTS_FILE" > "$tmpfile"
       mv "$tmpfile" "$AGENTS_FILE"
       echo "Removed ${count} stopped/done session(s)."
       ;;
+    --stale)
+      if [ ! -f "$AGENTS_FILE" ]; then
+        echo "No agents file at $AGENTS_FILE"
+        return 1
+      fi
+      local threshold_minutes="${2:-60}"
+      local now_epoch
+      now_epoch=$(date +%s)
+      local year
+      year=$(date +%Y)
+      local stale_sids=()
+
+      while IFS='|' read -r _ name status od sid desc started updated _; do
+        local s_trimmed
+        s_trimmed=$(echo "$status" | xargs)
+        local u_trimmed
+        u_trimmed=$(echo "$updated" | xargs)
+        local sid_trimmed
+        sid_trimmed=$(echo "$sid" | xargs)
+
+        [ -z "$sid_trimmed" ] && continue
+        [ -z "$u_trimmed" ] && continue
+
+        case "$s_trimmed" in
+          "⚡ active"|"🟡 idle"|"🟢 interactive"|"🔄 resumed") ;;
+          *) continue ;;
+        esac
+
+        local updated_epoch
+        updated_epoch=$(date -d "${year}-${u_trimmed}" +%s 2>/dev/null)
+        [ -z "$updated_epoch" ] && continue
+
+        local age_minutes=$(( (now_epoch - updated_epoch) / 60 ))
+        if [ "$age_minutes" -lt 0 ]; then
+          age_minutes=$(( age_minutes + 525960 ))
+        fi
+
+        if [ "$age_minutes" -ge "$threshold_minutes" ]; then
+          stale_sids+=("$sid_trimmed")
+          local name_trimmed
+          name_trimmed=$(echo "$name" | xargs)
+          echo "  Removing: ${name_trimmed} (${s_trimmed}, ${age_minutes}m old)"
+        fi
+      done < <(tail -n +5 "$AGENTS_FILE")
+
+      if [ ${#stale_sids[@]} -eq 0 ]; then
+        echo "No stale sessions older than ${threshold_minutes}m found."
+        return 0
+      fi
+
+      local tmpfile="${AGENTS_FILE}.tmp"
+      cp "$AGENTS_FILE" "$tmpfile"
+      for sid_to_remove in "${stale_sids[@]}"; do
+        grep -v "| ${sid_to_remove} |" "$tmpfile" > "${tmpfile}.2"
+        mv "${tmpfile}.2" "$tmpfile"
+      done
+      mv "$tmpfile" "$AGENTS_FILE"
+      echo "Removed ${#stale_sids[@]} stale session(s)."
+      ;;
     ""|--help|-h)
       echo "Usage:"
-      echo "  cclean <name>      Remove a session by name"
-      echo "  cclean --stopped   Remove all stopped and bg:done sessions"
-      echo "  cclean --all       Clear everything"
+      echo "  cclean <name>          Remove a session by name"
+      echo "  cclean --stopped       Remove all stopped and bg:done sessions"
+      echo "  cclean --stale [min]   Remove active-like sessions not updated in [min] minutes (default: 60)"
+      echo "  cclean --all           Clear everything"
       ;;
     *)
       local name="$1"
