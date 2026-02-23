@@ -90,6 +90,8 @@ mark_stale() {
   year=$(date +%Y)
   local changed=false
   local tmpfile="${AGENTS_FILE}.tmp"
+  local name status od sid desc started updated
+  local status_trimmed updated_trimmed sid_trimmed
 
   cp "$AGENTS_FILE" "$tmpfile"
 
