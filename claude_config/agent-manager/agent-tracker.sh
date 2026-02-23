@@ -275,6 +275,23 @@ cmd_register() {
           grep -v "| ${name} |" "$AGENTS_FILE" > "$tmpfile"
           mv "$tmpfile" "$AGENTS_FILE"
         fi
+      elif [ -n "${TMUX:-}" ]; then
+        local tmux_name
+        tmux_name=$(tmux display-message -p '#W' 2>/dev/null)
+        if [ -n "$tmux_name" ] && [[ "$tmux_name" != "bash" && "$tmux_name" != "zsh" && "$tmux_name" != "fish" ]]; then
+          name="$tmux_name"
+          _log "  startup: using tmux window name='${name}'"
+          if grep -q "| ${name} |" "$AGENTS_FILE" 2>/dev/null; then
+            old_desc=$(grep "| ${name} |" "$AGENTS_FILE" | awk -F'|' '{print $6}' | xargs)
+            old_started=$(grep "| ${name} |" "$AGENTS_FILE" | awk -F'|' '{print $7}' | xargs)
+            local tmpfile="${AGENTS_FILE}.tmp"
+            grep -v "| ${name} |" "$AGENTS_FILE" > "$tmpfile"
+            mv "$tmpfile" "$AGENTS_FILE"
+          fi
+        else
+          name="${host}-${sid:0:4}"
+          _log "  startup: genuine new session, auto-name='${name}'"
+        fi
       else
         name="${host}-${sid:0:4}"
         _log "  startup: genuine new session, auto-name='${name}'"
