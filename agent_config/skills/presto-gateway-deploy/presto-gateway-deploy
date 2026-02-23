@@ -1,0 +1,232 @@
+#!/bin/bash
+set -euo pipefail
+
+# presto-gateway-deploy: Builds, packages, and deploys the Presto Gateway to the test gateway.
+#
+# Steps:
+#   1. Maven install presto-gateway
+#   2. Maven deploy to Nexus — extracts version
+#   3. Build fbpkg (pt build fbpkg gateway <version>)
+#   4. Deploy to test gateway via tw update
+#   5. Force immediate restart via apply-task-ops
+#
+# SAP limitation: Steps 3-5 are blocked when run from Claude Code due to
+# context-based SAP policy rejecting the claude_code agent identity. When
+# a step fails with SAP/proxy errors, the script prints the remaining
+# commands for the user to run manually.
+#
+# Usage:
+#   presto-gateway-deploy              Full pipeline: build + deploy + apply-task-ops
+#   presto-gateway-deploy -v <ver>     Skip Maven, use existing Nexus version
+#   presto-gateway-deploy -h <hash>    Skip Maven + fbpkg, use existing fbpkg hash
+#   presto-gateway-deploy -s           Skip apply-task-ops (let TW roll out gradually)
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# === Config ===
+PRESTO_FB_TRUNK="$HOME/fbsource/fbcode/github/presto-facebook-trunk"
+TW_CONFIG="$HOME/fbsource/fbcode/tupperware/config/presto/gateway/gateway-test.tw"
+DEPLOY_LOG="/tmp/presto_gateway_deploy.log"
+
+# Test gateway job handles (3 regions)
+GATEWAY_JOBS=(
+    "tsp_prn/presto/test-gateway"
+    "tsp_nha/presto/test-gateway"
+    "tsp_ftw/presto/test-gateway"
+)
+
+# Maven flags for presto-facebook-trunk builds.
+# These intentionally omit `dependency:go-offline` and `dependency:sources`
+# (present in the ~/.localrc _f alias) since those are only useful for IDE
+# setup, not for build-and-deploy.
+MVN_FLAGS=(
+    -Dmaven.gitcommitid.skip=true
+    -am
+    -DuseParallelDependencyResolution=false
+    -T 48
+    -nsu
+    -Dout-of-tree-build-root="${BUILD_ROOT:-/data/users/$USER/builds}/presto-facebook-trunk"
+    -Dout-of-tree-build=true
+    -Dlicense.report.skip=true
+    -DwithPlugins=true
+    -Dos.detected.name=linux
+    -Dos.detected.arch=x86_64
+    -Dos.detected.classifier=linux-x86_64
+    -DskipTests
+)
+
+# === Flags ===
+SKIP_BUILD=false
+EXISTING_VERSION=""
+EXISTING_HASH=""
+SKIP_APPLY_OPS=false
+
+usage() {
+    cat <<'EOF'
+Usage: presto-gateway-deploy [options]
+
+FULL PIPELINE (default):
+  (no flags)         Build, deploy to Nexus, create fbpkg, push to test gateway
+
+SKIP BUILD:
+  -v <version>       Skip Maven build/deploy, use existing Nexus version for fbpkg
+  -h <fbpkg_hash>    Skip Maven + fbpkg, deploy existing hash to test gateway
+
+OPTIONS:
+  -s                 Skip apply-task-ops (allow gradual TW rollout)
+  --help             Show this help
+
+EXAMPLES:
+  presto-gateway-deploy                           # Full pipeline
+  presto-gateway-deploy -v 0.297-20260221.070005-19   # Skip Maven, build fbpkg from version
+  presto-gateway-deploy -h abc1234                # Deploy existing fbpkg hash
+EOF
+    exit 0
+}
+
+# Print the remaining manual commands when SAP blocks a step.
+print_manual_commands() {
+    local from_step="$1"
+    echo ""
+    echo "=========================================="
+    echo "SAP policy blocked this step (claude_code agent identity is rejected)."
+    echo "Run the following commands manually in your shell:"
+    echo "=========================================="
+    echo ""
+
+    if [ "$from_step" -le 3 ] && [ -n "$EXISTING_VERSION" ]; then
+        echo "# Step 3: Build fbpkg"
+        echo "pt build fbpkg gateway $EXISTING_VERSION"
+        echo ""
+    fi
+
+    if [ "$from_step" -le 4 ]; then
+        local ver="${EXISTING_VERSION:-<VERSION>}"
+        echo "# Step 4: Deploy to test gateway"
+        echo "GATEWAY_VERSION='$ver' tw update $TW_CONFIG --all-jobs --force"
+        echo ""
+    fi
+
+    if [ "$from_step" -le 5 ] && [ "$SKIP_APPLY_OPS" = false ]; then
+        echo "# Step 5: Force immediate restart"
+        for job in "${GATEWAY_JOBS[@]}"; do
+            echo "tw task-control apply-task-ops --all-ops --silent $job"
+        done
+        echo ""
+    fi
+
+    echo "# Verify"
+    echo "presto --use-test-gateway di --execute 'SELECT 1'"
+}
+
+# === Parse args ===
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -v)
+            EXISTING_VERSION="$2"
+            SKIP_BUILD=true
+            shift 2
+            ;;
+        -h)
+            EXISTING_HASH="$2"
+            SKIP_BUILD=true
+            shift 2
+            ;;
+        -s)
+            SKIP_APPLY_OPS=true
+            shift
+            ;;
+        --help)
+            usage
+            ;;
+        *)
+            echo "Unknown option: $1"
+            usage
+            ;;
+    esac
+done
+
+# === Step 1 & 2: Maven install + deploy ===
+if [ "$SKIP_BUILD" = false ]; then
+    echo "=== Step 1: Maven install presto-gateway ==="
+    (cd "$PRESTO_FB_TRUNK" && mvn install "${MVN_FLAGS[@]}" -pl presto-gateway)
+
+    echo ""
+    echo "=== Step 2: Maven deploy to Nexus ==="
+    (cd "$PRESTO_FB_TRUNK" && mvn deploy "${MVN_FLAGS[@]}" -pl presto-gateway) 2>&1 | tee "$DEPLOY_LOG"
+
+    # Extract version from deploy log (format: 0.NNN-YYYYMMDD.HHMMSS-N)
+    EXISTING_VERSION=$(grep -oP '\d+\.\d+-\d{8}\.\d+-\d+' "$DEPLOY_LOG" | tail -1)
+    if [ -z "$EXISTING_VERSION" ]; then
+        echo "ERROR: Could not extract version from deploy log at $DEPLOY_LOG"
+        exit 1
+    fi
+    echo ""
+    echo "Deployed version: $EXISTING_VERSION"
+fi
+
+# === Step 3: Build fbpkg ===
+if [ -z "$EXISTING_HASH" ]; then
+    if [ -z "$EXISTING_VERSION" ]; then
+        echo "ERROR: No version specified. Use -v <version> or run full pipeline."
+        exit 1
+    fi
+
+    echo ""
+    echo "=== Step 3: Build fbpkg (gateway $EXISTING_VERSION) ==="
+    if ! FBPKG_OUTPUT=$(pt build fbpkg gateway "$EXISTING_VERSION" 2>&1); then
+        echo "$FBPKG_OUTPUT"
+        if echo "$FBPKG_OUTPUT" | grep -qE 'Proxy CONNECT aborted|context-based policy|Access was denied'; then
+            print_manual_commands 3
+            exit 1
+        fi
+        echo "ERROR: fbpkg build failed (non-SAP error)"
+        exit 1
+    fi
+    echo "$FBPKG_OUTPUT"
+
+    # Extract fbpkg hash from output (format: "presto.gateway:<hash>")
+    EXISTING_HASH=$(echo "$FBPKG_OUTPUT" | grep -oP 'presto\.gateway:\K[a-f0-9]+' | tail -1)
+    if [ -z "$EXISTING_HASH" ]; then
+        echo "ERROR: Could not extract fbpkg hash from pt build output"
+        exit 1
+    fi
+    echo ""
+    echo "Built fbpkg hash: $EXISTING_HASH"
+fi
+
+# === Step 4: Deploy to test gateway ===
+echo ""
+echo "=== Step 4: Deploy to test gateway ==="
+echo "Version: ${EXISTING_VERSION:-<from fbpkg>}"
+
+if ! TW_OUTPUT=$(GATEWAY_VERSION="${EXISTING_VERSION}" tw update "$TW_CONFIG" --all-jobs --force 2>&1); then
+    echo "$TW_OUTPUT"
+    if echo "$TW_OUTPUT" | grep -qE 'context-based policy|Access was denied|Proxy CONNECT aborted'; then
+        print_manual_commands 4
+        exit 1
+    fi
+    echo "ERROR: tw update failed (non-SAP error)"
+    exit 1
+fi
+echo "$TW_OUTPUT"
+
+# === Step 5: Force immediate restart ===
+if [ "$SKIP_APPLY_OPS" = false ]; then
+    echo ""
+    echo "=== Step 5: Applying task ops for immediate restart ==="
+    for job in "${GATEWAY_JOBS[@]}"; do
+        echo "Applying ops: $job"
+        tw task-control apply-task-ops --all-ops --silent "$job" || true
+    done
+fi
+
+echo ""
+echo "=== Gateway deployment complete ==="
+echo "Verify with:"
+echo "  presto --use-test-gateway di --execute 'SELECT 1'"
+echo ""
+echo "Or check job status:"
+for job in "${GATEWAY_JOBS[@]}"; do
+    echo "  tw diag $job"
+done
