@@ -251,6 +251,18 @@ if [[ -x "$HOME/.tmux/plugins/tpm/bin/install_plugins" ]]; then
     fi
 fi
 
+if ! command -v bob &>/dev/null; then
+    if command -v cargo &>/dev/null; then
+        cargo install bob-nvim && echo "installed bob" \
+            || echo "WARNING: bob install via cargo failed" >&2
+    elif command -v brew &>/dev/null; then
+        brew install bob && echo "installed bob" \
+            || echo "WARNING: bob install via brew failed" >&2
+    else
+        echo "WARNING: bob not found and no installer available (need cargo or brew)" >&2
+    fi
+fi
+
 if [[ ${#SKIPPED_FILES[@]} -gt 0 ]]; then
   echo ""
   echo "Skipped (already exist):"
