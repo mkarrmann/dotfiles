@@ -1,0 +1,102 @@
+#!/bin/bash
+set -euo pipefail
+
+# presto-gateway-deploy-finish: Completes the SAP-blocked steps of gateway deployment.
+#
+# Run this in your own shell after Claude Code has deployed to Nexus (steps 1-2).
+# This script handles steps 3-5: fbpkg build, tw update, and apply-task-ops.
+#
+# Usage:
+#   presto-gateway-deploy-finish <version>              # Full: fbpkg + tw update + restart
+#   presto-gateway-deploy-finish <version> -s           # Skip apply-task-ops
+#   presto-gateway-deploy-finish -h <hash> <version>    # Skip fbpkg build, deploy existing hash
+
+TW_CONFIG="$HOME/fbsource/fbcode/tupperware/config/presto/gateway/gateway-test.tw"
+
+GATEWAY_JOBS=(
+    "tsp_prn/presto/test-gateway"
+    "tsp_nha/presto/test-gateway"
+    "tsp_ftw/presto/test-gateway"
+)
+
+SKIP_APPLY_OPS=false
+EXISTING_HASH=""
+VERSION=""
+
+usage() {
+    cat <<'EOF'
+Usage: presto-gateway-deploy-finish [options] <version>
+
+Completes gateway deployment after Claude Code has deployed to Nexus.
+
+ARGUMENTS:
+  <version>          Maven snapshot version (e.g., 0.297-20260221.070005-19)
+
+OPTIONS:
+  -h <hash>          Skip fbpkg build, deploy existing fbpkg hash
+  -s                 Skip apply-task-ops (allow gradual TW rollout)
+  --help             Show this help
+
+EXAMPLES:
+  presto-gateway-deploy-finish 0.297-20260223.205039-20
+  presto-gateway-deploy-finish -h 57400a5 0.297-20260223.205039-20
+EOF
+    exit 0
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h)
+            EXISTING_HASH="$2"
+            shift 2
+            ;;
+        -s)
+            SKIP_APPLY_OPS=true
+            shift
+            ;;
+        --help)
+            usage
+            ;;
+        -*)
+            echo "Unknown option: $1"
+            usage
+            ;;
+        *)
+            VERSION="$1"
+            shift
+            ;;
+    esac
+done
+
+if [ -z "$VERSION" ]; then
+    echo "ERROR: version argument required"
+    usage
+fi
+
+# Step 3: Build fbpkg
+if [ -z "$EXISTING_HASH" ]; then
+    echo "=== Building fbpkg (gateway $VERSION) ==="
+    pt build fbpkg gateway "$VERSION"
+else
+    echo "=== Tagging existing fbpkg $EXISTING_HASH ==="
+    fbpkg tag --yes "presto.gateway:$EXISTING_HASH" "v$VERSION"
+fi
+
+# Step 4: Deploy to test gateway
+echo ""
+echo "=== Deploying to test gateway ==="
+GATEWAY_VERSION="$VERSION" tw update "$TW_CONFIG" --all-jobs --force
+
+# Step 5: Force immediate restart
+if [ "$SKIP_APPLY_OPS" = false ]; then
+    echo ""
+    echo "=== Applying task ops for immediate restart ==="
+    for job in "${GATEWAY_JOBS[@]}"; do
+        echo "  $job"
+        tw task-control apply-task-ops --all-ops --silent "$job"
+    done
+fi
+
+echo ""
+echo "=== Done. Verify: ==="
+echo "  presto --use-test-gateway di --execute 'SELECT 1'"
