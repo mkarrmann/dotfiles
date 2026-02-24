@@ -15,6 +15,31 @@ if [ -z "$AGENTS_FILE" ]; then
 fi
 LOCK_FILE="$(dirname "$AGENTS_FILE")/.agents.lock"
 MAX_ENTRIES=50
+
+# Cross-machine lock using mkdir (atomic on FUSE/NFS, unlike flock)
+_acquire_lock() {
+  local lock_dir="${LOCK_FILE}.d"
+  local i=0
+  while ! mkdir "$lock_dir" 2>/dev/null; do
+    # Break stale locks older than 30 seconds
+    local lock_age
+    lock_age=$(( $(date +%s) - $(stat -c%Y "$lock_dir" 2>/dev/null || echo 0) ))
+    if [ "$lock_age" -gt 30 ]; then
+      _log "  lock: breaking stale lock (${lock_age}s old)"
+      rm -rf "$lock_dir" 2>/dev/null
+      continue
+    fi
+    i=$((i + 1))
+    [ "$i" -ge 10 ] && return 1
+    sleep 0.5
+  done
+  trap '_release_lock' EXIT
+  return 0
+}
+
+_release_lock() {
+  rm -rf "${LOCK_FILE}.d" 2>/dev/null
+}
 LOG_DIR="$HOME/.claude/agent-manager/logs"
 LOG_FILE="$LOG_DIR/agent-tracker.log"
 
@@ -27,6 +52,19 @@ _log() {
     mv "$LOG_FILE" "${LOG_FILE}.prev" 2>/dev/null || true
   fi
   echo "$(date '+%m-%d %H:%M:%S') $*" >> "$LOG_FILE"
+}
+
+# Check if gdrive mount is healthy (avoid hanging on stale FUSE mounts)
+_check_gdrive() {
+  if ! grep -q "gdrive" /proc/mounts 2>/dev/null; then
+    _log "  gdrive: not mounted (not in /proc/mounts)"
+    return 1
+  fi
+  if ! timeout 3 ls "$(dirname "$AGENTS_FILE")" &>/dev/null; then
+    _log "  gdrive: mounted but unresponsive (stale?)"
+    return 1
+  fi
+  return 0
 }
 
 ensure_agents_file() {
@@ -123,7 +161,7 @@ mark_stale() {
       ts=$(now)
       _log "  mark_stale: sid=${sid_trimmed:0:8} age=${age_minutes}m — marking stopped"
       awk -v sid="$sid_trimmed" -v ts="$ts" -F'|' 'BEGIN{OFS="|"} {
-        if (index($5, sid) > 0) {
+        if (NR > 4 && index($5, sid) > 0) {
           $3 = " ⏹️ stopped "
           $8 = " " ts " "
         }
@@ -177,10 +215,14 @@ cmd_register() {
   if [ "$source" = "resume" ]; then
     echo "$sid" > ~/.claude-resuming
 
+    if ! _check_gdrive; then
+      ( sleep 2 && rm -f ~/.claude-resuming ) &
+      exit 0
+    fi
     ensure_agents_file
 
     (
-      flock -w 5 200 || exit 0
+      _acquire_lock || exit 0
 
       if grep -q "| ${sid} |" "$AGENTS_FILE" 2>/dev/null; then
         local current_status
@@ -190,7 +232,7 @@ cmd_register() {
           _log "  resume: sid found, status=bg:running — updating OD+ts only"
           local tmpfile="${AGENTS_FILE}.tmp"
           awk -v sid="$sid" -v ts="$ts" -v host="$host" -F'|' 'BEGIN{OFS="|"} {
-            if (index($5, sid) > 0) {
+            if (NR > 4 && index($5, sid) > 0) {
               $4 = " " host " "
               $8 = " " ts " "
             }
@@ -201,7 +243,7 @@ cmd_register() {
           _log "  resume: sid found, marking as resumed"
           local tmpfile="${AGENTS_FILE}.tmp"
           awk -v sid="$sid" -v ts="$ts" -v host="$host" -F'|' 'BEGIN{OFS="|"} {
-            if (index($5, sid) > 0) {
+            if (NR > 4 && index($5, sid) > 0) {
               $3 = " 🔄 resumed "
               $4 = " " host " "
               $8 = " " ts " "
@@ -217,26 +259,39 @@ cmd_register() {
 
       sort_agents
 
-    ) 200>"$LOCK_FILE"
+    )
 
     ( sleep 2 && rm -f ~/.claude-resuming ) &
     return
   fi
 
   # ── STARTUP PATH ──
+  # Capture intended name BEFORE sleep — a concurrent startup may consume
+  # ~/.claude-next-name during the sleep window.
+  local intended_name=""
+  if [ -f ~/.claude-next-name ]; then
+    intended_name=$(cat ~/.claude-next-name)
+  fi
+
   sleep 1
   if [ -f ~/.claude-resuming ]; then
     _log "  startup: phantom detected (resume flag exists) — skipping"
     exit 0
   fi
 
+  if ! _check_gdrive; then
+    exit 0
+  fi
   ensure_agents_file
 
   (
-    flock -w 5 200 || exit 0
+    _acquire_lock || exit 0
 
     # Clean up stale sessions while we hold the lock
     mark_stale
+
+    # Guard: sid may have been clobbered in subshell (observed in logs)
+    [ -z "$sid" ] && exit 0
 
     if [ -f ~/.claude-resuming ]; then
       _log "  startup: phantom detected after flock — skipping"
@@ -250,7 +305,7 @@ cmd_register() {
       if [[ "$current_status" != *"bg:running"* ]]; then
         local tmpfile="${AGENTS_FILE}.tmp"
         awk -v sid="$sid" -v ts="$ts" -v host="$host" -F'|' 'BEGIN{OFS="|"} {
-          if (index($5, sid) > 0) {
+          if (NR > 4 && index($5, sid) > 0) {
             $3 = " 🟢 interactive "
             $4 = " " host " "
             $8 = " " ts " "
@@ -264,30 +319,20 @@ cmd_register() {
       local name
       local old_desc=""
       local old_started=""
-      if [ -f ~/.claude-next-name ]; then
+      if [ -n "$intended_name" ]; then
+        name="$intended_name"
+        rm -f ~/.claude-next-name 2>/dev/null
+        _log "  startup: new UUID, intended-name='${name}'"
+      elif [ -f ~/.claude-next-name ]; then
         name=$(cat ~/.claude-next-name)
         rm -f ~/.claude-next-name
         _log "  startup: new UUID, claude-next-name='${name}'"
-        if grep -q "| ${name} |" "$AGENTS_FILE" 2>/dev/null; then
-          old_desc=$(grep "| ${name} |" "$AGENTS_FILE" | awk -F'|' '{print $6}' | xargs)
-          old_started=$(grep "| ${name} |" "$AGENTS_FILE" | awk -F'|' '{print $7}' | xargs)
-          local tmpfile="${AGENTS_FILE}.tmp"
-          grep -v "| ${name} |" "$AGENTS_FILE" > "$tmpfile"
-          mv "$tmpfile" "$AGENTS_FILE"
-        fi
       elif [ -n "${TMUX:-}" ]; then
         local tmux_name
         tmux_name=$(tmux display-message -p '#W' 2>/dev/null)
         if [ -n "$tmux_name" ] && [[ "$tmux_name" != "bash" && "$tmux_name" != "zsh" && "$tmux_name" != "fish" ]]; then
           name="$tmux_name"
           _log "  startup: using tmux window name='${name}'"
-          if grep -q "| ${name} |" "$AGENTS_FILE" 2>/dev/null; then
-            old_desc=$(grep "| ${name} |" "$AGENTS_FILE" | awk -F'|' '{print $6}' | xargs)
-            old_started=$(grep "| ${name} |" "$AGENTS_FILE" | awk -F'|' '{print $7}' | xargs)
-            local tmpfile="${AGENTS_FILE}.tmp"
-            grep -v "| ${name} |" "$AGENTS_FILE" > "$tmpfile"
-            mv "$tmpfile" "$AGENTS_FILE"
-          fi
         else
           name="${host}-${sid:0:4}"
           _log "  startup: genuine new session, auto-name='${name}'"
@@ -295,6 +340,37 @@ cmd_register() {
       else
         name="${host}-${sid:0:4}"
         _log "  startup: genuine new session, auto-name='${name}'"
+      fi
+
+      if grep -q "| ${name} |" "$AGENTS_FILE" 2>/dev/null; then
+        local existing_status
+        existing_status=$(grep "| ${name} |" "$AGENTS_FILE" | awk -F'|' '{print $3}')
+        if [[ "$existing_status" != *"stopped"* ]] && [[ "$existing_status" != *"bg:done"* ]]; then
+          # Active row with same name but different sid — update sid in place.
+          # This handles restarts, setup-triggered reloads, and rapid retries
+          # without creating phantom auto-named entries.
+          _log "  startup: name '${name}' active with different sid — updating sid in place"
+          local tmpfile="${AGENTS_FILE}.tmp"
+          awk -v sid="$sid" -v name="$name" -v ts="$ts" -v host="$host" -F'|' 'BEGIN{OFS="|"} {
+            if (NR > 4 && index($0, "| " name " |") > 0) {
+              $3 = " 🟢 interactive "
+              $4 = " " host " "
+              $5 = " " sid " "
+              $8 = " " ts " "
+            }
+            print
+          }' "$AGENTS_FILE" > "$tmpfile"
+          mv "$tmpfile" "$AGENTS_FILE"
+          echo "$sid" > ~/.claude-last-session
+          sort_agents
+          exit 0
+        fi
+        # Stopped/done — replace with new session (preserve desc and started)
+        old_desc=$(grep "| ${name} |" "$AGENTS_FILE" | awk -F'|' '{print $6}' | xargs)
+        old_started=$(grep "| ${name} |" "$AGENTS_FILE" | awk -F'|' '{print $7}' | xargs)
+        local tmpfile="${AGENTS_FILE}.tmp"
+        grep -v "| ${name} |" "$AGENTS_FILE" > "$tmpfile"
+        mv "$tmpfile" "$AGENTS_FILE"
       fi
 
       echo "$sid" > ~/.claude-last-session
@@ -314,7 +390,7 @@ cmd_register() {
 
     sort_agents
 
-  ) 200>"$LOCK_FILE"
+  )
 }
 
 # ============================================================
@@ -336,15 +412,16 @@ cmd_stop() {
   local ts
   ts=$(now)
 
+  _check_gdrive || exit 0
   ensure_agents_file
 
   (
-    flock -w 5 200 || exit 0
+    _acquire_lock || exit 0
 
     if grep -q "| ${sid} |" "$AGENTS_FILE" 2>/dev/null; then
       local tmpfile="${AGENTS_FILE}.tmp"
       awk -v sid="$sid" -v ts="$ts" -F'|' 'BEGIN{OFS="|"} {
-        if (index($5, sid) > 0) {
+        if (NR > 4 && index($5, sid) > 0) {
           $3 = " ⏹️ stopped "
           $8 = " " ts " "
         }
@@ -355,7 +432,7 @@ cmd_stop() {
 
     sort_agents
 
-  ) 200>"$LOCK_FILE"
+  )
 }
 
 # ============================================================
@@ -371,15 +448,16 @@ cmd_background() {
   local ts
   ts=$(now)
 
+  _check_gdrive || exit 0
   ensure_agents_file
 
   (
-    flock -w 5 200 || exit 0
+    _acquire_lock || exit 0
 
     if grep -q "| ${sid} |" "$AGENTS_FILE" 2>/dev/null; then
       local tmpfile="${AGENTS_FILE}.tmp"
       awk -v sid="$sid" -v ts="$ts" -v name="$name" -v desc="${desc:0:60}" -F'|' 'BEGIN{OFS="|"} {
-        if (index($5, sid) > 0) {
+        if (NR > 4 && index($5, sid) > 0) {
           $2 = " " name " "
           $3 = " 🔵 bg:running "
           $6 = " " desc " "
@@ -394,7 +472,7 @@ cmd_background() {
 
     sort_agents
 
-  ) 200>"$LOCK_FILE"
+  )
 }
 
 # ============================================================
@@ -405,15 +483,16 @@ cmd_bg_done() {
   local ts
   ts=$(now)
 
+  _check_gdrive || exit 0
   ensure_agents_file
 
   (
-    flock -w 5 200 || exit 0
+    _acquire_lock || exit 0
 
     if grep -q "| ${sid} |" "$AGENTS_FILE" 2>/dev/null; then
       local tmpfile="${AGENTS_FILE}.tmp"
       awk -v sid="$sid" -v ts="$ts" -F'|' 'BEGIN{OFS="|"} {
-        if (index($5, sid) > 0) {
+        if (NR > 4 && index($5, sid) > 0) {
           $3 = " ✅ bg:done "
           $8 = " " ts " "
         }
@@ -424,7 +503,7 @@ cmd_bg_done() {
 
     sort_agents
 
-  ) 200>"$LOCK_FILE"
+  )
 }
 
 # ============================================================
@@ -446,10 +525,11 @@ cmd_active() {
   local ts
   ts=$(now)
 
+  _check_gdrive || exit 0
   ensure_agents_file
 
   (
-    flock -w 5 200 || exit 0
+    _acquire_lock || exit 0
 
     if grep -q "| ${sid} |" "$AGENTS_FILE" 2>/dev/null; then
       local current_status
@@ -457,7 +537,7 @@ cmd_active() {
       if [[ "$current_status" != *"⚡"* ]]; then
         local tmpfile="${AGENTS_FILE}.tmp"
         awk -v sid="$sid" -v ts="$ts" -F'|' 'BEGIN{OFS="|"} {
-          if (index($5, sid) > 0) {
+          if (NR > 4 && index($5, sid) > 0) {
             $3 = " ⚡ active "
             $8 = " " ts " "
           }
@@ -466,9 +546,53 @@ cmd_active() {
         mv "$tmpfile" "$AGENTS_FILE"
         sort_agents
       fi
+    else
+      # Fallback registration: session not in AGENTS.md — startup registration
+      # likely failed (e.g., gdrive was stale when SessionStart hook fired).
+      local host
+      host=$(hostname -s)
+      local name
+
+      if [ -f ~/.claude-next-name ]; then
+        name=$(cat ~/.claude-next-name)
+        rm -f ~/.claude-next-name
+        _log "  active: fallback registration, name='${name}' (from claude-next-name)"
+      else
+        name="${host}-${sid:0:4}"
+        _log "  active: fallback registration, auto-name='${name}'"
+      fi
+
+      if grep -q "| ${name} |" "$AGENTS_FILE" 2>/dev/null; then
+        local existing_status
+        existing_status=$(grep "| ${name} |" "$AGENTS_FILE" | awk -F'|' '{print $3}')
+        if [[ "$existing_status" != *"stopped"* ]] && [[ "$existing_status" != *"bg:done"* ]]; then
+          _log "  active: fallback — name '${name}' active, updating sid"
+          local tmpfile="${AGENTS_FILE}.tmp"
+          awk -v sid="$sid" -v name="$name" -v ts="$ts" -v host="$host" -F'|' 'BEGIN{OFS="|"} {
+            if (NR > 4 && index($0, "| " name " |") > 0) {
+              $3 = " ⚡ active "
+              $4 = " " host " "
+              $5 = " " sid " "
+              $8 = " " ts " "
+            }
+            print
+          }' "$AGENTS_FILE" > "$tmpfile"
+          mv "$tmpfile" "$AGENTS_FILE"
+          echo "$sid" > ~/.claude-last-session
+          sort_agents
+          exit 0
+        fi
+        local tmpfile="${AGENTS_FILE}.tmp"
+        grep -v "| ${name} |" "$AGENTS_FILE" > "$tmpfile"
+        mv "$tmpfile" "$AGENTS_FILE"
+      fi
+
+      echo "$sid" > ~/.claude-last-session
+      echo "| ${name} | ⚡ active | ${host} | ${sid} | (new session) | ${ts} | ${ts} |" >> "$AGENTS_FILE"
+      sort_agents
     fi
 
-  ) 200>"$LOCK_FILE"
+  )
 }
 
 # ============================================================
@@ -490,10 +614,11 @@ cmd_idle() {
   local ts
   ts=$(now)
 
+  _check_gdrive || exit 0
   ensure_agents_file
 
   (
-    flock -w 5 200 || exit 0
+    _acquire_lock || exit 0
 
     if grep -q "| ${sid} |" "$AGENTS_FILE" 2>/dev/null; then
       local current_status
@@ -501,7 +626,7 @@ cmd_idle() {
       if [[ "$current_status" == *"⚡"* ]] || [[ "$current_status" == *"🟢"* ]] || [[ "$current_status" == *"🔄"* ]]; then
         local tmpfile="${AGENTS_FILE}.tmp"
         awk -v sid="$sid" -v ts="$ts" -F'|' 'BEGIN{OFS="|"} {
-          if (index($5, sid) > 0) {
+          if (NR > 4 && index($5, sid) > 0) {
             $3 = " 🟡 idle "
             $8 = " " ts " "
           }
@@ -512,7 +637,7 @@ cmd_idle() {
       fi
     fi
 
-  ) 200>"$LOCK_FILE"
+  )
 }
 
 # ============================================================

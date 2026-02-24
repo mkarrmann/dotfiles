@@ -82,6 +82,7 @@ _start_bg_session() {
   local tmux_name="cb-${name}"
   local logfile="${CLAUDE_BG_LOGDIR}/${name}.log"
 
+  sudo ondemand-idle-checks disable 2>/dev/null
   tmux kill-session -t "$tmux_name" 2>/dev/null
 
   local claude_cmd=""
