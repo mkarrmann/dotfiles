@@ -3,6 +3,13 @@ set -e
 
 # presto-deploy: Builds, packages, and deploys Presto to remote clusters.
 # Sources presto-build for shared Maven config and build functions.
+#
+# SAP limitation: fbpkg tag, tw task-control, and tw restart are blocked when
+# run from Claude Code. This script does everything it can (build, package,
+# pt pcm deploy), then prints a single presto-deploy-finish command for the
+# user to run to complete the blocked steps.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # === Source build script for config and functions ===
 BUILD_SCRIPT="$HOME/.claude/skills/presto-build/presto-build"
@@ -34,6 +41,8 @@ DEPLOY_REASON=""
 CPP_FBPKG_HASH=""
 PRESTO_FBPKG_HASH=""
 PRESTO_VERSION=""
+HYBRID_IDENTIFIER=""
+HYBRID_BASE_VERSION=""
 
 # === Usage ===
 usage() {
@@ -218,7 +227,41 @@ build_hybrid() {
         hybrid_args+=(-k "$CPP_TARGET")
     fi
 
-    "${FBCODE_HOME}/fb_presto_cpp/scripts/build.sh" "${hybrid_args[@]}"
+    # build.sh calls `fbpkg tag` at the end, which is blocked by AI agent
+    # policy. The package creation (`fbpkg build`) succeeds — only the tag
+    # fails. We run build.sh with set +e, extract the identifier from its
+    # stdout (printed before the tag attempt), and defer the tag command.
+    local hybrid_output
+    set +e
+    hybrid_output=$("${FBCODE_HOME}/fb_presto_cpp/scripts/build.sh" "${hybrid_args[@]}" 2>&1)
+    local hybrid_exit=$?
+    set -e
+
+    # build.sh prints the identifier (presto.presto:<hash>) on its own line
+    # right before attempting the tag. Extract it.
+    HYBRID_IDENTIFIER=$(echo "$hybrid_output" | grep -oP '^presto\.presto:\S+' | head -1)
+
+    # Extract the base version from "presto.presto build 'v0.297-edge11' ..."
+    HYBRID_BASE_VERSION=$(echo "$hybrid_output" | grep -oP "presto\.presto build '\K[^']+")
+
+    if [ $hybrid_exit -eq 0 ]; then
+        echo "$hybrid_output"
+        # Tag succeeded (running as human, not AI agent). Update hash.
+        if [ -n "$HYBRID_IDENTIFIER" ]; then
+            PRESTO_FBPKG_HASH=$(echo "$HYBRID_IDENTIFIER" | cut -d: -f2)
+        fi
+    elif [ -n "$HYBRID_IDENTIFIER" ]; then
+        # Package was created but tag failed (expected from Claude Code).
+        echo "$hybrid_output"
+        echo ""
+        echo "    Hybrid package created: ${HYBRID_IDENTIFIER}"
+        echo "    (tagging deferred — see finish command below)"
+        PRESTO_FBPKG_HASH=$(echo "$HYBRID_IDENTIFIER" | cut -d: -f2)
+    else
+        echo "$hybrid_output"
+        echo "Error: hybrid build failed — could not extract package identifier"
+        exit 1
+    fi
 }
 
 deploy_to_cluster() {
@@ -230,7 +273,7 @@ deploy_to_cluster() {
     local reason="${DEPLOY_REASON:-deployed by presto-deploy}"
 
     echo "==> Deploying to cluster $DEPLOY_CLUSTER (version: $version)..."
-    pt pcm deploy -l -c "$DEPLOY_CLUSTER" -pv "$version" -r "$reason" -f
+    pt pcm deploy -c "$DEPLOY_CLUSTER" -pv "$version" -r "$reason" -f -ni -dt 0
 }
 
 verify_deployment() {
@@ -239,8 +282,16 @@ verify_deployment() {
     fi
 
     echo "==> Verifying deployment on $DEPLOY_CLUSTER..."
-    # Use system.runtime.nodes — version() function doesn't exist in Prestissimo
-    presto --smc "$DEPLOY_CLUSTER" --execute "SELECT node_version FROM system.runtime.nodes LIMIT 1"
+    set +e
+    presto --smc "$DEPLOY_CLUSTER" --oncall presto_release_internal \
+        --execute "SELECT node_version, coordinator, count(*) FROM system.runtime.nodes GROUP BY 1, 2"
+    local verify_exit=$?
+    set -e
+
+    if [ $verify_exit -ne 0 ]; then
+        echo "    Verification failed — cluster may still be restarting."
+        echo "    Run the accelerate command below, then re-verify."
+    fi
 }
 
 # === Ensure build dirs exist ===
@@ -295,21 +346,54 @@ if ! $NATIVE || ! $BUILD_JAVA; then
     fi
 fi
 
-# Step 5: Hybrid merge (if both Java + C++ fbpkgs)
+# Step 4: Hybrid merge (if both Java + C++ fbpkgs)
 if $NATIVE && [ -n "$PRESTO_FBPKG_HASH" ] && [ -n "$CPP_FBPKG_HASH" ]; then
     build_hybrid
 fi
 
-# Step 6: Deploy to cluster (if -c)
+# Step 5: Deploy to cluster (if -c)
 deploy_to_cluster
 
-# Step 7: Verify deployment (if -c)
+# Step 6: Verify deployment (if -c)
 verify_deployment
 
+# === Summary ===
+echo ""
 echo "==> Done."
-if [ -n "$PRESTO_FBPKG_HASH" ]; then
+if [ -n "$HYBRID_IDENTIFIER" ]; then
+    echo "    Hybrid fbpkg: ${HYBRID_IDENTIFIER}"
+elif [ -n "$PRESTO_FBPKG_HASH" ]; then
     echo "    Java fbpkg: presto.presto:${PRESTO_FBPKG_HASH}"
 fi
 if [ -n "$CPP_FBPKG_HASH" ]; then
     echo "    C++ fbpkg: ${CPP_TARGET}:${CPP_FBPKG_HASH}"
+fi
+
+# === Print finish commands ===
+FINISH_SCRIPT="$SCRIPT_DIR/presto-deploy-finish"
+FINISH_COMMANDS=()
+
+# Hybrid tag (if build.sh's fbpkg tag was blocked)
+if [ -n "$HYBRID_IDENTIFIER" ] && [ -n "$HYBRID_BASE_VERSION" ]; then
+    local_ts=$(date '+%Y%m%d%H%M%S')
+    local_tag="${HYBRID_BASE_VERSION}.cpp-${USER}-${local_ts}"
+    resolve_cpp_targets
+    FINISH_COMMANDS+=("$FINISH_SCRIPT tag ${HYBRID_IDENTIFIER} ${local_tag} ${CPP_TARGET}-${CPP_FBPKG_HASH}")
+fi
+
+# Accelerate deploy (if deploying to cluster)
+if [ -n "$DEPLOY_CLUSTER" ]; then
+    FINISH_COMMANDS+=("$FINISH_SCRIPT accelerate ${DEPLOY_CLUSTER}")
+fi
+
+if [ ${#FINISH_COMMANDS[@]} -gt 0 ]; then
+    echo ""
+    echo "=========================================="
+    echo "Run this in your shell to finish:"
+    echo "=========================================="
+    for cmd in "${FINISH_COMMANDS[@]}"; do
+        echo ""
+        echo "  $cmd"
+    done
+    echo ""
 fi

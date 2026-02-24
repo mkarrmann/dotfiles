@@ -1,0 +1,156 @@
+#!/bin/bash
+set -euo pipefail
+
+# presto-deploy-finish: Completes the SAP-blocked steps of Presto deployment.
+#
+# Run this in your own shell after Claude Code has built packages (presto-deploy).
+# This script handles operations blocked by AI agent policy:
+#   - fbpkg tag (hybrid package tagging)
+#   - tw task-control apply-task-ops (accelerate deploy rollout)
+#   - tw restart (recover broken clusters)
+#
+# Usage:
+#   presto-deploy-finish tag <hash> <version_tag> [<cpp_tag>]
+#   presto-deploy-finish accelerate <cluster>
+#   presto-deploy-finish restart <cluster>
+
+usage() {
+    cat <<'EOF'
+Usage: presto-deploy-finish <command> [args...]
+
+COMMANDS:
+  tag <identifier> <version_tag> [<cpp_tag>]
+      Tag a hybrid fbpkg with version and optional C++ provenance tags.
+      Example: presto-deploy-finish tag presto.presto:abc123 v0.297-edge11.cpp-user-20260223120000 presto.presto_cpp-def456
+
+  accelerate <cluster>
+      Speed up deploy rollout by polling and applying task-ops.
+      Loops until apply-task-ops succeeds on both worker and coordinator.
+      Example: presto-deploy-finish accelerate pnb1_batchtest_bgm_2
+
+  restart <cluster>
+      Force-restart a broken cluster (SIGKILL, no drain).
+      Example: presto-deploy-finish restart pnb1_batchtest_bgm_2
+
+EXAMPLES:
+  # After presto-deploy builds a hybrid:
+  presto-deploy-finish tag presto.presto:abc123 v0.297-edge11.cpp-user-20260223120000 presto.presto_cpp-def456
+
+  # After pt pcm deploy starts a rollout:
+  presto-deploy-finish accelerate pnb1_batchtest_bgm_2
+
+  # Cluster is crash-looping:
+  presto-deploy-finish restart pnb1_batchtest_bgm_2
+EOF
+    exit 0
+}
+
+cluster_region() {
+    echo "$1" | cut -d'_' -f1
+}
+
+cmd_tag() {
+    local identifier="$1"
+    local version_tag="$2"
+    shift 2
+    # Remaining args are additional tags (e.g., cpp provenance tag)
+    local extra_tags=("$@")
+
+    echo "=== Tagging fbpkg ==="
+    echo "  Identifier: $identifier"
+    echo "  Version tag: $version_tag"
+    fbpkg tag --yes "$identifier" "$version_tag" "${extra_tags[@]}"
+    echo "  Tagged successfully."
+}
+
+cmd_accelerate() {
+    local cluster="$1"
+    local region
+    region=$(cluster_region "$cluster")
+
+    local jobs=(
+        "tsp_${region}/presto/${cluster}.worker"
+        "tsp_${region}/presto/${cluster}.coordinator"
+    )
+
+    echo "=== Accelerating deploy for $cluster ==="
+    for job in "${jobs[@]}"; do
+        echo "  Applying task-ops: $job"
+        local max_attempts=30
+        for ((i=1; i<=max_attempts; i++)); do
+            if tw task-control apply-task-ops --all-ops --silent "$job" 2>/dev/null; then
+                echo "    Applied successfully."
+                break
+            fi
+            if [ "$i" -eq "$max_attempts" ]; then
+                echo "    WARNING: apply-task-ops did not succeed after $max_attempts attempts."
+                break
+            fi
+            echo "    Waiting for task-ops to be available... (attempt $i/$max_attempts)"
+            sleep 10
+        done
+    done
+
+    echo ""
+    echo "=== Done. Verify: ==="
+    echo "  presto --smc $cluster --oncall presto_release_internal \\"
+    echo "      --execute \"SELECT node_version, coordinator, count(*) FROM system.runtime.nodes GROUP BY 1, 2\""
+}
+
+cmd_restart() {
+    local cluster="$1"
+    local region
+    region=$(cluster_region "$cluster")
+
+    echo "=== Restarting $cluster (fast + kill) ==="
+    tw restart --fast --kill "tsp_${region}/presto/${cluster}.worker"
+    echo "  Worker restart initiated."
+
+    echo ""
+    echo "=== Done. Wait ~2 minutes, then verify: ==="
+    echo "  presto --smc $cluster --oncall presto_release_internal \\"
+    echo "      --execute \"SELECT node_version, coordinator, count(*) FROM system.runtime.nodes GROUP BY 1, 2\""
+}
+
+# === Main ===
+
+if [[ $# -lt 1 ]]; then
+    usage
+fi
+
+COMMAND="$1"
+shift
+
+case "$COMMAND" in
+    tag)
+        if [[ $# -lt 2 ]]; then
+            echo "Error: 'tag' requires at least <identifier> and <version_tag>"
+            echo "Usage: presto-deploy-finish tag <identifier> <version_tag> [<cpp_tag>]"
+            exit 1
+        fi
+        cmd_tag "$@"
+        ;;
+    accelerate)
+        if [[ $# -lt 1 ]]; then
+            echo "Error: 'accelerate' requires <cluster>"
+            echo "Usage: presto-deploy-finish accelerate <cluster>"
+            exit 1
+        fi
+        cmd_accelerate "$1"
+        ;;
+    restart)
+        if [[ $# -lt 1 ]]; then
+            echo "Error: 'restart' requires <cluster>"
+            echo "Usage: presto-deploy-finish restart <cluster>"
+            exit 1
+        fi
+        cmd_restart "$1"
+        ;;
+    --help|-h)
+        usage
+        ;;
+    *)
+        echo "Error: unknown command '$COMMAND'"
+        usage
+        ;;
+esac
