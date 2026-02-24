@@ -40,6 +40,7 @@ _acquire_lock() {
 _release_lock() {
   rm -rf "${LOCK_FILE}.d" 2>/dev/null
 }
+
 LOG_DIR="$HOME/.claude/agent-manager/logs"
 LOG_FILE="$LOG_DIR/agent-tracker.log"
 
