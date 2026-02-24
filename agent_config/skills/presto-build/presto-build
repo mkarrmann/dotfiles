@@ -37,6 +37,11 @@ OSS_OPTS=(
     "-Dout-of-tree-build-root=${BUILD_ROOT}/presto-trunk"
 )
 
+# OSS modules needed by presto-facebook-trunk. Transitive deps (e.g. presto-matching,
+# presto-function-namespace-managers, presto-hive) are resolved automatically by -am.
+# Keep in sync with _p_modules in ~/.localrc.
+OSS_MODULES="presto-analyzer,presto-base-jdbc,presto-benchmark,presto-benchmark-driver,presto-benchmark-runner,presto-bytecode,presto-cache,presto-client,presto-common,presto-expressions,presto-geospatial-toolkit,presto-jdbc,presto-jmx,presto-main,presto-main-base,presto-main-tests,presto-memory,presto-memory-context,presto-native-execution,presto-orc,presto-parquet,presto-parser,presto-plugin-toolkit,presto-proxy,presto-rcfile,presto-resource-group-managers,presto-spi,presto-spark-base,presto-spark-classloader-interface,presto-spark-common,presto-spark-launcher,presto-testng-services,presto-testing-docker,presto-tests,presto-thrift-api,presto-thrift-connector,presto-thrift-testing-server,presto-tpcds,presto-tpch,presto-verifier"
+
 FB_OPTS=(
     "${COMMON_OPTS[@]}"
     -DuseParallelDependencyResolution=false
@@ -95,9 +100,15 @@ build_java_module() {
 
 build_java_full() {
     if ! $SKIP_OSS; then
-        echo "==> Building presto-trunk (OSS)..."
+        local oss_pl_flags=(-pl "$OSS_MODULES" -am)
+        if $ALL_OSS; then
+            oss_pl_flags=()
+            echo "==> Building presto-trunk (OSS, ALL modules)..."
+        else
+            echo "==> Building presto-trunk (OSS, $(echo "$OSS_MODULES" | tr ',' '\n' | wc -l) modules + transitive deps)..."
+        fi
         pushd "${DEV_HOME}/presto-trunk" > /dev/null
-        mvn $MVN_CLEAN $MVN_GOAL "${MVN_TEST_FLAGS[@]}" "${OSS_OPTS[@]}"
+        mvn $MVN_CLEAN $MVN_GOAL "${MVN_TEST_FLAGS[@]}" "${oss_pl_flags[@]}" "${OSS_OPTS[@]}"
         popd > /dev/null
     else
         echo "==> Skipping presto-trunk (-T)"
@@ -127,6 +138,7 @@ fi
 # === Flags ===
 MODULES=""
 SKIP_OSS=false
+ALL_OSS=false
 NATIVE=false
 CPP_MODE=""
 INCREMENTAL=false
@@ -147,6 +159,7 @@ MODULE BUILD (fast iteration):
 FULL BUILD (default when no -l):
   (no flags)         Build both presto-trunk + presto-facebook-trunk
   -T                 Skip presto-trunk (when only FB code changed)
+  -A                 Build ALL OSS modules (default: only FB-needed subset)
 
 C++ BUILD (local only):
   -n                 Build C++ native binary (buck2 build)
@@ -169,6 +182,7 @@ EXAMPLES:
   presto-build -n -m asan                  Java + local C++ ASAN binary
   presto-build -t -l presto-main           Run tests for a module
   presto-build -C                          Full build, skip checkstyle
+  presto-build -A                          Full build, ALL OSS modules
 EOF
     exit "${1:-0}"
 }
@@ -178,6 +192,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -l) MODULES="$2"; shift 2;;
         -T) SKIP_OSS=true; shift;;
+        -A) ALL_OSS=true; shift;;
         -n) NATIVE=true; shift;;
         -m) CPP_MODE="$2"; shift 2;;
         -I) INCREMENTAL=true; shift;;

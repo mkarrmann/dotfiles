@@ -13,7 +13,7 @@ Local development build tool for Presto Java and C++ codebases.
 
 **Key script:** `~/.claude/skills/presto-build/presto-build`
 
-**Shell aliases** (from `~/.localrc`): `gf`/`gp` navigate to presto-facebook-trunk/presto-trunk. `mfci`, `mfi`, `mpci` run Maven with correct flags and `-T 48` threads. `mfcc` runs checkstyle. All aliases trigger eden prefetch first.
+**Shell aliases** (from `~/.localrc`): `gf`/`gp` navigate to presto-facebook-trunk/presto-trunk. `mfci`, `mfi`, `mpci` run Maven with correct flags and `-T 48` threads. `mfcc` runs checkstyle. All aliases trigger eden prefetch first. OSS aliases (`mpi`, `mpci`, etc.) use `-pl $_p_modules -am` to build only needed modules. FB aliases (`mfi`, `mfci`, etc.) use `-pl presto-facebook -am`. Override with `-pl <module>` to target a different module (Maven uses the last `-pl`).
 
 **Related skills:**
 - `presto-deploy` — Nexus deployment, fbpkg packaging, cluster deployment
@@ -34,7 +34,7 @@ Local development build tool for Presto Java and C++ codebases.
 |---|---|---|
 | Java module (incremental) | `presto-build -I -l <module>` | ~5 min |
 | Java FB trunk only | `presto-build -T` | ~15 min |
-| Java full (OSS + FB) | `presto-build` | ~30 min |
+| Java full (OSS subset + FB) | `presto-build` | ~20-25 min |
 | C++ dev (local, no opt) | `presto-build -n` | ~15 min |
 | C++ opt (fbpkg) | `presto-deploy -n` | **~3 hours** |
 
@@ -84,7 +84,7 @@ presto-build -T
 presto-build -C
 ```
 
-Full builds run `mvn clean install` on OSS trunk first, then FB trunk with `-pl presto-facebook -am`.
+Full builds run `mvn clean install` on a subset of OSS trunk (only the ~40 modules needed by FB trunk, plus transitive deps via `-am`), then FB trunk with `-pl presto-facebook -am`. The module list is defined in `OSS_MODULES` in the build script and `_p_modules` in `~/.localrc`. If a build fails with an unresolved OSS artifact, add the missing module to both lists.
 
 ### Tests
 
@@ -147,9 +147,9 @@ The build script uses these Maven flags (shared with `presto-deploy` via sourcin
 
 **Common (all builds):** `-Dmaven.gitcommitid.skip=true`, `-Dlicense.report.skip=true`, `-Djava.net.preferIPv6Addresses=true`, `-DskipUI`, OS detection flags, `-Dout-of-tree-build=true`, `-T 48`
 
-**OSS additions:** `-Dmaven.javadoc.skip=true`, `-Dout-of-tree-build-root=$BUILD_ROOT/presto-trunk`
+**OSS additions:** `-Dmaven.javadoc.skip=true`, `-Dout-of-tree-build-root=$BUILD_ROOT/presto-trunk`, `-pl $OSS_MODULES -am` (builds only the ~40 modules needed by FB trunk; transitive deps like `presto-matching`, `presto-hive`, `presto-function-namespace-managers` are resolved by `-am`)
 
-**FB additions:** `-DuseParallelDependencyResolution=false`, `-nsu`, `-DwithPlugins=true`, `-Dout-of-tree-build-root=$BUILD_ROOT/presto-facebook-trunk`
+**FB additions:** `-DuseParallelDependencyResolution=false`, `-nsu`, `-DwithPlugins=true`, `-Dout-of-tree-build-root=$BUILD_ROOT/presto-facebook-trunk`, `-pl presto-facebook -am`
 
 Build output goes to `$BUILD_ROOT` (`/data/users/$USER/builds` by default).
 
