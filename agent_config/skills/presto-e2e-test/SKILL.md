@@ -225,6 +225,7 @@ Common predicates by test type:
 | Spot-check query | `presto-test cli -c <cluster> -e "SELECT ..."` |
 | Verifier (default) | `presto-test verifier -c <cluster>` |
 | Verifier (explicit control) | `presto-test verifier -c <cluster> --control <ctl> --suite <suite>` |
+| Acquire Super User | `dips_superuser_cli acquire --oncall presto_release_internal --reason "<description>"` |
 | goshadow (paste) | `presto-test goshadow -c <cluster> -p <paste_id>` |
 | goshadow (logs) | `presto-test goshadow -c <cluster> --mode logs --env <src> --start "..." --end "..."` |
 | goshadow (live) | `presto-test goshadow -c <cluster> --mode live --env <src>` |
@@ -259,6 +260,8 @@ presto-test verifier -c <cluster> --control atn1_batch1 --suite atn1_default
 Results at: search "presto verifier results" on internal tools.
 
 ## goshadow (Query Replay)
+
+**Super User permissions:** goshadow replays production queries that may access sensitive data. Before running goshadow, ensure the user has active Super User permissions. Always prompt the user to acquire permissions before launching goshadow, providing the exact command: `dips_superuser_cli acquire --oncall presto_release_internal --reason "<description>"`
 
 Replays real production queries against a test cluster.
 

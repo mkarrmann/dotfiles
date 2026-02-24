@@ -12,9 +12,9 @@ Deploys the Presto Gateway to the **test gateway** (`test-gateway` jobs in `tsp_
 **Key script:** `~/.claude/skills/presto-gateway-deploy/presto-gateway-deploy`
 
 **Prerequisites:**
-- **All presto-facebook-trunk dependencies installed in local Maven repo.** The script builds only `-pl presto-gateway` (no `-am`), so all dependencies must already be in `~/.m2/repository`. If not, run `presto-build` first.
+- **All presto-facebook-trunk dependencies installed in local Maven repo.** The script builds only `-pl presto-gateway` (no `-am`), so all dependencies must already be installed. If not, run `presto-build` first. (For secondary checkouts like `~/fbsource2`, dependencies are in `${BUILD_ROOT}/m2-repo-2` instead of `~/.m2/repository`.)
 - **Nexus credentials in `~/.m2/settings.xml`.** Required for the `mvn deploy` step.
-- **Out-of-tree build directory exists.** Defaults to `/data/users/$USER/builds/presto-facebook-trunk`.
+- **Out-of-tree build directory exists.** Auto-detected from the current checkout.
 
 **Related skills:**
 - `presto-build` — Local Java/C++ builds
@@ -62,7 +62,7 @@ The recommended approach is to run the `presto-gateway-deploy` script, which han
 mfi -pl presto-gateway
 
 # Equivalent:
-cd ~/fbsource/fbcode/github/presto-facebook-trunk
+cd <checkout>/fbcode/github/presto-facebook-trunk
 mvn install <FB_TRUNK_FLAGS> -DskipTests -pl presto-gateway
 ```
 
@@ -174,4 +174,4 @@ arc skycastle schedule tools/skycastle/workflows2/presto/presto_maven_build_gate
 | Test gateway reserved by someone else | Check Katchin dashboard; coordinate with team |
 | Deploy seems stuck / rolling slowly | Run `tw task-control apply-task-ops --all-ops` on each job handle |
 | `presto --use-test-gateway` fails | Jobs may still be restarting; check `tw diag <job>` |
-| Maven build fails on a dependency module | Do NOT add `-am` to Maven flags. Dependencies must be pre-installed. Run `presto-build` first if missing. |
+| Maven build fails on a dependency module | Do NOT add `-am` to Maven flags. Dependencies must be pre-installed. Run `presto-build` first if missing. For secondary checkouts, dependencies are isolated in `${BUILD_ROOT}/m2-repo-{2,3}`. |

@@ -14,9 +14,35 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
 fi
 
 # === Configuration ===
-FBCODE_HOME="${FBCODE_HOME:-$HOME/fbsource/fbcode}"
+# Auto-detect FBCODE_HOME from CWD: walk up to find an fbcode/ parent.
+# Falls back to ~/fbsource/fbcode if CWD is not inside an fbsource checkout.
+_detect_fbcode_home() {
+    local d="$PWD"
+    while [[ "$d" != "/" ]]; do
+        if [[ -d "$d/github/presto-trunk" && "$(basename "$d")" == "fbcode" ]]; then
+            echo "$d"
+            return
+        fi
+        d="$(dirname "$d")"
+    done
+    echo "$HOME/fbsource/fbcode"
+}
+FBCODE_HOME="${FBCODE_HOME:-$(_detect_fbcode_home)}"
 DEV_HOME="${FBCODE_HOME}/github"
 BUILD_ROOT="${BUILD_ROOT:-/data/users/${USER}/builds}"
+
+# Checkout isolation: append a suffix to build dirs and maven local repo
+# so that builds from different fbsource checkouts don't clobber each other.
+_CHECKOUT_SUFFIX=""
+case "$FBCODE_HOME" in
+    "$HOME"/fbsource2/*) _CHECKOUT_SUFFIX="-2";;
+    "$HOME"/fbsource3/*) _CHECKOUT_SUFFIX="-3";;
+esac
+
+_MAVEN_REPO_LOCAL_OPT=()
+if [[ -n "$_CHECKOUT_SUFFIX" ]]; then
+    _MAVEN_REPO_LOCAL_OPT=("-Dmaven.repo.local=${BUILD_ROOT}/m2-repo${_CHECKOUT_SUFFIX}")
+fi
 
 # === Maven flags ===
 COMMON_OPTS=(
@@ -29,12 +55,13 @@ COMMON_OPTS=(
     -Dos.detected.classifier=linux-x86_64
     -Dout-of-tree-build=true
     -T 48
+    "${_MAVEN_REPO_LOCAL_OPT[@]}"
 )
 
 OSS_OPTS=(
     "${COMMON_OPTS[@]}"
     -Dmaven.javadoc.skip=true
-    "-Dout-of-tree-build-root=${BUILD_ROOT}/presto-trunk"
+    "-Dout-of-tree-build-root=${BUILD_ROOT}/presto-trunk${_CHECKOUT_SUFFIX}"
 )
 
 # OSS modules needed by presto-facebook-trunk. Transitive deps (e.g. presto-matching,
@@ -47,7 +74,7 @@ FB_OPTS=(
     -DuseParallelDependencyResolution=false
     -nsu
     -DwithPlugins=true
-    "-Dout-of-tree-build-root=${BUILD_ROOT}/presto-facebook-trunk"
+    "-Dout-of-tree-build-root=${BUILD_ROOT}/presto-facebook-trunk${_CHECKOUT_SUFFIX}"
 )
 
 # === Shared functions ===
@@ -244,7 +271,7 @@ MVN_CLEAN=""
 $INCREMENTAL || MVN_CLEAN="clean"
 
 # === Ensure build dirs exist ===
-mkdir -p "${BUILD_ROOT}/presto-trunk" "${BUILD_ROOT}/presto-facebook-trunk"
+mkdir -p "${BUILD_ROOT}/presto-trunk${_CHECKOUT_SUFFIX}" "${BUILD_ROOT}/presto-facebook-trunk${_CHECKOUT_SUFFIX}"
 
 # === Main ===
 eden_prefetch

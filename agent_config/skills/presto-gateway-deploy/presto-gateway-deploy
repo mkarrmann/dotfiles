@@ -25,11 +25,31 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # === Config ===
-PRESTO_FB_TRUNK="$HOME/fbsource/fbcode/github/presto-facebook-trunk"
-TW_CONFIG="$HOME/fbsource/fbcode/tupperware/config/presto/gateway/gateway-test.tw"
-FBPACKAGE_DIR="$HOME/fbsource/fbcode/datainfra/presto/fbpackage"
+# Auto-detect fbcode root from CWD, falling back to ~/fbsource/fbcode.
+_detect_fbcode() {
+    local d="$PWD"
+    while [[ "$d" != "/" ]]; do
+        if [[ -d "$d/github/presto-trunk" && "$(basename "$d")" == "fbcode" ]]; then
+            echo "$d"
+            return
+        fi
+        d="$(dirname "$d")"
+    done
+    echo "$HOME/fbsource/fbcode"
+}
+_FBCODE="$(_detect_fbcode)"
+PRESTO_FB_TRUNK="$_FBCODE/github/presto-facebook-trunk"
+TW_CONFIG="$_FBCODE/tupperware/config/presto/gateway/gateway-test.tw"
+FBPACKAGE_DIR="$_FBCODE/datainfra/presto/fbpackage"
 DEPLOY_LOG="/tmp/presto_gateway_deploy.log"
 NEXUS_BASE="https://maven.thefacebook.com/nexus"
+
+# Checkout isolation suffix
+_CK_SUFFIX=""
+case "$_FBCODE" in
+    "$HOME"/fbsource2/*) _CK_SUFFIX="-2";;
+    "$HOME"/fbsource3/*) _CK_SUFFIX="-3";;
+esac
 
 # Test gateway job handles (3 regions)
 GATEWAY_JOBS=(
@@ -51,7 +71,7 @@ MVN_FLAGS=(
     -DuseParallelDependencyResolution=false
     -T 48
     -nsu
-    -Dout-of-tree-build-root="${BUILD_ROOT:-/data/users/$USER/builds}/presto-facebook-trunk"
+    -Dout-of-tree-build-root="${BUILD_ROOT:-/data/users/$USER/builds}/presto-facebook-trunk${_CK_SUFFIX}"
     -Dout-of-tree-build=true
     -Dlicense.report.skip=true
     -DwithPlugins=true
@@ -60,6 +80,9 @@ MVN_FLAGS=(
     -Dos.detected.classifier=linux-x86_64
     -DskipTests
 )
+if [[ -n "$_CK_SUFFIX" ]]; then
+    MVN_FLAGS+=("-Dmaven.repo.local=${BUILD_ROOT:-/data/users/$USER/builds}/m2-repo${_CK_SUFFIX}")
+fi
 
 # === Flags ===
 SKIP_BUILD=false

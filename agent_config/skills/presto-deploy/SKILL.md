@@ -323,6 +323,9 @@ fbpkg build fbcode//fb_presto_cpp:presto.presto_cpp
 # 2. Merge with Java coordinator to create deployable hybrid (~5 min)
 ~/fbsource/fbcode/fb_presto_cpp/scripts/build.sh <hash>
 # -> prints hybrid hash like "presto.presto:<hybrid_hash>"
+```
+
+NOTE: Replace `~/fbsource` with the actual checkout root (e.g., `~/fbsource2`) if working from a secondary checkout.
 
 # 3. Deploy the opt hybrid
 pt pcm deploy -c <cluster> -pv <hybrid_version> -r "opt build" -f -ni -dt 0
@@ -441,14 +444,14 @@ For Java clusters, the equivalent file is `include/tupperware_configs/warehouse/
 
 #### How `pt pcm deploy -l` Works
 
-The `-l` / `--use-local-config` flag deploys the **entire TW config from your local working copy** (`~/fbsource/fbcode/tupperware/`). Any uncommitted changes to `.tw` or `.cinc` files take effect. Without `-l`, the tool uses a daily-published config snapshot (`tupperware_fbcode_config_snapshot:daily`), so local changes won't be picked up.
+The `-l` / `--use-local-config` flag deploys the **entire TW config from your local working copy** (the `tupperware/` directory in the current fbsource checkout). Any uncommitted changes to `.tw` or `.cinc` files take effect. Without `-l`, the tool uses a daily-published config snapshot (`tupperware_fbcode_config_snapshot:daily`), so local changes won't be picked up.
 
 **CRITICAL: Do not combine `-l` with `-pv`.** The local spec compiles a CONFIG_BLOB that embeds a Presto version. If `-pv` specifies a different version, the CONFIG_BLOB will be compiled for one version while the binary is another. This mismatch crashes workers on startup and leaves the cluster unrecoverable without manual `tw restart`. When using `-l`, omit `-pv` entirely -- the local spec controls the version.
 
 #### Workflow
 
 1. **Modify the TW config file** using one of the approaches above.
-2. **Validate:** `tw.real validate ~/fbsource/fbcode/tupperware/config/presto/testing/<your_tw_file>.tw` (use the `.tw` file that manages your cluster -- see "Which TW Config File Manages Your Cluster?" above). If you modified a `.cinc` file, validate the `.tw` file that imports it.
+2. **Validate:** `tw.real validate <checkout>/fbcode/tupperware/config/presto/testing/<your_tw_file>.tw` (use the `.tw` file that manages your cluster -- see "Which TW Config File Manages Your Cluster?" above). If you modified a `.cinc` file, validate the `.tw` file that imports it. Replace `<checkout>` with the current fbsource checkout root (e.g., `~/fbsource` or `~/fbsource2`).
 3. **Deploy with local config:** `pt pcm deploy -c <cluster> -l -r "<reason>" -f -ni -dt 0`
    - **Do NOT pass `-pv`** -- see "CRITICAL: Never use `-pv` with `-l`" above.
 4. **Ask the user to accelerate:** `presto-deploy-finish accelerate <cluster>`
@@ -513,7 +516,7 @@ pt pcm test-cluster list | grep <cluster_name>
 
 # 2. Push the update (uses the TESTING config -- never use presto.tw)
 PRESTO_VERSION=<version> tw update \
-  ~/fbsource/fbcode/tupperware/config/presto/testing/katchin.tw \
+  <checkout>/fbcode/tupperware/config/presto/testing/katchin.tw \
   '.*<cluster_name>.*(coordinator|worker|resource_manager)' --force
 
 # 3. Immediately force all tasks to restart (bypasses slow incremental rollout)

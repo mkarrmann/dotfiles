@@ -13,7 +13,7 @@ Local development build tool for Presto Java and C++ codebases.
 
 **Key script:** `~/.claude/skills/presto-build/presto-build`
 
-**Shell aliases** (from `~/.localrc`): `gf`/`gp` navigate to presto-facebook-trunk/presto-trunk. `mfci`, `mfi`, `mpci` run Maven with correct flags and `-T 48` threads. `mfcc` runs checkstyle. All aliases trigger eden prefetch first. OSS aliases (`mpi`, `mpci`, etc.) use `-pl $_p_modules -am` to build only needed modules. FB aliases (`mfi`, `mfci`, etc.) use `-pl presto-facebook -am`. Override with `-pl <module>` to target a different module (Maven uses the last `-pl`).
+**Shell functions** (from `~/.localrc`): `gf`/`gp` navigate to presto-facebook-trunk/presto-trunk. `mfci`, `mfi`, `mpci` run Maven with correct flags and `-T 48` threads. `mfcc` runs checkstyle. All functions trigger eden prefetch first. The functions auto-detect which fbsource checkout you're in and isolate the out-of-tree build root and Maven local repo accordingly (secondary checkouts like `~/fbsource2` use `${BUILD_ROOT}/m2-repo-2` instead of `~/.m2/repository`). Override with `-pl <module>` to target a different module (Maven uses the last `-pl`). **These functions are not available in Claude Code's Bash tool** — use `source ~/.localrc && mpi` (etc.) instead.
 
 **Related skills:**
 - `presto-deploy` — Nexus deployment, fbpkg packaging, cluster deployment

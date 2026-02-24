@@ -170,7 +170,7 @@ mvn_deploy() {
         -pl presto-facebook
         -DskipTests
         "${COMMON_OPTS[@]}"
-        "-Dout-of-tree-build-root=${BUILD_ROOT}/presto-facebook-trunk"
+        "-Dout-of-tree-build-root=${BUILD_ROOT}/presto-facebook-trunk${_CHECKOUT_SUFFIX}"
     )
     [ -n "$QUIET" ] && deploy_opts+=("$QUIET")
     [ -n "$VERBOSE" ] && deploy_opts+=("$VERBOSE")
@@ -295,7 +295,7 @@ verify_deployment() {
 }
 
 # === Ensure build dirs exist ===
-mkdir -p "${BUILD_ROOT}/presto-trunk" "${BUILD_ROOT}/presto-facebook-trunk"
+mkdir -p "${BUILD_ROOT}/presto-trunk${_CHECKOUT_SUFFIX}" "${BUILD_ROOT}/presto-facebook-trunk${_CHECKOUT_SUFFIX}"
 
 # === Main ===
 eden_prefetch
