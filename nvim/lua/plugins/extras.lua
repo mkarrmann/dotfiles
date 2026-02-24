@@ -2,6 +2,13 @@ return {
 	{ "christoomey/vim-tmux-navigator", lazy = false },
 	{ "mbbill/undotree" },
 	{
+		"lewis6991/satellite.nvim",
+		config = function(_, opts)
+			require("satellite").setup(opts)
+			require("lib.satellite-diff")
+		end,
+	},
+	{
 		"xiyaowong/virtcolumn.nvim",
 		event = "VeryLazy",
 	},
