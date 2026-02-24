@@ -35,8 +35,8 @@ BUILD_ROOT="${BUILD_ROOT:-/data/users/${USER}/builds}"
 # so that builds from different fbsource checkouts don't clobber each other.
 _CHECKOUT_SUFFIX=""
 case "$FBCODE_HOME" in
-    "$HOME"/fbsource2/*) _CHECKOUT_SUFFIX="-2";;
-    "$HOME"/fbsource3/*) _CHECKOUT_SUFFIX="-3";;
+    "$HOME"/fbsource2|"$HOME"/fbsource2/*) _CHECKOUT_SUFFIX="-2";;
+    "$HOME"/fbsource3|"$HOME"/fbsource3/*) _CHECKOUT_SUFFIX="-3";;
 esac
 
 _MAVEN_REPO_LOCAL_OPT=()

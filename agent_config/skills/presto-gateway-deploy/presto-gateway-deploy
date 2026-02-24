@@ -47,8 +47,8 @@ NEXUS_BASE="https://maven.thefacebook.com/nexus"
 # Checkout isolation suffix
 _CK_SUFFIX=""
 case "$_FBCODE" in
-    "$HOME"/fbsource2/*) _CK_SUFFIX="-2";;
-    "$HOME"/fbsource3/*) _CK_SUFFIX="-3";;
+    "$HOME"/fbsource2|"$HOME"/fbsource2/*) _CK_SUFFIX="-2";;
+    "$HOME"/fbsource3|"$HOME"/fbsource3/*) _CK_SUFFIX="-3";;
 esac
 
 # Test gateway job handles (3 regions)
