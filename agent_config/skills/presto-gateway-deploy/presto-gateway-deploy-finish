@@ -93,6 +93,21 @@ if [ "$SKIP_APPLY_OPS" = false ]; then
     echo "=== Applying task ops for immediate restart ==="
     for job in "${GATEWAY_JOBS[@]}"; do
         echo "  $job"
+        # Poll until the scheduler generates restart ops from the tw update.
+        # tw update returns immediately, but ops take time to appear.
+        local_max_attempts=30
+        for ((i=1; i<=local_max_attempts; i++)); do
+            ops=$(tw task-control show-task-ops "$job" 2>&1)
+            if echo "$ops" | grep -q "taskRestart"; then
+                break
+            fi
+            if [ "$i" -eq "$local_max_attempts" ]; then
+                echo "    WARNING: No task ops appeared after ${local_max_attempts} attempts, applying anyway"
+                break
+            fi
+            echo "    Waiting for task ops... (attempt $i/$local_max_attempts)"
+            sleep 10
+        done
         tw task-control apply-task-ops --all-ops --silent "$job"
     done
 fi
