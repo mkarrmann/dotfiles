@@ -7,22 +7,19 @@ local handler = {
 
 local config = {
 	enable = true,
-	overlap = false,
+	overlap = true,
 	priority = 25,
-	signs = {
-		add = "│",
-		change = "│",
-		delete = "-",
-	},
 }
 
 local function setup_hl()
-	for _, sfx in ipairs({ "Add", "Delete", "Change" }) do
-		api.nvim_set_hl(0, "SatelliteDiff" .. sfx, {
-			default = true,
-			link = "Diff" .. sfx,
-		})
+	local function sign_fg(name, fallback)
+		local hl = api.nvim_get_hl(0, { name = name, link = false })
+		return hl.fg or fallback
 	end
+
+	api.nvim_set_hl(0, "SatelliteDiffAdd", { fg = sign_fg("GitSignsAdd", 0x2ea043) })
+	api.nvim_set_hl(0, "SatelliteDiffChange", { fg = sign_fg("GitSignsChange", 0x0078d4) })
+	api.nvim_set_hl(0, "SatelliteDiffDelete", { fg = sign_fg("GitSignsDelete", 0xf85149) })
 end
 
 function handler.setup(config0, update)
@@ -50,41 +47,45 @@ function handler.update(bufnr, winid)
 		return {}
 	end
 
-	local total_lines = api.nvim_buf_line_count(bufnr)
-	local diff_info = api.nvim_win_call(winid, function()
-		local info = {}
-		for lnum = 1, total_lines do
-			local hl_id = vim.fn.diff_hlID(lnum, 1)
-			if hl_id > 0 then
-				info[#info + 1] = { lnum = lnum, type = vim.fn.synIDattr(hl_id, "name") }
-			end
-			if vim.fn.diff_filler(lnum) > 0 then
-				info[#info + 1] = { lnum = lnum, type = "DiffDelete" }
-			end
+	local other_bufnr
+	for _, wid in ipairs(api.nvim_tabpage_list_wins(0)) do
+		if wid ~= winid and api.nvim_win_is_valid(wid) and vim.wo[wid].diff then
+			other_bufnr = api.nvim_win_get_buf(wid)
+			break
 		end
-		return info
-	end)
+	end
+	if not other_bufnr then
+		return {}
+	end
+
+	local lines_a = table.concat(api.nvim_buf_get_lines(other_bufnr, 0, -1, false), "\n")
+	local lines_b = table.concat(api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
+	local hunks = vim.diff(lines_a, lines_b, { result_type = "indices" })
 
 	local marks = {}
-	for _, entry in ipairs(diff_info) do
-		local satellite_hl, symbol
-		if entry.type == "DiffAdd" then
-			satellite_hl = "SatelliteDiffAdd"
-			symbol = config.signs.add
-		elseif entry.type == "DiffChange" or entry.type == "DiffText" then
-			satellite_hl = "SatelliteDiffChange"
-			symbol = config.signs.change
-		elseif entry.type == "DiffDelete" then
-			satellite_hl = "SatelliteDiffDelete"
-			symbol = config.signs.delete
+	for _, hunk in ipairs(hunks) do
+		local count_a = hunk[2]
+		local start_b, count_b = hunk[3], hunk[4]
+
+		if count_b > 0 then
+			local hl = count_a == 0 and "SatelliteDiffAdd" or "SatelliteDiffChange"
+			local first = util.row_to_barpos(winid, start_b - 1)
+			local last = util.row_to_barpos(winid, start_b + count_b - 2)
+			for pos = first, last do
+				marks[#marks + 1] = {
+					pos = pos,
+					symbol = "│",
+					highlight = hl,
+				}
+			end
 		end
 
-		if satellite_hl then
-			local pos = util.row_to_barpos(winid, entry.lnum - 1)
+		if count_a > 0 and count_b == 0 then
+			local pos = util.row_to_barpos(winid, math.max(0, start_b - 1))
 			marks[#marks + 1] = {
 				pos = pos,
-				symbol = symbol,
-				highlight = satellite_hl,
+				symbol = "─",
+				highlight = "SatelliteDiffDelete",
 			}
 		end
 	end

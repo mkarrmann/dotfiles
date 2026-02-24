@@ -4,8 +4,8 @@ return {
 	{
 		"lewis6991/satellite.nvim",
 		config = function(_, opts)
-			require("satellite").setup(opts)
 			require("lib.satellite-diff")
+			require("satellite").setup(opts)
 		end,
 	},
 	{
