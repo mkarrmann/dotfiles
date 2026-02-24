@@ -42,9 +42,12 @@ GATEWAY_JOBS=(
 # These intentionally omit `dependency:go-offline` and `dependency:sources`
 # (present in the ~/.localrc _f alias) since those are only useful for IDE
 # setup, not for build-and-deploy.
+#
+# Do NOT add `-am` (also-make). Dependencies must be pre-installed in
+# ~/.m2/repository. Using `-am` rebuilds all transitive dependencies,
+# which is slow and may fail on modules unrelated to the gateway.
 MVN_FLAGS=(
     -Dmaven.gitcommitid.skip=true
-    -am
     -DuseParallelDependencyResolution=false
     -T 48
     -nsu

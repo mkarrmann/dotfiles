@@ -12,7 +12,7 @@ Deploys the Presto Gateway to the **test gateway** (`test-gateway` jobs in `tsp_
 **Key script:** `~/.claude/skills/presto-gateway-deploy/presto-gateway-deploy`
 
 **Prerequisites:**
-- **OSS presto-trunk installed in local Maven repo.** The gateway depends on OSS artifacts (`presto-spi`, `presto-common`, etc.) that must already be in `~/.m2/repository`. If not, run `presto-build` (full build, not `-T`) first, or install OSS trunk manually. The gateway build only compiles within `presto-facebook-trunk` — it does not rebuild OSS trunk.
+- **All presto-facebook-trunk dependencies installed in local Maven repo.** The script builds only `-pl presto-gateway` (no `-am`), so all dependencies must already be in `~/.m2/repository`. If not, run `presto-build` first.
 - **Nexus credentials in `~/.m2/settings.xml`.** Required for the `mvn deploy` step.
 - **Out-of-tree build directory exists.** Defaults to `/data/users/$USER/builds/presto-facebook-trunk`.
 
@@ -174,3 +174,4 @@ arc skycastle schedule tools/skycastle/workflows2/presto/presto_maven_build_gate
 | Test gateway reserved by someone else | Check Katchin dashboard; coordinate with team |
 | Deploy seems stuck / rolling slowly | Run `tw task-control apply-task-ops --all-ops` on each job handle |
 | `presto --use-test-gateway` fails | Jobs may still be restarting; check `tw diag <job>` |
+| Maven build fails on a dependency module | Do NOT add `-am` to Maven flags. Dependencies must be pre-installed. Run `presto-build` first if missing. |
