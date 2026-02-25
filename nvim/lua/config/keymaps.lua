@@ -38,3 +38,8 @@ vim.keymap.set("t", "<C-l>", "<C-\\><C-n><C-w>l", { desc = "Go to Right Window" 
 vim.keymap.set("n", "<leader>tt", "<cmd>terminal<cr>", { desc = "Terminal" })
 vim.keymap.set("n", "<leader>tv", "<cmd>vsplit | terminal<cr>", { desc = "Terminal (vsplit)" })
 vim.keymap.set("n", "<leader>th", "<cmd>split | terminal<cr>", { desc = "Terminal (hsplit)" })
+
+vim.keymap.set("n", "<C-w>+", "10<C-w>+", { desc = "Increase Window Height" })
+vim.keymap.set("n", "<C-w>-", "10<C-w>-", { desc = "Decrease Window Height" })
+vim.keymap.set("n", "<C-w>>", "10<C-w>>", { desc = "Increase Window Width" })
+vim.keymap.set("n", "<C-w><", "10<C-w><", { desc = "Decrease Window Width" })
