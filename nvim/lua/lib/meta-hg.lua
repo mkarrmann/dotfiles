@@ -1275,82 +1275,81 @@ local function HgSsl(opts)
     return commit
   end
 
-  local function commit_commmands()
-    if SSL_STATE.blocked then
-      vim.notify("SSL is updating, please wait...", vim.log.levels.WARN)
-      return
-    end
-    local commit = get_current_commit()
-    if commit == nil then
-      vim.notify("No commit under cursor")
-      return
-    end
-
-    -- we do not allow to checkout current commit
-    -- or rebase/split/merge bookmarks
-    ---@type string[]
-    local available_commands = (function()
-      if SSL_STATE.merge_conflict then
-        return {
-          "rebase_abort",
-          "rebase_continue",
-        }
-      end
-
-      return commit.is_bookmark
-          and {
-            "checkout",
-            "arc_pull",
-          }
-        or vim.tbl_filter(function(item)
-          if (item == "checkout") and commit.is_current then
-            return false
-          end
-
-          if (item == "uncommit") and not commit.is_current then
-            return false
-          end
-
-          if (item == "histedit") and not commit.is_current then
-            return false
-          end
-
-          if (item == "open_in_phabricator") and commit.diff == nil then
-            return false
-          end
-
-          if (item == "author_internal_profile") and commit.author ~= nil then
-            return true
-          end
-
-          if item == "rebase_continue" or item == "rebase_abort" then
-            return false
-          end
-
-          return true
-        end, vim.tbl_keys(SSL_COMMANDS))
-    end)()
-
-    if #available_commands == 0 then
-      return
-    end
-
-    vim.ui.select(available_commands, {
-      prompt = "Pick an action:",
-      format_item = function(key)
-        return SSL_COMMANDS[key].desc
-      end,
-    }, function(choice)
-      log_to_scuba({
-        module = "hg",
-        command = "HgSsl." .. tostring(choice),
-      })
-      if choice == nil then
+  local function ssl_action(name, guard)
+    return function()
+      if SSL_STATE.blocked then
+        vim.notify("SSL is updating, please wait...", vim.log.levels.WARN)
         return
       end
-      SSL_COMMANDS[choice].action(commit, SSL_STATE.bufnr)
-    end)
+      local commit = get_current_commit()
+      if commit == nil then
+        vim.notify("No commit under cursor")
+        return
+      end
+      if guard and not guard(commit) then
+        return
+      end
+      log_to_scuba({ module = "hg", command = "HgSsl." .. name })
+      SSL_COMMANDS[name].action(commit, SSL_STATE.bufnr)
+    end
   end
+
+  local wk = require("which-key")
+  local buf = SSL_STATE.bufnr
+  wk.add({
+    buffer = buf,
+    { "<CR>", group = "actions" },
+    { "<CR>s", ssl_action("show"), desc = "Show commit" },
+    { "<CR>d", ssl_action("diff_split"), desc = "Diff split" },
+    { "<CR>o", ssl_action("checkout", function(c)
+      if c.is_current then
+        vim.notify("Already on this commit", vim.log.levels.WARN)
+        return false
+      end
+      return true
+    end), desc = "Checkout" },
+    { "<CR>e", ssl_action("metaedit"), desc = "Edit commit message" },
+    { "<CR>E", ssl_action("histedit", function(c)
+      if not c.is_current then
+        vim.notify("Can only histedit current commit", vim.log.levels.WARN)
+        return false
+      end
+      return true
+    end), desc = "Histedit" },
+    { "<CR>S", ssl_action("split"), desc = "Split commit" },
+    { "<CR>u", ssl_action("uncommit", function(c)
+      if not c.is_current then
+        vim.notify("Can only uncommit current commit", vim.log.levels.WARN)
+        return false
+      end
+      return true
+    end), desc = "Uncommit" },
+    { "<CR>x", ssl_action("hide"), desc = "Hide commit" },
+    { "<CR>b", ssl_action("rebase"), desc = "Rebase onto..." },
+    { "<CR>p", ssl_action("arc_pull"), desc = "Arc pull" },
+    { "<CR>gx", ssl_action("open_in_phabricator", function(c)
+      if not c.diff then
+        vim.notify("No diff associated with this commit", vim.log.levels.WARN)
+        return false
+      end
+      return true
+    end), desc = "Open in Phabricator" },
+    { "<CR>ga", ssl_action("author_internal_profile", function(c)
+      if not c.author then
+        vim.notify("No author on this commit", vim.log.levels.WARN)
+        return false
+      end
+      return true
+    end), desc = "Author profile" },
+    { "<CR>f", group = "submit" },
+    { "<CR>fs", ssl_action("submit"), desc = "Submit" },
+    { "<CR>fS", ssl_action("submit_stack"), desc = "Submit stack" },
+    { "<CR>fd", ssl_action("submit_draft"), desc = "Submit draft" },
+    { "<CR>fD", ssl_action("submit_draft_stack"), desc = "Submit draft stack" },
+    { "<CR>R", group = "rebase conflict" },
+    { "<CR>Ra", ssl_action("rebase_abort"), desc = "Abort rebase" },
+    { "<CR>Rc", ssl_action("rebase_continue"), desc = "Continue rebase" },
+  })
 
   vim.api.nvim_create_autocmd("BufEnter", {
     buffer = SSL_STATE.bufnr,
@@ -1366,7 +1365,6 @@ local function HgSsl(opts)
     desc = "Update ssl buffer when focused",
   })
 
-  vim.keymap.set("n", "<cr>", commit_commmands, { buffer = true })
   vim.keymap.set("n", "?", function()
     local lines = {
       "HG SSL Buffer",
