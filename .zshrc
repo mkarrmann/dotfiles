@@ -64,26 +64,11 @@ setopt APPEND_HISTORY
 setopt INC_APPEND_HISTORY
 setopt EXTENDED_HISTORY
 setopt HIST_IGNORE_DUPS
+# oh-my-zsh enables SHARE_HISTORY, which re-reads the history file before each
+# prompt. This causes externally-synced commands from other machines to appear
+# at the top of the scrollback mid-session. Disable it so up-arrow always
+# starts with this shell's most recent command.
 unsetopt SHARE_HISTORY
-
-# Up/Down: navigate only current session's commands.
-# Ctrl+R: search full history (including synced cross-machine entries).
-up-line-or-local-history() {
-  zle set-local-history 1
-  zle up-line-or-history
-  zle set-local-history 0
-}
-zle -N up-line-or-local-history
-
-down-line-or-local-history() {
-  zle set-local-history 1
-  zle down-line-or-history
-  zle set-local-history 0
-}
-zle -N down-line-or-local-history
-
-bindkey '^[[A' up-line-or-local-history
-bindkey '^[[B' down-line-or-local-history
 
 # Local zsh-only config (not source-controlled)
 if [[ -f ~/.zshrc.local ]]; then
