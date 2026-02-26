@@ -93,7 +93,7 @@ fi
 # Sync Neovim's tab-local cwd when cd-ing inside a Neovim terminal.
 chpwd() {
   if [[ -n "$NVIM" ]]; then
-    command nvim --server "$NVIM" --remote-expr "v:lua.vim.cmd('silent tcd '..vim.fn.fnameescape('$(pwd)'))" &!
+    command nvim --server "$NVIM" --remote-expr "execute('silent tcd '.fnameescape('$(pwd)'))" &!
   fi
 }
 
