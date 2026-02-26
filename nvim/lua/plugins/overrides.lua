@@ -31,6 +31,9 @@ return {
 			env = {
 				EDITOR = vim.fn.expand("~/bin/nvim-edit-in-tab"),
 			},
+			terminal = {
+				split_width_percentage = 0.45,
+			},
 		},
 	},
 	{
