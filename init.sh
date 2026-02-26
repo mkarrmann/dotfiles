@@ -245,6 +245,7 @@ fi
 
 if [[ -x "$HOME/.tmux/plugins/tpm/bin/install_plugins" ]]; then
     if command -v tmux &>/dev/null; then
+        tmux set-environment -g TMUX_PLUGIN_MANAGER_PATH "$HOME/.tmux/plugins"
         "$HOME/.tmux/plugins/tpm/bin/install_plugins" && echo "installed tmux plugins" \
             || echo "WARNING: tmux plugin install failed" >&2
     else
