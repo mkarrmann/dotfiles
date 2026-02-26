@@ -4,15 +4,7 @@ return {
 		keys = {
 			{ "<leader>ao", "<cmd>CodexToggle<cr>", desc = "Toggle Codex" },
 			{ "<leader>aO", "<cmd>CodexOpen<cr>", desc = "Open Codex" },
-			{ "<leader>aP", "<cmd>CodexSendPath<cr>", desc = "Add current file to Codex" },
-			{ "<leader>aS", ":'<,'>CodexSendSelection<cr>", mode = "v", desc = "Send selection to Codex" },
 			{ "<leader>aR", ":'<,'>CodexSendReference<cr>", mode = "v", desc = "Send reference to Codex" },
-			{
-				"<leader>aS",
-				"<cmd>CodexSendPath<cr>",
-				ft = { "NvimTree", "neo-tree", "oil" },
-				desc = "Add file to Codex",
-			},
 		},
 		opts = {
 			terminal = {

@@ -43,3 +43,48 @@ vim.keymap.set("n", "<C-w>+", "10<C-w>+", { desc = "Increase Window Height" })
 vim.keymap.set("n", "<C-w>-", "10<C-w>-", { desc = "Decrease Window Height" })
 vim.keymap.set("n", "<C-w>>", "10<C-w>>", { desc = "Increase Window Width" })
 vim.keymap.set("n", "<C-w><", "10<C-w><", { desc = "Decrease Window Width" })
+
+-- Unified send: dispatches to Claude Code or Codex based on which terminal is visible.
+local function _find_active_agent()
+	for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+		local buf = vim.api.nvim_win_get_buf(win)
+		if vim.bo[buf].buftype == "terminal" then
+			local name = vim.api.nvim_buf_get_name(buf)
+			if name:find("claude") then
+				return "claude"
+			elseif name:find("codex") then
+				return "codex"
+			end
+		end
+	end
+	return nil
+end
+
+local function agent_send_selection()
+	local agent = _find_active_agent()
+	if agent == "claude" then
+		vim.cmd("ClaudeCodeSend")
+	elseif agent == "codex" then
+		vim.cmd("'<,'>CodexSendSelection")
+	else
+		vim.notify("No Claude or Codex terminal visible", vim.log.levels.WARN)
+	end
+end
+
+local function agent_send_path()
+	local agent = _find_active_agent()
+	if agent == "claude" then
+		vim.cmd("ClaudeCodeSend")
+	elseif agent == "codex" then
+		vim.cmd("CodexSendPath")
+	else
+		vim.notify("No Claude or Codex terminal visible", vim.log.levels.WARN)
+	end
+end
+
+vim.keymap.set("v", "<leader>aS", agent_send_selection, { desc = "Send selection to agent" })
+vim.keymap.set("n", "<leader>aP", agent_send_path, { desc = "Add file to agent" })
+vim.keymap.set("n", "<leader>aS", agent_send_path, {
+	desc = "Add file to agent (file explorer)",
+	-- Works from any buffer; file explorer plugins set ft-specific overrides if needed
+})

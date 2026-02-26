@@ -5,7 +5,7 @@ local function resolve_agents_file()
 	if vim.env.CLAUDE_AGENTS_FILE then
 		return vim.env.CLAUDE_AGENTS_FILE
 	end
-	local gdrive = vim.fn.expand("~/gdrive/AGENTS.md")
+	local gdrive = "/data/users/" .. (vim.env.USER or "unknown") .. "/gdrive/AGENTS.md"
 	if vim.fn.filereadable(gdrive) == 1 then
 		return gdrive
 	end

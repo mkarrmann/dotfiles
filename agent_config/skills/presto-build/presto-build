@@ -80,10 +80,12 @@ FB_OPTS=(
 # === Shared functions ===
 
 eden_prefetch() {
-    echo "==> Eden prefetch..."
-    eden prefetch \
+    local checkout_root
+    checkout_root="$(dirname "$FBCODE_HOME")"
+    echo "==> Eden prefetch (${checkout_root})..."
+    (cd "$checkout_root" && eden prefetch \
         'fbcode/github/presto-facebook-trunk/**' \
-        'fbcode/github/presto-trunk/**' 2>/dev/null || true
+        'fbcode/github/presto-trunk/**') 2>/dev/null || true
 }
 
 detect_repo() {
