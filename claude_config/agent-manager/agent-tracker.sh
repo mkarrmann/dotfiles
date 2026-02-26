@@ -7,11 +7,15 @@ set -euo pipefail
 
 AGENTS_FILE="${CLAUDE_AGENTS_FILE:-}"
 if [ -z "$AGENTS_FILE" ]; then
-  if [ -f "$HOME/gdrive/AGENTS.md" ]; then
-    AGENTS_FILE="$HOME/gdrive/AGENTS.md"
+  # Check gdrive at the non-home mount point. Use /proc/mounts first (instant,
+  # no FUSE) to avoid hanging on a stale mount.
+  _gdrive_mount="/data/users/${USER}/gdrive"
+  if grep -q "gdrive" /proc/mounts 2>/dev/null && [ -f "${_gdrive_mount}/AGENTS.md" ]; then
+    AGENTS_FILE="${_gdrive_mount}/AGENTS.md"
   else
     AGENTS_FILE="$HOME/.claude/agents.md"
   fi
+  unset _gdrive_mount
 fi
 LOCK_FILE="$(dirname "$AGENTS_FILE")/.agents.lock"
 MAX_ENTRIES=50
