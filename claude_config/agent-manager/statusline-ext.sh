@@ -123,8 +123,32 @@ color_status() {
   esac
 }
 
+shorten_path() {
+  local p="$1"
+  [ -z "$p" ] && return
+
+  # Replace home-like prefixes with ~
+  local home="$HOME"
+  if [[ "$p" == "$home"* ]]; then
+    p="~${p#$home}"
+  elif [[ "$p" == "/home/$USER"* ]]; then
+    p="~${p#/home/$USER}"
+  elif [[ "$p" == "/data/users/$USER"* ]]; then
+    p="~${p#/data/users/$USER}"
+  fi
+
+  # If still long, show …/last-2-components
+  if [ "${#p}" -gt 35 ]; then
+    local last2
+    last2=$(echo "$p" | awk -F'/' '{if (NF>=2) print $(NF-1)"/"$NF; else print $NF}')
+    p="…/${last2}"
+  fi
+
+  echo "$p"
+}
+
 format_line() {
-  local marker="$1" name="$2" status="$3" od="$4" desc="$5" updated="$6"
+  local marker="$1" name="$2" status="$3" od="$4" desc="$5" updated="$6" dir="$7"
 
   local age_min=""
   age_min=$(age_minutes_from_ts "$updated")
@@ -137,11 +161,20 @@ format_line() {
     age_str=$(format_age "$updated")
   fi
 
-  if [ "$marker" = ">" ]; then
-    printf "${BOLD}${CYAN}>${RESET} ${BOLD}%-16s${RESET} %b  ${DIM}%s${RESET}  ${DIM}%s${RESET} %b\n" "$name" "$status_colored" "$od" "$desc" "$age_str"
-  else
-    printf "  ${DIM}%-16s${RESET} %b  ${DIM}%s${RESET}  ${DIM}%s${RESET} %b\n" "$name" "$status_colored" "$od" "$desc" "$age_str"
+  local dir_str=""
+  if [ -n "$dir" ]; then
+    dir_str=$(shorten_path "$dir")
   fi
+
+  if [ "$marker" = ">" ]; then
+    printf "${BOLD}${CYAN}>${RESET} ${BOLD}%-16s${RESET} %b  ${DIM}%s${RESET}  ${DIM}%s${RESET} %b" "$name" "$status_colored" "$od" "$desc" "$age_str"
+  else
+    printf "  ${DIM}%-16s${RESET} %b  ${DIM}%s${RESET}  ${DIM}%s${RESET} %b" "$name" "$status_colored" "$od" "$desc" "$age_str"
+  fi
+  if [ -n "$dir_str" ]; then
+    printf "  ${DIM}%s${RESET}" "$dir_str"
+  fi
+  printf "\n"
 }
 
 # How many stopped/done/stale sessions to show
@@ -165,13 +198,14 @@ is_live_status() {
   esac
 }
 
-while IFS='|' read -r _ name status od sid desc started updated _; do
+while IFS='|' read -r _ name status od sid desc started updated dir _; do
   name=$(echo "$name" | xargs)
   status=$(echo "$status" | xargs)
   od=$(echo "$od" | xargs)
   sid=$(echo "$sid" | xargs)
   desc=$(echo "$desc" | xargs)
   updated=$(echo "$updated" | xargs)
+  dir=$(echo "$dir" | xargs)
 
   [ -z "$name" ] && continue
 
@@ -179,36 +213,36 @@ while IFS='|' read -r _ name status od sid desc started updated _; do
     if [ -n "$current_line" ]; then
       live_lines+=("$current_line")
     fi
-    current_line="$name|(this session)|$od|$desc|$updated"
+    current_line="$name|(this session)|$od|$desc|$updated|$dir"
   else
     local age_min=""
     age_min=$(age_minutes_from_ts "$updated")
     if is_live_status "$status" "$age_min"; then
-      live_lines+=("$name|$status|$od|$desc|$updated")
+      live_lines+=("$name|$status|$od|$desc|$updated|$dir")
     else
-      inactive_lines+=("$name|$status|$od|$desc|$updated")
+      inactive_lines+=("$name|$status|$od|$desc|$updated|$dir")
     fi
   fi
 done < <(tail -n +5 "$agents_source")
 
 # Current session first
 if [ -n "$current_line" ]; then
-  IFS='|' read -r name status od desc updated <<< "$current_line"
-  format_line ">" "$name" "$status" "$od" "$desc" "$updated"
+  IFS='|' read -r name status od desc updated dir <<< "$current_line"
+  format_line ">" "$name" "$status" "$od" "$desc" "$updated" "$dir"
 fi
 
 # All live sessions
 for line in "${live_lines[@]}"; do
-  IFS='|' read -r name status od desc updated <<< "$line"
-  format_line " " "$name" "$status" "$od" "$desc" "$updated"
+  IFS='|' read -r name status od desc updated dir <<< "$line"
+  format_line " " "$name" "$status" "$od" "$desc" "$updated" "$dir"
 done
 
 # Most recent inactive sessions, up to limit
 inactive_shown=0
 for line in "${inactive_lines[@]}"; do
   [ "$inactive_shown" -ge "$MAX_INACTIVE" ] && break
-  IFS='|' read -r name status od desc updated <<< "$line"
-  format_line " " "$name" "$status" "$od" "$desc" "$updated"
+  IFS='|' read -r name status od desc updated dir <<< "$line"
+  format_line " " "$name" "$status" "$od" "$desc" "$updated" "$dir"
   inactive_shown=$((inactive_shown + 1))
 done
 

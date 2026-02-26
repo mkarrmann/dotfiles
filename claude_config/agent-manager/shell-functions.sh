@@ -300,8 +300,8 @@ cclean() {
     --all)
       echo "# Claude Agents" > "$AGENTS_FILE"
       echo "" >> "$AGENTS_FILE"
-      echo "| Name | Status | OD | Session ID | Description | Started | Updated |" >> "$AGENTS_FILE"
-      echo "|------|--------|----|------------|-------------|---------|---------|" >> "$AGENTS_FILE"
+      echo "| Name | Status | OD | Session ID | Description | Started | Updated | Dir |" >> "$AGENTS_FILE"
+      echo "|------|--------|----|------------|-------------|---------|---------|-----|" >> "$AGENTS_FILE"
       echo "All sessions cleared."
       ;;
     --stopped)

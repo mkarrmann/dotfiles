@@ -103,7 +103,7 @@ local function show_agents()
 	vim.bo[buf].bufhidden = "wipe"
 	vim.bo[buf].filetype = "markdown"
 
-	local width = math.min(120, vim.o.columns - 4)
+	local width = math.min(180, vim.o.columns - 4)
 	local height = math.min(#lines + 2, vim.o.lines - 4)
 	vim.api.nvim_open_win(buf, true, {
 		relative = "editor",
@@ -129,14 +129,14 @@ local function parse_agents()
 	end
 	local entries = {}
 	for line in f:lines() do
-		-- Data rows: | Name | Status | OD | Session ID | Description | Started | Updated |
+		-- Data rows: | Name | Status | OD | Session ID | Description | Started | Updated | Dir |
 		-- Skip header/separator lines (contain "---" or "Name" in the name column)
 		if line:match("^|") and not line:match("^|%-") then
 			local fields = {}
 			for field in line:gmatch("|([^|]*)") do
 				fields[#fields + 1] = vim.trim(field)
 			end
-			-- fields: [1]=Name [2]=Status [3]=OD [4]=Session ID [5]=Description [6]=Started [7]=Updated
+			-- fields: [1]=Name [2]=Status [3]=OD [4]=Session ID [5]=Description [6]=Started [7]=Updated [8]=Dir
 			local name = fields[1] or ""
 			local sid = fields[4] or ""
 			if name ~= "" and name ~= "Name" and sid ~= "" and sid ~= "Session ID" then
@@ -148,12 +148,38 @@ local function parse_agents()
 					description = fields[5] or "",
 					started = fields[6] or "",
 					updated = fields[7] or "",
+					dir = fields[8] or "",
 				}
 			end
 		end
 	end
 	f:close()
 	return entries
+end
+
+local function shorten_path(p)
+	if not p or p == "" then
+		return ""
+	end
+	local home = vim.env.HOME or ""
+	local user = vim.env.USER or ""
+	-- Replace home-like prefixes with ~
+	if home ~= "" and p:sub(1, #home) == home then
+		p = "~" .. p:sub(#home + 1)
+	elseif user ~= "" then
+		local alt = "/data/users/" .. user
+		if p:sub(1, #alt) == alt then
+			p = "~" .. p:sub(#alt + 1)
+		end
+	end
+	-- If still long, show …/last-2-components
+	if #p > 35 then
+		local parts = vim.split(p, "/", { trimempty = true })
+		if #parts >= 2 then
+			p = "…/" .. parts[#parts - 1] .. "/" .. parts[#parts]
+		end
+	end
+	return p
 end
 
 local function resume_by_name()
@@ -182,6 +208,7 @@ local function resume_by_name()
 			{ width = 14 },
 			{ width = 30 },
 			{ width = 12 },
+			{ width = 12 },
 			{ remaining = true },
 		},
 	})
@@ -192,6 +219,7 @@ local function resume_by_name()
 			{ entry.value.name, "TelescopeResultsIdentifier" },
 			{ entry.value.updated, "TelescopeResultsComment" },
 			{ entry.value.od, "TelescopeResultsComment" },
+			{ shorten_path(entry.value.dir), "TelescopeResultsComment" },
 		})
 	end
 
@@ -204,7 +232,7 @@ local function resume_by_name()
 					return {
 						value = agent,
 						display = make_display,
-						ordinal = agent.name .. " " .. agent.status .. " " .. agent.od .. " " .. agent.description,
+						ordinal = agent.name .. " " .. agent.status .. " " .. agent.od .. " " .. agent.description .. " " .. agent.dir,
 					}
 				end,
 			}),

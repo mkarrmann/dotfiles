@@ -48,8 +48,8 @@ _release_lock() {
 LOG_DIR="$HOME/.claude/agent-manager/logs"
 LOG_FILE="$LOG_DIR/agent-tracker.log"
 
-# Column layout: | Name | Status | OD | Session ID | Description | Started | Updated |
-# Field indices:   $2     $3       $4   $5           $6            $7        $8
+# Column layout: | Name | Status | OD | Session ID | Description | Started | Updated | Dir |
+# Field indices:   $2     $3       $4   $5           $6            $7        $8         $9
 
 _log() {
   mkdir -p "$LOG_DIR" 2>/dev/null
@@ -78,8 +78,8 @@ ensure_agents_file() {
     cat > "$AGENTS_FILE" <<'HEADER'
 # Claude Agents
 
-| Name | Status | OD | Session ID | Description | Started | Updated |
-|------|--------|----|------------|-------------|---------|---------|
+| Name | Status | OD | Session ID | Description | Started | Updated | Dir |
+|------|--------|----|------------|-------------|---------|---------|-----|
 HEADER
   fi
 }
@@ -236,10 +236,11 @@ cmd_register() {
         if [[ "$current_status" == *"bg:running"* ]]; then
           _log "  resume: sid found, status=bg:running — updating OD+ts only"
           local tmpfile="${AGENTS_FILE}.tmp"
-          awk -v sid="$sid" -v ts="$ts" -v host="$host" -F'|' 'BEGIN{OFS="|"} {
+          awk -v sid="$sid" -v ts="$ts" -v host="$host" -v dir="$PWD" -F'|' 'BEGIN{OFS="|"} {
             if (NR > 4 && index($5, sid) > 0) {
               $4 = " " host " "
               $8 = " " ts " "
+              $9 = " " dir " "
             }
             print
           }' "$AGENTS_FILE" > "$tmpfile"
@@ -247,11 +248,12 @@ cmd_register() {
         else
           _log "  resume: sid found, marking as resumed"
           local tmpfile="${AGENTS_FILE}.tmp"
-          awk -v sid="$sid" -v ts="$ts" -v host="$host" -F'|' 'BEGIN{OFS="|"} {
+          awk -v sid="$sid" -v ts="$ts" -v host="$host" -v dir="$PWD" -F'|' 'BEGIN{OFS="|"} {
             if (NR > 4 && index($5, sid) > 0) {
               $3 = " 🔄 resumed "
               $4 = " " host " "
               $8 = " " ts " "
+              $9 = " " dir " "
             }
             print
           }' "$AGENTS_FILE" > "$tmpfile"
@@ -309,11 +311,12 @@ cmd_register() {
       current_status=$(grep "| ${sid} |" "$AGENTS_FILE" | awk -F'|' '{print $3}')
       if [[ "$current_status" != *"bg:running"* ]]; then
         local tmpfile="${AGENTS_FILE}.tmp"
-        awk -v sid="$sid" -v ts="$ts" -v host="$host" -F'|' 'BEGIN{OFS="|"} {
+        awk -v sid="$sid" -v ts="$ts" -v host="$host" -v dir="$PWD" -F'|' 'BEGIN{OFS="|"} {
           if (NR > 4 && index($5, sid) > 0) {
             $3 = " 🟢 interactive "
             $4 = " " host " "
             $8 = " " ts " "
+            $9 = " " dir " "
           }
           print
         }' "$AGENTS_FILE" > "$tmpfile"
@@ -356,12 +359,13 @@ cmd_register() {
           # without creating phantom auto-named entries.
           _log "  startup: name '${name}' active with different sid — updating sid in place"
           local tmpfile="${AGENTS_FILE}.tmp"
-          awk -v sid="$sid" -v name="$name" -v ts="$ts" -v host="$host" -F'|' 'BEGIN{OFS="|"} {
+          awk -v sid="$sid" -v name="$name" -v ts="$ts" -v host="$host" -v dir="$PWD" -F'|' 'BEGIN{OFS="|"} {
             if (NR > 4 && index($0, "| " name " |") > 0) {
               $3 = " 🟢 interactive "
               $4 = " " host " "
               $5 = " " sid " "
               $8 = " " ts " "
+              $9 = " " dir " "
             }
             print
           }' "$AGENTS_FILE" > "$tmpfile"
@@ -387,7 +391,7 @@ cmd_register() {
       fi
       local desc="${old_desc:-(new session)}"
       local started="${old_started:-$ts}"
-      echo "| ${name} | ${initial_status} | ${host} | ${sid} | ${desc} | ${started} | ${ts} |" >> "$AGENTS_FILE"
+      echo "| ${name} | ${initial_status} | ${host} | ${sid} | ${desc} | ${started} | ${ts} | ${PWD} |" >> "$AGENTS_FILE"
       _log "  startup: created row name='${name}' sid=${sid:0:8}"
 
       prune
@@ -472,7 +476,7 @@ cmd_background() {
       }' "$AGENTS_FILE" > "$tmpfile"
       mv "$tmpfile" "$AGENTS_FILE"
     else
-      echo "| ${name} | 🔵 bg:running | ${host} | ${sid} | ${desc:0:60} | ${ts} | ${ts} |" >> "$AGENTS_FILE"
+      echo "| ${name} | 🔵 bg:running | ${host} | ${sid} | ${desc:0:60} | ${ts} | ${ts} | ${PWD} |" >> "$AGENTS_FILE"
     fi
 
     sort_agents
@@ -573,12 +577,13 @@ cmd_active() {
         if [[ "$existing_status" != *"stopped"* ]] && [[ "$existing_status" != *"bg:done"* ]]; then
           _log "  active: fallback — name '${name}' active, updating sid"
           local tmpfile="${AGENTS_FILE}.tmp"
-          awk -v sid="$sid" -v name="$name" -v ts="$ts" -v host="$host" -F'|' 'BEGIN{OFS="|"} {
+          awk -v sid="$sid" -v name="$name" -v ts="$ts" -v host="$host" -v dir="$PWD" -F'|' 'BEGIN{OFS="|"} {
             if (NR > 4 && index($0, "| " name " |") > 0) {
               $3 = " ⚡ active "
               $4 = " " host " "
               $5 = " " sid " "
               $8 = " " ts " "
+              $9 = " " dir " "
             }
             print
           }' "$AGENTS_FILE" > "$tmpfile"
@@ -593,7 +598,7 @@ cmd_active() {
       fi
 
       echo "$sid" > ~/.claude-last-session
-      echo "| ${name} | ⚡ active | ${host} | ${sid} | (new session) | ${ts} | ${ts} |" >> "$AGENTS_FILE"
+      echo "| ${name} | ⚡ active | ${host} | ${sid} | (new session) | ${ts} | ${ts} | ${PWD} |" >> "$AGENTS_FILE"
       sort_agents
     fi
 
