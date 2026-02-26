@@ -46,4 +46,11 @@ vim.api.nvim_create_autocmd("TextYankPost", {
 	end,
 })
 
+-- Open a file from a nested terminal in the current window instead of
+-- launching a nested Neovim instance.
+-- Called via `nvim --server $NVIM --remote-send` from the shell function.
+function _G._open_from_terminal(path)
+	vim.cmd.edit(vim.fn.fnameescape(path))
+end
+
 pcall(require, "config.local")

@@ -98,6 +98,16 @@ kb64() {
 
 }
 
+nvim() {
+  if [ -n "$NVIM" ] && [ $# -gt 0 ]; then
+    local abspath
+    abspath=$(realpath "$1" 2>/dev/null || echo "$1")
+    command nvim --server "$NVIM" --remote-send "<C-\\><C-n>:lua _open_from_terminal([[${abspath}]])<CR>"
+  else
+    command nvim "$@"
+  fi
+}
+
 function fix-code() {
   export VSCODE_IPC_HOOK_CLI=$(ls -lt /run/user/$UID/vscode-ipc-*.sock 2> /dev/null | awk '{print $NF}' | head -n 1)
 
