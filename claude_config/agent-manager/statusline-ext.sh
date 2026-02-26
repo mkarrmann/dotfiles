@@ -4,11 +4,13 @@
 
 AGENTS_FILE="${CLAUDE_AGENTS_FILE:-}"
 if [ -z "$AGENTS_FILE" ]; then
-  if [ -f "$HOME/gdrive/AGENTS.md" ]; then
-    AGENTS_FILE="$HOME/gdrive/AGENTS.md"
+  _gdrive_mount="/data/users/${USER}/gdrive"
+  if grep -q "gdrive" /proc/mounts 2>/dev/null && [ -f "${_gdrive_mount}/AGENTS.md" ]; then
+    AGENTS_FILE="${_gdrive_mount}/AGENTS.md"
   else
     AGENTS_FILE="$HOME/.claude/agents.md"
   fi
+  unset _gdrive_mount
 fi
 CACHE_FILE="$HOME/.claude/agent-manager/.agents-cache"
 CACHE_TTL=10

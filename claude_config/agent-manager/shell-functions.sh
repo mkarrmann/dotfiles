@@ -8,11 +8,13 @@ AGENT_TRACKER="$HOME/.claude/agent-manager/bin/agent-tracker.sh"
 CLAUDE_BG_LOGDIR="$HOME/claude-logs"
 AGENTS_FILE="${CLAUDE_AGENTS_FILE:-}"
 if [ -z "$AGENTS_FILE" ]; then
-  if [ -f "$HOME/gdrive/AGENTS.md" ]; then
-    AGENTS_FILE="$HOME/gdrive/AGENTS.md"
+  _gdrive_mount="/data/users/${USER}/gdrive"
+  if grep -q "gdrive" /proc/mounts 2>/dev/null && [ -f "${_gdrive_mount}/AGENTS.md" ]; then
+    AGENTS_FILE="${_gdrive_mount}/AGENTS.md"
   else
     AGENTS_FILE="$HOME/.claude/agents.md"
   fi
+  unset _gdrive_mount
 fi
 
 mkdir -p "$CLAUDE_BG_LOGDIR" 2>/dev/null
