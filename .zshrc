@@ -8,6 +8,7 @@ plugins=(git vi-mode)
 if [[ -f $ZSH/oh-my-zsh.sh ]]; then
   source $ZSH/oh-my-zsh.sh
 fi
+setopt PUSHD_SILENT
 
 # Shared config (env, PATH, aliases, functions, tool init)
 if [[ -f ~/.shellrc ]]; then
