@@ -64,6 +64,26 @@ setopt APPEND_HISTORY
 setopt INC_APPEND_HISTORY
 setopt EXTENDED_HISTORY
 setopt HIST_IGNORE_DUPS
+unsetopt SHARE_HISTORY
+
+# Up/Down: navigate only current session's commands.
+# Ctrl+R: search full history (including synced cross-machine entries).
+up-line-or-local-history() {
+  zle set-local-history 1
+  zle up-line-or-history
+  zle set-local-history 0
+}
+zle -N up-line-or-local-history
+
+down-line-or-local-history() {
+  zle set-local-history 1
+  zle down-line-or-history
+  zle set-local-history 0
+}
+zle -N down-line-or-local-history
+
+bindkey '^[[A' up-line-or-local-history
+bindkey '^[[B' down-line-or-local-history
 
 # Local zsh-only config (not source-controlled)
 if [[ -f ~/.zshrc.local ]]; then
@@ -73,7 +93,7 @@ fi
 # Sync Neovim's tab-local cwd when cd-ing inside a Neovim terminal.
 chpwd() {
   if [[ -n "$NVIM" ]]; then
-    command nvim --server "$NVIM" --remote-send "<C-\\><C-n>:silent tcd $(pwd)<CR>i" &!
+    command nvim --server "$NVIM" --remote-expr "v:lua.vim.cmd('silent tcd '..vim.fn.fnameescape('$(pwd)'))" &!
   fi
 }
 
