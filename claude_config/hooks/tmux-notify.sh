@@ -15,7 +15,7 @@ INPUT=$(cat)
 EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // empty' 2>/dev/null)
 
 set_state() {
-    tmux set-option -wq @claude_state "$1" 2>/dev/null
+    tmux set-option -wq -t "$TMUX_PANE" @claude_state "$1" 2>/dev/null
 }
 
 case "$EVENT" in
