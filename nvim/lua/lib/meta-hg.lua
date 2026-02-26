@@ -1162,12 +1162,10 @@ local function HgSsl()
 
   if SSL_STATE.bufnr and vim.api.nvim_buf_is_valid(SSL_STATE.bufnr) then
     local win = vim.fn.win_findbuf(SSL_STATE.bufnr)[1]
-    -- if a tab with ssl buffer exists jump to it
-    -- otherwise create a new tab with ssl buffer
     if win then
       vim.api.nvim_set_current_win(win)
     else
-      vim.cmd.tabnew()
+      vim.cmd("botright vnew")
       vim.api.nvim_set_current_buf(SSL_STATE.bufnr)
     end
 
@@ -1202,7 +1200,7 @@ local function HgSsl()
     )
   end
 
-  vim.cmd.tabnew()
+  vim.cmd("botright vnew")
   vim.api.nvim_set_current_buf(SSL_STATE.bufnr)
 
   local function get_current_commit()
