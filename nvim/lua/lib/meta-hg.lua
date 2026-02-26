@@ -45,6 +45,16 @@ local CONFIG = {
       open = "gx",
       refresh = "r",
     },
+    hidden_bookmarks = {
+      "whatsapp_server/stable",
+      "waios/stable",
+      "igios/stable",
+      "ig4a/stable",
+      "waandroid/stable",
+      "fbobjc/stable",
+      "fbandroid/stable",
+      "fbsource/stable",
+    },
   },
   ---@type 'snacks'|'telescope'
   picker = "telescope",
@@ -653,6 +663,53 @@ function ssl_utils.annotate_hg_status(bufnr, sl_lines)
   end)
 end
 
+---@param lines string[]
+---@return string[]
+local function filter_hidden_bookmarks(lines)
+  local hidden = CONFIG.ssl.hidden_bookmarks
+  if #hidden == 0 then
+    return lines
+  end
+
+  local result = {}
+  local skip_next_connector = false
+  for _, line in ipairs(lines) do
+    if skip_next_connector then
+      skip_next_connector = false
+      -- drop bare connector lines (e.g. "╷") that follow a hidden bookmark
+      if line:match("^%s*╷%s*$") then
+        goto continue
+      end
+    end
+
+    local commit = ssl_utils.parse_diff_line(line)
+    if commit and commit.is_bookmark then
+      local dominated = true
+      for _, bm in ipairs(vim.split(commit.bookmarks, " ")) do
+        local is_hidden = false
+        for _, pat in ipairs(hidden) do
+          if bm:find(pat, 1, true) then
+            is_hidden = true
+            break
+          end
+        end
+        if not is_hidden then
+          dominated = false
+          break
+        end
+      end
+      if dominated then
+        skip_next_connector = true
+        goto continue
+      end
+    end
+
+    table.insert(result, line)
+    ::continue::
+  end
+  return result
+end
+
 ---@param bufnr number
 function ssl_utils.refresh_buffer(bufnr)
   SSL_STATE.blocked = true
@@ -666,6 +723,7 @@ function ssl_utils.refresh_buffer(bufnr)
     end
 
     local sl_lines = vim.split(sl_obj.stdout, "\n")
+    sl_lines = filter_hidden_bookmarks(sl_lines)
     vim.schedule(function()
       vim.api.nvim_buf_set_lines(bufnr or 0, 0, -1, false, sl_lines)
     end)
@@ -679,6 +737,7 @@ function ssl_utils.refresh_buffer(bufnr)
       end
 
       local ssl_lines = vim.split(ssl_obj.stdout, "\n")
+      ssl_lines = filter_hidden_bookmarks(ssl_lines)
       -- cannot call "nvim_buf_set_lines" inside a lua loop
       vim.schedule(function()
         SSL_STATE.blocked = false
