@@ -869,25 +869,40 @@ local SSL_COMMANDS = {
         local old_content =
           vim.fn.systemlist("hg cat -r " .. parent_rev .. " " .. escaped_file)
         local old_ok = vim.v.shell_error == 0
-        local new_content =
-          vim.fn.systemlist("hg cat -r " .. commit.hash .. " " .. escaped_file)
-        local new_ok = vim.v.shell_error == 0
-
-        if not old_ok and not new_ok then
-          vim.notify(
-            "Cannot read " .. file .. " at either revision",
-            vim.log.levels.ERROR
-          )
-          return
-        end
 
         local suffix = "_" .. vim.fn.fnamemodify(file, ":t")
         local old_tmp = vim.fn.tempname() .. suffix
-        local new_tmp = vim.fn.tempname() .. suffix
         vim.fn.writefile(old_ok and old_content or {}, old_tmp)
-        vim.fn.writefile(new_ok and new_content or {}, new_tmp)
 
-        vim.cmd("tabnew " .. vim.fn.fnameescape(new_tmp))
+        local is_live = false
+        local new_file
+
+        if commit.is_current then
+          local cwd = vim.uv.cwd() or vim.fn.getcwd()
+          local repo_root = vim.fs.root(cwd, ".hg") or cwd
+          local real_path = repo_root .. "/" .. file
+          if vim.fn.filereadable(real_path) == 1 then
+            is_live = true
+            new_file = real_path
+          end
+        end
+
+        if not is_live then
+          local new_content =
+            vim.fn.systemlist("hg cat -r " .. commit.hash .. " " .. escaped_file)
+          local new_ok = vim.v.shell_error == 0
+          if not old_ok and not new_ok then
+            vim.notify(
+              "Cannot read " .. file .. " at either revision",
+              vim.log.levels.ERROR
+            )
+            return
+          end
+          new_file = vim.fn.tempname() .. suffix
+          vim.fn.writefile(new_ok and new_content or {}, new_file)
+        end
+
+        vim.cmd("tabnew " .. vim.fn.fnameescape(new_file))
         local new_win = vim.api.nvim_get_current_win()
         vim.cmd("vertical diffsplit " .. vim.fn.fnameescape(old_tmp))
         local old_win = vim.api.nvim_get_current_win()
@@ -898,6 +913,12 @@ local SSL_COMMANDS = {
           vim.wo[win].statuscolumn = ""
           vim.wo[win].foldenable = false
         end
+        if is_live then
+          vim.wo[new_win].winbar = "%#DiagnosticOk# LIVE %* " .. file
+        else
+          vim.wo[new_win].winbar = "%#Comment# " .. commit.hash .. " %* " .. file
+        end
+        vim.wo[old_win].winbar = "%#Comment# " .. parent_rev .. " %* " .. file
         vim.cmd("syncbind")
       end
 

@@ -111,6 +111,9 @@ vim.api.nvim_create_user_command("HgDiffSplit", function()
 	vim.wo[orig_win].relativenumber = false
 	vim.wo[orig_win].statuscolumn = ""
 	vim.wo[orig_win].foldenable = false
+	local display_name = vim.fn.fnamemodify(file, ":.")
+	vim.wo[diff_win].winbar = "%#Comment# .^ %* " .. display_name
+	vim.wo[orig_win].winbar = "%#DiagnosticOk# LIVE %* " .. display_name
 	vim.cmd("syncbind")
 end, { desc = "Side-by-side diff of current file against parent commit" })
 vim.keymap.set("n", "<leader>hd", "<CMD>HgDiffSplit<CR>", { desc = "Hg diff split" })
