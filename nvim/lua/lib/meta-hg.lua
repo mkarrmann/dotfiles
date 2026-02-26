@@ -1154,7 +1154,10 @@ local SSL_COMMANDS = {
   },
 }
 
-local function HgSsl()
+local function HgSsl(opts)
+  opts = opts or {}
+  local split = opts.split or false
+
   log_to_scuba({
     module = "hg",
     command = "HgSsl",
@@ -1164,8 +1167,10 @@ local function HgSsl()
     local win = vim.fn.win_findbuf(SSL_STATE.bufnr)[1]
     if win then
       vim.api.nvim_set_current_win(win)
-    else
+    elseif split then
       vim.cmd("botright vnew")
+      vim.api.nvim_set_current_buf(SSL_STATE.bufnr)
+    else
       vim.api.nvim_set_current_buf(SSL_STATE.bufnr)
     end
 
@@ -1200,7 +1205,9 @@ local function HgSsl()
     )
   end
 
-  vim.cmd("botright vnew")
+  if split then
+    vim.cmd("botright vnew")
+  end
   vim.api.nvim_set_current_buf(SSL_STATE.bufnr)
 
   local function get_current_commit()
@@ -2360,8 +2367,14 @@ HgBrowseRevYank        yanks current buffer in phabricator for a current commit
 
     vim.api.nvim_create_user_command(
       "HgSsl",
-      HgSsl,
+      function() HgSsl() end,
       { desc = "Interactive smartlog for mercurial" }
+    )
+
+    vim.api.nvim_create_user_command(
+      "HgSslSplit",
+      function() HgSsl({ split = true }) end,
+      { desc = "Interactive smartlog for mercurial (vsplit)" }
     )
 
     vim.api.nvim_create_user_command(

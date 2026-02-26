@@ -114,6 +114,8 @@ vim.api.nvim_create_user_command("HgDiffSplit", function()
 	vim.cmd("syncbind")
 end, { desc = "Side-by-side diff of current file against parent commit" })
 vim.keymap.set("n", "<leader>hd", "<CMD>HgDiffSplit<CR>", { desc = "Hg diff split" })
+vim.keymap.set("n", "<leader>hs", "<CMD>HgSsl<CR>", { desc = "Hg smartlog" })
+vim.keymap.set("n", "<leader>hS", "<CMD>HgSslSplit<CR>", { desc = "Hg smartlog (vsplit)" })
 
 vim.api.nvim_create_user_command("SlPull", function()
 	vim.fn.jobstart("sl pull", {
