@@ -103,6 +103,12 @@ for src in "$DOTFILES_DIR/claude_config/agent-manager/"*.sh; do
   link_one "$src" "$HOME/.claude/agent-manager/bin/$base"
 done
 link_one "$DOTFILES_DIR/claude_config/agent-manager/statusline-ext.sh" "$HOME/.claude/statusline.d/agent-manager.sh"
+# Google Drive mount scripts
+mkdir -p "$HOME/.claude/gdrive-mount-scripts"
+for src in "$DOTFILES_DIR/claude_config/gdrive-mount-scripts/"*.sh; do
+  base="$(basename "$src")"
+  link_one "$src" "$HOME/.claude/gdrive-mount-scripts/$base"
+done
 # Hooks
 shopt -s nullglob
 for src in "$DOTFILES_DIR/claude_config/hooks/"*; do
