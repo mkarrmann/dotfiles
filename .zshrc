@@ -78,6 +78,8 @@ fi
 
 # Sync Neovim's tab-local cwd when cd-ing inside a Neovim terminal.
 chpwd() {
+  # Guard: skip in subshells (e.g. _scm_prompt walks dirs in $(...))
+  [[ $ZSH_SUBSHELL -gt 0 ]] && return
   if [[ -n "$NVIM" ]]; then
     command nvim --server "$NVIM" --remote-expr "execute('silent tcd '.fnameescape('$(pwd)'))" &!
   fi
