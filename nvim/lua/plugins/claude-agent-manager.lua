@@ -1,7 +1,17 @@
 -- Agent Manager integration for Claude Code
 -- Adds :ClaudeCodeName and :ClaudeCodeAgents commands with keybindings
 
-local agents_file = vim.env.CLAUDE_AGENTS_FILE or (vim.fn.expand("~/.claude/agents.md"))
+local function resolve_agents_file()
+	if vim.env.CLAUDE_AGENTS_FILE then
+		return vim.env.CLAUDE_AGENTS_FILE
+	end
+	local gdrive = vim.fn.expand("~/gdrive/AGENTS.md")
+	if vim.fn.filereadable(gdrive) == 1 then
+		return gdrive
+	end
+	return vim.fn.expand("~/.claude/agents.md")
+end
+local agents_file = resolve_agents_file()
 local last_session_file = vim.fn.expand("~/.claude-last-session")
 
 local function get_session_id()
@@ -112,6 +122,118 @@ local function show_agents()
 	vim.keymap.set("n", "<Esc>", "<cmd>close<cr>", { buffer = buf, silent = true })
 end
 
+local function parse_agents()
+	local f = io.open(agents_file, "r")
+	if not f then
+		return {}
+	end
+	local entries = {}
+	for line in f:lines() do
+		-- Data rows: | Name | Status | OD | Session ID | Description | Started | Updated |
+		-- Skip header/separator lines (contain "---" or "Name" in the name column)
+		if line:match("^|") and not line:match("^|%-") then
+			local fields = {}
+			for field in line:gmatch("|([^|]*)") do
+				fields[#fields + 1] = vim.trim(field)
+			end
+			-- fields: [1]=Name [2]=Status [3]=OD [4]=Session ID [5]=Description [6]=Started [7]=Updated
+			local name = fields[1] or ""
+			local sid = fields[4] or ""
+			if name ~= "" and name ~= "Name" and sid ~= "" and sid ~= "Session ID" then
+				entries[#entries + 1] = {
+					name = name,
+					status = fields[2] or "",
+					od = fields[3] or "",
+					sid = sid,
+					description = fields[5] or "",
+					started = fields[6] or "",
+					updated = fields[7] or "",
+				}
+			end
+		end
+	end
+	f:close()
+	return entries
+end
+
+local function resume_by_name()
+	local ok, telescope = pcall(require, "telescope")
+	if not ok then
+		vim.notify("Telescope is required for resume-by-name", vim.log.levels.ERROR)
+		return
+	end
+
+	local pickers = require("telescope.pickers")
+	local finders = require("telescope.finders")
+	local conf = require("telescope.config").values
+	local actions = require("telescope.actions")
+	local action_state = require("telescope.actions.state")
+	local entry_display = require("telescope.pickers.entry_display")
+
+	local entries = parse_agents()
+	if #entries == 0 then
+		vim.notify("No sessions found in " .. agents_file, vim.log.levels.WARN)
+		return
+	end
+
+	local displayer = entry_display.create({
+		separator = " ",
+		items = {
+			{ width = 14 },
+			{ width = 30 },
+			{ width = 12 },
+			{ remaining = true },
+		},
+	})
+
+	local function make_display(entry)
+		return displayer({
+			{ entry.value.status },
+			{ entry.value.name, "TelescopeResultsIdentifier" },
+			{ entry.value.updated, "TelescopeResultsComment" },
+			{ entry.value.od, "TelescopeResultsComment" },
+		})
+	end
+
+	pickers
+		.new({}, {
+			prompt_title = "Resume Claude Session",
+			finder = finders.new_table({
+				results = entries,
+				entry_maker = function(agent)
+					return {
+						value = agent,
+						display = make_display,
+						ordinal = agent.name .. " " .. agent.status .. " " .. agent.od .. " " .. agent.description,
+					}
+				end,
+			}),
+			sorter = conf.generic_sorter({}),
+			attach_mappings = function(prompt_bufnr)
+				actions.select_default:replace(function()
+					actions.close(prompt_bufnr)
+					local selection = action_state.get_selected_entry()
+					if not selection then
+						return
+					end
+					local agent = selection.value
+					-- Write name so hook preserves it if session is compacted
+					local nf = io.open(next_name_file, "w")
+					if nf then
+						nf:write(agent.name)
+						nf:close()
+					end
+					if vim.env.TMUX then
+						vim.fn.system("tmux rename-window " .. vim.fn.shellescape(agent.name))
+					end
+					vim.cmd("ClaudeCode --resume " .. agent.sid)
+				end)
+				return true
+			end,
+		})
+		:find()
+end
+
 return {
 	{
 		"coder/claudecode.nvim",
@@ -142,6 +264,11 @@ return {
 				"<leader>al",
 				show_agents,
 				desc = "List Claude agents",
+			},
+			{
+				"<leader>ar",
+				resume_by_name,
+				desc = "Resume Claude session by name",
 			},
 			{
 				"<leader>aR",
@@ -184,6 +311,10 @@ return {
 
 			vim.api.nvim_create_user_command("ClaudeCodeAgents", show_agents, {
 				desc = "Show all Claude agents",
+			})
+
+			vim.api.nvim_create_user_command("ClaudeCodeResume", resume_by_name, {
+				desc = "Resume Claude session by name (Telescope picker)",
 			})
 		end,
 	},

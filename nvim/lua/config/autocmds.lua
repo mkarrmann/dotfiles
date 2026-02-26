@@ -36,4 +36,14 @@ vim.api.nvim_create_autocmd({ "FocusGained", "TermEnter" }, {
 	end,
 })
 
+-- Copy every yank to the local clipboard via OSC52 (copy-only).
+local osc52 = require("vim.ui.clipboard.osc52")
+vim.api.nvim_create_autocmd("TextYankPost", {
+	callback = function()
+		if vim.v.event.operator == "y" then
+			osc52.copy("+")(vim.v.event.regcontents, vim.v.event.regtype)
+		end
+	end,
+})
+
 pcall(require, "config.local")
