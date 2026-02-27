@@ -69,6 +69,7 @@ local CONFIG = {
       "fbobjc/stable",
       "fbandroid/stable",
       "fbsource/stable",
+      "fbcode/stable",
     },
   },
   ---@type 'snacks'|'telescope'
