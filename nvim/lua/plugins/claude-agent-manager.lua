@@ -262,6 +262,45 @@ local function resume_by_name()
 		:find()
 end
 
+local function prompt_new_window()
+	if not vim.env.TMUX then
+		vim.notify("Not in tmux", vim.log.levels.WARN)
+		return
+	end
+	vim.ui.input({ prompt = "Claude prompt: " }, function(text)
+		if not text or text == "" then
+			return
+		end
+
+		local prompt_file = string.format("/tmp/.claude-auto-prompt-%d", vim.uv.hrtime())
+		local f = io.open(prompt_file, "w")
+		if not f then
+			vim.notify("Failed to write prompt file", vim.log.levels.ERROR)
+			return
+		end
+		f:write(text)
+		f:close()
+
+		local label = text:sub(1, 25):gsub("[^%w%-_ ]", ""):match("^%s*(.-)%s*$") or ""
+		if label == "" then
+			label = "claude"
+		end
+
+		local nf = io.open(next_name_file, "w")
+		if nf then
+			nf:write(label)
+			nf:close()
+		end
+
+		vim.fn.system({
+			"tmux", "new-window",
+			"-n", label,
+			"-e", "CLAUDE_AUTO_PROMPT=" .. prompt_file,
+			"--", "nvim",
+		})
+	end)
+end
+
 return {
 	{
 		"coder/claudecode.nvim",
@@ -308,6 +347,11 @@ return {
 					end)
 				end,
 				desc = "Resume Claude session by ID",
+			},
+			{
+				"<leader>ap",
+				prompt_new_window,
+				desc = "Prompt Claude in new tmux window",
 			},
 		},
 		init = function()

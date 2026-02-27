@@ -12,6 +12,21 @@ local log_to_scuba = meta_util.log_to_scuba
 ---@field author ?string
 ---@field message string
 
+---@class (exact) Hg.diff_file_pair
+---@field file string
+---@field old_buf integer?
+---@field new_buf integer?
+---@field is_live boolean
+
+---@class (exact) Hg.diff_session
+---@field pairs Hg.diff_file_pair[]
+---@field index integer
+---@field old_win integer
+---@field new_win integer
+---@field commit Hg.commit
+---@field parent_rev string
+---@field repo_root string
+
 ---@class (exact) Hg.preblame_opts
 ---@field scrollbind boolean
 ---@field wrap boolean
@@ -71,6 +86,9 @@ local SSL_STATE = {
   ---@type boolean controls how current status is displayed and what actions are available
   merge_conflict = false,
 }
+
+---@type table<integer, Hg.diff_session>
+local DIFF_SPLIT_SESSIONS = {}
 
 hg_utils.on_blame_enter = function()
   local word_under_cursor = vim.fn.expand("<cword>")
@@ -823,6 +841,316 @@ function ssl_utils.run_cmd(cmd, bufnr, reload, msg)
   end)
 end
 
+local DIFF_SPLIT_KEYMAPS = { "]f", "[f", "]F", "[F", "gf", "gq" }
+
+---@param session Hg.diff_session
+local function diff_split_update_winbar(session)
+  local pair = session.pairs[session.index]
+  local pos = string.format("[%d/%d]", session.index, #session.pairs)
+
+  vim.wo[session.old_win].winbar = "%#Comment# "
+    .. session.parent_rev
+    .. " %* "
+    .. pair.file
+    .. " "
+    .. pos
+
+  if pair.is_live then
+    vim.wo[session.new_win].winbar = "%#DiagnosticOk# LIVE %* "
+      .. pair.file
+      .. " "
+      .. pos
+  else
+    vim.wo[session.new_win].winbar = "%#Comment# "
+      .. session.commit.hash
+      .. " %* "
+      .. pair.file
+      .. " "
+      .. pos
+  end
+end
+
+local diff_split_set_keymaps
+
+---@param session Hg.diff_session
+---@param pair Hg.diff_file_pair
+local function diff_split_load_pair(session, pair)
+  if pair.old_buf then
+    return
+  end
+
+  local escaped_file = vim.fn.shellescape(pair.file)
+
+  local old_content = vim.fn.systemlist(
+    "hg cat -r " .. session.parent_rev .. " " .. escaped_file
+  )
+  local old_ok = vim.v.shell_error == 0
+
+  local is_live = false
+  local new_buf
+
+  if session.commit.is_current then
+    local real_path = session.repo_root .. "/" .. pair.file
+    if vim.fn.filereadable(real_path) == 1 then
+      is_live = true
+      new_buf = vim.fn.bufadd(real_path)
+      vim.api.nvim_set_option_value("swapfile", false, { buf = new_buf })
+      vim.fn.bufload(new_buf)
+    end
+  end
+
+  if not is_live then
+    local new_content = vim.fn.systemlist(
+      "hg cat -r " .. session.commit.hash .. " " .. escaped_file
+    )
+    local new_ok = vim.v.shell_error == 0
+    if not old_ok and not new_ok then
+      vim.notify(
+        "Skipping " .. pair.file .. " (unreadable at either revision)",
+        vim.log.levels.WARN
+      )
+      return
+    end
+    new_buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(
+      new_buf,
+      0,
+      -1,
+      false,
+      new_ok and new_content or {}
+    )
+    vim.api.nvim_buf_set_name(
+      new_buf,
+      "hg-diff://" .. session.commit.hash .. "/" .. pair.file
+    )
+    vim.api.nvim_set_option_value("buftype", "nofile", { buf = new_buf })
+    vim.api.nvim_set_option_value("modifiable", false, { buf = new_buf })
+    vim.api.nvim_set_option_value("swapfile", false, { buf = new_buf })
+  end
+
+  local old_buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(
+    old_buf,
+    0,
+    -1,
+    false,
+    old_ok and old_content or {}
+  )
+  vim.api.nvim_buf_set_name(
+    old_buf,
+    "hg-diff://" .. session.parent_rev .. "/" .. pair.file
+  )
+  vim.api.nvim_set_option_value("buftype", "nofile", { buf = old_buf })
+  vim.api.nvim_set_option_value("modifiable", false, { buf = old_buf })
+  vim.api.nvim_set_option_value("swapfile", false, { buf = old_buf })
+
+  pair.old_buf = old_buf
+  pair.new_buf = new_buf
+  pair.is_live = is_live
+
+  diff_split_set_keymaps(session)
+end
+
+---@param session Hg.diff_session
+---@param index integer
+local function diff_split_show_pair(session, index)
+  if
+    not vim.api.nvim_win_is_valid(session.old_win)
+    or not vim.api.nvim_win_is_valid(session.new_win)
+  then
+    vim.notify("Diff windows are no longer valid", vim.log.levels.WARN)
+    local tab = vim.api.nvim_get_current_tabpage()
+    DIFF_SPLIT_SESSIONS[tab] = nil
+    return
+  end
+
+  local pair = session.pairs[index]
+  if not pair.old_buf then
+    diff_split_load_pair(session, pair)
+    if not pair.old_buf then
+      return
+    end
+  end
+
+  session.index = index
+
+  vim.api.nvim_win_call(session.old_win, function()
+    vim.cmd("diffoff")
+  end)
+  vim.api.nvim_win_call(session.new_win, function()
+    vim.cmd("diffoff")
+  end)
+
+  vim.api.nvim_win_set_buf(session.old_win, pair.old_buf)
+  vim.api.nvim_win_set_buf(session.new_win, pair.new_buf)
+
+  vim.api.nvim_win_call(session.old_win, function()
+    vim.cmd("diffthis")
+  end)
+  vim.api.nvim_win_call(session.new_win, function()
+    vim.cmd("diffthis")
+  end)
+
+  for _, win in ipairs({ session.old_win, session.new_win }) do
+    vim.wo[win].scrollbind = true
+    vim.wo[win].relativenumber = false
+    vim.wo[win].statuscolumn = ""
+    vim.wo[win].foldenable = false
+  end
+
+  diff_split_update_winbar(session)
+  vim.cmd("syncbind")
+
+  vim.api.nvim_win_call(session.old_win, function()
+    vim.cmd("normal! gg")
+  end)
+  vim.api.nvim_win_call(session.new_win, function()
+    vim.cmd("normal! gg")
+  end)
+end
+
+---@param direction 1|-1
+local function diff_split_cycle(direction)
+  local tab = vim.api.nvim_get_current_tabpage()
+  local session = DIFF_SPLIT_SESSIONS[tab]
+  if not session then
+    return
+  end
+  if #session.pairs <= 1 then
+    vim.notify("Only one file in this diff", vim.log.levels.INFO)
+    return
+  end
+
+  local n = #session.pairs
+  local new_index = ((session.index - 1 + direction) % n) + 1
+  diff_split_show_pair(session, new_index)
+end
+
+local function diff_split_jump_to_file()
+  local tab = vim.api.nvim_get_current_tabpage()
+  local session = DIFF_SPLIT_SESSIONS[tab]
+  if not session then
+    return
+  end
+
+  ---@type {index: integer, file: string}[]
+  local items = {}
+  for i, pair in ipairs(session.pairs) do
+    table.insert(items, { index = i, file = pair.file })
+  end
+
+  vim.ui.select(items, {
+    prompt = "Jump to file:",
+    format_item = function(item)
+      local marker = item.index == session.index and " (current)" or ""
+      return string.format(
+        "[%d/%d] %s%s",
+        item.index,
+        #session.pairs,
+        item.file,
+        marker
+      )
+    end,
+  }, function(choice)
+    if choice then
+      diff_split_show_pair(session, choice.index)
+    end
+  end)
+end
+
+---@param tab integer
+local function diff_split_cleanup(tab)
+  local session = DIFF_SPLIT_SESSIONS[tab]
+  if not session then
+    return
+  end
+
+  for _, pair in ipairs(session.pairs) do
+    if pair.old_buf and vim.api.nvim_buf_is_valid(pair.old_buf) then
+      vim.api.nvim_buf_delete(pair.old_buf, { force = true })
+    end
+    if pair.is_live then
+      if pair.new_buf and vim.api.nvim_buf_is_valid(pair.new_buf) then
+        for _, key in ipairs(DIFF_SPLIT_KEYMAPS) do
+          pcall(vim.keymap.del, "n", key, { buffer = pair.new_buf })
+        end
+      end
+    elseif pair.new_buf and vim.api.nvim_buf_is_valid(pair.new_buf) then
+      vim.api.nvim_buf_delete(pair.new_buf, { force = true })
+    end
+  end
+
+  DIFF_SPLIT_SESSIONS[tab] = nil
+end
+
+local function diff_split_close()
+  local tab = vim.api.nvim_get_current_tabpage()
+  if not DIFF_SPLIT_SESSIONS[tab] then
+    return
+  end
+  vim.cmd("tabclose")
+end
+
+---@param session Hg.diff_session
+diff_split_set_keymaps = function(session)
+  ---@type table<integer, boolean>
+  local seen = {}
+  for _, pair in ipairs(session.pairs) do
+    if not pair.old_buf then
+      goto continue
+    end
+    for _, b in ipairs({ pair.old_buf, pair.new_buf }) do
+      if not seen[b] then
+        seen[b] = true
+        vim.keymap.set("n", "]f", function()
+          diff_split_cycle(1)
+        end, { buffer = b, desc = "Next diff file" })
+        vim.keymap.set("n", "[f", function()
+          diff_split_cycle(-1)
+        end, { buffer = b, desc = "Previous diff file" })
+        vim.keymap.set("n", "]F", function()
+          local tab = vim.api.nvim_get_current_tabpage()
+          local s = DIFF_SPLIT_SESSIONS[tab]
+          if s then
+            diff_split_show_pair(s, #s.pairs)
+          end
+        end, { buffer = b, desc = "Last diff file" })
+        vim.keymap.set("n", "[F", function()
+          local tab = vim.api.nvim_get_current_tabpage()
+          local s = DIFF_SPLIT_SESSIONS[tab]
+          if s then
+            diff_split_show_pair(s, 1)
+          end
+        end, { buffer = b, desc = "First diff file" })
+        vim.keymap.set(
+          "n",
+          "gf",
+          diff_split_jump_to_file,
+          { buffer = b, desc = "Jump to diff file" }
+        )
+        vim.keymap.set(
+          "n",
+          "gq",
+          diff_split_close,
+          { buffer = b, desc = "Close diff tab" }
+        )
+      end
+    end
+    ::continue::
+  end
+end
+
+vim.api.nvim_create_autocmd("TabClosed", {
+  callback = function()
+    for tab, _ in pairs(DIFF_SPLIT_SESSIONS) do
+      if not vim.api.nvim_tabpage_is_valid(tab) then
+        diff_split_cleanup(tab)
+      end
+    end
+  end,
+  desc = "Clean up diff split sessions on tab close",
+})
+
 ---@class (exact) Hg.ssl_command
 ---@field desc string
 ---@field action fun(commit: Hg.commit, bufnr: number)
@@ -846,7 +1174,7 @@ local SSL_COMMANDS = {
     end,
   },
   diff_split = {
-    desc = "View file diff (side-by-side split)",
+    desc = "View file diffs (side-by-side split, cycle with ]f/[f)",
     action = function(commit)
       local template = '{files % "{file}\\n"}'
       local cmd = "hg log -r "
@@ -863,76 +1191,63 @@ local SSL_COMMANDS = {
         return
       end
 
-      local function open_diff_for_file(file)
-        local parent_rev = commit.hash .. "^"
-        local escaped_file = vim.fn.shellescape(file)
-        local old_content =
-          vim.fn.systemlist("hg cat -r " .. parent_rev .. " " .. escaped_file)
-        local old_ok = vim.v.shell_error == 0
+      local parent_rev = commit.hash .. "^"
+      local cwd = vim.uv.cwd() or vim.fn.getcwd()
+      local repo_root = vim.fs.root(cwd, ".hg") or cwd
 
-        local suffix = "_" .. vim.fn.fnamemodify(file, ":t")
-        local old_tmp = vim.fn.tempname() .. suffix
-        vim.fn.writefile(old_ok and old_content or {}, old_tmp)
-
-        local is_live = false
-        local new_file
-
-        if commit.is_current then
-          local cwd = vim.uv.cwd() or vim.fn.getcwd()
-          local repo_root = vim.fs.root(cwd, ".hg") or cwd
-          local real_path = repo_root .. "/" .. file
-          if vim.fn.filereadable(real_path) == 1 then
-            is_live = true
-            new_file = real_path
-          end
-        end
-
-        if not is_live then
-          local new_content =
-            vim.fn.systemlist("hg cat -r " .. commit.hash .. " " .. escaped_file)
-          local new_ok = vim.v.shell_error == 0
-          if not old_ok and not new_ok then
-            vim.notify(
-              "Cannot read " .. file .. " at either revision",
-              vim.log.levels.ERROR
-            )
-            return
-          end
-          new_file = vim.fn.tempname() .. suffix
-          vim.fn.writefile(new_ok and new_content or {}, new_file)
-        end
-
-        vim.cmd("tabnew " .. vim.fn.fnameescape(new_file))
-        local new_win = vim.api.nvim_get_current_win()
-        vim.cmd("vertical diffsplit " .. vim.fn.fnameescape(old_tmp))
-        local old_win = vim.api.nvim_get_current_win()
-
-        for _, win in ipairs({ old_win, new_win }) do
-          vim.wo[win].scrollbind = true
-          vim.wo[win].relativenumber = false
-          vim.wo[win].statuscolumn = ""
-          vim.wo[win].foldenable = false
-        end
-        if is_live then
-          vim.wo[new_win].winbar = "%#DiagnosticOk# LIVE %* " .. file
-        else
-          vim.wo[new_win].winbar = "%#Comment# " .. commit.hash .. " %* " .. file
-        end
-        vim.wo[old_win].winbar = "%#Comment# " .. parent_rev .. " %* " .. file
-        vim.cmd("syncbind")
+      ---@type Hg.diff_file_pair[]
+      local file_pairs = {}
+      for _, file in ipairs(files) do
+        table.insert(file_pairs, {
+          file = file,
+          is_live = false,
+        })
       end
 
-      if #files == 1 then
-        open_diff_for_file(files[1])
-      else
-        vim.ui.select(files, {
-          prompt = "Select file to diff:",
-        }, function(file)
-          if file then
-            open_diff_for_file(file)
-          end
-        end)
+      local tab = vim.api.nvim_get_current_tabpage()
+      vim.cmd("tabnew")
+      tab = vim.api.nvim_get_current_tabpage()
+      local new_win = vim.api.nvim_get_current_win()
+      vim.cmd("vsplit")
+      local old_win = vim.api.nvim_get_current_win()
+
+      ---@type Hg.diff_session
+      local session = {
+        pairs = file_pairs,
+        index = 1,
+        old_win = old_win,
+        new_win = new_win,
+        commit = commit,
+        parent_rev = parent_rev,
+        repo_root = repo_root,
+      }
+      DIFF_SPLIT_SESSIONS[tab] = session
+
+      diff_split_load_pair(session, file_pairs[1])
+      if not file_pairs[1].old_buf then
+        vim.cmd("tabclose")
+        return
       end
+
+      vim.api.nvim_win_set_buf(old_win, file_pairs[1].old_buf)
+      vim.api.nvim_win_set_buf(new_win, file_pairs[1].new_buf)
+
+      vim.api.nvim_win_call(old_win, function()
+        vim.cmd("diffthis")
+      end)
+      vim.api.nvim_win_call(new_win, function()
+        vim.cmd("diffthis")
+      end)
+
+      for _, win in ipairs({ old_win, new_win }) do
+        vim.wo[win].scrollbind = true
+        vim.wo[win].relativenumber = false
+        vim.wo[win].statuscolumn = ""
+        vim.wo[win].foldenable = false
+      end
+
+      diff_split_update_winbar(session)
+      vim.cmd("syncbind")
     end,
   },
   uncommit = {
