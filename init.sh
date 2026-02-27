@@ -199,6 +199,26 @@ tmp=$(jq '
       ]
     }
   ] |
+  .hooks.Notification = [
+    {
+      "matcher": "permission_prompt|elicitation_dialog",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash ~/.claude/hooks/tmux-notify.sh"
+        }
+      ]
+    },
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "[ -f ~/.claude/agent-manager/bin/agent-tracker.sh ] && cat | bash ~/.claude/agent-manager/bin/agent-tracker.sh idle || cat > /dev/null",
+          "timeout": 5
+        }
+      ]
+    }
+  ] |
   .hooks.SessionEnd = [
     {
       "hooks": [
