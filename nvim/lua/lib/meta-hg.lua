@@ -47,7 +47,7 @@ local CONFIG = {
     debounce_ms = 500,
   },
   line_blame = {
-    enable = false,
+    enable = true,
     highlight = "Comment",
     prefix = string.rep(" ", 4),
     debounce_ms = 300,
