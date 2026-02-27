@@ -1249,6 +1249,12 @@ local SSL_COMMANDS = {
       ssl_utils.run_cmd({ "hg", "uncommit" }, bufnr, true)
     end,
   },
+  changes = {
+    desc = "Select files to amend or discard",
+    action = function()
+      HgChanges()
+    end,
+  },
   hide = {
     desc = "Hide commit from smartlog",
     action = function(commit, bufnr)
@@ -1649,6 +1655,13 @@ local function HgSsl(opts)
       end
       return true
     end), desc = "Uncommit" },
+    { "<CR>w", ssl_action("changes", function(c)
+      if not c.is_current then
+        vim.notify("Can only manage changes on current commit", vim.log.levels.WARN)
+        return false
+      end
+      return true
+    end), desc = "Working changes" },
     { "<CR>x", ssl_action("hide"), desc = "Hide commit" },
     { "<CR>b", ssl_action("rebase"), desc = "Rebase onto..." },
     { "<CR>p", ssl_action("arc_pull"), desc = "Arc pull" },
@@ -2350,6 +2363,283 @@ local function HgStatus()
       }, "\n"))
     end, { desc = "show help", buffer = buf })
   end
+end
+
+local CHANGES_NS = vim.api.nvim_create_namespace("hg_changes")
+
+local function HgChanges()
+  log_to_scuba({
+    module = "hg",
+    command = "HgChanges",
+  })
+
+  local out = vim.system({ "hg", "status" }):wait()
+  if out.code ~= 0 then
+    vim.notify(
+      "Failed to run hg status\n" .. (out.stderr or ""),
+      vim.log.levels.ERROR
+    )
+    return
+  end
+  local stdout = vim.trim(out.stdout or "")
+  if stdout == "" then
+    vim.notify("No uncommitted changes", vim.log.levels.INFO)
+    return
+  end
+
+  local lines = vim.tbl_filter(function(l)
+    return l ~= ""
+  end, vim.split(stdout, "\n"))
+
+  if #lines == 0 then
+    vim.notify("No uncommitted changes", vim.log.levels.INFO)
+    return
+  end
+
+  local selected = {}
+
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.api.nvim_set_option_value("buftype", "nofile", { buf = buf })
+  vim.api.nvim_set_option_value("bufhidden", "wipe", { buf = buf })
+  vim.api.nvim_set_option_value("swapfile", false, { buf = buf })
+  vim.api.nvim_set_option_value("modifiable", false, { buf = buf })
+  vim.api.nvim_buf_set_name(buf, "hg changes")
+
+  local mode_to_hl = {
+    M = "@diff.plus",
+    A = "@diff.plus",
+    R = "@diff.minus",
+    C = "@diff.minus",
+    I = "@diff.delta",
+    ["!"] = "@diff.delta",
+    ["?"] = "@diff.delta",
+  }
+
+  local function apply_highlights()
+    for i, line in ipairs(lines) do
+      local mode = line:sub(1, 1)
+      if mode_to_hl[mode] then
+        vim.api.nvim_buf_add_highlight(buf, -1, mode_to_hl[mode], i - 1, 0, 1)
+      end
+    end
+  end
+
+  apply_highlights()
+
+  vim.cmd.split()
+  local win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(win, buf)
+  vim.api.nvim_win_set_height(win, math.min(#lines + 1, 15))
+  vim.wo[win].signcolumn = "yes:1"
+  vim.wo[win].number = false
+  vim.wo[win].relativenumber = false
+  vim.wo[win].winbar = "%#Comment# <Space>%* toggle"
+    .. "  %#Comment#A%* all"
+    .. "  %#Comment#a%* amend"
+    .. "  %#Comment#X%* discard"
+    .. "  %#Comment#q%* close"
+
+  local function update_signs()
+    vim.api.nvim_buf_clear_namespace(buf, CHANGES_NS, 0, -1)
+    for idx in pairs(selected) do
+      vim.api.nvim_buf_set_extmark(buf, CHANGES_NS, idx - 1, 0, {
+        sign_text = "●",
+        sign_hl_group = "DiagnosticOk",
+      })
+    end
+  end
+
+  local function get_path(line)
+    return line:match("^.%s+(.*)")
+  end
+
+  local function get_action_paths()
+    local paths = {}
+    if next(selected) then
+      for idx in pairs(selected) do
+        local path = get_path(lines[idx])
+        if path then
+          table.insert(paths, path)
+        end
+      end
+    else
+      local lnum = vim.api.nvim_win_get_cursor(0)[1]
+      local path = get_path(lines[lnum])
+      if path then
+        paths = { path }
+      end
+    end
+    return paths
+  end
+
+  local function refresh()
+    local new_out = vim.system({ "hg", "status" }):wait()
+    if new_out.code ~= 0 then
+      return
+    end
+    local new_stdout = vim.trim(new_out.stdout or "")
+    if new_stdout == "" then
+      if vim.api.nvim_win_is_valid(win) then
+        vim.api.nvim_win_close(win, true)
+      end
+      vim.notify("No remaining changes", vim.log.levels.INFO)
+      if SSL_STATE.bufnr and vim.api.nvim_buf_is_valid(SSL_STATE.bufnr) then
+        ssl_utils.refresh_buffer(SSL_STATE.bufnr)
+      end
+      return
+    end
+    lines = vim.tbl_filter(function(l)
+      return l ~= ""
+    end, vim.split(new_stdout, "\n"))
+    selected = {}
+    vim.api.nvim_set_option_value("modifiable", true, { buf = buf })
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    vim.api.nvim_set_option_value("modifiable", false, { buf = buf })
+    vim.api.nvim_buf_clear_namespace(buf, -1, 0, -1)
+    apply_highlights()
+    update_signs()
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_set_height(win, math.min(#lines + 1, 15))
+    end
+    if SSL_STATE.bufnr and vim.api.nvim_buf_is_valid(SSL_STATE.bufnr) then
+      ssl_utils.refresh_buffer(SSL_STATE.bufnr)
+    end
+  end
+
+  vim.keymap.set("n", "<Space>", function()
+    local lnum = vim.api.nvim_win_get_cursor(0)[1]
+    if selected[lnum] then
+      selected[lnum] = nil
+    else
+      selected[lnum] = true
+    end
+    update_signs()
+  end, { buffer = buf, desc = "Toggle selection" })
+
+  vim.keymap.set("v", "<Space>", function()
+    local start_line = vim.fn.line("v")
+    local end_line = vim.fn.line(".")
+    if start_line > end_line then
+      start_line, end_line = end_line, start_line
+    end
+    for lnum = start_line, end_line do
+      if selected[lnum] then
+        selected[lnum] = nil
+      else
+        selected[lnum] = true
+      end
+    end
+    vim.api.nvim_feedkeys(
+      vim.api.nvim_replace_termcodes("<Esc>", true, false, true),
+      "n",
+      false
+    )
+    update_signs()
+  end, { buffer = buf, desc = "Toggle selection" })
+
+  vim.keymap.set("n", "A", function()
+    local all_selected = true
+    for i = 1, #lines do
+      if not selected[i] then
+        all_selected = false
+        break
+      end
+    end
+    if all_selected then
+      selected = {}
+    else
+      for i = 1, #lines do
+        selected[i] = true
+      end
+    end
+    update_signs()
+  end, { buffer = buf, desc = "Toggle all" })
+
+  vim.keymap.set("n", "a", function()
+    local paths = get_action_paths()
+    if #paths == 0 then
+      vim.notify("No files selected", vim.log.levels.WARN)
+      return
+    end
+    local cmd = vim.list_extend({ "hg", "amend" }, paths)
+    vim.notify("Amending " .. #paths .. " file(s)...", vim.log.levels.INFO)
+    vim.system(cmd, { text = true }, function(result)
+      vim.schedule(function()
+        if result.code ~= 0 then
+          vim.notify(
+            "Amend failed:\n" .. (result.stderr or ""),
+            vim.log.levels.ERROR
+          )
+          return
+        end
+        vim.notify("Amended " .. #paths .. " file(s)", vim.log.levels.INFO)
+        refresh()
+      end)
+    end)
+  end, { buffer = buf, desc = "Amend selected files" })
+
+  vim.keymap.set("n", "X", function()
+    local paths = get_action_paths()
+    if #paths == 0 then
+      vim.notify("No files selected", vim.log.levels.WARN)
+      return
+    end
+    vim.ui.select(
+      { "Yes", "No" },
+      { prompt = "Discard changes to " .. #paths .. " file(s)?" },
+      function(choice)
+        if choice ~= "Yes" then
+          return
+        end
+        local cmd =
+          vim.list_extend({ "hg", "revert", "--no-backup" }, paths)
+        vim.system(cmd, { text = true }, function(result)
+          vim.schedule(function()
+            if result.code ~= 0 then
+              vim.notify(
+                "Discard failed:\n" .. (result.stderr or ""),
+                vim.log.levels.ERROR
+              )
+              return
+            end
+            vim.notify(
+              "Discarded " .. #paths .. " file(s)",
+              vim.log.levels.INFO
+            )
+            for _, path in ipairs(paths) do
+              local abs = vim.fn.fnamemodify(path, ":p")
+              local b = vim.fn.bufnr(abs)
+              if b ~= -1 and vim.api.nvim_buf_is_loaded(b) then
+                vim.api.nvim_buf_call(b, function()
+                  vim.cmd("edit!")
+                end)
+              end
+            end
+            refresh()
+          end)
+        end)
+      end
+    )
+  end, { buffer = buf, desc = "Discard selected files" })
+
+  vim.keymap.set("n", "q", function()
+    vim.api.nvim_win_close(win, true)
+  end, { buffer = buf, desc = "Close" })
+
+  vim.keymap.set("n", "?", function()
+    vim.notify(table.concat({
+      "Hg Changes",
+      "===========",
+      "<Space>  toggle file selection",
+      "V+Space  toggle range selection",
+      "A        toggle all",
+      "a        amend selected into current commit",
+      "X        discard selected changes",
+      "q        close",
+      "?        show this help",
+    }, "\n"), vim.log.levels.INFO)
+  end, { buffer = buf, desc = "Show help" })
 end
 
 local SIGN_NS = vim.api.nvim_create_namespace("hg_signcolumn")
@@ -3112,6 +3402,12 @@ HgSuggest -m "msg"       submit with a message
       "HgStatus",
       HgStatus,
       { desc = "Interactively stage files" }
+    )
+
+    vim.api.nvim_create_user_command(
+      "HgChanges",
+      HgChanges,
+      { desc = "Select uncommitted files to amend or discard" }
     )
 
     vim.api.nvim_create_user_command("HgChangeBase", HgChangeBase, {
