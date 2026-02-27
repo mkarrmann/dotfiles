@@ -1848,6 +1848,20 @@ local function HgSuggest(opts)
     command = "HgSuggest",
   })
 
+  local unsaved = vim.tbl_filter(function(buf)
+    return vim.bo[buf].modified and vim.bo[buf].buflisted
+  end, vim.api.nvim_list_bufs())
+  if #unsaved > 0 then
+    local names = vim.tbl_map(function(buf)
+      return vim.fn.fnamemodify(vim.api.nvim_buf_get_name(buf), ":~:.")
+    end, unsaved)
+    vim.notify(
+      "Unsaved buffers (save first):\n  " .. table.concat(names, "\n  "),
+      vim.log.levels.ERROR
+    )
+    return
+  end
+
   local has_changes = hg_utils.can_commit()
   if has_changes == false then
     vim.notify("No changes to suggest", vim.log.levels.ERROR)
