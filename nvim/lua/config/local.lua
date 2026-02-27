@@ -5,7 +5,7 @@ vim.opt.rtp:prepend("/usr/lib/nvim")
 
 local meta_hg = require("lib.meta-hg")
 package.loaded["meta.hg"] = meta_hg
-meta_hg.config({ ssl = { status = true } })
+meta_hg.setup({ ssl = { status = true } })
 local meta_ok, meta = pcall(require, "meta")
 if meta_ok then
 	meta.setup()
