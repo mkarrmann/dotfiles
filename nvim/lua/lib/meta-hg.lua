@@ -1841,6 +1841,28 @@ local function HgAbsorb()
   hg_utils.run_cmd_and_exit("hg absorb")
 end
 
+local function HgSuggest(opts)
+  log_to_scuba({
+    module = "hg",
+    command = "HgSuggest",
+  })
+
+  local has_changes = hg_utils.can_commit()
+  if has_changes == false then
+    vim.notify("No changes to suggest", vim.log.levels.ERROR)
+    return
+  end
+
+  local cmd = { "jf", "suggest", "--no-commit" }
+
+  local args = vim.trim(opts.args or "")
+  if args ~= "" then
+    vim.list_extend(cmd, vim.split(args, "%s+"))
+  end
+
+  hg_utils.run_cmd_and_exit(table.concat(cmd, " "))
+end
+
 -- Refresh signs for all loaded buffers
 local function refresh_all_signs()
   for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
@@ -2764,6 +2786,15 @@ HgBrowseRevYank        yanks current buffer in phabricator for a current commit
       HgAbsorb,
       { desc = "Intelligently integrate pending changes into current stack" }
     )
+
+    vim.api.nvim_create_user_command("HgSuggest", HgSuggest, {
+      nargs = "*",
+      desc = [[
+HgSuggest                submit uncommitted changes as suggested changes on the current diff
+HgSuggest --draft        submit as draft suggestions
+HgSuggest -m "msg"       submit with a message
+]],
+    })
 
     vim.api.nvim_create_user_command(
       "HgStatus",
