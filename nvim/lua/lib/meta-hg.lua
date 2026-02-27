@@ -2453,27 +2453,35 @@ HgChanges = function()
     end
   end
 
+  local function get_status(line)
+    return line:sub(1, 1)
+  end
+
   local function get_path(line)
     return line:match("^.%s+(.*)")
   end
 
-  local function get_action_paths()
-    local paths = {}
+  local function get_action_entries()
+    local entries = {}
     if next(selected) then
       for idx in pairs(selected) do
         local path = get_path(lines[idx])
         if path then
-          table.insert(paths, path)
+          table.insert(entries, { status = get_status(lines[idx]), path = path })
         end
       end
     else
       local lnum = vim.api.nvim_win_get_cursor(0)[1]
       local path = get_path(lines[lnum])
       if path then
-        paths = { path }
+        entries = { { status = get_status(lines[lnum]), path = path } }
       end
     end
-    return paths
+    return entries
+  end
+
+  local function get_action_paths()
+    return vim.tbl_map(function(e) return e.path end, get_action_entries())
   end
 
   local function refresh()
@@ -2583,34 +2591,51 @@ HgChanges = function()
   end, { buffer = buf, desc = "Amend selected files" })
 
   vim.keymap.set("n", "X", function()
-    local paths = get_action_paths()
-    if #paths == 0 then
+    local entries = get_action_entries()
+    if #entries == 0 then
       vim.notify("No files selected", vim.log.levels.WARN)
       return
     end
+    local all_paths = vim.tbl_map(function(e) return e.path end, entries)
     vim.ui.select(
       { "Yes", "No" },
-      { prompt = "Discard changes to " .. #paths .. " file(s)?" },
+      { prompt = "Discard changes to " .. #entries .. " file(s)?" },
       function(choice)
         if choice ~= "Yes" then
           return
         end
-        local cmd =
-          vim.list_extend({ "hg", "revert", "--no-backup" }, paths)
-        vim.system(cmd, { text = true }, function(result)
+
+        local tracked = {}
+        local untracked = {}
+        for _, e in ipairs(entries) do
+          if e.status == "?" then
+            table.insert(untracked, e.path)
+          else
+            table.insert(tracked, e.path)
+          end
+        end
+
+        local pending = 0
+        local errors = {}
+
+        local function on_done()
+          pending = pending - 1
+          if pending > 0 then
+            return
+          end
           vim.schedule(function()
-            if result.code ~= 0 then
+            if #errors > 0 then
               vim.notify(
-                "Discard failed:\n" .. (result.stderr or ""),
+                "Discard failed:\n" .. table.concat(errors, "\n"),
                 vim.log.levels.ERROR
               )
               return
             end
             vim.notify(
-              "Discarded " .. #paths .. " file(s)",
+              "Discarded " .. #entries .. " file(s)",
               vim.log.levels.INFO
             )
-            for _, path in ipairs(paths) do
+            for _, path in ipairs(all_paths) do
               local abs = vim.fn.fnamemodify(path, ":p")
               local b = vim.fn.bufnr(abs)
               if b ~= -1 and vim.api.nvim_buf_is_loaded(b) then
@@ -2621,7 +2646,29 @@ HgChanges = function()
             end
             refresh()
           end)
-        end)
+        end
+
+        if #tracked > 0 then
+          pending = pending + 1
+          local cmd = vim.list_extend({ "hg", "revert", "--no-backup" }, tracked)
+          vim.system(cmd, { text = true }, function(result)
+            if result.code ~= 0 then
+              table.insert(errors, result.stderr or "hg revert failed")
+            end
+            on_done()
+          end)
+        end
+
+        if #untracked > 0 then
+          pending = pending + 1
+          local cmd = vim.list_extend({ "rm", "-f" }, untracked)
+          vim.system(cmd, { text = true }, function(result)
+            if result.code ~= 0 then
+              table.insert(errors, result.stderr or "rm failed")
+            end
+            on_done()
+          end)
+        end
       end
     )
   end, { buffer = buf, desc = "Discard selected files" })
