@@ -85,7 +85,7 @@ local function agent_send_path()
 end
 
 vim.keymap.set("v", "<leader>aS", agent_send_selection, { desc = "Send selection to agent" })
-vim.keymap.set("n", "<leader>aP", agent_send_path, { desc = "Add file to agent" })
+vim.keymap.set("n", "<leader>af", agent_send_path, { desc = "Add file to agent" })
 vim.keymap.set("n", "<leader>aS", agent_send_path, {
 	desc = "Add file to agent (file explorer)",
 	-- Works from any buffer; file explorer plugins set ft-specific overrides if needed
