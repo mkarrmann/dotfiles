@@ -281,10 +281,11 @@ local function prompt_new_window()
 		f:write(text)
 		f:close()
 
-		local label = text:sub(1, 25):gsub("[^%w%-_ ]", ""):match("^%s*(.-)%s*$") or ""
+		local label = text:sub(1, 15):gsub("[^%w%-_ ]", ""):match("^%s*(.-)%s*$") or ""
 		if label == "" then
 			label = "claude"
 		end
+		label = "qq: " .. label
 
 		local nf = io.open(next_name_file, "w")
 		if nf then
@@ -293,7 +294,7 @@ local function prompt_new_window()
 		end
 
 		vim.fn.system({
-			"tmux", "new-window",
+			"tmux", "new-window", "-d",
 			"-n", label,
 			"-e", "CLAUDE_AUTO_PROMPT=" .. prompt_file,
 			"--", "nvim",
@@ -322,10 +323,11 @@ local function prompt_new_pane()
 
 		local nf = io.open(next_name_file, "w")
 		if nf then
-			local label = text:sub(1, 25):gsub("[^%w%-_ ]", ""):match("^%s*(.-)%s*$") or ""
+			local label = text:sub(1, 15):gsub("[^%w%-_ ]", ""):match("^%s*(.-)%s*$") or ""
 			if label == "" then
 				label = "claude"
 			end
+			label = "qq: " .. label
 			nf:write(label)
 			nf:close()
 		end
