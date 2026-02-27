@@ -21,8 +21,8 @@ local log_to_scuba = meta_util.log_to_scuba
 ---@class (exact) Hg.diff_session
 ---@field pairs Hg.diff_file_pair[]
 ---@field index integer
----@field old_win integer
----@field new_win integer
+---@field left_win integer
+---@field right_win integer
 ---@field commit Hg.commit
 ---@field parent_rev string
 ---@field repo_root string
@@ -843,12 +843,25 @@ end
 
 local DIFF_SPLIT_KEYMAPS = { "]f", "[f", "]F", "[F", "gf", "gq" }
 
+---@param lines string[]
+---@param name string
+---@return integer
+local function create_scratch_buf(lines, name)
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.api.nvim_buf_set_name(buf, name)
+  vim.bo[buf].buftype = "nofile"
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].swapfile = false
+  return buf
+end
+
 ---@param session Hg.diff_session
 local function diff_split_update_winbar(session)
   local pair = session.pairs[session.index]
   local pos = string.format("[%d/%d]", session.index, #session.pairs)
 
-  vim.wo[session.old_win].winbar = "%#Comment# "
+  vim.wo[session.right_win].winbar = "%#Comment# "
     .. session.parent_rev
     .. " %* "
     .. pair.file
@@ -856,12 +869,12 @@ local function diff_split_update_winbar(session)
     .. pos
 
   if pair.is_live then
-    vim.wo[session.new_win].winbar = "%#DiagnosticOk# LIVE %* "
+    vim.wo[session.left_win].winbar = "%#DiagnosticOk# LIVE %* "
       .. pair.file
       .. " "
       .. pos
   else
-    vim.wo[session.new_win].winbar = "%#Comment# "
+    vim.wo[session.left_win].winbar = "%#Comment# "
       .. session.commit.hash
       .. " %* "
       .. pair.file
@@ -911,40 +924,16 @@ local function diff_split_load_pair(session, pair)
       )
       return
     end
-    new_buf = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_buf_set_lines(
-      new_buf,
-      0,
-      -1,
-      false,
-      new_ok and new_content or {}
-    )
-    vim.api.nvim_buf_set_name(
-      new_buf,
+    new_buf = create_scratch_buf(
+      new_ok and new_content or {},
       "hg-diff://" .. session.commit.hash .. "/" .. pair.file
     )
-    vim.api.nvim_set_option_value("buftype", "nofile", { buf = new_buf })
-    vim.api.nvim_set_option_value("modifiable", false, { buf = new_buf })
-    vim.api.nvim_set_option_value("swapfile", false, { buf = new_buf })
   end
 
-  local old_buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_lines(
-    old_buf,
-    0,
-    -1,
-    false,
-    old_ok and old_content or {}
-  )
-  vim.api.nvim_buf_set_name(
-    old_buf,
+  pair.old_buf = create_scratch_buf(
+    old_ok and old_content or {},
     "hg-diff://" .. session.parent_rev .. "/" .. pair.file
   )
-  vim.api.nvim_set_option_value("buftype", "nofile", { buf = old_buf })
-  vim.api.nvim_set_option_value("modifiable", false, { buf = old_buf })
-  vim.api.nvim_set_option_value("swapfile", false, { buf = old_buf })
-
-  pair.old_buf = old_buf
   pair.new_buf = new_buf
   pair.is_live = is_live
 
@@ -955,8 +944,8 @@ end
 ---@param index integer
 local function diff_split_show_pair(session, index)
   if
-    not vim.api.nvim_win_is_valid(session.old_win)
-    or not vim.api.nvim_win_is_valid(session.new_win)
+    not vim.api.nvim_win_is_valid(session.left_win)
+    or not vim.api.nvim_win_is_valid(session.right_win)
   then
     vim.notify("Diff windows are no longer valid", vim.log.levels.WARN)
     local tab = vim.api.nvim_get_current_tabpage()
@@ -974,24 +963,24 @@ local function diff_split_show_pair(session, index)
 
   session.index = index
 
-  vim.api.nvim_win_call(session.old_win, function()
+  vim.api.nvim_win_call(session.left_win, function()
     vim.cmd("diffoff")
   end)
-  vim.api.nvim_win_call(session.new_win, function()
+  vim.api.nvim_win_call(session.right_win, function()
     vim.cmd("diffoff")
   end)
 
-  vim.api.nvim_win_set_buf(session.old_win, pair.old_buf)
-  vim.api.nvim_win_set_buf(session.new_win, pair.new_buf)
+  vim.api.nvim_win_set_buf(session.left_win, pair.new_buf)
+  vim.api.nvim_win_set_buf(session.right_win, pair.old_buf)
 
-  vim.api.nvim_win_call(session.old_win, function()
+  vim.api.nvim_win_call(session.left_win, function()
     vim.cmd("diffthis")
   end)
-  vim.api.nvim_win_call(session.new_win, function()
+  vim.api.nvim_win_call(session.right_win, function()
     vim.cmd("diffthis")
   end)
 
-  for _, win in ipairs({ session.old_win, session.new_win }) do
+  for _, win in ipairs({ session.left_win, session.right_win }) do
     vim.wo[win].scrollbind = true
     vim.wo[win].relativenumber = false
     vim.wo[win].statuscolumn = ""
@@ -1001,12 +990,13 @@ local function diff_split_show_pair(session, index)
   diff_split_update_winbar(session)
   vim.cmd("syncbind")
 
-  vim.api.nvim_win_call(session.old_win, function()
+  vim.api.nvim_win_call(session.left_win, function()
     vim.cmd("normal! gg")
   end)
-  vim.api.nvim_win_call(session.new_win, function()
+  vim.api.nvim_win_call(session.right_win, function()
     vim.cmd("normal! gg")
   end)
+  vim.api.nvim_set_current_win(session.left_win)
 end
 
 ---@param direction 1|-1
@@ -1204,19 +1194,18 @@ local SSL_COMMANDS = {
         })
       end
 
-      local tab = vim.api.nvim_get_current_tabpage()
       vim.cmd("tabnew")
-      tab = vim.api.nvim_get_current_tabpage()
-      local new_win = vim.api.nvim_get_current_win()
-      vim.cmd("vsplit")
-      local old_win = vim.api.nvim_get_current_win()
+      local tab = vim.api.nvim_get_current_tabpage()
+      local left_win = vim.api.nvim_get_current_win()
+      vim.cmd("rightbelow vsplit")
+      local right_win = vim.api.nvim_get_current_win()
 
       ---@type Hg.diff_session
       local session = {
         pairs = file_pairs,
         index = 1,
-        old_win = old_win,
-        new_win = new_win,
+        left_win = left_win,
+        right_win = right_win,
         commit = commit,
         parent_rev = parent_rev,
         repo_root = repo_root,
@@ -1229,25 +1218,7 @@ local SSL_COMMANDS = {
         return
       end
 
-      vim.api.nvim_win_set_buf(old_win, file_pairs[1].old_buf)
-      vim.api.nvim_win_set_buf(new_win, file_pairs[1].new_buf)
-
-      vim.api.nvim_win_call(old_win, function()
-        vim.cmd("diffthis")
-      end)
-      vim.api.nvim_win_call(new_win, function()
-        vim.cmd("diffthis")
-      end)
-
-      for _, win in ipairs({ old_win, new_win }) do
-        vim.wo[win].scrollbind = true
-        vim.wo[win].relativenumber = false
-        vim.wo[win].statuscolumn = ""
-        vim.wo[win].foldenable = false
-      end
-
-      diff_split_update_winbar(session)
-      vim.cmd("syncbind")
+      diff_split_show_pair(session, 1)
     end,
   },
   uncommit = {

@@ -93,15 +93,12 @@ vim.api.nvim_create_user_command("HgDiffSplit", function()
 	end
 
 	local result = vim.fn.systemlist("hg cat -r .^ " .. vim.fn.shellescape(file))
-	if vim.v.shell_error ~= 0 then
-		vim.notify("hg cat failed (file may be new or not in parent commit)", vim.log.levels.ERROR)
-		return
-	end
+	local old_ok = vim.v.shell_error == 0
 
 	local tmp = vim.fn.tempname()
-	vim.fn.writefile(result, tmp)
+	vim.fn.writefile(old_ok and result or {}, tmp)
 	local orig_win = vim.api.nvim_get_current_win()
-	vim.cmd("vertical diffsplit " .. vim.fn.fnameescape(tmp))
+	vim.cmd("rightbelow vertical diffsplit " .. vim.fn.fnameescape(tmp))
 	local diff_win = vim.api.nvim_get_current_win()
 	vim.wo[diff_win].scrollbind = true
 	vim.wo[diff_win].relativenumber = false
@@ -115,6 +112,7 @@ vim.api.nvim_create_user_command("HgDiffSplit", function()
 	vim.wo[diff_win].winbar = "%#Comment# .^ %* " .. display_name
 	vim.wo[orig_win].winbar = "%#DiagnosticOk# LIVE %* " .. display_name
 	vim.cmd("syncbind")
+	vim.api.nvim_set_current_win(orig_win)
 end, { desc = "Side-by-side diff of current file against parent commit" })
 vim.keymap.set("n", "<leader>hd", "<CMD>HgDiffSplit<CR>", { desc = "Hg diff split" })
 vim.keymap.set("n", "<leader>hs", "<CMD>HgSsl<CR>", { desc = "Hg smartlog" })
