@@ -26,6 +26,8 @@ ring_bell() {
     [ -n "$tty" ] && printf '\a' > "$tty"
 }
 
+echo "$INPUT" >> /tmp/claude-hook-debug.log
+
 case "$EVENT" in
     UserPromptSubmit|SessionStart)
         set_state "⚙"

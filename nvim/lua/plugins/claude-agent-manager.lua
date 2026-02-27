@@ -432,6 +432,43 @@ return {
 			vim.api.nvim_create_user_command("ClaudeCodeResume", resume_by_name, {
 				desc = "Resume Claude session by name (Telescope picker)",
 			})
+
+			if vim.env.CLAUDE_AUTO_PROMPT then
+				vim.api.nvim_create_autocmd("VimEnter", {
+					once = true,
+					callback = function()
+						vim.defer_fn(function()
+							local prompt_file = vim.env.CLAUDE_AUTO_PROMPT
+							local f = io.open(prompt_file, "r")
+							local prompt = f and f:read("*a") or nil
+							if f then
+								f:close()
+							end
+							os.remove(prompt_file)
+
+							require("lazy").load({ plugins = { "claudecode.nvim" } })
+							vim.cmd("ClaudeCode")
+
+							if prompt and prompt ~= "" then
+								vim.defer_fn(function()
+									for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+										if vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].buftype == "terminal" then
+											local name = vim.api.nvim_buf_get_name(buf)
+											if name:lower():find("claude") then
+												local chan = vim.bo[buf].channel
+												if chan and chan > 0 then
+													vim.api.nvim_chan_send(chan, prompt .. "\n")
+												end
+												break
+											end
+										end
+									end
+								end, 2000)
+							end
+						end, 200)
+					end,
+				})
+			end
 		end,
 	},
 }
