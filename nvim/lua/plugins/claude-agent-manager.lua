@@ -333,7 +333,7 @@ local function prompt_new_pane()
 		end
 
 		vim.fn.system({
-			"tmux", "split-window", "-h",
+			"tmux", "split-window", "-h", "-l", "33%",
 			"-e", "CLAUDE_AUTO_PROMPT=" .. prompt_file,
 			"--", "nvim",
 		})
