@@ -37,34 +37,7 @@ if _auto_prompt then
 			end
 
 			require("lazy").load({ plugins = { "claudecode.nvim" } })
-			vim.cmd("ClaudeCodeOpen")
-
-			local needle = prompt:sub(1, math.min(#prompt, 20))
-			local attempts = 0
-			local sent_text = false
-			local function poll()
-				attempts = attempts + 1
-				for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-					if vim.bo[buf].buftype == "terminal" and vim.bo[buf].channel > 0 then
-						local chan = vim.bo[buf].channel
-						if not sent_text then
-							vim.api.nvim_chan_send(chan, prompt)
-							sent_text = true
-						end
-						local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-						for _, line in ipairs(lines) do
-							if line:find(needle, 1, true) then
-								vim.api.nvim_chan_send(chan, "\r")
-								return
-							end
-						end
-					end
-				end
-				if attempts < 150 then
-					vim.defer_fn(poll, 200)
-				end
-			end
-			vim.defer_fn(poll, 200)
+			require("claudecode.terminal").open({}, "-- " .. prompt)
 		end,
 	})
 end
