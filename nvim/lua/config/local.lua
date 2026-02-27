@@ -128,11 +128,14 @@ vim.keymap.set("n", "<leader>hp", "<CMD>SlPull<CR>", { desc = "Hg pull" })
 vim.api.nvim_create_user_command("SlPull", function()
 	vim.fn.jobstart("sl pull", {
 		on_exit = function(_, code)
-			if code == 0 then
-				vim.notify("sl pull completed", vim.log.levels.INFO)
-			else
-				vim.notify("sl pull failed (exit " .. code .. ")", vim.log.levels.ERROR)
-			end
+			vim.schedule(function()
+				if code == 0 then
+					vim.notify("sl pull completed", vim.log.levels.INFO)
+					require("lib.meta-hg").refresh_ssl()
+				else
+					vim.notify("sl pull failed (exit " .. code .. ")", vim.log.levels.ERROR)
+				end
+			end)
 		end,
 	})
 end, { desc = "Run sl pull" })
