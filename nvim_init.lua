@@ -38,6 +38,7 @@ if _auto_prompt then
 
 			require("lazy").load({ plugins = { "claudecode.nvim" } })
 			require("claudecode.terminal").open({}, "-- " .. prompt)
+			vim.cmd("only")
 		end,
 	})
 end
