@@ -1864,6 +1864,277 @@ local function HgSuggest(opts)
   hg_utils.run_cmd_and_exit(table.concat(cmd, " "))
 end
 
+local function jf_graphql(query, variables, on_success, on_error)
+  vim.system(
+    { "jf", "graphql", "--query", query, "--variables", vim.json.encode(variables) },
+    { text = true },
+    function(obj)
+      if obj.code ~= 0 then
+        local msg = vim.trim(obj.stderr or "")
+        if on_error then
+          vim.schedule(function() on_error(msg) end)
+        else
+          vim.schedule(function()
+            vim.notify("GraphQL error: " .. msg, vim.log.levels.ERROR)
+          end)
+        end
+        return
+      end
+      local ok, result = pcall(vim.json.decode, obj.stdout)
+      if not ok then
+        vim.schedule(function()
+          vim.notify("Failed to parse GraphQL response", vim.log.levels.ERROR)
+        end)
+        return
+      end
+      vim.schedule(function() on_success(result) end)
+    end
+  )
+end
+
+---@type table<string, string>
+local version_id_cache = {}
+
+local function get_current_diff_number(callback)
+  vim.system(
+    { "hg", "log", "--limit", "1", "--template", "{phabdiff}" },
+    { text = true },
+    function(obj)
+      if obj.code ~= 0 then
+        vim.schedule(function()
+          vim.notify("Failed to get diff number from current commit", vim.log.levels.ERROR)
+        end)
+        return
+      end
+      local phabdiff = vim.trim(obj.stdout or "")
+      if phabdiff == "" then
+        vim.schedule(function()
+          vim.notify("No Phabricator diff linked to current commit", vim.log.levels.ERROR)
+        end)
+        return
+      end
+      local diff_number = phabdiff:gsub("^D", "")
+      vim.schedule(function() callback(diff_number) end)
+    end
+  )
+end
+
+local GET_VERSION_ID_QUERY = [[
+query GetVersionID($query_params: [PhabricatorDiffQueryParams!]!) {
+  phabricator_diff_query(query_params: $query_params) {
+    results {
+      nodes {
+        phabricator_versions(orderby: created_time_reverse, first: 1) {
+          nodes {
+            id
+          }
+        }
+      }
+    }
+  }
+}
+]]
+
+local function get_version_id(diff_number, callback)
+  if version_id_cache[diff_number] then
+    callback(version_id_cache[diff_number])
+    return
+  end
+  jf_graphql(GET_VERSION_ID_QUERY, {
+    query_params = { {
+      numbers = { diff_number },
+      client_caller = "neovim",
+      queryID = "1",
+    } },
+  }, function(result)
+    local nodes = result
+      and result.phabricator_diff_query
+      and result.phabricator_diff_query[1]
+      and result.phabricator_diff_query[1].results
+      and result.phabricator_diff_query[1].results.nodes
+    local version = nodes
+      and nodes[1]
+      and nodes[1].phabricator_versions
+      and nodes[1].phabricator_versions.nodes
+      and nodes[1].phabricator_versions.nodes[1]
+    if not version then
+      vim.notify("Could not find version for D" .. diff_number, vim.log.levels.ERROR)
+      return
+    end
+    version_id_cache[diff_number] = version.id
+    callback(version.id)
+  end)
+end
+
+local CREATE_INLINE_DRAFT_MUTATION = [[
+mutation CreateInlineDraft($data: DifferentialInlineDraftCreateData!) {
+  differential_inline_draft_create(data: $data) {
+    comment {
+      id
+    }
+  }
+}
+]]
+
+local PUBLISH_DRAFTS_MUTATION = [[
+mutation PublishDrafts($data: UpdatePhabricatorDiffData!) {
+  update_phabricator_diff(data: $data) {
+    phabricator_diff {
+      number
+      url
+    }
+  }
+}
+]]
+
+local function resolve_inline_comment_context()
+  local session = DIFF_SPLIT_SESSIONS[vim.api.nvim_get_current_tabpage()]
+  if session then
+    local pair = session.pairs[session.index]
+    local diff_number = session.commit.diff and session.commit.diff:gsub("^D", "")
+    if not diff_number then
+      vim.notify("No Phabricator diff linked to this commit", vim.log.levels.ERROR)
+      return nil
+    end
+    local cur_win = vim.api.nvim_get_current_win()
+    local is_new_file = cur_win == session.left_win
+    return {
+      file_path = pair.file,
+      diff_number = diff_number,
+      is_new_file = is_new_file,
+    }
+  end
+
+  local repo_root = vim.fs.root(0, ".hg")
+  if not repo_root then
+    vim.notify("Not in an hg repository", vim.log.levels.ERROR)
+    return nil
+  end
+
+  local buf_abs_path = vim.fn.expand("%:p")
+  return {
+    file_path = buf_abs_path:sub(#repo_root + 2),
+    diff_number = nil,
+    is_new_file = true,
+  }
+end
+
+local function HgInlineComment(opts)
+  log_to_scuba({
+    module = "hg",
+    command = "HgInlineComment",
+  })
+
+  local ctx = resolve_inline_comment_context()
+  if not ctx then
+    return
+  end
+
+  local line1 = opts.line1
+  local line2 = opts.count > 0 and opts.count or line1
+  local line_length = line2 - line1
+
+  local comment_buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[comment_buf].buftype = "nofile"
+  vim.bo[comment_buf].filetype = "markdown"
+  vim.bo[comment_buf].swapfile = false
+
+  local width = math.min(80, vim.o.columns - 4)
+  local height = 10
+  local win = vim.api.nvim_open_win(comment_buf, true, {
+    relative = "cursor",
+    row = 1,
+    col = 0,
+    width = width,
+    height = height,
+    style = "minimal",
+    border = "rounded",
+    title = string.format(" Inline comment: %s:%d", ctx.file_path, line1),
+    title_pos = "left",
+  })
+  vim.wo[win].wrap = true
+
+  vim.cmd("startinsert")
+
+  local function submit_comment(content)
+    local function do_submit(diff_number)
+      get_version_id(diff_number, function(version_id)
+        jf_graphql(CREATE_INLINE_DRAFT_MUTATION, {
+          data = {
+            content = content,
+            phabricator_version_id = version_id,
+            file_name = ctx.file_path,
+            is_new_file = ctx.is_new_file,
+            line_number = line1,
+            line_length = line_length,
+            skip_draft = false,
+          },
+        }, function()
+          vim.notify(
+            string.format("Draft comment added on D%s %s:%d", diff_number, ctx.file_path, line1),
+            vim.log.levels.INFO
+          )
+        end)
+      end)
+    end
+
+    if ctx.diff_number then
+      do_submit(ctx.diff_number)
+    else
+      get_current_diff_number(do_submit)
+    end
+  end
+
+  vim.api.nvim_create_autocmd("WinClosed", {
+    buffer = comment_buf,
+    once = true,
+    callback = function()
+      local lines = vim.api.nvim_buf_get_lines(comment_buf, 0, -1, false)
+      local content = vim.trim(table.concat(lines, "\n"))
+
+      vim.schedule(function()
+        if vim.api.nvim_buf_is_valid(comment_buf) then
+          vim.api.nvim_buf_delete(comment_buf, { force = true })
+        end
+      end)
+
+      if content == "" then
+        vim.schedule(function()
+          vim.notify("Comment cancelled", vim.log.levels.INFO)
+        end)
+        return
+      end
+
+      submit_comment(content)
+    end,
+  })
+end
+
+local function HgPublishDrafts()
+  log_to_scuba({
+    module = "hg",
+    command = "HgPublishDrafts",
+  })
+
+  get_current_diff_number(function(diff_number)
+    jf_graphql(PUBLISH_DRAFTS_MUTATION, {
+      data = {
+        client_caller = "neovim",
+        client_mutation_id = "1",
+        number = diff_number,
+        action = "none",
+        attach_inlines = true,
+      },
+    }, function(result)
+      local diff = result
+        and result.update_phabricator_diff
+        and result.update_phabricator_diff.phabricator_diff
+      local url = diff and diff.url or ("D" .. diff_number)
+      vim.notify("Draft comments published on " .. url, vim.log.levels.INFO)
+    end)
+  end)
+end
+
 -- Refresh signs for all loaded buffers
 local function refresh_all_signs()
   for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
@@ -2795,6 +3066,15 @@ HgSuggest                submit uncommitted changes as suggested changes on the 
 HgSuggest --draft        submit as draft suggestions
 HgSuggest -m "msg"       submit with a message
 ]],
+    })
+
+    vim.api.nvim_create_user_command("HgInlineComment", HgInlineComment, {
+      range = true,
+      desc = "Post a draft inline comment on the current diff at the selected lines",
+    })
+
+    vim.api.nvim_create_user_command("HgPublishDrafts", HgPublishDrafts, {
+      desc = "Publish all draft inline comments on the current diff",
     })
 
     vim.api.nvim_create_user_command(
