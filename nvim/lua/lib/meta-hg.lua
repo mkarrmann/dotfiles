@@ -2441,6 +2441,7 @@ HgChanges = function()
     .. "  %#Comment#a%* amend"
     .. "  %#Comment#X%* discard"
     .. "  %#Comment#q%* close"
+    .. "  %#Comment#?%* help"
 
   local function update_signs()
     vim.api.nvim_buf_clear_namespace(buf, CHANGES_NS, 0, -1)
@@ -2625,23 +2626,61 @@ HgChanges = function()
     )
   end, { buffer = buf, desc = "Discard selected files" })
 
+  local help_lines = {
+    " Hg Changes",
+    " ═══════════",
+    " <Space>  toggle file selection",
+    " V+Space  toggle range selection",
+    " A        toggle all",
+    " a        amend selected into current commit",
+    " X        discard selected changes",
+    " q        close",
+    " ?        show/dismiss this help",
+  }
+
+  local help_win = nil
+  local function show_help()
+    if help_win and vim.api.nvim_win_is_valid(help_win) then
+      vim.api.nvim_win_close(help_win, true)
+      help_win = nil
+      return
+    end
+    local help_buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(help_buf, 0, -1, false, help_lines)
+    vim.api.nvim_set_option_value("modifiable", false, { buf = help_buf })
+    vim.api.nvim_set_option_value("bufhidden", "wipe", { buf = help_buf })
+    local width = 0
+    for _, l in ipairs(help_lines) do
+      width = math.max(width, #l)
+    end
+    help_win = vim.api.nvim_open_win(help_buf, false, {
+      relative = "win",
+      win = win,
+      anchor = "NE",
+      row = 0,
+      col = vim.api.nvim_win_get_width(win),
+      width = width + 2,
+      height = #help_lines,
+      style = "minimal",
+      border = "rounded",
+    })
+    vim.keymap.set("n", "q", function()
+      if help_win and vim.api.nvim_win_is_valid(help_win) then
+        vim.api.nvim_win_close(help_win, true)
+        help_win = nil
+      end
+    end, { buffer = help_buf })
+  end
+
   vim.keymap.set("n", "q", function()
+    if help_win and vim.api.nvim_win_is_valid(help_win) then
+      vim.api.nvim_win_close(help_win, true)
+      help_win = nil
+    end
     vim.api.nvim_win_close(win, true)
   end, { buffer = buf, desc = "Close" })
 
-  vim.keymap.set("n", "?", function()
-    vim.notify(table.concat({
-      "Hg Changes",
-      "===========",
-      "<Space>  toggle file selection",
-      "V+Space  toggle range selection",
-      "A        toggle all",
-      "a        amend selected into current commit",
-      "X        discard selected changes",
-      "q        close",
-      "?        show this help",
-    }, "\n"), vim.log.levels.INFO)
-  end, { buffer = buf, desc = "Show help" })
+  vim.keymap.set("n", "?", show_help, { buffer = buf, desc = "Show help" })
 end
 
 local SIGN_NS = vim.api.nvim_create_namespace("hg_signcolumn")
