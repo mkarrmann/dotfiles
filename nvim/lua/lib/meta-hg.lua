@@ -79,6 +79,8 @@ local CONFIG = {
 }
 
 local SSL_NS = vim.api.nvim_create_namespace("hg_ssl")
+local SSL_CURRENT_NS = vim.api.nvim_create_namespace("hg_ssl_current")
+vim.api.nvim_set_hl(0, "HgSslCurrentLine", { default = true, link = "Visual" })
 local SSL_STATE = {
   ---@type number? reuse the same buffer for the nvim process lifespan
   bufnr = nil,
@@ -729,6 +731,19 @@ local function filter_hidden_bookmarks(lines)
   return result
 end
 
+local function ssl_highlight_current_line(bufnr, lines)
+  vim.api.nvim_buf_clear_namespace(bufnr, SSL_CURRENT_NS, 0, -1)
+  for i, line in ipairs(lines) do
+    local commit = ssl_utils.parse_diff_line(line)
+    if commit and commit.is_current then
+      vim.api.nvim_buf_set_extmark(bufnr, SSL_CURRENT_NS, i - 1, 0, {
+        line_hl_group = "HgSslCurrentLine",
+      })
+      break
+    end
+  end
+end
+
 ---@param bufnr number
 function ssl_utils.refresh_buffer(bufnr)
   SSL_STATE.blocked = true
@@ -745,6 +760,7 @@ function ssl_utils.refresh_buffer(bufnr)
     sl_lines = filter_hidden_bookmarks(sl_lines)
     vim.schedule(function()
       vim.api.nvim_buf_set_lines(bufnr or 0, 0, -1, false, sl_lines)
+      ssl_highlight_current_line(bufnr or 0, sl_lines)
     end)
 
     -- later async update content with diff statuses
@@ -761,6 +777,7 @@ function ssl_utils.refresh_buffer(bufnr)
       vim.schedule(function()
         SSL_STATE.blocked = false
         vim.api.nvim_buf_set_lines(bufnr or 0, 0, -1, false, ssl_lines)
+        ssl_highlight_current_line(bufnr or 0, ssl_lines)
         vim.notify("ssl updated", vim.log.levels.INFO)
       end)
 
