@@ -1163,6 +1163,8 @@ vim.api.nvim_create_autocmd("TabClosed", {
 ---@field desc string
 ---@field action fun(commit: Hg.commit, bufnr: number)
 
+local HgChanges -- forward declaration; defined after HgStatus
+
 -- Here will be the command in the future diffs
 ---@type table<string, Hg.ssl_command>
 local SSL_COMMANDS = {
@@ -2367,7 +2369,7 @@ end
 
 local CHANGES_NS = vim.api.nvim_create_namespace("hg_changes")
 
-local function HgChanges()
+HgChanges = function()
   log_to_scuba({
     module = "hg",
     command = "HgChanges",
