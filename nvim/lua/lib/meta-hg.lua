@@ -2443,6 +2443,8 @@ HgChanges = function()
     .. "  %#Comment#q%* close"
     .. "  %#Comment#?%* help"
 
+  vim.notify("Press ? for help", vim.log.levels.INFO)
+
   local function update_signs()
     vim.api.nvim_buf_clear_namespace(buf, CHANGES_NS, 0, -1)
     for idx in pairs(selected) do
