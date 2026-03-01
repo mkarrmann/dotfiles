@@ -4,6 +4,7 @@ local M = {}
 
 local SESSION_KEY = "claude_edit_diff"
 local _term_win = nil
+local _buf_counter = 0
 
 local function find_terminal_win()
 	for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
@@ -29,8 +30,11 @@ local function update_winbar(session)
 	local pair = session.pairs[session.index]
 	local pos = string.format("[%d/%d]", session.index, #session.pairs)
 	local display_name = vim.fn.fnamemodify(pair.file, ":.")
-	vim.wo[session.right_win].winbar = "%#Comment# before " .. pos .. " %* " .. display_name
-	vim.wo[session.left_win].winbar = "%#DiagnosticOk# after " .. pos .. " %* " .. display_name
+	vim.api.nvim_win_set_var(session.right_win, "custom_winbar_text",
+		"%#Comment# before " .. pos .. " %* " .. display_name)
+	vim.api.nvim_win_set_var(session.left_win, "custom_winbar_text",
+		"%#DiagnosticOk# after " .. pos .. " %* " .. display_name)
+	require("lualine").refresh()
 end
 
 local function ensure_session()
@@ -120,7 +124,8 @@ function M.show(file_path, snapshot_path)
 			if ft then
 				vim.bo[old_buf].filetype = ft
 			end
-			vim.api.nvim_buf_set_name(old_buf, "before://" .. vim.fn.fnamemodify(file_path, ":t"))
+			_buf_counter = _buf_counter + 1
+			vim.api.nvim_buf_set_name(old_buf, string.format("before://%s#%d", file_path, _buf_counter))
 
 			local new_buf = vim.fn.bufadd(file_path)
 			vim.fn.bufload(new_buf)

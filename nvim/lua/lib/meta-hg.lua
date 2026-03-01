@@ -907,26 +907,17 @@ local function diff_split_update_winbar(session)
   local pair = session.pairs[session.index]
   local pos = string.format("[%d/%d]", session.index, #session.pairs)
 
-  vim.wo[session.right_win].winbar = "%#Comment# "
-    .. session.parent_rev
-    .. " %* "
-    .. pair.file
-    .. " "
-    .. pos
+  vim.api.nvim_win_set_var(session.right_win, "custom_winbar_text",
+    "%#Comment# " .. session.parent_rev .. " %* " .. pair.file .. " " .. pos)
 
   if pair.is_live then
-    vim.wo[session.left_win].winbar = "%#DiagnosticOk# LIVE %* "
-      .. pair.file
-      .. " "
-      .. pos
+    vim.api.nvim_win_set_var(session.left_win, "custom_winbar_text",
+      "%#DiagnosticOk# LIVE %* " .. pair.file .. " " .. pos)
   else
-    vim.wo[session.left_win].winbar = "%#Comment# "
-      .. session.commit.hash
-      .. " %* "
-      .. pair.file
-      .. " "
-      .. pos
+    vim.api.nvim_win_set_var(session.left_win, "custom_winbar_text",
+      "%#Comment# " .. session.commit.hash .. " %* " .. pair.file .. " " .. pos)
   end
+  require("lualine").refresh()
 end
 
 ---@param session Hg.diff_session

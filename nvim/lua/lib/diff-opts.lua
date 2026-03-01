@@ -11,11 +11,14 @@ function M.apply_pair(left_win, right_win, left_label, right_label, display_name
 	M.apply(left_win)
 	M.apply(right_win)
 	if left_label and display_name then
-		vim.wo[left_win].winbar = "%#Comment# " .. left_label .. " %* " .. display_name
+		vim.api.nvim_win_set_var(left_win, "custom_winbar_text",
+			"%#Comment# " .. left_label .. " %* " .. display_name)
 	end
 	if right_label and display_name then
-		vim.wo[right_win].winbar = "%#DiagnosticOk# " .. right_label .. " %* " .. display_name
+		vim.api.nvim_win_set_var(right_win, "custom_winbar_text",
+			"%#DiagnosticOk# " .. right_label .. " %* " .. display_name)
 	end
+	require("lualine").refresh()
 	vim.cmd("syncbind")
 end
 

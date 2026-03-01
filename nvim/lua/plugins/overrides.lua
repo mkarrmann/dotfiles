@@ -16,14 +16,24 @@ return {
 	},
 	{
 		"nvim-lualine/lualine.nvim",
-		opts = {
-			winbar = {
-				lualine_c = { { "filename", path = 1 } },
-			},
-			inactive_winbar = {
-				lualine_c = { { "filename", path = 1 } },
-			},
-		},
+		opts = function(_, opts)
+			local function custom_or_filename()
+				local ok, text = pcall(vim.api.nvim_win_get_var, 0, "custom_winbar_text")
+				if ok then
+					return text
+				end
+				local name = vim.fn.expand("%:.")
+				if name == "" then
+					name = "[No Name]"
+				end
+				if vim.bo.modified then
+					name = name .. " [+]"
+				end
+				return name
+			end
+			opts.winbar = { lualine_c = { custom_or_filename } }
+			opts.inactive_winbar = { lualine_c = { custom_or_filename } }
+		end,
 	},
 	{
 		"coder/claudecode.nvim",

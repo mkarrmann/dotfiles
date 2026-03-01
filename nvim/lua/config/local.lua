@@ -105,6 +105,19 @@ vim.api.nvim_create_user_command("HgDiffSplit", function()
 	local display_name = vim.fn.fnamemodify(file, ":.")
 	require("lib.diff-opts").apply_pair(diff_win, orig_win, ".^", "LIVE", display_name)
 	vim.api.nvim_set_current_win(orig_win)
+	vim.api.nvim_create_autocmd("WinClosed", {
+		pattern = tostring(diff_win),
+		once = true,
+		callback = function()
+			if vim.api.nvim_win_is_valid(orig_win) then
+				pcall(vim.api.nvim_win_del_var, orig_win, "custom_winbar_text")
+				vim.api.nvim_win_call(orig_win, function()
+					vim.cmd("diffoff")
+				end)
+				require("lualine").refresh()
+			end
+		end,
+	})
 end, { desc = "Side-by-side diff of current file against parent commit" })
 vim.keymap.set("n", "<leader>hb", "<CMD>HgBlame<CR>", { desc = "Hg blame" })
 vim.keymap.set("n", "<leader>hd", "<CMD>HgDiffSplit<CR>", { desc = "Hg diff split" })
