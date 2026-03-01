@@ -47,6 +47,7 @@ _release_lock() {
 
 LOG_DIR="$HOME/.claude/agent-manager/logs"
 LOG_FILE="$LOG_DIR/agent-tracker.log"
+PID_DIR="$HOME/.claude/agent-manager/pids"
 
 # Column layout: | Name | Status | OD | Session ID | Description | Started | Updated | Dir |
 # Field indices:   $2     $3       $4   $5           $6            $7        $8         $9
@@ -57,6 +58,24 @@ _log() {
     mv "$LOG_FILE" "${LOG_FILE}.prev" 2>/dev/null || true
   fi
   echo "$(date '+%m-%d %H:%M:%S') $*" >> "$LOG_FILE"
+}
+
+# Record the Claude Code process's PID for liveness checks.
+# Hook process tree: Claude Code → sh -c "..." ($PPID) → bash agent-tracker.sh ($$)
+# So Claude Code's PID is our grandparent.
+_save_pid() {
+  local sid="$1"
+  local claude_pid
+  claude_pid=$(awk '/PPid/{print $2}' /proc/$PPID/status 2>/dev/null)
+  if [ -n "$claude_pid" ] && [ "$claude_pid" -gt 1 ] && [ -d "/proc/$claude_pid" ]; then
+    mkdir -p "$PID_DIR" 2>/dev/null
+    echo "$claude_pid" > "${PID_DIR}/${sid}"
+  fi
+}
+
+_cleanup_pid() {
+  local sid="$1"
+  rm -f "${PID_DIR}/${sid}" 2>/dev/null
 }
 
 # Check if gdrive mount is healthy (avoid hanging on stale FUSE mounts)
@@ -125,16 +144,19 @@ prune() {
 
 STALE_THRESHOLD_MINUTES=60
 
-# Mark stale sessions: any active-like session not updated in >STALE_THRESHOLD_MINUTES gets stopped
+# Mark stale sessions: any active-like session not updated in >STALE_THRESHOLD_MINUTES gets stopped.
+# Also stops sessions whose PID is no longer alive (same-host only).
 mark_stale() {
   local now_epoch
   now_epoch=$(date +%s)
   local year
   year=$(date +%Y)
+  local this_host
+  this_host=$(hostname -s)
   local changed=false
   local tmpfile="${AGENTS_FILE}.tmp"
   local name status od sid desc started updated
-  local status_trimmed updated_trimmed sid_trimmed
+  local status_trimmed updated_trimmed sid_trimmed od_trimmed
 
   cp "$AGENTS_FILE" "$tmpfile"
 
@@ -142,13 +164,50 @@ mark_stale() {
     status_trimmed=$(echo "$status" | xargs)
     updated_trimmed=$(echo "$updated" | xargs)
     sid_trimmed=$(echo "$sid" | xargs)
+    od_trimmed=$(echo "$od" | xargs)
 
     [ -z "$sid_trimmed" ] && continue
-    [ -z "$updated_trimmed" ] && continue
 
     case "$status_trimmed" in
-      "⚡ active"|"🟡 done"|"🟢 interactive"|"🔄 resumed") ;;
+      "⚡ active"|"🟡 done"|"❓ waiting"|"🟢 interactive"|"🔄 resumed") ;;
       *) continue ;;
+    esac
+
+    # PID-based liveness: if we have a PID file for a same-host session, check it
+    local pid_dead=false
+    if [ "$od_trimmed" = "$this_host" ] && [ -f "${PID_DIR}/${sid_trimmed}" ]; then
+      local stored_pid
+      stored_pid=$(cat "${PID_DIR}/${sid_trimmed}" 2>/dev/null)
+      if [ -n "$stored_pid" ] && ! [ -d "/proc/$stored_pid" ]; then
+        pid_dead=true
+      fi
+    fi
+
+    if $pid_dead; then
+      local ts
+      ts=$(now)
+      local name_trimmed
+      name_trimmed=$(echo "$name" | xargs)
+      _log "  mark_stale: sid=${sid_trimmed:0:8} pid dead — marking stopped"
+      awk -v sid="$sid_trimmed" -v ts="$ts" -F'|' 'BEGIN{OFS="|"} {
+        if (NR > 4 && index($5, sid) > 0) {
+          $3 = " ⏹️ stopped "
+          $8 = " " ts " "
+        }
+        print
+      }' "$tmpfile" > "${tmpfile}.2"
+      mv "${tmpfile}.2" "$tmpfile"
+      _cleanup_pid "$sid_trimmed"
+      changed=true
+      continue
+    fi
+
+    # Timestamp-based fallback (cross-machine or no PID file)
+    [ -z "$updated_trimmed" ] && continue
+
+    # Don't auto-stop "waiting" sessions — the question still needs an answer
+    case "$status_trimmed" in
+      "❓ waiting") continue ;;
     esac
 
     local updated_epoch
@@ -173,6 +232,7 @@ mark_stale() {
         print
       }' "$tmpfile" > "${tmpfile}.2"
       mv "${tmpfile}.2" "$tmpfile"
+      _cleanup_pid "$sid_trimmed"
       changed=true
     fi
   done < <(tail -n +5 "$AGENTS_FILE")
@@ -223,6 +283,9 @@ cmd_register() {
   # file to point at a *previous* session, so renames and resumes silently
   # target the wrong row.
   echo "$sid" > ~/.claude-last-session
+
+  # Record Claude Code's PID for liveness checks (local, fast — do before gdrive)
+  _save_pid "$sid"
 
   # ── RESUME PATH ──
   if [ "$source" = "resume" ]; then
@@ -421,6 +484,8 @@ cmd_stop() {
     exit 0
   fi
 
+  _cleanup_pid "$sid"
+
   local ts
   ts=$(now)
 
@@ -533,6 +598,9 @@ cmd_active() {
   if is_subagent "$tp"; then
     exit 0
   fi
+
+  # Fallback PID capture in case SessionStart hook failed
+  [ ! -f "${PID_DIR}/${sid}" ] && _save_pid "$sid"
 
   local ts
   ts=$(now)

@@ -14,6 +14,8 @@ if [ -z "$AGENTS_FILE" ]; then
 fi
 CACHE_FILE="$HOME/.claude/agent-manager/.agents-cache"
 CACHE_TTL=10
+PID_DIR="$HOME/.claude/agent-manager/pids"
+THIS_HOST=$(hostname -s)
 
 if [ ! -f "$AGENTS_FILE" ]; then
   exit 0
@@ -53,6 +55,20 @@ GRAY='\033[0;90m'
 
 NOW_EPOCH=$(date +%s)
 YEAR=$(date +%Y)
+
+# Check if a session's Claude Code process is still alive (same-host only).
+# Returns: 0=alive, 1=dead, 2=unknown (cross-machine or no PID file)
+_check_pid() {
+  local sid="$1" od="$2"
+  [ "$od" != "$THIS_HOST" ] && return 2
+  local pidfile="${PID_DIR}/${sid}"
+  [ ! -f "$pidfile" ] && return 2
+  local pid
+  pid=$(cat "$pidfile" 2>/dev/null)
+  [ -z "$pid" ] && return 2
+  [ -d "/proc/$pid" ] && return 0
+  return 1
+}
 
 # Compute relative age string from an Updated timestamp (format: MM-DD HH:MM)
 format_age() {
@@ -103,17 +119,6 @@ age_minutes_from_ts() {
 color_status() {
   local status="$1"
   local age_minutes="$2"
-
-  # Override active-like statuses if stale (>30 min without update)
-  # Don't override "done" or "waiting" — those are legitimate end states.
-  if [ -n "$age_minutes" ] && [ "$age_minutes" -ge 30 ]; then
-    case "$status" in
-      "⚡ active"|"🟢 interactive"|"🔄 resumed")
-        printf "${YELLOW}💤 stale${RESET}"
-        return
-        ;;
-    esac
-  fi
 
   case "$status" in
     *"(this session)"*)  printf "${CYAN}(this session)${RESET}" ;;
@@ -196,12 +201,6 @@ inactive_lines=()
 
 is_live_status() {
   local status="$1" age_min="$2"
-  # Stale sessions are inactive even if their status looks live
-  if [ -n "$age_min" ] && [ "$age_min" -ge 30 ]; then
-    case "$status" in
-      "⚡ active"|"🟢 interactive"|"🔄 resumed") return 1 ;;
-    esac
-  fi
   case "$status" in
     "⚡ active"|"🟡 done"|"❓ waiting"|"🟢 interactive"|"🔄 resumed"|"🔵 bg:running") return 0 ;;
     *) return 1 ;;
@@ -225,12 +224,20 @@ while IFS='|' read -r _ name status od sid desc started updated dir _; do
     fi
     current_line="$name|(this session)|$od|$sid|$desc|$updated|$dir"
   else
-    age_min=""
-    age_min=$(age_minutes_from_ts "$updated")
-    if is_live_status "$status" "$age_min"; then
-      live_lines+=("$name|$status|$od|$sid|$desc|$updated|$dir")
+    # For non-current sessions, check PID liveness to detect dead sessions
+    _check_pid "$sid" "$od"
+    local pid_result=$?
+    if [ "$pid_result" -eq 1 ]; then
+      # PID is dead — show as stopped regardless of stored status
+      inactive_lines+=("$name|⏹️ stopped|$od|$sid|$desc|$updated|$dir")
     else
-      inactive_lines+=("$name|$status|$od|$sid|$desc|$updated|$dir")
+      age_min=""
+      age_min=$(age_minutes_from_ts "$updated")
+      if is_live_status "$status" "$age_min"; then
+        live_lines+=("$name|$status|$od|$sid|$desc|$updated|$dir")
+      else
+        inactive_lines+=("$name|$status|$od|$sid|$desc|$updated|$dir")
+      fi
     fi
   fi
 done < <(tail -n +5 "$agents_source")
