@@ -223,7 +223,7 @@ while IFS='|' read -r _ name status od sid desc started updated dir _; do
     fi
     current_line="$name|(this session)|$od|$sid|$desc|$updated|$dir"
   else
-    local age_min=""
+    age_min=""
     age_min=$(age_minutes_from_ts "$updated")
     if is_live_status "$status" "$age_min"; then
       live_lines+=("$name|$status|$od|$sid|$desc|$updated|$dir")
