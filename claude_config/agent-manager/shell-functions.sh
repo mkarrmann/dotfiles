@@ -76,6 +76,12 @@ _lookup_sid() {
   echo "$sid"
 }
 
+# _lookup_dir <name> — resolve session name to its working directory
+_lookup_dir() {
+  local name="$1"
+  grep "| ${name} |" "$AGENTS_FILE" 2>/dev/null | head -1 | awk -F'|' '{print $9}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
 # _start_bg_session <name> <prompt> [sid]
 #   If sid is provided, resumes that session (cr -b).
 #   If sid is empty, starts a new session (cn -b).
@@ -181,6 +187,12 @@ cr() {
     [ -z "$prompt" ] && { echo "Error: background mode requires a prompt"; return 1; }
     _start_bg_session "$name" "$prompt" "$sid"
   else
+    local session_dir
+    session_dir=$(_lookup_dir "$name")
+    if [ -n "$session_dir" ] && [ -d "$session_dir" ] && [ "$session_dir" != "$PWD" ]; then
+      echo "cd $session_dir"
+      cd "$session_dir" || { echo "Cannot cd to $session_dir"; return 1; }
+    fi
     tmux kill-session -t "cb-${name}" 2>/dev/null && echo "Killed tmux session cb-${name}"
     echo "Resuming session ${sid:0:8}... (${name}) interactively..."
     # Pre-set name so if session was compacted (new UUID), the hook inherits the name

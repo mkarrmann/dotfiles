@@ -245,6 +245,14 @@ local function resume_by_name()
 						return
 					end
 					local agent = selection.value
+					-- Switch to the session's directory so Claude starts there
+					if agent.dir and agent.dir ~= "" and vim.fn.isdirectory(agent.dir) == 1 then
+						local cwd = vim.fn.getcwd()
+						if agent.dir ~= cwd then
+							vim.fn.chdir(agent.dir)
+							vim.notify("cd " .. agent.dir)
+						end
+					end
 					-- Write name so hook preserves it if session is compacted
 					local nf = io.open(next_name_file, "w")
 					if nf then
