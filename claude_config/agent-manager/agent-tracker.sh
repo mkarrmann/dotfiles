@@ -216,6 +216,14 @@ cmd_register() {
 
   _log "register sid=${sid:0:8} source=$source next-name=$(cat ~/.claude-next-name 2>/dev/null || echo NONE)"
 
+  # Always track session locally, regardless of gdrive state.
+  # This is critical: rename_session() and other local consumers read
+  # ~/.claude-last-session to identify the current session.  If we only
+  # write it after a successful gdrive update, a stale mount causes the
+  # file to point at a *previous* session, so renames and resumes silently
+  # target the wrong row.
+  echo "$sid" > ~/.claude-last-session
+
   # ── RESUME PATH ──
   if [ "$source" = "resume" ]; then
     echo "$sid" > ~/.claude-resuming
@@ -259,7 +267,6 @@ cmd_register() {
           }' "$AGENTS_FILE" > "$tmpfile"
           mv "$tmpfile" "$AGENTS_FILE"
         fi
-        echo "$sid" > ~/.claude-last-session
       else
         _log "  resume: sid NOT found in AGENTS.md — skipping (expired session)"
       fi
@@ -322,7 +329,6 @@ cmd_register() {
         }' "$AGENTS_FILE" > "$tmpfile"
         mv "$tmpfile" "$AGENTS_FILE"
       fi
-      echo "$sid" > ~/.claude-last-session
     else
       local name
       local old_desc=""
@@ -370,7 +376,6 @@ cmd_register() {
             print
           }' "$AGENTS_FILE" > "$tmpfile"
           mv "$tmpfile" "$AGENTS_FILE"
-          echo "$sid" > ~/.claude-last-session
           sort_agents
           exit 0
         fi
@@ -381,8 +386,6 @@ cmd_register() {
         grep -v "| ${name} |" "$AGENTS_FILE" > "$tmpfile"
         mv "$tmpfile" "$AGENTS_FILE"
       fi
-
-      echo "$sid" > ~/.claude-last-session
 
       local initial_status="🟢 interactive"
       if [ -f ~/.claude-next-bg ]; then

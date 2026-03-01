@@ -72,7 +72,7 @@ claude() {
 _lookup_sid() {
   local name="$1"
   local sid
-  sid=$(grep "| ${name} |" "$AGENTS_FILE" 2>/dev/null | tail -1 | awk -F'|' '{print $5}' | tr -d ' ')
+  sid=$(grep "| ${name} |" "$AGENTS_FILE" 2>/dev/null | head -1 | awk -F'|' '{print $5}' | tr -d ' ')
   echo "$sid"
 }
 
