@@ -651,6 +651,9 @@ cmd_active() {
   # Fallback PID capture in case SessionStart hook failed
   [ ! -f "${PID_DIR}/${sid}" ] && _save_pid "$sid"
 
+  local tmux_ctx
+  tmux_ctx=$(_tmux_context)
+
   local ts
   ts=$(now)
 
@@ -665,15 +668,32 @@ cmd_active() {
       current_status=$(grep "| ${sid} |" "$AGENTS_FILE" | awk -F'|' '{print $3}')
       if [[ "$current_status" != *"⚡"* ]]; then
         local tmpfile="${AGENTS_FILE}.tmp"
-        awk -v sid="$sid" -v ts="$ts" -F'|' 'BEGIN{OFS="|"} {
+        awk -v sid="$sid" -v ts="$ts" -v desc="$tmux_ctx" -F'|' 'BEGIN{OFS="|"} {
           if (NR > 4 && index($5, sid) > 0) {
             $3 = " ⚡ active "
+            if (desc != "") $6 = " " desc " "
             $8 = " " ts " "
           }
           print
         }' "$AGENTS_FILE" > "$tmpfile"
         mv "$tmpfile" "$AGENTS_FILE"
         sort_agents
+      else
+        # Already active — refresh tmux context without touching timestamp
+        if [ -n "$tmux_ctx" ]; then
+          local current_desc
+          current_desc=$(grep "| ${sid} |" "$AGENTS_FILE" | awk -F'|' '{print $6}' | xargs)
+          if [ "$current_desc" != "$tmux_ctx" ]; then
+            local tmpfile="${AGENTS_FILE}.tmp"
+            awk -v sid="$sid" -v desc="$tmux_ctx" -F'|' 'BEGIN{OFS="|"} {
+              if (NR > 4 && index($5, sid) > 0) {
+                $6 = " " desc " "
+              }
+              print
+            }' "$AGENTS_FILE" > "$tmpfile"
+            mv "$tmpfile" "$AGENTS_FILE"
+          fi
+        fi
       fi
     else
       # Fallback registration: session not in AGENTS.md — startup registration
