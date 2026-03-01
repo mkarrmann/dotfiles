@@ -207,6 +207,7 @@ local function resume_by_name()
 		items = {
 			{ width = 14 },
 			{ width = 30 },
+			{ width = 38 },
 			{ width = 12 },
 			{ width = 12 },
 			{ remaining = true },
@@ -217,6 +218,7 @@ local function resume_by_name()
 		return displayer({
 			{ entry.value.status },
 			{ entry.value.name, "TelescopeResultsIdentifier" },
+			{ entry.value.sid, "TelescopeResultsComment" },
 			{ entry.value.updated, "TelescopeResultsComment" },
 			{ entry.value.od, "TelescopeResultsComment" },
 			{ shorten_path(entry.value.dir), "TelescopeResultsComment" },
@@ -232,7 +234,7 @@ local function resume_by_name()
 					return {
 						value = agent,
 						display = make_display,
-						ordinal = agent.name .. " " .. agent.status .. " " .. agent.od .. " " .. agent.description .. " " .. agent.dir,
+						ordinal = agent.name .. " " .. agent.sid .. " " .. agent.status .. " " .. agent.od .. " " .. agent.description .. " " .. agent.dir,
 					}
 				end,
 			}),
