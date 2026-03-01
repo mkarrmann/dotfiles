@@ -80,7 +80,12 @@ local CONFIG = {
 
 local SSL_NS = vim.api.nvim_create_namespace("hg_ssl")
 local SSL_CURRENT_NS = vim.api.nvim_create_namespace("hg_ssl_current")
+local SSL_HOP_NS = vim.api.nvim_create_namespace("hg_ssl_hop")
 vim.api.nvim_set_hl(0, "HgSslCurrentLine", { default = true, link = "Visual" })
+vim.api.nvim_set_hl(0, "HgSslHopLabel", { default = true, link = "DiagnosticOk" })
+
+local HOP_LABELS = "fjdksla;ghqweruiop"
+
 local SSL_STATE = {
   ---@type number? reuse the same buffer for the nvim process lifespan
   bufnr = nil,
@@ -731,6 +736,27 @@ local function filter_hidden_bookmarks(lines)
   return result
 end
 
+---@param bufnr number
+---@param lines string[]
+local function ssl_place_hop_labels(bufnr, lines)
+  vim.api.nvim_buf_clear_namespace(bufnr, SSL_HOP_NS, 0, -1)
+  local label_idx = 0
+  for i, line in ipairs(lines) do
+    local commit = ssl_utils.parse_diff_line(line)
+    if commit then
+      label_idx = label_idx + 1
+      local label = HOP_LABELS:sub(label_idx, label_idx)
+      if label == "" then
+        break
+      end
+      vim.api.nvim_buf_set_extmark(bufnr, SSL_HOP_NS, i - 1, 0, {
+        virt_text = { { " [" .. label .. "]", "HgSslHopLabel" } },
+        virt_text_pos = "eol",
+      })
+    end
+  end
+end
+
 local function ssl_highlight_current_line(bufnr, lines)
   vim.api.nvim_buf_clear_namespace(bufnr, SSL_CURRENT_NS, 0, -1)
   for i, line in ipairs(lines) do
@@ -761,6 +787,7 @@ function ssl_utils.refresh_buffer(bufnr)
     vim.schedule(function()
       vim.api.nvim_buf_set_lines(bufnr or 0, 0, -1, false, sl_lines)
       ssl_highlight_current_line(bufnr or 0, sl_lines)
+      ssl_place_hop_labels(bufnr or 0, sl_lines)
     end)
 
     -- later async update content with diff statuses
@@ -778,6 +805,7 @@ function ssl_utils.refresh_buffer(bufnr)
         SSL_STATE.blocked = false
         vim.api.nvim_buf_set_lines(bufnr or 0, 0, -1, false, ssl_lines)
         ssl_highlight_current_line(bufnr or 0, ssl_lines)
+        ssl_place_hop_labels(bufnr or 0, ssl_lines)
         vim.notify("ssl updated", vim.log.levels.INFO)
       end)
 
@@ -1710,6 +1738,7 @@ local function HgSsl(opts)
       "HG SSL Buffer",
       "===================================================",
       "Navigate to next/prev commit with j/k",
+      "f     hop to a labeled commit",
       "",
       "Keymaps:",
       "<cr>  select available commands for selected commit",
@@ -1760,6 +1789,36 @@ local function HgSsl(opts)
       meta_util.open_url("https://www.internalfb.com/diff/" .. commit.diff)
     end
   end, { buffer = true, desc = "Open diff in phabricator" })
+
+  vim.keymap.set("n", "f", function()
+    local lines = vim.api.nvim_buf_get_lines(SSL_STATE.bufnr, 0, -1, false)
+    local label_to_line = {}
+    local label_idx = 0
+    for i, line in ipairs(lines) do
+      if ssl_utils.parse_diff_line(line) then
+        label_idx = label_idx + 1
+        local label = HOP_LABELS:sub(label_idx, label_idx)
+        if label == "" then
+          break
+        end
+        label_to_line[label] = i
+      end
+    end
+
+    if label_idx == 0 then
+      return
+    end
+
+    local ok, char = pcall(vim.fn.getcharstr)
+    if not ok or not char then
+      return
+    end
+
+    local target = label_to_line[char]
+    if target then
+      vim.api.nvim_win_set_cursor(0, { target, 0 })
+    end
+  end, { buffer = true, desc = "Hop to labeled commit" })
 end
 
 local function HgCommit()
