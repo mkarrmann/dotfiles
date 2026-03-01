@@ -203,9 +203,12 @@ local function _run_cmd_and_send(cmd)
 	local float_w = math.max(40, math.floor(editor_w * 0.4))
 	local float_h = math.max(8, math.floor(editor_h * 0.3))
 
+	local cwd = vim.fn.getcwd()
+
 	local float_buf = vim.api.nvim_create_buf(false, true)
 	vim.bo[float_buf].buftype = "nofile"
 	vim.bo[float_buf].bufhidden = "wipe"
+	vim.api.nvim_buf_set_lines(float_buf, 0, -1, false, { "cwd: " .. cwd, "" })
 	vim.bo[float_buf].modifiable = false
 
 	local title_max = float_w - 4
@@ -236,6 +239,7 @@ local function _run_cmd_and_send(cmd)
 		output = {},
 		line_count = 0,
 		claude = claude,
+		cwd = cwd,
 	}
 	_run_state = s
 
@@ -290,8 +294,8 @@ local function _run_cmd_and_send(cmd)
 				end
 
 				local body = table.concat(output, "\n")
-				local msg = ("I ran `%s` (exit code %d). Combined stdout+stderr:\n```\n%s\n```"):format(
-					cmd, exit_code, body
+				local msg = ("I ran `%s` in `%s` (exit code %d). Combined stdout+stderr:\n```\n%s\n```"):format(
+					cmd, s.cwd, exit_code, body
 				)
 
 				if s.claude and s.claude.chan then
