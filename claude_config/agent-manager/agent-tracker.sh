@@ -105,6 +105,16 @@ _start_heartbeat() {
   setsid bash "$SELF" heartbeat "$sid" "$claude_pid" </dev/null >/dev/null 2>&1 &
 }
 
+# Get tmux session:window context for the current pane.
+_tmux_context() {
+  if [ -n "${TMUX:-}" ]; then
+    local s w
+    s=$(tmux display-message -p '#S' 2>/dev/null)
+    w=$(tmux display-message -p '#I' 2>/dev/null)
+    [ -n "$s" ] && echo "${s}:${w}" && return
+  fi
+}
+
 # Check if gdrive mount is healthy (avoid hanging on stale FUSE mounts)
 _check_gdrive() {
   if ! grep -q "gdrive" /proc/mounts 2>/dev/null; then
@@ -314,6 +324,10 @@ cmd_register() {
   # Record Claude Code's PID for liveness checks (local, fast — do before gdrive)
   _save_pid "$sid"
 
+  # Capture tmux context (session:window) for display
+  local tmux_ctx
+  tmux_ctx=$(_tmux_context)
+
   # Start cross-machine heartbeat daemon (updates AGENTS.md timestamp periodically)
   local claude_pid
   claude_pid=$(cat "${PID_DIR}/${sid}" 2>/dev/null)
@@ -351,10 +365,11 @@ cmd_register() {
         else
           _log "  resume: sid found, marking as resumed"
           local tmpfile="${AGENTS_FILE}.tmp"
-          awk -v sid="$sid" -v ts="$ts" -v host="$host" -v dir="$PWD" -F'|' 'BEGIN{OFS="|"} {
+          awk -v sid="$sid" -v ts="$ts" -v host="$host" -v dir="$PWD" -v desc="$tmux_ctx" -F'|' 'BEGIN{OFS="|"} {
             if (NR > 4 && index($5, sid) > 0) {
               $3 = " 🔄 resumed "
               $4 = " " host " "
+              if (desc != "") $6 = " " desc " "
               $8 = " " ts " "
               $9 = " " dir " "
             }
@@ -413,10 +428,11 @@ cmd_register() {
       current_status=$(grep "| ${sid} |" "$AGENTS_FILE" | awk -F'|' '{print $3}')
       if [[ "$current_status" != *"bg:running"* ]]; then
         local tmpfile="${AGENTS_FILE}.tmp"
-        awk -v sid="$sid" -v ts="$ts" -v host="$host" -v dir="$PWD" -F'|' 'BEGIN{OFS="|"} {
+        awk -v sid="$sid" -v ts="$ts" -v host="$host" -v dir="$PWD" -v desc="$tmux_ctx" -F'|' 'BEGIN{OFS="|"} {
           if (NR > 4 && index($5, sid) > 0) {
             $3 = " 🟢 interactive "
             $4 = " " host " "
+            if (desc != "") $6 = " " desc " "
             $8 = " " ts " "
             $9 = " " dir " "
           }
@@ -460,11 +476,12 @@ cmd_register() {
           # without creating phantom auto-named entries.
           _log "  startup: name '${name}' active with different sid — updating sid in place"
           local tmpfile="${AGENTS_FILE}.tmp"
-          awk -v sid="$sid" -v name="$name" -v ts="$ts" -v host="$host" -v dir="$PWD" -F'|' 'BEGIN{OFS="|"} {
+          awk -v sid="$sid" -v name="$name" -v ts="$ts" -v host="$host" -v dir="$PWD" -v desc="$tmux_ctx" -F'|' 'BEGIN{OFS="|"} {
             if (NR > 4 && index($0, "| " name " |") > 0) {
               $3 = " 🟢 interactive "
               $4 = " " host " "
               $5 = " " sid " "
+              if (desc != "") $6 = " " desc " "
               $8 = " " ts " "
               $9 = " " dir " "
             }
@@ -487,7 +504,7 @@ cmd_register() {
         initial_status="🔵 bg:running"
         rm -f ~/.claude-next-bg
       fi
-      local desc="${old_desc:-(new session)}"
+      local desc="${old_desc:-${tmux_ctx}}"
       local started="${old_started:-$ts}"
       echo "| ${name} | ${initial_status} | ${host} | ${sid} | ${desc} | ${started} | ${ts} | ${PWD} |" >> "$AGENTS_FILE"
       _log "  startup: created row name='${name}' sid=${sid:0:8}"
@@ -701,7 +718,9 @@ cmd_active() {
       fi
 
       echo "$sid" > ~/.claude-last-session
-      echo "| ${name} | ⚡ active | ${host} | ${sid} | (new session) | ${ts} | ${ts} | ${PWD} |" >> "$AGENTS_FILE"
+      local tmux_ctx
+      tmux_ctx=$(_tmux_context)
+      echo "| ${name} | ⚡ active | ${host} | ${sid} | ${tmux_ctx} | ${ts} | ${ts} | ${PWD} |" >> "$AGENTS_FILE"
       sort_agents
     fi
 

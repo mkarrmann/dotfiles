@@ -158,7 +158,7 @@ shorten_path() {
 }
 
 format_line() {
-  local marker="$1" name="$2" status="$3" od="$4" sid="$5" desc="$6" updated="$7" dir="$8"
+  local marker="$1" name="$2" status="$3" od="$4" sid="$5" desc="$6" started="$7" updated="$8" dir="$9"
 
   local age_min=""
   age_min=$(age_minutes_from_ts "$updated")
@@ -176,19 +176,45 @@ format_line() {
     dir_str=$(shorten_path "$dir")
   fi
 
-  local sid_short=""
-  if [ -n "$sid" ]; then
-    sid_short="$sid"
+  # Format time display: started→updated when they differ, just started otherwise
+  local time_str=""
+  local today
+  today=$(date '+%m-%d')
+  if [ -n "$started" ]; then
+    local s_date="${started%% *}"
+    if [ "$s_date" = "$today" ]; then
+      time_str="${started##* }"
+    else
+      time_str="$started"
+    fi
+    if [ -n "$updated" ] && [ "$updated" != "$started" ]; then
+      local u_date="${updated%% *}"
+      local u_time
+      if [ "$u_date" = "$today" ]; then
+        u_time="${updated##* }"
+      else
+        u_time="$updated"
+      fi
+      time_str="${time_str}→${u_time}"
+    fi
   fi
 
+  # Suppress useless default descriptions
+  local desc_display="$desc"
+  case "$desc" in
+    "(new session)"|"-"|"") desc_display="" ;;
+  esac
+
   if [ "$marker" = ">" ]; then
-    printf "${BOLD}${CYAN}>${RESET} ${BOLD}%-16s${RESET} %b  ${DIM}%s${RESET}  ${DIM}%s${RESET}  ${DIM}%s${RESET} %b" "$name" "$status_colored" "$sid_short" "$od" "$desc" "$age_str"
+    printf "${BOLD}${CYAN}>${RESET} ${BOLD}%-16s${RESET} %b" "$name" "$status_colored"
   else
-    printf "  ${DIM}%-16s${RESET} %b  ${DIM}%s${RESET}  ${DIM}%s${RESET}  ${DIM}%s${RESET} %b" "$name" "$status_colored" "$sid_short" "$od" "$desc" "$age_str"
+    printf "  ${DIM}%-16s${RESET} %b" "$name" "$status_colored"
   fi
-  if [ -n "$dir_str" ]; then
-    printf "  ${DIM}%s${RESET}" "$dir_str"
-  fi
+  [ -n "$desc_display" ] && printf "  ${DIM}%s${RESET}" "$desc_display"
+  printf "  ${DIM}%s${RESET}" "$od"
+  [ -n "$time_str" ] && printf "  ${DIM}%s${RESET}" "$time_str"
+  [ -n "$age_str" ] && printf " %b" "$age_str"
+  [ -n "$dir_str" ] && printf "  ${DIM}%s${RESET}" "$dir_str"
   printf "\n"
 }
 
@@ -213,6 +239,7 @@ while IFS='|' read -r _ name status od sid desc started updated dir _; do
   od=$(echo "$od" | xargs)
   sid=$(echo "$sid" | xargs)
   desc=$(echo "$desc" | xargs)
+  started=$(echo "$started" | xargs)
   updated=$(echo "$updated" | xargs)
   dir=$(echo "$dir" | xargs)
 
@@ -222,21 +249,21 @@ while IFS='|' read -r _ name status od sid desc started updated dir _; do
     if [ -n "$current_line" ]; then
       live_lines+=("$current_line")
     fi
-    current_line="$name|(this session)|$od|$sid|$desc|$updated|$dir"
+    current_line="$name|(this session)|$od|$sid|$desc|$started|$updated|$dir"
   else
     # For non-current sessions, check PID liveness to detect dead sessions
     _check_pid "$sid" "$od"
     local pid_result=$?
     if [ "$pid_result" -eq 1 ]; then
       # PID is dead — show as stopped regardless of stored status
-      inactive_lines+=("$name|⏹️ stopped|$od|$sid|$desc|$updated|$dir")
+      inactive_lines+=("$name|⏹️ stopped|$od|$sid|$desc|$started|$updated|$dir")
     else
       age_min=""
       age_min=$(age_minutes_from_ts "$updated")
       if is_live_status "$status" "$age_min"; then
-        live_lines+=("$name|$status|$od|$sid|$desc|$updated|$dir")
+        live_lines+=("$name|$status|$od|$sid|$desc|$started|$updated|$dir")
       else
-        inactive_lines+=("$name|$status|$od|$sid|$desc|$updated|$dir")
+        inactive_lines+=("$name|$status|$od|$sid|$desc|$started|$updated|$dir")
       fi
     fi
   fi
@@ -244,22 +271,22 @@ done < <(tail -n +5 "$agents_source")
 
 # Current session first
 if [ -n "$current_line" ]; then
-  IFS='|' read -r name status od sid desc updated dir <<< "$current_line"
-  format_line ">" "$name" "$status" "$od" "$sid" "$desc" "$updated" "$dir"
+  IFS='|' read -r name status od sid desc started updated dir <<< "$current_line"
+  format_line ">" "$name" "$status" "$od" "$sid" "$desc" "$started" "$updated" "$dir"
 fi
 
 # All live sessions
 for line in "${live_lines[@]}"; do
-  IFS='|' read -r name status od sid desc updated dir <<< "$line"
-  format_line " " "$name" "$status" "$od" "$sid" "$desc" "$updated" "$dir"
+  IFS='|' read -r name status od sid desc started updated dir <<< "$line"
+  format_line " " "$name" "$status" "$od" "$sid" "$desc" "$started" "$updated" "$dir"
 done
 
 # Most recent inactive sessions, up to limit
 inactive_shown=0
 for line in "${inactive_lines[@]}"; do
   [ "$inactive_shown" -ge "$MAX_INACTIVE" ] && break
-  IFS='|' read -r name status od sid desc updated dir <<< "$line"
-  format_line " " "$name" "$status" "$od" "$sid" "$desc" "$updated" "$dir"
+  IFS='|' read -r name status od sid desc started updated dir <<< "$line"
+  format_line " " "$name" "$status" "$od" "$sid" "$desc" "$started" "$updated" "$dir"
   inactive_shown=$((inactive_shown + 1))
 done
 
