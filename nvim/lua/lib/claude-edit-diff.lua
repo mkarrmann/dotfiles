@@ -1,35 +1,9 @@
+local diff_session = require("lib.diff-session")
+
 local M = {}
 
-local _state = nil
-
-function M.dismiss()
-	if not _state then
-		return
-	end
-	local s = _state
-	_state = nil
-
-	local group_ok, _ = pcall(vim.api.nvim_del_augroup_by_name, "claude_edit_diff")
-	if not group_ok then
-		-- group already cleaned up
-	end
-
-	for _, win in ipairs({ s.before_win, s.after_win }) do
-		if win and vim.api.nvim_win_is_valid(win) then
-			vim.api.nvim_win_call(win, function()
-				vim.cmd("diffoff")
-			end)
-			pcall(vim.api.nvim_win_close, win, true)
-		end
-	end
-	if s.before_buf and vim.api.nvim_buf_is_valid(s.before_buf) then
-		pcall(vim.api.nvim_buf_delete, s.before_buf, { force = true })
-	end
-
-	if s.term_win and vim.api.nvim_win_is_valid(s.term_win) then
-		vim.api.nvim_set_current_win(s.term_win)
-	end
-end
+local SESSION_KEY = "claude_edit_diff"
+local _term_win = nil
 
 local function find_terminal_win()
 	for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
@@ -47,91 +21,128 @@ local function find_terminal_win()
 	return nil
 end
 
+local function get_session()
+	return diff_session.sessions[SESSION_KEY]
+end
+
+local function update_winbar(session)
+	local pair = session.pairs[session.index]
+	local pos = string.format("[%d/%d]", session.index, #session.pairs)
+	local display_name = vim.fn.fnamemodify(pair.file, ":.")
+	vim.wo[session.right_win].winbar = "%#Comment# before " .. pos .. " %* " .. display_name
+	vim.wo[session.left_win].winbar = "%#DiagnosticOk# after " .. pos .. " %* " .. display_name
+end
+
+local function ensure_session()
+	local session = get_session()
+	if session then
+		return session
+	end
+
+	_term_win = find_terminal_win()
+	if _term_win then
+		vim.api.nvim_set_current_win(_term_win)
+	end
+
+	vim.cmd("belowright vsplit")
+	local right_win = vim.api.nvim_get_current_win()
+	vim.cmd("belowright vsplit")
+	local left_win = vim.api.nvim_get_current_win()
+
+	session = {
+		pairs = {},
+		index = 0,
+		left_win = left_win,
+		right_win = right_win,
+		update_winbar = update_winbar,
+		on_close = function()
+			local s = get_session()
+			if s then
+				diff_session.cleanup(s)
+			end
+			for _, win in ipairs({ left_win, right_win }) do
+				if vim.api.nvim_win_is_valid(win) then
+					vim.api.nvim_win_call(win, function()
+						vim.cmd("diffoff")
+					end)
+					pcall(vim.api.nvim_win_close, win, true)
+				end
+			end
+			if _term_win and vim.api.nvim_win_is_valid(_term_win) then
+				vim.api.nvim_set_current_win(_term_win)
+			end
+		end,
+	}
+
+	diff_session.register(SESSION_KEY, session)
+
+	local group = vim.api.nvim_create_augroup("claude_edit_diff", { clear = true })
+	vim.api.nvim_create_autocmd("WinClosed", {
+		group = group,
+		callback = function(ev)
+			local s = get_session()
+			if not s then
+				return true
+			end
+			local closed = tonumber(ev.match)
+			if closed == s.left_win or closed == s.right_win then
+				vim.schedule(function()
+					diff_session.close(s)
+				end)
+				return true
+			end
+		end,
+	})
+
+	return session
+end
+
 function M.show(file_path, snapshot_path)
 	vim.schedule(function()
-		M.dismiss()
-
-		local term_win = find_terminal_win()
-
-		-- Build "before" content from the snapshot.
-		local before_lines = {}
-		if snapshot_path and snapshot_path ~= "" then
-			local f = io.open(snapshot_path, "r")
-			if f then
-				local content = f:read("*a")
-				f:close()
-				before_lines = vim.split(content, "\n", { plain = true })
-				os.remove(snapshot_path)
+		local ok, err = pcall(function()
+			local before_lines = {}
+			if snapshot_path and snapshot_path ~= "" then
+				local f = io.open(snapshot_path, "r")
+				if f then
+					local content = f:read("*a")
+					f:close()
+					before_lines = vim.split(content, "\n", { plain = true })
+					os.remove(snapshot_path)
+				end
 			end
+
+			local old_buf = vim.api.nvim_create_buf(false, true)
+			vim.api.nvim_buf_set_lines(old_buf, 0, -1, false, before_lines)
+			vim.bo[old_buf].modifiable = false
+			vim.bo[old_buf].buftype = "nofile"
+			vim.bo[old_buf].bufhidden = "hide"
+			local ft = vim.filetype.match({ filename = file_path })
+			if ft then
+				vim.bo[old_buf].filetype = ft
+			end
+			vim.api.nvim_buf_set_name(old_buf, "before://" .. vim.fn.fnamemodify(file_path, ":t"))
+
+			local new_buf = vim.fn.bufadd(file_path)
+			vim.fn.bufload(new_buf)
+			vim.api.nvim_buf_call(new_buf, function()
+				vim.cmd("silent! checktime")
+				vim.cmd("silent! edit!")
+			end)
+
+			local session = ensure_session()
+			table.insert(session.pairs, {
+				file = file_path,
+				old_buf = old_buf,
+				new_buf = new_buf,
+				is_live = true,
+			})
+
+			diff_session.register(SESSION_KEY, session)
+			diff_session.show_pair(session, #session.pairs)
+		end)
+		if not ok then
+			vim.notify("claude-edit-diff error: " .. tostring(err), vim.log.levels.ERROR)
 		end
-
-		-- Create a readonly scratch buffer for the before-state.
-		local before_buf = vim.api.nvim_create_buf(false, true)
-		vim.api.nvim_buf_set_lines(before_buf, 0, -1, false, before_lines)
-		vim.bo[before_buf].modifiable = false
-		vim.bo[before_buf].buftype = "nofile"
-		vim.bo[before_buf].bufhidden = "wipe"
-		local ft = vim.filetype.match({ filename = file_path })
-		if ft then
-			vim.bo[before_buf].filetype = ft
-		end
-		vim.api.nvim_buf_set_name(before_buf, "before://" .. vim.fn.fnamemodify(file_path, ":t"))
-
-		-- Split to the right of the Claude Code terminal.
-		if term_win then
-			vim.api.nvim_set_current_win(term_win)
-		end
-		vim.cmd("belowright vsplit")
-		local before_win = vim.api.nvim_get_current_win()
-		vim.api.nvim_win_set_buf(before_win, before_buf)
-
-		-- Open the current (after-edit) file in another split to the right.
-		vim.cmd("belowright vsplit " .. vim.fn.fnameescape(file_path))
-		vim.cmd("silent! checktime")
-		vim.cmd("silent! edit!")
-		local after_win = vim.api.nvim_get_current_win()
-		local after_buf = vim.api.nvim_win_get_buf(after_win)
-
-		-- Enable diff mode and apply shared window options.
-		vim.api.nvim_set_current_win(before_win)
-		vim.cmd("diffthis")
-		vim.api.nvim_set_current_win(after_win)
-		vim.cmd("diffthis")
-		local display_name = vim.fn.fnamemodify(file_path, ":.")
-		local diff_opts = require("lib.diff-opts")
-		diff_opts.apply_pair(before_win, after_win, "before", "after", display_name)
-
-		_state = {
-			term_win = term_win,
-			before_win = before_win,
-			before_buf = before_buf,
-			after_win = after_win,
-			after_buf = after_buf,
-			file_path = file_path,
-		}
-
-		-- Press q in either diff pane to dismiss.
-		for _, buf in ipairs({ before_buf, after_buf }) do
-			vim.keymap.set("n", "q", M.dismiss, { buffer = buf, nowait = true })
-		end
-
-		-- Auto-dismiss if either diff window is closed externally.
-		local group = vim.api.nvim_create_augroup("claude_edit_diff", { clear = true })
-		vim.api.nvim_create_autocmd("WinClosed", {
-			group = group,
-			callback = function(ev)
-				if not _state then
-					return true
-				end
-				local closed = tonumber(ev.match)
-				if closed == _state.before_win or closed == _state.after_win then
-					vim.schedule(M.dismiss)
-					return true
-				end
-			end,
-		})
-
-		vim.notify("Edit diff: " .. vim.fn.fnamemodify(file_path, ":t") .. "  (q to dismiss)")
 	end)
 	return true
 end

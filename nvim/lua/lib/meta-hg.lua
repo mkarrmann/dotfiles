@@ -96,7 +96,7 @@ local SSL_STATE = {
 }
 
 ---@type table<integer, Hg.diff_session>
-local DIFF_SPLIT_SESSIONS = {}
+local DIFF_SPLIT_SESSIONS = require("lib.diff-session").sessions
 
 hg_utils.on_blame_enter = function()
   local word_under_cursor = vim.fn.expand("<cword>")
@@ -887,7 +887,7 @@ function ssl_utils.run_cmd(cmd, bufnr, reload, msg)
   end)
 end
 
-local DIFF_SPLIT_KEYMAPS = { "]f", "[f", "]F", "[F", "gf", "gq" }
+local diff_session = require("lib.diff-session")
 
 ---@param lines string[]
 ---@param name string
@@ -928,8 +928,6 @@ local function diff_split_update_winbar(session)
       .. pos
   end
 end
-
-local diff_split_set_keymaps
 
 ---@param session Hg.diff_session
 ---@param pair Hg.diff_file_pair
@@ -983,112 +981,11 @@ local function diff_split_load_pair(session, pair)
   pair.new_buf = new_buf
   pair.is_live = is_live
 
-  diff_split_set_keymaps(session)
+  diff_session.register(vim.api.nvim_get_current_tabpage(), session)
 end
 
----@param session Hg.diff_session
----@param index integer
 local function diff_split_show_pair(session, index)
-  if
-    not vim.api.nvim_win_is_valid(session.left_win)
-    or not vim.api.nvim_win_is_valid(session.right_win)
-  then
-    vim.notify("Diff windows are no longer valid", vim.log.levels.WARN)
-    local tab = vim.api.nvim_get_current_tabpage()
-    DIFF_SPLIT_SESSIONS[tab] = nil
-    return
-  end
-
-  local pair = session.pairs[index]
-  if not pair.old_buf then
-    diff_split_load_pair(session, pair)
-    if not pair.old_buf then
-      return
-    end
-  end
-
-  session.index = index
-
-  vim.api.nvim_win_call(session.left_win, function()
-    vim.cmd("diffoff")
-  end)
-  vim.api.nvim_win_call(session.right_win, function()
-    vim.cmd("diffoff")
-  end)
-
-  vim.api.nvim_win_set_buf(session.left_win, pair.new_buf)
-  vim.api.nvim_win_set_buf(session.right_win, pair.old_buf)
-
-  vim.api.nvim_win_call(session.left_win, function()
-    vim.cmd("diffthis")
-  end)
-  vim.api.nvim_win_call(session.right_win, function()
-    vim.cmd("diffthis")
-  end)
-
-  for _, win in ipairs({ session.left_win, session.right_win }) do
-    require("lib.diff-opts").apply(win)
-  end
-
-  diff_split_update_winbar(session)
-  vim.cmd("syncbind")
-
-  vim.api.nvim_win_call(session.left_win, function()
-    vim.cmd("normal! gg")
-  end)
-  vim.api.nvim_win_call(session.right_win, function()
-    vim.cmd("normal! gg")
-  end)
-  vim.api.nvim_set_current_win(session.left_win)
-end
-
----@param direction 1|-1
-local function diff_split_cycle(direction)
-  local tab = vim.api.nvim_get_current_tabpage()
-  local session = DIFF_SPLIT_SESSIONS[tab]
-  if not session then
-    return
-  end
-  if #session.pairs <= 1 then
-    vim.notify("Only one file in this diff", vim.log.levels.INFO)
-    return
-  end
-
-  local n = #session.pairs
-  local new_index = ((session.index - 1 + direction) % n) + 1
-  diff_split_show_pair(session, new_index)
-end
-
-local function diff_split_jump_to_file()
-  local tab = vim.api.nvim_get_current_tabpage()
-  local session = DIFF_SPLIT_SESSIONS[tab]
-  if not session then
-    return
-  end
-
-  ---@type {index: integer, file: string}[]
-  local items = {}
-  for i, pair in ipairs(session.pairs) do
-    table.insert(items, { index = i, file = pair.file })
-  end
-
-  vim.ui.select(items, {
-    prompt = "Jump to file:",
-    format_item = function(item)
-      local marker = item.index == session.index and " (current)" or ""
-      return string.format(
-        "[%d/%d] %s%s",
-        item.index,
-        #session.pairs,
-        item.file,
-        marker
-      )
-    end,
-  }, function(choice)
-    if choice then
-      diff_split_show_pair(session, choice.index)
-    end
-  end)
+  diff_session.show_pair(session, index)
 end
 
 ---@param tab integer
@@ -1097,80 +994,7 @@ local function diff_split_cleanup(tab)
   if not session then
     return
   end
-
-  for _, pair in ipairs(session.pairs) do
-    if pair.old_buf and vim.api.nvim_buf_is_valid(pair.old_buf) then
-      vim.api.nvim_buf_delete(pair.old_buf, { force = true })
-    end
-    if pair.is_live then
-      if pair.new_buf and vim.api.nvim_buf_is_valid(pair.new_buf) then
-        for _, key in ipairs(DIFF_SPLIT_KEYMAPS) do
-          pcall(vim.keymap.del, "n", key, { buffer = pair.new_buf })
-        end
-      end
-    elseif pair.new_buf and vim.api.nvim_buf_is_valid(pair.new_buf) then
-      vim.api.nvim_buf_delete(pair.new_buf, { force = true })
-    end
-  end
-
-  DIFF_SPLIT_SESSIONS[tab] = nil
-end
-
-local function diff_split_close()
-  local tab = vim.api.nvim_get_current_tabpage()
-  if not DIFF_SPLIT_SESSIONS[tab] then
-    return
-  end
-  vim.cmd("tabclose")
-end
-
----@param session Hg.diff_session
-diff_split_set_keymaps = function(session)
-  ---@type table<integer, boolean>
-  local seen = {}
-  for _, pair in ipairs(session.pairs) do
-    if not pair.old_buf then
-      goto continue
-    end
-    for _, b in ipairs({ pair.old_buf, pair.new_buf }) do
-      if not seen[b] then
-        seen[b] = true
-        vim.keymap.set("n", "]f", function()
-          diff_split_cycle(1)
-        end, { buffer = b, desc = "Next diff file" })
-        vim.keymap.set("n", "[f", function()
-          diff_split_cycle(-1)
-        end, { buffer = b, desc = "Previous diff file" })
-        vim.keymap.set("n", "]F", function()
-          local tab = vim.api.nvim_get_current_tabpage()
-          local s = DIFF_SPLIT_SESSIONS[tab]
-          if s then
-            diff_split_show_pair(s, #s.pairs)
-          end
-        end, { buffer = b, desc = "Last diff file" })
-        vim.keymap.set("n", "[F", function()
-          local tab = vim.api.nvim_get_current_tabpage()
-          local s = DIFF_SPLIT_SESSIONS[tab]
-          if s then
-            diff_split_show_pair(s, 1)
-          end
-        end, { buffer = b, desc = "First diff file" })
-        vim.keymap.set(
-          "n",
-          "gf",
-          diff_split_jump_to_file,
-          { buffer = b, desc = "Jump to diff file" }
-        )
-        vim.keymap.set(
-          "n",
-          "gq",
-          diff_split_close,
-          { buffer = b, desc = "Close diff tab" }
-        )
-      end
-    end
-    ::continue::
-  end
+  diff_session.cleanup(session)
 end
 
 vim.api.nvim_create_autocmd("TabClosed", {
@@ -1254,8 +1078,16 @@ local SSL_COMMANDS = {
         commit = commit,
         parent_rev = parent_rev,
         repo_root = repo_root,
+        update_winbar = diff_split_update_winbar,
       }
-      DIFF_SPLIT_SESSIONS[tab] = session
+
+      for _, pair in ipairs(file_pairs) do
+        pair.load = function(p)
+          diff_split_load_pair(session, p)
+        end
+      end
+
+      diff_session.register(tab, session)
 
       diff_split_load_pair(session, file_pairs[1])
       if not file_pairs[1].old_buf then
