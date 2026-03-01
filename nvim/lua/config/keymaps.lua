@@ -93,7 +93,7 @@ vim.keymap.set("n", "<leader>aS", agent_send_path, {
 })
 
 -- Run a command and send its output to the Claude Code terminal.
-local _active_run_job = nil
+local _run_state = nil -- { job, float_win, float_buf, timer, start_ms, output, line_count, claude }
 
 local function _clean_cmd(text)
 	text = text:match("^%s*(.-)%s*$") or ""
@@ -119,36 +119,158 @@ local function _find_claude_term()
 	return nil
 end
 
+local function _close_float()
+	if not _run_state then
+		return
+	end
+	if _run_state.float_win and vim.api.nvim_win_is_valid(_run_state.float_win) then
+		pcall(vim.api.nvim_win_close, _run_state.float_win, true)
+	end
+	_run_state.float_win = nil
+end
+
+local function _cleanup_run()
+	if not _run_state then
+		return
+	end
+	if _run_state.timer then
+		vim.fn.timer_stop(_run_state.timer)
+		_run_state.timer = nil
+	end
+	_close_float()
+	_run_state = nil
+end
+
+local _display_max = 500
+
+local function _update_float_footer(s)
+	if not s or not s.float_win or not vim.api.nvim_win_is_valid(s.float_win) then
+		return
+	end
+	local elapsed = math.floor((vim.loop.now() - s.start_ms) / 1000)
+	local footer = (" %ds | %d lines "):format(elapsed, s.line_count)
+	pcall(vim.api.nvim_win_set_config, s.float_win, { footer = { { footer, "FloatFooter" } } })
+end
+
+local function _append_lines(data)
+	if not _run_state or not data then
+		return
+	end
+	local s = _run_state
+	for _, line in ipairs(data) do
+		s.line_count = s.line_count + 1
+		s.output[#s.output + 1] = line
+	end
+
+	if not s.float_buf or not vim.api.nvim_buf_is_valid(s.float_buf) then
+		return
+	end
+
+	vim.bo[s.float_buf].modifiable = true
+	local buf_lines = vim.api.nvim_buf_line_count(s.float_buf)
+	if buf_lines == 1 and vim.api.nvim_buf_get_lines(s.float_buf, 0, 1, false)[1] == "" then
+		vim.api.nvim_buf_set_lines(s.float_buf, 0, 1, false, data)
+	else
+		vim.api.nvim_buf_set_lines(s.float_buf, -1, -1, false, data)
+	end
+
+	buf_lines = vim.api.nvim_buf_line_count(s.float_buf)
+	if buf_lines > _display_max then
+		local excess = buf_lines - _display_max
+		vim.api.nvim_buf_set_lines(s.float_buf, 0, excess, false, {})
+		buf_lines = _display_max
+	end
+	vim.bo[s.float_buf].modifiable = false
+
+	if s.float_win and vim.api.nvim_win_is_valid(s.float_win) then
+		pcall(vim.api.nvim_win_set_cursor, s.float_win, { buf_lines, 0 })
+	end
+end
+
 local function _run_cmd_and_send(cmd)
 	local claude = _find_claude_term()
 	if not claude then
 		vim.notify("No Claude Code terminal found in this tab", vim.log.levels.ERROR)
 		return
 	end
-	if _active_run_job then
+	if _run_state then
 		vim.notify("A command is already running — <leader>aX to cancel", vim.log.levels.WARN)
 		return
 	end
 
-	vim.notify("Running: " .. cmd:sub(1, 80) .. (#cmd > 80 and "…" or ""))
+	local editor_w = vim.o.columns
+	local editor_h = vim.o.lines - vim.o.cmdheight - 1
+	local float_w = math.max(40, math.floor(editor_w * 0.4))
+	local float_h = math.max(8, math.floor(editor_h * 0.3))
 
-	local output = {}
-	_active_run_job = vim.fn.jobstart({ vim.o.shell, "-c", cmd }, {
-		stdout_buffered = true,
-		stderr_buffered = true,
+	local float_buf = vim.api.nvim_create_buf(false, true)
+	vim.bo[float_buf].buftype = "nofile"
+	vim.bo[float_buf].bufhidden = "wipe"
+	vim.bo[float_buf].modifiable = false
+
+	local title_max = float_w - 4
+	local title_text = cmd:sub(1, title_max) .. (#cmd > title_max and "…" or "")
+	local float_win = vim.api.nvim_open_win(float_buf, false, {
+		relative = "editor",
+		anchor = "SE",
+		row = editor_h,
+		col = editor_w,
+		width = float_w,
+		height = float_h,
+		style = "minimal",
+		border = "rounded",
+		title = { { " " .. title_text .. " ", "FloatTitle" } },
+		title_pos = "left",
+		footer = { { " 0s | 0 lines ", "FloatFooter" } },
+		footer_pos = "right",
+		noautocmd = true,
+	})
+
+	vim.keymap.set("n", "q", _close_float, { buffer = float_buf })
+	vim.keymap.set("n", "<Esc>", _close_float, { buffer = float_buf })
+
+	local s = {
+		float_win = float_win,
+		float_buf = float_buf,
+		start_ms = vim.loop.now(),
+		output = {},
+		line_count = 0,
+		claude = claude,
+	}
+	_run_state = s
+
+	s.timer = vim.fn.timer_start(1000, function()
+		vim.schedule(function()
+			_update_float_footer(s)
+		end)
+	end, { ["repeat"] = -1 })
+
+	s.job = vim.fn.jobstart({ vim.o.shell, "-c", cmd }, {
 		on_stdout = function(_, data)
 			if data then
-				vim.list_extend(output, data)
+				vim.schedule(function()
+					_append_lines(data)
+				end)
 			end
 		end,
 		on_stderr = function(_, data)
 			if data then
-				vim.list_extend(output, data)
+				vim.schedule(function()
+					_append_lines(data)
+				end)
 			end
 		end,
 		on_exit = function(_, exit_code)
-			_active_run_job = nil
 			vim.schedule(function()
+				if _run_state ~= s then
+					return
+				end
+				if s.timer then
+					vim.fn.timer_stop(s.timer)
+					s.timer = nil
+				end
+
+				local output = s.output
 				while #output > 0 and output[#output] == "" do
 					table.remove(output)
 				end
@@ -168,13 +290,20 @@ local function _run_cmd_and_send(cmd)
 				end
 
 				local body = table.concat(output, "\n")
-				local msg = ("I ran `%s` (exit code %d). Combined stdout+stderr:\n```\n%s\n```"):format(cmd, exit_code, body)
+				local msg = ("I ran `%s` (exit code %d). Combined stdout+stderr:\n```\n%s\n```"):format(
+					cmd, exit_code, body
+				)
 
-				vim.api.nvim_chan_send(claude.chan, "\x1b[200~" .. msg .. "\x1b[201~")
+				if s.claude and s.claude.chan then
+					vim.api.nvim_chan_send(s.claude.chan, "\x1b[200~" .. msg .. "\x1b[201~")
+				end
 
-				local win = claude.win
-				if vim.api.nvim_win_is_valid(win) then
-					pcall(vim.api.nvim_set_current_win, win)
+				local claude_win = s.claude and s.claude.win
+				_close_float()
+				_run_state = nil
+
+				if claude_win and vim.api.nvim_win_is_valid(claude_win) then
+					pcall(vim.api.nvim_set_current_win, claude_win)
 					pcall(vim.cmd, "startinsert")
 				end
 
@@ -209,9 +338,11 @@ vim.keymap.set("n", "<leader>ax", function()
 end, { desc = "Run command, send output to Claude" })
 
 vim.keymap.set("n", "<leader>aX", function()
-	if _active_run_job then
-		vim.fn.jobstop(_active_run_job)
-		_active_run_job = nil
+	if _run_state then
+		if _run_state.job then
+			vim.fn.jobstop(_run_state.job)
+		end
+		_cleanup_run()
 		vim.notify("Cancelled running command")
 	else
 		vim.notify("No command running", vim.log.levels.WARN)
