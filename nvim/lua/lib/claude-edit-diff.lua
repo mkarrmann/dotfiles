@@ -5,6 +5,8 @@ local M = {}
 local SESSION_KEY = "claude_edit_diff"
 local _term_win = nil
 local _buf_counter = 0
+local _hidden_pairs = nil
+local _hidden_index = nil
 
 local function find_terminal_win()
 	for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
@@ -37,6 +39,26 @@ local function update_winbar(session)
 	require("lualine").refresh()
 end
 
+local function setup_win_autocmd(session)
+	local group = vim.api.nvim_create_augroup("claude_edit_diff", { clear = true })
+	vim.api.nvim_create_autocmd("WinClosed", {
+		group = group,
+		callback = function(ev)
+			local s = get_session()
+			if not s then
+				return true
+			end
+			local closed = tonumber(ev.match)
+			if closed == s.left_win or closed == s.right_win then
+				vim.schedule(function()
+					diff_session.close(s)
+				end)
+				return true
+			end
+		end,
+	})
+end
+
 local function ensure_session()
 	local session = get_session()
 	if session then
@@ -64,6 +86,9 @@ local function ensure_session()
 			if s then
 				diff_session.cleanup(s)
 			end
+			_hidden_pairs = nil
+			_hidden_index = nil
+			vim.api.nvim_create_augroup("claude_edit_diff", { clear = true })
 			for _, win in ipairs({ left_win, right_win }) do
 				if vim.api.nvim_win_is_valid(win) then
 					vim.api.nvim_win_call(win, function()
@@ -79,77 +104,109 @@ local function ensure_session()
 	}
 
 	diff_session.register(SESSION_KEY, session)
-
-	local group = vim.api.nvim_create_augroup("claude_edit_diff", { clear = true })
-	vim.api.nvim_create_autocmd("WinClosed", {
-		group = group,
-		callback = function(ev)
-			local s = get_session()
-			if not s then
-				return true
-			end
-			local closed = tonumber(ev.match)
-			if closed == s.left_win or closed == s.right_win then
-				vim.schedule(function()
-					diff_session.close(s)
-				end)
-				return true
-			end
-		end,
-	})
-
+	setup_win_autocmd(session)
 	return session
+end
+
+local function make_pair(file_path, snapshot_path)
+	local before_lines = {}
+	if snapshot_path and snapshot_path ~= "" then
+		local f = io.open(snapshot_path, "r")
+		if f then
+			local content = f:read("*a")
+			f:close()
+			before_lines = vim.split(content, "\n", { plain = true })
+			os.remove(snapshot_path)
+		end
+	end
+
+	local old_buf = vim.api.nvim_create_buf(false, true)
+	vim.api.nvim_buf_set_lines(old_buf, 0, -1, false, before_lines)
+	vim.bo[old_buf].modifiable = false
+	vim.bo[old_buf].buftype = "nofile"
+	vim.bo[old_buf].bufhidden = "hide"
+	local ft = vim.filetype.match({ filename = file_path })
+	if ft then
+		vim.bo[old_buf].filetype = ft
+	end
+	_buf_counter = _buf_counter + 1
+	vim.api.nvim_buf_set_name(old_buf, string.format("before://%s#%d", file_path, _buf_counter))
+
+	local new_buf = vim.fn.bufadd(file_path)
+	vim.fn.bufload(new_buf)
+	vim.api.nvim_buf_call(new_buf, function()
+		vim.cmd("silent! checktime")
+		vim.cmd("silent! edit!")
+	end)
+
+	return {
+		file = file_path,
+		old_buf = old_buf,
+		new_buf = new_buf,
+		is_live = true,
+	}
 end
 
 function M.show(file_path, snapshot_path)
 	vim.schedule(function()
 		local ok, err = pcall(function()
-			local before_lines = {}
-			if snapshot_path and snapshot_path ~= "" then
-				local f = io.open(snapshot_path, "r")
-				if f then
-					local content = f:read("*a")
-					f:close()
-					before_lines = vim.split(content, "\n", { plain = true })
-					os.remove(snapshot_path)
-				end
+			local pair = make_pair(file_path, snapshot_path)
+
+			if _hidden_pairs then
+				table.insert(_hidden_pairs, pair)
+				_hidden_index = #_hidden_pairs
+				return
 			end
 
-			local old_buf = vim.api.nvim_create_buf(false, true)
-			vim.api.nvim_buf_set_lines(old_buf, 0, -1, false, before_lines)
-			vim.bo[old_buf].modifiable = false
-			vim.bo[old_buf].buftype = "nofile"
-			vim.bo[old_buf].bufhidden = "hide"
-			local ft = vim.filetype.match({ filename = file_path })
-			if ft then
-				vim.bo[old_buf].filetype = ft
-			end
-			_buf_counter = _buf_counter + 1
-			vim.api.nvim_buf_set_name(old_buf, string.format("before://%s#%d", file_path, _buf_counter))
-
-			local new_buf = vim.fn.bufadd(file_path)
-			vim.fn.bufload(new_buf)
-			vim.api.nvim_buf_call(new_buf, function()
-				vim.cmd("silent! checktime")
-				vim.cmd("silent! edit!")
-			end)
-
+			local prev_win = vim.api.nvim_get_current_win()
 			local session = ensure_session()
-			table.insert(session.pairs, {
-				file = file_path,
-				old_buf = old_buf,
-				new_buf = new_buf,
-				is_live = true,
-			})
-
+			table.insert(session.pairs, pair)
 			diff_session.register(SESSION_KEY, session)
 			diff_session.show_pair(session, #session.pairs)
+			if vim.api.nvim_win_is_valid(prev_win) then
+				vim.api.nvim_set_current_win(prev_win)
+			end
 		end)
 		if not ok then
 			vim.notify("claude-edit-diff error: " .. tostring(err), vim.log.levels.ERROR)
 		end
 	end)
 	return true
+end
+
+function M.toggle()
+	local session = get_session()
+	if session then
+		_hidden_pairs = session.pairs
+		_hidden_index = session.index
+		-- Prevent WinClosed autocmd from triggering full cleanup
+		vim.api.nvim_create_augroup("claude_edit_diff", { clear = true })
+		diff_session.sessions[SESSION_KEY] = nil
+		for _, win in ipairs({ session.left_win, session.right_win }) do
+			if vim.api.nvim_win_is_valid(win) then
+				vim.api.nvim_win_call(win, function()
+					vim.cmd("diffoff")
+				end)
+				pcall(vim.api.nvim_win_del_var, win, "custom_winbar_text")
+				pcall(vim.api.nvim_win_close, win, true)
+			end
+		end
+		require("lualine").refresh()
+		if _term_win and vim.api.nvim_win_is_valid(_term_win) then
+			vim.api.nvim_set_current_win(_term_win)
+		end
+	elseif _hidden_pairs and #_hidden_pairs > 0 then
+		local pairs = _hidden_pairs
+		local idx = _hidden_index or #pairs
+		_hidden_pairs = nil
+		_hidden_index = nil
+		local session = ensure_session()
+		session.pairs = pairs
+		diff_session.register(SESSION_KEY, session)
+		diff_session.show_pair(session, idx)
+	else
+		vim.notify("No Claude edit diffs available", vim.log.levels.INFO)
+	end
 end
 
 return M
