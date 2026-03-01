@@ -1,7 +1,10 @@
 #!/bin/bash
 # Agent Tracker — manages AGENTS.md
-# Called by Claude Code hooks (SessionStart, Stop) and shell functions
+# Called by Claude Code hooks (SessionStart, Stop) and shell functions.
+# Also runs as a long-lived heartbeat daemon (spawned by SessionStart hook).
 # Location of AGENTS.md is controlled by CLAUDE_AGENTS_FILE env var.
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "$0")"
 
 set -euo pipefail
 
@@ -76,6 +79,30 @@ _save_pid() {
 _cleanup_pid() {
   local sid="$1"
   rm -f "${PID_DIR}/${sid}" 2>/dev/null
+  # Kill heartbeat daemon if running
+  if [ -f "${PID_DIR}/${sid}.heartbeat" ]; then
+    kill "$(cat "${PID_DIR}/${sid}.heartbeat")" 2>/dev/null || true
+    rm -f "${PID_DIR}/${sid}.heartbeat"
+  fi
+}
+
+# Spawn a background daemon that periodically updates the AGENTS.md timestamp,
+# proving to other machines that this session is still alive.  The daemon
+# monitors the Claude Code PID and exits when the process dies.
+HEARTBEAT_INTERVAL=300
+
+_start_heartbeat() {
+  local sid="$1" claude_pid="$2"
+  [ -z "$claude_pid" ] && return
+
+  # Kill any stale heartbeat for this session
+  if [ -f "${PID_DIR}/${sid}.heartbeat" ]; then
+    kill "$(cat "${PID_DIR}/${sid}.heartbeat")" 2>/dev/null || true
+    rm -f "${PID_DIR}/${sid}.heartbeat"
+  fi
+
+  # Launch in a new session so it survives the hook's process group
+  setsid bash "$SELF" heartbeat "$sid" "$claude_pid" </dev/null >/dev/null 2>&1 &
 }
 
 # Check if gdrive mount is healthy (avoid hanging on stale FUSE mounts)
@@ -286,6 +313,11 @@ cmd_register() {
 
   # Record Claude Code's PID for liveness checks (local, fast — do before gdrive)
   _save_pid "$sid"
+
+  # Start cross-machine heartbeat daemon (updates AGENTS.md timestamp periodically)
+  local claude_pid
+  claude_pid=$(cat "${PID_DIR}/${sid}" 2>/dev/null)
+  _start_heartbeat "$sid" "$claude_pid"
 
   # ── RESUME PATH ──
   if [ "$source" = "resume" ]; then
@@ -781,6 +813,49 @@ cmd_waiting() {
 }
 
 # ============================================================
+# heartbeat <sid> <claude_pid> — long-lived daemon, updates timestamp
+#   Spawned by _start_heartbeat in cmd_register.  Exits when the
+#   monitored Claude Code process dies.
+# ============================================================
+cmd_heartbeat() {
+  set +e  # Don't exit on transient failures in a long-lived daemon
+  local sid="$1" claude_pid="$2"
+  local heartbeat_pidfile="${PID_DIR}/${sid}.heartbeat"
+
+  mkdir -p "$PID_DIR" 2>/dev/null
+  echo $$ > "$heartbeat_pidfile"
+  trap 'rm -f "$heartbeat_pidfile"; exit 0' EXIT TERM
+
+  while sleep "$HEARTBEAT_INTERVAL"; do
+    # Stop if Claude process is dead
+    [ -d "/proc/$claude_pid" ] || break
+
+    # Quick gdrive health check — skip this cycle if unavailable
+    grep -q "gdrive" /proc/mounts 2>/dev/null || continue
+    timeout 3 ls "$(dirname "$AGENTS_FILE")" &>/dev/null || continue
+
+    # Update timestamp (inline lock to avoid trap conflicts with _acquire_lock)
+    local lock_dir="${LOCK_FILE}.d"
+    if mkdir "$lock_dir" 2>/dev/null; then
+      if grep -q "| ${sid} |" "$AGENTS_FILE" 2>/dev/null; then
+        local ts
+        ts=$(date '+%m-%d %H:%M')
+        local tmpfile="${AGENTS_FILE}.tmp"
+        if awk -v sid="$sid" -v ts="$ts" -F'|' 'BEGIN{OFS="|"} {
+          if (NR > 4 && index($5, sid) > 0) { $8 = " " ts " " }
+          print
+        }' "$AGENTS_FILE" > "$tmpfile"; then
+          mv "$tmpfile" "$AGENTS_FILE"
+        else
+          rm -f "$tmpfile"
+        fi
+      fi
+      rm -rf "$lock_dir" 2>/dev/null
+    fi
+  done
+}
+
+# ============================================================
 # Dispatch
 # ============================================================
 action="${1:-}"
@@ -792,10 +867,11 @@ case "$action" in
   active)     cmd_active ;;
   done)       cmd_done ;;
   waiting)    cmd_waiting ;;
+  heartbeat)  cmd_heartbeat "$@" ;;
   background) cmd_background "$@" ;;
   bg-done)    cmd_bg_done "$@" ;;
   *)
-    echo "Usage: agent-tracker.sh {register|stop|active|done|waiting|background|bg-done}" >&2
+    echo "Usage: agent-tracker.sh {register|stop|active|done|waiting|heartbeat|background|bg-done}" >&2
     exit 1
     ;;
 esac
