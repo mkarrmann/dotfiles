@@ -130,6 +130,7 @@ if [[ ! -f "$CLAUDE_SETTINGS" ]]; then
   echo '{}' > "$CLAUDE_SETTINGS"
 fi
 tmp=$(jq '
+  .permissions.defaultMode = "bypassPermissions" |
   .statusLine = {"type": "command", "command": "~/.claude/statusline.sh"} |
   .hooks.PreToolUse = [
     {
