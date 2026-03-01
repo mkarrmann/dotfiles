@@ -244,7 +244,7 @@ mark_stale() {
 
     # Don't auto-stop "waiting" sessions — the question still needs an answer
     case "$status_trimmed" in
-      "❓ waiting") continue ;;
+      "❓ waiting"|"🟡 done") continue ;;
     esac
 
     local updated_epoch
@@ -853,10 +853,13 @@ cmd_heartbeat() {
     grep -q "gdrive" /proc/mounts 2>/dev/null || continue
     timeout 3 ls "$(dirname "$AGENTS_FILE")" &>/dev/null || continue
 
-    # Update timestamp (inline lock to avoid trap conflicts with _acquire_lock)
+    # Update timestamp only for active sessions — for other states (done, waiting),
+    # the timestamp should reflect when the status was set, not heartbeat time.
     local lock_dir="${LOCK_FILE}.d"
     if mkdir "$lock_dir" 2>/dev/null; then
-      if grep -q "| ${sid} |" "$AGENTS_FILE" 2>/dev/null; then
+      local current_status
+      current_status=$(grep "| ${sid} |" "$AGENTS_FILE" 2>/dev/null | awk -F'|' '{print $3}')
+      if [[ "$current_status" == *"⚡"* ]]; then
         local ts
         ts=$(date '+%m-%d %H:%M')
         local tmpfile="${AGENTS_FILE}.tmp"
