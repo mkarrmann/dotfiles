@@ -501,6 +501,80 @@ return {
 						end, 200)
 					end,
 				})
+			elseif vim.env.TMUX then
+				-- tmux-resurrect: auto-resume Claude session if this window was
+				-- saved with one. The manifest is written by tmux-resurrect-save.sh
+				-- (post-save-all) and gated by tmux-resurrect-restore.sh (post-restore-all).
+				vim.api.nvim_create_autocmd("VimEnter", {
+					once = true,
+					callback = function()
+						vim.defer_fn(function()
+							local resurrect_dir = vim.fn.expand("~/.claude/agent-manager/resurrect")
+							local ts_path = resurrect_dir .. "/.restore-ts"
+
+							local ts_file = io.open(ts_path, "r")
+							if not ts_file then
+								return
+							end
+							local ts_str = ts_file:read("*l")
+							ts_file:close()
+							local restore_epoch = tonumber(ts_str)
+							if not restore_epoch or os.time() - restore_epoch > 30 then
+								pcall(os.remove, ts_path)
+								return
+							end
+
+							local manifest_path = resurrect_dir .. "/manifest.json"
+							local mf = io.open(manifest_path, "r")
+							if not mf then
+								return
+							end
+							local content = mf:read("*a")
+							mf:close()
+
+							local ok, manifest = pcall(vim.json.decode, content)
+							if not ok or type(manifest) ~= "table" then
+								pcall(os.remove, manifest_path)
+								pcall(os.remove, ts_path)
+								return
+							end
+
+							local win_name = vim.fn.system("tmux display-message -p '#W'"):gsub("%s+$", "")
+							local entry = manifest[win_name]
+							if not entry or type(entry) ~= "table" or not entry.sid or entry.sid == "" then
+								return
+							end
+
+							-- Claim our entry and update the manifest
+							manifest[win_name] = nil
+							local remaining = 0
+							for _ in pairs(manifest) do
+								remaining = remaining + 1
+							end
+							if remaining == 0 then
+								pcall(os.remove, manifest_path)
+								pcall(os.remove, ts_path)
+							else
+								local wf = io.open(manifest_path, "w")
+								if wf then
+									wf:write(vim.json.encode(manifest))
+									wf:close()
+								end
+							end
+
+							chdir_if_needed(entry.dir)
+
+							local nf = io.open(next_name_file, "w")
+							if nf then
+								nf:write(win_name)
+								nf:close()
+							end
+
+							require("lazy").load({ plugins = { "claudecode.nvim" } })
+							vim.cmd("ClaudeCode --resume " .. entry.sid)
+						end, 3000)
+					end,
+				})
 			end
 		end,
 	},
