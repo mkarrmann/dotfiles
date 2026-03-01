@@ -105,9 +105,10 @@ color_status() {
   local age_minutes="$2"
 
   # Override active-like statuses if stale (>30 min without update)
+  # Don't override "done" or "waiting" — those are legitimate end states.
   if [ -n "$age_minutes" ] && [ "$age_minutes" -ge 30 ]; then
     case "$status" in
-      "⚡ active"|"🟡 idle"|"🟢 interactive"|"🔄 resumed")
+      "⚡ active"|"🟢 interactive"|"🔄 resumed")
         printf "${YELLOW}💤 stale${RESET}"
         return
         ;;
@@ -116,12 +117,13 @@ color_status() {
 
   case "$status" in
     *"(this session)"*)  printf "${CYAN}(this session)${RESET}" ;;
+    *"waiting"*)         printf "${YELLOW}$1${RESET}" ;;
     *"interactive"*)     printf "${GREEN}$1${RESET}" ;;
     *"bg:running"*)      printf "${BLUE}$1${RESET}" ;;
     *"resumed"*)         printf "${GREEN}$1${RESET}" ;;
-    *"idle"*)            printf "${GREEN}$1${RESET}" ;;
+    *"done"*)            printf "${GREEN}$1${RESET}" ;;
     *"active"*)          printf "${CYAN}$1${RESET}" ;;
-    *"stopped"*|*"done"*) printf "${GRAY}$1${RESET}" ;;
+    *"stopped"*|*"bg:done"*) printf "${GRAY}$1${RESET}" ;;
     *)                   printf "${DIM}%s${RESET}" "$1" ;;
   esac
 }
@@ -197,11 +199,11 @@ is_live_status() {
   # Stale sessions are inactive even if their status looks live
   if [ -n "$age_min" ] && [ "$age_min" -ge 30 ]; then
     case "$status" in
-      "⚡ active"|"🟡 idle"|"🟢 interactive"|"🔄 resumed") return 1 ;;
+      "⚡ active"|"🟢 interactive"|"🔄 resumed") return 1 ;;
     esac
   fi
   case "$status" in
-    "⚡ active"|"🟡 idle"|"🟢 interactive"|"🔄 resumed"|"🔵 bg:running") return 0 ;;
+    "⚡ active"|"🟡 done"|"❓ waiting"|"🟢 interactive"|"🔄 resumed"|"🔵 bg:running") return 0 ;;
     *) return 1 ;;
   esac
 }

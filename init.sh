@@ -156,7 +156,7 @@ tmp=$(jq '
       "hooks": [
         {
           "type": "command",
-          "command": "[ -f ~/.claude/agent-manager/bin/agent-tracker.sh ] && cat | bash ~/.claude/agent-manager/bin/agent-tracker.sh idle || cat > /dev/null",
+          "command": "[ -f ~/.claude/agent-manager/bin/agent-tracker.sh ] && cat | bash ~/.claude/agent-manager/bin/agent-tracker.sh done || cat > /dev/null",
           "timeout": 10
         }
       ]
@@ -207,14 +207,10 @@ tmp=$(jq '
         {
           "type": "command",
           "command": "bash ~/.claude/hooks/tmux-notify.sh"
-        }
-      ]
-    },
-    {
-      "hooks": [
+        },
         {
           "type": "command",
-          "command": "[ -f ~/.claude/agent-manager/bin/agent-tracker.sh ] && cat | bash ~/.claude/agent-manager/bin/agent-tracker.sh idle || cat > /dev/null",
+          "command": "[ -f ~/.claude/agent-manager/bin/agent-tracker.sh ] && cat | bash ~/.claude/agent-manager/bin/agent-tracker.sh waiting || cat > /dev/null",
           "timeout": 5
         }
       ]

@@ -95,8 +95,8 @@ sort_agents() {
     [ -z "$line" ] && continue
     local pri=3
     case "$line" in
-      *"⚡ active"*) pri=0 ;;
-      *"🟡 idle"*|*"🟢 interactive"*|*"🔄 resumed"*) pri=1 ;;
+      *"❓ waiting"*|*"⚡ active"*) pri=0 ;;
+      *"🟡 done"*|*"🟢 interactive"*|*"🔄 resumed"*) pri=1 ;;
       *"🔵 bg:running"*) pri=2 ;;
     esac
     local updated
@@ -147,7 +147,7 @@ mark_stale() {
     [ -z "$updated_trimmed" ] && continue
 
     case "$status_trimmed" in
-      "⚡ active"|"🟡 idle"|"🟢 interactive"|"🔄 resumed") ;;
+      "⚡ active"|"🟡 done"|"🟢 interactive"|"🔄 resumed") ;;
       *) continue ;;
     esac
 
@@ -609,9 +609,10 @@ cmd_active() {
 }
 
 # ============================================================
-# idle — called by Stop hook and Notification hook (stdin = hook JSON)
+# done — called by Stop hook (stdin = hook JSON)
+#   Claude finished its turn; output ready for user review.
 # ============================================================
-cmd_idle() {
+cmd_done() {
   local input
   input=$(cat)
   local sid
@@ -636,17 +637,75 @@ cmd_idle() {
     if grep -q "| ${sid} |" "$AGENTS_FILE" 2>/dev/null; then
       local current_status
       current_status=$(grep "| ${sid} |" "$AGENTS_FILE" | awk -F'|' '{print $3}')
+      # Only transition from active/interactive/resumed — don't downgrade "waiting"
       if [[ "$current_status" == *"⚡"* ]] || [[ "$current_status" == *"🟢"* ]] || [[ "$current_status" == *"🔄"* ]]; then
         local tmpfile="${AGENTS_FILE}.tmp"
         awk -v sid="$sid" -v ts="$ts" -F'|' 'BEGIN{OFS="|"} {
           if (NR > 4 && index($5, sid) > 0) {
-            $3 = " 🟡 idle "
+            $3 = " 🟡 done "
             $8 = " " ts " "
           }
           print
         }' "$AGENTS_FILE" > "$tmpfile"
         mv "$tmpfile" "$AGENTS_FILE"
         sort_agents
+      fi
+    fi
+
+  )
+}
+
+# ============================================================
+# waiting — called by Notification hook for permission_prompt|elicitation_dialog
+#   Claude needs user input (question, permission prompt, etc.)
+# ============================================================
+cmd_waiting() {
+  local input
+  input=$(cat)
+  local sid
+  sid=$(echo "$input" | jq -r '.session_id // empty')
+  [ -z "$sid" ] && exit 0
+
+  local tp
+  tp=$(echo "$input" | jq -r '.transcript_path // empty')
+  if is_subagent "$tp"; then
+    exit 0
+  fi
+
+  local ts
+  ts=$(now)
+
+  _check_gdrive || exit 0
+  ensure_agents_file
+
+  (
+    _acquire_lock || exit 0
+
+    if grep -q "| ${sid} |" "$AGENTS_FILE" 2>/dev/null; then
+      local current_status
+      current_status=$(grep "| ${sid} |" "$AGENTS_FILE" | awk -F'|' '{print $3}')
+      # Transition from active/interactive/resumed/done — anything except bg:running, stopped, waiting itself
+      if [[ "$current_status" == *"⚡"* ]] || [[ "$current_status" == *"🟢"* ]] || [[ "$current_status" == *"🔄"* ]] || [[ "$current_status" == *"🟡"* ]]; then
+        local tmpfile="${AGENTS_FILE}.tmp"
+        awk -v sid="$sid" -v ts="$ts" -F'|' 'BEGIN{OFS="|"} {
+          if (NR > 4 && index($5, sid) > 0) {
+            $3 = " ❓ waiting "
+            $8 = " " ts " "
+          }
+          print
+        }' "$AGENTS_FILE" > "$tmpfile"
+        mv "$tmpfile" "$AGENTS_FILE"
+        sort_agents
+      elif [[ "$current_status" == *"❓"* ]]; then
+        # Already waiting — just update timestamp
+        local tmpfile="${AGENTS_FILE}.tmp"
+        awk -v sid="$sid" -v ts="$ts" -F'|' 'BEGIN{OFS="|"} {
+          if (NR > 4 && index($5, sid) > 0) {
+            $8 = " " ts " "
+          }
+          print
+        }' "$AGENTS_FILE" > "$tmpfile"
+        mv "$tmpfile" "$AGENTS_FILE"
       fi
     fi
 
@@ -663,11 +722,12 @@ case "$action" in
   register)   cmd_register ;;
   stop)       cmd_stop ;;
   active)     cmd_active ;;
-  idle)       cmd_idle ;;
+  done)       cmd_done ;;
+  waiting)    cmd_waiting ;;
   background) cmd_background "$@" ;;
   bg-done)    cmd_bg_done "$@" ;;
   *)
-    echo "Usage: agent-tracker.sh {register|stop|active|idle|background|bg-done}" >&2
+    echo "Usage: agent-tracker.sh {register|stop|active|done|waiting|background|bg-done}" >&2
     exit 1
     ;;
 esac

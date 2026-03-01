@@ -356,7 +356,7 @@ cclean() {
         [ -z "$u_trimmed" ] && continue
 
         case "$s_trimmed" in
-          "⚡ active"|"🟡 idle"|"🟢 interactive"|"🔄 resumed") ;;
+          "⚡ active"|"🟡 done"|"🟢 interactive"|"🔄 resumed") ;;
           *) continue ;;
         esac
 
