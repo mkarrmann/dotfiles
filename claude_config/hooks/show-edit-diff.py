@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import uuid
 
 
 def main():
@@ -32,7 +33,11 @@ def main():
             # File unchanged (tool probably failed) — skip diff, clean up.
             os.remove(snapshot)
             return
-        snap_arg = snapshot
+        # Move to a unique path so the shared snapshot location is immediately
+        # free for the next PreToolUse hook (avoids race with rapid edits).
+        unique = f"/tmp/.claude-edit-before-{uuid.uuid4().hex}"
+        os.rename(snapshot, unique)
+        snap_arg = unique
     else:
         # New file (Write to a path that didn't exist) — diff against empty.
         snap_arg = ""

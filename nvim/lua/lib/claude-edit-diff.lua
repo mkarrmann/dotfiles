@@ -16,7 +16,9 @@ function M.dismiss()
 
 	for _, win in ipairs({ s.before_win, s.after_win }) do
 		if win and vim.api.nvim_win_is_valid(win) then
-			vim.wo[win].diff = false
+			vim.api.nvim_win_call(win, function()
+				vim.cmd("diffoff")
+			end)
 			pcall(vim.api.nvim_win_close, win, true)
 		end
 	end
@@ -35,7 +37,10 @@ local function find_terminal_win()
 		if cfg.relative == "" then
 			local buf = vim.api.nvim_win_get_buf(win)
 			if vim.bo[buf].buftype == "terminal" then
-				return win
+				local name = vim.api.nvim_buf_get_name(buf)
+				if name:lower():find("claude") then
+					return win
+				end
 			end
 		end
 	end
@@ -72,7 +77,7 @@ function M.show(file_path, snapshot_path)
 		end
 		vim.api.nvim_buf_set_name(before_buf, "before://" .. vim.fn.fnamemodify(file_path, ":t"))
 
-		-- Open the before buffer in a vertical split to the right of the terminal.
+		-- Split to the right of the Claude Code terminal.
 		if term_win then
 			vim.api.nvim_set_current_win(term_win)
 		end
@@ -87,9 +92,14 @@ function M.show(file_path, snapshot_path)
 		local after_win = vim.api.nvim_get_current_win()
 		local after_buf = vim.api.nvim_win_get_buf(after_win)
 
-		-- Enable diff mode on both panes.
-		vim.wo[before_win].diff = true
-		vim.wo[after_win].diff = true
+		-- Enable diff mode and apply shared window options.
+		vim.api.nvim_set_current_win(before_win)
+		vim.cmd("diffthis")
+		vim.api.nvim_set_current_win(after_win)
+		vim.cmd("diffthis")
+		local display_name = vim.fn.fnamemodify(file_path, ":.")
+		local diff_opts = require("lib.diff-opts")
+		diff_opts.apply_pair(before_win, after_win, "before", "after", display_name)
 
 		_state = {
 			term_win = term_win,

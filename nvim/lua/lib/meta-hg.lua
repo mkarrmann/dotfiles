@@ -1027,10 +1027,7 @@ local function diff_split_show_pair(session, index)
   end)
 
   for _, win in ipairs({ session.left_win, session.right_win }) do
-    vim.wo[win].scrollbind = true
-    vim.wo[win].relativenumber = false
-    vim.wo[win].statuscolumn = ""
-    vim.wo[win].foldenable = false
+    require("lib.diff-opts").apply(win)
   end
 
   diff_split_update_winbar(session)
