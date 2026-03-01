@@ -176,6 +176,22 @@ local function lookup_dir_by_sid(sid)
 	return nil
 end
 
+local function lookup_name_by_sid(sid)
+	local f = io.open(agents_file, "r")
+	if not f then
+		return nil
+	end
+	for line in f:lines() do
+		if line:find(sid, 1, true) then
+			local name = line:match("^| ([^|]+) |")
+			f:close()
+			return name and vim.trim(name)
+		end
+	end
+	f:close()
+	return nil
+end
+
 local function chdir_if_needed(dir)
 	if dir and dir ~= "" and vim.fn.isdirectory(dir) == 1 then
 		local cwd = vim.fn.getcwd()
@@ -414,6 +430,17 @@ return {
 					vim.ui.input({ prompt = "Session ID: " }, function(id)
 						if id and id ~= "" then
 							chdir_if_needed(lookup_dir_by_sid(id))
+							local name = lookup_name_by_sid(id)
+							if name then
+								local nf = io.open(next_name_file, "w")
+								if nf then
+									nf:write(name)
+									nf:close()
+								end
+								if vim.env.TMUX then
+									vim.fn.system("tmux rename-window " .. vim.fn.shellescape(name))
+								end
+							end
 							vim.cmd("ClaudeCode --resume " .. id)
 						end
 					end)

@@ -336,6 +336,7 @@ cmd_register() {
   # ── RESUME PATH ──
   if [ "$source" = "resume" ]; then
     echo "$sid" > ~/.claude-resuming
+    rm -f ~/.claude-next-name 2>/dev/null
 
     if ! _check_gdrive; then
       ( sleep 2 && rm -f ~/.claude-resuming ) &
@@ -455,7 +456,7 @@ cmd_register() {
       elif [ -n "${TMUX:-}" ]; then
         local tmux_name
         tmux_name=$(tmux display-message -p '#W' 2>/dev/null)
-        if [ -n "$tmux_name" ] && [[ "$tmux_name" != "bash" && "$tmux_name" != "zsh" && "$tmux_name" != "fish" ]]; then
+        if [ -n "$tmux_name" ] && ! echo "$tmux_name" | grep -qxE "nvim|bash|zsh|sh|fish|tmux|systemd"; then
           name="$tmux_name"
           _log "  startup: using tmux window name='${name}'"
         else
@@ -729,6 +730,9 @@ cmd_active() {
           }' "$AGENTS_FILE" > "$tmpfile"
           mv "$tmpfile" "$AGENTS_FILE"
           echo "$sid" > ~/.claude-last-session
+          if [ -n "${TMUX:-}" ]; then
+            tmux rename-window "$name" 2>/dev/null
+          fi
           sort_agents
           exit 0
         fi
@@ -741,6 +745,9 @@ cmd_active() {
       local tmux_ctx
       tmux_ctx=$(_tmux_context)
       echo "| ${name} | ⚡ active | ${host} | ${sid} | ${tmux_ctx} | ${ts} | ${ts} | ${PWD} |" >> "$AGENTS_FILE"
+      if [ -n "${TMUX:-}" ]; then
+        tmux rename-window "$name" 2>/dev/null
+      fi
       sort_agents
     fi
 
