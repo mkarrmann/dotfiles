@@ -19,8 +19,8 @@ if [ ! -f "$AGENTS_FILE" ]; then
   exit 0
 fi
 
-# Consume stdin (not used, but prevents broken pipe)
-cat > /dev/null
+# Read JSON from stdin (piped by main statusline.sh) to get the real session ID
+input=$(cat)
 
 # Use cached copy if fresh enough to avoid FUSE latency
 mkdir -p "$(dirname "$CACHE_FILE")" 2>/dev/null
@@ -32,9 +32,12 @@ else
   agents_source="$CACHE_FILE"
 fi
 
-# Get current session's ID
+# Get current session's ID from JSON (authoritative), fall back to file
 current_sid=""
-if [ -f ~/.claude-last-session ]; then
+if [ -n "$input" ]; then
+  current_sid=$(echo "$input" | jq -r '.session_id // empty' 2>/dev/null)
+fi
+if [ -z "$current_sid" ] && [ -f ~/.claude-last-session ]; then
   current_sid=$(cat ~/.claude-last-session)
 fi
 
