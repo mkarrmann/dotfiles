@@ -141,6 +141,26 @@ tmp=$(jq '
           "command": "python3 ~/.claude/hooks/accept-source-controlled-edits.py"
         }
       ]
+    },
+    {
+      "matcher": "Edit|Write",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 ~/.claude/hooks/snapshot-for-diff.py"
+        }
+      ]
+    }
+  ] |
+  .hooks.PostToolUse = [
+    {
+      "matcher": "Edit|Write",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 ~/.claude/hooks/show-edit-diff.py"
+        }
+      ]
     }
   ] |
   .hooks.Stop = [
