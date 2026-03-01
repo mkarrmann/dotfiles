@@ -157,6 +157,35 @@ local function parse_agents()
 	return entries
 end
 
+local function lookup_dir_by_sid(sid)
+	local f = io.open(agents_file, "r")
+	if not f then
+		return nil
+	end
+	for line in f:lines() do
+		if line:find(sid, 1, true) then
+			local fields = {}
+			for field in line:gmatch("|([^|]*)") do
+				fields[#fields + 1] = vim.trim(field)
+			end
+			f:close()
+			return fields[8] or nil
+		end
+	end
+	f:close()
+	return nil
+end
+
+local function chdir_if_needed(dir)
+	if dir and dir ~= "" and vim.fn.isdirectory(dir) == 1 then
+		local cwd = vim.fn.getcwd()
+		if dir ~= cwd then
+			vim.fn.chdir(dir)
+			vim.notify("cd " .. dir)
+		end
+	end
+end
+
 local function shorten_path(p)
 	if not p or p == "" then
 		return ""
@@ -247,14 +276,7 @@ local function resume_by_name()
 						return
 					end
 					local agent = selection.value
-					-- Switch to the session's directory so Claude starts there
-					if agent.dir and agent.dir ~= "" and vim.fn.isdirectory(agent.dir) == 1 then
-						local cwd = vim.fn.getcwd()
-						if agent.dir ~= cwd then
-							vim.fn.chdir(agent.dir)
-							vim.notify("cd " .. agent.dir)
-						end
-					end
+					chdir_if_needed(agent.dir)
 					-- Write name so hook preserves it if session is compacted
 					local nf = io.open(next_name_file, "w")
 					if nf then
@@ -391,6 +413,7 @@ return {
 				function()
 					vim.ui.input({ prompt = "Session ID: " }, function(id)
 						if id and id ~= "" then
+							chdir_if_needed(lookup_dir_by_sid(id))
 							vim.cmd("ClaudeCode --resume " .. id)
 						end
 					end)
