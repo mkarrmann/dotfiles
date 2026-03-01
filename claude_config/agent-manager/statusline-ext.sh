@@ -209,7 +209,7 @@ while IFS='|' read -r _ name status od sid desc started updated dir _; do
 
   [ -z "$name" ] && continue
 
-  if [ -n "$current_sid" ] && [[ "$current_sid" == "$sid"* || "$sid" == "$current_sid"* ]]; then
+  if [ -n "$current_sid" ] && [ "$sid" = "$current_sid" ]; then
     if [ -n "$current_line" ]; then
       live_lines+=("$current_line")
     fi
