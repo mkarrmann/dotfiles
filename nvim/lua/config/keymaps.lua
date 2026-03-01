@@ -30,11 +30,30 @@ if vim.g.vscode then
 		{ noremap = true, silent = true })
 end
 
+local function win_move_wrap(dir, opposite)
+	return function()
+		local cur = vim.api.nvim_get_current_win()
+		vim.cmd("wincmd " .. dir)
+		if vim.api.nvim_get_current_win() == cur then
+			vim.cmd("999wincmd " .. opposite)
+		end
+	end
+end
+
+vim.keymap.set("n", "<C-h>", win_move_wrap("h", "l"), { desc = "Go to Left Window (wrap)" })
+vim.keymap.set("n", "<C-l>", win_move_wrap("l", "h"), { desc = "Go to Right Window (wrap)" })
+
 vim.keymap.set("t", "<C-\\>", "<C-\\><C-n>", { desc = "Exit terminal mode" })
-vim.keymap.set("t", "<C-h>", "<C-\\><C-n><C-w>h", { desc = "Go to Left Window" })
+vim.keymap.set("t", "<C-h>", function()
+	vim.cmd("stopinsert")
+	win_move_wrap("h", "l")()
+end, { desc = "Go to Left Window (wrap)" })
 vim.keymap.set("t", "<C-j>", "<C-\\><C-n><C-w>j", { desc = "Go to Lower Window" })
 vim.keymap.set("t", "<C-k>", "<C-\\><C-n><C-w>k", { desc = "Go to Upper Window" })
-vim.keymap.set("t", "<C-l>", "<C-\\><C-n><C-w>l", { desc = "Go to Right Window" })
+vim.keymap.set("t", "<C-l>", function()
+	vim.cmd("stopinsert")
+	win_move_wrap("l", "h")()
+end, { desc = "Go to Right Window (wrap)" })
 
 vim.keymap.set("n", "<leader>tt", "<cmd>terminal<cr>", { desc = "Terminal" })
 vim.keymap.set("n", "<leader>tv", "<cmd>vsplit | terminal<cr>", { desc = "Terminal (vsplit)" })
