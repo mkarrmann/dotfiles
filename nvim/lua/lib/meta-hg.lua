@@ -2486,6 +2486,8 @@ HgChanges = function()
     return vim.tbl_map(function(e) return e.path end, get_action_entries())
   end
 
+  local help_win = nil
+
   local function refresh()
     local new_out = vim.system({ "hg", "status" }):wait()
     if new_out.code ~= 0 then
@@ -2493,6 +2495,10 @@ HgChanges = function()
     end
     local new_stdout = vim.trim(new_out.stdout or "")
     if new_stdout == "" then
+      if help_win and vim.api.nvim_win_is_valid(help_win) then
+        vim.api.nvim_win_close(help_win, true)
+        help_win = nil
+      end
       if vim.api.nvim_win_is_valid(win) then
         vim.api.nvim_win_close(win, true)
       end
@@ -2687,7 +2693,6 @@ HgChanges = function()
     " ?        show/dismiss this help",
   }
 
-  local help_win = nil
   local function show_help()
     if help_win and vim.api.nvim_win_is_valid(help_win) then
       vim.api.nvim_win_close(help_win, true)
