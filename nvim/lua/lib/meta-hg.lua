@@ -2648,6 +2648,18 @@ HgChanges = function()
 
     local changes_win = vim.api.nvim_get_current_win()
 
+    -- Split from the HgSsl window (not the small changes split)
+    local split_from = changes_win
+    if SSL_STATE.bufnr then
+      for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+        if vim.api.nvim_win_get_buf(w) == SSL_STATE.bufnr then
+          split_from = w
+          break
+        end
+      end
+    end
+
+    vim.api.nvim_set_current_win(split_from)
     vim.cmd("rightbelow vsplit")
     local left_win = vim.api.nvim_get_current_win()
     vim.cmd("rightbelow vsplit")
