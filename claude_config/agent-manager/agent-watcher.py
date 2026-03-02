@@ -45,7 +45,8 @@ SKIP_STATUSES = {"waiting", "bg:running"}
 CLASSIFIABLE_STATUSES = {"done", "stopped", "active", "interactive", "resumed"}
 
 # Auto-naming: sessions with default names (hostname-xxxx) get named from transcript
-NAMING_MIN_TRANSCRIPT_ENTRIES = 3
+NAMING_QUICK_MIN_ENTRIES = 1   # qq: prefix — as soon as first prompt exists
+NAMING_FULL_MIN_ENTRIES = 6    # drop qq: prefix — enough context for a good name
 _HOSTNAME = os.uname().nodename.split(".")[0]
 
 # ── Logging ───────────────────────────────────────────────
@@ -182,12 +183,21 @@ CLASSIFICATION_PROMPT = """You are monitoring a Claude Code session. Based on th
 - WORKING: actively making progress on the task
 - STUCK: not making progress — looping, hitting repeated errors, or hung
 - CRASHED: terminated unexpectedly mid-task
-- WAITING: legitimately waiting for user input
+- WAITING: blocked on user input — needs a decision, answer, or action from the user
 - DONE: finished its task successfully
 
-Respond with ONLY the classification word and a short reason (max 15 words).
-Example: "DONE — completed all requested file changes"
-Example: "STUCK — hitting the same permission error in a loop"
+Response format:
+Line 1: classification word and short reason (max 15 words)
+Line 2: if WAITING or STUCK, a concise summary of what is needed (max 60 chars). Otherwise leave blank.
+
+Examples:
+DONE — completed all requested file changes
+
+STUCK — hitting the same permission error in a loop
+Needs write access to /etc/config or alternative path
+
+WAITING — asked user which auth method to use
+JWT vs session cookies for the auth refactor?
 
 Session status: {status}
 Idle time: {idle_secs}s
@@ -235,7 +245,14 @@ def classify_session(agent: dict, transcript: str) -> Tuple[str, str, dict]:
     verdict = output.split()[0].upper().rstrip("—:-") if output else "ERROR"
     if verdict not in ("WORKING", "STUCK", "CRASHED", "WAITING", "DONE"):
         verdict = "ERROR"
-    return verdict, output, usage
+
+    # Extract detail line (line 2) for WAITING/STUCK
+    detail = ""
+    lines = output.strip().split("\n")
+    if len(lines) >= 2:
+        detail = lines[-1].strip()[:60]
+
+    return verdict, output, detail, usage
 
 
 # ── Auto-naming ──────────────────────────────────────────
@@ -526,69 +543,133 @@ def main():
             if cleared or pruned:
                 save_state(state)
 
-            # Auto-name sessions with default names
+            # Auto-name sessions
+            # Phase 1: default name → qq:<name> (quick, after first prompt)
+            # Phase 2: qq:<name> → <name> (full rename, after 6+ transcript entries)
             for agent in agents:
                 sid = agent["session_id"]
                 if not sid:
                     continue
                 name = agent["name"]
-                if not is_default_name(name):
-                    continue
-                naming_key = f"_named:{sid}"
-                if naming_key in state:
-                    continue
 
                 transcript_path = find_transcript_path(sid)
                 if not transcript_path:
                     continue
 
                 transcript = read_transcript_tail(transcript_path)
-                entry_count = transcript.count("\n") + 1
-                if transcript == "(no transcript entries)" or entry_count < NAMING_MIN_TRANSCRIPT_ENTRIES:
-                    continue
+                entry_count = transcript.count("\n") + 1 if transcript != "(no transcript entries)" else 0
 
-                # Re-check name in AGENTS.md — another watcher may have renamed it
-                fresh_agents = parse_agents(resolve_agents_file())
-                fresh = next((a for a in fresh_agents if a["session_id"] == sid), None)
-                if not fresh or not is_default_name(fresh["name"]):
-                    continue
+                if is_default_name(name):
+                    # Phase 1: quick name with qq: prefix
+                    naming_key = f"_named:{sid}"
+                    if naming_key in state:
+                        continue
+                    if entry_count < NAMING_QUICK_MIN_ENTRIES:
+                        continue
 
-                state[naming_key] = {"named": True, "timestamp": time.time()}
-                save_state(state)
+                    fresh_agents = parse_agents(resolve_agents_file())
+                    fresh = next((a for a in fresh_agents if a["session_id"] == sid), None)
+                    if not fresh or not is_default_name(fresh["name"]):
+                        continue
 
-                log.info("naming %s (%s)", sid[:8], name)
-                new_name, usage = name_session(agent, transcript)
+                    state[naming_key] = {"named": True, "phase": "quick", "timestamp": time.time()}
+                    save_state(state)
 
-                if new_name:
-                    rename_in_agents_md(sid, name, new_name)
-                    # Rename tmux window if local
-                    try:
-                        target = agent.get("description", "").strip()
-                        if target and ":" in target:
-                            subprocess.run(
-                                ["tmux", "rename-window", "-t", target, new_name],
-                                capture_output=True, timeout=2,
-                            )
-                    except (subprocess.TimeoutExpired, FileNotFoundError):
-                        pass
-                    state[naming_key]["new_name"] = new_name
-                else:
-                    log.info("naming failed for %s, keeping default", sid[:8])
+                    log.info("quick-naming %s (%s)", sid[:8], name)
+                    new_name, usage = name_session(agent, transcript)
 
-                if usage:
-                    totals = state.get("_usage", {
-                        "total_classifications": 0,
-                        "total_input_tokens_est": 0,
-                        "total_output_tokens_est": 0,
-                        "total_cost_est": 0.0,
-                    })
-                    totals["total_classifications"] += 1
-                    totals["total_input_tokens_est"] += usage.get("input_tokens_est", 0)
-                    totals["total_output_tokens_est"] += usage.get("output_tokens_est", 0)
-                    totals["total_cost_est"] += usage.get("cost_est", 0.0)
-                    state["_usage"] = totals
+                    if new_name:
+                        qq_name = f"qq:{new_name}"
+                        rename_in_agents_md(sid, name, qq_name)
+                        try:
+                            target = agent.get("description", "").strip()
+                            if target and ":" in target:
+                                subprocess.run(
+                                    ["tmux", "rename-window", "-t", target, qq_name],
+                                    capture_output=True, timeout=2,
+                                )
+                        except (subprocess.TimeoutExpired, FileNotFoundError):
+                            pass
+                        state[naming_key]["new_name"] = qq_name
+                    else:
+                        log.info("quick-naming failed for %s, keeping default", sid[:8])
 
-                save_state(state)
+                    if usage:
+                        totals = state.get("_usage", {
+                            "total_classifications": 0,
+                            "total_input_tokens_est": 0,
+                            "total_output_tokens_est": 0,
+                            "total_cost_est": 0.0,
+                        })
+                        totals["total_classifications"] += 1
+                        totals["total_input_tokens_est"] += usage.get("input_tokens_est", 0)
+                        totals["total_output_tokens_est"] += usage.get("output_tokens_est", 0)
+                        totals["total_cost_est"] += usage.get("cost_est", 0.0)
+                        state["_usage"] = totals
+
+                    save_state(state)
+
+                elif name.startswith("qq:"):
+                    # Phase 2: full rename — drop qq: prefix
+                    rename_key = f"_renamed:{sid}"
+                    if rename_key in state:
+                        continue
+                    if entry_count < NAMING_FULL_MIN_ENTRIES:
+                        continue
+
+                    fresh_agents = parse_agents(resolve_agents_file())
+                    fresh = next((a for a in fresh_agents if a["session_id"] == sid), None)
+                    if not fresh or not fresh["name"].startswith("qq:"):
+                        continue
+
+                    state[rename_key] = {"renamed": True, "timestamp": time.time()}
+                    save_state(state)
+
+                    log.info("full-naming %s (%s)", sid[:8], name)
+                    new_name, usage = name_session(agent, transcript)
+
+                    if new_name:
+                        rename_in_agents_md(sid, name, new_name)
+                        try:
+                            target = agent.get("description", "").strip()
+                            if target and ":" in target:
+                                subprocess.run(
+                                    ["tmux", "rename-window", "-t", target, new_name],
+                                    capture_output=True, timeout=2,
+                                )
+                        except (subprocess.TimeoutExpired, FileNotFoundError):
+                            pass
+                        state[rename_key]["new_name"] = new_name
+                    else:
+                        # LLM failed — just strip qq: from existing name
+                        stripped = name[3:]
+                        rename_in_agents_md(sid, name, stripped)
+                        try:
+                            target = agent.get("description", "").strip()
+                            if target and ":" in target:
+                                subprocess.run(
+                                    ["tmux", "rename-window", "-t", target, stripped],
+                                    capture_output=True, timeout=2,
+                                )
+                        except (subprocess.TimeoutExpired, FileNotFoundError):
+                            pass
+                        state[rename_key]["new_name"] = stripped
+                        log.info("full-naming failed for %s, stripped qq: prefix", sid[:8])
+
+                    if usage:
+                        totals = state.get("_usage", {
+                            "total_classifications": 0,
+                            "total_input_tokens_est": 0,
+                            "total_output_tokens_est": 0,
+                            "total_cost_est": 0.0,
+                        })
+                        totals["total_classifications"] += 1
+                        totals["total_input_tokens_est"] += usage.get("input_tokens_est", 0)
+                        totals["total_output_tokens_est"] += usage.get("output_tokens_est", 0)
+                        totals["total_cost_est"] += usage.get("cost_est", 0.0)
+                        state["_usage"] = totals
+
+                    save_state(state)
 
             # Classify idle sessions
             for agent in agents:
@@ -626,7 +707,7 @@ def main():
                     sid[:8], agent["name"], agent["idle_secs"], agent["status_text"],
                 )
 
-                verdict, raw, usage = classify_session(agent, transcript)
+                verdict, raw, detail, usage = classify_session(agent, transcript)
                 log.info("verdict for %s: %s (%s)", sid[:8], verdict, raw[:80])
 
                 # Track cumulative usage
@@ -646,6 +727,7 @@ def main():
                     "classified": True,
                     "verdict": verdict,
                     "reason": raw,
+                    "detail": detail,
                     "timestamp": time.time(),
                     "usage": usage,
                 }
@@ -654,7 +736,9 @@ def main():
                 if verdict == "STUCK":
                     update_agents_md(sid, "🔴 stuck")
                     notify_stuck(agent)
-
+                elif verdict == "WAITING":
+                    update_agents_md(sid, "❓ waiting")
+                    notify_stuck(agent)  # same bell + ! state
         except Exception:
             log.exception("watcher loop error")
 

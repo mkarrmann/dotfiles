@@ -121,7 +121,7 @@ class Agent:
     @property
     def is_live(self) -> bool:
         return self.status_text in (
-            "active", "waiting", "done", "interactive", "resumed"
+            "active", "waiting", "done", "interactive", "resumed", "stuck"
         )
 
     @property
@@ -301,10 +301,32 @@ def get_preview(pane_lines: List[str], count: int) -> List[str]:
 
 # ── Smart Status Detection ────────────────────────────────
 
+_watcher_state_cache: Optional[dict] = None
+
+
+def _load_watcher_detail(a: Agent) -> None:
+    global _watcher_state_cache
+    if _watcher_state_cache is None:
+        state_file = Path.home() / ".claude" / "agent-manager" / "watcher-state.json"
+        try:
+            import json
+            _watcher_state_cache = json.loads(state_file.read_text()) if state_file.exists() else {}
+        except (OSError, ValueError):
+            _watcher_state_cache = {}
+    entry = _watcher_state_cache.get(a.session_id, {})
+    if entry.get("detail"):
+        a.smart_detail = entry["detail"]
+
 
 def detect_status(a: Agent) -> None:
     if not a.is_live:
         a.smart_status = a.status_text or "stopped"
+        return
+
+    # Watcher-classified sessions: use detail from watcher state
+    if a.status_text in ("stuck", "waiting"):
+        a.smart_status = a.status_text
+        _load_watcher_detail(a)
         return
 
     if not a.is_local:
