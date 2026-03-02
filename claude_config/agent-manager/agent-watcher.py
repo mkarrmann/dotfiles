@@ -64,12 +64,31 @@ log = logging.getLogger("watcher")
 # ── AGENTS.md parsing (minimal, no tmux) ─────────────────
 
 
+def _is_gdrive_healthy() -> bool:
+    """Check gdrive FUSE mount health, matching agent-tracker.sh's _check_gdrive()."""
+    try:
+        if "gdrive" not in Path("/proc/mounts").read_text():
+            return False
+    except OSError:
+        return False
+    gdrive_dir = f"/data/users/{os.environ.get('USER', 'nobody')}/gdrive"
+    try:
+        subprocess.run(["ls", gdrive_dir], capture_output=True, timeout=3, check=True)
+        return True
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
 def resolve_agents_file() -> Path:
     if env := os.environ.get("CLAUDE_AGENTS_FILE"):
         return Path(env)
-    gdrive = Path(f"/data/users/{os.environ.get('USER', 'nobody')}/gdrive/AGENTS.md")
-    if gdrive.exists():
-        return gdrive
+    if _is_gdrive_healthy():
+        gdrive = Path(f"/data/users/{os.environ.get('USER', 'nobody')}/gdrive/AGENTS.md")
+        try:
+            if gdrive.exists():
+                return gdrive
+        except OSError:
+            pass
     return Path.home() / ".claude" / "agents.md"
 
 
@@ -206,8 +225,8 @@ Recent conversation:
 {transcript}"""
 
 
-def classify_session(agent: dict, transcript: str) -> Tuple[str, str, dict]:
-    """Returns (verdict, raw_output, usage_stats)."""
+def classify_session(agent: dict, transcript: str) -> Tuple[str, str, str, dict]:
+    """Returns (verdict, raw_output, detail, usage_stats)."""
     prompt = CLASSIFICATION_PROMPT.format(
         status=agent["status_raw"],
         idle_secs=agent["idle_secs"],
@@ -217,16 +236,17 @@ def classify_session(agent: dict, transcript: str) -> Tuple[str, str, dict]:
     input_chars = len(prompt)
     try:
         result = subprocess.run(
-            ["claude", "-p", "--model", "haiku", prompt],
+            ["claude", "-p", "--model", "haiku"],
+            input=prompt,
             capture_output=True,
             text=True,
-            timeout=60,
-            env={**os.environ, "CLAUDECODE": ""},  # unset to allow nested invocation
+            timeout=120,
+            env={**os.environ, "CLAUDECODE": ""},
         )
         output = result.stdout.strip()
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         log.error("classify failed for %s: %s", agent["session_id"][:8], e)
-        return "ERROR", str(e), {}
+        return "ERROR", str(e), "", {}
 
     output_chars = len(output)
     input_tokens_est = int(input_chars / CHARS_PER_TOKEN_ESTIMATE)
@@ -282,10 +302,11 @@ def name_session(agent: dict, transcript: str) -> Tuple[str, dict]:
     input_chars = len(prompt)
     try:
         result = subprocess.run(
-            ["claude", "-p", "--model", "haiku", prompt],
+            ["claude", "-p", "--model", "haiku"],
+            input=prompt,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=120,
             env={**os.environ, "CLAUDECODE": ""},
         )
         output = result.stdout.strip()
@@ -306,9 +327,10 @@ def name_session(agent: dict, transcript: str) -> Tuple[str, dict]:
         "cost_est": cost_est,
     }
 
-    # Sanitize: take first word/line, strip quotes, enforce length
-    name = output.split("\n")[0].strip().strip('"\'').lower()[:20]
-    if not name or " " in name:
+    # Sanitize: take first word/line, strip quotes, convert spaces to hyphens
+    name = output.split("\n")[0].strip().strip('"\'').lower()
+    name = name.replace(" ", "-")[:20]
+    if not name or not all(c.isalnum() or c == "-" for c in name):
         return "", usage
     return name, usage
 
