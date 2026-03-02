@@ -122,6 +122,8 @@ local function _clean_cmd(text)
 	text = text:gsub("^```%w*\n", ""):gsub("\n```%s*$", "")
 	text = text:gsub("^`(.+)`$", "%1")
 	text = text:gsub("^[%$#%%>]+%s+", "")
+	text = text:gsub("[ \t]*\\?\n[ \t]*", " ")
+	text = text:match("^%s*(.-)%s*$") or ""
 	return text
 end
 
