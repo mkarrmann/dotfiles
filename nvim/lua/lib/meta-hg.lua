@@ -3232,6 +3232,8 @@ local _is_setup = false
 return {
   ssl_state = SSL_STATE,
   ssl_commands = SSL_COMMANDS,
+  diff_split_load_pair = diff_split_load_pair,
+  diff_split_update_winbar = diff_split_update_winbar,
   refresh_ssl = function()
     if SSL_STATE.bufnr and vim.api.nvim_buf_is_valid(SSL_STATE.bufnr) and not SSL_STATE.blocked then
       ssl_utils.refresh_buffer(SSL_STATE.bufnr)

@@ -123,8 +123,114 @@ vim.api.nvim_create_user_command("HgDiffSplit", function()
 		end,
 	})
 end, { desc = "Side-by-side diff of current file against parent commit" })
+
+vim.api.nvim_create_user_command("HgDiffSplitWorkingSet", function()
+	local diff_session = require("lib.diff-session")
+
+	local cwd = vim.uv.cwd() or vim.fn.getcwd()
+	local repo_root = vim.fs.root(cwd, ".hg")
+	if not repo_root then
+		vim.notify("Not in an hg repo", vim.log.levels.ERROR)
+		return
+	end
+
+	local out = vim.system({ "hg", "status" }, { text = true }):wait()
+	if out.code ~= 0 then
+		vim.notify("hg status failed", vim.log.levels.ERROR)
+		return
+	end
+
+	local files = {}
+	for _, line in ipairs(vim.split(vim.trim(out.stdout or ""), "\n")) do
+		local status = line:sub(1, 1)
+		if status == "M" or status == "A" then
+			table.insert(files, line:sub(3))
+		end
+	end
+
+	if #files == 0 then
+		vim.notify("No uncommitted changes", vim.log.levels.INFO)
+		return
+	end
+
+	local file_pairs = {}
+	for _, file in ipairs(files) do
+		table.insert(file_pairs, { file = file, is_live = false })
+	end
+
+	local tab = vim.api.nvim_get_current_tabpage()
+	if diff_session.sessions[tab] then
+		diff_session.close(diff_session.sessions[tab])
+	end
+
+	local origin_win = vim.api.nvim_get_current_win()
+
+	vim.cmd("rightbelow vsplit")
+	local left_win = vim.api.nvim_get_current_win()
+	vim.cmd("rightbelow vsplit")
+	local right_win = vim.api.nvim_get_current_win()
+
+	local closing = false
+
+	local session = {
+		pairs = file_pairs,
+		index = 1,
+		left_win = left_win,
+		right_win = right_win,
+		commit = { is_current = true, hash = "." },
+		parent_rev = ".",
+		repo_root = repo_root,
+		update_winbar = meta_hg.diff_split_update_winbar,
+	}
+
+	session.on_close = function()
+		if closing then
+			return
+		end
+		closing = true
+		for _, win in ipairs({ left_win, right_win }) do
+			if vim.api.nvim_win_is_valid(win) then
+				pcall(vim.api.nvim_win_close, win, true)
+			end
+		end
+		diff_session.cleanup(session)
+		if vim.api.nvim_win_is_valid(origin_win) then
+			vim.api.nvim_set_current_win(origin_win)
+		end
+	end
+
+	for _, win in ipairs({ left_win, right_win }) do
+		vim.api.nvim_create_autocmd("WinClosed", {
+			pattern = tostring(win),
+			once = true,
+			callback = function()
+				vim.schedule(function()
+					diff_session.close(session)
+				end)
+			end,
+		})
+	end
+
+	for _, pair in ipairs(file_pairs) do
+		pair.load = function(p)
+			meta_hg.diff_split_load_pair(session, p)
+		end
+	end
+
+	diff_session.register(tab, session)
+
+	meta_hg.diff_split_load_pair(session, file_pairs[1])
+	if not file_pairs[1].old_buf then
+		session.on_close()
+		return
+	end
+
+	diff_session.show_pair(session, 1)
+end, { desc = "Side-by-side diff of all uncommitted changes" })
+
 vim.keymap.set("n", "<leader>hb", "<CMD>HgBlame<CR>", { desc = "Hg blame" })
 vim.keymap.set("n", "<leader>hd", "<CMD>HgDiffSplit<CR>", { desc = "Hg diff split" })
+vim.keymap.set("n", "<leader>hD", "<CMD>HgDiffSplitWorkingSet<CR>", { desc = "Hg diff split (working set)" })
 vim.keymap.set("n", "<leader>hs", "<CMD>HgSsl<CR>", { desc = "Hg smartlog" })
 vim.keymap.set("n", "<leader>hS", "<CMD>HgSslSplit<CR>", { desc = "Hg smartlog (vsplit)" })
 vim.keymap.set("n", "<leader>hu", "<CMD>HgSuggest<CR>", { desc = "Hg suggest changes" })
