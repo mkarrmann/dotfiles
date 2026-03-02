@@ -89,7 +89,7 @@ _cleanup_pid() {
 # Spawn a background daemon that periodically updates the AGENTS.md timestamp,
 # proving to other machines that this session is still alive.  The daemon
 # monitors the Claude Code PID and exits when the process dies.
-HEARTBEAT_INTERVAL=300
+HEARTBEAT_INTERVAL=15
 
 _start_heartbeat() {
   local sid="$1" claude_pid="$2"
@@ -872,9 +872,14 @@ cmd_heartbeat() {
   echo $$ > "$heartbeat_pidfile"
   trap 'rm -f "$heartbeat_pidfile"; exit 0' EXIT TERM
 
-  while sleep "$HEARTBEAT_INTERVAL"; do
-    # Stop if Claude process is dead
-    [ -d "/proc/$claude_pid" ] || break
+  while true; do
+    # Check PID liveness every 10s, but only do file I/O every HEARTBEAT_INTERVAL
+    local elapsed=0
+    while [ "$elapsed" -lt "$HEARTBEAT_INTERVAL" ]; do
+      sleep 10
+      [ -d "/proc/$claude_pid" ] || break 2
+      elapsed=$((elapsed + 10))
+    done
 
     # Quick gdrive health check — skip this cycle if unavailable
     grep -q "gdrive" /proc/mounts 2>/dev/null || continue
@@ -902,6 +907,31 @@ cmd_heartbeat() {
       rm -rf "$lock_dir" 2>/dev/null
     fi
   done
+
+  # Claude process died without Stop hook firing (e.g. tmux window killed).
+  # Mark the session as stopped so the dashboard reflects reality.
+  _log "  heartbeat: sid=${sid:0:8} claude pid $claude_pid dead — marking stopped"
+  _cleanup_pid "$sid"
+  if _check_gdrive 2>/dev/null; then
+    local lock_dir="${LOCK_FILE}.d"
+    if mkdir "$lock_dir" 2>/dev/null; then
+      local ts
+      ts=$(date '+%m-%d %H:%M')
+      local tmpfile="${AGENTS_FILE}.tmp"
+      if awk -v sid="$sid" -v ts="$ts" -F'|' 'BEGIN{OFS="|"} {
+        if (NR > 4 && index($5, sid) > 0) {
+          $3 = " ⏹️ stopped "
+          $8 = " " ts " "
+        }
+        print
+      }' "$AGENTS_FILE" > "$tmpfile"; then
+        mv "$tmpfile" "$AGENTS_FILE"
+      else
+        rm -f "$tmpfile"
+      fi
+      rm -rf "$lock_dir" 2>/dev/null
+    fi
+  fi
 }
 
 # ============================================================
