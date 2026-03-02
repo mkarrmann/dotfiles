@@ -84,7 +84,13 @@ local SSL_HOP_NS = vim.api.nvim_create_namespace("hg_ssl_hop")
 vim.api.nvim_set_hl(0, "HgSslCurrentLine", { default = true, link = "Visual" })
 vim.api.nvim_set_hl(0, "HgSslHopLabel", { default = true, link = "DiagnosticOk" })
 
-local HOP_LABELS = "fjdksla;ghqweruiop"
+local HOP_CHARS = "fjdksla;ghqweruiop"
+local HOP_LABELS = {}
+for i = 1, #HOP_CHARS do
+  for j = 1, #HOP_CHARS do
+    HOP_LABELS[#HOP_LABELS + 1] = HOP_CHARS:sub(i, i) .. HOP_CHARS:sub(j, j)
+  end
+end
 
 local SSL_STATE = {
   ---@type number? reuse the same buffer for the nvim process lifespan
@@ -745,8 +751,8 @@ local function ssl_place_hop_labels(bufnr, lines)
     local commit = ssl_utils.parse_diff_line(line)
     if commit then
       label_idx = label_idx + 1
-      local label = HOP_LABELS:sub(label_idx, label_idx)
-      if label == "" then
+      local label = HOP_LABELS[label_idx]
+      if not label then
         break
       end
       vim.api.nvim_buf_set_extmark(bufnr, SSL_HOP_NS, i - 1, 0, {
@@ -1617,8 +1623,8 @@ local function HgSsl(opts)
     for i, line in ipairs(lines) do
       if ssl_utils.parse_diff_line(line) then
         label_idx = label_idx + 1
-        local label = HOP_LABELS:sub(label_idx, label_idx)
-        if label == "" then
+        local label = HOP_LABELS[label_idx]
+        if not label then
           break
         end
         label_to_line[label] = i
@@ -1629,12 +1635,16 @@ local function HgSsl(opts)
       return
     end
 
-    local ok, char = pcall(vim.fn.getcharstr)
-    if not ok or not char then
+    local ok, c1 = pcall(vim.fn.getcharstr)
+    if not ok or not c1 then
+      return
+    end
+    local ok2, c2 = pcall(vim.fn.getcharstr)
+    if not ok2 or not c2 then
       return
     end
 
-    local target = label_to_line[char]
+    local target = label_to_line[c1 .. c2]
     if target then
       vim.api.nvim_win_set_cursor(0, { target, 0 })
     end
