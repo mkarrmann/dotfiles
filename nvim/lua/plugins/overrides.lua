@@ -46,6 +46,31 @@ return {
 				split_width_percentage = 0.45,
 			},
 		},
+		config = function(_, opts)
+			require("claudecode").setup(opts)
+
+			-- Patch closeAllDiffTabs to only close diffs that claudecode.nvim
+			-- itself created (tracked in its active_diffs table), rather than
+			-- indiscriminately closing every window with diff mode on.
+			local tools = require("claudecode.tools")
+			local orig = tools.tools["closeAllDiffTabs"]
+			if orig then
+				orig.handler = function()
+					local diff = require("claudecode.diff")
+					local active = diff._get_active_diffs()
+					local count = 0
+					for _ in pairs(active) do
+						count = count + 1
+					end
+					diff._cleanup_all_active_diffs("closeAllDiffTabs")
+					return {
+						content = {
+							{ type = "text", text = "CLOSED_" .. count .. "_DIFF_TABS" },
+						},
+					}
+				end
+			end
+		end,
 	},
 	{
 		"folke/flash.nvim",
