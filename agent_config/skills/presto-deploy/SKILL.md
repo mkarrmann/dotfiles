@@ -134,6 +134,17 @@ presto-deploy-finish accelerate <cluster>
 
 ### Deploy with local TW config changes
 
+Use the `-L` flag on `presto-deploy` to deploy with local TW config:
+
+```bash
+# Build + deploy with local config (version from PRESTO_VERSION or cpp-prod tag)
+presto-deploy -n -L -c <cluster> -r "<reason>"
+
+# Deploy existing fbpkg with local config
+presto-deploy -J <hash> -L -c <cluster> -r "<reason>"
+```
+
+Or manually via `pt pcm deploy`:
 ```bash
 pt pcm deploy -c <cluster> -l -r "<reason>" -f -ni -dt 0
 ```
@@ -178,6 +189,8 @@ presto-deploy-finish restart <cluster>
 | Hybrid with existing Java | `presto-deploy -J <hash> -n` |
 | Build + deploy + push to cluster | `presto-deploy -c <cluster> -r "reason"` |
 | Full hybrid + push to cluster | `presto-deploy -n -c <cluster> -r "reason"` |
+| Deploy with local TW config | `presto-deploy -L -c <cluster> -r "reason"` |
+| Hybrid + local TW config | `presto-deploy -n -L -c <cluster> -r "reason"` |
 
 ## Workflow
 
@@ -447,6 +460,28 @@ For Java clusters, the equivalent file is `include/tupperware_configs/warehouse/
 The `-l` / `--use-local-config` flag deploys the **entire TW config from your local working copy** (the `tupperware/` directory in the current fbsource checkout). Any uncommitted changes to `.tw` or `.cinc` files take effect. Without `-l`, the tool uses a daily-published config snapshot (`tupperware_fbcode_config_snapshot:daily`), so local changes won't be picked up.
 
 **CRITICAL: Do not combine `-l` with `-pv`.** The local spec compiles a CONFIG_BLOB that embeds a Presto version. If `-pv` specifies a different version, the CONFIG_BLOB will be compiled for one version while the binary is another. This mismatch crashes workers on startup and leaves the cluster unrecoverable without manual `tw restart`. When using `-l`, omit `-pv` entirely -- the local spec controls the version.
+
+#### How Prestissimo Worker Version Is Resolved
+
+For dynamically-reserved batch test clusters, the native worker version is resolved in `testing/batch_test.tw` (lines 46-49):
+
+```python
+native_presto_version = (
+    utils.get_maven_version_from_env()
+    or utils.get_fbpkg_presto_version(tag=constant.FBPKG_CPP_PROD_TAG)
+)
+```
+
+**Resolution order:**
+1. `PRESTO_VERSION` env var — if set, parses this into a `PrestoVersion` and uses it
+2. `TW_PUSHED_VERSION` env var — used during `tw push` workflows
+3. `cpp-prod` tag — falls back to `presto.presto:cpp-prod` fbpkg tag lookup
+
+The final worker package is `presto.presto` with tag `v{version_string}`. To deploy a custom hybrid:
+1. Build and tag the hybrid: `fbpkg tag presto.presto:<hash> v<version_string>`
+2. Deploy: `PRESTO_VERSION=<version_string> pt pcm deploy -c <cluster> -l -r "..." -f -ni -dt 0`
+
+Reference files: `include/utils.cinc` (`get_maven_version_from_env()`), `include/constants.cinc` (`FBPKG_CPP_PROD_TAG = "cpp-prod"`).
 
 #### Workflow
 

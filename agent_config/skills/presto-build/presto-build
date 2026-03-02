@@ -101,11 +101,11 @@ detect_repo() {
 resolve_cpp_targets() {
     case "$CPP_MODE" in
         dev)  CPP_TARGET="";                        CPP_BUCK_MODE="";;
-        opt)  CPP_TARGET="presto.presto_cpp";       CPP_BUCK_MODE="@mode/opt";;
+        opt)  CPP_TARGET="presto.presto_cpp";       CPP_BUCK_MODE="@fbcode//mode/opt";;
         bolt) CPP_TARGET="presto.presto_cpp_bolt";  CPP_BUCK_MODE="";;
-        asan) CPP_TARGET="presto.presto_cpp_asan";  CPP_BUCK_MODE="@mode/opt-asan";;
-        tsan) CPP_TARGET="presto.presto_cpp_tsan";  CPP_BUCK_MODE="@mode/opt-tsan";;
-        dbgo) CPP_TARGET="presto.presto_cpp_dbgo";  CPP_BUCK_MODE="@mode/dbgo";;
+        asan) CPP_TARGET="presto.presto_cpp_asan";  CPP_BUCK_MODE="@fbcode//mode/opt-asan";;
+        tsan) CPP_TARGET="presto.presto_cpp_tsan";  CPP_BUCK_MODE="@fbcode//mode/opt-tsan";;
+        dbgo) CPP_TARGET="presto.presto_cpp_dbgo";  CPP_BUCK_MODE="@fbcode//mode/dbgo";;
     esac
 }
 

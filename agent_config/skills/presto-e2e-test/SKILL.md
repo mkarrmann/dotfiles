@@ -229,6 +229,7 @@ Common predicates by test type:
 | goshadow (paste) | `presto-test goshadow -c <cluster> -p <paste_id>` |
 | goshadow (logs) | `presto-test goshadow -c <cluster> --mode logs --env <src> --start "..." --end "..."` |
 | goshadow (live) | `presto-test goshadow -c <cluster> --mode live --env <src>` |
+| goshadow (A/B with session) | `presto-test goshadow -c <cluster> --mode logs --env <src> --start "..." --end "..." --session "prop=val" --tag "my_tag" --limit 1000` |
 | BEEST (suite) | `presto-test beest -c <cluster> --suite <suite>` |
 | BEEST (specific IDs) | `presto-test beest -c <cluster> --ids 115315,127316` |
 | Shadow A/B | `presto-test shadow -c <cluster> --query-file <file> --tag <tag>` |
@@ -278,6 +279,17 @@ presto-test goshadow -c <cluster> --mode live --env <source_cluster>
 ```
 
 The script automatically adds `--run-as-current-user` and `--max-concurrent-query 200`.
+
+**Session property A/B testing:** Use `--session` to set session properties and `--tag` to tag queries for analysis:
+```bash
+# Control arm
+presto-test goshadow -c <cluster> --mode logs --env <src> \
+    --start "..." --end "..." --tag "control_arm" --limit 1000
+
+# Experiment arm
+presto-test goshadow -c <cluster> --mode logs --env <src> \
+    --start "..." --end "..." --session "my_prop=false" --tag "experiment_arm" --limit 1000
+```
 
 ## BEEST (Querybank)
 

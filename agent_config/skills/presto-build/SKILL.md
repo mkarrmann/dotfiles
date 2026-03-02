@@ -23,6 +23,16 @@ Running from the wrong directory fails with `Could not find the selected project
 - `presto-deploy` — Nexus deployment, fbpkg packaging, cluster deployment
 - `presto-test` — Post-deployment validation (verifier, goshadow, BEEST)
 
+## IMPORTANT: Always Use the Scripts
+
+**Never run `buck2 build` or `mvn` directly.** Always use `presto-build` (or `presto-deploy` for packaging). The scripts handle:
+- **IPv6 networking** (`-Djava.net.preferIPv6Addresses=true`) — Meta devservers often only have IPv6 routes to Maven Nexus
+- **Out-of-tree build isolation** — per-checkout build roots prevent clobbering
+- **Correct buck2 mode flags** — `@fbcode//mode/opt` (not `@mode/opt`, which fails from the fbsource root)
+- **Checkout detection** — automatically uses the right Maven local repo for secondary checkouts
+
+Running commands manually will hit these issues and waste tokens debugging them.
+
 ## IMPORTANT: When NOT to Build
 
 **Building C++ from source takes ~3 hours** (128K+ buck2 actions for an opt build). Before building, ask: **do I actually need a new binary, or can I reuse an existing one?**
@@ -122,10 +132,10 @@ presto-build -n -m dbgo          # debug optimized
 | Mode | Buck mode | Optimization | LTO | BOLT PGO | FDO | Use case |
 |------|-----------|---|---|---|---|---|
 | dev | (none) | -O0 | No | No | No | Local iteration (default, fast) |
-| opt | `@mode/opt` | -O3 | No | No | No | Optimized local testing; fair for A/B comparisons |
-| asan | `@mode/opt-asan` | -O3 | No | No | No | Memory error detection |
-| tsan | `@mode/opt-tsan` | -O3 | No | No | No | Data race detection |
-| dbgo | `@mode/dbgo` | -Og | No | No | No | Debug with optimization |
+| opt | `@fbcode//mode/opt` | -O3 | No | No | No | Optimized local testing; fair for A/B comparisons |
+| asan | `@fbcode//mode/opt-asan` | -O3 | No | No | No | Memory error detection |
+| tsan | `@fbcode//mode/opt-tsan` | -O3 | No | No | No | Data race detection |
+| dbgo | `@fbcode//mode/dbgo` | -Og | No | No | No | Debug with optimization |
 
 `bolt` mode is not available for local builds — it requires the fbpkg pipeline (`presto-deploy -n -m bolt`). BOLT uses `@mode/opt-clang-thinlto` which enables LTO, and the Prestissimo binary target has a BOLT profile that activates under LTO. See `presto-deploy` for details on when bolt vs opt matters.
 
@@ -162,7 +172,8 @@ Build output goes to `$BUILD_ROOT` (`/data/users/$USER/builds` by default).
 | Problem | Fix |
 |---------|-----|
 | Build fails on checkstyle | `presto-build -C` to skip, or `gf && mfcc` to run checkstyle only |
+| Pre-existing trunk compile error (unrelated test file) | Add `-Dmaven.test.skip=true` to skip test compilation, or skip the failing module with `-pl '!<module>'` |
 | Eden mount slow/stale | `eden prefetch 'fbcode/github/presto-*-trunk/**'` |
 | Module not found | Ensure CWD is inside the correct repo (`presto-trunk` or `presto-facebook-trunk`) |
 | OOM during build | Reduce thread count or use `-l` for targeted module build |
-| C++ build fails | Ensure `buck2` is available; check `buck2 build fbcode//fb_presto_cpp:main` directly |
+| C++ build fails | Ensure `buck2` is available; use `presto-build -n -m opt` (never run `buck2 build` directly) |

@@ -36,6 +36,7 @@ QUIET=""
 VERBOSE=""
 DEPLOY_CLUSTER=""
 DEPLOY_REASON=""
+LOCAL_CONFIG=false
 
 # === Deploy state ===
 CPP_FBPKG_HASH=""
@@ -67,6 +68,10 @@ C++ PACKAGING:
 CLUSTER DEPLOYMENT:
   -c <cluster>       Deploy to cluster after packaging
   -r <reason>        Deployment reason string (used with -c)
+  -L                 Use local TW config (pt pcm deploy -l).
+                     Required when local .cinc/.tw changes must take effect.
+                     Version comes from PRESTO_VERSION env var or cpp-prod tag.
+                     INCOMPATIBLE with -pv (handled automatically).
 
 OUTPUT:
   -q                 Quiet Maven output
@@ -96,6 +101,7 @@ while [[ $# -gt 0 ]]; do
         -m) CPP_MODE="$2"; shift 2;;
         -c) DEPLOY_CLUSTER="$2"; shift 2;;
         -r) DEPLOY_REASON="$2"; shift 2;;
+        -L) LOCAL_CONFIG=true; shift;;
         -q) QUIET="-q"; shift;;
         -V) VERBOSE="-X"; shift;;
         -h) usage 0;;
@@ -131,6 +137,11 @@ fi
 
 if [ -n "$DEPLOY_REASON" ] && [ -z "$DEPLOY_CLUSTER" ]; then
     echo "Error: -r (reason) requires -c (cluster)"
+    exit 1
+fi
+
+if $LOCAL_CONFIG && [ -z "$DEPLOY_CLUSTER" ]; then
+    echo "Error: -L (local config) requires -c (cluster)"
     exit 1
 fi
 
@@ -269,11 +280,18 @@ deploy_to_cluster() {
         return
     fi
 
-    local version="${PRESTO_FBPKG_HASH}"
     local reason="${DEPLOY_REASON:-deployed by presto-deploy}"
 
-    echo "==> Deploying to cluster $DEPLOY_CLUSTER (version: $version)..."
-    pt pcm deploy -c "$DEPLOY_CLUSTER" -pv "$version" -r "$reason" -f -ni -dt 0
+    if $LOCAL_CONFIG; then
+        echo "==> Deploying to cluster $DEPLOY_CLUSTER with LOCAL TW config..."
+        echo "    Version resolved from PRESTO_VERSION env var or cpp-prod tag."
+        echo "    CRITICAL: -pv is NOT used — local config controls the version."
+        pt pcm deploy -c "$DEPLOY_CLUSTER" -l -r "$reason" -f -ni -dt 0
+    else
+        local version="${PRESTO_FBPKG_HASH}"
+        echo "==> Deploying to cluster $DEPLOY_CLUSTER (version: $version)..."
+        pt pcm deploy -c "$DEPLOY_CLUSTER" -pv "$version" -r "$reason" -f -ni -dt 0
+    fi
 }
 
 verify_deployment() {

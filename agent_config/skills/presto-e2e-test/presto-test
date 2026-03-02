@@ -36,6 +36,9 @@ GOSHADOW OPTIONS:
   --start <time>        Start time for logs mode (e.g., "2026-01-14 14:00")
   --end <time>          End time for logs mode
   --concurrent <n>      Max concurrent queries (default: 200)
+  --session <props>     Session properties (prop=value;prop2=value2)
+  --tag <tag>           Client tag for filtering in query stats
+  --limit <n>           Max queries to replay
 
 BEEST OPTIONS:
   --suite <suite>       Test suite name
@@ -93,6 +96,9 @@ GOSHADOW_ENV=""
 GOSHADOW_START=""
 GOSHADOW_END=""
 CONCURRENT=200
+GOSHADOW_SESSION=""
+GOSHADOW_TAG=""
+GOSHADOW_LIMIT=""
 
 # BEEST
 BEEST_SUITE=""
@@ -123,6 +129,9 @@ while [[ $# -gt 0 ]]; do
         --start) GOSHADOW_START="$2"; shift 2;;
         --end) GOSHADOW_END="$2"; shift 2;;
         --concurrent) CONCURRENT="$2"; shift 2;;
+        --session) GOSHADOW_SESSION="$2"; shift 2;;
+        --tag) GOSHADOW_TAG="$2"; shift 2;;
+        --limit) GOSHADOW_LIMIT="$2"; shift 2;;
 
         # BEEST
         --ids) BEEST_IDS="$2"; shift 2;;
@@ -205,6 +214,10 @@ case "$TEST_TYPE" in
             echo "Error: goshadow requires either -p <paste_id> or --mode <logs|live>"
             exit 1
         fi
+
+        [ -n "$GOSHADOW_SESSION" ] && local_args+=(--session "$GOSHADOW_SESSION")
+        [ -n "$GOSHADOW_TAG" ] && local_args+=(--target-client-tags "$GOSHADOW_TAG")
+        [ -n "$GOSHADOW_LIMIT" ] && local_args+=(-replay-limit "$GOSHADOW_LIMIT")
 
         goshadow "${local_args[@]}"
         ;;
