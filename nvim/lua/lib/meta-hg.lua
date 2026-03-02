@@ -899,6 +899,13 @@ local diff_session = require("lib.diff-session")
 ---@param name string
 ---@return integer
 local function create_scratch_buf(lines, name)
+  local existing = vim.fn.bufnr(name)
+  if existing ~= -1 then
+    vim.api.nvim_buf_set_option(existing, "modifiable", true)
+    vim.api.nvim_buf_set_lines(existing, 0, -1, false, lines)
+    vim.api.nvim_buf_set_option(existing, "modifiable", false)
+    return existing
+  end
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.api.nvim_buf_set_name(buf, name)
