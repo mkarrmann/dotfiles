@@ -122,7 +122,7 @@ _start_watcher() {
     fi
   fi
 
-  setsid python3 "$WATCHER_SCRIPT" </dev/null >/dev/null 2>&1 &
+  TMUX="" TMUX_PANE="" setsid python3 "$WATCHER_SCRIPT" </dev/null >/dev/null 2>&1 &
   _log "  watcher: started (pid=$!)"
 }
 

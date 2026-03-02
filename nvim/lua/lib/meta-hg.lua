@@ -2374,6 +2374,7 @@ HgChanges = function()
   vim.wo[win].winbar = "%#Comment# <Space>%* toggle"
     .. "  %#Comment#A%* all"
     .. "  %#Comment#a%* amend"
+    .. "  %#Comment#d%* diff"
     .. "  %#Comment#X%* discard"
     .. "  %#Comment#q%* close"
     .. "  %#Comment#?%* help"
@@ -2616,6 +2617,100 @@ HgChanges = function()
     )
   end, { buffer = buf, desc = "Discard selected files" })
 
+  vim.keymap.set("n", "d", function()
+    local entries = get_action_entries()
+    if #entries == 0 then
+      vim.notify("No files selected", vim.log.levels.WARN)
+      return
+    end
+
+    local diffable = vim.tbl_filter(function(e)
+      return e.status == "M" or e.status == "A"
+    end, entries)
+
+    if #diffable == 0 then
+      vim.notify("No diffable files selected (need M or A status)", vim.log.levels.WARN)
+      return
+    end
+
+    local cwd = vim.uv.cwd() or vim.fn.getcwd()
+    local repo_root = vim.fs.root(cwd, ".hg") or cwd
+
+    local file_pairs = {}
+    for _, e in ipairs(diffable) do
+      table.insert(file_pairs, { file = e.path, is_live = false })
+    end
+
+    local tab = vim.api.nvim_get_current_tabpage()
+    if DIFF_SPLIT_SESSIONS[tab] then
+      diff_session.close(DIFF_SPLIT_SESSIONS[tab])
+    end
+
+    local changes_win = vim.api.nvim_get_current_win()
+
+    vim.cmd("rightbelow vsplit")
+    local left_win = vim.api.nvim_get_current_win()
+    vim.cmd("rightbelow vsplit")
+    local right_win = vim.api.nvim_get_current_win()
+
+    local closing = false
+
+    local session = {
+      pairs = file_pairs,
+      index = 1,
+      left_win = left_win,
+      right_win = right_win,
+      commit = { is_current = true, hash = "." },
+      parent_rev = ".",
+      repo_root = repo_root,
+      update_winbar = diff_split_update_winbar,
+    }
+
+    session.on_close = function()
+      if closing then
+        return
+      end
+      closing = true
+      for _, w in ipairs({ left_win, right_win }) do
+        if vim.api.nvim_win_is_valid(w) then
+          pcall(vim.api.nvim_win_close, w, true)
+        end
+      end
+      diff_session.cleanup(session)
+      if vim.api.nvim_win_is_valid(changes_win) then
+        vim.api.nvim_set_current_win(changes_win)
+      end
+    end
+
+    for _, w in ipairs({ left_win, right_win }) do
+      vim.api.nvim_create_autocmd("WinClosed", {
+        pattern = tostring(w),
+        once = true,
+        callback = function()
+          vim.schedule(function()
+            diff_session.close(session)
+          end)
+        end,
+      })
+    end
+
+    for _, pair in ipairs(file_pairs) do
+      pair.load = function(p)
+        diff_split_load_pair(session, p)
+      end
+    end
+
+    diff_session.register(tab, session)
+
+    diff_split_load_pair(session, file_pairs[1])
+    if not file_pairs[1].old_buf then
+      session.on_close()
+      return
+    end
+
+    diff_session.show_pair(session, 1)
+  end, { buffer = buf, desc = "Diff split selected files" })
+
   local help_lines = {
     " Hg Changes",
     " ═══════════",
@@ -2623,6 +2718,7 @@ HgChanges = function()
     " V+Space  toggle range selection",
     " A        toggle all",
     " a        amend selected into current commit",
+    " d        diff split selected files",
     " X        discard selected changes",
     " q        close",
     " ?        show/dismiss this help",

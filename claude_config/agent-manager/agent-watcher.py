@@ -36,7 +36,12 @@ IDLE_EXIT_THRESHOLD = 600  # 10 min with no live sessions → exit
 TRANSCRIPT_TAIL_ENTRIES = 15
 TRANSCRIPT_MAX_CHARS = 6000
 
-# Cost tracking (Haiku pricing as of 2025)
+# Env for claude -p subprocess: unset CLAUDECODE to allow nested invocation,
+# unset TMUX/TMUX_PANE so claude -p's hooks don't interfere with any tmux window.
+_SUBPROCESS_ENV = {
+    k: v for k, v in os.environ.items()
+    if k not in ("CLAUDECODE", "TMUX", "TMUX_PANE")
+}
 HAIKU_INPUT_COST_PER_MTOK = 0.25
 HAIKU_OUTPUT_COST_PER_MTOK = 1.25
 CHARS_PER_TOKEN_ESTIMATE = 3.5
@@ -241,7 +246,7 @@ def classify_session(agent: dict, transcript: str) -> Tuple[str, str, str, dict]
             capture_output=True,
             text=True,
             timeout=120,
-            env={**os.environ, "CLAUDECODE": ""},
+            env=_SUBPROCESS_ENV,
         )
         output = result.stdout.strip()
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
@@ -307,7 +312,7 @@ def name_session(agent: dict, transcript: str) -> Tuple[str, dict]:
             capture_output=True,
             text=True,
             timeout=120,
-            env={**os.environ, "CLAUDECODE": ""},
+            env=_SUBPROCESS_ENV,
         )
         output = result.stdout.strip()
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
