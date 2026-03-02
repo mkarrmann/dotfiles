@@ -1067,11 +1067,21 @@ local SSL_COMMANDS = {
         })
       end
 
-      vim.cmd("tabnew")
+      -- Close any existing diff split in this tab before opening a new one
       local tab = vim.api.nvim_get_current_tabpage()
+      if DIFF_SPLIT_SESSIONS[tab] then
+        diff_session.close(DIFF_SPLIT_SESSIONS[tab])
+      end
+
+      local ssl_win = vim.api.nvim_get_current_win()
+
+      -- Open diff windows to the right of the HgSsl window, in the same tab
+      vim.cmd("rightbelow vsplit")
       local left_win = vim.api.nvim_get_current_win()
       vim.cmd("rightbelow vsplit")
       local right_win = vim.api.nvim_get_current_win()
+
+      local closing = false
 
       ---@type Hg.diff_session
       local session = {
@@ -1085,6 +1095,35 @@ local SSL_COMMANDS = {
         update_winbar = diff_split_update_winbar,
       }
 
+      session.on_close = function()
+        if closing then
+          return
+        end
+        closing = true
+        for _, win in ipairs({ left_win, right_win }) do
+          if vim.api.nvim_win_is_valid(win) then
+            pcall(vim.api.nvim_win_close, win, true)
+          end
+        end
+        diff_session.cleanup(session)
+        if vim.api.nvim_win_is_valid(ssl_win) then
+          vim.api.nvim_set_current_win(ssl_win)
+        end
+      end
+
+      -- Clean up if either diff window is closed externally
+      for _, win in ipairs({ left_win, right_win }) do
+        vim.api.nvim_create_autocmd("WinClosed", {
+          pattern = tostring(win),
+          once = true,
+          callback = function()
+            vim.schedule(function()
+              diff_session.close(session)
+            end)
+          end,
+        })
+      end
+
       for _, pair in ipairs(file_pairs) do
         pair.load = function(p)
           diff_split_load_pair(session, p)
@@ -1095,7 +1134,7 @@ local SSL_COMMANDS = {
 
       diff_split_load_pair(session, file_pairs[1])
       if not file_pairs[1].old_buf then
-        vim.cmd("tabclose")
+        session.on_close()
         return
       end
 
