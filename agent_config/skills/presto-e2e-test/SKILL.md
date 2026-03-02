@@ -336,6 +336,21 @@ Presto is a multi-tenant distributed system with inherent non-determinism, even 
 
 **Per-query regression thresholds:** 3x+ CPU ratio is likely real. 1.3-2x might be real or spill noise — re-run to confirm. Under 1.3x is within normal variance for individual queries.
 
+### Validating A/B Test Design
+
+Before committing to a large A/B test run, validate these assumptions:
+
+**1. Verify the toggle is the ONLY difference.** List every dimension that changes between arms (protocol, port, connection pool, multiplexing, config properties, binary version). If more than one thing changes, the test measures a combination of effects, not the intended variable. This is the most common and most expensive mistake.
+
+**2. Run a small pilot first.** Run 5-10 queries with each arm. Check:
+- Do both arms have similar success/failure rates? If not, the toggle is broken.
+- Are there unexpected error patterns in one arm? (e.g., exchange failures, connection refused)
+- Is the CPU ratio roughly what you expect? A wildly different ratio (e.g., 2x) suggests a bug, not a real effect.
+
+**3. Verify the deployed binary matches your code.** After deployment, run `SELECT node_version FROM system.runtime.nodes` and confirm it shows your expected version tag on all workers. A mismatch means the deploy didn't propagate.
+
+**4. Confirm the toggle is reaching the code path.** For session property toggles, verify the property is accepted: `presto --smc <cluster> --session "prop=value" --execute "SELECT 1"`. If this fails with INVALID_SESSION_PROPERTY, the Java coordinator doesn't recognize the property.
+
 ### Query Classification by Resource Profile
 
 The queries you test determine the signal you get. Choose query sets based on what you're testing.
@@ -388,6 +403,12 @@ However, in sequential A/B on the **same cluster**, shadow tables from the contr
 | `tw job update` blocked by AI agent policy | Server-side policy blocks TW mutations | Use `pt pcm deploy -l` (**without `-pv`**) with local TW config. See `presto-deploy` "Claude Code Deployment" for the fast deploy pattern |
 | Not verifying the config took effect | Change may not have propagated | After deploying, spot-check a query or inspect worker config before running the full suite |
 | Config-only A/B (not session property) | Requires redeployment between arms; adds time for cluster restart | Use post-construction override in `batch_native.cinc` + `pt pcm deploy -l` (**without `-pv`**); see `presto-deploy` "Modifying Cluster Config for Testing". Never combine `-l` with `-pv` — causes version mismatch that crashes workers |
+| Uncontrolled variables in A/B | Experiment measures wrong thing | Before running, explicitly list EVERY dimension that differs between arms. Confirm only the intended variable changes. Config toggles often have cascading side effects |
+| Small-sample significance | False confidence from noise | A statistically significant result on 50 queries may vanish at 500. With 200 concurrent queries, per-query variance is 20-50%. Need 500+ queries to detect 5% effects, 2000+ for 2% effects. Always run the largest feasible test before drawing conclusions |
+| CTAS collision in parallel A/B | Shadow tables collide between simultaneous arms | `--batch-mode` only cleans within one goshadow run, not between two parallel runs. Filter CTAS in analysis (`query NOT LIKE '%CREATE TABLE%'`), or accept CTAS queries are invalid in parallel A/B |
+| Missing super user permissions | ~10% of queries fail with PERMISSION_DENIED, reducing matched sample | Acquire super user BEFORE launching goshadow: `dips_superuser_cli acquire --oncall presto_release_internal --reason "<description>"` |
+| Cluster reservation expiration | Cluster scales down mid-test, invalidating results | Note expiration time before starting. Extend reservation to cover full test duration plus 1-hour buffer. Check with `pt pcm test-cluster list` |
+| Not sanity-checking the toggle | Full test runs with broken toggle, wasting hours | Run 5-10 queries with each arm first. Check for unexpected failures, verify CPU/E2E ratios are reasonable, confirm no exchange errors in experiment arm |
 
 ### Automated: `pt shadow perfrun`
 

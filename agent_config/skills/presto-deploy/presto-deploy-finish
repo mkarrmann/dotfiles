@@ -79,19 +79,38 @@ cmd_accelerate() {
     echo "=== Accelerating deploy for $cluster ==="
     for job in "${jobs[@]}"; do
         echo "  Applying task-ops: $job"
-        local max_attempts=30
-        for ((i=1; i<=max_attempts; i++)); do
-            if tw task-control apply-task-ops --all-ops --silent "$job" 2>/dev/null; then
+        local max_wait=180  # 3 minutes max
+        local elapsed=0
+        local interval=15
+        local applied=false
+
+        while [ "$elapsed" -lt "$max_wait" ]; do
+            local output
+            output=$(tw task-control apply-task-ops --all-ops --silent "$job" 2>&1) || true
+
+            if echo "$output" | grep -qi "no pending task ops"; then
+                # No ops yet — check if rollout already completed
+                local worker_count
+                worker_count=$(smcc list-hosts "presto.${cluster}.worker.https" 2>/dev/null | wc -l) || true
+                if [ "${worker_count:-0}" -ge 50 ]; then
+                    echo "    No pending ops (rollout likely complete — $worker_count workers in SMC)."
+                    applied=true
+                    break
+                fi
+                echo "    No pending ops yet, $worker_count workers in SMC. Waiting... (${elapsed}s/${max_wait}s)"
+                sleep "$interval"
+                elapsed=$((elapsed + interval))
+            else
+                echo "$output" | head -5
                 echo "    Applied successfully."
+                applied=true
                 break
             fi
-            if [ "$i" -eq "$max_attempts" ]; then
-                echo "    WARNING: apply-task-ops did not succeed after $max_attempts attempts."
-                break
-            fi
-            echo "    Waiting for task-ops to be available... (attempt $i/$max_attempts)"
-            sleep 10
         done
+
+        if [ "$applied" = false ]; then
+            echo "    Timed out after ${max_wait}s. Workers may still be rolling out on TW's default schedule."
+        fi
     done
 
     echo ""

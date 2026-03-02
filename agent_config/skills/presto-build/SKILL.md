@@ -13,7 +13,11 @@ Local development build tool for Presto Java and C++ codebases.
 
 **Key script:** `~/.claude/skills/presto-build/presto-build`
 
-**Shell functions** (from `~/.localrc`): `gf`/`gp` navigate to presto-facebook-trunk/presto-trunk. `mfci`, `mfi`, `mpci` run Maven with correct flags and `-T 48` threads. `mfcc` runs checkstyle. All functions trigger eden prefetch first. The functions auto-detect which fbsource checkout you're in and isolate the out-of-tree build root and Maven local repo accordingly (secondary checkouts like `~/fbsource2` use `${BUILD_ROOT}/m2-repo-2` instead of `~/.m2/repository`). Override with `-pl <module>` to target a different module (Maven uses the last `-pl`). **These functions are not available in Claude Code's Bash tool** — use `source ~/.localrc && mpi` (etc.) instead.
+**Shell functions** (from `~/.localrc`): `gf`/`gp` navigate to presto-facebook-trunk/presto-trunk. `mfci`, `mfi`, `mpci` run Maven with correct flags and `-T 48` threads. `mfcc` runs checkstyle. All functions trigger eden prefetch first. The functions auto-detect which fbsource checkout you're in and isolate the out-of-tree build root and Maven local repo accordingly (secondary checkouts like `~/fbsource2` use `${BUILD_ROOT}/m2-repo-2` instead of `~/.m2/repository`). Override with `-pl <module>` to target a different module (Maven uses the last `-pl`). **These functions are not available in Claude Code's Bash tool.** When using them, you MUST `cd` to the correct directory first because the functions do not navigate for you:
+- OSS (`mpi`, `mpci`, etc.): `cd <checkout>/fbcode/github/presto-trunk && source ~/.localrc && mpi`
+- FB trunk (`mfi`, `mfci`, etc.): `cd <checkout>/fbcode/github/presto-facebook-trunk && source ~/.localrc && mfi`
+
+Running from the wrong directory fails with `Could not find the selected project in the reactor`.
 
 **Related skills:**
 - `presto-deploy` — Nexus deployment, fbpkg packaging, cluster deployment
