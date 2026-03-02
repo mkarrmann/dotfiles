@@ -44,6 +44,10 @@ CHARS_PER_TOKEN_ESTIMATE = 3.5
 SKIP_STATUSES = {"waiting", "bg:running"}
 CLASSIFIABLE_STATUSES = {"done", "stopped", "active", "interactive", "resumed"}
 
+# Auto-naming: sessions with default names (hostname-xxxx) get named from transcript
+NAMING_MIN_TRANSCRIPT_ENTRIES = 3
+_HOSTNAME = os.uname().nodename.split(".")[0]
+
 # ── Logging ───────────────────────────────────────────────
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -234,6 +238,109 @@ def classify_session(agent: dict, transcript: str) -> Tuple[str, str, dict]:
     return verdict, output, usage
 
 
+# ── Auto-naming ──────────────────────────────────────────
+
+NAMING_PROMPT = """Based on the conversation transcript below, suggest a short name (2-4 words, lowercase, hyphens for spaces) that describes what this Claude Code session is working on.
+
+Rules:
+- Max 20 characters
+- Lowercase, use hyphens (e.g. "fix-auth-bug", "presto-config-refactor", "add-session-metrics")
+- Be specific to the task, not generic
+- Respond with ONLY the name, nothing else
+
+Transcript:
+{transcript}"""
+
+
+def is_default_name(name: str) -> bool:
+    """Check if a name looks auto-generated (hostname-xxxx pattern)."""
+    import re
+    return bool(re.match(r"^[a-zA-Z0-9._-]+-[a-f0-9]{4}$", name))
+
+
+def name_session(agent: dict, transcript: str) -> Tuple[str, dict]:
+    """Returns (name, usage_stats)."""
+    prompt = NAMING_PROMPT.format(transcript=transcript)
+
+    input_chars = len(prompt)
+    try:
+        result = subprocess.run(
+            ["claude", "-p", "--model", "haiku", prompt],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env={**os.environ, "CLAUDECODE": ""},
+        )
+        output = result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        log.error("naming failed for %s: %s", agent["session_id"][:8], e)
+        return "", {}
+
+    output_chars = len(output)
+    input_tokens_est = int(input_chars / CHARS_PER_TOKEN_ESTIMATE)
+    output_tokens_est = int(output_chars / CHARS_PER_TOKEN_ESTIMATE)
+    cost_est = (
+        input_tokens_est * HAIKU_INPUT_COST_PER_MTOK / 1_000_000
+        + output_tokens_est * HAIKU_OUTPUT_COST_PER_MTOK / 1_000_000
+    )
+    usage = {
+        "input_tokens_est": input_tokens_est,
+        "output_tokens_est": output_tokens_est,
+        "cost_est": cost_est,
+    }
+
+    # Sanitize: take first word/line, strip quotes, enforce length
+    name = output.split("\n")[0].strip().strip('"\'').lower()[:20]
+    if not name or " " in name:
+        return "", usage
+    return name, usage
+
+
+def rename_in_agents_md(sid: str, old_name: str, new_name: str) -> None:
+    agents_file = resolve_agents_file()
+    lock_dir = agents_file.parent / ".agents.lock.d"
+
+    for i in range(10):
+        try:
+            lock_dir.mkdir()
+            break
+        except FileExistsError:
+            lock_age = time.time() - lock_dir.stat().st_mtime
+            if lock_age > 30:
+                lock_dir.rmdir()
+                continue
+            time.sleep(0.5)
+    else:
+        log.error("could not acquire lock to rename %s", sid[:8])
+        return
+
+    try:
+        lines = agents_file.read_text().split("\n")
+        new_lines = []
+        renamed = False
+        for line in lines:
+            if f"| {sid} |" in line:
+                parts = line.split("|")
+                if len(parts) >= 9:
+                    # Check that the name hasn't already been changed by the user
+                    current_name = parts[1].strip()
+                    if current_name == old_name:
+                        parts[1] = f" {new_name} "
+                        line = "|".join(parts)
+                        renamed = True
+            new_lines.append(line)
+        if renamed:
+            agents_file.write_text("\n".join(new_lines))
+            log.info("renamed %s: %s → %s", sid[:8], old_name, new_name)
+    except OSError as e:
+        log.error("failed to rename in agents.md: %s", e)
+    finally:
+        try:
+            lock_dir.rmdir()
+        except OSError:
+            pass
+
+
 # ── AGENTS.md update ──────────────────────────────────────
 
 
@@ -417,6 +524,70 @@ def main():
                 del state[sid]
 
             if cleared or pruned:
+                save_state(state)
+
+            # Auto-name sessions with default names
+            for agent in agents:
+                sid = agent["session_id"]
+                if not sid:
+                    continue
+                name = agent["name"]
+                if not is_default_name(name):
+                    continue
+                naming_key = f"_named:{sid}"
+                if naming_key in state:
+                    continue
+
+                transcript_path = find_transcript_path(sid)
+                if not transcript_path:
+                    continue
+
+                transcript = read_transcript_tail(transcript_path)
+                entry_count = transcript.count("\n") + 1
+                if transcript == "(no transcript entries)" or entry_count < NAMING_MIN_TRANSCRIPT_ENTRIES:
+                    continue
+
+                # Re-check name in AGENTS.md — another watcher may have renamed it
+                fresh_agents = parse_agents(resolve_agents_file())
+                fresh = next((a for a in fresh_agents if a["session_id"] == sid), None)
+                if not fresh or not is_default_name(fresh["name"]):
+                    continue
+
+                state[naming_key] = {"named": True, "timestamp": time.time()}
+                save_state(state)
+
+                log.info("naming %s (%s)", sid[:8], name)
+                new_name, usage = name_session(agent, transcript)
+
+                if new_name:
+                    rename_in_agents_md(sid, name, new_name)
+                    # Rename tmux window if local
+                    try:
+                        target = agent.get("description", "").strip()
+                        if target and ":" in target:
+                            subprocess.run(
+                                ["tmux", "rename-window", "-t", target, new_name],
+                                capture_output=True, timeout=2,
+                            )
+                    except (subprocess.TimeoutExpired, FileNotFoundError):
+                        pass
+                    state[naming_key]["new_name"] = new_name
+                else:
+                    log.info("naming failed for %s, keeping default", sid[:8])
+
+                if usage:
+                    totals = state.get("_usage", {
+                        "total_classifications": 0,
+                        "total_input_tokens_est": 0,
+                        "total_output_tokens_est": 0,
+                        "total_cost_est": 0.0,
+                    })
+                    totals["total_classifications"] += 1
+                    totals["total_input_tokens_est"] += usage.get("input_tokens_est", 0)
+                    totals["total_output_tokens_est"] += usage.get("output_tokens_est", 0)
+                    totals["total_cost_est"] += usage.get("cost_est", 0.0)
+                    state["_usage"] = totals
+
                 save_state(state)
 
             # Classify idle sessions
