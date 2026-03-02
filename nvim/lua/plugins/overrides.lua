@@ -17,6 +17,9 @@ return {
 	{
 		"nvim-lualine/lualine.nvim",
 		opts = function(_, opts)
+			local function cwd()
+				return vim.fn.fnamemodify(vim.fn.getcwd(0), ":~")
+			end
 			local function custom_or_filename()
 				local ok, text = pcall(vim.api.nvim_win_get_var, 0, "custom_winbar_text")
 				if ok then
@@ -31,8 +34,8 @@ return {
 				end
 				return name
 			end
-			opts.winbar = { lualine_c = { custom_or_filename } }
-			opts.inactive_winbar = { lualine_c = { custom_or_filename } }
+			opts.winbar = { lualine_b = { cwd }, lualine_c = { custom_or_filename } }
+			opts.inactive_winbar = { lualine_b = { cwd }, lualine_c = { custom_or_filename } }
 		end,
 	},
 	{
