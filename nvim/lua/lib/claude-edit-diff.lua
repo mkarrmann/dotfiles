@@ -150,9 +150,60 @@ local function make_pair(file_path, snapshot_path)
 	}
 end
 
+local function find_existing_pair(file_path)
+	local session = get_session()
+	if session then
+		for _, pair in ipairs(session.pairs) do
+			if pair.file == file_path then
+				return pair, session
+			end
+		end
+	end
+	if _hidden_pairs then
+		for _, pair in ipairs(_hidden_pairs) do
+			if pair.file == file_path then
+				return pair, nil
+			end
+		end
+	end
+	return nil, nil
+end
+
+local function cleanup_snapshot(snapshot_path)
+	if snapshot_path and snapshot_path ~= "" then
+		os.remove(snapshot_path)
+	end
+end
+
+local function reload_live_buffer(file_path)
+	local buf = vim.fn.bufnr(file_path)
+	if buf ~= -1 then
+		vim.api.nvim_buf_call(buf, function()
+			vim.cmd("silent! checktime")
+			vim.cmd("silent! edit!")
+		end)
+	end
+end
+
 function M.show(file_path, snapshot_path)
 	vim.schedule(function()
 		local ok, err = pcall(function()
+			file_path = vim.fn.fnamemodify(file_path, ":p")
+
+			local existing, session = find_existing_pair(file_path)
+			if existing then
+				cleanup_snapshot(snapshot_path)
+				reload_live_buffer(file_path)
+				if session and session.pairs[session.index] == existing then
+					if vim.api.nvim_win_is_valid(session.left_win) then
+						vim.api.nvim_win_call(session.left_win, function()
+							vim.cmd("diffupdate")
+						end)
+					end
+				end
+				return
+			end
+
 			local pair = make_pair(file_path, snapshot_path)
 
 			if _disabled then
@@ -165,7 +216,7 @@ function M.show(file_path, snapshot_path)
 			end
 
 			local prev_win = vim.api.nvim_get_current_win()
-			local session = ensure_session()
+			session = ensure_session()
 			table.insert(session.pairs, pair)
 			diff_session.register(SESSION_KEY, session)
 			diff_session.show_pair(session, #session.pairs)
