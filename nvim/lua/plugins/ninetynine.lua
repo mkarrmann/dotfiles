@@ -9,6 +9,7 @@ return {
 			local basename = vim.fs.basename(cwd)
 			_99.setup({
 				provider = _99.Providers.ClaudeCodeProvider,
+				tmp_dir = "/tmp/99-nvim",
 				logger = {
 					level = _99.DEBUG,
 					path = "/tmp/" .. basename .. ".99.debug",
