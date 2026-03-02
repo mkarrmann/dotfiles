@@ -134,6 +134,14 @@ tmp=$(jq '
   .statusLine = {"type": "command", "command": "~/.claude/statusline.sh"} |
   .hooks.PreToolUse = [
     {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash ~/.claude/hooks/tmux-notify.sh"
+        }
+      ]
+    },
+    {
       "matcher": "Edit|Write",
       "hooks": [
         {

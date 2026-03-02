@@ -34,6 +34,12 @@ case "$EVENT" in
         set_state "!"
         ring_bell
         ;;
+    PreToolUse)
+        # If Claude is using a tool, the user must have answered any pending
+        # prompt. Clear stale ! so the subsequent Stop correctly sets ✓.
+        CURRENT=$(tmux show-options -wqv -t "$TMUX_PANE" @claude_state 2>/dev/null)
+        [ "$CURRENT" = "!" ] && set_state "⚙"
+        ;;
     Stop)
         # Don't downgrade ! to ✓ — Claude still needs input
         CURRENT=$(tmux show-options -wqv -t "$TMUX_PANE" @claude_state 2>/dev/null)
