@@ -44,4 +44,4 @@ if [ -s "$HOME/.sdkman/bin/sdkman-init.sh" ]; then
 fi
 export PATH="$HOME/.cargo/bin:$PATH"
 export PATH="$HOME/.local/share/bob/nvim-bin:$PATH"
-
+export PATH="$HOME/ob-headless:$PATH"

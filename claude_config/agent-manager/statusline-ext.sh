@@ -55,6 +55,10 @@ GRAY='\033[0;90m'
 
 NOW_EPOCH=$(date +%s)
 YEAR=$(date +%Y)
+TODAY=$(date '+%m-%d')
+
+# Trim whitespace without spawning xargs subprocess
+_trim() { local s="${1#"${1%%[! ]*}"}"; echo "${s%"${s##*[! ]}"}"; }
 
 # Check if a session's Claude Code process is still alive (same-host only).
 # Returns: 0=alive, 1=dead, 2=unknown (cross-machine or no PID file)
@@ -70,8 +74,10 @@ _check_pid() {
   return 1
 }
 
-# Compute relative age string from an Updated timestamp (format: MM-DD HH:MM)
-format_age() {
+# Compute age in minutes from an Updated timestamp (format: MM-DD HH:MM)
+# Returns via _AGE_MIN variable (avoids subprocess)
+_compute_age() {
+  _AGE_MIN=""
   local updated_ts="$1"
   [ -z "$updated_ts" ] && return
 
@@ -83,43 +89,27 @@ format_age() {
   if [ "$age_seconds" -lt 0 ]; then
     age_seconds=$(( age_seconds + 31557600 ))
   fi
+  _AGE_MIN=$(( age_seconds / 60 ))
+}
 
-  local age_minutes=$(( age_seconds / 60 ))
-
+# Format age string with color (uses _AGE_MIN from _compute_age)
+_format_age_str() {
+  local age_minutes="${_AGE_MIN:-0}"
   if [ "$age_minutes" -lt 5 ]; then
-    return
+    echo ""
   elif [ "$age_minutes" -lt 30 ]; then
     printf "${DIM}(%dm)${RESET}" "$age_minutes"
   elif [ "$age_minutes" -lt 120 ]; then
     printf "${YELLOW}(%dm)${RESET}" "$age_minutes"
   elif [ "$age_minutes" -lt 1440 ]; then
-    local hours=$(( age_minutes / 60 ))
-    printf "${GRAY}(%dh)${RESET}" "$hours"
+    printf "${GRAY}(%dh)${RESET}" "$(( age_minutes / 60 ))"
   else
-    local days=$(( age_minutes / 1440 ))
-    printf "${GRAY}(%dd)${RESET}" "$days"
+    printf "${GRAY}(%dd)${RESET}" "$(( age_minutes / 1440 ))"
   fi
-}
-
-age_minutes_from_ts() {
-  local updated_ts="$1"
-  [ -z "$updated_ts" ] && echo "" && return
-
-  local updated_epoch
-  updated_epoch=$(date -d "${YEAR}-${updated_ts}" +%s 2>/dev/null)
-  [ -z "$updated_epoch" ] && echo "" && return
-
-  local age_seconds=$(( NOW_EPOCH - updated_epoch ))
-  if [ "$age_seconds" -lt 0 ]; then
-    age_seconds=$(( age_seconds + 31557600 ))
-  fi
-  echo $(( age_seconds / 60 ))
 }
 
 color_status() {
   local status="$1"
-  local age_minutes="$2"
-
   case "$status" in
     *"(this session)"*)  printf "${CYAN}(this session)${RESET}" ;;
     *"waiting"*)         printf "${YELLOW}$1${RESET}" ;;
@@ -137,7 +127,6 @@ shorten_path() {
   local p="$1"
   [ -z "$p" ] && return
 
-  # Replace home-like prefixes with ~
   local home="$HOME"
   if [[ "$p" == "$home"* ]]; then
     p="~${p#$home}"
@@ -147,11 +136,12 @@ shorten_path() {
     p="~${p#/data/users/$USER}"
   fi
 
-  # If still long, show …/last-2-components
   if [ "${#p}" -gt 35 ]; then
-    local last2
-    last2=$(echo "$p" | awk -F'/' '{if (NF>=2) print $(NF-1)"/"$NF; else print $NF}')
-    p="…/${last2}"
+    # Extract last 2 path components using bash string ops
+    local tail="${p##*/}"
+    local rest="${p%/*}"
+    local parent="${rest##*/}"
+    p="…/${parent}/${tail}"
   fi
 
   echo "$p"
@@ -160,15 +150,14 @@ shorten_path() {
 format_line() {
   local marker="$1" name="$2" status="$3" od="$4" sid="$5" desc="$6" started="$7" updated="$8" dir="$9"
 
-  local age_min=""
-  age_min=$(age_minutes_from_ts "$updated")
+  _compute_age "$updated"
 
   local status_colored
-  status_colored=$(color_status "$status" "$age_min")
+  status_colored=$(color_status "$status")
 
   local age_str=""
   if [ "$status" != "(this session)" ]; then
-    age_str=$(format_age "$updated")
+    age_str=$(_format_age_str)
   fi
 
   local dir_str=""
@@ -176,13 +165,10 @@ format_line() {
     dir_str=$(shorten_path "$dir")
   fi
 
-  # Format time display: started→updated when they differ, just started otherwise
   local time_str=""
-  local today
-  today=$(date '+%m-%d')
   if [ -n "$started" ]; then
     local s_date="${started%% *}"
-    if [ "$s_date" = "$today" ]; then
+    if [ "$s_date" = "$TODAY" ]; then
       time_str="${started##* }"
     else
       time_str="$started"
@@ -190,7 +176,7 @@ format_line() {
     if [ -n "$updated" ] && [ "$updated" != "$started" ]; then
       local u_date="${updated%% *}"
       local u_time
-      if [ "$u_date" = "$today" ]; then
+      if [ "$u_date" = "$TODAY" ]; then
         u_time="${updated##* }"
       else
         u_time="$updated"
@@ -199,7 +185,6 @@ format_line() {
     fi
   fi
 
-  # Suppress useless default descriptions
   local desc_display="$desc"
   case "$desc" in
     "(new session)"|"-"|"") desc_display="" ;;
@@ -218,7 +203,6 @@ format_line() {
   printf "\n"
 }
 
-# How many stopped/done/stale sessions to show
 MAX_INACTIVE=3
 
 current_line=""
@@ -226,7 +210,7 @@ live_lines=()
 inactive_lines=()
 
 is_live_status() {
-  local status="$1" age_min="$2"
+  local status="$1"
   case "$status" in
     "⚡ active"|"🟡 done"|"❓ waiting"|"🟢 interactive"|"🔄 resumed"|"🔵 bg:running") return 0 ;;
     *) return 1 ;;
@@ -234,14 +218,14 @@ is_live_status() {
 }
 
 while IFS='|' read -r _ name status od sid desc started updated dir _; do
-  name=$(echo "$name" | xargs)
-  status=$(echo "$status" | xargs)
-  od=$(echo "$od" | xargs)
-  sid=$(echo "$sid" | xargs)
-  desc=$(echo "$desc" | xargs)
-  started=$(echo "$started" | xargs)
-  updated=$(echo "$updated" | xargs)
-  dir=$(echo "$dir" | xargs)
+  name=$(_trim "$name")
+  status=$(_trim "$status")
+  od=$(_trim "$od")
+  sid=$(_trim "$sid")
+  desc=$(_trim "$desc")
+  started=$(_trim "$started")
+  updated=$(_trim "$updated")
+  dir=$(_trim "$dir")
 
   [ -z "$name" ] && continue
 
@@ -251,16 +235,12 @@ while IFS='|' read -r _ name status od sid desc started updated dir _; do
     fi
     current_line="$name|(this session)|$od|$sid|$desc|$started|$updated|$dir"
   else
-    # For non-current sessions, check PID liveness to detect dead sessions
     _check_pid "$sid" "$od"
-    local pid_result=$?
+    pid_result=$?
     if [ "$pid_result" -eq 1 ]; then
-      # PID is dead — show as stopped regardless of stored status
       inactive_lines+=("$name|⏹️ stopped|$od|$sid|$desc|$started|$updated|$dir")
     else
-      age_min=""
-      age_min=$(age_minutes_from_ts "$updated")
-      if is_live_status "$status" "$age_min"; then
+      if is_live_status "$status"; then
         live_lines+=("$name|$status|$od|$sid|$desc|$started|$updated|$dir")
       else
         inactive_lines+=("$name|$status|$od|$sid|$desc|$started|$updated|$dir")

@@ -1,72 +1,33 @@
 #!/usr/bin/env python3
 """Agent Manager Dashboard — live TUI for monitoring Claude Code sessions.
 
-Reads from AGENTS.md, PID files, and tmux pane output to provide:
-- Per-agent cards with live pane preview
-- Smart status detection (thinking, running tool, writing, etc.)
-- Idle time alerts for potentially stuck agents
+Imports the shared agent_state module for data loading, status detection,
+and chrome filtering. This file only contains the interactive TUI.
 """
 
 import os
-import re
 import select
 import signal
-import subprocess
 import sys
 import termios
 import time
 import tty
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Tuple
+
+from agent_state import (
+    Agent, C, IDLE_ALERT_SECS, IDLE_WARN_SECS, SMART_ICONS,
+    compute_idle, detect_status, enrich_pids, enrich_tmux, fmt_dur,
+    get_preview, load_agents, parse_agents, print_summary,
+    resolve_agents_file, tmux_cmd, vlen,
+)
 
 REFRESH_SECS = 2.0
 PREVIEW_LINES = 4
-IDLE_WARN_SECS = 600
-IDLE_ALERT_SECS = 1800
-SPINNER = set("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
-PIDS_DIR = Path.home() / ".claude" / "agent-manager" / "pids"
-_ANSI_RE = re.compile(r"\033\[[^m]*m")
 
 
-class C:
-    RESET = "\033[0m"
-    BOLD = "\033[1m"
-    DIM = "\033[2m"
-    RED = "\033[91m"
-    GREEN = "\033[92m"
-    YELLOW = "\033[93m"
-    BLUE = "\033[94m"
-    MAGENTA = "\033[95m"
-    CYAN = "\033[96m"
-    WHITE = "\033[97m"
-    GRAY = "\033[90m"
-    ORANGE = "\033[38;5;208m"
-
-
-SMART_ICONS = {
-    "thinking":   ("💭", "Thinking",         C.YELLOW),
-    "processing": ("⚙️",  "Processing",       C.YELLOW),
-    "tool":       ("🔧", "Running",           C.ORANGE),
-    "writing":    ("✏️",  "Writing",           C.GREEN),
-    "reading":    ("📖", "Reading",            C.CYAN),
-    "searching":  ("🔍", "Searching",          C.BLUE),
-    "waiting":    ("⚠️",  "Waiting for input", C.RED),
-    "complete":   ("✅", "Turn complete",       C.GREEN),
-    "active":     ("⚡", "Active",             C.YELLOW),
-    "stopped":    ("⏹️",  "Stopped",            C.GRAY),
-    "idle":       ("💤", "Idle",                C.GRAY),
-    "bg:running": ("🔵", "Background",         C.BLUE),
-    "bg:done":    ("✅", "Background done",     C.GREEN),
-}
-
-
-# ── Helpers ────────────────────────────────────────────────
-
-
-def vlen(s: str) -> int:
-    return len(_ANSI_RE.sub("", s))
+# ── TUI Helpers ───────────────────────────────────────────
 
 
 def vpad(s: str, width: int) -> str:
@@ -95,31 +56,11 @@ def vtrunc(s: str, width: int) -> str:
     return "".join(out)
 
 
-def fmt_dur(secs: int) -> str:
-    if secs < 60:
-        return f"{secs}s"
-    if secs < 3600:
-        return f"{secs // 60}m"
-    h = secs // 3600
-    m = (secs % 3600) // 60
-    return f"{h}h{m}m"
-
-
 def term_size() -> Tuple[int, int]:
     try:
         return os.get_terminal_size()
     except OSError:
         return 80, 24
-
-
-def tmux_cmd(*args: str) -> Optional[str]:
-    try:
-        r = subprocess.run(
-            ["tmux", *args], capture_output=True, text=True, timeout=2
-        )
-        return r.stdout.strip() if r.returncode == 0 else None
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return None
 
 
 def draw_box(
@@ -130,7 +71,7 @@ def draw_box(
     lines: List[str] = []
 
     if title:
-        tvis_len = len(_ANSI_RE.sub("", title))
+        tvis_len = vlen(title)
         pad = inner - tvis_len - 4
         lines.append(
             f"{border}╭──{C.RESET} "
@@ -150,310 +91,7 @@ def draw_box(
     return lines
 
 
-# ── Data Model ─────────────────────────────────────────────
-
-
-@dataclass
-class Agent:
-    name: str
-    status_raw: str
-    od: str
-    session_id: str
-    description: str
-    started: str
-    updated: str
-    directory: str
-    pid: Optional[int] = None
-    pid_alive: bool = False
-    is_local: bool = False
-    tmux_target: Optional[str] = None
-    claude_state: Optional[str] = None
-    smart_status: str = ""
-    smart_detail: str = ""
-    pane_lines: List[str] = field(default_factory=list)
-    idle_secs: int = 0
-
-    @property
-    def status_text(self) -> str:
-        parts = self.status_raw.split(maxsplit=1)
-        return parts[1].strip() if len(parts) > 1 else ""
-
-    @property
-    def status_emoji(self) -> str:
-        return self.status_raw.split()[0] if self.status_raw.strip() else "·"
-
-    @property
-    def is_live(self) -> bool:
-        return self.status_text in (
-            "active", "waiting", "done", "interactive", "resumed"
-        )
-
-    @property
-    def is_stopped(self) -> bool:
-        return self.status_text in ("stopped", "idle") or self.status_text == "bg:done"
-
-
-# ── Data Loading ───────────────────────────────────────────
-
-
-def resolve_agents_file() -> Path:
-    if env := os.environ.get("CLAUDE_AGENTS_FILE"):
-        return Path(env)
-    gdrive = Path(
-        f"/data/users/{os.environ.get('USER', 'nobody')}/gdrive/AGENTS.md"
-    )
-    if gdrive.exists():
-        return gdrive
-    return Path.home() / ".claude" / "agents.md"
-
-
-def parse_agents(path: Path) -> List[Agent]:
-    if not path.exists():
-        return []
-    try:
-        text = path.read_text()
-    except OSError:
-        return []
-    rows = text.strip().split("\n")
-    agents = []
-    for row in rows[4:]:
-        parts = [p.strip() for p in row.split("|")]
-        if len(parts) < 9 or not parts[1].strip():
-            continue
-        agents.append(Agent(
-            name=parts[1], status_raw=parts[2], od=parts[3],
-            session_id=parts[4], description=parts[5],
-            started=parts[6], updated=parts[7],
-            directory=parts[8] if len(parts) > 8 else "",
-        ))
-    return agents
-
-
-def enrich_pids(agents: List[Agent]) -> None:
-    hostname = os.uname().nodename.split(".")[0]
-    for a in agents:
-        a.is_local = hostname in a.od or a.od in hostname
-        if not a.session_id:
-            continue
-        pf = PIDS_DIR / a.session_id
-        if pf.exists():
-            try:
-                a.pid = int(pf.read_text().strip())
-                if a.is_local:
-                    a.pid_alive = Path(f"/proc/{a.pid}").exists()
-            except (ValueError, OSError):
-                pass
-
-
-def enrich_tmux(agents: List[Agent]) -> None:
-    raw = tmux_cmd(
-        "list-windows", "-a", "-F",
-        "#{session_name}:#{window_index} #{window_name}"
-    )
-    if not raw:
-        return
-    windows = {}
-    for line in raw.split("\n"):
-        parts = line.split(" ", 1)
-        if len(parts) == 2:
-            windows[parts[1].rstrip("-")] = parts[0]
-
-    for a in agents:
-        if not a.is_local:
-            continue
-
-        for wname, target in windows.items():
-            if a.name and (a.name in wname or wname in a.name):
-                a.tmux_target = target
-                break
-
-        if not a.tmux_target and a.description and ":" in a.description:
-            desc = a.description.strip()
-            if any(c.isdigit() for c in desc):
-                a.tmux_target = desc
-
-        if not a.tmux_target:
-            continue
-
-        st = tmux_cmd(
-            "show-options", "-wqv", "-t", a.tmux_target, "@claude_state"
-        )
-        if st:
-            a.claude_state = st
-
-        if a.is_live:
-            raw_pane = tmux_cmd(
-                "capture-pane", "-t", a.tmux_target, "-p", "-S", "-30"
-            )
-            if raw_pane:
-                a.pane_lines = [l for l in raw_pane.split("\n") if l.strip()]
-
-
-# ── Smart Status Detection ─────────────────────────────────
-
-
-def detect_status(a: Agent) -> None:
-    if not a.is_live:
-        a.smart_status = a.status_text or "stopped"
-        return
-
-    if not a.is_local:
-        a.smart_status = a.status_text or "active"
-        a.smart_detail = f"on {a.od} (unverified)"
-        return
-
-    if a.claude_state == "⚙":
-        _detect_activity(a)
-    elif a.claude_state == "!":
-        a.smart_status = "waiting"
-        _extract_detail(a)
-    elif a.claude_state in ("✓", "~"):
-        a.smart_status = "complete"
-        _extract_detail(a)
-    elif a.pane_lines:
-        _detect_activity(a)
-    else:
-        a.smart_status = "active"
-
-
-def _detect_activity(a: Agent) -> None:
-    if not a.pane_lines:
-        a.smart_status = "active"
-        return
-
-    chunk = "\n".join(a.pane_lines[-12:])[-800:]
-
-    m = re.search(r"(?:Running|Executing)[:\s]+(.+?)(?:\n|$)", chunk)
-    if m:
-        a.smart_status = "tool"
-        a.smart_detail = m.group(1).strip()[:60]
-        return
-
-    if "esc to interrupt" in chunk.lower():
-        a.smart_status = "processing"
-        for line in reversed(a.pane_lines[-8:]):
-            s = line.strip()
-            if s and "esc to interrupt" not in s.lower() and len(s) > 5:
-                a.smart_detail = s[:60]
-                break
-        return
-
-    if any(c in SPINNER for c in chunk[-200:]) or "Thinking" in chunk[-300:]:
-        a.smart_status = "thinking"
-        return
-
-    m = re.search(r"(?:Writ|Edit|Creat)\w*\s+(\S+)", chunk)
-    if m:
-        a.smart_status = "writing"
-        a.smart_detail = m.group(1)[:60]
-        return
-
-    m = re.search(r"Read(?:ing)?\s+(\S+)", chunk)
-    if m:
-        a.smart_status = "reading"
-        a.smart_detail = m.group(1)[:60]
-        return
-
-    m = re.search(r"(?:Grep|Glob|Search)\w*\s+(.*?)(?:\n|$)", chunk)
-    if m:
-        a.smart_status = "searching"
-        a.smart_detail = m.group(1).strip()[:60]
-        return
-
-    a.smart_status = "active"
-
-
-_CHROME_RE = re.compile(
-    r"TERMINAL\s+term:"         # neovim terminal statusline
-    r"|NORMAL\s+term:"          # neovim normal mode statusline
-    r"|INSERT\s+.*term:"        # neovim insert mode statusline
-    r"|-- INSERT --"            # vim insert mode indicator
-    r"|-- NORMAL --"            # vim normal mode indicator
-    r"|⏵⏵\s*accept"            # claude accept edits hint
-    r"|shift\+tab to cycle"     # claude mode hint
-    r"|📁\s+\w+.*🤖"           # claude statusline
-    r"|Bot \d+:\d+"             # neovim statusline right side
-    r"|^\s*\d+\s+\d+\s*$"      # bare neovim line number pairs
-    r"|^\s*\d{1,5}\s*$"        # bare single line numbers
-    r"|^[─━═]{5,}$"            # horizontal rules
-    r"|▏"                       # neovim indent guides
-    r"|^\s*$"                   # blank lines
-)
-
-
-def _is_chrome(line: str) -> bool:
-    return bool(_CHROME_RE.search(line))
-
-
-_NVIM_LINENUM_RE = re.compile(r"^\s*\d{1,5}\s{2,}\S")
-
-
-def _clean_line(line: str) -> str:
-    s = line.strip()
-    # Strip leading neovim line number pairs (e.g., "78  46 ")
-    s = re.sub(r"^\d+\s+\d+\s+", "", s)
-    # If there's a neovim split gutter, pick the terminal-like side
-    if "│" in s:
-        parts = [p.strip() for p in s.split("│") if p.strip()]
-        if not parts:
-            return ""
-        # Prefer the side that doesn't look like numbered editor content
-        non_code = [p for p in parts if not _NVIM_LINENUM_RE.match(p)]
-        if non_code:
-            return max(non_code, key=len)
-        return max(parts, key=len)
-    # If line itself looks like a neovim numbered editor line, skip it
-    if _NVIM_LINENUM_RE.match(s):
-        return ""
-    # Strip leading single neovim line number (e.g., "96  content")
-    s = re.sub(r"^\d{1,5}\s{2,}", "", s)
-    return s
-
-
-def _get_preview(pane_lines: List[str], count: int) -> List[str]:
-    raw = "\n".join(pane_lines[-10:])
-    is_nvim = bool(re.search(r"NORMAL\s+term:|TERMINAL\s+term:|INSERT\s+.*term:", raw))
-    cleaned = []
-    for line in pane_lines:
-        if _is_chrome(line):
-            continue
-        s = _clean_line(line)
-        if not s or _is_chrome(s):
-            continue
-        if is_nvim and re.match(r"^\d{1,5}\s+\S", s):
-            continue
-        cleaned.append(s)
-    if len(cleaned) > count + 2:
-        cleaned = cleaned[:-2]
-    return cleaned[-count:]
-
-
-def _extract_detail(a: Agent) -> None:
-    if not a.pane_lines:
-        return
-    for line in reversed(a.pane_lines[:-3]):
-        if _is_chrome(line):
-            continue
-        s = _clean_line(line)
-        if not s or len(s) < 6 or _is_chrome(s):
-            continue
-        a.smart_detail = s[:60]
-        break
-
-
-def compute_idle(agents: List[Agent]) -> None:
-    now = datetime.now()
-    for a in agents:
-        if not a.updated:
-            continue
-        try:
-            ts = datetime.strptime(f"{now.year}-{a.updated}", "%Y-%m-%d %H:%M")
-            a.idle_secs = max(0, int((now - ts).total_seconds()))
-        except ValueError:
-            pass
-
-
-# ── Dashboard ──────────────────────────────────────────────
+# ── Dashboard ─────────────────────────────────────────────
 
 
 class Dashboard:
@@ -471,12 +109,7 @@ class Dashboard:
         self._orig_termios = None
 
     def refresh(self):
-        self.agents = parse_agents(self.agents_file)
-        enrich_pids(self.agents)
-        enrich_tmux(self.agents)
-        for a in self.agents:
-            detect_status(a)
-        compute_idle(self.agents)
+        self.agents = load_agents()
         vis = self._visible()
         if vis:
             self.selected = min(self.selected, len(vis) - 1)
@@ -589,7 +222,9 @@ class Dashboard:
             status = f"{icon} {color}{label}{C.RESET}"
 
         idle_str = ""
-        if a.idle_secs > 0 and a.is_live:
+        if a.idle_secs > 0 and a.is_live and a.smart_status in (
+            "waiting", "complete", "idle"
+        ):
             dur = fmt_dur(a.idle_secs)
             if a.idle_secs >= IDLE_ALERT_SECS:
                 idle_str = f"{C.RED}{C.BOLD}{dur} ⚠{C.RESET}"
@@ -613,7 +248,7 @@ class Dashboard:
 
         if a.pane_lines and a.is_live:
             content.append(f"{C.DIM}{'┄' * min(inner, 50)}{C.RESET}")
-            preview = _get_preview(a.pane_lines, PREVIEW_LINES)
+            preview = get_preview(a.pane_lines, PREVIEW_LINES)
             for pl in preview:
                 content.append(
                     f"  {C.DIM}{vtrunc(pl, inner - 4)}{C.RESET}"
@@ -762,4 +397,12 @@ class Dashboard:
 
 
 if __name__ == "__main__":
-    Dashboard().run()
+    if "--summary" in sys.argv:
+        scope = "all"
+        if "--local" in sys.argv:
+            scope = "local"
+        elif "--remote" in sys.argv:
+            scope = "remote"
+        print_summary(scope)
+    else:
+        Dashboard().run()
