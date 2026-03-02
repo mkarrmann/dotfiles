@@ -315,13 +315,42 @@ local function _run_cmd_and_send(cmd)
 					end
 				end
 
+				-- Append zero-width space to lines ending with image extensions
+				-- to prevent Claude Code's image-paste detection from triggering
+				for i, line in ipairs(output) do
+					local lower = line:lower()
+					if lower:match("%.png$") or lower:match("%.jpe?g$")
+						or lower:match("%.gif$") or lower:match("%.webp$") then
+						output[i] = line .. "\xe2\x80\x8b"
+					end
+				end
+
 				local body = table.concat(output, "\n")
+
 				local msg = ("I ran `%s` in `%s` (exit code %d). Combined stdout+stderr:\n```\n%s\n```"):format(
 					cmd, s.cwd, exit_code, body
 				)
 
-				if s.claude and s.claude.chan then
-					vim.api.nvim_chan_send(s.claude.chan, "\x1b[200~" .. msg .. "\x1b[201~")
+				local chan = s.claude and s.claude.chan
+				if chan then
+					local chunk_size = 750
+					local delay_ms = 150
+					local chunks = {}
+					for i = 1, #msg, chunk_size do
+						chunks[#chunks + 1] = msg:sub(i, i + chunk_size - 1)
+					end
+					local function send_chunk(idx)
+						if idx > #chunks then return end
+						vim.api.nvim_chan_send(chan, chunks[idx])
+						if idx < #chunks then
+							vim.fn.timer_start(delay_ms, function()
+								vim.schedule(function()
+									send_chunk(idx + 1)
+								end)
+							end)
+						end
+					end
+					send_chunk(1)
 				end
 
 				local claude_win = s.claude and s.claude.win
