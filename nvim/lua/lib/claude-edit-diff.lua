@@ -7,6 +7,7 @@ local _term_win = nil
 local _buf_counter = 0
 local _hidden_pairs = nil
 local _hidden_index = nil
+local _disabled = false
 
 local function find_terminal_win()
 	for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
@@ -86,8 +87,10 @@ local function ensure_session()
 			if s then
 				diff_session.cleanup(s)
 			end
-			_hidden_pairs = nil
-			_hidden_index = nil
+			if not _disabled then
+				_hidden_pairs = nil
+				_hidden_index = nil
+			end
 			vim.api.nvim_create_augroup("claude_edit_diff", { clear = true })
 			for _, win in ipairs({ left_win, right_win }) do
 				if vim.api.nvim_win_is_valid(win) then
@@ -152,7 +155,10 @@ function M.show(file_path, snapshot_path)
 		local ok, err = pcall(function()
 			local pair = make_pair(file_path, snapshot_path)
 
-			if _hidden_pairs then
+			if _disabled then
+				if not _hidden_pairs then
+					_hidden_pairs = {}
+				end
 				table.insert(_hidden_pairs, pair)
 				_hidden_index = #_hidden_pairs
 				return
@@ -175,37 +181,45 @@ function M.show(file_path, snapshot_path)
 end
 
 function M.toggle()
-	local session = get_session()
-	if session then
-		_hidden_pairs = session.pairs
-		_hidden_index = session.index
-		-- Prevent WinClosed autocmd from triggering full cleanup
-		vim.api.nvim_create_augroup("claude_edit_diff", { clear = true })
-		diff_session.sessions[SESSION_KEY] = nil
-		for _, win in ipairs({ session.left_win, session.right_win }) do
-			if vim.api.nvim_win_is_valid(win) then
-				vim.api.nvim_win_call(win, function()
-					vim.cmd("diffoff")
-				end)
-				pcall(vim.api.nvim_win_del_var, win, "custom_winbar_text")
-				pcall(vim.api.nvim_win_close, win, true)
+	if not _disabled then
+		_disabled = true
+		local session = get_session()
+		if session then
+			_hidden_pairs = session.pairs
+			_hidden_index = session.index
+			vim.api.nvim_create_augroup("claude_edit_diff", { clear = true })
+			diff_session.sessions[SESSION_KEY] = nil
+			for _, win in ipairs({ session.left_win, session.right_win }) do
+				if vim.api.nvim_win_is_valid(win) then
+					vim.api.nvim_win_call(win, function()
+						vim.cmd("diffoff")
+					end)
+					pcall(vim.api.nvim_win_del_var, win, "custom_winbar_text")
+					pcall(vim.api.nvim_win_close, win, true)
+				end
+			end
+			require("lualine").refresh()
+			if _term_win and vim.api.nvim_win_is_valid(_term_win) then
+				vim.api.nvim_set_current_win(_term_win)
 			end
 		end
-		require("lualine").refresh()
-		if _term_win and vim.api.nvim_win_is_valid(_term_win) then
-			vim.api.nvim_set_current_win(_term_win)
-		end
-	elseif _hidden_pairs and #_hidden_pairs > 0 then
-		local pairs = _hidden_pairs
-		local idx = _hidden_index or #pairs
-		_hidden_pairs = nil
-		_hidden_index = nil
-		local session = ensure_session()
-		session.pairs = pairs
-		diff_session.register(SESSION_KEY, session)
-		diff_session.show_pair(session, idx)
+		vim.notify("Diff viewer disabled", vim.log.levels.INFO)
 	else
-		vim.notify("No Claude edit diffs available", vim.log.levels.INFO)
+		_disabled = false
+		if _hidden_pairs and #_hidden_pairs > 0 then
+			local pairs = _hidden_pairs
+			local idx = _hidden_index or #pairs
+			_hidden_pairs = nil
+			_hidden_index = nil
+			local session = ensure_session()
+			session.pairs = pairs
+			diff_session.register(SESSION_KEY, session)
+			diff_session.show_pair(session, idx)
+		else
+			_hidden_pairs = nil
+			_hidden_index = nil
+			vim.notify("Diff viewer enabled", vim.log.levels.INFO)
+		end
 	end
 end
 

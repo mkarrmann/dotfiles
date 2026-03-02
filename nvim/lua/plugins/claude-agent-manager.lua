@@ -40,7 +40,24 @@ local function start_named_session(name)
 	vim.cmd("ClaudeCode")
 end
 
+local function has_claude_terminal()
+	for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+		if vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].buftype == "terminal" then
+			local bname = vim.api.nvim_buf_get_name(buf)
+			if bname:lower():find("claude") then
+				return true
+			end
+		end
+	end
+	return false
+end
+
 local function rename_session(name)
+	if not has_claude_terminal() then
+		vim.notify("No active Claude Code session open", vim.log.levels.ERROR)
+		return
+	end
+
 	local sid = get_session_id()
 	if not sid or sid == "" then
 		vim.notify("No active Claude session found", vim.log.levels.WARN)
