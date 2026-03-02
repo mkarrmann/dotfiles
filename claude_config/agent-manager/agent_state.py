@@ -53,6 +53,7 @@ SMART_ICONS = {
     "idle":       ("💤", "Idle",                C.GRAY),
     "bg:running": ("🔵", "Background",         C.BLUE),
     "bg:done":    ("✅", "Background done",     C.GREEN),
+    "stuck":      ("🔴", "Stuck",              C.RED),
 }
 
 IDLE_STATUSES = ("waiting", "complete", "idle")

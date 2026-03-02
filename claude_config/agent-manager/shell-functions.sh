@@ -214,6 +214,68 @@ cr() {
 }
 
 # ============================================================
+# cwatch — Start/stop/status the agent watcher daemon
+# ============================================================
+cwatch() {
+  local watcher="$HOME/.claude/agent-manager/bin/agent-watcher.py"
+  local pidfile="$HOME/.claude/agent-manager/watcher.pid"
+
+  case "${1:-status}" in
+    start)
+      if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; then
+        echo "Watcher already running (pid=$(cat "$pidfile"))."
+        return 0
+      fi
+      setsid python3 "$watcher" </dev/null >/dev/null 2>&1 &
+      sleep 0.5
+      if [ -f "$pidfile" ]; then
+        echo "Watcher started (pid=$(cat "$pidfile"))."
+      else
+        echo "Watcher failed to start. Check ~/.claude/agent-manager/logs/watcher.log"
+      fi
+      ;;
+    stop)
+      if [ -f "$pidfile" ]; then
+        local wpid
+        wpid=$(cat "$pidfile")
+        kill "$wpid" 2>/dev/null && echo "Watcher stopped (pid=$wpid)." || echo "Watcher not running."
+        rm -f "$pidfile"
+      else
+        echo "Watcher not running."
+      fi
+      ;;
+    status|"")
+      if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; then
+        echo "Watcher running (pid=$(cat "$pidfile"))."
+      else
+        echo "Watcher not running."
+      fi
+      local state="$HOME/.claude/agent-manager/watcher-state.json"
+      if [ -f "$state" ]; then
+        python3 -c "
+import json
+s = json.load(open('$state'))
+u = s.get('_usage', {})
+if u:
+    print(f\"  Classifications: {u.get('total_classifications', 0)}\")
+    print(f\"  Input tokens:    ~{u.get('total_input_tokens_est', 0)}\")
+    print(f\"  Output tokens:   ~{u.get('total_output_tokens_est', 0)}\")
+    print(f\"  Est. cost:       \${u.get('total_cost_est', 0):.4f}\")
+sessions = {k: v for k, v in s.items() if k != '_usage' and isinstance(v, dict) and v.get('classified')}
+if sessions:
+    print(f\"  Sessions classified: {len(sessions)}\")
+    for sid, v in sessions.items():
+        print(f\"    {sid[:8]}  {v.get('verdict','?'):8s}  {v.get('reason','')[:60]}\")
+" 2>/dev/null
+      fi
+      ;;
+    *)
+      echo "Usage: cwatch [start|stop|status]"
+      ;;
+  esac
+}
+
+# ============================================================
 # agents — Display AGENTS.md (all sessions)
 # ============================================================
 agents() {

@@ -52,6 +52,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 GRAY='\033[0;90m'
+RED='\033[0;31m'
 
 NOW_EPOCH=$(date +%s)
 YEAR=$(date +%Y)
@@ -112,6 +113,7 @@ color_status() {
   local status="$1"
   case "$status" in
     *"(this session)"*)  printf "${CYAN}(this session)${RESET}" ;;
+    *"stuck"*)           printf "${RED}$1${RESET}" ;;
     *"waiting"*)         printf "${YELLOW}$1${RESET}" ;;
     *"interactive"*)     printf "${GREEN}$1${RESET}" ;;
     *"bg:running"*)      printf "${BLUE}$1${RESET}" ;;
@@ -212,7 +214,7 @@ inactive_lines=()
 is_live_status() {
   local status="$1"
   case "$status" in
-    "⚡ active"|"🟡 done"|"❓ waiting"|"🟢 interactive"|"🔄 resumed"|"🔵 bg:running") return 0 ;;
+    "⚡ active"|"🟡 done"|"❓ waiting"|"🟢 interactive"|"🔄 resumed"|"🔵 bg:running"|"🔴 stuck") return 0 ;;
     *) return 1 ;;
   esac
 }

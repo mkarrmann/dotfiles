@@ -79,6 +79,7 @@ _save_pid() {
 _cleanup_pid() {
   local sid="$1"
   rm -f "${PID_DIR}/${sid}" 2>/dev/null
+  # NOTE: .transcript is intentionally preserved — watcher needs it for LLM classification
   # Kill heartbeat daemon if running
   if [ -f "${PID_DIR}/${sid}.heartbeat" ]; then
     kill "$(cat "${PID_DIR}/${sid}.heartbeat")" 2>/dev/null || true
@@ -103,6 +104,26 @@ _start_heartbeat() {
 
   # Launch in a new session so it survives the hook's process group
   setsid bash "$SELF" heartbeat "$sid" "$claude_pid" </dev/null >/dev/null 2>&1 &
+}
+
+WATCHER_SCRIPT="$(dirname "$SELF")/agent-watcher.py"
+WATCHER_PID_FILE="$HOME/.claude/agent-manager/watcher.pid"
+
+_start_watcher() {
+  # Only start if the watcher script exists
+  [ -f "$WATCHER_SCRIPT" ] || return
+
+  # Check if already running
+  if [ -f "$WATCHER_PID_FILE" ]; then
+    local wpid
+    wpid=$(cat "$WATCHER_PID_FILE" 2>/dev/null)
+    if [ -n "$wpid" ] && [ -d "/proc/$wpid" ]; then
+      return
+    fi
+  fi
+
+  setsid python3 "$WATCHER_SCRIPT" </dev/null >/dev/null 2>&1 &
+  _log "  watcher: started (pid=$!)"
 }
 
 # Get tmux session:window context for the current pane.
@@ -324,6 +345,12 @@ cmd_register() {
   # Record Claude Code's PID for liveness checks (local, fast — do before gdrive)
   _save_pid "$sid"
 
+  # Save transcript path for watcher's LLM classification
+  if [ -n "$tp" ]; then
+    mkdir -p "$PID_DIR" 2>/dev/null
+    echo "$tp" > "${PID_DIR}/${sid}.transcript"
+  fi
+
   # Capture tmux context (session:window) for display
   local tmux_ctx
   tmux_ctx=$(_tmux_context)
@@ -332,6 +359,9 @@ cmd_register() {
   local claude_pid
   claude_pid=$(cat "${PID_DIR}/${sid}" 2>/dev/null)
   _start_heartbeat "$sid" "$claude_pid"
+
+  # Auto-start watcher daemon if not running
+  _start_watcher
 
   # ── RESUME PATH ──
   if [ "$source" = "resume" ]; then
