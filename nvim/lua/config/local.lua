@@ -88,6 +88,10 @@ if buck_ok then
 end
 
 vim.api.nvim_create_user_command("HgDiffSplit", function()
+	if vim.bo.buftype ~= "" then
+		vim.notify("Not a file buffer", vim.log.levels.WARN)
+		return
+	end
 	local file = vim.fn.expand("%:p")
 	if file == "" then
 		vim.notify("No file in current buffer", vim.log.levels.ERROR)
