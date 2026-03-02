@@ -95,6 +95,13 @@ local function rename_session(name)
 	f:write(table.concat(lines, "\n") .. "\n")
 	f:close()
 
+	-- Persist name so hook preserves it if session is compacted
+	local nf = io.open(next_name_file, "w")
+	if nf then
+		nf:write(name)
+		nf:close()
+	end
+
 	-- Rename tmux window
 	if vim.env.TMUX then
 		vim.fn.system("tmux rename-window " .. vim.fn.shellescape(name))
@@ -174,38 +181,12 @@ local function parse_agents()
 	return entries
 end
 
-local function lookup_dir_by_sid(sid)
-	local f = io.open(agents_file, "r")
-	if not f then
-		return nil
-	end
-	for line in f:lines() do
-		if line:find(sid, 1, true) then
-			local fields = {}
-			for field in line:gmatch("|([^|]*)") do
-				fields[#fields + 1] = vim.trim(field)
-			end
-			f:close()
-			return fields[8] or nil
+local function lookup_agent_by_sid(sid)
+	for _, agent in ipairs(parse_agents()) do
+		if agent.sid == sid then
+			return agent
 		end
 	end
-	f:close()
-	return nil
-end
-
-local function lookup_name_by_sid(sid)
-	local f = io.open(agents_file, "r")
-	if not f then
-		return nil
-	end
-	for line in f:lines() do
-		if line:find(sid, 1, true) then
-			local name = line:match("^| ([^|]+) |")
-			f:close()
-			return name and vim.trim(name)
-		end
-	end
-	f:close()
 	return nil
 end
 
@@ -327,7 +308,7 @@ local function resume_by_name()
 		:find()
 end
 
-local function prompt_new_window()
+local function prompt_and_launch(make_tmux_cmd)
 	if not vim.env.TMUX then
 		vim.notify("Not in tmux", vim.log.levels.WARN)
 		return
@@ -358,50 +339,28 @@ local function prompt_new_window()
 			nf:close()
 		end
 
-		vim.fn.system({
+		vim.fn.system(make_tmux_cmd(label, prompt_file))
+	end)
+end
+
+local function prompt_new_window()
+	prompt_and_launch(function(label, prompt_file)
+		return {
 			"tmux", "new-window", "-d",
 			"-n", label,
 			"-e", "CLAUDE_AUTO_PROMPT=" .. prompt_file,
 			"--", "nvim",
-		})
+		}
 	end)
 end
 
 local function prompt_new_pane()
-	if not vim.env.TMUX then
-		vim.notify("Not in tmux", vim.log.levels.WARN)
-		return
-	end
-	vim.ui.input({ prompt = "Claude prompt: " }, function(text)
-		if not text or text == "" then
-			return
-		end
-
-		local prompt_file = string.format("/tmp/.claude-auto-prompt-%d", vim.uv.hrtime())
-		local f = io.open(prompt_file, "w")
-		if not f then
-			vim.notify("Failed to write prompt file", vim.log.levels.ERROR)
-			return
-		end
-		f:write(text)
-		f:close()
-
-		local nf = io.open(next_name_file, "w")
-		if nf then
-			local label = text:sub(1, 15):gsub("[^%w%-_ ]", ""):match("^%s*(.-)%s*$") or ""
-			if label == "" then
-				label = "claude"
-			end
-			label = "qq: " .. label
-			nf:write(label)
-			nf:close()
-		end
-
-		vim.fn.system({
+	prompt_and_launch(function(_, prompt_file)
+		return {
 			"tmux", "split-window", "-h", "-l", "33%",
 			"-e", "CLAUDE_AUTO_PROMPT=" .. prompt_file,
 			"--", "nvim",
-		})
+		}
 	end)
 end
 
@@ -423,6 +382,10 @@ return {
 			{
 				"<leader>aN",
 				function()
+					if not has_claude_terminal() then
+						vim.notify("No active Claude Code session open", vim.log.levels.ERROR)
+						return
+					end
 					vim.ui.input({ prompt = "Session name: " }, function(name)
 						if name and name ~= "" then
 							rename_session(name)
@@ -446,16 +409,16 @@ return {
 				function()
 					vim.ui.input({ prompt = "Session ID: " }, function(id)
 						if id and id ~= "" then
-							chdir_if_needed(lookup_dir_by_sid(id))
-							local name = lookup_name_by_sid(id)
-							if name then
+							local agent = lookup_agent_by_sid(id)
+							if agent then
+								chdir_if_needed(agent.dir)
 								local nf = io.open(next_name_file, "w")
 								if nf then
-									nf:write(name)
+									nf:write(agent.name)
 									nf:close()
 								end
 								if vim.env.TMUX then
-									vim.fn.system("tmux rename-window " .. vim.fn.shellescape(name))
+									vim.fn.system("tmux rename-window " .. vim.fn.shellescape(agent.name))
 								end
 							end
 							vim.cmd("ClaudeCode --resume " .. id)
@@ -490,6 +453,10 @@ return {
 			end, { nargs = "?", desc = "Start a new named Claude session" })
 
 			vim.api.nvim_create_user_command("ClaudeCodeName", function(opts)
+				if not has_claude_terminal() then
+					vim.notify("No active Claude Code session open", vim.log.levels.ERROR)
+					return
+				end
 				local name = opts.args
 				if name == "" then
 					vim.ui.input({ prompt = "Session name: " }, function(input)
