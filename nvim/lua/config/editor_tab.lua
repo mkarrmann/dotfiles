@@ -13,20 +13,7 @@ local function find_terminal_win()
 	return nil
 end
 
-local function open_vsplit(file)
-	vim.cmd("vsplit " .. vim.fn.fnameescape(file))
-	local win = vim.api.nvim_get_current_win()
-	local buf = vim.api.nvim_get_current_buf()
-	return win, buf
-end
-
-local function on_edit_closed(buf, sentinel, cleanup)
-	if vim.api.nvim_buf_is_valid(buf) then
-		vim.api.nvim_buf_delete(buf, { force = true })
-	end
-	if cleanup then
-		vim.schedule(cleanup)
-	end
+local function signal(sentinel)
 	local fh = io.open(sentinel, "w")
 	if fh then
 		fh:close()
@@ -38,12 +25,17 @@ function M.open_and_signal(file, sentinel)
 		local term_win = find_terminal_win()
 
 		if not term_win then
-			local win, buf = open_vsplit(file)
+			vim.cmd("vsplit " .. vim.fn.fnameescape(file))
+			local edit_win = vim.api.nvim_get_current_win()
+			local edit_buf = vim.api.nvim_get_current_buf()
 			vim.api.nvim_create_autocmd("WinClosed", {
-				pattern = tostring(win),
+				pattern = tostring(edit_win),
 				once = true,
 				callback = function()
-					on_edit_closed(buf, sentinel)
+					if vim.api.nvim_buf_is_valid(edit_buf) then
+						vim.api.nvim_buf_delete(edit_buf, { force = true })
+					end
+					signal(sentinel)
 				end,
 			})
 			return
@@ -51,15 +43,24 @@ function M.open_and_signal(file, sentinel)
 
 		local term_buf = vim.api.nvim_win_get_buf(term_win)
 		local term_width = vim.api.nvim_win_get_width(term_win)
+		local saved_ea = vim.o.equalalways
+		vim.o.equalalways = false
 
 		if not pcall(vim.api.nvim_win_close, term_win, true) then
+			vim.o.equalalways = saved_ea
 			vim.api.nvim_set_current_win(term_win)
-			local win, buf = open_vsplit(file)
+			vim.cmd("vsplit " .. vim.fn.fnameescape(file))
+			local edit_win = vim.api.nvim_get_current_win()
+			local edit_buf = vim.api.nvim_get_current_buf()
 			vim.api.nvim_create_autocmd("WinClosed", {
-				pattern = tostring(win),
+				pattern = tostring(edit_win),
 				once = true,
 				callback = function()
-					on_edit_closed(buf, sentinel)
+					if vim.api.nvim_buf_is_valid(edit_buf) then
+						vim.api.nvim_buf_delete(edit_buf, { force = true })
+					end
+					vim.o.equalalways = saved_ea
+					signal(sentinel)
 				end,
 			})
 			return
@@ -73,12 +74,17 @@ function M.open_and_signal(file, sentinel)
 			pattern = tostring(edit_win),
 			once = true,
 			callback = function()
-				on_edit_closed(edit_buf, sentinel, function()
+				if vim.api.nvim_buf_is_valid(edit_buf) then
+					vim.api.nvim_buf_delete(edit_buf, { force = true })
+				end
+				vim.schedule(function()
 					if vim.api.nvim_buf_is_valid(term_buf) then
 						vim.cmd("botright " .. term_width .. "vsplit")
 						vim.api.nvim_win_set_buf(vim.api.nvim_get_current_win(), term_buf)
 						vim.cmd("startinsert")
 					end
+					vim.o.equalalways = saved_ea
+					signal(sentinel)
 				end)
 			end,
 		})
