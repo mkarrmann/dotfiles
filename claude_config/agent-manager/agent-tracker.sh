@@ -336,6 +336,19 @@ cmd_register() {
 
   _log "register sid=${sid:0:8} source=$source next-name=$(cat ~/.claude-next-name 2>/dev/null || echo NONE)"
 
+  # Track previous session in this pane for compaction detection.
+  # Must read before overwriting ~/.claude-last-session.
+  local prev_pane_sid=""
+  if [ -n "${TMUX_PANE:-}" ]; then
+    local safe_pane="${TMUX_PANE//[^a-zA-Z0-9_]/_}"
+    local pane_file="${PID_DIR}/pane-${safe_pane}"
+    prev_pane_sid=$(cat "$pane_file" 2>/dev/null || true)
+    mkdir -p "$PID_DIR" 2>/dev/null
+    echo "$sid" > "$pane_file"
+  elif [ -f ~/.claude-last-session ]; then
+    prev_pane_sid=$(cat ~/.claude-last-session)
+  fi
+
   # Always track session locally, regardless of gdrive state.
   # This is critical: rename_session() and other local consumers read
   # ~/.claude-last-session to identify the current session.  If we only
@@ -474,7 +487,7 @@ cmd_register() {
         mv "$tmpfile" "$AGENTS_FILE"
       fi
     else
-      local name
+      local name=""
       local old_desc=""
       local old_started=""
       if [ -n "$intended_name" ]; then
@@ -485,19 +498,62 @@ cmd_register() {
         name=$(cat ~/.claude-next-name)
         rm -f ~/.claude-next-name
         _log "  startup: new UUID, claude-next-name='${name}'"
-      elif [ -n "${TMUX:-}" ]; then
-        local tmux_name
-        tmux_name=$(tmux display-message -p '#W' 2>/dev/null)
-        if [ -n "$tmux_name" ] && ! echo "$tmux_name" | grep -qxE "nvim|bash|zsh|sh|fish|tmux|systemd"; then
-          name="$tmux_name"
-          _log "  startup: using tmux window name='${name}'"
+      fi
+
+      # Compaction detection: if still unnamed, check if previous session in
+      # this pane was recently active.  A new session appearing in the same
+      # pane within seconds strongly indicates context compaction.
+      if [ -z "$name" ] && [ -n "${prev_pane_sid:-}" ] && [ "$prev_pane_sid" != "$sid" ]; then
+        local prev_row
+        prev_row=$(grep "| ${prev_pane_sid} |" "$AGENTS_FILE" 2>/dev/null || true)
+        if [ -n "$prev_row" ]; then
+          local prev_updated
+          prev_updated=$(echo "$prev_row" | awk -F'|' '{gsub(/^ +| +$/, "", $8); print $8}')
+          local now_epoch prev_epoch age
+          now_epoch=$(date +%s)
+          prev_epoch=$(date -d "$prev_updated" +%s 2>/dev/null || echo 0)
+          age=$(( now_epoch - prev_epoch ))
+          if [ "$age" -lt 120 ]; then
+            local compaction_confirmed=true
+            # For non-tmux, require same directory as additional guard
+            if [ -z "${TMUX_PANE:-}" ]; then
+              local prev_dir
+              prev_dir=$(echo "$prev_row" | awk -F'|' '{gsub(/^ +| +$/, "", $9); print $9}')
+              [ "$prev_dir" != "$PWD" ] && compaction_confirmed=false
+            fi
+            if [ "$compaction_confirmed" = true ]; then
+              name=$(echo "$prev_row" | awk -F'|' '{gsub(/^ +| +$/, "", $2); print $2}')
+              old_desc=$(echo "$prev_row" | awk -F'|' '{gsub(/^ +| +$/, "", $6); print $6}')
+              old_started=$(echo "$prev_row" | awk -F'|' '{gsub(/^ +| +$/, "", $7); print $7}')
+              _log "  startup: compaction detected (prev=${prev_pane_sid:0:8}, age=${age}s) — inheriting name='${name}'"
+              # Mark old session as stopped (Stop hook may not fire during compaction)
+              local tmpfile="${AGENTS_FILE}.tmp"
+              awk -v sid="$prev_pane_sid" -F'|' 'BEGIN{OFS="|"} {
+                if (NR > 4 && index($5, sid) > 0) { $3 = " ⏹️ stopped " }
+                print
+              }' "$AGENTS_FILE" > "$tmpfile"
+              mv "$tmpfile" "$AGENTS_FILE"
+            fi
+          fi
+        fi
+      fi
+
+      # Fallback: tmux window name or auto-generate
+      if [ -z "$name" ]; then
+        if [ -n "${TMUX:-}" ]; then
+          local tmux_name
+          tmux_name=$(tmux display-message -p '#W' 2>/dev/null)
+          if [ -n "$tmux_name" ] && ! echo "$tmux_name" | grep -qxE "nvim|bash|zsh|sh|fish|tmux|systemd"; then
+            name="$tmux_name"
+            _log "  startup: using tmux window name='${name}'"
+          else
+            name="${host}-${sid:0:4}"
+            _log "  startup: genuine new session, auto-name='${name}'"
+          fi
         else
           name="${host}-${sid:0:4}"
           _log "  startup: genuine new session, auto-name='${name}'"
         fi
-      else
-        name="${host}-${sid:0:4}"
-        _log "  startup: genuine new session, auto-name='${name}'"
       fi
 
       if grep -q "| ${name} |" "$AGENTS_FILE" 2>/dev/null; then
