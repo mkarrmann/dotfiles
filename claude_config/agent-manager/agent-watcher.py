@@ -416,14 +416,15 @@ def update_agents_md(sid: str, new_status: str) -> None:
             if f"| {sid} |" in line:
                 parts = line.split("|")
                 if len(parts) >= 9:
-                    current_status = parts[3].strip()
+                    # split("|") is 0-indexed: [0]="", [1]=Name, [2]=Status, [3]=OD, ...
+                    current_status = parts[2].strip()
                     # Only update if session is still idle — don't overwrite
                     # if it went active between our check and this write
                     if current_status in ("⚡ active", "🔵 bg:running"):
                         log.info("skip update %s — status is now %s", sid[:8], current_status)
                     else:
-                        parts[3] = f" {new_status} "
-                        parts[8] = f" {ts} "
+                        parts[2] = f" {new_status} "
+                        parts[7] = f" {ts} "
                         line = "|".join(parts)
                         updated = True
             new_lines.append(line)

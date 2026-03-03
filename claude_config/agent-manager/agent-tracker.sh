@@ -263,9 +263,11 @@ mark_stale() {
     # Timestamp-based fallback (cross-machine or no PID file)
     [ -z "$updated_trimmed" ] && continue
 
-    # Don't auto-stop "waiting" sessions — the question still needs an answer
+    # Use longer thresholds for done/waiting — they're less urgent but still stale eventually
+    local stale_limit="$STALE_THRESHOLD_MINUTES"
     case "$status_trimmed" in
-      "❓ waiting"|"🟡 done") continue ;;
+      "🟡 done") stale_limit=120 ;;       # 2 hours
+      "❓ waiting") stale_limit=240 ;;     # 4 hours
     esac
 
     local updated_epoch
@@ -278,7 +280,7 @@ mark_stale() {
       age_minutes=$(( age_minutes + 525960 ))
     fi
 
-    if [ "$age_minutes" -ge "$STALE_THRESHOLD_MINUTES" ]; then
+    if [ "$age_minutes" -ge "$stale_limit" ]; then
       local ts
       ts=$(now)
       _log "  mark_stale: sid=${sid_trimmed:0:8} age=${age_minutes}m — marking stopped"
@@ -940,8 +942,11 @@ cmd_heartbeat() {
 
   # Claude process died without Stop hook firing (e.g. tmux window killed).
   # Mark the session as stopped so the dashboard reflects reality.
+  # Important: update AGENTS.md BEFORE removing the PID file — if the update
+  # fails (gdrive unavailable), the PID file must remain so the statusline's
+  # _check_pid can detect the dead process and classify it as inactive.
   _log "  heartbeat: sid=${sid:0:8} claude pid $claude_pid dead — marking stopped"
-  _cleanup_pid "$sid"
+  local agents_updated=false
   if _check_gdrive 2>/dev/null; then
     local lock_dir="${LOCK_FILE}.d"
     if mkdir "$lock_dir" 2>/dev/null; then
@@ -956,12 +961,17 @@ cmd_heartbeat() {
         print
       }' "$AGENTS_FILE" > "$tmpfile"; then
         mv "$tmpfile" "$AGENTS_FILE"
+        agents_updated=true
       else
         rm -f "$tmpfile"
       fi
       rm -rf "$lock_dir" 2>/dev/null
     fi
   fi
+  if $agents_updated; then
+    rm -f "${PID_DIR}/${sid}"
+  fi
+  rm -f "${PID_DIR}/${sid}.heartbeat"
 }
 
 # ============================================================

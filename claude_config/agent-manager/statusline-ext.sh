@@ -206,6 +206,8 @@ format_line() {
 }
 
 MAX_INACTIVE=3
+MAX_LIVE=10
+LIVE_AGE_MAX=120  # minutes — done/waiting sessions older than this are treated as inactive
 
 current_line=""
 live_lines=()
@@ -215,6 +217,15 @@ is_live_status() {
   local status="$1"
   case "$status" in
     "⚡ active"|"🟡 done"|"❓ waiting"|"🟢 interactive"|"🔄 resumed"|"🔵 bg:running"|"🔴 stuck") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Statuses that are always shown as live regardless of age
+_is_always_live() {
+  local status="$1"
+  case "$status" in
+    "⚡ active"|"🔵 bg:running") return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -240,10 +251,32 @@ while IFS='|' read -r _ name status od sid desc started updated dir _; do
     _check_pid "$sid" "$od"
     pid_result=$?
     if [ "$pid_result" -eq 1 ]; then
+      # PID confirmed dead
       inactive_lines+=("$name|⏹️ stopped|$od|$sid|$desc|$started|$updated|$dir")
+    elif [ "$pid_result" -eq 2 ] && [ "$od" = "$THIS_HOST" ]; then
+      # Local session with no PID file — likely orphaned (heartbeat cleaned up
+      # PID but failed to update AGENTS.md). Treat as inactive if not very recent.
+      _compute_age "$updated"
+      if [ -n "$_AGE_MIN" ] && [ "$_AGE_MIN" -gt 5 ]; then
+        inactive_lines+=("$name|⏹️ stopped|$od|$sid|$desc|$started|$updated|$dir")
+      elif is_live_status "$status"; then
+        live_lines+=("$name|$status|$od|$sid|$desc|$started|$updated|$dir")
+      else
+        inactive_lines+=("$name|$status|$od|$sid|$desc|$started|$updated|$dir")
+      fi
     else
       if is_live_status "$status"; then
-        live_lines+=("$name|$status|$od|$sid|$desc|$started|$updated|$dir")
+        # Age-based filtering: old done/waiting/etc. sessions are demoted to inactive
+        if _is_always_live "$status"; then
+          live_lines+=("$name|$status|$od|$sid|$desc|$started|$updated|$dir")
+        else
+          _compute_age "$updated"
+          if [ -n "$_AGE_MIN" ] && [ "$_AGE_MIN" -gt "$LIVE_AGE_MAX" ]; then
+            inactive_lines+=("$name|$status|$od|$sid|$desc|$started|$updated|$dir")
+          else
+            live_lines+=("$name|$status|$od|$sid|$desc|$started|$updated|$dir")
+          fi
+        fi
       else
         inactive_lines+=("$name|$status|$od|$sid|$desc|$started|$updated|$dir")
       fi
@@ -251,13 +284,22 @@ while IFS='|' read -r _ name status od sid desc started updated dir _; do
   fi
 done < <(tail -n +5 "$agents_source")
 
+# Enforce MAX_LIVE cap — excess live sessions become inactive
+if [ "${#live_lines[@]}" -gt "$MAX_LIVE" ]; then
+  # Move oldest (last in array, since AGENTS.md is sorted newest-first) to inactive
+  while [ "${#live_lines[@]}" -gt "$MAX_LIVE" ]; do
+    inactive_lines+=("${live_lines[-1]}")
+    unset 'live_lines[-1]'
+  done
+fi
+
 # Current session first
 if [ -n "$current_line" ]; then
   IFS='|' read -r name status od sid desc started updated dir <<< "$current_line"
   format_line ">" "$name" "$status" "$od" "$sid" "$desc" "$started" "$updated" "$dir"
 fi
 
-# All live sessions
+# Live sessions
 for line in "${live_lines[@]}"; do
   IFS='|' read -r name status od sid desc started updated dir <<< "$line"
   format_line " " "$name" "$status" "$od" "$sid" "$desc" "$started" "$updated" "$dir"
