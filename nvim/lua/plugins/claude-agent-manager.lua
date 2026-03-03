@@ -308,6 +308,50 @@ local function resume_by_name()
 		:find()
 end
 
+local function fork_to(make_tmux_cmd)
+	if not vim.env.TMUX then
+		vim.notify("Not in tmux", vim.log.levels.WARN)
+		return
+	end
+	local sid = get_session_id()
+	if not sid or sid == "" then
+		vim.notify("No active Claude session to fork", vim.log.levels.WARN)
+		return
+	end
+	local agent = lookup_agent_by_sid(sid)
+	local name = agent and agent.name or nil
+	if name then
+		local nf = io.open(next_name_file, "w")
+		if nf then
+			nf:write(name)
+			nf:close()
+		end
+	end
+	local label = name or ("fork-" .. sid:sub(1, 8))
+	vim.fn.system(make_tmux_cmd(label, sid))
+end
+
+local function fork_to_window()
+	fork_to(function(label, sid)
+		return {
+			"tmux", "new-window", "-d",
+			"-n", label,
+			"-e", "CLAUDE_AUTO_RESUME=" .. sid,
+			"--", "nvim",
+		}
+	end)
+end
+
+local function fork_to_pane()
+	fork_to(function(_, sid)
+		return {
+			"tmux", "split-window", "-h", "-l", "33%",
+			"-e", "CLAUDE_AUTO_RESUME=" .. sid,
+			"--", "nvim",
+		}
+	end)
+end
+
 local function prompt_and_launch(make_tmux_cmd)
 	if not vim.env.TMUX then
 		vim.notify("Not in tmux", vim.log.levels.WARN)
@@ -428,6 +472,16 @@ return {
 				desc = "Resume Claude session by ID",
 			},
 			{
+				"<leader>af",
+				fork_to_window,
+				desc = "Fork Claude session in new tmux window",
+			},
+			{
+				"<leader>aF",
+				fork_to_pane,
+				desc = "Fork Claude session in new tmux pane",
+			},
+			{
 				"<leader>ap",
 				prompt_new_window,
 				desc = "Prompt Claude in new tmux window",
@@ -509,6 +563,17 @@ return {
 									end
 								end, 2000)
 							end
+						end, 200)
+					end,
+				})
+			elseif vim.env.CLAUDE_AUTO_RESUME then
+				vim.api.nvim_create_autocmd("VimEnter", {
+					once = true,
+					callback = function()
+						vim.defer_fn(function()
+							local sid = vim.env.CLAUDE_AUTO_RESUME
+							require("lazy").load({ plugins = { "claudecode.nvim" } })
+							vim.cmd("ClaudeCode --resume " .. sid .. " --fork-session")
 						end, 200)
 					end,
 				})
