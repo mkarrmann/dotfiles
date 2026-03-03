@@ -300,7 +300,7 @@ local function resume_by_name()
 					if vim.env.TMUX then
 						vim.fn.system("tmux rename-window " .. vim.fn.shellescape(agent.name))
 					end
-					vim.cmd("ClaudeCode --resume " .. agent.sid)
+					vim.cmd("ClaudeCode --resume " .. agent.sid .. " --fork-session")
 				end)
 				return true
 			end,
@@ -421,7 +421,7 @@ return {
 									vim.fn.system("tmux rename-window " .. vim.fn.shellescape(agent.name))
 								end
 							end
-							vim.cmd("ClaudeCode --resume " .. id)
+							vim.cmd("ClaudeCode --resume " .. id .. " --fork-session")
 						end
 					end)
 				end,
@@ -582,7 +582,7 @@ return {
 							end
 
 							require("lazy").load({ plugins = { "claudecode.nvim" } })
-							vim.cmd("ClaudeCode --resume " .. entry.sid)
+							vim.cmd("ClaudeCode --resume " .. entry.sid .. " --fork-session")
 						end, 3000)
 					end,
 				})

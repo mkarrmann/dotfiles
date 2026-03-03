@@ -99,7 +99,7 @@ _start_bg_session() {
   if [ -n "$sid" ]; then
     # Resume mode (cr -b): has session ID, use --resume
     bash "$AGENT_TRACKER" background "$name" "$sid" "$prompt"
-    claude_cmd="command claude --dangerously-skip-permissions -p --resume '${sid}' '${prompt}'"
+    claude_cmd="command claude --dangerously-skip-permissions -p --resume '${sid}' --fork-session '${prompt}'"
     done_cmd="bash '${AGENT_TRACKER}' bg-done '${sid}'"
   else
     # New mode (cn -b): no session ID yet, no --resume
@@ -198,7 +198,7 @@ cr() {
     # Pre-set name so if session was compacted (new UUID), the hook inherits the name
     echo "$name" > ~/.claude-next-name
     [ -n "$TMUX" ] && tmux rename-window "$name" 2>/dev/null
-    claude --resume "$sid"
+    claude --resume "$sid" --fork-session
     local exit_code=$?
     # Clean up: if compacted, hook already consumed it; if normal resume, it's orphaned
     rm -f ~/.claude-next-name
