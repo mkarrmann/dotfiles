@@ -405,3 +405,21 @@ vim.keymap.set("n", "<leader>aX", function()
 		vim.notify("No command running", vim.log.levels.WARN)
 	end
 end, { desc = "Cancel running command" })
+
+-- In diff mode, remap mouse scroll to Ctrl-E/Ctrl-Y which respect scrollbind,
+-- so both diff panes scroll together.
+vim.keymap.set("n", "<ScrollWheelUp>", function()
+	if vim.wo.diff then
+		vim.cmd("normal! 3\x19")
+	else
+		vim.cmd("normal! \x19")
+	end
+end)
+
+vim.keymap.set("n", "<ScrollWheelDown>", function()
+	if vim.wo.diff then
+		vim.cmd("normal! 3\x05")
+	else
+		vim.cmd("normal! \x05")
+	end
+end)
