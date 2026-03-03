@@ -138,8 +138,11 @@ def resolve_agents_file() -> Path:
     gdrive = Path(
         f"/data/users/{os.environ.get('USER', 'nobody')}/gdrive/AGENTS.md"
     )
-    if gdrive.exists():
-        return gdrive
+    try:
+        if gdrive.exists():
+            return gdrive
+    except OSError:
+        pass
     return Path.home() / ".claude" / "agents.md"
 
 
