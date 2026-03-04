@@ -300,7 +300,7 @@ local function resume_by_name()
 					if vim.env.TMUX then
 						vim.fn.system("tmux rename-window " .. vim.fn.shellescape(agent.name))
 					end
-					vim.cmd("ClaudeCode --resume " .. agent.sid .. " --fork-session")
+					vim.cmd("ClaudeCode --resume " .. agent.sid)
 				end)
 				return true
 			end,
@@ -337,6 +337,7 @@ local function fork_to_window()
 			"tmux", "new-window", "-d",
 			"-n", label,
 			"-e", "CLAUDE_AUTO_RESUME=" .. sid,
+			"-e", "CLAUDECODE=",
 			"--", "nvim",
 		}
 	end)
@@ -347,6 +348,7 @@ local function fork_to_pane()
 		return {
 			"tmux", "split-window", "-h", "-l", "33%",
 			"-e", "CLAUDE_AUTO_RESUME=" .. sid,
+			"-e", "CLAUDECODE=",
 			"--", "nvim",
 		}
 	end)
@@ -393,6 +395,7 @@ local function prompt_new_window()
 			"tmux", "new-window", "-d",
 			"-n", label,
 			"-e", "CLAUDE_AUTO_PROMPT=" .. prompt_file,
+			"-e", "CLAUDECODE=",
 			"--", "nvim",
 		}
 	end)
@@ -403,6 +406,7 @@ local function prompt_new_pane()
 		return {
 			"tmux", "split-window", "-h", "-l", "33%",
 			"-e", "CLAUDE_AUTO_PROMPT=" .. prompt_file,
+			"-e", "CLAUDECODE=",
 			"--", "nvim",
 		}
 	end)
@@ -465,7 +469,7 @@ return {
 									vim.fn.system("tmux rename-window " .. vim.fn.shellescape(agent.name))
 								end
 							end
-							vim.cmd("ClaudeCode --resume " .. id .. " --fork-session")
+							vim.cmd("ClaudeCode --resume " .. id)
 						end
 					end)
 				end,
@@ -573,7 +577,7 @@ return {
 						vim.defer_fn(function()
 							local sid = vim.env.CLAUDE_AUTO_RESUME
 							require("lazy").load({ plugins = { "claudecode.nvim" } })
-							vim.cmd("ClaudeCode --resume " .. sid .. " --fork-session")
+							vim.cmd("ClaudeCode --resume " .. sid)
 						end, 200)
 					end,
 				})
@@ -647,7 +651,7 @@ return {
 							end
 
 							require("lazy").load({ plugins = { "claudecode.nvim" } })
-							vim.cmd("ClaudeCode --resume " .. entry.sid .. " --fork-session")
+							vim.cmd("ClaudeCode --resume " .. entry.sid)
 						end, 3000)
 					end,
 				})
