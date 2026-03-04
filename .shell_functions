@@ -98,6 +98,9 @@ kb64() {
 
 }
 
+# Unalias nvim if it exists (from dotfiles/nvim/env-setup.sh)
+unalias nvim 2>/dev/null || true
+
 nvim() {
   if [ -n "$NVIM" ] && [ $# -gt 0 ]; then
     local abspath
