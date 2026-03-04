@@ -42,9 +42,7 @@ return {
 		"coder/claudecode.nvim",
 		opts = {
 			terminal_cmd = "~/.claude/agent-manager/bin/claude-nvim-wrapper.sh",
-			env = {
-				EDITOR = vim.fn.expand("~/bin/nvim-edit-in-tab"),
-			},
+			-- Using Claude Code's default behavior - no custom EDITOR
 			terminal = {
 				split_width_percentage = 0.45,
 			},
