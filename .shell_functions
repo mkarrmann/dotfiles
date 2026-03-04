@@ -102,12 +102,20 @@ kb64() {
 unalias nvim 2>/dev/null || true
 
 nvim() {
+  # Determine which nvim to use (wrapper if it exists, otherwise system nvim)
+  local nvim_cmd="/usr/bin/nvim"
+  if [[ -x "$HOME/dotfiles/bin/nvim-env-wrapper" ]]; then
+    nvim_cmd="$HOME/dotfiles/bin/nvim-env-wrapper"
+  fi
+
   if [ -n "$NVIM" ] && [ $# -gt 0 ]; then
+    # We're inside Neovim - use remote to avoid nesting
     local abspath
     abspath=$(realpath "$1" 2>/dev/null || echo "$1")
-    command nvim --server "$NVIM" --remote-send "<C-\\><C-n>:lua _open_from_terminal([[${abspath}]])<CR>"
+    $nvim_cmd --server "$NVIM" --remote-send "<C-\\><C-n>:lua _open_from_terminal([[${abspath}]])<CR>"
   else
-    command nvim "$@"
+    # Normal launch (with Meta fixes if wrapper exists)
+    $nvim_cmd "$@"
   fi
 }
 
