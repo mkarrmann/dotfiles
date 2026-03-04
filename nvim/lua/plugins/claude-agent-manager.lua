@@ -15,6 +15,14 @@ local agents_file = resolve_agents_file()
 local last_session_file = vim.fn.expand("~/.claude-last-session")
 
 local function get_session_id()
+	-- First try to get the session ID from the environment variable
+	-- This is more reliable for the current session
+	local env_sid = vim.env.CLAUDE_CODE_CURRENT_SESSION_ID
+	if env_sid and env_sid ~= "" then
+		return env_sid:match("^%s*(.-)%s*$")
+	end
+
+	-- Fall back to the file if no environment variable
 	local f = io.open(last_session_file, "r")
 	if not f then
 		return nil
