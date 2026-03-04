@@ -30,7 +30,7 @@ STATE_FILE = STATE_DIR / "watcher-state.json"
 
 # ── Config ────────────────────────────────────────────────
 
-POLL_INTERVAL = 30
+POLL_INTERVAL = 15  # Reduced from 30 for faster naming updates
 INACTIVE_THRESHOLD = 150
 IDLE_EXIT_THRESHOLD = 600  # 10 min with no live sessions → exit
 TRANSCRIPT_TAIL_ENTRIES = 15
@@ -51,7 +51,7 @@ CLASSIFIABLE_STATUSES = {"done", "active", "interactive", "resumed"}  # Removed 
 
 # Auto-naming: sessions with default names (hostname-xxxx) get named from transcript
 NAMING_QUICK_MIN_ENTRIES = 1   # qq: prefix — as soon as first prompt exists
-NAMING_FULL_MIN_ENTRIES = 6    # drop qq: prefix — enough context for a good name
+NAMING_FULL_MIN_ENTRIES = 3    # drop qq: prefix — reduced from 6 for faster final naming
 _HOSTNAME = os.uname().nodename.split(".")[0]
 
 # ── Logging ───────────────────────────────────────────────
@@ -282,12 +282,13 @@ def classify_session(agent: dict, transcript: str) -> Tuple[str, str, str, dict]
 
 # ── Auto-naming ──────────────────────────────────────────
 
-NAMING_PROMPT = """Based on the conversation transcript below, suggest a short name (2-4 words, lowercase, hyphens for spaces) that describes what this Claude Code session is working on.
+NAMING_PROMPT = """Based on the conversation transcript below, generate a search-friendly name using 3-5 keywords that capture the main topics and technologies in this Claude Code session.
 
 Rules:
-- Max 20 characters
-- Lowercase, use hyphens (e.g. "fix-auth-bug", "presto-config-refactor", "add-session-metrics")
-- Be specific to the task, not generic
+- Max 35 characters
+- Lowercase, use hyphens between keywords (e.g. "presto-java-maven-bug-fix", "auth-api-refactor-typescript", "debug-memory-leak-tupperware")
+- Focus on SEARCHABLE KEYWORDS not full descriptions
+- Include technologies, frameworks, action verbs, and problem areas
 - Respond with ONLY the name, nothing else
 
 Transcript:
