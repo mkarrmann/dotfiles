@@ -1,7 +1,5 @@
--- Meta's Neovim package puts bundled treesitter parsers in /usr/lib/nvim/parser/
--- but doesn't add /usr/lib/nvim to the runtimepath. The proxy also blocks
--- nvim-treesitter from downloading parsers directly from GitHub.
-vim.opt.rtp:prepend("/usr/lib/nvim")
+-- Apply environment-specific configuration (Meta, etc.)
+require("lib.env").setup()
 
 local meta_hg = require("lib.meta-hg")
 package.loaded["meta.hg"] = meta_hg
