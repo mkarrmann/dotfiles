@@ -42,7 +42,10 @@ return {
 		"coder/claudecode.nvim",
 		opts = {
 			terminal_cmd = "~/.claude/agent-manager/bin/claude-nvim-wrapper.sh",
-			-- Using Claude Code's default behavior - no custom EDITOR
+			env = {
+				-- Use nvim as the editor (Claude Code's expected default)
+				EDITOR = "nvim",
+			},
 			terminal = {
 				split_width_percentage = 0.45,
 			},
