@@ -47,7 +47,7 @@ HAIKU_OUTPUT_COST_PER_MTOK = 1.25
 CHARS_PER_TOKEN_ESTIMATE = 3.5
 
 SKIP_STATUSES = {"waiting", "bg:running"}
-CLASSIFIABLE_STATUSES = {"done", "stopped", "active", "interactive", "resumed"}
+CLASSIFIABLE_STATUSES = {"done", "active", "interactive", "resumed"}  # Removed "stopped" to prevent overwriting
 
 # Auto-naming: sessions with default names (hostname-xxxx) get named from transcript
 NAMING_QUICK_MIN_ENTRIES = 1   # qq: prefix — as soon as first prompt exists
@@ -420,7 +420,7 @@ def update_agents_md(sid: str, new_status: str) -> None:
                     current_status = parts[2].strip()
                     # Only update if session is still idle — don't overwrite
                     # if it went active between our check and this write
-                    if current_status in ("⚡ active", "🔵 bg:running"):
+                    if current_status in ("⚡ active", "🔵 bg:running", "⏹️ stopped"):
                         log.info("skip update %s — status is now %s", sid[:8], current_status)
                     else:
                         parts[2] = f" {new_status} "
