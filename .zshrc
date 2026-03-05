@@ -71,6 +71,12 @@ setopt HIST_IGNORE_DUPS
 # starts with this shell's most recent command.
 unsetopt SHARE_HISTORY
 
+# Unset proxy variables that can break internal tools like arc
+unset http_proxy
+unset https_proxy
+unset HTTP_PROXY
+unset HTTPS_PROXY
+
 # Local zsh-only config (not source-controlled)
 if [[ -f ~/.zshrc.local ]]; then
   source ~/.zshrc.local
@@ -85,3 +91,6 @@ chpwd() {
   fi
 }
 
+# Fix for dotsync2 certificate issue
+export THRIFT_TLS_CL_CERT_PATH=/var/facebook/credentials/mkarrmann/x509/mkarrmann.pem
+export THRIFT_TLS_CL_KEY_PATH=/var/facebook/credentials/mkarrmann/x509/mkarrmann.pem

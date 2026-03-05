@@ -13,23 +13,50 @@ ORANGE='\033[38;5;208m'
 DARK_RED='\033[0;31m'
 RESET='\033[0m'
 
-# Extract all values in a single jq call
-eval "$(echo "$input" | jq -r '
-  "CURRENT_DIR=\(.workspace.current_dir // "")
-   MODEL_ID=\(.model.id // "")
-   TOTAL_COST=\(.cost.total_cost_usd // 0)
-   TOTAL_DURATION=\(.cost.total_duration_ms // 0)
-   API_DURATION=\(.cost.total_api_duration_ms // 0)
-   LINES_ADDED=\(.cost.total_lines_added // 0)
-   LINES_REMOVED=\(.cost.total_lines_removed // 0)
-   CONTEXT_WINDOW_SIZE=\(.context_window.context_window_size // 0)
-   OUTPUT_TOKENS=\(.context_window.total_output_tokens // 0)
-   USED_PCT=\(.context_window.used_percentage // 0)
-   CTX_TOKENS=\((.context_window.current_usage | (.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)) // 0)
-   SESSION_ID=\(.session_id // "")"
-' 2>/dev/null)" 2>/dev/null
+# Extract all values in one jq call without eval.
+if ! IFS=$'\t' read -r \
+  CURRENT_DIR \
+  MODEL_ID \
+  TOTAL_COST \
+  TOTAL_DURATION \
+  API_DURATION \
+  LINES_ADDED \
+  LINES_REMOVED \
+  CONTEXT_WINDOW_SIZE \
+  OUTPUT_TOKENS \
+  USED_PCT \
+  CTX_TOKENS \
+  SESSION_ID < <(
+  printf '%s' "$input" | jq -r '[
+    .workspace.current_dir // "",
+    .model.id // "",
+    (.cost.total_cost_usd // 0),
+    (.cost.total_duration_ms // 0),
+    (.cost.total_api_duration_ms // 0),
+    (.cost.total_lines_added // 0),
+    (.cost.total_lines_removed // 0),
+    (.context_window.context_window_size // 0),
+    (.context_window.total_output_tokens // 0),
+    (.context_window.used_percentage // 0),
+    ((.context_window.current_usage | (.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)) // 0),
+    .session_id // ""
+  ] | @tsv' 2>/dev/null
+); then
+  CURRENT_DIR=""
+  MODEL_ID=""
+  TOTAL_COST=0
+  TOTAL_DURATION=0
+  API_DURATION=0
+  LINES_ADDED=0
+  LINES_REMOVED=0
+  CONTEXT_WINDOW_SIZE=0
+  OUTPUT_TOKENS=0
+  USED_PCT=0
+  CTX_TOKENS=0
+  SESSION_ID=""
+fi
 
-DIR_NAME=$(basename "$CURRENT_DIR")
+DIR_NAME=$(basename "${CURRENT_DIR:-.}")
 
 # Format durations (integer arithmetic to avoid bc)
 TOTAL_DURATION_SEC=$(( TOTAL_DURATION / 1000 )).$(( (TOTAL_DURATION % 1000) / 100 ))
@@ -69,6 +96,6 @@ echo -e "${BLUE}📁 ${DIR_NAME}${RESET} | ${GREEN}🤖 ${MODEL_ID}${RESET} | ${
 STATUSLINE_EXT_DIR="$HOME/.claude/statusline.d"
 if [ -d "$STATUSLINE_EXT_DIR" ]; then
   for ext in "$STATUSLINE_EXT_DIR"/*.sh; do
-    [ -f "$ext" ] && echo "$input" | bash "$ext"
+    [ -f "$ext" ] && printf '%s\n' "$input" | bash "$ext"
   done
 fi

@@ -95,13 +95,16 @@ link_one "$DOTFILES_DIR/sway_config" "$HOME/.config/sway/config"
 mkdir -p "$HOME/.claude/projects" "$HOME/.claude/rules" "$HOME/.claude/hooks"
 link_one "$DOTFILES_DIR/claude_config/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
 link_one "$DOTFILES_DIR/agent_config/global-development-preferences.md" "$HOME/.claude/rules/global-development-preferences.md"
+# Clean up stale optional rule links that no longer exist in dotfiles.
+if [[ -L "$HOME/.claude/rules/personal-style.md" && ! -e "$HOME/.claude/rules/personal-style.md" ]]; then
+  rm "$HOME/.claude/rules/personal-style.md"
+  echo "removed stale link $HOME/.claude/rules/personal-style.md"
+fi
 link_one "$DOTFILES_DIR/claude_config/statusline.sh" "$HOME/.claude/statusline.sh"
 # Agent Manager
 mkdir -p "$HOME/.claude/agent-manager/bin" "$HOME/.claude/statusline.d"
-for src in "$DOTFILES_DIR/claude_config/agent-manager/"*.sh; do
-  base="$(basename "$src")"
-  link_one "$src" "$HOME/.claude/agent-manager/bin/$base"
-done
+sync_link_dir "$DOTFILES_DIR/claude_config/agent-manager" "$HOME/.claude/agent-manager/bin" "*.sh"
+sync_link_dir "$DOTFILES_DIR/claude_config/agent-manager" "$HOME/.claude/agent-manager/bin" "*.py"
 link_one "$DOTFILES_DIR/claude_config/agent-manager/statusline-ext.sh" "$HOME/.claude/statusline.d/agent-manager.sh"
 # Google Drive mount scripts
 mkdir -p "$HOME/.claude/gdrive-mount-scripts"

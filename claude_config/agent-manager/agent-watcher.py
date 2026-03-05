@@ -118,6 +118,7 @@ def parse_agents(path: Path) -> List[dict]:
             "status_raw": status_raw,
             "status_text": status_text,
             "session_id": parts[4],
+            "description": parts[5],
             "updated": parts[7],
         })
     return agents
