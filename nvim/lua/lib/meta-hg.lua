@@ -3110,8 +3110,8 @@ local function setup_line_blame()
       return
     end
     local blame_line = blame_lines[cursor[1]]
-    -- not committed line
-    if blame_line == "" then
+    -- not committed line or line not in blame output (e.g. newly added)
+    if not blame_line or blame_line == "" then
       return
     end
 
