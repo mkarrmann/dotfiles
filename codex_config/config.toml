@@ -1,4 +1,2 @@
 model = "gpt-5.3-codex"
 model_reasoning_effort = "xhigh"
-[projects."__HOME__/dotfiles"]
-trust_level = "trusted"

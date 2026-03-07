@@ -54,12 +54,17 @@ sync_link_dir() {
 sync_link_subdirs() {
   local src_parent="$1"
   local dst_parent="$2"
+  local required_file="${3:-}"
   local target
 
   mkdir -p "$dst_parent"
 
   shopt -s nullglob
   for src in "$src_parent"/*/; do
+    if [[ -n "$required_file" ]] && [[ ! -e "$src$required_file" ]]; then
+      echo "skipped $src (missing $required_file)"
+      continue
+    fi
     link_one "$src" "$dst_parent/$(basename "$src")"
   done
   shopt -u nullglob
@@ -69,9 +74,11 @@ sync_link_subdirs() {
   for dst in "$dst_parent"/*; do
     if [[ -L "$dst" ]]; then
       target="$(readlink "$dst")"
-      if [[ "$target" == "$src_parent/"* ]] && [[ ! -e "$target" ]]; then
-        rm "$dst"
-        echo "removed stale link $dst -> $target"
+      if [[ "$target" == "$src_parent/"* ]]; then
+        if [[ ! -e "$target" ]] || { [[ -n "$required_file" ]] && [[ ! -e "$target/$required_file" ]]; }; then
+          rm "$dst"
+          echo "removed stale link $dst -> $target"
+        fi
       fi
     fi
   done
@@ -149,7 +156,7 @@ done
 shopt -u nullglob
 # Skills (shared between Claude Code and Codex)
 mkdir -p "$HOME/.claude/skills"
-sync_link_subdirs "$DOTFILES_DIR/agent_config/skills" "$HOME/.claude/skills"
+sync_link_subdirs "$DOTFILES_DIR/agent_config/skills" "$HOME/.claude/skills" "SKILL.md"
 # Ensure settings.json has the statusline command configured (preserving other settings)
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 if [[ ! -f "$CLAUDE_SETTINGS" ]]; then
@@ -298,6 +305,12 @@ if [[ -f "$HOME/.codex/config.local.toml" ]]; then
   echo "" >> "$codex_config"
   cat "$HOME/.codex/config.local.toml" >> "$codex_config"
 fi
+# Ensure dotfiles repo is trusted by default unless explicitly set in local overrides.
+if ! grep -Fqx "[projects.\"$HOME/dotfiles\"]" "$codex_config"; then
+  echo "" >> "$codex_config"
+  echo "[projects.\"$HOME/dotfiles\"]" >> "$codex_config"
+  echo "trust_level = \"trusted\"" >> "$codex_config"
+fi
 if $codex_existed; then
   echo "updated $codex_config"
 else
@@ -307,7 +320,7 @@ fi
 # Shared development rules
 link_one "$DOTFILES_DIR/agent_config/global-development-preferences.md" "$HOME/.codex/rules/global-development-preferences.md"
 # Shared skills
-sync_link_subdirs "$DOTFILES_DIR/agent_config/skills" "$HOME/.codex/skills"
+sync_link_subdirs "$DOTFILES_DIR/agent_config/skills" "$HOME/.codex/skills" "SKILL.md"
 
 # default.rules is machine-specific — managed by Codex itself
 
