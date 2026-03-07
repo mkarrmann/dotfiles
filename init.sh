@@ -27,6 +27,7 @@ sync_link_dir() {
   local src_dir="$1"
   local dst_dir="$2"
   local pattern="$3"
+  local target
 
   mkdir -p "$dst_dir"
 
@@ -42,6 +43,33 @@ sync_link_dir() {
     if [[ -L "$dst" ]]; then
       target="$(readlink "$dst")"
       if [[ "$target" == "$src_dir/"* ]] && [[ ! -e "$target" ]]; then
+        rm "$dst"
+        echo "removed stale link $dst -> $target"
+      fi
+    fi
+  done
+  shopt -u nullglob
+}
+
+sync_link_subdirs() {
+  local src_parent="$1"
+  local dst_parent="$2"
+  local target
+
+  mkdir -p "$dst_parent"
+
+  shopt -s nullglob
+  for src in "$src_parent"/*/; do
+    link_one "$src" "$dst_parent/$(basename "$src")"
+  done
+  shopt -u nullglob
+
+  # Remove stale links previously created from this managed source parent.
+  shopt -s nullglob
+  for dst in "$dst_parent"/*; do
+    if [[ -L "$dst" ]]; then
+      target="$(readlink "$dst")"
+      if [[ "$target" == "$src_parent/"* ]] && [[ ! -e "$target" ]]; then
         rm "$dst"
         echo "removed stale link $dst -> $target"
       fi
@@ -121,12 +149,7 @@ done
 shopt -u nullglob
 # Skills (shared between Claude Code and Codex)
 mkdir -p "$HOME/.claude/skills"
-shopt -s nullglob
-for src in "$DOTFILES_DIR/agent_config/skills/"*/; do
-  base="$(basename "$src")"
-  link_one "$src" "$HOME/.claude/skills/$base"
-done
-shopt -u nullglob
+sync_link_subdirs "$DOTFILES_DIR/agent_config/skills" "$HOME/.claude/skills"
 # Ensure settings.json has the statusline command configured (preserving other settings)
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 if [[ ! -f "$CLAUDE_SETTINGS" ]]; then
@@ -134,6 +157,9 @@ if [[ ! -f "$CLAUDE_SETTINGS" ]]; then
 fi
 tmp=$(jq '
   .permissions.defaultMode = "bypassPermissions" |
+  .env |= ((. // {}) + {
+    "DISABLE_AUTOUPDATER": "1"
+  }) |
   .statusLine = {"type": "command", "command": "~/.claude/statusline.sh"} |
   .hooks.PreToolUse = [
     {
@@ -262,7 +288,7 @@ tmp=$(jq '
   && echo "configured statusLine and hooks in $CLAUDE_SETTINGS"
 
 # Codex
-mkdir -p "$HOME/.codex/rules"
+mkdir -p "$HOME/.codex/rules" "$HOME/.codex/skills"
 
 # Portable settings (templated) + machine-local overrides (config.local.toml)
 codex_config="$HOME/.codex/config.toml"
@@ -280,6 +306,8 @@ fi
 
 # Shared development rules
 link_one "$DOTFILES_DIR/agent_config/global-development-preferences.md" "$HOME/.codex/rules/global-development-preferences.md"
+# Shared skills
+sync_link_subdirs "$DOTFILES_DIR/agent_config/skills" "$HOME/.codex/skills"
 
 # default.rules is machine-specific — managed by Codex itself
 

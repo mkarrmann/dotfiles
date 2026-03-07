@@ -93,12 +93,7 @@ function M.setup()
     config.setup()
   end
 
-  -- Notify which environment was detected (only for non-default)
-  if env ~= "default" then
-    vim.schedule(function()
-      vim.notify(string.format("Environment: %s - applied workarounds", config.name), vim.log.levels.INFO)
-    end)
-  end
+  -- Environment info available via :EnvInfo command
 
   M.current_env = env
   M.current_config = config
