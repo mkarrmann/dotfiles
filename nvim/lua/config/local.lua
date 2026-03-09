@@ -1,6 +1,8 @@
 -- Apply environment-specific configuration (Meta, etc.)
 require("lib.env").setup()
 
+vim.g.obsidian_vault = vim.fn.expand("~/Work")
+
 local meta_hg = require("lib.meta-hg")
 package.loaded["meta.hg"] = meta_hg
 meta_hg.setup({ ssl = { status = true } })
