@@ -563,12 +563,18 @@ def main():
                 del state[sid]
 
             # Prune state entries for sessions no longer in AGENTS.md
+            def _extract_sid(key: str) -> str:
+                for prefix in ("_named:", "_renamed:"):
+                    if key.startswith(prefix):
+                        return key[len(prefix):]
+                return key
+
             pruned = [
-                sid for sid in state
-                if sid not in active_sids and sid != "_usage"
+                key for key in state
+                if key != "_usage" and _extract_sid(key) not in active_sids
             ]
-            for sid in pruned:
-                del state[sid]
+            for key in pruned:
+                del state[key]
 
             if cleared or pruned:
                 save_state(state)
