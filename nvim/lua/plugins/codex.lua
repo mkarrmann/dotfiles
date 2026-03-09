@@ -2,14 +2,14 @@ return {
 	{
 		"pittcat/codex.nvim",
 		keys = {
-			{ "<leader>ao", "<cmd>CodexToggle<cr>", desc = "Toggle Codex" },
-			{ "<leader>aO", "<cmd>CodexOpen<cr>", desc = "Open Codex" },
-			{ "<leader>ac", "<cmd>CodexResume<cr>", desc = "Resume Codex Session" },
-			{ "<leader>aC", "<cmd>CodexResumeLast<cr>", desc = "Resume Last Codex Session" },
-			{ "<leader>ak", "<cmd>CodexFork<cr>", desc = "Fork Codex Session" },
-			{ "<leader>aK", "<cmd>CodexForkLast<cr>", desc = "Fork Last Codex Session" },
-			{ "<leader>am", "<cmd>CodexName<cr>", desc = "Name Codex Session" },
-			{ "<leader>aM", ":'<,'>CodexSendReference<cr>", mode = "v", desc = "Send reference to Codex" },
+			{ "<leader>co", "<cmd>CodexToggle<cr>", desc = "Toggle Codex" },
+			{ "<leader>cO", "<cmd>CodexOpen<cr>", desc = "Open Codex" },
+			{ "<leader>cr", "<cmd>CodexResume<cr>", desc = "Resume Codex Session" },
+			{ "<leader>cR", "<cmd>CodexResumeLast<cr>", desc = "Resume Last Codex Session" },
+			{ "<leader>cf", "<cmd>CodexFork<cr>", desc = "Fork Codex Session" },
+			{ "<leader>cF", "<cmd>CodexForkLast<cr>", desc = "Fork Last Codex Session" },
+			{ "<leader>cn", "<cmd>CodexName<cr>", desc = "Name Codex Session" },
+			{ "<leader>cM", ":'<,'>CodexSendReference<cr>", mode = "v", desc = "Send reference to Codex" },
 		},
 		opts = {
 			terminal = {
@@ -47,7 +47,7 @@ return {
 			local function run_codex_with_subcommand(subcommand, args)
 				local ok_lazy, lazy = pcall(require, "lazy")
 				if ok_lazy then
-					lazy.load({ plugins = { "pittcat/codex.nvim" } })
+					lazy.load({ plugins = { "codex.nvim" } })
 				end
 
 				local ok_codex, codex = pcall(require, "codex")
