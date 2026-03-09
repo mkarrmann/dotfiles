@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent watcher — classifies idle sessions via LLM (claude -p --model haiku).
+"""Agent watcher — classifies idle sessions via LLM (Haiku, direct API).
 
 Standalone daemon with no tmux coupling. Reads only:
   - AGENTS.md (session list + idle times)
@@ -13,9 +13,12 @@ import json
 import logging
 import os
 import signal
+import ssl
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -36,15 +39,23 @@ IDLE_EXIT_THRESHOLD = 600  # 10 min with no live sessions → exit
 TRANSCRIPT_TAIL_ENTRIES = 15
 TRANSCRIPT_MAX_CHARS = 6000
 
-# Env for claude -p subprocess: unset CLAUDECODE to allow nested invocation,
-# unset TMUX/TMUX_PANE so claude -p's hooks don't interfere with any tmux window.
-_SUBPROCESS_ENV = {
-    k: v for k, v in os.environ.items()
-    if k not in ("CLAUDECODE", "TMUX", "TMUX_PANE")
-}
+# ── API config ────────────────────────────────────────────
+# Direct mTLS calls to Meta's Anthropic proxy, bypassing claude -p overhead.
+
+_ANTHROPIC_BASE_URL = os.environ.get(
+    "ANTHROPIC_BASE_URL", "https://plugboard.x2p.facebook.net"
+)
+_MTLS_CERT = Path(
+    os.environ.get(
+        "CLAUDE_CODE_CLIENT_CERT",
+        f"/var/facebook/credentials/{os.environ.get('USER', 'nobody')}"
+        f"/agent_x509/claude_code_{os.environ.get('USER', 'nobody')}.pem",
+    )
+)
+_CA_CERT = Path("/var/facebook/rootcanal/ca.pem")
+HAIKU_MODEL = "claude-haiku-4-5-20251001"
 HAIKU_INPUT_COST_PER_MTOK = 0.25
 HAIKU_OUTPUT_COST_PER_MTOK = 1.25
-CHARS_PER_TOKEN_ESTIMATE = 3.5
 
 SKIP_STATUSES = {"waiting", "bg:running"}
 CLASSIFIABLE_STATUSES = {"done", "active", "interactive", "resumed"}  # Removed "stopped" to prevent overwriting
@@ -64,6 +75,74 @@ logging.basicConfig(
     level=logging.INFO,
 )
 log = logging.getLogger("watcher")
+
+
+# ── Haiku API helper ─────────────────────────────────────
+
+
+def _call_haiku(prompt: str, max_tokens: int = 256) -> Tuple[str, dict]:
+    """Call Haiku via Meta's Anthropic proxy using mTLS.
+
+    Returns (response_text, usage_dict).  usage_dict has actual token counts
+    from the API response.  On ANY failure, logs the error and returns ("", {}).
+    """
+    payload = json.dumps({
+        "model": HAIKU_MODEL,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode()
+
+    req = urllib.request.Request(
+        f"{_ANTHROPIC_BASE_URL}/v1/messages",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01",
+            "x-client-id": "claude_code",
+        },
+        method="POST",
+    )
+
+    ctx = ssl.create_default_context(cafile=str(_CA_CERT))
+    if _MTLS_CERT.exists():
+        ctx.load_cert_chain(certfile=str(_MTLS_CERT), keyfile=str(_MTLS_CERT))
+    else:
+        log.error("mTLS cert not found at %s — API call will likely fail", _MTLS_CERT)
+
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=60) as resp:
+            body = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        error_body = ""
+        try:
+            error_body = e.read().decode()[:500]
+        except Exception:
+            pass
+        log.error("Haiku API HTTP %d: %s", e.code, error_body)
+        return "", {}
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        log.error("Haiku API request failed: %s", e)
+        return "", {}
+    except json.JSONDecodeError as e:
+        log.error("Haiku API returned invalid JSON: %s", e)
+        return "", {}
+
+    content = body.get("content", [])
+    if not content or content[0].get("type") != "text":
+        log.error("Haiku API returned unexpected content: %s", json.dumps(body)[:300])
+        return "", {}
+
+    text = content[0]["text"].strip()
+    api_usage = body.get("usage", {})
+    usage = {
+        "input_tokens": api_usage.get("input_tokens", 0),
+        "output_tokens": api_usage.get("output_tokens", 0),
+        "cost_est": (
+            api_usage.get("input_tokens", 0) * HAIKU_INPUT_COST_PER_MTOK / 1_000_000
+            + api_usage.get("output_tokens", 0) * HAIKU_OUTPUT_COST_PER_MTOK / 1_000_000
+        ),
+    }
+    return text, usage
 
 
 # ── AGENTS.md parsing (minimal, no tmux) ─────────────────
@@ -239,34 +318,9 @@ def classify_session(agent: dict, transcript: str) -> Tuple[str, str, str, dict]
         transcript=transcript,
     )
 
-    input_chars = len(prompt)
-    try:
-        result = subprocess.run(
-            ["claude", "-p", "--model", "haiku"],
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env=_SUBPROCESS_ENV,
-        )
-        output = result.stdout.strip()
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        log.error("classify failed for %s: %s", agent["session_id"][:8], e)
-        return "ERROR", str(e), "", {}
-
-    output_chars = len(output)
-    input_tokens_est = int(input_chars / CHARS_PER_TOKEN_ESTIMATE)
-    output_tokens_est = int(output_chars / CHARS_PER_TOKEN_ESTIMATE)
-    cost_est = (
-        input_tokens_est * HAIKU_INPUT_COST_PER_MTOK / 1_000_000
-        + output_tokens_est * HAIKU_OUTPUT_COST_PER_MTOK / 1_000_000
-    )
-
-    usage = {
-        "input_tokens_est": input_tokens_est,
-        "output_tokens_est": output_tokens_est,
-        "cost_est": cost_est,
-    }
+    output, usage = _call_haiku(prompt, max_tokens=150)
+    if not output:
+        return "ERROR", "API call failed (check watcher.log)", "", usage
 
     verdict = output.split()[0].upper().rstrip("—:-") if output else "ERROR"
     if verdict not in ("WORKING", "STUCK", "CRASHED", "WAITING", "DONE"):
@@ -304,35 +358,15 @@ def is_default_name(name: str) -> bool:
 
 def name_session(agent: dict, transcript: str) -> Tuple[str, dict]:
     """Returns (name, usage_stats)."""
-    prompt = NAMING_PROMPT.format(transcript=transcript)
-
-    input_chars = len(prompt)
-    try:
-        result = subprocess.run(
-            ["claude", "-p", "--model", "haiku"],
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env=_SUBPROCESS_ENV,
-        )
-        output = result.stdout.strip()
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        log.error("naming failed for %s: %s", agent["session_id"][:8], e)
+    if not transcript or transcript == "(no transcript entries)":
+        log.info("skipping naming for %s: no usable transcript", agent["session_id"][:8])
         return "", {}
 
-    output_chars = len(output)
-    input_tokens_est = int(input_chars / CHARS_PER_TOKEN_ESTIMATE)
-    output_tokens_est = int(output_chars / CHARS_PER_TOKEN_ESTIMATE)
-    cost_est = (
-        input_tokens_est * HAIKU_INPUT_COST_PER_MTOK / 1_000_000
-        + output_tokens_est * HAIKU_OUTPUT_COST_PER_MTOK / 1_000_000
-    )
-    usage = {
-        "input_tokens_est": input_tokens_est,
-        "output_tokens_est": output_tokens_est,
-        "cost_est": cost_est,
-    }
+    prompt = NAMING_PROMPT.format(transcript=transcript)
+
+    output, usage = _call_haiku(prompt, max_tokens=50)
+    if not output:
+        return "", usage
 
     # Sanitize: take first word/line, strip quotes, convert spaces to hyphens
     name = output.split("\n")[0].strip().strip('"\'').lower()
@@ -593,7 +627,12 @@ def main():
                     continue
 
                 transcript = read_transcript_tail(transcript_path)
-                entry_count = transcript.count("\n") + 1 if transcript != "(no transcript entries)" else 0
+                # Count only lines with real user/assistant content (not system reminders)
+                meaningful_lines = [
+                    line for line in transcript.split("\n")
+                    if line and not line.startswith("user: <system-reminder>")
+                ] if transcript != "(no transcript entries)" else []
+                entry_count = len(meaningful_lines)
 
                 if is_default_name(name):
                     # Phase 1: quick name with qq: prefix
@@ -633,13 +672,13 @@ def main():
                     if usage:
                         totals = state.get("_usage", {
                             "total_classifications": 0,
-                            "total_input_tokens_est": 0,
-                            "total_output_tokens_est": 0,
+                            "total_input_tokens": 0,
+                            "total_output_tokens": 0,
                             "total_cost_est": 0.0,
                         })
                         totals["total_classifications"] += 1
-                        totals["total_input_tokens_est"] += usage.get("input_tokens_est", 0)
-                        totals["total_output_tokens_est"] += usage.get("output_tokens_est", 0)
+                        totals["total_input_tokens"] += usage.get("input_tokens", 0)
+                        totals["total_output_tokens"] += usage.get("output_tokens", 0)
                         totals["total_cost_est"] += usage.get("cost_est", 0.0)
                         state["_usage"] = totals
 
@@ -695,13 +734,13 @@ def main():
                     if usage:
                         totals = state.get("_usage", {
                             "total_classifications": 0,
-                            "total_input_tokens_est": 0,
-                            "total_output_tokens_est": 0,
+                            "total_input_tokens": 0,
+                            "total_output_tokens": 0,
                             "total_cost_est": 0.0,
                         })
                         totals["total_classifications"] += 1
-                        totals["total_input_tokens_est"] += usage.get("input_tokens_est", 0)
-                        totals["total_output_tokens_est"] += usage.get("output_tokens_est", 0)
+                        totals["total_input_tokens"] += usage.get("input_tokens", 0)
+                        totals["total_output_tokens"] += usage.get("output_tokens", 0)
                         totals["total_cost_est"] += usage.get("cost_est", 0.0)
                         state["_usage"] = totals
 
@@ -749,13 +788,13 @@ def main():
                 # Track cumulative usage
                 totals = state.get("_usage", {
                     "total_classifications": 0,
-                    "total_input_tokens_est": 0,
-                    "total_output_tokens_est": 0,
+                    "total_input_tokens": 0,
+                    "total_output_tokens": 0,
                     "total_cost_est": 0.0,
                 })
                 totals["total_classifications"] += 1
-                totals["total_input_tokens_est"] += usage.get("input_tokens_est", 0)
-                totals["total_output_tokens_est"] += usage.get("output_tokens_est", 0)
+                totals["total_input_tokens"] += usage.get("input_tokens", 0)
+                totals["total_output_tokens"] += usage.get("output_tokens", 0)
                 totals["total_cost_est"] += usage.get("cost_est", 0.0)
                 state["_usage"] = totals
 
