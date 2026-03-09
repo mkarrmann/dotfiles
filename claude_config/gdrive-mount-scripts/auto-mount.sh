@@ -83,5 +83,5 @@ fi
 
     # Mark as done for this OD
     touch "$MOUNT_FLAG"
-) &>/dev/null &
+) >> "/tmp/${USER}/gdrive-mount.log" 2>&1 &
 disown
