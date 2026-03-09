@@ -4,6 +4,7 @@
 # Provides: claude wrapper, cn, cr, cclean, cbk, cbp, cba, cbls, agents
 
 AGENT_TRACKER="$HOME/.claude/agent-manager/bin/agent-tracker.sh"
+CODEX_SESSIONS_INDEX="$HOME/.codex/agents.tsv"
 
 CLAUDE_BG_LOGDIR="$HOME/claude-logs"
 AGENTS_FILE="${CLAUDE_AGENTS_FILE:-}"
@@ -476,4 +477,130 @@ cclean() {
       echo "Removed session '${name}'."
       ;;
   esac
+}
+
+# ============================================================
+# Codex session helpers (tmux naming + lightweight index)
+# ============================================================
+
+_codex_index_upsert() {
+  local name="$1" sid="$2" dir="${3:-$PWD}"
+  [ -z "$name" ] && return 1
+  [ -z "$sid" ] && return 1
+  mkdir -p "$(dirname "$CODEX_SESSIONS_INDEX")" 2>/dev/null
+  touch "$CODEX_SESSIONS_INDEX" 2>/dev/null
+  local now
+  now=$(date +%s)
+  local tmpfile="${CODEX_SESSIONS_INDEX}.tmp"
+  awk -F'\t' -v n="$name" -v s="$sid" '
+    BEGIN { OFS="\t" }
+    $1 == n || $2 == s { next }
+    { print $1, $2, $3, $4 }
+  ' "$CODEX_SESSIONS_INDEX" > "$tmpfile" 2>/dev/null
+  printf '%s\t%s\t%s\t%s\n' "$name" "$sid" "$dir" "$now" >> "$tmpfile"
+  mv "$tmpfile" "$CODEX_SESSIONS_INDEX"
+}
+
+_codex_lookup_sid() {
+  local name="$1"
+  [ -f "$CODEX_SESSIONS_INDEX" ] || return 1
+  awk -F'\t' -v n="$name" '$1 == n { print $2; exit }' "$CODEX_SESSIONS_INDEX"
+}
+
+_codex_lookup_dir() {
+  local name="$1"
+  [ -f "$CODEX_SESSIONS_INDEX" ] || return 1
+  awk -F'\t' -v n="$name" '$1 == n { print $3; exit }' "$CODEX_SESSIONS_INDEX"
+}
+
+_codex_latest_sid() {
+  python3 - <<'PY'
+import glob
+import os
+import re
+
+files = glob.glob(os.path.expanduser("~/.codex/sessions/**/*.jsonl"), recursive=True)
+if not files:
+    raise SystemExit(1)
+latest = max(files, key=lambda p: os.path.getmtime(p))
+m = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$', latest, re.I)
+if m:
+    print(m.group(1).lower())
+PY
+}
+
+_codex_set_name() {
+  local name="$1" sid="$2" dir="${3:-$PWD}"
+  [ -z "$name" ] && return 1
+  [ -n "$TMUX" ] && tmux rename-window "$name" 2>/dev/null
+  [ -n "$sid" ] && _codex_index_upsert "$name" "$sid" "$dir"
+}
+
+codex_name() {
+  local name="$*"
+  [ -z "$name" ] && { echo "Usage: codex_name <name>"; return 1; }
+  local sid
+  sid=$(_codex_latest_sid 2>/dev/null)
+  _codex_set_name "$name" "$sid" "$PWD"
+}
+
+co() {
+  codex "$@"
+}
+
+con() {
+  local name="$1"
+  shift || true
+  [ -z "$name" ] && { echo "Usage: con <name> [prompt ...]"; return 1; }
+  _codex_set_name "$name" "" "$PWD"
+  codex "$@"
+  local sid
+  sid=$(_codex_latest_sid 2>/dev/null)
+  [ -n "$sid" ] && _codex_index_upsert "$name" "$sid" "$PWD"
+}
+
+cor() {
+  local name="$1"
+  shift || true
+  [ -z "$name" ] && { echo "Usage: cor <name> [prompt ...]"; return 1; }
+  local sid
+  sid=$(_codex_lookup_sid "$name")
+  [ -z "$sid" ] && { echo "No Codex session mapped to '${name}'."; return 1; }
+  local session_dir
+  session_dir=$(_codex_lookup_dir "$name")
+  if [ -n "$session_dir" ] && [ -d "$session_dir" ] && [ "$session_dir" != "$PWD" ]; then
+    echo "cd $session_dir"
+    cd "$session_dir" || return 1
+  fi
+  _codex_set_name "$name" "$sid" "$PWD"
+  codex resume "$sid" "$@"
+}
+
+cof() {
+  local name="$1"
+  shift || true
+  [ -z "$name" ] && { echo "Usage: cof <name> [prompt ...]"; return 1; }
+  local sid
+  sid=$(_codex_lookup_sid "$name")
+  [ -z "$sid" ] && { echo "No Codex session mapped to '${name}'."; return 1; }
+  _codex_set_name "$name" "$sid" "$PWD"
+  codex fork "$sid" "$@"
+}
+
+cols() {
+  if [ ! -f "$CODEX_SESSIONS_INDEX" ]; then
+    echo "No Codex session index at $CODEX_SESSIONS_INDEX"
+    return 0
+  fi
+  awk -F'\t' 'BEGIN {
+      printf "%-28s %-36s %-20s %s\n", "Name", "Session ID", "Updated", "Dir"
+      printf "%-28s %-36s %-20s %s\n", "----", "----------", "-------", "---"
+    }
+    {
+      cmd = "date -d @" $4 " \"+%Y-%m-%d %H:%M\" 2>/dev/null"
+      cmd | getline ts
+      close(cmd)
+      if (ts == "") ts = $4
+      printf "%-28s %-36s %-20s %s\n", $1, $2, ts, $3
+    }' "$CODEX_SESSIONS_INDEX"
 }

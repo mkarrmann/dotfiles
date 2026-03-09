@@ -6,6 +6,18 @@ Dotfile git repo.
 
 First run init.sh to symlink dotfiles.
 
+Agent session naming helpers:
+
+- Claude: managed by Agent Manager (`cn`, `cr`, etc.).
+- Codex: lightweight named-session sync is available via shell functions:
+  - `con <name> [prompt...]`
+  - `cor <name> [prompt...]`
+  - `cof <name> [prompt...]`
+  - `codex_name <name>`
+  - `cols`
+
+Codex name/session mappings are stored in `~/.codex/agents.tsv` (machine-local).
+
 Then download vim relative line numbers from https://www.vim.org/scripts/script.php?script_id=2351
 
 Follow instructions to install, run:

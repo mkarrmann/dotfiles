@@ -71,7 +71,7 @@ local function _find_active_agent()
 	for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
 		local buf = vim.api.nvim_win_get_buf(win)
 		if vim.bo[buf].buftype == "terminal" then
-			local name = vim.api.nvim_buf_get_name(buf)
+			local name = vim.api.nvim_buf_get_name(buf):lower()
 			if name:find("claude") then
 				return "claude"
 			elseif name:find("codex") then
@@ -114,8 +114,8 @@ vim.keymap.set("n", "<leader>aD", function()
 	require("lib.claude-edit-diff").toggle()
 end, { desc = "Toggle Claude edit diff viewer" })
 
--- Run a command and send its output to the Claude Code terminal.
-local _run_state = nil -- { job, float_win, float_buf, timer, start_ms, output, line_count, claude }
+-- Run a command and send its output to the active agent terminal.
+local _run_state = nil -- { job, float_win, float_buf, timer, start_ms, output, line_count, agent_term }
 
 local function _clean_cmd(text)
 	text = text:match("^%s*(.-)%s*$") or ""
@@ -127,15 +127,20 @@ local function _clean_cmd(text)
 	return text
 end
 
-local function _find_claude_term()
+local function _find_agent_term()
 	for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
 		local buf = vim.api.nvim_win_get_buf(win)
 		if vim.bo[buf].buftype == "terminal" then
-			local name = vim.api.nvim_buf_get_name(buf)
+			local name = vim.api.nvim_buf_get_name(buf):lower()
 			if name:find("claude") then
 				local chan = vim.bo[buf].channel
 				if chan and chan > 0 then
-					return { buf = buf, win = win, chan = chan }
+					return { buf = buf, win = win, chan = chan, agent = "claude" }
+				end
+			elseif name:find("codex") then
+				local chan = vim.bo[buf].channel
+				if chan and chan > 0 then
+					return { buf = buf, win = win, chan = chan, agent = "codex" }
 				end
 			end
 		end
@@ -212,9 +217,9 @@ local function _append_lines(data)
 end
 
 local function _run_cmd_and_send(cmd)
-	local claude = _find_claude_term()
-	if not claude then
-		vim.notify("No Claude Code terminal found in this tab", vim.log.levels.ERROR)
+	local agent_term = _find_agent_term()
+	if not agent_term then
+		vim.notify("No Claude or Codex terminal found in this tab", vim.log.levels.ERROR)
 		return
 	end
 	if _run_state then
@@ -262,7 +267,7 @@ local function _run_cmd_and_send(cmd)
 		start_ms = vim.loop.now(),
 		output = {},
 		line_count = 0,
-		claude = claude,
+		agent_term = agent_term,
 		cwd = cwd,
 	}
 	_run_state = s
@@ -333,7 +338,7 @@ local function _run_cmd_and_send(cmd)
 					cmd, s.cwd, exit_code, body
 				)
 
-				local chan = s.claude and s.claude.chan
+				local chan = s.agent_term and s.agent_term.chan
 				if chan then
 					local chunk_size = 750
 					local delay_ms = 150
@@ -355,17 +360,20 @@ local function _run_cmd_and_send(cmd)
 					send_chunk(1)
 				end
 
-				local claude_win = s.claude and s.claude.win
 				_close_float()
 				_run_state = nil
 
-				if claude_win and vim.api.nvim_win_is_valid(claude_win) then
-					pcall(vim.api.nvim_set_current_win, claude_win)
+				local agent_win = s.agent_term and s.agent_term.win
+				local agent_name = (s.agent_term and s.agent_term.agent) or "agent"
+				local agent_label = agent_name == "claude" and "Claude" or "Codex"
+
+				if agent_win and vim.api.nvim_win_is_valid(agent_win) then
+					pcall(vim.api.nvim_set_current_win, agent_win)
 					pcall(vim.cmd, "startinsert")
 				end
 
 				local status = exit_code == 0 and "ok" or "exit " .. exit_code
-				vim.notify(("Sent %d lines to Claude (%s)"):format(total, status))
+				vim.notify(("Sent %d lines to %s (%s)"):format(total, agent_label, status))
 			end)
 		end,
 	})
@@ -384,15 +392,15 @@ vim.keymap.set("v", "<leader>ax", function()
 		return
 	end
 	_run_cmd_and_send(cmd)
-end, { desc = "Run selection, send output to Claude" })
+end, { desc = "Run selection, send output to active agent" })
 
 vim.keymap.set("n", "<leader>ax", function()
-	vim.ui.input({ prompt = "Run and send to Claude: " }, function(cmd)
+	vim.ui.input({ prompt = "Run and send to active agent: " }, function(cmd)
 		if cmd and cmd ~= "" then
 			_run_cmd_and_send(cmd)
 		end
 	end)
-end, { desc = "Run command, send output to Claude" })
+end, { desc = "Run command, send output to active agent" })
 
 vim.keymap.set("n", "<leader>aX", function()
 	if _run_state then
