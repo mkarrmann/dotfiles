@@ -68,6 +68,7 @@ fi
             --vfs-cache-mode writes \
             --dir-cache-time 1s \
             --poll-interval 10s \
+            --allow-non-empty \
             --daemon 2>/dev/null
 
         sleep 2
