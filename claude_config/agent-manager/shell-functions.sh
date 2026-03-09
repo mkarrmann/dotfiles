@@ -544,6 +544,10 @@ codex_name() {
   _codex_set_name "$name" "$sid" "$PWD"
 }
 
+# zsh expands aliases in function definitions, which can break names like
+# `con` if an alias already exists in the user's shell startup files.
+unalias co con cor cof cols codex_name 2>/dev/null || true
+
 co() {
   codex "$@"
 }
