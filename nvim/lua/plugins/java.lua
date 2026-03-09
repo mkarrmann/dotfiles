@@ -55,6 +55,16 @@ return {
 				return dir
 			end
 
+			opts.project_name = opts.project_name or function(root_dir)
+				return root_dir and vim.fs.basename(root_dir)
+			end
+			opts.jdtls_config_dir = opts.jdtls_config_dir or function(project_name)
+				return vim.fn.stdpath("cache") .. "/jdtls/" .. project_name .. "/config"
+			end
+			opts.jdtls_workspace_dir = opts.jdtls_workspace_dir or function(project_name)
+				return vim.fn.stdpath("cache") .. "/jdtls/" .. project_name .. "/workspace"
+			end
+
 			opts.full_cmd = function(o)
 				local fname = vim.api.nvim_buf_get_name(0)
 				local root_dir = o.root_dir(fname)
