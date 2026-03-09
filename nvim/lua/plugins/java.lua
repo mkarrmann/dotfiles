@@ -30,6 +30,7 @@ return {
 	-- Override nvim-jdtls to use upstream jdtls with Java 21.
 	{
 		"mfussenegger/nvim-jdtls",
+		cond = function() return vim.fn.executable(JDTLS_BIN) == 1 end,
 		opts = function(_, opts)
 			opts.cmd = { JDTLS_BIN }
 

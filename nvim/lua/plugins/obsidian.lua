@@ -1,6 +1,6 @@
 return {
 	{
-		dir = "~/obsidian.nvim",
+		"epwalsh/obsidian.nvim",
 		dependencies = { "nvim-lua/plenary.nvim" },
 		event = { "BufReadPre *.md", "BufNewFile *.md" },
 		cmd = {
