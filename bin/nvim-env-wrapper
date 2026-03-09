@@ -20,5 +20,19 @@ fi
 #     # Company-specific fixes
 # fi
 
-# Run Neovim
-exec /usr/bin/nvim "$@"
+# Find the real nvim, skipping this wrapper's own directory to avoid recursion
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REAL_NVIM=""
+IFS=: read -ra _path_dirs <<< "$PATH"
+for _dir in "${_path_dirs[@]}"; do
+    [[ "$_dir" == "$SCRIPT_DIR" ]] && continue
+    if [[ -x "$_dir/nvim" ]]; then
+        REAL_NVIM="$_dir/nvim"
+        break
+    fi
+done
+if [[ -z "$REAL_NVIM" ]]; then
+    echo "nvim-env-wrapper: nvim not found in PATH" >&2
+    exit 1
+fi
+exec "$REAL_NVIM" "$@"
