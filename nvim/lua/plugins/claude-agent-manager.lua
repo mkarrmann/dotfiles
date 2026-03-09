@@ -15,14 +15,29 @@ local agents_file = resolve_agents_file()
 local last_session_file = vim.fn.expand("~/.claude-last-session")
 
 local function get_session_id()
-	-- First try to get the session ID from the environment variable
-	-- This is more reliable for the current session
-	local env_sid = vim.env.CLAUDE_CODE_CURRENT_SESSION_ID
-	if env_sid and env_sid ~= "" then
-		return env_sid:match("^%s*(.-)%s*$")
+	-- Primary: set by the SessionStart hook via nvim --remote-expr.
+	-- This is authoritative for the Claude session in THIS Neovim instance.
+	local g_sid = vim.g.claude_session_id
+	if g_sid and g_sid ~= "" then
+		return g_sid
 	end
 
-	-- Fall back to the file if no environment variable
+	-- Fallback: per-pane file written by agent-tracker.sh
+	local tmux_pane = vim.env.TMUX_PANE
+	if tmux_pane and tmux_pane ~= "" then
+		local safe_pane = tmux_pane:gsub("[^%w_]", "_")
+		local pane_file = vim.fn.expand("~/.claude/agent-manager/pids/pane-" .. safe_pane)
+		local f = io.open(pane_file, "r")
+		if f then
+			local sid = f:read("*l")
+			f:close()
+			if sid and sid:match("^%s*(.-)%s*$") ~= "" then
+				return sid:match("^%s*(.-)%s*$")
+			end
+		end
+	end
+
+	-- Last resort: global file (unreliable with multiple sessions)
 	local f = io.open(last_session_file, "r")
 	if not f then
 		return nil

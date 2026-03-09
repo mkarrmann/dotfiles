@@ -262,6 +262,15 @@ tmp=$(jq '
           "timeout": 10
         }
       ]
+    },
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash ~/.claude/hooks/nvim-session-id.sh",
+          "timeout": 5
+        }
+      ]
     }
   ] |
   .hooks.Notification = [
