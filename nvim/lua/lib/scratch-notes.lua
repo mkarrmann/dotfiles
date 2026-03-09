@@ -96,13 +96,26 @@ function M.toggle()
 		state.win = nil
 		return
 	end
+	-- If a Claude session is active, open its pad note
+	local agent = require("lib.agent-session").get_current_agent()
+	if agent and agent.name ~= "" then
+		local name = agent.name:gsub("^qq:%s*", "")
+		local file = pad_dir() .. "/" .. normalize_name(name)
+		if vim.fn.filereadable(file) == 1 then
+			M.open_in_panel(file)
+		else
+			vim.ui.input({ prompt = "New pad note: ", default = name }, function(input)
+				if input and input ~= "" then
+					M.open(input)
+				end
+			end)
+		end
+		return
+	end
 	local file = state.last_file
 	if not file then
-		ensure_pad_dir()
-		file = pad_dir() .. "/pad.md"
-		if vim.fn.filereadable(file) == 0 then
-			vim.fn.writefile({ "# Pad", "", "" }, file)
-		end
+		M.open()
+		return
 	end
 	open_panel(file)
 end
@@ -123,6 +136,40 @@ function M.open(name)
 		vim.fn.writefile({ "# " .. name, "", "" }, file)
 	end
 	M.open_in_panel(file)
+end
+
+function M.open_for_session(session_name)
+	if not session_name or session_name == "" then
+		M.toggle()
+		return
+	end
+	local name = session_name:gsub("^qq:%s*", "")
+	M.open(name)
+end
+
+function M.rename_pad(old_name, new_name)
+	if not old_name or old_name == "" or not new_name or new_name == "" then
+		return
+	end
+	local old_file = pad_dir() .. "/" .. normalize_name(old_name)
+	if vim.fn.filereadable(old_file) == 0 then
+		return
+	end
+	ensure_pad_dir()
+	local new_file = pad_dir() .. "/" .. normalize_name(new_name)
+	vim.fn.rename(old_file, new_file)
+	-- Update panel if the old file was displayed
+	if state.last_file == old_file then
+		state.last_file = new_file
+		if state.win and vim.api.nvim_win_is_valid(state.win) then
+			local buf = vim.api.nvim_win_get_buf(state.win)
+			if vim.api.nvim_buf_get_name(buf) == old_file then
+				vim.api.nvim_set_current_win(state.win)
+				vim.cmd("edit " .. vim.fn.fnameescape(new_file))
+				vim.api.nvim_buf_delete(buf, { force = true })
+			end
+		end
+	end
 end
 
 function M.find()

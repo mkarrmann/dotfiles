@@ -1,51 +1,8 @@
 -- Agent Manager integration for Claude Code
 -- Adds :ClaudeCodeName and :ClaudeCodeAgents commands with keybindings
 
-local function resolve_agents_file()
-	if vim.env.CLAUDE_AGENTS_FILE then
-		return vim.env.CLAUDE_AGENTS_FILE
-	end
-	local gdrive = "/data/users/" .. (vim.env.USER or "unknown") .. "/gdrive/AGENTS.md"
-	if vim.fn.filereadable(gdrive) == 1 then
-		return gdrive
-	end
-	return vim.fn.expand("~/.claude/agents.md")
-end
-local agents_file = resolve_agents_file()
-local last_session_file = vim.fn.expand("~/.claude-last-session")
-
-local function get_session_id()
-	-- Primary: set by the SessionStart hook via nvim --remote-expr.
-	-- This is authoritative for the Claude session in THIS Neovim instance.
-	local g_sid = vim.g.claude_session_id
-	if g_sid and g_sid ~= "" then
-		return g_sid
-	end
-
-	-- Fallback: per-pane file written by agent-tracker.sh
-	local tmux_pane = vim.env.TMUX_PANE
-	if tmux_pane and tmux_pane ~= "" then
-		local safe_pane = tmux_pane:gsub("[^%w_]", "_")
-		local pane_file = vim.fn.expand("~/.claude/agent-manager/pids/pane-" .. safe_pane)
-		local f = io.open(pane_file, "r")
-		if f then
-			local sid = f:read("*l")
-			f:close()
-			if sid and sid:match("^%s*(.-)%s*$") ~= "" then
-				return sid:match("^%s*(.-)%s*$")
-			end
-		end
-	end
-
-	-- Last resort: global file (unreliable with multiple sessions)
-	local f = io.open(last_session_file, "r")
-	if not f then
-		return nil
-	end
-	local sid = f:read("*l")
-	f:close()
-	return sid and sid:match("^%s*(.-)%s*$")
-end
+local agent_session = require("lib.agent-session")
+local agents_file = agent_session.resolve_agents_file()
 
 local next_name_file = vim.fn.expand("~/.claude-next-name")
 
@@ -81,11 +38,15 @@ local function rename_session(name)
 		return
 	end
 
-	local sid = get_session_id()
+	local sid = agent_session.get_session_id()
 	if not sid or sid == "" then
 		vim.notify("No active Claude session found", vim.log.levels.WARN)
 		return
 	end
+
+	-- Capture old name before overwriting AGENTS.md
+	local old_agent = agent_session.lookup_agent_by_sid(sid)
+	local old_name = old_agent and old_agent.name or nil
 
 	-- Update AGENTS.md: replace the Name column for the row matching this session ID
 	local f = io.open(agents_file, "r")
@@ -131,6 +92,11 @@ local function rename_session(name)
 	end
 
 	vim.notify("Session renamed to '" .. name .. "'")
+
+	-- Rename the associated pad file if it exists
+	if old_name and old_name ~= "" then
+		require("lib.scratch-notes").rename_pad(old_name, name)
+	end
 end
 
 local function show_agents()
@@ -170,47 +136,11 @@ local function show_agents()
 end
 
 local function parse_agents()
-	local f = io.open(agents_file, "r")
-	if not f then
-		return {}
-	end
-	local entries = {}
-	for line in f:lines() do
-		-- Data rows: | Name | Status | OD | Session ID | Description | Started | Updated | Dir |
-		-- Skip header/separator lines (contain "---" or "Name" in the name column)
-		if line:match("^|") and not line:match("^|%-") then
-			local fields = {}
-			for field in line:gmatch("|([^|]*)") do
-				fields[#fields + 1] = vim.trim(field)
-			end
-			-- fields: [1]=Name [2]=Status [3]=OD [4]=Session ID [5]=Description [6]=Started [7]=Updated [8]=Dir
-			local name = fields[1] or ""
-			local sid = fields[4] or ""
-			if name ~= "" and name ~= "Name" and sid ~= "" and sid ~= "Session ID" then
-				entries[#entries + 1] = {
-					name = name,
-					status = fields[2] or "",
-					od = fields[3] or "",
-					sid = sid,
-					description = fields[5] or "",
-					started = fields[6] or "",
-					updated = fields[7] or "",
-					dir = fields[8] or "",
-				}
-			end
-		end
-	end
-	f:close()
-	return entries
+	return agent_session.parse_agents()
 end
 
 local function lookup_agent_by_sid(sid)
-	for _, agent in ipairs(parse_agents()) do
-		if agent.sid == sid then
-			return agent
-		end
-	end
-	return nil
+	return agent_session.lookup_agent_by_sid(sid)
 end
 
 local function chdir_if_needed(dir)
@@ -324,6 +254,10 @@ local function resume_by_name()
 						vim.fn.system("tmux rename-window " .. vim.fn.shellescape(agent.name))
 					end
 					vim.cmd("ClaudeCode --resume " .. agent.sid .. " --fork-session")
+					-- Open the session's pad note
+					if agent.name ~= "" then
+						require("lib.scratch-notes").open_for_session(agent.name)
+					end
 				end)
 				return true
 			end,
@@ -336,7 +270,7 @@ local function fork_to(make_tmux_cmd)
 		vim.notify("Not in tmux", vim.log.levels.WARN)
 		return
 	end
-	local sid = get_session_id()
+	local sid = agent_session.get_session_id()
 	if not sid or sid == "" then
 		vim.notify("No active Claude session to fork", vim.log.levels.WARN)
 		return
