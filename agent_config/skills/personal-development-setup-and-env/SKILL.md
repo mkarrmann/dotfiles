@@ -19,10 +19,12 @@ Config is split into **source-controlled** (portable, in `~/dotfiles/`) and **lo
 
 ```
 ~/dotfiles/                          (git repo, portable across machines)
-├── init.sh                          Symlinks everything; skip-on-conflict
+├── init.sh                          Symlinks portable config; skip-on-conflict
+├── meta_init.sh                     Symlinks Meta-specific local config templates
 ├── .shellrc, .zshrc, .tmux.conf ... Shell/terminal dotfiles → ~/
 ├── nvim_init.lua                    → ~/.config/nvim/init.lua
-├── nvim/lua/{config,plugins}/*.lua  → ~/.config/nvim/lua/...
+├── nvim/lua/{config,plugins,lib}/*.lua  → ~/.config/nvim/lua/... (via init.sh)
+├── nvim/local/{config,plugins}/*.lua    → ~/.config/nvim/lua/... (via meta_init.sh)
 ├── claude_config/
 │   ├── CLAUDE.md                    → ~/.claude/CLAUDE.md
 │   ├── statusline.sh                → ~/.claude/statusline.sh
@@ -40,13 +42,25 @@ Every layer uses the same pattern — load portable config, then silently load l
 
 | Layer | Portable | Local override | Mechanism |
 |-------|----------|----------------|-----------|
-| Neovim | `config/*.lua`, `plugins/*.lua` | `config/local.lua`, `plugins/local.lua` | `pcall(require, "config.local")` in `autocmds.lua` |
+| Neovim | `config/*.lua`, `plugins/*.lua` | `config/local.lua` | `pcall(require, "config.local")` in `autocmds.lua` |
 | Shell | `.shellrc` | `~/.localrc` | `source ~/.localrc` in `.shellrc` |
 | Tmux | `.tmux.conf` | `~/.tmux.conf.local` | `source-file` if exists |
 | Claude | `CLAUDE.md` | `CLAUDE.local.md` | `@~/.claude/CLAUDE.local.md` reference |
 | Codex | `config.toml` template | `config.local.toml` | Appended by `init.sh` |
 
-**Rule of thumb:** Meta-specific config (LSPs, meta.nvim, internal tools) goes in local files. Everything else goes in dotfiles.
+**Rule of thumb:** `local.lua` / `localrc` / etc. are the machine-specific escape hatches — not in dotfiles. Shared config (even Meta-specific) lives in dotfiles under a descriptive name.
+
+## Meta Config Opt-In Pattern
+
+Meta-specific Neovim local config templates live in `nvim/local/` (source-controlled, but only symlinked by `meta_init.sh`). On a Meta machine, run `bash meta_init.sh` after `init.sh` to:
+
+1. Symlink `nvim/local/config/*.lua` and `nvim/local/plugins/*.lua` into the nvim runtime
+2. Create `~/.config/nvim/lua/config/local.lua` with `require("config.meta")` if it doesn't exist
+
+- **`plugins/meta.lua`** — symlinked by `meta_init.sh`; auto-loaded by lazy.nvim; `cond` guards make it a no-op if meta.nvim isn't installed.
+- **`config/meta.lua`** — symlinked by `meta_init.sh`; loaded via `config/local.lua` opt-in (also created by `meta_init.sh`).
+
+On non-Meta machines (where only `init.sh` runs), neither file is symlinked — Meta config is completely absent.
 
 ## Where Things Go
 
@@ -55,8 +69,9 @@ Every layer uses the same pattern — load portable config, then silently load l
 | New portable skill | `~/dotfiles/agent_config/skills/<name>/SKILL.md` | Yes — auto-symlinked by `init.sh` |
 | Meta-specific skill | `~/.claude/skills/<name>/SKILL.md` | No — created directly |
 | Claude rules (shared w/ Codex) | `~/dotfiles/agent_config/global-development-preferences.md` | Yes |
-| Meta nvim plugins | `~/.config/nvim/lua/plugins/local.lua` | No |
-| Meta nvim config (LSPs, etc.) | `~/.config/nvim/lua/config/local.lua` | No |
+| Meta nvim plugins | `~/dotfiles/nvim/local/plugins/meta.lua` | Yes — symlinked by `meta_init.sh`, cond-guarded |
+| Meta nvim config (LSPs, etc.) | `~/dotfiles/nvim/local/config/meta.lua` | Yes — symlinked by `meta_init.sh`, opt-in via local.lua |
+| Machine-specific nvim config | `~/.config/nvim/lua/config/local.lua` | No — created by `meta_init.sh` or manually |
 | Project-specific Claude context | `~/.claude/projects/<project>.md` | No |
 | Machine-specific shell config | `~/.localrc` | No |
 
@@ -66,9 +81,9 @@ Every layer uses the same pattern — load portable config, then silently load l
 
 **Portable plugins** (in dotfiles): telescope, nvim-cmp, treesitter, flash, lualine, undotree, tmux-navigator, claudecode.nvim, midnight/catppuccin themes
 
-**Local plugins** (Meta-specific, in `plugins/local.lua`): meta.nvim (from `/usr/share/fb-editor-support/nvim`), none-ls
+**Meta plugins** (in dotfiles `nvim/local/plugins/meta.lua`, symlinked by `meta_init.sh`, cond-guarded): meta.nvim (detected at `/usr/share/fb-editor-support/nvim` on Linux or `/usr/local/share/fb-editor-support/nvim` on Mac), none-ls
 
-**Local config** (Meta-specific, in `config/local.lua`): Meta LSPs (cppls, fb-pyright, pyre, buck2, linttool), MetaMate AI, Buck keybindings, Telescope extensions (myles, biggrep, hg), custom Maven/Presto build integration
+**Meta config** (in dotfiles `nvim/local/config/meta.lua`, opt-in via local.lua): Meta LSPs (cppls, fb-pyright, pyre, buck2, linttool), MetaMate AI, Buck keybindings, Telescope extensions (myles, biggrep, hg), custom Maven/Presto build integration
 
 **For meta.nvim capabilities reference**, see the `neovim-meta` skill if available on this machine.
 

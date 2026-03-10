@@ -3,9 +3,15 @@ require("lib.env").setup()
 
 vim.g.obsidian_vault = vim.fn.expand("~/Work")
 
-local meta_hg = require("lib.meta-hg")
-package.loaded["meta.hg"] = meta_hg
-meta_hg.setup({ ssl = { status = true } })
+local meta_hg = nil
+do
+	local ok, m = pcall(require, "lib.meta-hg")
+	if ok then
+		meta_hg = m
+		package.loaded["meta.hg"] = meta_hg
+		meta_hg.setup({ ssl = { status = true } })
+	end
+end
 local meta_ok, meta = pcall(require, "meta")
 if meta_ok then
 	meta.setup()
