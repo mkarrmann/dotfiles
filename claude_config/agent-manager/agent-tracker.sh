@@ -2,28 +2,30 @@
 # Agent Tracker — manages AGENTS.md
 # Called by Claude Code hooks (SessionStart, Stop) and shell functions.
 # Also runs as a long-lived heartbeat daemon (spawned by SessionStart hook).
-# Location of AGENTS.md is controlled by CLAUDE_AGENTS_FILE env var.
+# Location of AGENTS.md is controlled by CLAUDE_AGENTS_FILE env var
+# or derived from the Obsidian vault root in obsidian-vault.conf.
 
 SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "$0")"
 
 set -euo pipefail
 
-AGENTS_FILE="${CLAUDE_AGENTS_FILE:-}"
-if [ -z "$AGENTS_FILE" ]; then
-  # Check gdrive at the non-home mount point. Use /proc/mounts first (instant,
-  # no FUSE) to avoid hanging on a stale mount.
-  _gdrive_mount="/data/users/${USER}/gdrive"
-  if grep -q "gdrive" /proc/mounts 2>/dev/null && [ -f "${_gdrive_mount}/AGENTS.md" ]; then
-    AGENTS_FILE="${_gdrive_mount}/AGENTS.md"
-  else
-    AGENTS_FILE="$HOME/.claude/agents.md"
-  fi
-  unset _gdrive_mount
+THIS_HOST=$(hostname -s)
+
+if [ -n "${CLAUDE_AGENTS_FILE:-}" ]; then
+  AGENTS_FILE_LOCAL="$CLAUDE_AGENTS_FILE"
+  AGENTS_DIR="$(dirname "$AGENTS_FILE_LOCAL")"
+  LOCK_FILE="${AGENTS_DIR}/.agents-${THIS_HOST}.lock"
+else
+  _conf="$HOME/.claude/obsidian-vault.conf"
+  [ -f "$_conf" ] && . "$_conf"
+  AGENTS_DIR="${OBSIDIAN_VAULT_ROOT:-$HOME/obsidian}"
+  unset _conf
+  AGENTS_FILE_LOCAL="${AGENTS_DIR}/AGENTS-${THIS_HOST}.md"
+  LOCK_FILE="${AGENTS_DIR}/.agents-${THIS_HOST}.lock"
 fi
-LOCK_FILE="$(dirname "$AGENTS_FILE")/.agents.lock"
 MAX_ENTRIES=50
 
-# Cross-machine lock using mkdir (atomic on FUSE/NFS, unlike flock)
+# Cross-machine lock using mkdir (atomic on most filesystems)
 _acquire_lock() {
   local lock_dir="${LOCK_FILE}.d"
   local i=0
@@ -136,23 +138,18 @@ _tmux_context() {
   fi
 }
 
-# Check if gdrive mount is healthy (avoid hanging on stale FUSE mounts)
-_check_gdrive() {
-  if ! grep -q "gdrive" /proc/mounts 2>/dev/null; then
-    _log "  gdrive: not mounted (not in /proc/mounts)"
-    return 1
-  fi
-  if ! timeout 3 ls "$(dirname "$AGENTS_FILE")" &>/dev/null; then
-    _log "  gdrive: mounted but unresponsive (stale?)"
-    return 1
-  fi
-  return 0
+# Check if AGENTS.md parent directory is accessible
+_check_agents_dir() {
+  local dir
+  dir="$(dirname "$AGENTS_FILE_LOCAL")"
+  mkdir -p "$dir" 2>/dev/null
+  [ -d "$dir" ]
 }
 
 ensure_agents_file() {
-  mkdir -p "$(dirname "$AGENTS_FILE")" 2>/dev/null
-  if [ ! -f "$AGENTS_FILE" ]; then
-    cat > "$AGENTS_FILE" <<'HEADER'
+  mkdir -p "$(dirname "$AGENTS_FILE_LOCAL")" 2>/dev/null
+  if [ ! -f "$AGENTS_FILE_LOCAL" ]; then
+    cat > "$AGENTS_FILE_LOCAL" <<'HEADER'
 # Claude Agents
 
 | Name | Status | OD | Session ID | Description | Started | Updated | Dir |
@@ -166,9 +163,9 @@ now() {
 }
 
 sort_agents() {
-  local tmpfile="${AGENTS_FILE}.tmp"
-  head -4 "$AGENTS_FILE" > "$tmpfile"
-  tail -n +5 "$AGENTS_FILE" | while IFS= read -r line; do
+  local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
+  head -4 "$AGENTS_FILE_LOCAL" > "$tmpfile"
+  tail -n +5 "$AGENTS_FILE_LOCAL" | while IFS= read -r line; do
     [ -z "$line" ] && continue
     local pri=3
     case "$line" in
@@ -180,24 +177,24 @@ sort_agents() {
     updated=$(echo "$line" | awk -F'|' '{print $8}' | tr -d ' ')
     echo "${pri} ${updated} ${line}"
   done | sort -k1,1n -k2,2r | sed 's/^[0-9] [^ ]* //' >> "$tmpfile"
-  mv "$tmpfile" "$AGENTS_FILE"
+  mv "$tmpfile" "$AGENTS_FILE_LOCAL"
 }
 
 prune() {
   local total
-  total=$(grep -c "^|" "$AGENTS_FILE" 2>/dev/null || echo 0)
+  total=$(grep -c "^|" "$AGENTS_FILE_LOCAL" 2>/dev/null || echo 0)
   local data_rows=$((total - 2))
   if [ "$data_rows" -le "$MAX_ENTRIES" ]; then
     return
   fi
   local to_remove=$((data_rows - MAX_ENTRIES))
-  local tmpfile="${AGENTS_FILE}.tmp"
-  head -4 "$AGENTS_FILE" > "$tmpfile"
+  local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
+  head -4 "$AGENTS_FILE_LOCAL" > "$tmpfile"
   local total_data
-  total_data=$(tail -n +5 "$AGENTS_FILE" | wc -l)
+  total_data=$(tail -n +5 "$AGENTS_FILE_LOCAL" | wc -l)
   local keep=$((total_data - to_remove))
-  tail -n +5 "$AGENTS_FILE" | head -n "$keep" >> "$tmpfile"
-  mv "$tmpfile" "$AGENTS_FILE"
+  tail -n +5 "$AGENTS_FILE_LOCAL" | head -n "$keep" >> "$tmpfile"
+  mv "$tmpfile" "$AGENTS_FILE_LOCAL"
 }
 
 STALE_THRESHOLD_MINUTES=60
@@ -209,14 +206,12 @@ mark_stale() {
   now_epoch=$(date +%s)
   local year
   year=$(date +%Y)
-  local this_host
-  this_host=$(hostname -s)
   local changed=false
-  local tmpfile="${AGENTS_FILE}.tmp"
+  local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
   local name status od sid desc started updated
   local status_trimmed updated_trimmed sid_trimmed od_trimmed
 
-  cp "$AGENTS_FILE" "$tmpfile"
+  cp "$AGENTS_FILE_LOCAL" "$tmpfile"
 
   while IFS='|' read -r _ name status od sid desc started updated _; do
     status_trimmed=$(echo "$status" | xargs)
@@ -233,7 +228,7 @@ mark_stale() {
 
     # PID-based liveness: if we have a PID file for a same-host session, check it
     local pid_dead=false
-    if [ "$od_trimmed" = "$this_host" ] && [ -f "${PID_DIR}/${sid_trimmed}" ]; then
+    if [ "$od_trimmed" = "$THIS_HOST" ] && [ -f "${PID_DIR}/${sid_trimmed}" ]; then
       local stored_pid
       stored_pid=$(cat "${PID_DIR}/${sid_trimmed}" 2>/dev/null)
       if [ -n "$stored_pid" ] && ! [ -d "/proc/$stored_pid" ]; then
@@ -295,10 +290,10 @@ mark_stale() {
       _cleanup_pid "$sid_trimmed"
       changed=true
     fi
-  done < <(tail -n +5 "$AGENTS_FILE")
+  done < <(tail -n +5 "$AGENTS_FILE_LOCAL")
 
   if $changed; then
-    mv "$tmpfile" "$AGENTS_FILE"
+    mv "$tmpfile" "$AGENTS_FILE_LOCAL"
     sort_agents
   else
     rm -f "$tmpfile"
@@ -329,8 +324,7 @@ cmd_register() {
     exit 0
   fi
 
-  local host
-  host=$(hostname -s)
+  local host="$THIS_HOST"
   local ts
   ts=$(now)
 
@@ -349,15 +343,12 @@ cmd_register() {
     prev_pane_sid=$(cat ~/.claude-last-session)
   fi
 
-  # Always track session locally, regardless of gdrive state.
+  # Always track session locally, regardless of vault sync state.
   # This is critical: rename_session() and other local consumers read
-  # ~/.claude-last-session to identify the current session.  If we only
-  # write it after a successful gdrive update, a stale mount causes the
-  # file to point at a *previous* session, so renames and resumes silently
-  # target the wrong row.
+  # ~/.claude-last-session to identify the current session.
   echo "$sid" > ~/.claude-last-session
 
-  # Record Claude Code's PID for liveness checks (local, fast — do before gdrive)
+  # Record Claude Code's PID for liveness checks
   _save_pid "$sid"
 
   # Save transcript path for watcher's LLM classification
@@ -370,7 +361,7 @@ cmd_register() {
   local tmux_ctx
   tmux_ctx=$(_tmux_context)
 
-  # Start cross-machine heartbeat daemon (updates AGENTS.md timestamp periodically)
+  # Start heartbeat daemon (updates AGENTS.md timestamp periodically)
   local claude_pid
   claude_pid=$(cat "${PID_DIR}/${sid}" 2>/dev/null)
   _start_heartbeat "$sid" "$claude_pid"
@@ -383,7 +374,7 @@ cmd_register() {
     echo "$sid" > ~/.claude-resuming
     rm -f ~/.claude-next-name 2>/dev/null
 
-    if ! _check_gdrive; then
+    if ! _check_agents_dir; then
       ( sleep 2 && rm -f ~/.claude-resuming ) &
       exit 0
     fi
@@ -392,13 +383,13 @@ cmd_register() {
     (
       _acquire_lock || exit 0
 
-      if grep -q "| ${sid} |" "$AGENTS_FILE" 2>/dev/null; then
+      if grep -q "| ${sid} |" "$AGENTS_FILE_LOCAL" 2>/dev/null; then
         local current_status
-        current_status=$(grep "| ${sid} |" "$AGENTS_FILE" | awk -F'|' '{print $3}')
+        current_status=$(grep "| ${sid} |" "$AGENTS_FILE_LOCAL" | awk -F'|' '{print $3}')
 
         if [[ "$current_status" == *"bg:running"* ]]; then
           _log "  resume: sid found, status=bg:running — updating OD+ts only"
-          local tmpfile="${AGENTS_FILE}.tmp"
+          local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
           awk -v sid="$sid" -v ts="$ts" -v host="$host" -v dir="$PWD" -F'|' 'BEGIN{OFS="|"} {
             if (NR > 4 && index($5, sid) > 0) {
               $4 = " " host " "
@@ -406,11 +397,11 @@ cmd_register() {
               $9 = " " dir " "
             }
             print
-          }' "$AGENTS_FILE" > "$tmpfile"
-          mv "$tmpfile" "$AGENTS_FILE"
+          }' "$AGENTS_FILE_LOCAL" > "$tmpfile"
+          mv "$tmpfile" "$AGENTS_FILE_LOCAL"
         else
           _log "  resume: sid found, marking as resumed"
-          local tmpfile="${AGENTS_FILE}.tmp"
+          local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
           awk -v sid="$sid" -v ts="$ts" -v host="$host" -v dir="$PWD" -v desc="$tmux_ctx" -F'|' 'BEGIN{OFS="|"} {
             if (NR > 4 && index($5, sid) > 0) {
               $3 = " 🔄 resumed "
@@ -420,8 +411,8 @@ cmd_register() {
               $9 = " " dir " "
             }
             print
-          }' "$AGENTS_FILE" > "$tmpfile"
-          mv "$tmpfile" "$AGENTS_FILE"
+          }' "$AGENTS_FILE_LOCAL" > "$tmpfile"
+          mv "$tmpfile" "$AGENTS_FILE_LOCAL"
         fi
       else
         _log "  resume: sid NOT found in AGENTS.md — skipping (expired session)"
@@ -449,7 +440,7 @@ cmd_register() {
     exit 0
   fi
 
-  if ! _check_gdrive; then
+  if ! _check_agents_dir; then
     exit 0
   fi
   ensure_agents_file
@@ -468,12 +459,12 @@ cmd_register() {
       exit 0
     fi
 
-    if grep -q "| ${sid} |" "$AGENTS_FILE" 2>/dev/null; then
+    if grep -q "| ${sid} |" "$AGENTS_FILE_LOCAL" 2>/dev/null; then
       _log "  startup: sid already exists — updating existing row"
       local current_status
-      current_status=$(grep "| ${sid} |" "$AGENTS_FILE" | awk -F'|' '{print $3}')
+      current_status=$(grep "| ${sid} |" "$AGENTS_FILE_LOCAL" | awk -F'|' '{print $3}')
       if [[ "$current_status" != *"bg:running"* ]]; then
-        local tmpfile="${AGENTS_FILE}.tmp"
+        local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
         awk -v sid="$sid" -v ts="$ts" -v host="$host" -v dir="$PWD" -v desc="$tmux_ctx" -F'|' 'BEGIN{OFS="|"} {
           if (NR > 4 && index($5, sid) > 0) {
             $3 = " 🟢 interactive "
@@ -483,8 +474,8 @@ cmd_register() {
             $9 = " " dir " "
           }
           print
-        }' "$AGENTS_FILE" > "$tmpfile"
-        mv "$tmpfile" "$AGENTS_FILE"
+        }' "$AGENTS_FILE_LOCAL" > "$tmpfile"
+        mv "$tmpfile" "$AGENTS_FILE_LOCAL"
       fi
     else
       local name=""
@@ -505,7 +496,7 @@ cmd_register() {
       # pane within seconds strongly indicates context compaction.
       if [ -z "$name" ] && [ -n "${prev_pane_sid:-}" ] && [ "$prev_pane_sid" != "$sid" ]; then
         local prev_row
-        prev_row=$(grep "| ${prev_pane_sid} |" "$AGENTS_FILE" 2>/dev/null || true)
+        prev_row=$(grep "| ${prev_pane_sid} |" "$AGENTS_FILE_LOCAL" 2>/dev/null || true)
         if [ -n "$prev_row" ]; then
           local prev_updated
           prev_updated=$(echo "$prev_row" | awk -F'|' '{gsub(/^ +| +$/, "", $8); print $8}')
@@ -527,12 +518,12 @@ cmd_register() {
               old_started=$(echo "$prev_row" | awk -F'|' '{gsub(/^ +| +$/, "", $7); print $7}')
               _log "  startup: compaction detected (prev=${prev_pane_sid:0:8}, age=${age}s) — inheriting name='${name}'"
               # Mark old session as stopped (Stop hook may not fire during compaction)
-              local tmpfile="${AGENTS_FILE}.tmp"
+              local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
               awk -v sid="$prev_pane_sid" -F'|' 'BEGIN{OFS="|"} {
                 if (NR > 4 && index($5, sid) > 0) { $3 = " ⏹️ stopped " }
                 print
-              }' "$AGENTS_FILE" > "$tmpfile"
-              mv "$tmpfile" "$AGENTS_FILE"
+              }' "$AGENTS_FILE_LOCAL" > "$tmpfile"
+              mv "$tmpfile" "$AGENTS_FILE_LOCAL"
             fi
           fi
         fi
@@ -556,15 +547,15 @@ cmd_register() {
         fi
       fi
 
-      if grep -q "| ${name} |" "$AGENTS_FILE" 2>/dev/null; then
+      if grep -q "| ${name} |" "$AGENTS_FILE_LOCAL" 2>/dev/null; then
         local existing_status
-        existing_status=$(grep "| ${name} |" "$AGENTS_FILE" | awk -F'|' '{print $3}')
+        existing_status=$(grep "| ${name} |" "$AGENTS_FILE_LOCAL" | awk -F'|' '{print $3}')
         if [[ "$existing_status" != *"stopped"* ]] && [[ "$existing_status" != *"bg:done"* ]]; then
           # Active row with same name but different sid — update sid in place.
           # This handles restarts, setup-triggered reloads, and rapid retries
           # without creating phantom auto-named entries.
           _log "  startup: name '${name}' active with different sid — updating sid in place"
-          local tmpfile="${AGENTS_FILE}.tmp"
+          local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
           awk -v sid="$sid" -v name="$name" -v ts="$ts" -v host="$host" -v dir="$PWD" -v desc="$tmux_ctx" -F'|' 'BEGIN{OFS="|"} {
             if (NR > 4 && index($0, "| " name " |") > 0) {
               $3 = " 🟢 interactive "
@@ -575,17 +566,17 @@ cmd_register() {
               $9 = " " dir " "
             }
             print
-          }' "$AGENTS_FILE" > "$tmpfile"
-          mv "$tmpfile" "$AGENTS_FILE"
+          }' "$AGENTS_FILE_LOCAL" > "$tmpfile"
+          mv "$tmpfile" "$AGENTS_FILE_LOCAL"
           sort_agents
           exit 0
         fi
         # Stopped/done — replace with new session (preserve desc and started)
-        old_desc=$(grep "| ${name} |" "$AGENTS_FILE" | awk -F'|' '{print $6}' | xargs)
-        old_started=$(grep "| ${name} |" "$AGENTS_FILE" | awk -F'|' '{print $7}' | xargs)
-        local tmpfile="${AGENTS_FILE}.tmp"
-        grep -v "| ${name} |" "$AGENTS_FILE" > "$tmpfile"
-        mv "$tmpfile" "$AGENTS_FILE"
+        old_desc=$(grep "| ${name} |" "$AGENTS_FILE_LOCAL" | awk -F'|' '{print $6}' | xargs)
+        old_started=$(grep "| ${name} |" "$AGENTS_FILE_LOCAL" | awk -F'|' '{print $7}' | xargs)
+        local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
+        grep -v "| ${name} |" "$AGENTS_FILE_LOCAL" > "$tmpfile"
+        mv "$tmpfile" "$AGENTS_FILE_LOCAL"
       fi
 
       local initial_status="🟢 interactive"
@@ -595,7 +586,7 @@ cmd_register() {
       fi
       local desc="${old_desc:-${tmux_ctx}}"
       local started="${old_started:-$ts}"
-      echo "| ${name} | ${initial_status} | ${host} | ${sid} | ${desc} | ${started} | ${ts} | ${PWD} |" >> "$AGENTS_FILE"
+      echo "| ${name} | ${initial_status} | ${host} | ${sid} | ${desc} | ${started} | ${ts} | ${PWD} |" >> "$AGENTS_FILE_LOCAL"
       _log "  startup: created row name='${name}' sid=${sid:0:8}"
 
       prune
@@ -627,22 +618,22 @@ cmd_stop() {
   local ts
   ts=$(now)
 
-  _check_gdrive || exit 0
+  _check_agents_dir || exit 0
   ensure_agents_file
 
   (
     _acquire_lock || exit 0
 
-    if grep -q "| ${sid} |" "$AGENTS_FILE" 2>/dev/null; then
-      local tmpfile="${AGENTS_FILE}.tmp"
+    if grep -q "| ${sid} |" "$AGENTS_FILE_LOCAL" 2>/dev/null; then
+      local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
       awk -v sid="$sid" -v ts="$ts" -F'|' 'BEGIN{OFS="|"} {
         if (NR > 4 && index($5, sid) > 0) {
           $3 = " ⏹️ stopped "
           $8 = " " ts " "
         }
         print
-      }' "$AGENTS_FILE" > "$tmpfile"
-      mv "$tmpfile" "$AGENTS_FILE"
+      }' "$AGENTS_FILE_LOCAL" > "$tmpfile"
+      mv "$tmpfile" "$AGENTS_FILE_LOCAL"
     fi
 
     sort_agents
@@ -658,19 +649,18 @@ cmd_background() {
   local sid="$2"
   shift 2
   local desc="$*"
-  local host
-  host=$(hostname -s)
+  local host="$THIS_HOST"
   local ts
   ts=$(now)
 
-  _check_gdrive || exit 0
+  _check_agents_dir || exit 0
   ensure_agents_file
 
   (
     _acquire_lock || exit 0
 
-    if grep -q "| ${sid} |" "$AGENTS_FILE" 2>/dev/null; then
-      local tmpfile="${AGENTS_FILE}.tmp"
+    if grep -q "| ${sid} |" "$AGENTS_FILE_LOCAL" 2>/dev/null; then
+      local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
       awk -v sid="$sid" -v ts="$ts" -v name="$name" -v desc="${desc:0:60}" -F'|' 'BEGIN{OFS="|"} {
         if (NR > 4 && index($5, sid) > 0) {
           $2 = " " name " "
@@ -679,10 +669,10 @@ cmd_background() {
           $8 = " " ts " "
         }
         print
-      }' "$AGENTS_FILE" > "$tmpfile"
-      mv "$tmpfile" "$AGENTS_FILE"
+      }' "$AGENTS_FILE_LOCAL" > "$tmpfile"
+      mv "$tmpfile" "$AGENTS_FILE_LOCAL"
     else
-      echo "| ${name} | 🔵 bg:running | ${host} | ${sid} | ${desc:0:60} | ${ts} | ${ts} | ${PWD} |" >> "$AGENTS_FILE"
+      echo "| ${name} | 🔵 bg:running | ${host} | ${sid} | ${desc:0:60} | ${ts} | ${ts} | ${PWD} |" >> "$AGENTS_FILE_LOCAL"
     fi
 
     sort_agents
@@ -698,22 +688,22 @@ cmd_bg_done() {
   local ts
   ts=$(now)
 
-  _check_gdrive || exit 0
+  _check_agents_dir || exit 0
   ensure_agents_file
 
   (
     _acquire_lock || exit 0
 
-    if grep -q "| ${sid} |" "$AGENTS_FILE" 2>/dev/null; then
-      local tmpfile="${AGENTS_FILE}.tmp"
+    if grep -q "| ${sid} |" "$AGENTS_FILE_LOCAL" 2>/dev/null; then
+      local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
       awk -v sid="$sid" -v ts="$ts" -F'|' 'BEGIN{OFS="|"} {
         if (NR > 4 && index($5, sid) > 0) {
           $3 = " ✅ bg:done "
           $8 = " " ts " "
         }
         print
-      }' "$AGENTS_FILE" > "$tmpfile"
-      mv "$tmpfile" "$AGENTS_FILE"
+      }' "$AGENTS_FILE_LOCAL" > "$tmpfile"
+      mv "$tmpfile" "$AGENTS_FILE_LOCAL"
     fi
 
     sort_agents
@@ -746,17 +736,17 @@ cmd_active() {
   local ts
   ts=$(now)
 
-  _check_gdrive || exit 0
+  _check_agents_dir || exit 0
   ensure_agents_file
 
   (
     _acquire_lock || exit 0
 
-    if grep -q "| ${sid} |" "$AGENTS_FILE" 2>/dev/null; then
+    if grep -q "| ${sid} |" "$AGENTS_FILE_LOCAL" 2>/dev/null; then
       local current_status
-      current_status=$(grep "| ${sid} |" "$AGENTS_FILE" | awk -F'|' '{print $3}')
+      current_status=$(grep "| ${sid} |" "$AGENTS_FILE_LOCAL" | awk -F'|' '{print $3}')
       if [[ "$current_status" != *"⚡"* ]]; then
-        local tmpfile="${AGENTS_FILE}.tmp"
+        local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
         awk -v sid="$sid" -v ts="$ts" -v desc="$tmux_ctx" -F'|' 'BEGIN{OFS="|"} {
           if (NR > 4 && index($5, sid) > 0) {
             $3 = " ⚡ active "
@@ -764,31 +754,30 @@ cmd_active() {
             $8 = " " ts " "
           }
           print
-        }' "$AGENTS_FILE" > "$tmpfile"
-        mv "$tmpfile" "$AGENTS_FILE"
+        }' "$AGENTS_FILE_LOCAL" > "$tmpfile"
+        mv "$tmpfile" "$AGENTS_FILE_LOCAL"
         sort_agents
       else
         # Already active — refresh tmux context without touching timestamp
         if [ -n "$tmux_ctx" ]; then
           local current_desc
-          current_desc=$(grep "| ${sid} |" "$AGENTS_FILE" | awk -F'|' '{print $6}' | xargs)
+          current_desc=$(grep "| ${sid} |" "$AGENTS_FILE_LOCAL" | awk -F'|' '{print $6}' | xargs)
           if [ "$current_desc" != "$tmux_ctx" ]; then
-            local tmpfile="${AGENTS_FILE}.tmp"
+            local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
             awk -v sid="$sid" -v desc="$tmux_ctx" -F'|' 'BEGIN{OFS="|"} {
               if (NR > 4 && index($5, sid) > 0) {
                 $6 = " " desc " "
               }
               print
-            }' "$AGENTS_FILE" > "$tmpfile"
-            mv "$tmpfile" "$AGENTS_FILE"
+            }' "$AGENTS_FILE_LOCAL" > "$tmpfile"
+            mv "$tmpfile" "$AGENTS_FILE_LOCAL"
           fi
         fi
       fi
     else
       # Fallback registration: session not in AGENTS.md — startup registration
-      # likely failed (e.g., gdrive was stale when SessionStart hook fired).
-      local host
-      host=$(hostname -s)
+      # likely failed (e.g., vault dir was unavailable when SessionStart hook fired).
+      local host="$THIS_HOST"
       local name
 
       if [ -f ~/.claude-next-name ]; then
@@ -800,12 +789,12 @@ cmd_active() {
         _log "  active: fallback registration, auto-name='${name}'"
       fi
 
-      if grep -q "| ${name} |" "$AGENTS_FILE" 2>/dev/null; then
+      if grep -q "| ${name} |" "$AGENTS_FILE_LOCAL" 2>/dev/null; then
         local existing_status
-        existing_status=$(grep "| ${name} |" "$AGENTS_FILE" | awk -F'|' '{print $3}')
+        existing_status=$(grep "| ${name} |" "$AGENTS_FILE_LOCAL" | awk -F'|' '{print $3}')
         if [[ "$existing_status" != *"stopped"* ]] && [[ "$existing_status" != *"bg:done"* ]]; then
           _log "  active: fallback — name '${name}' active, updating sid"
-          local tmpfile="${AGENTS_FILE}.tmp"
+          local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
           awk -v sid="$sid" -v name="$name" -v ts="$ts" -v host="$host" -v dir="$PWD" -F'|' 'BEGIN{OFS="|"} {
             if (NR > 4 && index($0, "| " name " |") > 0) {
               $3 = " ⚡ active "
@@ -815,8 +804,8 @@ cmd_active() {
               $9 = " " dir " "
             }
             print
-          }' "$AGENTS_FILE" > "$tmpfile"
-          mv "$tmpfile" "$AGENTS_FILE"
+          }' "$AGENTS_FILE_LOCAL" > "$tmpfile"
+          mv "$tmpfile" "$AGENTS_FILE_LOCAL"
           echo "$sid" > ~/.claude-last-session
           if [ -n "${TMUX:-}" ]; then
             tmux rename-window "$name" 2>/dev/null
@@ -824,15 +813,15 @@ cmd_active() {
           sort_agents
           exit 0
         fi
-        local tmpfile="${AGENTS_FILE}.tmp"
-        grep -v "| ${name} |" "$AGENTS_FILE" > "$tmpfile"
-        mv "$tmpfile" "$AGENTS_FILE"
+        local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
+        grep -v "| ${name} |" "$AGENTS_FILE_LOCAL" > "$tmpfile"
+        mv "$tmpfile" "$AGENTS_FILE_LOCAL"
       fi
 
       echo "$sid" > ~/.claude-last-session
       local tmux_ctx
       tmux_ctx=$(_tmux_context)
-      echo "| ${name} | ⚡ active | ${host} | ${sid} | ${tmux_ctx} | ${ts} | ${ts} | ${PWD} |" >> "$AGENTS_FILE"
+      echo "| ${name} | ⚡ active | ${host} | ${sid} | ${tmux_ctx} | ${ts} | ${ts} | ${PWD} |" >> "$AGENTS_FILE_LOCAL"
       if [ -n "${TMUX:-}" ]; then
         tmux rename-window "$name" 2>/dev/null
       fi
@@ -862,26 +851,26 @@ cmd_done() {
   local ts
   ts=$(now)
 
-  _check_gdrive || exit 0
+  _check_agents_dir || exit 0
   ensure_agents_file
 
   (
     _acquire_lock || exit 0
 
-    if grep -q "| ${sid} |" "$AGENTS_FILE" 2>/dev/null; then
+    if grep -q "| ${sid} |" "$AGENTS_FILE_LOCAL" 2>/dev/null; then
       local current_status
-      current_status=$(grep "| ${sid} |" "$AGENTS_FILE" | awk -F'|' '{print $3}')
+      current_status=$(grep "| ${sid} |" "$AGENTS_FILE_LOCAL" | awk -F'|' '{print $3}')
       # Only transition from active/interactive/resumed — don't downgrade "waiting"
       if [[ "$current_status" == *"⚡"* ]] || [[ "$current_status" == *"🟢"* ]] || [[ "$current_status" == *"🔄"* ]]; then
-        local tmpfile="${AGENTS_FILE}.tmp"
+        local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
         awk -v sid="$sid" -v ts="$ts" -F'|' 'BEGIN{OFS="|"} {
           if (NR > 4 && index($5, sid) > 0) {
             $3 = " 🟡 done "
             $8 = " " ts " "
           }
           print
-        }' "$AGENTS_FILE" > "$tmpfile"
-        mv "$tmpfile" "$AGENTS_FILE"
+        }' "$AGENTS_FILE_LOCAL" > "$tmpfile"
+        mv "$tmpfile" "$AGENTS_FILE_LOCAL"
         sort_agents
       fi
     fi
@@ -909,37 +898,37 @@ cmd_waiting() {
   local ts
   ts=$(now)
 
-  _check_gdrive || exit 0
+  _check_agents_dir || exit 0
   ensure_agents_file
 
   (
     _acquire_lock || exit 0
 
-    if grep -q "| ${sid} |" "$AGENTS_FILE" 2>/dev/null; then
+    if grep -q "| ${sid} |" "$AGENTS_FILE_LOCAL" 2>/dev/null; then
       local current_status
-      current_status=$(grep "| ${sid} |" "$AGENTS_FILE" | awk -F'|' '{print $3}')
+      current_status=$(grep "| ${sid} |" "$AGENTS_FILE_LOCAL" | awk -F'|' '{print $3}')
       # Transition from active/interactive/resumed/done — anything except bg:running, stopped, waiting itself
       if [[ "$current_status" == *"⚡"* ]] || [[ "$current_status" == *"🟢"* ]] || [[ "$current_status" == *"🔄"* ]] || [[ "$current_status" == *"🟡"* ]]; then
-        local tmpfile="${AGENTS_FILE}.tmp"
+        local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
         awk -v sid="$sid" -v ts="$ts" -F'|' 'BEGIN{OFS="|"} {
           if (NR > 4 && index($5, sid) > 0) {
             $3 = " ❓ waiting "
             $8 = " " ts " "
           }
           print
-        }' "$AGENTS_FILE" > "$tmpfile"
-        mv "$tmpfile" "$AGENTS_FILE"
+        }' "$AGENTS_FILE_LOCAL" > "$tmpfile"
+        mv "$tmpfile" "$AGENTS_FILE_LOCAL"
         sort_agents
       elif [[ "$current_status" == *"❓"* ]]; then
         # Already waiting — just update timestamp
-        local tmpfile="${AGENTS_FILE}.tmp"
+        local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
         awk -v sid="$sid" -v ts="$ts" -F'|' 'BEGIN{OFS="|"} {
           if (NR > 4 && index($5, sid) > 0) {
             $8 = " " ts " "
           }
           print
-        }' "$AGENTS_FILE" > "$tmpfile"
-        mv "$tmpfile" "$AGENTS_FILE"
+        }' "$AGENTS_FILE_LOCAL" > "$tmpfile"
+        mv "$tmpfile" "$AGENTS_FILE_LOCAL"
       fi
     fi
 
@@ -969,25 +958,24 @@ cmd_heartbeat() {
       elapsed=$((elapsed + 10))
     done
 
-    # Quick gdrive health check — skip this cycle if unavailable
-    grep -q "gdrive" /proc/mounts 2>/dev/null || continue
-    timeout 3 ls "$(dirname "$AGENTS_FILE")" &>/dev/null || continue
+    # Skip this cycle if AGENTS.md parent dir is not accessible
+    [ -d "$(dirname "$AGENTS_FILE_LOCAL")" ] || continue
 
     # Update timestamp only for active sessions — for other states (done, waiting),
     # the timestamp should reflect when the status was set, not heartbeat time.
     local lock_dir="${LOCK_FILE}.d"
     if mkdir "$lock_dir" 2>/dev/null; then
       local current_status
-      current_status=$(grep "| ${sid} |" "$AGENTS_FILE" 2>/dev/null | awk -F'|' '{print $3}')
+      current_status=$(grep "| ${sid} |" "$AGENTS_FILE_LOCAL" 2>/dev/null | awk -F'|' '{print $3}')
       if [[ "$current_status" == *"⚡"* ]]; then
         local ts
         ts=$(date '+%m-%d %H:%M')
-        local tmpfile="${AGENTS_FILE}.tmp"
+        local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
         if awk -v sid="$sid" -v ts="$ts" -F'|' 'BEGIN{OFS="|"} {
           if (NR > 4 && index($5, sid) > 0) { $8 = " " ts " " }
           print
-        }' "$AGENTS_FILE" > "$tmpfile"; then
-          mv "$tmpfile" "$AGENTS_FILE"
+        }' "$AGENTS_FILE_LOCAL" > "$tmpfile"; then
+          mv "$tmpfile" "$AGENTS_FILE_LOCAL"
         else
           rm -f "$tmpfile"
         fi
@@ -998,25 +986,25 @@ cmd_heartbeat() {
 
   # Claude process died without Stop hook firing (e.g. tmux window killed).
   # Mark the session as stopped so the dashboard reflects reality.
-  # Important: update AGENTS.md BEFORE removing the PID file — if the update
-  # fails (gdrive unavailable), the PID file must remain so the statusline's
-  # _check_pid can detect the dead process and classify it as inactive.
+  # Update AGENTS.md BEFORE removing the PID file — if the update fails,
+  # the PID file must remain so the statusline's _check_pid can detect the
+  # dead process and classify it as inactive.
   _log "  heartbeat: sid=${sid:0:8} claude pid $claude_pid dead — marking stopped"
   local agents_updated=false
-  if _check_gdrive 2>/dev/null; then
+  if _check_agents_dir 2>/dev/null; then
     local lock_dir="${LOCK_FILE}.d"
     if mkdir "$lock_dir" 2>/dev/null; then
       local ts
       ts=$(date '+%m-%d %H:%M')
-      local tmpfile="${AGENTS_FILE}.tmp"
+      local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
       if awk -v sid="$sid" -v ts="$ts" -F'|' 'BEGIN{OFS="|"} {
         if (NR > 4 && index($5, sid) > 0) {
           $3 = " ⏹️ stopped "
           $8 = " " ts " "
         }
         print
-      }' "$AGENTS_FILE" > "$tmpfile"; then
-        mv "$tmpfile" "$AGENTS_FILE"
+      }' "$AGENTS_FILE_LOCAL" > "$tmpfile"; then
+        mv "$tmpfile" "$AGENTS_FILE_LOCAL"
         agents_updated=true
       else
         rm -f "$tmpfile"

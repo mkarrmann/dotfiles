@@ -141,12 +141,8 @@ mkdir -p "$HOME/.claude/agent-manager/bin" "$HOME/.claude/statusline.d"
 sync_link_dir "$DOTFILES_DIR/claude_config/agent-manager" "$HOME/.claude/agent-manager/bin" "*.sh"
 sync_link_dir "$DOTFILES_DIR/claude_config/agent-manager" "$HOME/.claude/agent-manager/bin" "*.py"
 link_one "$DOTFILES_DIR/claude_config/agent-manager/statusline-ext.sh" "$HOME/.claude/statusline.d/agent-manager.sh"
-# Google Drive mount scripts
-mkdir -p "$HOME/.claude/gdrive-mount-scripts"
-for src in "$DOTFILES_DIR/claude_config/gdrive-mount-scripts/"*.sh; do
-  base="$(basename "$src")"
-  link_one "$src" "$HOME/.claude/gdrive-mount-scripts/$base"
-done
+# Obsidian vault config (source of truth for AGENTS.md location)
+link_one "$DOTFILES_DIR/claude_config/obsidian-vault.conf" "$HOME/.claude/obsidian-vault.conf"
 # Hooks
 shopt -s nullglob
 for src in "$DOTFILES_DIR/claude_config/hooks/"*; do

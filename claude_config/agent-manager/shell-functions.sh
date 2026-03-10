@@ -6,16 +6,18 @@
 AGENT_TRACKER="$HOME/.claude/agent-manager/bin/agent-tracker.sh"
 CODEX_SESSIONS_INDEX="$HOME/.codex/agents.tsv"
 
+_AGENT_HOST=$(hostname -s)
 CLAUDE_BG_LOGDIR="$HOME/claude-logs"
-AGENTS_FILE="${CLAUDE_AGENTS_FILE:-}"
-if [ -z "$AGENTS_FILE" ]; then
-  _gdrive_mount="/data/users/${USER}/gdrive"
-  if grep -q "gdrive" /proc/mounts 2>/dev/null && [ -f "${_gdrive_mount}/AGENTS.md" ]; then
-    AGENTS_FILE="${_gdrive_mount}/AGENTS.md"
-  else
-    AGENTS_FILE="$HOME/.claude/agents.md"
-  fi
-  unset _gdrive_mount
+
+if [ -n "${CLAUDE_AGENTS_FILE:-}" ]; then
+  AGENTS_FILE_LOCAL="$CLAUDE_AGENTS_FILE"
+  AGENTS_DIR="$(dirname "$AGENTS_FILE_LOCAL")"
+else
+  _conf="$HOME/.claude/obsidian-vault.conf"
+  [ -f "$_conf" ] && . "$_conf"
+  AGENTS_DIR="${OBSIDIAN_VAULT_ROOT:-$HOME/obsidian}"
+  unset _conf
+  AGENTS_FILE_LOCAL="${AGENTS_DIR}/AGENTS-${_AGENT_HOST}.md"
 fi
 
 mkdir -p "$CLAUDE_BG_LOGDIR" 2>/dev/null
@@ -69,18 +71,27 @@ claude() {
 # Internal helpers
 # ============================================================
 
-# _lookup_sid <name> — resolve session name to full session ID
+# _lookup_sid <name> — resolve session name to full session ID (searches all per-host files)
 _lookup_sid() {
   local name="$1"
   local sid
-  sid=$(grep "| ${name} |" "$AGENTS_FILE" 2>/dev/null | head -1 | awk -F'|' '{print $5}' | tr -d ' ')
+  for f in "${AGENTS_DIR}"/AGENTS-*.md "${AGENTS_DIR}/AGENTS.md"; do
+    [ -f "$f" ] || continue
+    sid=$(grep "| ${name} |" "$f" 2>/dev/null | head -1 | awk -F'|' '{print $5}' | tr -d ' ')
+    [ -n "$sid" ] && break
+  done
   echo "$sid"
 }
 
-# _lookup_dir <name> — resolve session name to its working directory
+# _lookup_dir <name> — resolve session name to its working directory (searches all per-host files)
 _lookup_dir() {
   local name="$1"
-  grep "| ${name} |" "$AGENTS_FILE" 2>/dev/null | head -1 | awk -F'|' '{print $9}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+  for f in "${AGENTS_DIR}"/AGENTS-*.md "${AGENTS_DIR}/AGENTS.md"; do
+    [ -f "$f" ] || continue
+    local dir
+    dir=$(grep "| ${name} |" "$f" 2>/dev/null | head -1 | awk -F'|' '{print $9}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [ -n "$dir" ] && { echo "$dir"; return; }
+  done
 }
 
 # _start_bg_session <name> <prompt> [sid]
@@ -135,20 +146,30 @@ cn() {
   local name="$1"
   [ -z "$name" ] && { echo "Usage: cn [-b] <name> [prompt...]"; return 1; }
 
-  # Warn if name already exists in AGENTS.md
-  if [ -f "$AGENTS_FILE" ] && grep -q "| ${name} |" "$AGENTS_FILE" 2>/dev/null; then
+  # Warn if name already exists in any agents file
+  local _found_file=""
+  for f in "${AGENTS_DIR}"/AGENTS-*.md "${AGENTS_DIR}/AGENTS.md"; do
+    [ -f "$f" ] || continue
+    if grep -q "| ${name} |" "$f" 2>/dev/null; then
+      _found_file="$f"
+      break
+    fi
+  done
+  if [ -n "$_found_file" ]; then
     local existing_status
-    existing_status=$(grep "| ${name} |" "$AGENTS_FILE" | tail -1 | awk -F'|' '{print $3}' | xargs)
+    existing_status=$(grep "| ${name} |" "$_found_file" | tail -1 | awk -F'|' '{print $3}' | xargs)
     echo "Warning: '${name}' already exists (${existing_status})"
     read -rp "Replace it with a new session? [y/N] " reply
     if [[ "$reply" != [yY] ]]; then
       echo "Cancelled. Use 'cr ${name}' to resume the existing session."
       return 0
     fi
-    # Remove old row so the new session takes its place
-    local tmpfile="${AGENTS_FILE}.tmp"
-    grep -v "| ${name} |" "$AGENTS_FILE" > "$tmpfile"
-    mv "$tmpfile" "$AGENTS_FILE"
+    # Remove old row from local file only
+    if [ -f "$AGENTS_FILE_LOCAL" ] && grep -q "| ${name} |" "$AGENTS_FILE_LOCAL" 2>/dev/null; then
+      local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
+      grep -v "| ${name} |" "$AGENTS_FILE_LOCAL" > "$tmpfile"
+      mv "$tmpfile" "$AGENTS_FILE_LOCAL"
+    fi
     echo "Replaced. Starting new session '${name}'..."
   fi
 
@@ -280,10 +301,17 @@ if sessions:
 # agents — Display AGENTS.md (all sessions)
 # ============================================================
 agents() {
-  if [ -f "$AGENTS_FILE" ]; then
-    cat "$AGENTS_FILE"
-  else
-    echo "No agents file at $AGENTS_FILE"
+  local header_printed=false
+  for f in "${AGENTS_DIR}"/AGENTS-*.md "${AGENTS_DIR}/AGENTS.md"; do
+    [ -f "$f" ] || continue
+    if ! $header_printed; then
+      head -4 "$f"
+      header_printed=true
+    fi
+    tail -n +5 "$f" 2>/dev/null
+  done
+  if ! $header_printed; then
+    echo "No agents files in $AGENTS_DIR"
   fi
 }
 
@@ -373,31 +401,31 @@ cbk() {
 cclean() {
   case "$1" in
     --all)
-      echo "# Claude Agents" > "$AGENTS_FILE"
-      echo "" >> "$AGENTS_FILE"
-      echo "| Name | Status | OD | Session ID | Description | Started | Updated | Dir |" >> "$AGENTS_FILE"
-      echo "|------|--------|----|------------|-------------|---------|---------|-----|" >> "$AGENTS_FILE"
-      echo "All sessions cleared."
+      echo "# Claude Agents" > "$AGENTS_FILE_LOCAL"
+      echo "" >> "$AGENTS_FILE_LOCAL"
+      echo "| Name | Status | OD | Session ID | Description | Started | Updated | Dir |" >> "$AGENTS_FILE_LOCAL"
+      echo "|------|--------|----|------------|-------------|---------|---------|-----|" >> "$AGENTS_FILE_LOCAL"
+      echo "All local sessions cleared."
       ;;
     --stopped)
-      if [ ! -f "$AGENTS_FILE" ]; then
-        echo "No agents file at $AGENTS_FILE"
+      if [ ! -f "$AGENTS_FILE_LOCAL" ]; then
+        echo "No local agents file at $AGENTS_FILE_LOCAL"
         return 1
       fi
       local count
-      count=$(grep -cE '\| ⏹️ stopped \||\| ✅ bg:done \|' "$AGENTS_FILE" 2>/dev/null || echo 0)
+      count=$(grep -cE '\| ⏹️ stopped \||\| ✅ bg:done \|' "$AGENTS_FILE_LOCAL" 2>/dev/null || echo 0)
       if [ "$count" -eq 0 ]; then
         echo "No stopped or bg:done sessions to clean."
         return 0
       fi
-      local tmpfile="${AGENTS_FILE}.tmp"
-      grep -vE '\| ⏹️ stopped \||\| ✅ bg:done \|' "$AGENTS_FILE" > "$tmpfile"
-      mv "$tmpfile" "$AGENTS_FILE"
+      local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
+      grep -vE '\| ⏹️ stopped \||\| ✅ bg:done \|' "$AGENTS_FILE_LOCAL" > "$tmpfile"
+      mv "$tmpfile" "$AGENTS_FILE_LOCAL"
       echo "Removed ${count} stopped/done session(s)."
       ;;
     --stale)
-      if [ ! -f "$AGENTS_FILE" ]; then
-        echo "No agents file at $AGENTS_FILE"
+      if [ ! -f "$AGENTS_FILE_LOCAL" ]; then
+        echo "No local agents file at $AGENTS_FILE_LOCAL"
         return 1
       fi
       local threshold_minutes="${2:-60}"
@@ -438,20 +466,20 @@ cclean() {
           name_trimmed=$(echo "$name" | xargs)
           echo "  Removing: ${name_trimmed} (${s_trimmed}, ${age_minutes}m old)"
         fi
-      done < <(tail -n +5 "$AGENTS_FILE")
+      done < <(tail -n +5 "$AGENTS_FILE_LOCAL")
 
       if [ ${#stale_sids[@]} -eq 0 ]; then
         echo "No stale sessions older than ${threshold_minutes}m found."
         return 0
       fi
 
-      local tmpfile="${AGENTS_FILE}.tmp"
-      cp "$AGENTS_FILE" "$tmpfile"
+      local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
+      cp "$AGENTS_FILE_LOCAL" "$tmpfile"
       for sid_to_remove in "${stale_sids[@]}"; do
         grep -v "| ${sid_to_remove} |" "$tmpfile" > "${tmpfile}.2"
         mv "${tmpfile}.2" "$tmpfile"
       done
-      mv "$tmpfile" "$AGENTS_FILE"
+      mv "$tmpfile" "$AGENTS_FILE_LOCAL"
       echo "Removed ${#stale_sids[@]} stale session(s)."
       ;;
     ""|--help|-h)
@@ -463,17 +491,31 @@ cclean() {
       ;;
     *)
       local name="$1"
-      if [ ! -f "$AGENTS_FILE" ]; then
-        echo "No agents file at $AGENTS_FILE"
+      if [ ! -f "$AGENTS_FILE_LOCAL" ]; then
+        echo "No local agents file at $AGENTS_FILE_LOCAL"
         return 1
       fi
-      if ! grep -q "| ${name} |" "$AGENTS_FILE" 2>/dev/null; then
-        echo "No session named '${name}' found."
+      if ! grep -q "| ${name} |" "$AGENTS_FILE_LOCAL" 2>/dev/null; then
+        # Check if it exists on a remote host
+        local _remote_file=""
+        for f in "${AGENTS_DIR}"/AGENTS-*.md; do
+          [ -f "$f" ] || continue
+          [ "$f" = "$AGENTS_FILE_LOCAL" ] && continue
+          if grep -q "| ${name} |" "$f" 2>/dev/null; then
+            _remote_file="$(basename "$f")"
+            break
+          fi
+        done
+        if [ -n "$_remote_file" ]; then
+          echo "Session '${name}' exists on remote host ($_remote_file), not in local file."
+        else
+          echo "No session named '${name}' found."
+        fi
         return 1
       fi
-      local tmpfile="${AGENTS_FILE}.tmp"
-      grep -v "| ${name} |" "$AGENTS_FILE" > "$tmpfile"
-      mv "$tmpfile" "$AGENTS_FILE"
+      local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
+      grep -v "| ${name} |" "$AGENTS_FILE_LOCAL" > "$tmpfile"
+      mv "$tmpfile" "$AGENTS_FILE_LOCAL"
       echo "Removed session '${name}'."
       ;;
   esac

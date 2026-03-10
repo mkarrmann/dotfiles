@@ -14,38 +14,45 @@ if [ -f "$PYTHON_SCRIPT" ]; then
 fi
 
 # Otherwise fall back to basic shell implementation
-AGENTS_FILE="${CLAUDE_AGENTS_FILE:-}"
-if [ -z "$AGENTS_FILE" ]; then
-    _gdrive_mount="/data/users/${USER}/gdrive"
-    if grep -q "gdrive" /proc/mounts 2>/dev/null && [ -f "${_gdrive_mount}/AGENTS.md" ]; then
-        AGENTS_FILE="${_gdrive_mount}/AGENTS.md"
-    else
-        AGENTS_FILE="$HOME/.claude/agents.md"
-    fi
+if [ -n "${CLAUDE_AGENTS_FILE:-}" ]; then
+    AGENTS_DIR="$(dirname "$CLAUDE_AGENTS_FILE")"
+else
+    _conf="$HOME/.claude/obsidian-vault.conf"
+    [ -f "$_conf" ] && . "$_conf"
+    AGENTS_DIR="${OBSIDIAN_VAULT_ROOT:-$HOME/obsidian}"
+    unset _conf
 fi
 
-# Quick check if file exists
-[ ! -f "$AGENTS_FILE" ] && exit 0
+# Quick check if any agents files exist
+_agents_files=()
+for _f in "${AGENTS_DIR}"/AGENTS-*.md "${AGENTS_DIR}/AGENTS.md"; do
+    [ -f "$_f" ] && _agents_files+=("$_f")
+done
+[ ${#_agents_files[@]} -eq 0 ] && exit 0
 
-# Count active agents (simple grep)
-active_count=$(grep -E '\| (⚡|💭|🔧|✏️|📖|🔍|⚠️|🔐) ' "$AGENTS_FILE" 2>/dev/null | wc -l)
+# Count active agents across all files
+active_count=0
+first_agent=""
+for _f in "${_agents_files[@]}"; do
+    while IFS= read -r line; do
+        active_count=$((active_count + 1))
+        [ -z "$first_agent" ] && first_agent="$line"
+    done < <(grep -E '\| (⚡|💭|🔧|✏️|📖|🔍|⚠️|🔐) ' "$_f" 2>/dev/null)
+done
 
 if [ "$active_count" -gt 0 ]; then
-    # Get first active agent name and status
-    first_agent=$(grep -E '\| (⚡|💭|🔧|✏️|📖|🔍|⚠️|🔐) ' "$AGENTS_FILE" 2>/dev/null | head -1)
-
-    # Extract name and emoji
+    # Extract name and emoji from first_agent (already captured in loop above)
     name=$(echo "$first_agent" | awk -F'|' '{print $2}' | xargs)
     emoji=$(echo "$first_agent" | awk -F'|' '{print $3}' | awk '{print $1}')
 
-    # Check for alerts (permission, high context, errors)
+    # Check for alerts across all files
     alerts=""
-    if grep -q '🔐' "$AGENTS_FILE" 2>/dev/null; then
-        alerts="${alerts}🔐"
-    fi
-    if grep -q '❌' "$AGENTS_FILE" 2>/dev/null; then
-        alerts="${alerts}❌"
-    fi
+    for _f in "${_agents_files[@]}"; do
+        grep -q '🔐' "$_f" 2>/dev/null && alerts="${alerts}🔐" && break
+    done
+    for _f in "${_agents_files[@]}"; do
+        grep -q '❌' "$_f" 2>/dev/null && alerts="${alerts}❌" && break
+    done
 
     # Build status line
     if [ "$active_count" -eq 1 ]; then

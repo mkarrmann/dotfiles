@@ -132,18 +132,63 @@ class Agent:
 # ── Data Loading ──────────────────────────────────────────
 
 
-def resolve_agents_file() -> Path:
+def _read_vault_root() -> str:
+    conf = Path.home() / ".claude" / "obsidian-vault.conf"
+    if conf.exists():
+        try:
+            for line in conf.read_text().splitlines():
+                line = line.strip()
+                if line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                if key.strip() == "OBSIDIAN_VAULT_ROOT":
+                    val = val.strip().strip('"').strip("'")
+                    if val.startswith("${OBSIDIAN_VAULT:-") and val.endswith("}"):
+                        env_default = val[len("${OBSIDIAN_VAULT:-"):-1]
+                        val = os.environ.get("OBSIDIAN_VAULT", env_default)
+                    val = val.replace("$HOME", str(Path.home()))
+                    return val
+        except OSError:
+            pass
+    return os.environ.get("OBSIDIAN_VAULT", str(Path.home() / "obsidian"))
+
+
+def _hostname() -> str:
+    return os.uname().nodename.split(".")[0]
+
+
+def _resolve_agents_dir() -> Path:
     if env := os.environ.get("CLAUDE_AGENTS_FILE"):
-        return Path(env)
-    gdrive = Path(
-        f"/data/users/{os.environ.get('USER', 'nobody')}/gdrive/AGENTS.md"
-    )
+        return Path(env).parent
+    vault = _read_vault_root()
+    d = Path(vault)
     try:
-        if gdrive.exists():
-            return gdrive
+        if d.is_dir():
+            return d
     except OSError:
         pass
-    return Path.home() / ".claude" / "agents.md"
+    return Path.home() / ".claude"
+
+
+def resolve_local_agents_file() -> Path:
+    if env := os.environ.get("CLAUDE_AGENTS_FILE"):
+        return Path(env)
+    return _resolve_agents_dir() / f"AGENTS-{_hostname()}.md"
+
+
+def resolve_all_agents_files() -> List[Path]:
+    if env := os.environ.get("CLAUDE_AGENTS_FILE"):
+        p = Path(env)
+        return [p] if p.exists() else []
+    d = _resolve_agents_dir()
+    files = sorted(d.glob("AGENTS-*.md"))
+    legacy = d / "AGENTS.md"
+    if legacy.exists():
+        files.append(legacy)
+    return files
+
+
+resolve_agents_file = resolve_local_agents_file
 
 
 def parse_agents(path: Path) -> List[Agent]:
@@ -228,9 +273,15 @@ def enrich_tmux(agents: List[Agent]) -> None:
                 a.pane_lines = [l for l in raw_pane.split("\n") if l.strip()]
 
 
+def parse_all_agents() -> List[Agent]:
+    all_agents = []
+    for path in resolve_all_agents_files():
+        all_agents.extend(parse_agents(path))
+    return all_agents
+
+
 def load_agents() -> List[Agent]:
-    path = resolve_agents_file()
-    agents = parse_agents(path)
+    agents = parse_all_agents()
     enrich_pids(agents)
     enrich_tmux(agents)
     for a in agents:

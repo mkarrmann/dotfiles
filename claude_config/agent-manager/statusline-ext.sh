@@ -1,36 +1,44 @@
 #!/bin/bash
-# Statusline extension: agent tracking rows from AGENTS.md
-# Location of AGENTS.md is controlled by CLAUDE_AGENTS_FILE env var.
+# Statusline extension: agent tracking rows from AGENTS-*.md (per-host files)
 
-AGENTS_FILE="${CLAUDE_AGENTS_FILE:-}"
-if [ -z "$AGENTS_FILE" ]; then
-  _gdrive_mount="/data/users/${USER}/gdrive"
-  if grep -q "gdrive" /proc/mounts 2>/dev/null && [ -f "${_gdrive_mount}/AGENTS.md" ]; then
-    AGENTS_FILE="${_gdrive_mount}/AGENTS.md"
-  else
-    AGENTS_FILE="$HOME/.claude/agents.md"
-  fi
-  unset _gdrive_mount
+if [ -n "${CLAUDE_AGENTS_FILE:-}" ]; then
+  AGENTS_DIR="$(dirname "$CLAUDE_AGENTS_FILE")"
+else
+  _conf="$HOME/.claude/obsidian-vault.conf"
+  [ -f "$_conf" ] && . "$_conf"
+  AGENTS_DIR="${OBSIDIAN_VAULT_ROOT:-$HOME/obsidian}"
+  unset _conf
 fi
 CACHE_FILE="$HOME/.claude/agent-manager/.agents-cache"
 CACHE_TTL=10
 PID_DIR="$HOME/.claude/agent-manager/pids"
 THIS_HOST=$(hostname -s)
 
-if [ ! -f "$AGENTS_FILE" ]; then
-  exit 0
-fi
+# Check if any agents files exist
+_agents_files=()
+for _f in "${AGENTS_DIR}"/AGENTS-*.md "${AGENTS_DIR}/AGENTS.md"; do
+  [ -f "$_f" ] && _agents_files+=("$_f")
+done
+[ ${#_agents_files[@]} -eq 0 ] && exit 0
 
 # Read JSON from stdin (piped by main statusline.sh) to get the real session ID
 input=$(cat)
 
-# Use cached copy if fresh enough to avoid FUSE latency
+# Use cached copy if fresh enough
 mkdir -p "$(dirname "$CACHE_FILE")" 2>/dev/null
 if [ -f "$CACHE_FILE" ] && \
-   [ $(($(date +%s) - $(stat -c%Y "$CACHE_FILE" 2>/dev/null || stat -f%z "$CACHE_FILE" 2>/dev/null || echo 0))) -lt $CACHE_TTL ]; then
+   [ $(($(date +%s) - $(stat -c%Y "$CACHE_FILE" 2>/dev/null || stat -f%m "$CACHE_FILE" 2>/dev/null || echo 0))) -lt $CACHE_TTL ]; then
   agents_source="$CACHE_FILE"
 else
-  cp "$AGENTS_FILE" "$CACHE_FILE" 2>/dev/null
+  # Merge all per-host files into cache: header from first, data rows from all
+  local_header_done=false
+  for _f in "${_agents_files[@]}"; do
+    if ! $local_header_done; then
+      head -4 "$_f" > "$CACHE_FILE" 2>/dev/null
+      local_header_done=true
+    fi
+    tail -n +5 "$_f" >> "$CACHE_FILE" 2>/dev/null
+  done
   agents_source="$CACHE_FILE"
 fi
 

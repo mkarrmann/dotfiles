@@ -11,19 +11,22 @@ set -uo pipefail
 RESURRECT_DIR="$HOME/.claude/agent-manager/resurrect"
 MANIFEST="${RESURRECT_DIR}/manifest.json"
 
-# ── Resolve AGENTS.md (same logic as agent-tracker.sh / shell-functions.sh) ──
-AGENTS_FILE="${CLAUDE_AGENTS_FILE:-}"
-if [ -z "$AGENTS_FILE" ]; then
-  _gdrive_mount="/data/users/${USER}/gdrive"
-  if grep -q "gdrive" /proc/mounts 2>/dev/null && [ -f "${_gdrive_mount}/AGENTS.md" ]; then
-    AGENTS_FILE="${_gdrive_mount}/AGENTS.md"
-  else
-    AGENTS_FILE="$HOME/.claude/agents.md"
-  fi
-  unset _gdrive_mount
+# ── Resolve agents directory ──
+if [ -n "${CLAUDE_AGENTS_FILE:-}" ]; then
+  AGENTS_DIR="$(dirname "$CLAUDE_AGENTS_FILE")"
+else
+  _conf="$HOME/.claude/obsidian-vault.conf"
+  [ -f "$_conf" ] && . "$_conf"
+  AGENTS_DIR="${OBSIDIAN_VAULT_ROOT:-$HOME/obsidian}"
+  unset _conf
 fi
 
-[ ! -f "$AGENTS_FILE" ] && exit 0
+# Collect all agents files
+_agents_files=()
+for _f in "${AGENTS_DIR}"/AGENTS-*.md "${AGENTS_DIR}/AGENTS.md"; do
+  [ -f "$_f" ] && _agents_files+=("$_f")
+done
+[ ${#_agents_files[@]} -eq 0 ] && exit 0
 
 # ── Collect active sessions from AGENTS.md ──
 # Format: Name | Status | OD | Session ID | Description | Started | Updated | Dir
@@ -45,7 +48,7 @@ while IFS='|' read -r _ name status _ sid _ _ _ dir _; do
       agent_dir["$name"]="${dir:-}"
       ;;
   esac
-done < <(tail -n +5 "$AGENTS_FILE" 2>/dev/null)
+done < <(for _f in "${_agents_files[@]}"; do tail -n +5 "$_f" 2>/dev/null; done)
 
 if [ ${#agent_sid[@]} -eq 0 ]; then
   rm -f "$MANIFEST"

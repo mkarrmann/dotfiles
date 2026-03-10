@@ -2,7 +2,6 @@
 -- Adds :ClaudeCodeName and :ClaudeCodeAgents commands with keybindings
 
 local agent_session = require("lib.agent-session")
-local agents_file = agent_session.resolve_agents_file()
 
 local next_name_file = vim.fn.expand("~/.claude-next-name")
 
@@ -48,7 +47,8 @@ local function rename_session(name)
 	local old_agent = agent_session.lookup_agent_by_sid(sid)
 	local old_name = old_agent and old_agent.name or nil
 
-	-- Update AGENTS.md: replace the Name column for the row matching this session ID
+	-- Update local agents file: replace the Name column for the row matching this session ID
+	local agents_file = agent_session.resolve_local_agents_file()
 	local f = io.open(agents_file, "r")
 	if not f then
 		vim.notify("Agents file not found: " .. agents_file, vim.log.levels.WARN)
@@ -100,15 +100,31 @@ local function rename_session(name)
 end
 
 local function show_agents()
-	local f = io.open(agents_file, "r")
-	if not f then
-		vim.notify("Agents file not found: " .. agents_file, vim.log.levels.WARN)
+	local all_files = agent_session.resolve_all_agents_files()
+	if #all_files == 0 then
+		vim.notify("No agents files found", vim.log.levels.WARN)
 		return
 	end
-	local content = f:read("*a")
-	f:close()
 
-	local lines = vim.split(content, "\n", { trimempty = true })
+	-- Merge: header from first file, data rows from all
+	local lines = {}
+	local header_done = false
+	for _, agents_file in ipairs(all_files) do
+		local f = io.open(agents_file, "r")
+		if f then
+			local line_num = 0
+			for line in f:lines() do
+				line_num = line_num + 1
+				if not header_done and line_num <= 4 then
+					lines[#lines + 1] = line
+				elseif line_num > 4 then
+					lines[#lines + 1] = line
+				end
+			end
+			f:close()
+			header_done = true
+		end
+	end
 
 	local buf = vim.api.nvim_create_buf(false, true)
 	vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
@@ -194,7 +210,7 @@ local function resume_by_name()
 
 	local entries = parse_agents()
 	if #entries == 0 then
-		vim.notify("No sessions found in " .. agents_file, vim.log.levels.WARN)
+		vim.notify("No sessions found", vim.log.levels.WARN)
 		return
 	end
 

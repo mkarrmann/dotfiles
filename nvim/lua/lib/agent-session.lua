@@ -8,15 +8,63 @@ local function trim(value)
 	return (tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
-function M.resolve_agents_file()
+local function resolve_agents_dir()
+	if vim.env.CLAUDE_AGENTS_FILE then
+		return vim.fn.fnamemodify(vim.env.CLAUDE_AGENTS_FILE, ":h")
+	end
+	local vault = vim.g.obsidian_vault
+	if not vault then
+		local conf = vim.fn.expand("~/.claude/obsidian-vault.conf")
+		if vim.fn.filereadable(conf) == 1 then
+			for _, line in ipairs(vim.fn.readfile(conf)) do
+				local val = line:match("^OBSIDIAN_VAULT_ROOT%s*=%s*(.+)$")
+				if val then
+					val = val:gsub('^"(.*)"$', "%1"):gsub("^'(.*)'$", "%1")
+					val = val:gsub("%$HOME", vim.fn.expand("~"))
+					local env_default = val:match('^${OBSIDIAN_VAULT:%-(.+)}$')
+					if env_default then
+						val = vim.env.OBSIDIAN_VAULT or env_default
+					end
+					vault = val
+					break
+				end
+			end
+		end
+	end
+	vault = vault or vim.fn.expand("~/obsidian")
+	if vim.fn.isdirectory(vault) == 1 then
+		return vault
+	end
+	return vim.fn.expand("~/.claude")
+end
+
+function M.resolve_local_agents_file()
 	if vim.env.CLAUDE_AGENTS_FILE then
 		return vim.env.CLAUDE_AGENTS_FILE
 	end
-	local gdrive = "/data/users/" .. (vim.env.USER or "unknown") .. "/gdrive/AGENTS.md"
-	if vim.fn.filereadable(gdrive) == 1 then
-		return gdrive
+	local hostname = vim.fn.hostname():match("^([^%.]+)")
+	return resolve_agents_dir() .. "/AGENTS-" .. hostname .. ".md"
+end
+
+function M.resolve_all_agents_files()
+	if vim.env.CLAUDE_AGENTS_FILE then
+		local p = vim.env.CLAUDE_AGENTS_FILE
+		if vim.fn.filereadable(p) == 1 then
+			return { p }
+		end
+		return {}
 	end
-	return vim.fn.expand("~/.claude/agents.md")
+	local dir = resolve_agents_dir()
+	local files = vim.fn.glob(dir .. "/AGENTS-*.md", true, true)
+	local legacy = dir .. "/AGENTS.md"
+	if vim.fn.filereadable(legacy) == 1 then
+		table.insert(files, legacy)
+	end
+	return files
+end
+
+function M.resolve_agents_file()
+	return M.resolve_local_agents_file()
 end
 
 function M.get_session_id()
@@ -49,35 +97,37 @@ function M.get_session_id()
 end
 
 function M.parse_agents()
-	local agents_file = M.resolve_agents_file()
-	local f = io.open(agents_file, "r")
-	if not f then
-		return {}
-	end
 	local entries = {}
-	for line in f:lines() do
-		if line:match("^|") and not line:match("^|%-") then
-			local fields = {}
-			for field in line:gmatch("|([^|]*)") do
-				fields[#fields + 1] = trim(field)
+	for _, agents_file in ipairs(M.resolve_all_agents_files()) do
+		local f = io.open(agents_file, "r")
+		if f then
+			local line_num = 0
+			for line in f:lines() do
+				line_num = line_num + 1
+				if line_num > 4 and line:match("^|") and not line:match("^|%-") then
+					local fields = {}
+					for field in line:gmatch("|([^|]*)") do
+						fields[#fields + 1] = trim(field)
+					end
+					local name = fields[1] or ""
+					local sid = fields[4] or ""
+					if name ~= "" and name ~= "Name" and sid ~= "" and sid ~= "Session ID" then
+						entries[#entries + 1] = {
+							name = name,
+							status = fields[2] or "",
+							od = fields[3] or "",
+							sid = sid,
+							description = fields[5] or "",
+							started = fields[6] or "",
+							updated = fields[7] or "",
+							dir = fields[8] or "",
+						}
+					end
+				end
 			end
-			local name = fields[1] or ""
-			local sid = fields[4] or ""
-			if name ~= "" and name ~= "Name" and sid ~= "" and sid ~= "Session ID" then
-				entries[#entries + 1] = {
-					name = name,
-					status = fields[2] or "",
-					od = fields[3] or "",
-					sid = sid,
-					description = fields[5] or "",
-					started = fields[6] or "",
-					updated = fields[7] or "",
-					dir = fields[8] or "",
-				}
-			end
+			f:close()
 		end
 	end
-	f:close()
 	return entries
 end
 

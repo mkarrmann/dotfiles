@@ -148,110 +148,10 @@ def _call_haiku(prompt: str, max_tokens: int = 256) -> Tuple[str, dict]:
 # ── AGENTS.md parsing (minimal, no tmux) ─────────────────
 
 
-def _is_gdrive_healthy() -> bool:
-    """Check gdrive FUSE mount health, matching agent-tracker.sh's _check_gdrive()."""
-    try:
-        if "gdrive" not in Path("/proc/mounts").read_text():
-            return False
-    except OSError:
-        return False
-    gdrive_dir = f"/data/users/{os.environ.get('USER', 'nobody')}/gdrive"
-    try:
-        subprocess.run(["ls", gdrive_dir], capture_output=True, timeout=3, check=True)
-        return True
-    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
-        return False
-
-
-_GDRIVE_MOUNT_POINT = Path(f"/data/users/{os.environ.get('USER', 'nobody')}/gdrive")
-_GDRIVE_REMOUNT_COOLDOWN = 300  # Don't retry more than once per 5 minutes
-_last_remount_attempt: float = 0
-
-
-def _attempt_gdrive_remount() -> bool:
-    """Try to remount gdrive. Returns True if mount came back."""
-    global _last_remount_attempt
-    now = time.time()
-    if now - _last_remount_attempt < _GDRIVE_REMOUNT_COOLDOWN:
-        return False
-    _last_remount_attempt = now
-
-    mount_point = str(_GDRIVE_MOUNT_POINT)
-    log.info("gdrive down — attempting remount at %s", mount_point)
-
-    # Need proxy env for googleapis access
-    remount_env = dict(os.environ)
-    remount_env.update({
-        "http_proxy": "http://fwdproxy:8080",
-        "https_proxy": "http://fwdproxy:8080",
-        "no_proxy": ".facebook.net,.facebook.com,.tfbnw.net,.fb.com,.thefacebook.com,localhost",
-    })
-    # Clear Claude Code identity vars so mclone uses normal user identity
-    for k in ("CLAUDECODE", "TMUX", "TMUX_PANE"):
-        remount_env.pop(k, None)
-
-    try:
-        subprocess.run(["fusermount", "-uz", mount_point],
-                       capture_output=True, timeout=5, env=remount_env)
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
-
-    try:
-        subprocess.run(
-            ["mclone", "mount", "gdrive:", mount_point,
-             "--vfs-cache-mode", "writes",
-             "--dir-cache-time", "1s",
-             "--poll-interval", "10s",
-             "--allow-non-empty",
-             "--daemon"],
-            capture_output=True, timeout=30, env=remount_env,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        log.error("gdrive remount failed: %s", e)
-        return False
-
-    time.sleep(3)
-    if _is_gdrive_healthy():
-        log.info("gdrive remount succeeded")
-        return True
-    else:
-        log.error("gdrive remount failed — mount did not come back")
-        return False
-
-
-_gdrive_was_healthy: Optional[bool] = None
-
-
-def resolve_agents_file() -> Path:
-    global _gdrive_was_healthy
-    if env := os.environ.get("CLAUDE_AGENTS_FILE"):
-        return Path(env)
-
-    healthy = _is_gdrive_healthy()
-
-    # Log state transitions
-    if _gdrive_was_healthy is not None and healthy != _gdrive_was_healthy:
-        if healthy:
-            log.info("gdrive mount recovered — using gdrive AGENTS.md")
-        else:
-            log.warning("gdrive mount lost — falling back to local agents.md")
-            _attempt_gdrive_remount()
-            healthy = _is_gdrive_healthy()
-            if healthy:
-                log.info("gdrive remount recovered — using gdrive AGENTS.md")
-    elif _gdrive_was_healthy is None and not healthy:
-        log.info("gdrive not mounted at startup — using local agents.md")
-
-    _gdrive_was_healthy = healthy
-
-    if healthy:
-        gdrive = Path(f"/data/users/{os.environ.get('USER', 'nobody')}/gdrive/AGENTS.md")
-        try:
-            if gdrive.exists():
-                return gdrive
-        except OSError:
-            pass
-    return Path.home() / ".claude" / "agents.md"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from agent_state import (
+    resolve_local_agents_file, resolve_all_agents_files, resolve_agents_file,
+)
 
 
 def parse_agents(path: Path) -> List[dict]:
@@ -455,8 +355,8 @@ def name_session(agent: dict, transcript: str) -> Tuple[str, dict]:
 
 
 def rename_in_agents_md(sid: str, old_name: str, new_name: str) -> None:
-    agents_file = resolve_agents_file()
-    lock_dir = agents_file.parent / ".agents.lock.d"
+    agents_file = resolve_local_agents_file()
+    lock_dir = agents_file.parent / f".agents-{_HOSTNAME}.lock.d"
 
     for i in range(10):
         try:
@@ -503,8 +403,8 @@ def rename_in_agents_md(sid: str, old_name: str, new_name: str) -> None:
 
 
 def update_agents_md(sid: str, new_status: str) -> None:
-    agents_file = resolve_agents_file()
-    lock_dir = agents_file.parent / ".agents.lock.d"
+    agents_file = resolve_local_agents_file()
+    lock_dir = agents_file.parent / f".agents-{_HOSTNAME}.lock.d"
 
     # Acquire lock (same protocol as agent-tracker.sh)
     for i in range(10):
@@ -639,8 +539,9 @@ def main():
 
     while True:
         try:
-            agents_file = resolve_agents_file()
-            agents = parse_agents(agents_file)
+            agents = []
+            for af in resolve_all_agents_files():
+                agents.extend(parse_agents(af))
             compute_idle(agents)
             state = load_state()
 
@@ -728,7 +629,9 @@ def main():
                     if entry_count < NAMING_QUICK_MIN_ENTRIES:
                         continue
 
-                    fresh_agents = parse_agents(resolve_agents_file())
+                    fresh_agents = []
+                    for af in resolve_all_agents_files():
+                        fresh_agents.extend(parse_agents(af))
                     fresh = next((a for a in fresh_agents if a["session_id"] == sid), None)
                     if not fresh or not is_default_name(fresh["name"]):
                         continue
@@ -778,7 +681,9 @@ def main():
                     if entry_count < NAMING_FULL_MIN_ENTRIES:
                         continue
 
-                    fresh_agents = parse_agents(resolve_agents_file())
+                    fresh_agents = []
+                    for af in resolve_all_agents_files():
+                        fresh_agents.extend(parse_agents(af))
                     fresh = next((a for a in fresh_agents if a["session_id"] == sid), None)
                     if not fresh or not fresh["name"].startswith("qq:"):
                         continue

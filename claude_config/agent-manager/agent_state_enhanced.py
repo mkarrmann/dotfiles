@@ -373,18 +373,10 @@ def get_preview(pane_lines: List[str], count: int) -> List[str]:
 
 # ── Data Loading ──────────────────────────────────────────
 
-def resolve_agents_file() -> Path:
-    if env := os.environ.get("CLAUDE_AGENTS_FILE"):
-        return Path(env)
-    gdrive = Path(
-        f"/data/users/{os.environ.get('USER', 'nobody')}/gdrive/AGENTS.md"
-    )
-    try:
-        if gdrive.exists():
-            return gdrive
-    except OSError:
-        pass
-    return Path.home() / ".claude" / "agents.md"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from agent_state import (
+    resolve_local_agents_file, resolve_all_agents_files, resolve_agents_file,
+)
 
 
 def parse_agents(path: Path) -> List[Agent]:
@@ -491,14 +483,15 @@ def detect_status(a: Agent) -> None:
 
 
 def load_agents() -> List[Agent]:
-    path = resolve_agents_file()
-    agents = parse_agents(path)
-    enrich_pids(agents)
-    enrich_tmux(agents)
-    for a in agents:
+    all_agents = []
+    for path in resolve_all_agents_files():
+        all_agents.extend(parse_agents(path))
+    enrich_pids(all_agents)
+    enrich_tmux(all_agents)
+    for a in all_agents:
         detect_status(a)
-    compute_idle(agents)
-    return agents
+    compute_idle(all_agents)
+    return all_agents
 
 
 # ── Summary Printing ──────────────────────────────────────
@@ -582,5 +575,5 @@ __all__ = [
     'load_agents', 'parse_agents', 'detect_status',
     'print_summary', 'get_preview',
     'fmt_dur', 'vlen', 'tmux_cmd',
-    'resolve_agents_file',
+    'resolve_agents_file', 'resolve_local_agents_file', 'resolve_all_agents_files',
 ]

@@ -6,6 +6,7 @@ This patch prevents the watcher from overwriting sessions that are already
 marked as stopped, preventing the "stopped + waiting" contradiction.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -77,18 +78,17 @@ def verify_fix():
 
 
 def clean_agents_md():
-    """Clean up any sessions with conflicting statuses"""
+    """Clean up any sessions with conflicting statuses in the local per-host file"""
     from pathlib import Path
     import re
 
-    agents_file = Path.home() / ".claude" / "agents.md"
-    if not agents_file.exists():
-        gdrive = Path(f"/data/users/{Path.home().name}/gdrive/AGENTS.md")
-        if gdrive.exists():
-            agents_file = gdrive
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from agent_state import resolve_local_agents_file
+
+    agents_file = resolve_local_agents_file()
 
     if not agents_file.exists():
-        print("Could not find AGENTS.md")
+        print("Could not find agents file")
         return
 
     content = agents_file.read_text()
