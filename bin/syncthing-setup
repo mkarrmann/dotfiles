@@ -51,13 +51,17 @@ if [[ ! -f "$CONFIG_XML" ]]; then
   mkdir -p "$CONFIG_DIR"
   if syncthing generate --home="$CONFIG_DIR" --no-port-probing 2>/dev/null; then
     echo "generated $CONFIG_XML"
+  elif syncthing generate --home="$CONFIG_DIR" 2>/dev/null; then
+    echo "generated $CONFIG_XML"
+  elif syncthing -generate="$CONFIG_DIR" 2>/dev/null; then
+    echo "generated $CONFIG_XML"
   else
-    syncthing serve --no-browser &>/dev/null &
+    syncthing serve --no-browser --home="$CONFIG_DIR" &>/dev/null &
     local_pid=$!
     sleep 3
     kill "$local_pid" 2>/dev/null; wait "$local_pid" 2>/dev/null || true
     if [[ ! -f "$CONFIG_XML" ]]; then
-      echo "ERROR: Failed to generate syncthing config" >&2
+      echo "ERROR: Failed to generate syncthing config. Try: syncthing generate --help" >&2
       exit 1
     fi
     echo "generated $CONFIG_XML (via serve)"
