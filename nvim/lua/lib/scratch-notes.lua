@@ -11,7 +11,7 @@ local ARCHIVE_SUBDIR = "Archive/Pad"
 local state = {}
 
 local function vault_dir()
-	return vim.g.obsidian_vault or vim.fn.expand("~/obsidian")
+	return require("lib.agent-session").resolve_vault_root()
 end
 
 local function pad_dir()

@@ -20,7 +20,7 @@ return {
 				end,
 			})
 
-			local vault = vim.g.obsidian_vault or vim.fn.expand("~/obsidian")
+			local vault = require("lib.agent-session").resolve_vault_root()
 			local mappings = require("obsidian.mappings")
 			require("obsidian").setup({
 				workspaces = { { name = "default", path = vault } },

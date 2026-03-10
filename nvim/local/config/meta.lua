@@ -1,7 +1,7 @@
 -- Apply environment-specific configuration (Meta, etc.)
 require("lib.env").setup()
 
-vim.g.obsidian_vault = vim.fn.expand("~/Work")
+vim.g.obsidian_vault = require("lib.agent-session").resolve_vault_root()
 
 local meta_hg = nil
 do

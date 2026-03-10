@@ -8,30 +8,43 @@ local function trim(value)
 	return (tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
+function M.resolve_vault_root()
+	if vim.g.obsidian_vault then
+		return vim.g.obsidian_vault
+	end
+	local conf = vim.fn.expand("~/.claude/obsidian-vault.conf")
+	if vim.fn.filereadable(conf) == 1 then
+		for _, line in ipairs(vim.fn.readfile(conf)) do
+			local val = line:match("^OBSIDIAN_VAULT_ROOT%s*=%s*(.+)$")
+			if val then
+				val = val:gsub('^"(.*)"$', "%1"):gsub("^'(.*)'$", "%1")
+				val = val:gsub("%$HOME", vim.fn.expand("~"))
+				local env_default = val:match('^${OBSIDIAN_VAULT:%-(.+)}$')
+				if env_default then
+					val = vim.env.OBSIDIAN_VAULT
+					if not val then
+						vim.schedule(function()
+							vim.notify(
+								"OBSIDIAN_VAULT not set — using default: " .. env_default
+									.. "\nSet it in ~/.localrc to point to your vault.",
+								vim.log.levels.WARN
+							)
+						end)
+						val = env_default
+					end
+				end
+				return val
+			end
+		end
+	end
+	return vim.fn.expand("~/obsidian")
+end
+
 local function resolve_agents_dir()
 	if vim.env.CLAUDE_AGENTS_FILE then
 		return vim.fn.fnamemodify(vim.env.CLAUDE_AGENTS_FILE, ":h")
 	end
-	local vault = vim.g.obsidian_vault
-	if not vault then
-		local conf = vim.fn.expand("~/.claude/obsidian-vault.conf")
-		if vim.fn.filereadable(conf) == 1 then
-			for _, line in ipairs(vim.fn.readfile(conf)) do
-				local val = line:match("^OBSIDIAN_VAULT_ROOT%s*=%s*(.+)$")
-				if val then
-					val = val:gsub('^"(.*)"$', "%1"):gsub("^'(.*)'$", "%1")
-					val = val:gsub("%$HOME", vim.fn.expand("~"))
-					local env_default = val:match('^${OBSIDIAN_VAULT:%-(.+)}$')
-					if env_default then
-						val = vim.env.OBSIDIAN_VAULT or env_default
-					end
-					vault = val
-					break
-				end
-			end
-		end
-	end
-	vault = vault or vim.fn.expand("~/obsidian")
+	local vault = M.resolve_vault_root()
 	if vim.fn.isdirectory(vault) == 1 then
 		return vault
 	end
