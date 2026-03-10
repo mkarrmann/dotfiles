@@ -165,7 +165,8 @@ fi
 tmp=$(jq '
   .permissions.defaultMode = "bypassPermissions" |
   .env |= ((. // {}) + {
-    "DISABLE_AUTOUPDATER": "1"
+    "DISABLE_AUTOUPDATER": "1",
+    "MCP_TIMEOUT": "120000"
   }) |
   .statusLine = {"type": "command", "command": "~/.claude/statusline.sh"} |
   .hooks.PreToolUse = [
