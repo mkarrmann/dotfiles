@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# syncthing-setup — Set up Syncthing for Obsidian vault sync between Mac and devserver.
+#
+# Usage:
+#   syncthing-setup [VAULT_DIR]
+#
+# Detects Mac vs Linux (devserver) and applies appropriate config.
+# Idempotent — safe to re-run.
+set -euo pipefail
+
+IS_MAC=false
+[[ "$(uname -s)" == "Darwin" ]] && IS_MAC=true
+
+if $IS_MAC; then
+  VAULT_DIR="${1:-$HOME/Documents/Personal}"
+else
+  VAULT_DIR="${1:-$HOME/obsidian}"
+fi
+
+SYNCTHING_PORT=8084
+
+if $IS_MAC; then
+  CONFIG_DIR="$HOME/Library/Application Support/Syncthing"
+else
+  CONFIG_DIR="$HOME/.config/syncthing"
+fi
+CONFIG_XML="$CONFIG_DIR/config.xml"
+
+# ── Install ──────────────────────────────────────────────────
+
+if ! command -v syncthing &>/dev/null; then
+  echo "Installing syncthing..."
+  if $IS_MAC; then
+    brew install syncthing
+  elif command -v dnf &>/dev/null; then
+    sudo dnf install -y syncthing
+  elif command -v apt-get &>/dev/null; then
+    sudo apt-get install -y syncthing
+  else
+    echo "ERROR: No package manager found. Install syncthing manually." >&2
+    exit 1
+  fi
+fi
+
+echo "$(syncthing --version 2>/dev/null | head -1)"
+
+# ── Generate initial config ──────────────────────────────────
+
+if [[ ! -f "$CONFIG_XML" ]]; then
+  echo "Generating initial config..."
+  mkdir -p "$CONFIG_DIR"
+  if syncthing generate --home="$CONFIG_DIR" --no-port-probing 2>/dev/null; then
+    echo "generated $CONFIG_XML"
+  else
+    syncthing serve --no-browser &>/dev/null &
+    local_pid=$!
+    sleep 3
+    kill "$local_pid" 2>/dev/null; wait "$local_pid" 2>/dev/null || true
+    if [[ ! -f "$CONFIG_XML" ]]; then
+      echo "ERROR: Failed to generate syncthing config" >&2
+      exit 1
+    fi
+    echo "generated $CONFIG_XML (via serve)"
+  fi
+else
+  echo "$CONFIG_XML already exists"
+fi
+
+# ── Vault directory + .stignore ──────────────────────────────
+
+mkdir -p "$VAULT_DIR"
+
+STIGNORE="$VAULT_DIR/.stignore"
+if [[ ! -f "$STIGNORE" ]]; then
+  cat > "$STIGNORE" << 'EOF'
+// Syncthing ignore patterns for Obsidian vault
+.trash
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+EOF
+  echo "created $STIGNORE"
+else
+  echo "$STIGNORE already exists"
+fi
+
+# ── Platform-specific config ─────────────────────────────────
+
+DEVICE_ID=$(grep '<device ' "$CONFIG_XML" 2>/dev/null | head -1 | sed 's/.*id="\([^"]*\)".*/\1/' || echo "(unknown — check web UI)")
+
+if $IS_MAC; then
+  # Mac: keep default config, just start the service
+  if brew services list 2>/dev/null | grep -q "syncthing.*started"; then
+    echo "syncthing service already running"
+  else
+    brew services start syncthing 2>/dev/null \
+      && echo "started syncthing via brew services" \
+      || echo "start manually: brew services start syncthing" >&2
+  fi
+
+  cat << EOF
+
+=== Mac Syncthing Setup Complete ===
+
+Device ID:  $DEVICE_ID
+Vault dir:  $VAULT_DIR
+Web UI:     http://127.0.0.1:8384/
+
+Next steps:
+  1. Open http://127.0.0.1:8384/ and set username/password.
+  2. Run syncthing-setup on your devserver.
+  3. Add devserver as remote device (paste its Device ID).
+  4. Share folder — set path to: $VAULT_DIR
+
+EOF
+
+else
+  # Devserver: custom port, no relay/announce, systemd
+  if $IS_MAC; then
+    SED_I=(sed -i '')
+  else
+    SED_I=(sed -i)
+  fi
+
+  "${SED_I[@]}" \
+    -e "s|<listenAddress>[^<]*</listenAddress>|<listenAddress>tcp://0.0.0.0:$SYNCTHING_PORT</listenAddress>|" \
+    -e 's|<globalAnnounceEnabled>true</globalAnnounceEnabled>|<globalAnnounceEnabled>false</globalAnnounceEnabled>|' \
+    -e 's|<relaysEnabled>true</relaysEnabled>|<relaysEnabled>false</relaysEnabled>|' \
+    -e 's|<natEnabled>true</natEnabled>|<natEnabled>false</natEnabled>|' \
+    "$CONFIG_XML"
+
+  echo "configured: port=$SYNCTHING_PORT, no relay/announce"
+
+  if command -v systemctl &>/dev/null; then
+    if sudo systemctl enable --now "syncthing@${USER}.service" 2>/dev/null; then
+      echo "enabled syncthing@${USER}.service"
+    else
+      echo "WARNING: systemctl failed — start manually: syncthing serve --no-browser" >&2
+    fi
+  fi
+
+  HOSTNAME=$(hostname -s 2>/dev/null || hostname)
+  FQDN=$(hostname -f 2>/dev/null || echo "${HOSTNAME}.facebook.com")
+
+  cat << EOF
+
+=== Devserver Syncthing Setup Complete ===
+
+Device ID:  $DEVICE_ID
+Vault dir:  $VAULT_DIR
+Listen:     tcp://0.0.0.0:$SYNCTHING_PORT
+
+Set web UI credentials (first time only):
+  ssh $FQDN -L18384:localhost:8384
+  Open http://localhost:18384/ and set username/password.
+
+Pair with Mac:
+  1. Mac Syncthing UI → Add Remote Device
+     Device ID: $DEVICE_ID
+     Address:   tcp://$FQDN:$SYNCTHING_PORT
+
+  2. Accept on devserver UI, share vault folder.
+     Devserver path: $VAULT_DIR
+     Mac path:       ~/Documents/Personal
+
+EOF
+fi
