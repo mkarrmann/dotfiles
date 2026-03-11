@@ -42,7 +42,29 @@ if ! command -v syncthing &>/dev/null; then
   fi
 fi
 
-echo "$(syncthing --version 2>/dev/null | head -1)"
+SYNCTHING_VERSION=$(syncthing --version 2>/dev/null | head -1 | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' || echo "v0.0.0")
+echo "syncthing $SYNCTHING_VERSION"
+
+# ── Upgrade to v2.x on devservers (v1.x protocol is incompatible) ──
+
+REQUIRED_MAJOR=2
+CURRENT_MAJOR=$(echo "$SYNCTHING_VERSION" | sed 's/^v//' | cut -d. -f1)
+
+if ! $IS_MAC && [[ "$CURRENT_MAJOR" -lt "$REQUIRED_MAJOR" ]]; then
+  UPGRADE_VERSION="v2.0.15"
+  echo "WARNING: syncthing $SYNCTHING_VERSION is incompatible with v2.x peers"
+  echo "Upgrading to $UPGRADE_VERSION..."
+  TMPDIR=$(mktemp -d)
+  TARBALL="syncthing-linux-amd64-${UPGRADE_VERSION}.tar.gz"
+  if curl -sL "https://github.com/syncthing/syncthing/releases/download/${UPGRADE_VERSION}/${TARBALL}" | tar xz -C "$TMPDIR"; then
+    SYNCTHING_BIN=$(command -v syncthing)
+    sudo cp "$TMPDIR/syncthing-linux-amd64-${UPGRADE_VERSION}/syncthing" "$SYNCTHING_BIN"
+    echo "upgraded $(syncthing --version 2>/dev/null | head -1)"
+  else
+    echo "WARNING: auto-upgrade failed — download manually from GitHub" >&2
+  fi
+  rm -rf "$TMPDIR"
+fi
 
 # ── Generate initial config ──────────────────────────────────
 
@@ -119,14 +141,8 @@ EOF
 
 else
   # Devserver: custom port, no relay/announce, systemd
-  if $IS_MAC; then
-    SED_I=(sed -i '')
-  else
-    SED_I=(sed -i)
-  fi
-
-  "${SED_I[@]}" \
-    -e "s|<listenAddress>[^<]*</listenAddress>|<listenAddress>tcp://0.0.0.0:$SYNCTHING_PORT</listenAddress>|" \
+  sed -i \
+    -e "s|<listenAddress>[^<]*</listenAddress>|<listenAddress>tcp://[::]:$SYNCTHING_PORT</listenAddress>|" \
     -e 's|<globalAnnounceEnabled>true</globalAnnounceEnabled>|<globalAnnounceEnabled>false</globalAnnounceEnabled>|' \
     -e 's|<relaysEnabled>true</relaysEnabled>|<relaysEnabled>false</relaysEnabled>|' \
     -e 's|<natEnabled>true</natEnabled>|<natEnabled>false</natEnabled>|' \
@@ -151,20 +167,18 @@ else
 
 Device ID:  $DEVICE_ID
 Vault dir:  $VAULT_DIR
-Listen:     tcp://0.0.0.0:$SYNCTHING_PORT
+Listen:     tcp://[::]:$SYNCTHING_PORT
 
 Set web UI credentials (first time only):
   ssh $FQDN -L18384:localhost:8384
   Open http://localhost:18384/ and set username/password.
 
-Pair with Mac:
-  1. Mac Syncthing UI → Add Remote Device
-     Device ID: $DEVICE_ID
-     Address:   tcp://$FQDN:$SYNCTHING_PORT
+Pair with another devserver (ports 8080-8099 are open):
+  Address: tcp://$FQDN:$SYNCTHING_PORT
 
-  2. Accept on devserver UI, share vault folder.
-     Devserver path: $VAULT_DIR
-     Mac path:       ~/Documents/Personal
+Pair with Mac (SSH tunnel required):
+  Mac:  ssh $FQDN -L28084:localhost:$SYNCTHING_PORT
+  Then add this devserver with address: tcp://localhost:28084
 
 EOF
 fi
