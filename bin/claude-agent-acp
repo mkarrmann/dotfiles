@@ -1,0 +1,19 @@
+#!/bin/bash
+export CLAUDE_CODE_EXECUTABLE="/usr/local/bin/claude"
+export NODE_EXTRA_CA_CERTS="/var/facebook/rootcanal/ca.pem"
+export CODEX_MANAGED_CONFIG_PATH=/dev/null
+unset CLAUDECODE
+
+# Discover Node.js: prefer dotslash-cached modern Node, fall back to system
+NODE="$(find "$HOME/.cache/dotslash" -name node -type f 2>/dev/null | head -1)"
+if [[ -z "$NODE" ]] || ! "$NODE" --version &>/dev/null; then
+  NODE="$(command -v node)"
+fi
+
+SCRIPT="$HOME/.nori/acp/node_modules/@zed-industries/claude-agent-acp/dist/index.js"
+if [[ ! -f "$SCRIPT" ]]; then
+  echo "ACP adapter not installed. Run: cd ~/.nori/acp && npm install @zed-industries/claude-agent-acp" >&2
+  exit 1
+fi
+
+exec "$NODE" "$SCRIPT" "$@"

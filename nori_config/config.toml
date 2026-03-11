@@ -1,0 +1,12 @@
+agent = "claude-code"
+
+[[agents]]
+name = "Claude Code"
+slug = "claude-code"
+
+[agents.distribution.local]
+command = "__HOME__/bin/claude-agent-acp"
+args = []
+
+[tui]
+connect_timeout = "2m"

@@ -333,7 +333,22 @@ sync_link_subdirs "$DOTFILES_DIR/agent_config/skills" "$HOME/.codex/skills" "SKI
 # Hammerspoon
 mkdir -p "$HOME/.hammerspoon"
 link_one "$DOTFILES_DIR/hammerspoon.lua" "$HOME/.hammerspoon/init.lua"
+#
+# Nori
+mkdir -p "$HOME/.nori/cli"
 
+nori_config="$HOME/.nori/cli/config.toml"
+nori_existed=$([[ -f "$nori_config" ]] && echo true || echo false)
+sed "s|__HOME__|$HOME|g" "$DOTFILES_DIR/nori_config/config.toml" > "$nori_config"
+if [[ -f "$HOME/.nori/cli/config.local.toml" ]]; then
+  echo "" >> "$nori_config"
+  cat "$HOME/.nori/cli/config.local.toml" >> "$nori_config"
+fi
+if $nori_existed; then
+  echo "updated $nori_config"
+else
+  echo "generated $nori_config"
+fi
 
 if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
     KEEP_ZSHRC=yes sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
