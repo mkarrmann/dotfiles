@@ -37,6 +37,16 @@ fi
 
 set -o vi
 
+# Ghostty workspace: keep the assigned title across shell prompts
+if [[ -n "${GHOSTTY_WORKSPACE_TITLE:-}" ]]; then
+  _ghostty_set_title() { printf '\033]0;%s\007' "$GHOSTTY_WORKSPACE_TITLE"; }
+  if [[ -n "${ZSH_VERSION:-}" ]]; then
+    precmd_functions+=(_ghostty_set_title)
+  else
+    PROMPT_COMMAND="_ghostty_set_title${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+  fi
+fi
+
 #THIS MUST BE AT THE END OF THE FILE FOR SDKMAN TO WORK!!!
 export SDKMAN_DIR="$HOME/.sdkman"
 if [ -s "$HOME/.sdkman/bin/sdkman-init.sh" ]; then

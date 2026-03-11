@@ -330,8 +330,9 @@ sync_link_subdirs "$DOTFILES_DIR/agent_config/skills" "$HOME/.codex/skills" "SKI
 
 # default.rules is machine-specific — managed by Codex itself
 
-# TODO look into using hammerspoon again
-# link_one "$DOTFILES_DIR/hammerspoon.lua" "$HOME/.hammerspoon/init.lua"
+# Hammerspoon
+mkdir -p "$HOME/.hammerspoon"
+link_one "$DOTFILES_DIR/hammerspoon.lua" "$HOME/.hammerspoon/init.lua"
 
 
 if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
