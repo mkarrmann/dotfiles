@@ -3,14 +3,13 @@ hs.ipc.cliInstall("/opt/homebrew", true)
 
 local spaces = require("hs.spaces")
 
--- Auto-launch disabled during development. Run ghostty-workspaces manually.
--- hs.timer.doAfter(3, function()
--- 	hs.task.new(os.getenv("HOME") .. "/dotfiles/bin/ghostty-workspaces", function(exitCode, stdOut, stdErr)
--- 		if exitCode ~= 0 then
--- 			hs.notify.show("ghostty-workspaces", "Failed (exit " .. exitCode .. ")", stdErr or "")
--- 		end
--- 	end):start()
--- end)
+hs.timer.doAfter(3, function()
+	hs.task.new(os.getenv("HOME") .. "/dotfiles/bin/ghostty-workspaces", function(exitCode, stdOut, stdErr)
+		if exitCode ~= 0 then
+			hs.notify.show("ghostty-workspaces", "Failed (exit " .. exitCode .. ")", stdErr or "")
+		end
+	end):start()
+end)
 
 local function userSpacesForScreen(screen)
 	local all = spaces.spacesForScreen(screen)
