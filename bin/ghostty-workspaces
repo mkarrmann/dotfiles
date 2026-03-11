@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ── Workspace definitions ────────────────────────────────────────────
+# Format: title|workdir|command
+# Order determines desktop assignment (first = Desktop 1, second = Desktop 2, etc.)
+# Edit these to match your workflow.
+WORKSPACES=(
+  "Project|~/src/project|zsh"
+  "Logs|~|tail -f /tmp/dev.log"
+  "Server|~/src/server|npm start"
+)
+# ─────────────────────────────────────────────────────────────────────
+
+window_exists() {
+  pgrep -q Ghostty || return 1
+  osascript \
+    -e 'on run argv' \
+    -e '  tell application "Ghostty"' \
+    -e '    repeat with w in windows' \
+    -e '      if name of w is (item 1 of argv) then return "found"' \
+    -e '    end repeat' \
+    -e '  end tell' \
+    -e '  return "not_found"' \
+    -e 'end run' \
+    -- "$1" 2>/dev/null | grep -q "found"
+}
+
+create_window() {
+  local title="$1" workdir="$2" cmd="$3"
+  workdir="${workdir/#\~/$HOME}"
+  osascript \
+    -e 'on run argv' \
+    -e '  set theTitle to item 1 of argv' \
+    -e '  set theWorkdir to item 2 of argv' \
+    -e '  set theCmd to item 3 of argv' \
+    -e '  set titleSeq to "printf '\''\\033]0;%s\\007'\'' " & quoted form of theTitle & " && exec " & theCmd' \
+    -e '  tell application "Ghostty"' \
+    -e '    set cfg to new surface configuration' \
+    -e '    set command of cfg to "zsh -lic " & quoted form of titleSeq' \
+    -e '    set initial working directory of cfg to theWorkdir' \
+    -e '    set wait after command of cfg to true' \
+    -e '    set environment variables of cfg to {"GHOSTTY_WORKSPACE_TITLE=" & theTitle}' \
+    -e '    new window with configuration cfg' \
+    -e '  end tell' \
+    -e 'end run' \
+    -- "$title" "$workdir" "$cmd"
+}
+
+ghostty_window_ids() {
+  hs -c "
+    local app = hs.application.get('Ghostty')
+    if not app then return '' end
+    local ids = {}
+    for _, w in ipairs(app:allWindows()) do ids[#ids+1] = tostring(w:id()) end
+    return table.concat(ids, ',')
+  " 2>/dev/null | grep -v '^--' | tr -d '[:space:]'
+}
+
+hs_eval() {
+  hs -c "$1" 2>/dev/null | grep -v '^--' | tr -d '[:space:]'
+}
+
+if ! command -v hs &>/dev/null; then
+  echo "ERROR: Hammerspoon CLI (hs) not found." >&2
+  echo "Ensure Hammerspoon is running and has loaded hs.ipc (restart it after init.sh)." >&2
+  exit 1
+fi
+
+# If Ghostty isn't running, launch it and close the default window it opens
+if ! pgrep -q Ghostty; then
+  open -a Ghostty
+  sleep 2
+  osascript -e 'tell application "Ghostty" to close window 1' 2>/dev/null || true
+fi
+
+total=${#WORKSPACES[@]}
+
+echo "Ensuring ${total} macOS Spaces exist..."
+added=$(hs_eval "return tostring(ghosttyEnsureSpaces(${total}))")
+if [[ "$added" == "-1" ]]; then
+  echo "ERROR: Failed to ensure spaces. Is Hammerspoon running with the workspace config loaded?" >&2
+  exit 1
+elif [[ "$added" != "0" ]]; then
+  echo "Created ${added} new Space(s). Waiting for Mission Control to settle..."
+  sleep 1.5
+fi
+
+for i in "${!WORKSPACES[@]}"; do
+  IFS='|' read -r title workdir cmd <<< "${WORKSPACES[$i]}"
+  space=$((i + 1))
+
+  if window_exists "$title"; then
+    echo "[$title] already exists, skipping"
+    continue
+  fi
+
+  echo "[$title] creating..."
+  known_ids=$(ghostty_window_ids)
+  create_window "$title" "$workdir" "$cmd"
+  sleep 1
+
+  echo "[$title] moving to Desktop ${space}..."
+  result=$(hs_eval "return ghosttyMoveNewestToSpace('${known_ids}', ${space})")
+  if [[ "$result" != "ok" ]]; then
+    echo "WARNING: [$title] move failed: ${result}" >&2
+  fi
+done
+
+echo "Done."
