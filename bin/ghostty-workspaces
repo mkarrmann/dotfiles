@@ -6,9 +6,13 @@ set -euo pipefail
 # Order determines desktop assignment (first = Desktop 1, second = Desktop 2, etc.)
 # Edit these to match your workflow.
 WORKSPACES=(
-  "Project|~/src/project|zsh"
-  "Logs|~|tail -f /tmp/dev.log"
-  "Server|~/src/server|npm start"
+  "Local MacOS|~|tmux new-session -A -s macos1"
+  "FTW: main1|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s main1\"'"
+  "FTW: fbsource1|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s fbsource1 -c ~/fbsource\"'"
+  "FTW: fbsource2|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s fbsource2 -c ~/fbsource2\"'"
+  "CCO: main1|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"tmux new-session -A -s main1\"'"
+  "CCO: fbsource1|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"tmux new-session -A -s fbsource1 -c ~/fbsource\"'"
+  "CCO: fbsource2|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"tmux new-session -A -s fbsource2 -c ~/fbsource2\"'"
 )
 # ─────────────────────────────────────────────────────────────────────
 
@@ -86,6 +90,7 @@ elif [[ "$added" != "0" ]]; then
   sleep 1.5
 fi
 
+failures=0
 for i in "${!WORKSPACES[@]}"; do
   IFS='|' read -r title workdir cmd <<< "${WORKSPACES[$i]}"
   space=$((i + 1))
@@ -97,14 +102,23 @@ for i in "${!WORKSPACES[@]}"; do
 
   echo "[$title] creating..."
   known_ids=$(ghostty_window_ids)
-  create_window "$title" "$workdir" "$cmd"
+  if ! create_window "$title" "$workdir" "$cmd"; then
+    echo "WARNING: [$title] creation failed, skipping" >&2
+    ((failures++)) || true
+    continue
+  fi
   sleep 1
 
   echo "[$title] moving to Desktop ${space}..."
   result=$(hs_eval "return ghosttyMoveNewestToSpace('${known_ids}', ${space})")
   if [[ "$result" != "ok" ]]; then
     echo "WARNING: [$title] move failed: ${result}" >&2
+    ((failures++)) || true
   fi
 done
 
-echo "Done."
+if [[ "$failures" -gt 0 ]]; then
+  echo "Done with ${failures} warning(s)."
+else
+  echo "Done."
+fi
