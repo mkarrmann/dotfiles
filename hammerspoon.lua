@@ -3,6 +3,15 @@ hs.ipc.cliInstall("/opt/homebrew", true)
 
 local spaces = require("hs.spaces")
 
+-- Auto-launch disabled during development. Run ghostty-workspaces manually.
+-- hs.timer.doAfter(3, function()
+-- 	hs.task.new(os.getenv("HOME") .. "/dotfiles/bin/ghostty-workspaces", function(exitCode, stdOut, stdErr)
+-- 		if exitCode ~= 0 then
+-- 			hs.notify.show("ghostty-workspaces", "Failed (exit " .. exitCode .. ")", stdErr or "")
+-- 		end
+-- 	end):start()
+-- end)
+
 local function userSpacesForScreen(screen)
 	local all = spaces.spacesForScreen(screen)
 	if not all then return nil end
@@ -15,8 +24,24 @@ local function userSpacesForScreen(screen)
 	return result
 end
 
-function ghosttyEnsureSpaces(count)
+ghosttyScreenId = nil
+
+function ghosttyInitScreen()
 	local screen = hs.screen.mainScreen()
+	ghosttyScreenId = screen:id()
+	return "ok"
+end
+
+local function getGhosttyScreen()
+	if ghosttyScreenId then
+		local screen = hs.screen.find(ghosttyScreenId)
+		if screen then return screen end
+	end
+	return hs.screen.mainScreen()
+end
+
+function ghosttyEnsureSpaces(count)
+	local screen = getGhosttyScreen()
 	local userSpaces = userSpacesForScreen(screen)
 	if not userSpaces then return -1 end
 
@@ -34,51 +59,44 @@ function ghosttyEnsureSpaces(count)
 	return needed
 end
 
-function ghosttyMoveToSpace(title, spaceIndex)
-	local screen = hs.screen.mainScreen()
+function ghosttyGotoSpace(spaceIndex)
+	local screen = getGhosttyScreen()
 	local userSpaces = userSpacesForScreen(screen)
 	if not userSpaces then return "ERROR: Failed to get spaces" end
 	if spaceIndex > #userSpaces then
 		return "ERROR: Space " .. spaceIndex .. " does not exist (" .. #userSpaces .. " user spaces)"
 	end
 
-	local app = hs.application.get("Ghostty")
-	if not app then return "ERROR: Ghostty not running" end
-
-	for _, win in ipairs(app:allWindows()) do
-		if win:title() == title then
-			local ok, err = spaces.moveWindowToSpace(win:id(), userSpaces[spaceIndex], true)
-			if not ok then return "ERROR: " .. tostring(err) end
-			return "ok"
-		end
-	end
-
-	return "ERROR: Window '" .. title .. "' not found"
+	spaces.gotoSpace(userSpaces[spaceIndex])
+	return "ok"
 end
 
-function ghosttyMoveNewestToSpace(knownIdStr, spaceIndex)
-	local screen = hs.screen.mainScreen()
-	local userSpaces = userSpacesForScreen(screen)
-	if not userSpaces then return "ERROR: Failed to get spaces" end
-	if spaceIndex > #userSpaces then return "ERROR: Space does not exist" end
+function ghosttySweepFocused()
+	local win = hs.window.focusedWindow()
+	if not win then return "empty" end
+	local app = win:application()
+	if not app then return "empty" end
+	if app:name() == "Ghostty" then return "ghostty" end
+	if win:screen() ~= getGhosttyScreen() then return "other_screen" end
+	local appName = app:name()
+	hs.eventtap.keyStroke({"ctrl", "alt", "shift"}, "1")
+	return "swept:" .. appName
+end
 
-	local app = hs.application.get("Ghostty")
-	if not app then return "ERROR: Ghostty not running" end
+function ghosttyThrowToSpace(spaceIndex)
+	hs.eventtap.keyStroke({"ctrl", "alt", "shift"}, tostring(spaceIndex))
+	return "ok"
+end
 
-	local known = {}
-	for id in knownIdStr:gmatch("[^,]+") do
-		known[tonumber(id) or -1] = true
+function ghosttyWindowExists(title)
+	local ghosttyApp = hs.application.find("Ghostty")
+	if not ghosttyApp then return false end
+	local ok, windows = pcall(function() return ghosttyApp:allWindows() end)
+	if not ok or not windows then return false end
+	for _, win in ipairs(windows) do
+		if win:title() == title then return true end
 	end
-
-	for _, win in ipairs(app:allWindows()) do
-		if not known[win:id()] then
-			local ok, err = spaces.moveWindowToSpace(win:id(), userSpaces[spaceIndex], true)
-			if not ok then return "ERROR: " .. tostring(err) end
-			return "ok"
-		end
-	end
-
-	return "ERROR: No new window found"
+	return false
 end
 
 -- Screen navigation

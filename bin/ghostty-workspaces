@@ -3,8 +3,8 @@ set -euo pipefail
 
 # ── Workspace definitions ────────────────────────────────────────────
 # Format: title|workdir|command
-# Order determines desktop assignment (first = Desktop 1, second = Desktop 2, etc.)
-# Edit these to match your workflow.
+# Desktop 1 is reserved as a general-purpose desktop.
+# Workspaces are placed on Desktops 2..N+1 in array order.
 WORKSPACES=(
   "Local MacOS|~|tmux new-session -A -s macos1"
   "FTW: main1|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s main1\"'"
@@ -17,17 +17,17 @@ WORKSPACES=(
 # ─────────────────────────────────────────────────────────────────────
 
 window_exists() {
-  pgrep -q Ghostty || return 1
-  osascript \
+  local result
+  result=$(osascript \
     -e 'on run argv' \
     -e '  tell application "Ghostty"' \
-    -e '    repeat with w in windows' \
-    -e '      if name of w is (item 1 of argv) then return "found"' \
-    -e '    end repeat' \
+    -e '    if (name of every window) contains (item 1 of argv) then' \
+    -e '      return "true"' \
+    -e '    end if' \
     -e '  end tell' \
-    -e '  return "not_found"' \
     -e 'end run' \
-    -- "$1" 2>/dev/null | grep -q "found"
+    -- "$1" 2>/dev/null) || return 1
+  [[ "$result" == "true" ]]
 }
 
 create_window() {
@@ -51,16 +51,6 @@ create_window() {
     -- "$title" "$workdir" "$cmd"
 }
 
-ghostty_window_ids() {
-  hs -c "
-    local app = hs.application.get('Ghostty')
-    if not app then return '' end
-    local ids = {}
-    for _, w in ipairs(app:allWindows()) do ids[#ids+1] = tostring(w:id()) end
-    return table.concat(ids, ',')
-  " 2>/dev/null | grep -v '^--' | tr -d '[:space:]'
-}
-
 hs_eval() {
   hs -c "$1" 2>/dev/null | grep -v '^--' | tr -d '[:space:]'
 }
@@ -71,8 +61,13 @@ if ! command -v hs &>/dev/null; then
   exit 1
 fi
 
+# Capture the current screen for all subsequent space operations.
+# Uses mainScreen() (screen with current focus) but locks it in so it
+# doesn't drift as windows are created on other screens.
+hs_eval "return ghosttyInitScreen()" >/dev/null
+
 # If Ghostty isn't running, launch it and close the default window it opens
-if ! pgrep -q Ghostty; then
+if ! osascript -e 'application "Ghostty" is running' 2>/dev/null | grep -q 'true'; then
   open -a Ghostty
   sleep 2
   osascript -e 'tell application "Ghostty" to close window 1' 2>/dev/null || true
@@ -80,8 +75,8 @@ fi
 
 total=${#WORKSPACES[@]}
 
-echo "Ensuring ${total} macOS Spaces exist..."
-added=$(hs_eval "return tostring(ghosttyEnsureSpaces(${total}))")
+echo "Ensuring $((total + 1)) macOS Spaces exist (1 general + ${total} workspaces)..."
+added=$(hs_eval "return tostring(ghosttyEnsureSpaces($((total + 1))))")
 if [[ "$added" == "-1" ]]; then
   echo "ERROR: Failed to ensure spaces. Is Hammerspoon running with the workspace config loaded?" >&2
   exit 1
@@ -91,9 +86,44 @@ elif [[ "$added" != "0" ]]; then
 fi
 
 failures=0
+swept=0
+max_sweeps=15
+
 for i in "${!WORKSPACES[@]}"; do
   IFS='|' read -r title workdir cmd <<< "${WORKSPACES[$i]}"
-  space=$((i + 1))
+  space=$((i + 2))
+
+  echo "[$title] switching to Desktop ${space}..."
+  result=$(hs_eval "return ghosttyGotoSpace(${space})")
+  if [[ "$result" != "ok" ]]; then
+    echo "WARNING: [$title] failed to switch to Desktop ${space}: ${result}" >&2
+    ((failures++)) || true
+    continue
+  fi
+  sleep 0.7
+
+  # Sweep non-Ghostty windows from this desktop to Desktop 1
+  prev_result=""
+  for attempt in $(seq 1 5); do
+    if [[ "$swept" -ge "$max_sweeps" ]]; then break; fi
+    result=$(hs_eval "return ghosttySweepFocused()")
+    case "$result" in
+      empty|ghostty|other_screen) break ;;
+      swept:*)
+        if [[ "$result" == "$prev_result" ]]; then
+          echo "WARNING: Window on Desktop $space could not be moved, skipping" >&2
+          break
+        fi
+        echo "Swept window from Desktop $space to Desktop 1"
+        ((swept++)) || true
+        prev_result="$result"
+        sleep 0.7
+        hs_eval "return ghosttyGotoSpace($space)" >/dev/null
+        sleep 0.7
+        ;;
+      *) break ;;
+    esac
+  done
 
   if window_exists "$title"; then
     echo "[$title] already exists, skipping"
@@ -101,21 +131,29 @@ for i in "${!WORKSPACES[@]}"; do
   fi
 
   echo "[$title] creating..."
-  known_ids=$(ghostty_window_ids)
+  hs_eval "return ghosttyGotoSpace(${space})" >/dev/null
+  sleep 0.5
   if ! create_window "$title" "$workdir" "$cmd"; then
     echo "WARNING: [$title] creation failed, skipping" >&2
     ((failures++)) || true
     continue
   fi
-  sleep 1
-
-  echo "[$title] moving to Desktop ${space}..."
-  result=$(hs_eval "return ghosttyMoveNewestToSpace('${known_ids}', ${space})")
-  if [[ "$result" != "ok" ]]; then
-    echo "WARNING: [$title] move failed: ${result}" >&2
-    ((failures++)) || true
-  fi
+  sleep 0.7
+  hs_eval "return ghosttyThrowToSpace(${space})" >/dev/null
+  sleep 0.5
 done
+
+if [[ "$swept" -gt 0 ]]; then
+  echo "Swept ${swept} window(s) to Desktop 1."
+fi
+
+# TODO: Fix positions of existing workspace windows that have been moved to the
+# wrong desktop. Blocked by hs.spaces.windowSpaces() being broken on macOS 26.
+# The sweep above handles non-Ghostty windows; repositioning Ghostty workspace
+# windows requires a working way to query which space a window is on.
+
+# Switch back to Desktop 1
+hs_eval "return ghosttyGotoSpace(1)" >/dev/null 2>&1 || true
 
 if [[ "$failures" -gt 0 ]]; then
   echo "Done with ${failures} warning(s)."
