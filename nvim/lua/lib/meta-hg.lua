@@ -742,24 +742,45 @@ local function filter_hidden_bookmarks(lines)
   return result
 end
 
+---Builds an ordered list of commit line numbers with the current commit first.
+---@param lines string[]
+---@return number[] ordered_lines
+local function ssl_hop_ordered_lines(lines)
+  local current_line
+  local other_lines = {}
+  for i, line in ipairs(lines) do
+    local commit = ssl_utils.parse_diff_line(line)
+    if commit then
+      if commit.is_current then
+        current_line = i
+      else
+        other_lines[#other_lines + 1] = i
+      end
+    end
+  end
+  local ordered = {}
+  if current_line then
+    ordered[#ordered + 1] = current_line
+  end
+  for _, ln in ipairs(other_lines) do
+    ordered[#ordered + 1] = ln
+  end
+  return ordered
+end
+
 ---@param bufnr number
 ---@param lines string[]
 local function ssl_place_hop_labels(bufnr, lines)
   vim.api.nvim_buf_clear_namespace(bufnr, SSL_HOP_NS, 0, -1)
-  local label_idx = 0
-  for i, line in ipairs(lines) do
-    local commit = ssl_utils.parse_diff_line(line)
-    if commit then
-      label_idx = label_idx + 1
-      local label = HOP_LABELS[label_idx]
-      if not label then
-        break
-      end
-      vim.api.nvim_buf_set_extmark(bufnr, SSL_HOP_NS, i - 1, 0, {
-        virt_text = { { " [" .. label .. "]", "HgSslHopLabel" } },
-        virt_text_pos = "eol",
-      })
+  for label_idx, line_nr in ipairs(ssl_hop_ordered_lines(lines)) do
+    local label = HOP_LABELS[label_idx]
+    if not label then
+      break
     end
+    vim.api.nvim_buf_set_extmark(bufnr, SSL_HOP_NS, line_nr - 1, 0, {
+      virt_text = { { " [" .. label .. "]", "HgSslHopLabel" } },
+      virt_text_pos = "eol",
+    })
   end
 end
 
@@ -1665,16 +1686,12 @@ local function HgSsl(opts)
   vim.keymap.set("n", "f", function()
     local lines = vim.api.nvim_buf_get_lines(SSL_STATE.bufnr, 0, -1, false)
     local label_to_line = {}
-    local label_idx = 0
-    for i, line in ipairs(lines) do
-      if ssl_utils.parse_diff_line(line) then
-        label_idx = label_idx + 1
-        local label = HOP_LABELS[label_idx]
-        if not label then
-          break
-        end
-        label_to_line[label] = i
+    for label_idx, line_nr in ipairs(ssl_hop_ordered_lines(lines)) do
+      local label = HOP_LABELS[label_idx]
+      if not label then
+        break
       end
+      label_to_line[label] = line_nr
     end
 
     if label_idx == 0 then
