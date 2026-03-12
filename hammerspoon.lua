@@ -87,17 +87,6 @@ function ghosttyThrowToSpace(spaceIndex)
 	return "ok"
 end
 
-function ghosttyWindowExists(title)
-	local ghosttyApp = hs.application.find("Ghostty")
-	if not ghosttyApp then return false end
-	local ok, windows = pcall(function() return ghosttyApp:allWindows() end)
-	if not ok or not windows then return false end
-	for _, win in ipairs(windows) do
-		if win:title() == title then return true end
-	end
-	return false
-end
-
 -- Screen navigation
 
 function getNextScreen()

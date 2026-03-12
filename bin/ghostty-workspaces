@@ -93,6 +93,11 @@ for i in "${!WORKSPACES[@]}"; do
   IFS='|' read -r title workdir cmd <<< "${WORKSPACES[$i]}"
   space=$((i + 2))
 
+  if window_exists "$title"; then
+    echo "[$title] already exists, skipping"
+    continue
+  fi
+
   echo "[$title] switching to Desktop ${space}..."
   result=$(hs_eval "return ghosttyGotoSpace(${space})")
   if [[ "$result" != "ok" ]]; then
@@ -124,11 +129,6 @@ for i in "${!WORKSPACES[@]}"; do
       *) break ;;
     esac
   done
-
-  if window_exists "$title"; then
-    echo "[$title] already exists, skipping"
-    continue
-  fi
 
   echo "[$title] creating..."
   hs_eval "return ghosttyGotoSpace(${space})" >/dev/null
