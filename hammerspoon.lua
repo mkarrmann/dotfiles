@@ -148,7 +148,7 @@ function ghosttyMoveWindowToSpace(windowId, spaceIndex)
 end
 
 -- Desktop Focus bridge
-dofile(os.getenv("HOME") .. "/dev/desktop-focus/providers/hammerspoon/init.lua")
+dofile(os.getenv("HOME") .. "/dev/orchest/providers/hammerspoon/init.lua")
 
 -- Screen navigation
 
