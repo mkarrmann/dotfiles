@@ -3,8 +3,7 @@ local M = {}
 function M.apply(win)
 	vim.wo[win].scrollbind = true
 	vim.wo[win].foldenable = false
-	vim.wo[win].relativenumber = false
-	vim.wo[win].statuscolumn = ""
+	vim.wo[win].relativenumber = true
 end
 
 function M.apply_pair(left_win, right_win, left_label, right_label, display_name)
