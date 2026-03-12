@@ -10,9 +10,6 @@ if [[ "$http_proxy" == *"fwdproxy"* ]] || [[ -n "$THRIFT_TLS_CL_CERT_PATH" ]]; t
     unset CLAUDE_CODE_CLIENT_CERT
     unset CODEX_OTEL_CLIENT_CERT
     unset OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE
-
-    # Try to bypass proxy for GitHub (may not work depending on network config)
-    export NO_PROXY="${NO_PROXY},github.com,*.github.com,raw.githubusercontent.com"
 fi
 
 # Add more environment-specific fixes here as needed
