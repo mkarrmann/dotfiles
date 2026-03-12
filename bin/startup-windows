@@ -23,7 +23,7 @@ WORKSPACES=(
 
 VSCODE_APP="VS Code @ FB"
 VSCODE_CMD="/Applications/VS Code @ FB.app/Contents/Resources/app/bin/code"
-STATE_FILE="${HOME}/.local/state/ghostty-workspaces"
+STATE_FILE="${HOME}/.local/state/startup-windows"
 VSCODE_HELPER=""
 # ─────────────────────────────────────────────────────────────────────
 

@@ -4,9 +4,9 @@ hs.ipc.cliInstall("/opt/homebrew", true)
 local spaces = require("hs.spaces")
 
 hs.timer.doAfter(3, function()
-	hs.task.new(os.getenv("HOME") .. "/dotfiles/bin/ghostty-workspaces", function(exitCode, stdOut, stdErr)
+	hs.task.new(os.getenv("HOME") .. "/dotfiles/bin/startup-windows", function(exitCode, stdOut, stdErr)
 		if exitCode ~= 0 then
-			hs.notify.show("ghostty-workspaces", "Failed (exit " .. exitCode .. ")", stdErr or "")
+			hs.notify.show("startup-windows", "Failed (exit " .. exitCode .. ")", stdErr or "")
 		end
 	end):start()
 end)
