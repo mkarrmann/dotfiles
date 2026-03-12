@@ -16,18 +16,36 @@ WORKSPACES=(
 )
 # ─────────────────────────────────────────────────────────────────────
 
+STATE_FILE="${HOME}/.local/state/ghostty-workspaces"
+
+get_live_window_ids() {
+  osascript -e 'tell application "Ghostty"' \
+    -e '  set output to ""' \
+    -e '  repeat with w in every window' \
+    -e '    set output to output & (id of w) & linefeed' \
+    -e '  end repeat' \
+    -e '  return output' \
+    -e 'end tell' 2>/dev/null
+}
+
 window_exists() {
-  local result
-  result=$(osascript \
-    -e 'on run argv' \
-    -e '  tell application "Ghostty"' \
-    -e '    if (name of every window) contains (item 1 of argv) then' \
-    -e '      return "true"' \
-    -e '    end if' \
-    -e '  end tell' \
-    -e 'end run' \
-    -- "$1" 2>/dev/null) || return 1
-  [[ "$result" == "true" ]]
+  local title="$1"
+  [[ -f "$STATE_FILE" ]] || return 1
+  local saved_id
+  saved_id=$(grep "^${title}	" "$STATE_FILE" 2>/dev/null | cut -f2)
+  [[ -n "$saved_id" ]] || return 1
+  echo "$LIVE_WINDOW_IDS" | grep -qF "$saved_id"
+}
+
+save_window_id() {
+  local title="$1" window_id="$2"
+  mkdir -p "$(dirname "$STATE_FILE")"
+  # Remove any existing entry for this title, then append
+  if [[ -f "$STATE_FILE" ]]; then
+    grep -v "^${title}	" "$STATE_FILE" > "${STATE_FILE}.tmp" 2>/dev/null || true
+    mv "${STATE_FILE}.tmp" "$STATE_FILE"
+  fi
+  printf '%s\t%s\n' "$title" "$window_id" >> "$STATE_FILE"
 }
 
 create_window() {
@@ -72,6 +90,9 @@ if ! osascript -e 'application "Ghostty" is running' 2>/dev/null | grep -q 'true
   sleep 2
   osascript -e 'tell application "Ghostty" to close window 1' 2>/dev/null || true
 fi
+
+# Snapshot all live Ghostty window IDs for existence checks
+LIVE_WINDOW_IDS=$(get_live_window_ids)
 
 total=${#WORKSPACES[@]}
 
@@ -133,10 +154,15 @@ for i in "${!WORKSPACES[@]}"; do
   echo "[$title] creating..."
   hs_eval "return ghosttyGotoSpace(${space})" >/dev/null
   sleep 0.5
-  if ! create_window "$title" "$workdir" "$cmd"; then
+  window_output=$(create_window "$title" "$workdir" "$cmd") || {
     echo "WARNING: [$title] creation failed, skipping" >&2
     ((failures++)) || true
     continue
+  }
+  # Extract window ID (e.g. "window id tab-group-b48b77a20") and save to state
+  window_id=$(echo "$window_output" | sed -n 's/^window id //p' | tr -d '[:space:]')
+  if [[ -n "$window_id" ]]; then
+    save_window_id "$title" "$window_id"
   fi
   sleep 0.7
   hs_eval "return ghosttyThrowToSpace(${space})" >/dev/null
