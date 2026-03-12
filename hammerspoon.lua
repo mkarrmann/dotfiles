@@ -70,22 +70,61 @@ function ghosttyGotoSpace(spaceIndex)
 	return "ok"
 end
 
+local workspaceApps = { ["Ghostty"] = true, ["VS Code @ Meta"] = true }
+
 function ghosttySweepFocused()
 	local win = hs.window.focusedWindow()
 	if not win then return "empty" end
 	local app = win:application()
 	if not app then return "empty" end
-	if app:name() == "Ghostty" then return "ghostty" end
+	local name = app:name()
+	if workspaceApps[name] then return name end
 	if win:screen() ~= getGhosttyScreen() then return "other_screen" end
-	local appName = app:name()
 	hs.eventtap.keyStroke({"ctrl", "alt", "shift"}, "1")
-	return "swept:" .. appName
+	return "swept:" .. name
 end
 
+local throwSpaceKeys = {"1","2","3","4","5","6","7","8","9","0","-","="}
+
 function ghosttyThrowToSpace(spaceIndex)
-	hs.eventtap.keyStroke({"ctrl", "alt", "shift"}, tostring(spaceIndex))
+	if spaceIndex <= #throwSpaceKeys then
+		hs.eventtap.keyStroke({"ctrl", "alt", "shift"}, throwSpaceKeys[spaceIndex])
+		return "ok"
+	end
+	return "ERROR: Space " .. spaceIndex .. " out of range"
+end
+
+function ghosttyFocusAndThrow(windowId, spaceIndex)
+	if spaceIndex > #throwSpaceKeys then
+		return "ERROR: Space " .. spaceIndex .. " out of range"
+	end
+	local ok, result, raw = hs.osascript.applescript(
+		'tell application "Ghostty"\n' ..
+		'  set index of (first window whose id is "' .. windowId .. '") to 1\n' ..
+		'  activate\n' ..
+		'end tell'
+	)
+	if not ok then return "ERROR: focus failed: " .. tostring(raw) end
+	hs.timer.usleep(1000000)
+	hs.eventtap.keyStroke({"ctrl", "alt", "shift"}, throwSpaceKeys[spaceIndex])
 	return "ok"
 end
+
+function ghosttyMoveWindowToSpace(windowId, spaceIndex)
+	local screen = getGhosttyScreen()
+	local userSpaces = userSpacesForScreen(screen)
+	if not userSpaces or spaceIndex > #userSpaces then
+		return "ERROR: Space " .. spaceIndex .. " out of range"
+	end
+	local ok, err = spaces.moveWindowToSpace(windowId, userSpaces[spaceIndex])
+	if not ok then
+		return "MOVE_FAILED: " .. tostring(err)
+	end
+	return "ok"
+end
+
+-- Desktop Focus bridge
+dofile(os.getenv("HOME") .. "/dev/desktop-focus/providers/hammerspoon/init.lua")
 
 -- Screen navigation
 
