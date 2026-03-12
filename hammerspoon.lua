@@ -4,16 +4,20 @@ hs.ipc.cliInstall("/opt/homebrew", true)
 local spaces = require("hs.spaces")
 
 hs.timer.doAfter(3, function()
-	hs.task.new(os.getenv("HOME") .. "/dotfiles/bin/startup-windows", function(exitCode, stdOut, stdErr)
-		if exitCode ~= 0 then
-			hs.notify.show("startup-windows", "Failed (exit " .. exitCode .. ")", stdErr or "")
-		end
-	end):start()
+	hs.task
+		.new(os.getenv("HOME") .. "/dotfiles/bin/startup-windows", function(exitCode, stdOut, stdErr)
+			if exitCode ~= 0 then
+				hs.notify.show("startup-windows", "Failed (exit " .. exitCode .. ")", stdErr or "")
+			end
+		end)
+		:start()
 end)
 
 local function userSpacesForScreen(screen)
 	local all = spaces.spacesForScreen(screen)
-	if not all then return nil end
+	if not all then
+		return nil
+	end
 	local result = {}
 	for _, sid in ipairs(all) do
 		if spaces.spaceType(sid) == "user" then
@@ -34,7 +38,9 @@ end
 local function getGhosttyScreen()
 	if ghosttyScreenId then
 		local screen = hs.screen.find(ghosttyScreenId)
-		if screen then return screen end
+		if screen then
+			return screen
+		end
 	end
 	return hs.screen.mainScreen()
 end
@@ -42,10 +48,14 @@ end
 function ghosttyEnsureSpaces(count)
 	local screen = getGhosttyScreen()
 	local userSpaces = userSpacesForScreen(screen)
-	if not userSpaces then return -1 end
+	if not userSpaces then
+		return -1
+	end
 
 	local needed = count - #userSpaces
-	if needed <= 0 then return 0 end
+	if needed <= 0 then
+		return 0
+	end
 
 	for i = 1, needed do
 		local closeMC = (i == needed)
@@ -61,7 +71,9 @@ end
 function ghosttyGotoSpace(spaceIndex)
 	local screen = getGhosttyScreen()
 	local userSpaces = userSpacesForScreen(screen)
-	if not userSpaces then return "ERROR: Failed to get spaces" end
+	if not userSpaces then
+		return "ERROR: Failed to get spaces"
+	end
 	if spaceIndex > #userSpaces then
 		return "ERROR: Space " .. spaceIndex .. " does not exist (" .. #userSpaces .. " user spaces)"
 	end
@@ -74,21 +86,29 @@ local workspaceApps = { ["Ghostty"] = true, ["VS Code @ Meta"] = true }
 
 function ghosttySweepFocused()
 	local win = hs.window.focusedWindow()
-	if not win then return "empty" end
+	if not win then
+		return "empty"
+	end
 	local app = win:application()
-	if not app then return "empty" end
+	if not app then
+		return "empty"
+	end
 	local name = app:name()
-	if workspaceApps[name] then return name end
-	if win:screen() ~= getGhosttyScreen() then return "other_screen" end
-	hs.eventtap.keyStroke({"ctrl", "alt", "shift"}, "1")
+	if workspaceApps[name] then
+		return name
+	end
+	if win:screen() ~= getGhosttyScreen() then
+		return "other_screen"
+	end
+	hs.eventtap.keyStroke({ "ctrl", "alt", "shift" }, "1")
 	return "swept:" .. name
 end
 
-local throwSpaceKeys = {"1","2","3","4","5","6","7","8","9","0","-","="}
+local throwSpaceKeys = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=" }
 
 function ghosttyThrowToSpace(spaceIndex)
 	if spaceIndex <= #throwSpaceKeys then
-		hs.eventtap.keyStroke({"ctrl", "alt", "shift"}, throwSpaceKeys[spaceIndex])
+		hs.eventtap.keyStroke({ "ctrl", "alt", "shift" }, throwSpaceKeys[spaceIndex])
 		return "ok"
 	end
 	return "ERROR: Space " .. spaceIndex .. " out of range"
@@ -99,14 +119,18 @@ function ghosttyFocusAndThrow(windowId, spaceIndex)
 		return "ERROR: Space " .. spaceIndex .. " out of range"
 	end
 	local ok, result, raw = hs.osascript.applescript(
-		'tell application "Ghostty"\n' ..
-		'  set index of (first window whose id is "' .. windowId .. '") to 1\n' ..
-		'  activate\n' ..
-		'end tell'
+		'tell application "Ghostty"\n'
+			.. '  set index of (first window whose id is "'
+			.. windowId
+			.. '") to 1\n'
+			.. "  activate\n"
+			.. "end tell"
 	)
-	if not ok then return "ERROR: focus failed: " .. tostring(raw) end
+	if not ok then
+		return "ERROR: focus failed: " .. tostring(raw)
+	end
 	hs.timer.usleep(1000000)
-	hs.eventtap.keyStroke({"ctrl", "alt", "shift"}, throwSpaceKeys[spaceIndex])
+	hs.eventtap.keyStroke({ "ctrl", "alt", "shift" }, throwSpaceKeys[spaceIndex])
 	return "ok"
 end
 
@@ -168,33 +192,3 @@ function getPrevScreen()
 	end
 	return 1
 end
-
-hs.hotkey.bind(
-	{"ctrl"},
-	"k",
-	function()
-		local nextScreen = getNextScreen()
-		local point = {}
-		point.x = nextScreen:frame().w / 2
-		point.y = nextScreen:frame().h / 2
-		hs.mouse.setRelativePosition(point, nextScreen)
-		local w = getWindowUnderMouse()
-		w:focus()
-	end
-)
-
-hs.hotkey.bind(
-	{"ctrl"},
-	"j",
-	function()
-		local prevScreen = getPrevScreen()
-		local point = {}
-		point.x = prevScreen:frame().w / 2
-		point.y = prevScreen:frame().h / 2
-		hs.mouse.setRelativePosition(point, prevScreen)
-		-- There's a bug where this sometimes returns nil. Therefore, nothing
-		-- is focused.
-		local w = getWindowUnderMouse()
-		w:focus()
-	end
-)
