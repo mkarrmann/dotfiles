@@ -20,6 +20,14 @@ local KEYMAPS = { "]f", "[f", "]F", "[F", "gf", "gq" }
 ---@type table<integer, DiffSession>
 M.sessions = {}
 
+function M.create_pair_wins()
+	vim.cmd("rightbelow vsplit")
+	local left_win = vim.api.nvim_get_current_win()
+	vim.cmd("rightbelow vsplit")
+	local right_win = vim.api.nvim_get_current_win()
+	return left_win, right_win
+end
+
 local function set_keymaps(session)
 	---@type table<integer, boolean>
 	local seen = {}

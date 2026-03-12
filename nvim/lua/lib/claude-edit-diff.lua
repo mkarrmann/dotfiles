@@ -71,10 +71,7 @@ local function ensure_session()
 		vim.api.nvim_set_current_win(_term_win)
 	end
 
-	vim.cmd("belowright vsplit")
-	local right_win = vim.api.nvim_get_current_win()
-	vim.cmd("belowright vsplit")
-	local left_win = vim.api.nvim_get_current_win()
+	local left_win, right_win = diff_session.create_pair_wins()
 
 	session = {
 		pairs = {},

@@ -171,10 +171,7 @@ vim.api.nvim_create_user_command("HgDiffSplitWorkingSet", function()
 
 	local origin_win = vim.api.nvim_get_current_win()
 
-	vim.cmd("rightbelow vsplit")
-	local left_win = vim.api.nvim_get_current_win()
-	vim.cmd("rightbelow vsplit")
-	local right_win = vim.api.nvim_get_current_win()
+	local left_win, right_win = diff_session.create_pair_wins()
 
 	local closing = false
 
