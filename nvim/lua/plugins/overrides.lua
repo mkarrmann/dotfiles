@@ -77,6 +77,14 @@ return {
 		end,
 	},
 	{
+		"folke/snacks.nvim",
+		opts = {
+			notifier = {
+				timeout = 10000,
+			},
+		},
+	},
+	{
 		"folke/flash.nvim",
 		keys = {
 			{ "s", mode = { "n", "x", "o" }, false },
