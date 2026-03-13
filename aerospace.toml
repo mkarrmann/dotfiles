@@ -1,0 +1,138 @@
+config-version = 2
+start-at-login = true
+
+after-startup-command = [
+    'exec-and-forget sleep 3 && startup-windows',
+    'exec-and-forget sketchybar',
+]
+
+exec-on-workspace-change = ['/bin/bash', '-c',
+    'sketchybar --trigger aerospace_workspace_change FOCUSED_WORKSPACE=$AEROSPACE_FOCUSED_WORKSPACE'
+]
+
+# Persistent workspaces: 1-9, A, B, Z (overflow)
+persistent-workspaces = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "Z"]
+
+# Zero gaps, tiles layout
+[gaps]
+inner.horizontal = 0
+inner.vertical = 0
+outer.left = 0
+outer.right = 0
+outer.top = 22
+outer.bottom = 0
+
+[key-mapping]
+preset = 'qwerty'
+
+# ── Mode: main ───────────────────────────────────────────────────────
+
+[mode.main.binding]
+
+# Workspace switching
+alt-1 = 'workspace 1'
+alt-2 = 'workspace 2'
+alt-3 = 'workspace 3'
+alt-4 = 'workspace 4'
+alt-5 = 'workspace 5'
+alt-6 = 'workspace 6'
+alt-7 = 'workspace 7'
+alt-8 = 'workspace 8'
+alt-9 = 'workspace 9'
+alt-a = 'workspace A'
+alt-b = 'workspace B'
+alt-z = 'workspace Z'
+
+# Move window to workspace
+alt-shift-1 = 'move-node-to-workspace 1'
+alt-shift-2 = 'move-node-to-workspace 2'
+alt-shift-3 = 'move-node-to-workspace 3'
+alt-shift-4 = 'move-node-to-workspace 4'
+alt-shift-5 = 'move-node-to-workspace 5'
+alt-shift-6 = 'move-node-to-workspace 6'
+alt-shift-7 = 'move-node-to-workspace 7'
+alt-shift-8 = 'move-node-to-workspace 8'
+alt-shift-9 = 'move-node-to-workspace 9'
+alt-shift-a = 'move-node-to-workspace A'
+alt-shift-b = 'move-node-to-workspace B'
+alt-shift-z = 'move-node-to-workspace Z'
+
+# Focus direction
+alt-h = 'focus left'
+alt-j = 'focus down'
+alt-k = 'focus up'
+alt-l = 'focus right'
+
+# Move window in direction
+alt-shift-h = 'move left'
+alt-shift-j = 'move down'
+alt-shift-k = 'move up'
+alt-shift-l = 'move right'
+
+# Focus monitor
+alt-ctrl-h = 'focus-monitor left'
+alt-ctrl-l = 'focus-monitor right'
+
+# Cycle through workspaces
+alt-period = 'workspace next --wrap-around'
+alt-comma = 'workspace prev --wrap-around'
+
+# Workspace back-and-forth / move workspace to monitor
+alt-tab = 'workspace-back-and-forth'
+alt-shift-tab = 'move-workspace-to-monitor --wrap-around next'
+
+# Enter service mode
+alt-shift-semicolon = 'mode service'
+
+# ── Mode: service ────────────────────────────────────────────────────
+
+[mode.service.binding]
+esc = ['reload-config', 'mode main']
+r = ['flatten-workspace-tree', 'mode main']
+f = ['layout floating tiling', 'mode main']
+backspace = ['close-all-windows-but-current', 'mode main']
+
+alt-shift-h = ['join-with left', 'mode main']
+alt-shift-j = ['join-with down', 'mode main']
+alt-shift-k = ['join-with up', 'mode main']
+alt-shift-l = ['join-with right', 'mode main']
+
+# ── On window detected: best-effort workspace assignment ─────────────
+# The startup-windows script handles reliable placement; these rules
+# catch windows that appear outside the script (e.g. manual opens).
+
+[[on-window-detected]]
+if.app-id = 'com.mitchellh.ghostty'
+if.window-title-regex-substring = '^Local MacOS'
+run = 'move-node-to-workspace 1'
+
+[[on-window-detected]]
+if.app-id = 'com.mitchellh.ghostty'
+if.window-title-regex-substring = '^FTW: main1'
+run = 'move-node-to-workspace 2'
+
+[[on-window-detected]]
+if.app-id = 'com.mitchellh.ghostty'
+if.window-title-regex-substring = '^FTW: fbsource1'
+run = 'move-node-to-workspace 3'
+
+[[on-window-detected]]
+if.app-id = 'com.mitchellh.ghostty'
+if.window-title-regex-substring = '^FTW: fbsource2'
+run = 'move-node-to-workspace 5'
+
+[[on-window-detected]]
+if.app-id = 'com.mitchellh.ghostty'
+if.window-title-regex-substring = '^CCO: main1'
+run = 'move-node-to-workspace 7'
+
+[[on-window-detected]]
+if.app-id = 'com.mitchellh.ghostty'
+if.window-title-regex-substring = '^CCO: fbsource1'
+run = 'move-node-to-workspace 8'
+
+[[on-window-detected]]
+if.app-id = 'com.mitchellh.ghostty'
+if.window-title-regex-substring = '^CCO: fbsource2'
+run = 'move-node-to-workspace A'
+

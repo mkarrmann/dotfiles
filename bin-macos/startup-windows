@@ -2,95 +2,34 @@
 set -euo pipefail
 
 # ── Workspace definitions ────────────────────────────────────────────
-# Format: type|title|...
-#   ghostty: ghostty|title|workdir|command
-#   vscode:  vscode|title|workspace (local path or remote URI)
-# Workspaces are placed on Desktops 1..N in array order.
-# Stray windows on workspace desktops are swept to Desktop N+1.
+# Format: type|title|title_match|...
+#   ghostty: ghostty|title|title_match|workdir|command
+#   vscode:  vscode|title|title_match|workspace (local path or remote URI)
+# title_match is a regex used to find existing windows in AeroSpace.
+# Workspaces are assigned to AeroSpace workspaces in array order:
+#   index 0→"1", 1→"2", ..., 8→"9", 9→"A", 10→"B"
+# Stray windows are swept to workspace "Z".
 WORKSPACES=(
-  "ghostty|Local MacOS|~|tmux new-session -A -s macos1"
-  "ghostty|FTW: main1|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s main1\"'"
-  "ghostty|FTW: fbsource1|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s fbsource1 -c ~/fbsource\"'"
-  "vscode|FTW: vscode-fbsource1|${HOME}/Library/Application Support/VS Code @ FB/MetaWorkspaces/devvm36111.ftw0.code-workspace"
-  "ghostty|FTW: fbsource2|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s fbsource2 -c ~/fbsource2\"'"
-  "vscode|FTW: vscode-fbsource2|vscode-remote://fb-remote+devvm36111.ftw0.facebook.com/home/mkarrmann/fbsource2.code-workspace"
-  "ghostty|CCO: main1|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"tmux new-session -A -s main1\"'"
-  "ghostty|CCO: fbsource1|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"tmux new-session -A -s fbsource1 -c ~/fbsource\"'"
-  "vscode|CCO: vscode-fbsource1|${HOME}/Library/Application Support/VS Code @ FB/MetaWorkspaces/devvm20365.cco0.code-workspace"
-  "ghostty|CCO: fbsource2|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"tmux new-session -A -s fbsource2 -c ~/fbsource2\"'"
-  "vscode|CCO: vscode-fbsource2|vscode-remote://fb-remote+devvm20365.cco0.facebook.com/home/mkarrmann/fbsource2.code-workspace"
+  "ghostty|Local MacOS|Local MacOS|~|tmux new-session -A -s macos1"
+  "ghostty|FTW: main1|FTW: main1|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s main1\"'"
+  "ghostty|FTW: fbsource1|FTW: fbsource1|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s fbsource1 -c ~/fbsource\"'"
+  "vscode|FTW: vscode-fbsource1|devvm36111.ftw0 \\(Workspace\\)|${HOME}/Library/Application Support/VS Code @ FB/MetaWorkspaces/devvm36111.ftw0.code-workspace"
+  "ghostty|FTW: fbsource2|FTW: fbsource2|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s fbsource2 -c ~/fbsource2\"'"
+  "vscode|FTW: vscode-fbsource2|fbsource2.*devvm36111.ftw0|vscode-remote://fb-remote+devvm36111.ftw0.facebook.com/home/mkarrmann/fbsource2.code-workspace"
+  "ghostty|CCO: main1|CCO: main1|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"tmux new-session -A -s main1\"'"
+  "ghostty|CCO: fbsource1|CCO: fbsource1|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"tmux new-session -A -s fbsource1 -c ~/fbsource\"'"
+  "vscode|CCO: vscode-fbsource1|devvm20365.cco0 \\(Workspace\\)|${HOME}/Library/Application Support/VS Code @ FB/MetaWorkspaces/devvm20365.cco0.code-workspace"
+  "ghostty|CCO: fbsource2|CCO: fbsource2|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"tmux new-session -A -s fbsource2 -c ~/fbsource2\"'"
+  "vscode|CCO: vscode-fbsource2|fbsource2.*devvm20365.cco0|vscode-remote://fb-remote+devvm20365.cco0.facebook.com/home/mkarrmann/fbsource2.code-workspace"
 )
 
-VSCODE_APP="VS Code @ FB"
+WORKSPACE_NAMES=("1" "2" "3" "4" "5" "6" "7" "8" "9" "A" "B")
+SWEEP_WORKSPACE="Z"
+
+VSCODE_APP_AEROSPACE="VS Code @ Meta"
+VSCODE_APP_MACOS="VS Code @ FB"
 VSCODE_CMD="/Applications/VS Code @ FB.app/Contents/Resources/app/bin/code"
-STATE_FILE="${HOME}/.local/state/startup-windows"
-VSCODE_HELPER=""
 # ─────────────────────────────────────────────────────────────────────
-
-cleanup() { [[ -n "$VSCODE_HELPER" ]] && rm -f "$VSCODE_HELPER" || true; }
-trap cleanup EXIT
-
-# ── Window tracking ─────────────────────────────────────────────────
-
-get_live_ghostty_ids() {
-  osascript -e 'tell application "Ghostty"' \
-    -e '  set output to ""' \
-    -e '  repeat with w in every window' \
-    -e '    set output to output & (id of w) & linefeed' \
-    -e '  end repeat' \
-    -e '  return output' \
-    -e 'end tell' 2>/dev/null
-}
-
-compile_vscode_helper() {
-  VSCODE_HELPER=$(mktemp /tmp/vscode-wids.XXXXXX)
-  local src="${VSCODE_HELPER}.swift"
-  cat > "$src" <<'SWIFT'
-import CoreGraphics
-guard let list = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] else { exit(1) }
-for w in list {
-    guard let owner = w[kCGWindowOwnerName as String] as? String,
-          owner == "VS Code @ FB",
-          let num = w[kCGWindowNumber as String] as? Int,
-          let layer = w[kCGWindowLayer as String] as? Int,
-          layer == 0
-    else { continue }
-    print(num)
-}
-SWIFT
-  if ! swiftc -o "$VSCODE_HELPER" "$src" 2>/dev/null; then
-    echo "WARNING: Failed to compile VSCode window helper" >&2
-    rm -f "$src" "$VSCODE_HELPER"
-    VSCODE_HELPER=""
-    return 1
-  fi
-  rm -f "$src"
-}
-
-get_live_vscode_ids() {
-  if [[ -n "$VSCODE_HELPER" && -x "$VSCODE_HELPER" ]]; then
-    "$VSCODE_HELPER" 2>/dev/null
-  fi
-}
-
-window_exists() {
-  local title="$1"
-  [[ -f "$STATE_FILE" ]] || return 1
-  local saved_id
-  saved_id=$(grep "^${title}	" "$STATE_FILE" 2>/dev/null | cut -f2)
-  [[ -n "$saved_id" ]] || return 1
-  echo "$LIVE_WINDOW_IDS" | grep -qF "$saved_id"
-}
-
-save_window_id() {
-  local title="$1" window_id="$2"
-  mkdir -p "$(dirname "$STATE_FILE")"
-  if [[ -f "$STATE_FILE" ]]; then
-    grep -v "^${title}	" "$STATE_FILE" > "${STATE_FILE}.tmp" 2>/dev/null || true
-    mv "${STATE_FILE}.tmp" "$STATE_FILE"
-  fi
-  printf '%s\t%s\n' "$title" "$window_id" >> "$STATE_FILE"
-}
 
 # ── Window creation ─────────────────────────────────────────────────
 
@@ -124,58 +63,58 @@ create_vscode_window() {
   fi
 }
 
-focus_vscode_window() {
-  local workspace="$1"
-  if [[ "$workspace" == vscode-remote://* ]]; then
-    "$VSCODE_CMD" --file-uri "$workspace" 2>/dev/null
-  else
-    "$VSCODE_CMD" "$workspace" 2>/dev/null
-  fi
+# ── Helpers ──────────────────────────────────────────────────────────
+
+index_to_workspace() {
+  echo "${WORKSPACE_NAMES[$1]}"
 }
 
-focus_ghostty_window() {
-  local window_id="$1"
-  osascript \
-    -e 'on run argv' \
-    -e '  set wid to (item 1 of argv) as integer' \
-    -e '  tell application "Ghostty"' \
-    -e '    set index of (first window whose id is wid) to 1' \
-    -e '    activate' \
-    -e '  end tell' \
-    -e 'end run' \
-    -- "$window_id"
+snapshot_windows() {
+  aerospace list-windows --all --json 2>/dev/null
 }
 
-wait_for_new_vscode_id() {
-  local before_ids="$1"
-  for _ in $(seq 1 15); do
-    local after_ids new_id
-    after_ids=$(get_live_vscode_ids)
-    new_id=$(comm -23 <(echo "$after_ids" | grep -v '^$' | sort -n) <(echo "$before_ids" | grep -v '^$' | sort -n) | head -1)
+find_window_id() {
+  local app_name="$1" title_substr="$2" snapshot="$3"
+  echo "$snapshot" | jq -r \
+    --arg app "$app_name" \
+    --arg title "$title_substr" \
+    '[.[] | select(."app-name" == $app and (.["window-title"] | test($title; "i")))] | first | .["window-id"] // empty'
+}
+
+get_focused_window_id() {
+  aerospace list-windows --focused --json 2>/dev/null | jq -r '.[0]["window-id"] // empty'
+}
+
+wait_for_new_window() {
+  local app_name="$1" before_snapshot="$2"
+  local before_ids
+  before_ids=$(echo "$before_snapshot" | jq -r \
+    --arg app "$app_name" \
+    '[.[] | select(."app-name" == $app)] | .[]["window-id"]' | sort -n)
+
+  for _ in $(seq 1 20); do
+    sleep 0.5
+    local current_snapshot current_ids new_id
+    current_snapshot=$(snapshot_windows)
+    current_ids=$(echo "$current_snapshot" | jq -r \
+      --arg app "$app_name" \
+      '[.[] | select(."app-name" == $app)] | .[]["window-id"]' | sort -n)
+    new_id=$(comm -23 <(echo "$current_ids") <(echo "$before_ids") | head -1)
     if [[ -n "$new_id" ]]; then
       echo "$new_id"
       return 0
     fi
-    sleep 1
   done
   return 1
 }
 
-# ── Helpers ──────────────────────────────────────────────────────────
-
-hs_eval() {
-  hs -c "$1" 2>/dev/null | grep -v '^--' | tr -d '[:space:]' || true
-}
-
 # ── Main ─────────────────────────────────────────────────────────────
 
-if ! command -v hs &>/dev/null; then
-  echo "ERROR: Hammerspoon CLI (hs) not found." >&2
-  echo "Ensure Hammerspoon is running and has loaded hs.ipc (restart it after init.sh)." >&2
+if ! command -v aerospace &>/dev/null; then
+  echo "ERROR: aerospace CLI not found." >&2
+  echo "Install AeroSpace: brew install --cask nikitabobko/tap/aerospace" >&2
   exit 1
 fi
-
-hs_eval "return ghosttyInitScreen()" >/dev/null
 
 # Ensure Ghostty is running
 if ! osascript -e 'application "Ghostty" is running' 2>/dev/null | grep -q 'true'; then
@@ -184,156 +123,113 @@ if ! osascript -e 'application "Ghostty" is running' 2>/dev/null | grep -q 'true
   osascript -e 'tell application "Ghostty" to close window 1' 2>/dev/null || true
 fi
 
-# Ensure VS Code is running and compile the window-ID helper
+# Ensure VS Code is running if any vscode workspaces are defined
 has_vscode=false
 for entry in "${WORKSPACES[@]}"; do
   if [[ "$entry" == vscode\|* ]]; then has_vscode=true; break; fi
 done
 if $has_vscode; then
-  if ! osascript -e "application \"${VSCODE_APP}\" is running" 2>/dev/null | grep -q 'true'; then
-    open -a "$VSCODE_APP"
+  if ! osascript -e "application \"${VSCODE_APP_MACOS}\" is running" 2>/dev/null | grep -q 'true'; then
+    open -a "$VSCODE_APP_MACOS"
     sleep 3
   fi
-  compile_vscode_helper || true
 fi
 
-# Snapshot all live window IDs (Ghostty + VSCode) for existence checks
-LIVE_WINDOW_IDS=$( get_live_ghostty_ids; get_live_vscode_ids )
-
-total=${#WORKSPACES[@]}
-
-sweep_target=$((total + 1))
-
-echo "Ensuring ${sweep_target} macOS Spaces exist (${total} workspaces + 1 overflow)..."
-added=$(hs_eval "return tostring(ghosttyEnsureSpaces(${sweep_target}))")
-if [[ "$added" == "-1" ]]; then
-  echo "ERROR: Failed to ensure spaces. Is Hammerspoon running with the workspace config loaded?" >&2
-  exit 1
-elif [[ "$added" != "0" ]]; then
-  echo "Created ${added} new Space(s). Waiting for Mission Control to settle..."
-  sleep 1.5
-fi
+# Snapshot all windows
+SNAPSHOT=$(snapshot_windows)
 
 failures=0
-swept=0
-max_sweeps=15
 
 for i in "${!WORKSPACES[@]}"; do
   IFS='|' read -r type title rest <<< "${WORKSPACES[$i]}"
-  space=$((i + 1))
-
-  exists=false
-  if window_exists "$title"; then exists=true; fi
-
-  echo "[$title] switching to Desktop ${space}..."
-  result=$(hs_eval "return ghosttyGotoSpace(${space})")
-  if [[ "$result" != "ok" ]]; then
-    echo "WARNING: [$title] failed to switch to Desktop ${space}: ${result}" >&2
-    ((failures++)) || true
-    continue
-  fi
-  sleep 0.7
-
-  # Sweep non-workspace windows from this desktop to the overflow desktop
-  prev_result=""
-  for attempt in $(seq 1 5); do
-    if [[ "$swept" -ge "$max_sweeps" ]]; then break; fi
-    result=$(hs_eval "return ghosttySweepFocused(${sweep_target})")
-    case "$result" in
-      empty|Ghostty|VSCode@Meta|other_screen) break ;;
-      swept:*)
-        if [[ "$result" == "$prev_result" ]]; then
-          echo "WARNING: Window on Desktop $space could not be moved, skipping" >&2
-          break
-        fi
-        echo "Swept window from Desktop $space to Desktop ${sweep_target}"
-        ((swept++)) || true
-        prev_result="$result"
-        sleep 0.7
-        hs_eval "return ghosttyGotoSpace($space)" >/dev/null
-        sleep 0.7
-        ;;
-      *) break ;;
-    esac
-  done
-
-  hs_eval "return ghosttyGotoSpace(${space})" >/dev/null
-  sleep 0.5
+  ws=$(index_to_workspace "$i")
 
   case "$type" in
     ghostty)
-      IFS='|' read -r workdir cmd <<< "$rest"
-      if ! $exists; then
-        echo "[$title] creating..."
-        window_output=$(create_ghostty_window "$title" "$workdir" "$cmd") || {
+      IFS='|' read -r title_match workdir cmd <<< "$rest"
+      app_name="Ghostty"
+
+      window_id=$(find_window_id "$app_name" "$title_match" "$SNAPSHOT")
+      if [[ -n "$window_id" ]]; then
+        echo "[$title] moving existing window to workspace $ws..."
+        aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || {
+          echo "WARNING: [$title] move failed" >&2
+          ((failures++)) || true
+        }
+      else
+        echo "[$title] creating on workspace $ws..."
+        before_snapshot="$SNAPSHOT"
+        create_ghostty_window "$title" "$workdir" "$cmd" || {
           echo "WARNING: [$title] creation failed, skipping" >&2
           ((failures++)) || true
           continue
         }
-        window_id=$(echo "$window_output" | sed -n 's/^window id //p' | tr -d '[:space:]')
+        window_id=$(wait_for_new_window "$app_name" "$before_snapshot") || {
+          # Fallback: try the focused window
+          window_id=$(get_focused_window_id)
+        }
         if [[ -n "$window_id" ]]; then
-          save_window_id "$title" "$window_id"
-        fi
-        # If the new window inherited fullscreen from an existing Ghostty window, exit it
-        is_fs=$(hs_eval "local w = hs.window.focusedWindow(); if w and w:isFullScreen() then return 'yes' else return 'no' end")
-        if [[ "$is_fs" == "yes" ]]; then
-          hs_eval "hs.window.focusedWindow():setFullScreen(false); return 'ok'" >/dev/null
-          sleep 1
-        fi
-        sleep 0.7
-        hs_eval "return ghosttyThrowToSpace(${space})" >/dev/null
-        sleep 0.5
-      else
-        echo "[$title] repositioning..."
-        saved_id=$(grep "^${title}	" "$STATE_FILE" | cut -f2) || true
-        if [[ -n "$saved_id" ]]; then
-          result=$(hs_eval "return ghosttyFocusAndThrow(${saved_id}, ${space})")
-          if [[ "$result" != "ok" ]]; then
-            echo "WARNING: [$title] reposition failed: ${result}" >&2
-          fi
+          aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || true
         else
-          echo "WARNING: [$title] no saved window ID, cannot reposition" >&2
+          echo "WARNING: [$title] could not find new window ID" >&2
+          ((failures++)) || true
         fi
+        # Update snapshot for subsequent iterations
+        SNAPSHOT=$(snapshot_windows)
       fi
-      sleep 0.7
       ;;
     vscode)
-      workspace="$rest"
-      if ! $exists; then
-        echo "[$title] creating..."
-        before_ids=$(get_live_vscode_ids)
+      IFS='|' read -r title_match workspace <<< "$rest"
+      app_name="$VSCODE_APP_AEROSPACE"
+
+      window_id=$(find_window_id "$app_name" "$title_match" "$SNAPSHOT")
+      if [[ -n "$window_id" ]]; then
+        echo "[$title] moving existing window to workspace $ws..."
+        aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || {
+          echo "WARNING: [$title] move failed" >&2
+          ((failures++)) || true
+        }
+      else
+        echo "[$title] creating on workspace $ws..."
+        before_snapshot="$SNAPSHOT"
         create_vscode_window "$workspace" || {
           echo "WARNING: [$title] creation failed, skipping" >&2
           ((failures++)) || true
           continue
         }
-        window_id=$(wait_for_new_vscode_id "$before_ids") || {
+        window_id=$(wait_for_new_window "$app_name" "$before_snapshot") || {
           echo "WARNING: [$title] window did not appear in time" >&2
           ((failures++)) || true
           continue
         }
-        save_window_id "$title" "$window_id"
-      else
-        echo "[$title] repositioning..."
-        focus_vscode_window "$workspace" || true
+        if [[ -n "$window_id" ]]; then
+          aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || true
+        fi
+        # Update snapshot for subsequent iterations
+        SNAPSHOT=$(snapshot_windows)
       fi
-      sleep 0.7
-      osascript -e 'tell application "VS Code @ FB" to activate' 2>/dev/null || true
-      sleep 0.5
-      hs_eval "return ghosttyThrowToSpace(${space})" >/dev/null
-      sleep 0.5
       ;;
   esac
 done
 
+# Sweep stray windows: move non-Ghostty/VS Code windows off workspaces 1-9,A,B to Z
+swept=0
+for ws in "${WORKSPACE_NAMES[@]}"; do
+  stray_ids=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
+    | jq -r --arg vscode "$VSCODE_APP_AEROSPACE" \
+      '[.[] | select(."app-name" != "Ghostty" and ."app-name" != $vscode)] | .[]["window-id"]') || true
+  for wid in $stray_ids; do
+    [[ -z "$wid" ]] && continue
+    aerospace move-node-to-workspace --window-id "$wid" "$SWEEP_WORKSPACE" 2>/dev/null && ((swept++)) || true
+  done
+done
+
 if [[ "$swept" -gt 0 ]]; then
-  echo "Swept ${swept} window(s) to Desktop 1."
+  echo "Swept ${swept} stray window(s) to workspace ${SWEEP_WORKSPACE}."
 fi
 
-# NOTE: Existing windows are repositioned via focus+throw on every run.
-
-# Switch back to Desktop 1
-hs_eval "return ghosttyGotoSpace(1)" >/dev/null 2>&1 || true
+# Focus workspace 1
+aerospace workspace 1 2>/dev/null || true
 
 if [[ "$failures" -gt 0 ]]; then
   echo "Done with ${failures} warning(s)."

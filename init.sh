@@ -333,9 +333,20 @@ sync_link_subdirs "$DOTFILES_DIR/agent_config/skills" "$HOME/.codex/skills" "SKI
 
 # default.rules is machine-specific — managed by Codex itself
 
-# Hammerspoon
-mkdir -p "$HOME/.hammerspoon"
-link_one "$DOTFILES_DIR/hammerspoon.lua" "$HOME/.hammerspoon/init.lua"
+# macOS-only: Hammerspoon, AeroSpace, SketchyBar
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  # Hammerspoon
+  mkdir -p "$HOME/.hammerspoon"
+  link_one "$DOTFILES_DIR/hammerspoon.lua" "$HOME/.hammerspoon/init.lua"
+
+  # AeroSpace
+  link_one "$DOTFILES_DIR/aerospace.toml" "$HOME/.aerospace.toml"
+
+  # SketchyBar
+  mkdir -p "$HOME/.config/sketchybar/plugins"
+  link_one "$DOTFILES_DIR/sketchybar/sketchybarrc" "$HOME/.config/sketchybar/sketchybarrc"
+  link_one "$DOTFILES_DIR/sketchybar/plugins/aerospace.sh" "$HOME/.config/sketchybar/plugins/aerospace.sh"
+fi
 #
 # Nori
 mkdir -p "$HOME/.nori/cli"
