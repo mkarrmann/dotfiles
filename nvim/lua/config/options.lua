@@ -19,3 +19,6 @@ vim.opt.statuscolumn = table.concat({
 -- Disable concealment globally
 vim.opt.conceallevel = 0
 vim.opt.concealcursor = ""
+
+-- Load machine-local config (e.g. Meta-specific rtp and proxy fixes)
+pcall(require, "config.local")

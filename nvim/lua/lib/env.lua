@@ -57,8 +57,9 @@ M.configs = {
     -- Additional setup
     setup = function()
       -- Meta's Neovim package puts bundled treesitter parsers in /usr/lib/nvim/parser/
-      -- but doesn't add /usr/lib/nvim to the runtimepath
-      vim.opt.rtp:prepend("/usr/lib/nvim")
+      -- but doesn't add /usr/lib/nvim to the runtimepath. Append (not prepend) so that
+      -- nvim-treesitter's compiled parsers in site/ take priority when available.
+      vim.opt.rtp:append("/usr/lib/nvim")
 
       -- Could add more Meta-specific setup here
     end,

@@ -1,5 +1,11 @@
 return {
 	{
+		"nvim-treesitter/nvim-treesitter",
+		opts = {
+			ensure_installed = { "vim" },
+		},
+	},
+	{
 		"nvim-treesitter/nvim-treesitter-context",
 		opts = {
 			max_lines = 5,
@@ -45,6 +51,10 @@ return {
 			env = {
 				EDITOR = "nvim",
 				CLAUDECODE = "",
+				http_proxy = "",
+				https_proxy = "",
+				HTTP_PROXY = "",
+				HTTPS_PROXY = "",
 			},
 			terminal = {
 				split_width_percentage = 0.45,
