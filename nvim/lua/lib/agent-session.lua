@@ -153,6 +153,32 @@ function M.lookup_agent_by_sid(sid)
 	return nil
 end
 
+function M.resolve_cwd_for_sid(sid)
+	sid = trim(sid):lower()
+	if sid == "" then
+		return nil
+	end
+	local projects_dir = vim.fn.expand("~/.claude/projects")
+	local dirs = vim.fn.glob(projects_dir .. "/*", true, true)
+	for _, dir in ipairs(dirs) do
+		local jsonl = dir .. "/" .. sid .. ".jsonl"
+		if vim.fn.filereadable(jsonl) == 1 then
+			local f = io.open(jsonl, "r")
+			if f then
+				local first_line = f:read("*l")
+				f:close()
+				if first_line then
+					local ok, data = pcall(vim.json.decode, first_line)
+					if ok and type(data) == "table" and type(data.cwd) == "string" then
+						return data.cwd
+					end
+				end
+			end
+		end
+	end
+	return nil
+end
+
 function M.get_current_agent()
 	local sid = M.get_session_id()
 	if not sid or sid == "" then

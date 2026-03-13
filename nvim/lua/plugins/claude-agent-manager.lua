@@ -447,6 +447,9 @@ return {
 								if vim.env.TMUX then
 									vim.fn.system("tmux rename-window " .. vim.fn.shellescape(agent.name))
 								end
+							else
+								local resolved = agent_session.resolve_cwd_for_sid(id)
+								chdir_if_needed(resolved)
 							end
 							vim.cmd("ClaudeCode --resume " .. id .. " --fork-session")
 						end
