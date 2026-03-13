@@ -5,8 +5,8 @@ set -euo pipefail
 # Format: type|title|...
 #   ghostty: ghostty|title|workdir|command
 #   vscode:  vscode|title|workspace (local path or remote URI)
-# Desktop 1 is reserved as a general-purpose desktop.
-# Workspaces are placed on Desktops 2..N+1 in array order.
+# Workspaces are placed on Desktops 1..N in array order.
+# Stray windows on workspace desktops are swept to Desktop N+1.
 WORKSPACES=(
   "ghostty|Local MacOS|~|tmux new-session -A -s macos1"
   "ghostty|FTW: main1|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s main1\"'"
@@ -202,8 +202,10 @@ LIVE_WINDOW_IDS=$( get_live_ghostty_ids; get_live_vscode_ids )
 
 total=${#WORKSPACES[@]}
 
-echo "Ensuring $((total + 1)) macOS Spaces exist (1 general + ${total} workspaces)..."
-added=$(hs_eval "return tostring(ghosttyEnsureSpaces($((total + 1))))")
+sweep_target=$((total + 1))
+
+echo "Ensuring ${sweep_target} macOS Spaces exist (${total} workspaces + 1 overflow)..."
+added=$(hs_eval "return tostring(ghosttyEnsureSpaces(${sweep_target}))")
 if [[ "$added" == "-1" ]]; then
   echo "ERROR: Failed to ensure spaces. Is Hammerspoon running with the workspace config loaded?" >&2
   exit 1
@@ -218,7 +220,7 @@ max_sweeps=15
 
 for i in "${!WORKSPACES[@]}"; do
   IFS='|' read -r type title rest <<< "${WORKSPACES[$i]}"
-  space=$((i + 2))
+  space=$((i + 1))
 
   exists=false
   if window_exists "$title"; then exists=true; fi
@@ -232,11 +234,11 @@ for i in "${!WORKSPACES[@]}"; do
   fi
   sleep 0.7
 
-  # Sweep non-workspace windows from this desktop to Desktop 1
+  # Sweep non-workspace windows from this desktop to the overflow desktop
   prev_result=""
   for attempt in $(seq 1 5); do
     if [[ "$swept" -ge "$max_sweeps" ]]; then break; fi
-    result=$(hs_eval "return ghosttySweepFocused()")
+    result=$(hs_eval "return ghosttySweepFocused(${sweep_target})")
     case "$result" in
       empty|Ghostty|VSCode@Meta|other_screen) break ;;
       swept:*)
@@ -244,7 +246,7 @@ for i in "${!WORKSPACES[@]}"; do
           echo "WARNING: Window on Desktop $space could not be moved, skipping" >&2
           break
         fi
-        echo "Swept window from Desktop $space to Desktop 1"
+        echo "Swept window from Desktop $space to Desktop ${sweep_target}"
         ((swept++)) || true
         prev_result="$result"
         sleep 0.7
