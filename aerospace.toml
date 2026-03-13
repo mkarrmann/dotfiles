@@ -13,6 +13,21 @@ exec-on-workspace-change = ['/bin/bash', '-c',
 # Persistent workspaces: 1-9, A, B, Z (overflow)
 persistent-workspaces = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "Z"]
 
+# Pin all defined workspaces to the main monitor
+[workspace-to-monitor-force-assignment]
+1 = 'main'
+2 = 'main'
+3 = 'main'
+4 = 'main'
+5 = 'main'
+6 = 'main'
+7 = 'main'
+8 = 'main'
+9 = 'main'
+A = 'main'
+B = 'main'
+Z = 'main'
+
 # Zero gaps, tiles layout
 [gaps]
 inner.horizontal = 0
