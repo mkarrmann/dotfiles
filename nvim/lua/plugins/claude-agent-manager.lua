@@ -300,14 +300,16 @@ local function fork_to(make_tmux_cmd)
 			nf:close()
 		end
 	end
+	local cwd = vim.fn.getcwd()
 	local label = name or ("fork-" .. sid:sub(1, 8))
-	vim.fn.system(make_tmux_cmd(label, sid))
+	vim.fn.system(make_tmux_cmd(label, sid, cwd))
 end
 
 local function fork_to_window()
-	fork_to(function(label, sid)
+	fork_to(function(label, sid, cwd)
 		return {
 			"tmux", "new-window", "-d",
+			"-c", cwd,
 			"-n", label,
 			"-e", "CLAUDE_AUTO_RESUME=" .. sid,
 			"-e", "CLAUDECODE=",
@@ -317,9 +319,10 @@ local function fork_to_window()
 end
 
 local function fork_to_pane()
-	fork_to(function(_, sid)
+	fork_to(function(_, sid, cwd)
 		return {
 			"tmux", "split-window", "-h", "-l", "33%",
+			"-c", cwd,
 			"-e", "CLAUDE_AUTO_RESUME=" .. sid,
 			"-e", "CLAUDECODE=",
 			"--", "nvim",
@@ -332,6 +335,7 @@ local function prompt_and_launch(make_tmux_cmd)
 		vim.notify("Not in tmux", vim.log.levels.WARN)
 		return
 	end
+	local cwd = vim.fn.getcwd()
 	vim.ui.input({ prompt = "Claude prompt: " }, function(text)
 		if not text or text == "" then
 			return
@@ -358,14 +362,15 @@ local function prompt_and_launch(make_tmux_cmd)
 			nf:close()
 		end
 
-		vim.fn.system(make_tmux_cmd(label, prompt_file))
+		vim.fn.system(make_tmux_cmd(label, prompt_file, cwd))
 	end)
 end
 
 local function prompt_new_window()
-	prompt_and_launch(function(label, prompt_file)
+	prompt_and_launch(function(label, prompt_file, cwd)
 		return {
 			"tmux", "new-window", "-d",
+			"-c", cwd,
 			"-n", label,
 			"-e", "CLAUDE_AUTO_PROMPT=" .. prompt_file,
 			"-e", "CLAUDECODE=",
@@ -375,9 +380,10 @@ local function prompt_new_window()
 end
 
 local function prompt_new_pane()
-	prompt_and_launch(function(_, prompt_file)
+	prompt_and_launch(function(_, prompt_file, cwd)
 		return {
 			"tmux", "split-window", "-h", "-l", "33%",
+			"-c", cwd,
 			"-e", "CLAUDE_AUTO_PROMPT=" .. prompt_file,
 			"-e", "CLAUDECODE=",
 			"--", "nvim",
