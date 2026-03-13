@@ -109,14 +109,27 @@ sync_link_dir "$DOTFILES_DIR/nvim/lua/config" "$HOME/.config/nvim/lua/config" "*
 sync_link_dir "$DOTFILES_DIR/nvim/lua/plugins" "$HOME/.config/nvim/lua/plugins" "*.lua"
 sync_link_dir "$DOTFILES_DIR/nvim/lua/lib" "$HOME/.config/nvim/lua/lib" "*.lua"
 
-# ~/bin (link each file individually; fail if any target exists)
+# ~/bin (link each file individually)
 mkdir -p "$HOME/bin"
 shopt -s nullglob
 for src in "$DOTFILES_DIR/bin/"*; do
-  base="$(basename "$src")"
-  link_one "$src" "$HOME/bin/$base"
+  link_one "$src" "$HOME/bin/$(basename "$src")"
 done
 shopt -u nullglob
+
+# ~/bin — platform-specific
+case "$(uname -s)" in
+  Darwin) platform_bin="$DOTFILES_DIR/bin-macos" ;;
+  Linux)  platform_bin="$DOTFILES_DIR/bin-linux" ;;
+  *)      platform_bin="" ;;
+esac
+if [[ -n "$platform_bin" && -d "$platform_bin" ]]; then
+  shopt -s nullglob
+  for src in "$platform_bin/"*; do
+    link_one "$src" "$HOME/bin/$(basename "$src")"
+  done
+  shopt -u nullglob
+fi
 
 # wofi
 mkdir -p "$HOME/.config/wofi"
