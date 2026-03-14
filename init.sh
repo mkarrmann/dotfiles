@@ -95,6 +95,7 @@ for f in \
   .bash_profile \
   .zshrc \
   .zprofile \
+  .zshenv \
   .screenrc \
   .inputrc \
   .tmux.conf \

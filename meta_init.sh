@@ -51,6 +51,9 @@ sync_link_dir() {
   shopt -u nullglob
 }
 
+# Shell local overrides (Meta macOS-specific)
+link_one "$DOTFILES_DIR/zshenv.local.meta-macos" "$HOME/.zshenv.local"
+
 # Symlink local config templates into the nvim runtime
 mkdir -p "$HOME/.config/nvim/lua/config" "$HOME/.config/nvim/lua/plugins"
 sync_link_dir "$DOTFILES_DIR/nvim/local/config" "$HOME/.config/nvim/lua/config" "*.lua"

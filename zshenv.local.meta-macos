@@ -1,0 +1,8 @@
+# Meta macOS .zshenv.local
+#
+# x2pagentd sets HTTP(S)_PROXY for Meta internal traffic, but it breaks
+# external HTTPS (e.g. GitHub) when fwdproxy isn't reachable.
+unset http_proxy
+unset https_proxy
+unset HTTP_PROXY
+unset HTTPS_PROXY
