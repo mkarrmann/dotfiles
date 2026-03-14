@@ -4,13 +4,14 @@ set -euo pipefail
 # ── Workspace definitions ────────────────────────────────────────────
 # Format: type|title|title_match|...
 #   ghostty: ghostty|title|title_match|workdir|command
+#   cmux:    cmux|title|title_match
 #   vscode:  vscode|title|title_match|workspace (local path or remote URI)
 # title_match is a regex used to find existing windows in AeroSpace.
 # Workspaces are assigned to AeroSpace workspaces in array order:
 #   index 0→"1", 1→"2", ..., 8→"9", 9→"A", 10→"B"
 # Stray windows are swept to workspace "Z".
 WORKSPACES=(
-  "ghostty|Local MacOS|Local MacOS|~|tmux new-session -A -s macos1"
+  "cmux|Local MacOS|."
   "ghostty|FTW: main1|FTW-main1|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s FTW-main1\"'"
   "ghostty|FTW: fbsource1|FTW-fbsource1|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s FTW-fbsource1 -c ~/fbsource\"'"
   "vscode|FTW: vscode-fbsource1|devvm36111.ftw0 \\(Workspace\\)|${HOME}/Library/Application Support/VS Code @ FB/MetaWorkspaces/devvm36111.ftw0.code-workspace"
@@ -52,6 +53,13 @@ create_ghostty_window() {
     -e '  end tell' \
     -e 'end run' \
     -- "$title" "$workdir" "$cmd"
+}
+
+create_cmux_window() {
+  if osascript -e 'application "cmux" is running' 2>/dev/null | grep -q 'true'; then
+    return 0
+  fi
+  open -a cmux
 }
 
 create_vscode_window() {
@@ -178,6 +186,37 @@ for i in "${!WORKSPACES[@]}"; do
         SNAPSHOT=$(snapshot_windows)
       fi
       ;;
+    cmux)
+      IFS='|' read -r title_match _ <<< "$rest"
+      app_name="cmux"
+
+      window_id=$(find_window_id "$app_name" "$title_match" "$SNAPSHOT")
+      if [[ -n "$window_id" ]]; then
+        echo "[$title] moving existing window to workspace $ws..."
+        aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || {
+          echo "WARNING: [$title] move failed" >&2
+          ((failures++)) || true
+        }
+      else
+        echo "[$title] creating on workspace $ws..."
+        before_snapshot="$SNAPSHOT"
+        create_cmux_window || {
+          echo "WARNING: [$title] creation failed, skipping" >&2
+          ((failures++)) || true
+          continue
+        }
+        window_id=$(wait_for_new_window "$app_name" "$before_snapshot") || {
+          window_id=$(get_focused_window_id)
+        }
+        if [[ -n "$window_id" ]]; then
+          aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || true
+        else
+          echo "WARNING: [$title] could not find new window ID" >&2
+          ((failures++)) || true
+        fi
+        SNAPSHOT=$(snapshot_windows)
+      fi
+      ;;
     vscode)
       IFS='|' read -r title_match workspace <<< "$rest"
       app_name="$VSCODE_APP_AEROSPACE"
@@ -217,7 +256,7 @@ swept=0
 for ws in "${WORKSPACE_NAMES[@]}"; do
   stray_ids=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
     | jq -r --arg vscode "$VSCODE_APP_AEROSPACE" \
-      '[.[] | select(."app-name" != "Ghostty" and ."app-name" != $vscode)] | .[]["window-id"]') || true
+      '[.[] | select(."app-name" != "Ghostty" and ."app-name" != "cmux" and ."app-name" != $vscode)] | .[]["window-id"]') || true
   for wid in $stray_ids; do
     [[ -z "$wid" ]] && continue
     aerospace move-node-to-workspace --window-id "$wid" "$SWEEP_WORKSPACE" 2>/dev/null && ((swept++)) || true
