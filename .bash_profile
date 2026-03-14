@@ -3,6 +3,12 @@
 # the shell started when you log in via SSH).  The main things that make sense
 # to put in bash_profile are environment variable exports and startup programs.
 
+# Environment and PATH (available to all login shells, even non-interactive ones
+# like AeroSpace exec-and-forget).
+if [[ -f ~/.shell_env ]]; then
+  source ~/.shell_env
+fi
+
 # Source bashrc to pull in configuration for interactive shell use
 if [[ -f ~/.bashrc ]]; then
   source ~/.bashrc

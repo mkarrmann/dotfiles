@@ -2,7 +2,7 @@ config-version = 2
 start-at-login = true
 
 after-startup-command = [
-    'exec-and-forget sleep 3 && startup-windows',
+    'exec-and-forget /bin/bash -l -c "sleep 3 && startup-windows"',
     'exec-and-forget sketchybar',
 ]
 

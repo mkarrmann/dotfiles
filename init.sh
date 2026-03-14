@@ -87,6 +87,7 @@ sync_link_subdirs() {
 
 # Top-level dotfiles
 for f in \
+  .shell_env \
   .shellrc \
   .shell_aliases \
   .shell_functions \

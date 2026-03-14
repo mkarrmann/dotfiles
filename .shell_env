@@ -1,0 +1,20 @@
+# Environment and PATH — sourced by .bash_profile, .zprofile, and .shellrc
+# so that PATH is available in login, interactive, AND non-interactive contexts.
+
+export EDITOR=nvim
+
+export PATH=$PATH:$HOME/.local/bin:$HOME/bin
+
+# pyenv
+if command -v pyenv >> /dev/null 2>&1; then
+  export PYENV_ROOT="$HOME/.pyenv"
+  case "$PATH" in
+    *"$PYENV_ROOT/bin"*) ;;
+    *) export PATH="$PYENV_ROOT/bin:$PYENV_ROOT/shims:$PATH" ;;
+  esac
+fi
+
+export SDKMAN_DIR="$HOME/.sdkman"
+export PATH="$HOME/.cargo/bin:$PATH"
+export PATH="$HOME/.local/share/bob/nvim-bin:$PATH"
+export PATH="$HOME/ob-headless:$PATH"

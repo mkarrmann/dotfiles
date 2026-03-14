@@ -17,22 +17,18 @@ if [ -f ~/.shell_functions ]; then
   . ~/.shell_functions
 fi
 
-export EDITOR=nvim
-export PATH=$PATH:$HOME/.local/bin:$HOME/bin
+# PATH and environment (also sourced independently by .bash_profile/.zprofile
+# for non-interactive login shells like AeroSpace exec-and-forget).
+if [ -f ~/.shell_env ]; then
+  . ~/.shell_env
+fi
 
 # Claude Agent Manager
 [ -f ~/.claude/agent-manager/bin/shell-functions.sh ] && source ~/.claude/agent-manager/bin/shell-functions.sh
 
-# Check if pyenv is installed
-command -v pyenv >> /dev/null
-if [ $? -eq 0 ]; then
-       export PYENV_ROOT="$HOME/.pyenv"
-       # Add pyenv shims to PATH only once.
-       case "$PATH" in
-         *"$PYENV_ROOT/bin"*) ;;
-         *) export PATH="$PYENV_ROOT/bin:$PYENV_ROOT/shims:$PATH" ;;
-       esac
-       eval "$(pyenv init -)"
+# pyenv interactive init (PATH/shims already set by .shell_env)
+if command -v pyenv >> /dev/null 2>&1; then
+  eval "$(pyenv init -)"
 fi
 
 set -o vi
@@ -48,10 +44,6 @@ if [[ -n "${GHOSTTY_WORKSPACE_TITLE:-}" ]]; then
 fi
 
 #THIS MUST BE AT THE END OF THE FILE FOR SDKMAN TO WORK!!!
-export SDKMAN_DIR="$HOME/.sdkman"
 if [ -s "$HOME/.sdkman/bin/sdkman-init.sh" ]; then
   . "$HOME/.sdkman/bin/sdkman-init.sh"
 fi
-export PATH="$HOME/.cargo/bin:$PATH"
-export PATH="$HOME/.local/share/bob/nvim-bin:$PATH"
-export PATH="$HOME/ob-headless:$PATH"
