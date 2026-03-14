@@ -131,6 +131,10 @@ alt-shift-j = ['join-with down', 'mode main']
 alt-shift-k = ['join-with up', 'mode main']
 alt-shift-l = ['join-with right', 'mode main']
 
+# Layout switching
+t = ['layout tiles horizontal', 'mode main']
+a = ['layout accordion', 'mode main']
+
 # ── On window detected: best-effort workspace assignment ─────────────
 # The startup-windows script handles reliable placement; these rules
 # catch windows that appear outside the script (e.g. manual opens).
