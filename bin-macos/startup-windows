@@ -249,6 +249,16 @@ for i in "${!WORKSPACES[@]}"; do
   esac
 done
 
+# Set accordion layout on workspaces with multiple windows
+for ws in $(managed_workspaces); do
+  win_count=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null | jq 'length')
+  if [[ "$win_count" -gt 1 ]]; then
+    aerospace workspace "$ws" 2>/dev/null || true
+    aerospace flatten-workspace-tree 2>/dev/null || true
+    aerospace layout accordion 2>/dev/null || true
+  fi
+done
+
 # Sweep stray windows: move non-Ghostty/VS Code windows off workspaces 1-9,A,B to Z
 swept=0
 for ws in $(managed_workspaces); do
