@@ -71,12 +71,6 @@ setopt HIST_IGNORE_DUPS
 # starts with this shell's most recent command.
 unsetopt SHARE_HISTORY
 
-# Unset proxy variables that can break internal tools like arc
-unset http_proxy
-unset https_proxy
-unset HTTP_PROXY
-unset HTTPS_PROXY
-
 # Local zsh-only config (not source-controlled)
 if [[ -f ~/.zshrc.local ]]; then
   source ~/.zshrc.local
