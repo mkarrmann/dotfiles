@@ -89,8 +89,8 @@ alt-ctrl-h = 'focus-monitor left'
 alt-ctrl-l = 'focus-monitor right'
 
 # Cycle through workspaces
-alt-period = 'workspace next --wrap-around'
-alt-comma = 'workspace prev --wrap-around'
+ctrl-k = 'workspace next --wrap-around'
+ctrl-j = 'workspace prev --wrap-around'
 
 # Workspace back-and-forth / move workspace to monitor
 alt-tab = 'workspace-back-and-forth'
