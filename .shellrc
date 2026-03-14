@@ -1,5 +1,10 @@
 # Shared interactive shell config — sourced by both .bashrc and .zshrc
 
+# Clear stale TMUX vars inherited from app launch environment
+if [ -n "$TMUX" ] && ! tmux display -p '' 2>/dev/null; then
+  unset TMUX TMUX_PANE
+fi
+
 # Make /etc/paths + /etc/paths.d apply even in non-login shells (tmux panes)
 if [ -x /usr/libexec/path_helper ]; then
   eval "$(/usr/libexec/path_helper -s)"
