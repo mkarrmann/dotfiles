@@ -2,29 +2,28 @@
 set -euo pipefail
 
 # ── Workspace definitions ────────────────────────────────────────────
-# Format: type|title|title_match|...
-#   ghostty: ghostty|title|title_match|workdir|command
-#   cmux:    cmux|title|title_match
-#   vscode:  vscode|title|title_match|workspace (local path or remote URI)
+# Format: ws|type|title|title_match|...
+#   ghostty: ws|ghostty|title|title_match|workdir|command
+#   cmux:    ws|cmux|title|title_match
+#   vscode:  ws|vscode|title|title_match|workspace (local path or remote URI)
 # title_match is a regex used to find existing windows in AeroSpace.
-# Workspaces are assigned to AeroSpace workspaces in array order:
-#   index 0→"1", 1→"2", ..., 8→"9", 9→"A", 10→"B"
+# ws is the AeroSpace workspace to place the window in.
+# Multiple entries can share a workspace (accordion layout toggles between them).
 # Stray windows are swept to workspace "Z".
 WORKSPACES=(
-  "cmux|Local MacOS|."
-  "ghostty|FTW: main1|FTW-main1|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s FTW-main1\"'"
-  "ghostty|FTW: fbsource1|FTW-fbsource1|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s FTW-fbsource1 -c ~/fbsource\"'"
-  "vscode|FTW: vscode-fbsource1|devvm36111.ftw0 \\(Workspace\\)|${HOME}/Library/Application Support/VS Code @ FB/MetaWorkspaces/devvm36111.ftw0.code-workspace"
-  "ghostty|FTW: fbsource2|FTW-fbsource2|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s FTW-fbsource2 -c ~/fbsource2\"'"
-  "vscode|FTW: vscode-fbsource2|fbsource2.*devvm36111.ftw0|vscode-remote://fb-remote+devvm36111.ftw0.facebook.com/home/mkarrmann/fbsource2.code-workspace"
-  "ghostty|CCO: main1|CCO-main1|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"tmux new-session -A -s CCO-main1\"'"
-  "ghostty|CCO: fbsource1|CCO-fbsource1|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"tmux new-session -A -s CCO-fbsource1 -c ~/fbsource\"'"
-  "vscode|CCO: vscode-fbsource1|devvm20365.cco0 \\(Workspace\\)|${HOME}/Library/Application Support/VS Code @ FB/MetaWorkspaces/devvm20365.cco0.code-workspace"
-  "ghostty|CCO: fbsource2|CCO-fbsource2|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"tmux new-session -A -s CCO-fbsource2 -c ~/fbsource2\"'"
-  "vscode|CCO: vscode-fbsource2|fbsource2.*devvm20365.cco0|vscode-remote://fb-remote+devvm20365.cco0.facebook.com/home/mkarrmann/fbsource2.code-workspace"
+  "1|cmux|Local MacOS|."
+  "2|ghostty|FTW: main1|FTW-main1|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s FTW-main1\"'"
+  "3|ghostty|FTW: fbsource1|FTW-fbsource1|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s FTW-fbsource1 -c ~/fbsource\"'"
+  "3|vscode|FTW: vscode-fbsource1|devvm36111.ftw0 \\(Workspace\\)|${HOME}/Library/Application Support/VS Code @ FB/MetaWorkspaces/devvm36111.ftw0.code-workspace"
+  "4|ghostty|FTW: fbsource2|FTW-fbsource2|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s FTW-fbsource2 -c ~/fbsource2\"'"
+  "4|vscode|FTW: vscode-fbsource2|fbsource2.*devvm36111.ftw0|vscode-remote://fb-remote+devvm36111.ftw0.facebook.com/home/mkarrmann/fbsource2.code-workspace"
+  "5|ghostty|CCO: main1|CCO-main1|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"tmux new-session -A -s CCO-main1\"'"
+  "6|ghostty|CCO: fbsource1|CCO-fbsource1|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"tmux new-session -A -s CCO-fbsource1 -c ~/fbsource\"'"
+  "6|vscode|CCO: vscode-fbsource1|devvm20365.cco0 \\(Workspace\\)|${HOME}/Library/Application Support/VS Code @ FB/MetaWorkspaces/devvm20365.cco0.code-workspace"
+  "7|ghostty|CCO: fbsource2|CCO-fbsource2|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"tmux new-session -A -s CCO-fbsource2 -c ~/fbsource2\"'"
+  "7|vscode|CCO: vscode-fbsource2|fbsource2.*devvm20365.cco0|vscode-remote://fb-remote+devvm20365.cco0.facebook.com/home/mkarrmann/fbsource2.code-workspace"
 )
 
-WORKSPACE_NAMES=("1" "2" "3" "4" "5" "6" "7" "8" "9" "A" "B")
 SWEEP_WORKSPACE="Z"
 
 VSCODE_APP_AEROSPACE="VS Code @ Meta"
@@ -73,8 +72,8 @@ create_vscode_window() {
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
-index_to_workspace() {
-  echo "${WORKSPACE_NAMES[$1]}"
+managed_workspaces() {
+  printf '%s\n' "${WORKSPACES[@]}" | cut -d'|' -f1 | sort -u
 }
 
 snapshot_windows() {
@@ -149,8 +148,7 @@ SNAPSHOT=$(snapshot_windows)
 failures=0
 
 for i in "${!WORKSPACES[@]}"; do
-  IFS='|' read -r type title rest <<< "${WORKSPACES[$i]}"
-  ws=$(index_to_workspace "$i")
+  IFS='|' read -r ws type title rest <<< "${WORKSPACES[$i]}"
 
   case "$type" in
     ghostty)
@@ -253,7 +251,7 @@ done
 
 # Sweep stray windows: move non-Ghostty/VS Code windows off workspaces 1-9,A,B to Z
 swept=0
-for ws in "${WORKSPACE_NAMES[@]}"; do
+for ws in $(managed_workspaces); do
   stray_ids=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
     | jq -r --arg vscode "$VSCODE_APP_AEROSPACE" \
       '[.[] | select(."app-name" != "Ghostty" and ."app-name" != "cmux" and ."app-name" != $vscode)] | .[]["window-id"]') || true

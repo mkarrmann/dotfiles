@@ -1,5 +1,6 @@
 config-version = 2
 start-at-login = true
+default-root-container-layout = 'accordion'
 
 after-startup-command = [
     'exec-and-forget /bin/bash -l -c "sleep 3 && startup-windows"',
@@ -107,8 +108,8 @@ alt-ctrl-h = 'focus-monitor left'
 alt-ctrl-l = 'focus-monitor right'
 
 # Cycle through workspaces
-ctrl-k = 'workspace next --wrap-around'
-ctrl-j = 'workspace prev --wrap-around'
+alt-i = 'workspace next --wrap-around'
+alt-u = 'workspace prev --wrap-around'
 
 # Workspace back-and-forth / move workspace to monitor
 alt-tab = 'workspace-back-and-forth'
@@ -152,20 +153,20 @@ run = 'move-node-to-workspace 3'
 [[on-window-detected]]
 if.app-id = 'com.mitchellh.ghostty'
 if.window-title-regex-substring = '^FTW: fbsource2'
-run = 'move-node-to-workspace 5'
+run = 'move-node-to-workspace 4'
 
 [[on-window-detected]]
 if.app-id = 'com.mitchellh.ghostty'
 if.window-title-regex-substring = '^CCO: main1'
-run = 'move-node-to-workspace 7'
+run = 'move-node-to-workspace 5'
 
 [[on-window-detected]]
 if.app-id = 'com.mitchellh.ghostty'
 if.window-title-regex-substring = '^CCO: fbsource1'
-run = 'move-node-to-workspace 8'
+run = 'move-node-to-workspace 6'
 
 [[on-window-detected]]
 if.app-id = 'com.mitchellh.ghostty'
 if.window-title-regex-substring = '^CCO: fbsource2'
-run = 'move-node-to-workspace A'
+run = 'move-node-to-workspace 7'
 
