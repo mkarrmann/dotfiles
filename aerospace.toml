@@ -93,8 +93,8 @@ alt-shift-z = 'move-node-to-workspace Z'
 
 # Focus direction
 alt-h = 'focus --boundaries-action wrap-around-the-workspace left'
-alt-j = 'focus down'
-alt-k = 'focus up'
+alt-j = 'focus --boundaries-action wrap-around-the-workspace down'
+alt-k = 'focus --boundaries-action wrap-around-the-workspace up'
 alt-l = 'focus --boundaries-action wrap-around-the-workspace right'
 
 # Move window in direction
