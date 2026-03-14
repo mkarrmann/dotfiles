@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -u
+
+LOG="$HOME/.secure-input-monitor.log"
+INTERVAL="0.25"
+
+get_pid() {
+  ioreg -l -d 1 -w 0 2>/dev/null \
+    | perl -nle 'print $1 if /"kCGSSessionSecureInputPID"=(\d+)/' \
+    | head -1
+}
+
+frontmost_app() {
+  osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true' 2>/dev/null || true
+}
+
+snapshot() {
+  local pid="$1"
+  {
+    echo "=== $(date '+%Y-%m-%d %H:%M:%S %z') ==="
+    if [[ -n "$pid" ]]; then
+      echo "secure_input=ON pid=$pid"
+      echo "holder:"
+      ps -p "$pid" -o pid=,ppid=,comm=,args= 2>/dev/null || echo "  <pid vanished>"
+    else
+      echo "secure_input=OFF"
+    fi
+
+    echo "frontmost_app: $(frontmost_app)"
+
+    echo "-- likely suspects --"
+    ps ax -o pid=,ppid=,comm=,args= \
+      | egrep '1Password|Bitwarden|KeePassXC|Terminal|iTerm2|Google Chrome|Brave Browser|Arc|Safari|Firefox|Raycast|Karabiner|BetterTouchTool|Hammerspoon|GlobalProtect|Cisco|Zscaler|Okta|Authy|Slack' \
+      || true
+
+    echo "-- recent auth/system logs (heuristic) --"
+    log show --last 5s --style compact \
+      --predicate 'process == "loginwindow" OR process == "SecurityAgent" OR process == "securityd"' \
+      2>/dev/null | tail -n 80 || true
+
+    echo
+  } >> "$LOG"
+}
+
+last="__INIT__"
+
+echo "logging to $LOG"
+echo "started $(date)" >> "$LOG"
+
+while true; do
+  pid="$(get_pid)"
+  cur="${pid:-OFF}"
+
+  if [[ "$cur" != "$last" ]]; then
+    snapshot "${pid:-}"
+    last="$cur"
+  fi
+
+  sleep "$INTERVAL"
+done

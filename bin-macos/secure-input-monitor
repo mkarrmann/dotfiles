@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Polls for Secure Input changes and logs the responsible process.
+# Run in background: secure-input-monitor &
+# Check log: cat ~/.secure-input-monitor.log
+LOG="$HOME/.secure-input-monitor-orig.log"
+LAST_PID=""
+
+while true; do
+    PID=$(ioreg -l -w 0 | perl -nle 'print $1 if /"kCGSSessionSecureInputPID"=(\d+)/' | head -1)
+    if [[ -n "$PID" && "$PID" != "$LAST_PID" ]]; then
+        PROC=$(ps -p "$PID" -o comm= 2>/dev/null || echo "unknown")
+        echo "$(date '+%Y-%m-%d %H:%M:%S') SecureInput ON  pid=$PID  process=$PROC" >>"$LOG"
+        LAST_PID="$PID"
+    elif [[ -z "$PID" && -n "$LAST_PID" ]]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') SecureInput OFF (was pid=$LAST_PID)" >>"$LOG"
+        LAST_PID=""
+    fi
+    sleep 2
+done
