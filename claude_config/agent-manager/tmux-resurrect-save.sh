@@ -17,7 +17,7 @@ if [ -n "${CLAUDE_AGENTS_FILE:-}" ]; then
 else
   _conf="$HOME/.claude/obsidian-vault.conf"
   [ -f "$_conf" ] && . "$_conf"
-  AGENTS_DIR="${OBSIDIAN_VAULT_ROOT:-$HOME/obsidian}"
+  AGENTS_DIR="${OBSIDIAN_VAULT:-$HOME/obsidian}"
   unset _conf
 fi
 

@@ -15,7 +15,7 @@ function M.resolve_vault_root()
 	local conf = vim.fn.expand("~/.claude/obsidian-vault.conf")
 	if vim.fn.filereadable(conf) == 1 then
 		for _, line in ipairs(vim.fn.readfile(conf)) do
-			local val = line:match("^OBSIDIAN_VAULT_ROOT%s*=%s*(.+)$")
+			local val = line:match("^OBSIDIAN_VAULT%s*=%s*(.+)$")
 			if val then
 				val = val:gsub('^"(.*)"$', "%1"):gsub("^'(.*)'$", "%1")
 				val = val:gsub("%$HOME", vim.fn.expand("~"))

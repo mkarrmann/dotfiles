@@ -141,7 +141,7 @@ def _read_vault_root() -> str:
                 if line.startswith("#") or "=" not in line:
                     continue
                 key, _, val = line.partition("=")
-                if key.strip() == "OBSIDIAN_VAULT_ROOT":
+                if key.strip() == "OBSIDIAN_VAULT":
                     val = val.strip().strip('"').strip("'")
                     if val.startswith("${OBSIDIAN_VAULT:-") and val.endswith("}"):
                         env_default = val[len("${OBSIDIAN_VAULT:-"):-1]
