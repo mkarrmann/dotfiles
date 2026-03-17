@@ -18,3 +18,5 @@ export SDKMAN_DIR="$HOME/.sdkman"
 export PATH="$HOME/.cargo/bin:$PATH"
 export PATH="$HOME/.local/share/bob/nvim-bin:$PATH"
 export PATH="$HOME/ob-headless:$PATH"
+
+export OBSIDIAN_VAULT="${OBSIDIAN_VAULT:-$HOME/obsidian}"
