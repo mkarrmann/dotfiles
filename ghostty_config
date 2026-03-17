@@ -1,0 +1,13 @@
+clipboard-write = allow
+clipboard-read = allow
+window-colorspace = srgb
+theme = Github Dark High Contrast
+font-feature = -calt                                                                                                                                                                      
+font-feature = -liga                                                                                                                                                                      
+font-feature = -dlig
+keybind = cmd+d=unbind
+keybind = cmd+shift+d=unbind
+shell-integration-features = no-title
+
+command = zsh -c nvim
+
