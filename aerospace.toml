@@ -8,11 +8,13 @@ after-startup-command = [
 ]
 
 exec-on-workspace-change = ['/bin/bash', '-c',
-    'sketchybar --trigger aerospace_workspace_change FOCUSED_WORKSPACE=$AEROSPACE_FOCUSED_WORKSPACE'
+    'sketchybar --trigger aerospace_workspace_change'
 ]
 
 # Persistent workspaces: 1-9, A, B, Z (overflow)
 persistent-workspaces = ["1", "2", "3", "4", "5", "6", "7", "8", "9"]
+
+on-focused-monitor-changed = ['move-mouse monitor-lazy-center']
 
 # Pin all defined workspaces to the main monitor
 [workspace-to-monitor-force-assignment]
@@ -101,8 +103,10 @@ alt-shift-k = 'move up'
 alt-shift-l = 'move right'
 
 # Focus monitor
+alt-ctrl-j = 'focus-monitor up'
 alt-ctrl-h = 'focus-monitor left'
 alt-ctrl-l = 'focus-monitor right'
+alt-ctrl-k = 'focus-monitor down'
 
 # Cycle through workspaces
 alt-i = 'workspace next --wrap-around'

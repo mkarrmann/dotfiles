@@ -351,7 +351,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   # SketchyBar
   mkdir -p "$HOME/.config/sketchybar/plugins"
   link_one "$DOTFILES_DIR/sketchybar/sketchybarrc" "$HOME/.config/sketchybar/sketchybarrc"
-  link_one "$DOTFILES_DIR/sketchybar/plugins/aerospace.sh" "$HOME/.config/sketchybar/plugins/aerospace.sh"
+  sync_link_dir "$DOTFILES_DIR/sketchybar/plugins" "$HOME/.config/sketchybar/plugins" "*"
 fi
 #
 # Nori
@@ -381,12 +381,14 @@ if [[ ! -d "$HOME/.tmux/plugins/tpm" ]]; then
 fi
 
 if [[ -x "$HOME/.tmux/plugins/tpm/bin/install_plugins" ]]; then
-    if command -v tmux &>/dev/null; then
+    if ! command -v tmux &>/dev/null; then
+        echo "WARNING: tmux not found, skipping plugin install (run prefix + I in tmux later)" >&2
+    elif ! tmux list-sessions &>/dev/null; then
+        echo "WARNING: tmux server not running, skipping plugin install (run prefix + I in tmux later)" >&2
+    else
         tmux set-environment -g TMUX_PLUGIN_MANAGER_PATH "$HOME/.tmux/plugins"
         "$HOME/.tmux/plugins/tpm/bin/install_plugins" && echo "installed tmux plugins" \
             || echo "WARNING: tmux plugin install failed" >&2
-    else
-        echo "WARNING: tmux not found, skipping plugin install (run prefix + I in tmux later)" >&2
     fi
 fi
 
