@@ -1,0 +1,11 @@
+[Unit]
+Description=LSP multiplexer server
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/lspmux server
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

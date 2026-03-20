@@ -1,6 +1,9 @@
 -- Apply environment-specific configuration (Meta, etc.)
 require("lib.env").setup()
 
+-- Override fb-pyright-ls@meta to use lspmux (must run before vim.lsp.enable).
+require("config.lspmux")
+
 -- Meta's bundled parsers are minimal (c, lua, markdown, vim, etc.).
 -- On devservers, set proxy env vars so that curl-based downloads (e.g.
 -- nvim-treesitter parser installs) can reach external hosts like GitHub.
