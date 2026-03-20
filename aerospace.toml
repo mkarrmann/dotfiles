@@ -103,10 +103,10 @@ alt-shift-k = 'move up'
 alt-shift-l = 'move right'
 
 # Focus monitor
-alt-ctrl-j = 'focus-monitor up'
+alt-ctrl-j = 'focus-monitor down'
 alt-ctrl-h = 'focus-monitor left'
 alt-ctrl-l = 'focus-monitor right'
-alt-ctrl-k = 'focus-monitor down'
+alt-ctrl-k = 'focus-monitor up'
 
 # Cycle through workspaces
 alt-i = 'workspace next --wrap-around'
