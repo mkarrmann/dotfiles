@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# devserver-health-check: Detect and optionally resolve resource issues
+# Usage: devserver-health-check [--fix]
+
+set -euo pipefail
+
+FIX_MODE=false
+if [[ "${1:-}" == "--fix" ]]; then
+    FIX_MODE=true
+fi
+
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+warn_count=0
+fix_count=0
+
+warn() { echo -e "${YELLOW}WARNING:${NC} $1"; warn_count=$((warn_count + 1)); }
+err()  { echo -e "${RED}CRITICAL:${NC} $1"; warn_count=$((warn_count + 1)); }
+ok()   { echo -e "${GREEN}OK:${NC} $1"; }
+info() { echo -e "${BLUE}INFO:${NC} $1"; }
+fix()  { echo -e "${GREEN}FIXED:${NC} $1"; fix_count=$((fix_count + 1)); }
+
+echo "=== Devserver Health Check ==="
+echo ""
+
+# --- Memory ---
+total_mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+avail_mem_kb=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)
+swap_used_kb=$(awk '/SwapTotal/ {total=$2} /SwapFree/ {free=$2} END {print total-free}' /proc/meminfo)
+mem_pct=$((100 - (avail_mem_kb * 100 / total_mem_kb)))
+
+echo "--- Memory ---"
+if (( mem_pct > 90 )); then
+    err "Memory ${mem_pct}% used ($(( avail_mem_kb / 1024 )) MB available)"
+elif (( mem_pct > 75 )); then
+    warn "Memory ${mem_pct}% used ($(( avail_mem_kb / 1024 )) MB available)"
+else
+    ok "Memory ${mem_pct}% used ($(( avail_mem_kb / 1024 )) MB available)"
+fi
+
+if (( swap_used_kb > 1048576 )); then
+    err "Swap: $(( swap_used_kb / 1024 )) MB in use (>1 GB indicates memory pressure)"
+elif (( swap_used_kb > 0 )); then
+    warn "Swap: $(( swap_used_kb / 1024 )) MB in use"
+else
+    ok "Swap: not in use"
+fi
+echo ""
+
+# --- Load average ---
+echo "--- CPU ---"
+nproc_val=$(nproc)
+load1=$(cut -d' ' -f1 /proc/loadavg)
+load_int=${load1%%.*}
+if (( load_int > nproc_val * 2 )); then
+    err "Load average: ${load1} (${nproc_val} cores)"
+elif (( load_int > nproc_val )); then
+    warn "Load average: ${load1} (${nproc_val} cores)"
+else
+    ok "Load average: ${load1} (${nproc_val} cores)"
+fi
+echo ""
+
+# --- Buck2 daemons ---
+echo "--- Buck2 Daemons ---"
+buck2_daemons=$(ps -eo pid,rss,args 2>/dev/null | grep 'buck2-daemon --isolation-dir' | grep -v grep || true)
+if [[ -n "$buck2_daemons" ]]; then
+    daemon_count=$(echo "$buck2_daemons" | wc -l)
+    total_buck2_mb=$(echo "$buck2_daemons" | awk '{sum += $2} END {print int(sum/1024)}')
+    info "${daemon_count} buck2 daemons using ${total_buck2_mb} MB total"
+
+    echo "$buck2_daemons" | while read -r pid rss args; do
+        rss_mb=$((rss / 1024))
+        iso_dir=$(echo "$args" | sed -n 's/.*--isolation-dir \([^ ]*\).*/\1/p')
+        if (( rss > 8388608 )); then
+            err "  PID ${pid}: $((rss_mb / 1024)) GB (isolation: ${iso_dir})"
+        elif (( rss > 4194304 )); then
+            warn "  PID ${pid}: $((rss_mb / 1024)) GB (isolation: ${iso_dir})"
+        else
+            info "  PID ${pid}: ${rss_mb} MB (isolation: ${iso_dir})"
+        fi
+    done
+else
+    ok "No buck2 daemons running"
+fi
+echo ""
+
+# --- Orphaned Neovim instances ---
+echo "--- Orphaned Processes ---"
+orphaned_nvim=$(ps -eo pid,ppid,rss,lstart,args 2>/dev/null | awk '$2 == 1 && /nvim --embed/ {print}' || true)
+if [[ -n "$orphaned_nvim" ]]; then
+    while read -r pid ppid rss lstart_rest; do
+        rss_mb=$((rss / 1024))
+        warn "Orphaned nvim PID ${pid} (${rss_mb} MB, started: ${lstart_rest})"
+        if $FIX_MODE; then
+            kill "$pid" 2>/dev/null && fix "Killed orphaned nvim ${pid}" || warn "Failed to kill ${pid}"
+        fi
+    done <<< "$orphaned_nvim"
+else
+    ok "No orphaned Neovim instances"
+fi
+echo ""
+
+# --- Stuck Sapling operations ---
+echo "--- Stuck Sapling Operations ---"
+stuck_sl=$(ps -eo pid,etimes,args 2>/dev/null | grep -E 'hg\.real (diff|status|goto|log)' | grep -v grep | awk '$2 > 300 {print}' || true)
+if [[ -n "$stuck_sl" ]]; then
+    while read -r pid elapsed args; do
+        mins=$((elapsed / 60))
+        warn "Stuck sl operation PID ${pid} running for ${mins}m: $(echo "$args" | head -c 80)"
+        if $FIX_MODE; then
+            kill "$pid" 2>/dev/null && fix "Killed stuck sl operation ${pid}" || warn "Failed to kill ${pid}"
+        fi
+    done <<< "$stuck_sl"
+else
+    ok "No stuck Sapling operations"
+fi
+echo ""
+
+# --- Claude Code sessions ---
+echo "--- Claude Code Sessions ---"
+claude_count=$(ps -eo args 2>/dev/null | grep -c '^claude$' || echo 0)
+if (( claude_count > 3 )); then
+    warn "${claude_count} Claude Code sessions running (consider closing unused ones)"
+elif (( claude_count > 0 )); then
+    info "${claude_count} Claude Code session(s) running"
+else
+    ok "No Claude Code sessions"
+fi
+echo ""
+
+# --- htop / top consuming CPU ---
+echo "--- Miscellaneous ---"
+htop_pids=$(ps -eo pid,pcpu,args 2>/dev/null | awk '/[h]top/ && $2 > 50 {print $1}' || true)
+if [[ -n "$htop_pids" ]]; then
+    for pid in $htop_pids; do
+        warn "htop PID ${pid} consuming excessive CPU"
+        if $FIX_MODE; then
+            kill "$pid" 2>/dev/null && fix "Killed runaway htop ${pid}" || true
+        fi
+    done
+else
+    ok "No runaway monitoring tools"
+fi
+echo ""
+
+# --- Summary ---
+echo "=== Summary ==="
+if (( warn_count == 0 )); then
+    echo -e "${GREEN}All checks passed.${NC}"
+else
+    echo -e "${YELLOW}${warn_count} issue(s) found.${NC}"
+    if ! $FIX_MODE && (( warn_count > 0 )); then
+        echo -e "Run with ${BLUE}--fix${NC} to auto-resolve fixable issues."
+    elif (( fix_count > 0 )); then
+        echo -e "${GREEN}${fix_count} issue(s) auto-resolved.${NC}"
+    fi
+fi
