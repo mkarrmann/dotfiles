@@ -1,21 +1,29 @@
 #!/bin/bash
-# Neovim wrapper that handles environment-specific issues
-# This wrapper auto-detects the environment and applies necessary workarounds
+# Neovim wrapper that handles environment-specific issues.
+# This wrapper auto-detects the environment and applies necessary workarounds.
+
+# Ensure login shell environment. tmux default-command runs this as a non-login
+# process, so /etc/profile.d/ and user profile scripts are not sourced. Re-exec
+# through the user's login shell so neovim (and everything inside it) gets the
+# same environment as a normal interactive session.
+if [[ -z "$_NVIM_ENV_INIT" ]]; then
+    export _NVIM_ENV_INIT=1
+    _self="$(realpath "${BASH_SOURCE[0]}")"
+    exec "$SHELL" -lc 'exec "$0" "$@"' "$_self" "$@"
+fi
 
 # Meta environment detection and fixes
 if [[ "$http_proxy" == *"fwdproxy"* ]] || [[ -n "$THRIFT_TLS_CL_CERT_PATH" ]]; then
-    # At Meta - clear conflicting certificate variables to prevent OpenSSL segfaults
-    unset THRIFT_TLS_CL_CERT_PATH
-    unset THRIFT_TLS_CL_KEY_PATH
+    # Clear agent-specific cert vars leaked from Claude Code sessions. These
+    # previously caused OpenSSL segfaults in neovim (root cause unknown as of
+    # 2026-03). THRIFT_TLS_CL_CERT_PATH is intentionally kept — it's a
+    # system-level var needed by clicat and the Claude Code native binary.
+    # If neovim segfaults again, check whether THRIFT_TLS_CL_CERT_PATH needs
+    # to be unset here too (and re-add a fallback in claude-nvim-wrapper.sh).
     unset CLAUDE_CODE_CLIENT_CERT
     unset CODEX_OTEL_CLIENT_CERT
     unset OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE
 fi
-
-# Add more environment-specific fixes here as needed
-# if [[ -n "$SOME_COMPANY_VAR" ]]; then
-#     # Company-specific fixes
-# fi
 
 # Find the real nvim, skipping this wrapper's own directory to avoid recursion
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
