@@ -110,10 +110,6 @@ link_one "$DOTFILES_DIR/nvim_init.lua" "$HOME/.config/nvim/init.lua"
 sync_link_dir "$DOTFILES_DIR/nvim/lua/config" "$HOME/.config/nvim/lua/config" "*.lua"
 sync_link_dir "$DOTFILES_DIR/nvim/lua/plugins" "$HOME/.config/nvim/lua/plugins" "*.lua"
 sync_link_dir "$DOTFILES_DIR/nvim/lua/lib" "$HOME/.config/nvim/lua/lib" "*.lua"
-# Machine-local nvim config (e.g. meta.lua, lspmux.lua)
-if [[ -d "$DOTFILES_DIR/nvim/local/config" ]]; then
-  sync_link_dir "$DOTFILES_DIR/nvim/local/config" "$HOME/.config/nvim/lua/config" "*.lua"
-fi
 
 # ~/bin (cross-platform + platform-specific, with stale-link cleanup)
 mkdir -p "$HOME/bin"
@@ -134,18 +130,6 @@ link_one "$DOTFILES_DIR/wofi_config" "$HOME/.config/wofi/config"
 # sway
 mkdir -p "$HOME/.config/sway"
 link_one "$DOTFILES_DIR/sway_config" "$HOME/.config/sway/config"
-
-# lspmux (LSP multiplexer wrapper scripts)
-if [[ -d "$DOTFILES_DIR/lspmux" ]]; then
-  mkdir -p "$HOME/.local/share/lspmux"
-  sync_link_dir "$DOTFILES_DIR/lspmux" "$HOME/.local/share/lspmux" "*.sh"
-fi
-
-# systemd user services
-if [[ -d "$DOTFILES_DIR/systemd/user" ]]; then
-  mkdir -p "$HOME/.config/systemd/user"
-  sync_link_dir "$DOTFILES_DIR/systemd/user" "$HOME/.config/systemd/user" "*.service"
-fi
 
 # Claude Code
 mkdir -p "$HOME/.claude/projects" "$HOME/.claude/rules" "$HOME/.claude/hooks"
