@@ -414,6 +414,17 @@ vim.keymap.set("n", "<leader>aX", function()
 	end
 end, { desc = "Cancel running command" })
 
+vim.keymap.set("n", "<leader><tab>n", "<cmd>tabnew<cr>", { desc = "New tab" })
+
+vim.keymap.set("n", "<leader><tab>r", function()
+	vim.ui.input({ prompt = "Tab name: " }, function(name)
+		if name then
+			vim.t.tab_name = name
+			vim.cmd("redrawtabline")
+		end
+	end)
+end, { desc = "Rename tab" })
+
 -- In diff mode, remap mouse scroll to Ctrl-E/Ctrl-Y which respect scrollbind,
 -- so both diff panes scroll together.
 vim.keymap.set("n", "<ScrollWheelUp>", function()
