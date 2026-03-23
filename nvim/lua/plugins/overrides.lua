@@ -54,6 +54,8 @@ return {
 				function() return _hostname end,
 				function() return os.date("%H:%M") end,
 			}
+			opts.inactive_sections = opts.inactive_sections or {}
+			opts.inactive_sections.lualine_z = opts.sections.lualine_z
 		end,
 	},
 	{
