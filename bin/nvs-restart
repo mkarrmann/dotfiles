@@ -26,7 +26,6 @@ for arg in "$@"; do
   esac
 done
 
-# Detect current session: ask the parent Neovim for its PID
 if [[ "$mode" == "current" ]]; then
   if [[ -z "${NVIM:-}" ]]; then
     echo "Not inside a Neovim session. Use nvs-restart NAME or nvs-restart --all" >&2
@@ -46,7 +45,13 @@ names=()
 while IFS= read -r line; do
   [[ -z "$line" ]] && continue
   pid=$(echo "$line" | awk '{print $2}')
+
+  # Extract session name: try titlestring first, then socket filename
   name=$(echo "$line" | grep -oP 'titlestring=\K[^ \\]+' || true)
+  if [[ -z "$name" ]]; then
+    name=$(echo "$line" | grep -oP '[^/]+(?=\.sock)' || true)
+  fi
+  name="${name:-pid-$pid}"
 
   case "$mode" in
     all) ;;
