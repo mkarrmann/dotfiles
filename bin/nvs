@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+name="${1:?usage: nvs SESSION_NAME [WORKDIR]}"
+workdir="${2:-}"
+
+base="${XDG_STATE_HOME:-$HOME/.local/state}/nvim-sessions"
+sock="$base/$name.sock"
+log="$base/$name.log"
+
+mkdir -p "$base"
+
+is_live() {
+  [ -S "$sock" ] && nvim --server "$sock" --remote-expr '1' >/dev/null 2>&1
+}
+
+start() {
+  rm -f "$sock"
+  local cmd=(nvim --headless --listen "$sock")
+  if [[ -n "$workdir" ]]; then
+    local expanded="${workdir/#\~/$HOME}"
+    cmd+=(--cmd "cd $expanded")
+  fi
+  nohup "${cmd[@]}" >>"$log" 2>&1 </dev/null &
+  for _ in $(seq 1 50); do
+    if is_live; then return 0; fi
+    sleep 0.1
+  done
+  echo "Failed to start session: $name" >&2
+  exit 1
+}
+
+if ! is_live; then
+  start
+fi
+
+exec nvim --server "$sock" --remote-ui

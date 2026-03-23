@@ -12,15 +12,15 @@ set -euo pipefail
 # Stray windows are swept to workspace "Z".
 WORKSPACES=(
   "1|cmux|Local MacOS|."
-  "2|ghostty|FTW: main1|FTW-main1|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s FTW-main1\"'"
-  "3|ghostty|FTW: fbsource1|FTW-fbsource1|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s FTW-fbsource1 -c ~/fbsource\"'"
+  "2|ghostty|FTW: main1|FTW-main1|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"nvs FTW-main1\"'"
+  "3|ghostty|FTW: fbsource1|FTW-fbsource1|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"nvs FTW-fbsource1 ~/fbsource\"'"
   "3|vscode|FTW: vscode-fbsource1|devvm36111.ftw0 \\(Workspace\\)|${HOME}/Library/Application Support/VS Code @ FB/MetaWorkspaces/devvm36111.ftw0.code-workspace"
-  "4|ghostty|FTW: fbsource2|FTW-fbsource2|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"tmux new-session -A -s FTW-fbsource2 -c ~/fbsource2\"'"
+  "4|ghostty|FTW: fbsource2|FTW-fbsource2|~|x2ssh -et devvm36111.ftw0.facebook.com -c 'zsh -lc \"nvs FTW-fbsource2 ~/fbsource2\"'"
   "4|vscode|FTW: vscode-fbsource2|fbsource2.*devvm36111.ftw0|vscode-remote://fb-remote+devvm36111.ftw0.facebook.com/home/mkarrmann/fbsource2.code-workspace"
-  "5|ghostty|CCO: main1|CCO-main1|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"tmux new-session -A -s CCO-main1\"'"
-  "6|ghostty|CCO: fbsource1|CCO-fbsource1|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"tmux new-session -A -s CCO-fbsource1 -c ~/fbsource\"'"
+  "5|ghostty|CCO: main1|CCO-main1|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"nvs CCO-main1\"'"
+  "6|ghostty|CCO: fbsource1|CCO-fbsource1|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"nvs CCO-fbsource1 ~/fbsource\"'"
   "6|vscode|CCO: vscode-fbsource1|devvm20365.cco0 \\(Workspace\\)|${HOME}/Library/Application Support/VS Code @ FB/MetaWorkspaces/devvm20365.cco0.code-workspace"
-  "7|ghostty|CCO: fbsource2|CCO-fbsource2|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"tmux new-session -A -s CCO-fbsource2 -c ~/fbsource2\"'"
+  "7|ghostty|CCO: fbsource2|CCO-fbsource2|~|x2ssh -et devvm20365.cco0.facebook.com -c 'zsh -lc \"nvs CCO-fbsource2 ~/fbsource2\"'"
   "7|vscode|CCO: vscode-fbsource2|fbsource2.*devvm20365.cco0|vscode-remote://fb-remote+devvm20365.cco0.facebook.com/home/mkarrmann/fbsource2.code-workspace"
 )
 
