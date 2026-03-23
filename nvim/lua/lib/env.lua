@@ -31,12 +31,6 @@ M.configs = {
 
     -- Shell environment fixes
     setup_env = function()
-      -- Clear conflicting certificate variables that cause OpenSSL segfaults
-      vim.env.THRIFT_TLS_CL_CERT_PATH = nil
-      vim.env.THRIFT_TLS_CL_KEY_PATH = nil
-      vim.env.CLAUDE_CODE_CLIENT_CERT = nil
-      vim.env.CODEX_OTEL_CLIENT_CERT = nil
-      vim.env.OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE = nil
     end,
 
     -- Lazy.nvim overrides
