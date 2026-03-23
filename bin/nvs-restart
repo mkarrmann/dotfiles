@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Restart headless nvim servers. The nvs --server-only watchdog relaunches
+# each one within ~5s with fresh config.
+#
+# Usage:
+#   nvs-restart          Restart the current session (must be inside one)
+#   nvs-restart NAME     Restart a specific session by name
+#   nvs-restart --all    Restart all sessions on this machine
+
+mode="current"
+filter=""
+
+for arg in "$@"; do
+  case "$arg" in
+    --all|-a) mode="all" ;;
+    --help|-h)
+      echo "Usage: nvs-restart [--all | SESSION_NAME]"
+      echo "  (no args)     Restart the current nvim session"
+      echo "  SESSION_NAME  Restart a specific session"
+      echo "  --all, -a     Restart all sessions on this machine"
+      exit 0
+      ;;
+    *) mode="named"; filter="$arg" ;;
+  esac
+done
+
+# Detect current session: find the nvim server that owns our $NVIM socket
+if [[ "$mode" == "current" ]]; then
+  if [[ -z "${NVIM:-}" ]]; then
+    echo "Not inside a Neovim session. Use nvs-restart NAME or nvs-restart --all" >&2
+    exit 1
+  fi
+  server_pid=$(nvim --server "$NVIM" --remote-expr "v:servername" 2>/dev/null | grep -oP 'localhost:\K\d+' || true)
+  if [[ -z "$server_pid" ]]; then
+    echo "Could not determine current server. Use nvs-restart NAME or nvs-restart --all" >&2
+    exit 1
+  fi
+  filter="$server_pid"
+  mode="port"
+fi
+
+pids=()
+names=()
+
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  pid=$(echo "$line" | awk '{print $2}')
+  name=$(echo "$line" | grep -oP 'titlestring=\K[^ \\]+')
+  port=$(echo "$line" | grep -oP 'listen\s+localhost:\K\d+' || true)
+
+  case "$mode" in
+    all) ;;
+    named) [[ "$name" != "$filter" ]] && continue ;;
+    port)  [[ "$port" != "$filter" ]] && continue ;;
+  esac
+
+  pids+=("$pid")
+  names+=("$name")
+done < <(ps aux | grep 'nvim.*--headless.*--listen' | grep -v grep)
+
+if [[ ${#pids[@]} -eq 0 ]]; then
+  case "$mode" in
+    named) echo "No nvim server found for session: $filter" >&2 ;;
+    port)  echo "No nvim server found on port: $filter" >&2 ;;
+    all)   echo "No headless nvim servers found." >&2 ;;
+  esac
+  exit 1
+fi
+
+for i in "${!pids[@]}"; do
+  echo "Restarting ${names[$i]} (pid ${pids[$i]})..."
+  kill "${pids[$i]}"
+done
+
+echo "Done. Watchdog will relaunch within ~5s. Reconnect from macOS."
