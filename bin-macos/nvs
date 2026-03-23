@@ -4,6 +4,9 @@ set -euo pipefail
 # Local nvim client — connects to a remote nvim server through an existing ET tunnel.
 # The tunnel must be established first by nvs-tunnels (typically in workspace T).
 #
+# Automatically reconnects if the server restarts (e.g. via nvs-restart),
+# keeping the Ghostty window alive across server restarts.
+#
 # Usage: nvs SESSION_NAME
 
 session="${1:?usage: nvs SESSION_NAME}"
@@ -14,18 +17,33 @@ is_ready() {
   nvim --server "localhost:$port" --remote-expr '1' >/dev/null 2>&1
 }
 
+wait_for_server() {
+  local timeout="${1:-120}"
+  for _ in $(seq 1 "$timeout"); do
+    sleep 1
+    if is_ready; then return 0; fi
+  done
+  return 1
+}
+
+# Initial connection — wait for tunnel + server
 if ! is_ready; then
   echo "Waiting for tunnel (session: $session, port: $port)..."
-  for _ in $(seq 1 120); do
-    sleep 1
-    if is_ready; then break; fi
-  done
+  if ! wait_for_server 120; then
+    echo "ERROR: nvim server not reachable on port $port" >&2
+    echo "Ensure ET tunnel is running (check workspace T)" >&2
+    exit 1
+  fi
 fi
 
-if ! is_ready; then
-  echo "ERROR: nvim server not reachable on port $port" >&2
-  echo "Ensure ET tunnel is running (check workspace T)" >&2
-  exit 1
-fi
+# Reconnect loop — if the server dies (e.g. nvs-restart), wait for the
+# watchdog to relaunch it (~5s) and reconnect automatically.
+while true; do
+  nvim --server "localhost:$port" --remote-ui || true
 
-exec nvim --server "localhost:$port" --remote-ui
+  echo "Server disconnected. Reconnecting (session: $session)..."
+  if ! wait_for_server 120; then
+    echo "ERROR: server did not come back after 120s" >&2
+    exit 1
+  fi
+done
