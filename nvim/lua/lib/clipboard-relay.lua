@@ -26,7 +26,17 @@
 --   yank → vim.g.clipboard copy (for "+y) or TextYankPost autocmd (for y)
 --     → vim.fn.jobstart nc → reverse ET tunnel → Mac nvs-clip-listen → pbcopy
 --
--- Loaded only on headless servers via: nvs --cmd "lua pcall(require, 'lib.clipboard-relay')"
+-- LOADING (why --cmd + VimEnter):
+-- This module must be loaded via --cmd (not -c) in bin/nvs. --cmd runs before
+-- init.lua, so vim.g.clipboard is set before Neovim's provider detection.
+-- Without this, Neovim sees no provider during init (no pbcopy/xclip on
+-- headless) and emits "clipboard: No provider" to the user on first yank.
+--
+-- However, --cmd also means plugins load AFTER us, and any plugin that sets
+-- vim.g.clipboard (e.g. an osc52 provider) would silently override our relay.
+-- To prevent this, a VimEnter autocmd reasserts vim.g.clipboard after all
+-- plugins have finished loading. This makes the relay survive both init-time
+-- detection and plugin overrides.
 
 local CLIP_PORT = tonumber(vim.env.NVS_CLIP_PORT) or 8765
 local last_clip = {}
@@ -48,21 +58,33 @@ local function send_to_clipboard(lines, regtype)
 	end)
 end
 
-vim.g.clipboard = {
-	name = "nvs-relay",
-	copy = {
-		["+"] = send_to_clipboard,
-		["*"] = send_to_clipboard,
-	},
-	paste = {
-		["+"] = function()
-			return { last_clip, last_regtype }
-		end,
-		["*"] = function()
-			return { last_clip, last_regtype }
-		end,
-	},
-}
+local function set_clipboard_provider()
+	vim.g.clipboard = {
+		name = "nvs-relay",
+		copy = {
+			["+"] = send_to_clipboard,
+			["*"] = send_to_clipboard,
+		},
+		paste = {
+			["+"] = function()
+				return { last_clip, last_regtype }
+			end,
+			["*"] = function()
+				return { last_clip, last_regtype }
+			end,
+		},
+	}
+end
+
+-- Set provider immediately (--cmd runs before init.lua → prevents "No provider")
+set_clipboard_provider()
+
+-- Reassert after all plugins load (--cmd means plugins load after us and could
+-- override vim.g.clipboard — this ensures our relay always wins)
+vim.api.nvim_create_autocmd("VimEnter", {
+	once = true,
+	callback = set_clipboard_provider,
+})
 
 -- Mirror the TextYankPost pattern from autocmds.lua: copy every yank to the
 -- Mac clipboard (not just "+y). Skip + and * registers to avoid double-send
