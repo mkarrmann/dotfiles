@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Clipboard relay listener for nvs headless sessions.
+# Listens on a TCP port and pipes received text to pbcopy.
+# Intended to run on the Mac as a long-lived background process.
+# The remote devvm sends clipboard content through a reverse ET tunnel.
+
+NVS_CLIP_PORT="${NVS_CLIP_PORT:-8765}"
+
+if lsof -i "TCP:$NVS_CLIP_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+  exit 0
+fi
+
+while true; do
+  nc -l "$NVS_CLIP_PORT" | pbcopy 2>/dev/null || sleep 0.1
+done

@@ -30,6 +30,7 @@ start() {
     cmd+=(--cmd "cd $expanded")
   fi
   cmd+=(--cmd "set title titlestring=$name\\ —\\ %t")
+  cmd+=(-c "lua pcall(require, 'lib.clipboard-relay')")
   nohup "${cmd[@]}" >>"$log" 2>&1 </dev/null &
   for _ in $(seq 1 50); do
     if is_live; then return 0; fi

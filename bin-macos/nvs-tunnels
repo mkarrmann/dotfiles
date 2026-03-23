@@ -7,6 +7,8 @@ set -euo pipefail
 # Usage: nvs-tunnels HOST SESSION[:WORKDIR] [SESSION[:WORKDIR] ...]
 # Example: nvs-tunnels devvm36111.ftw0.facebook.com FTW-main1 FTW-fbsource1:~/fbsource
 
+NVS_CLIP_PORT="${NVS_CLIP_PORT:-8765}"
+
 host="${1:?usage: nvs-tunnels HOST SESSION[:WORKDIR] ...}"
 shift
 
@@ -52,10 +54,15 @@ echo ""
 echo "Connecting to $host (Duo auth may be required)..."
 echo ""
 
+# Start clipboard listener if not already running
+nvs-clip-listen &
+disown
+
 # Run ET in foreground (for Duo auth), but don't exec — keep our shell alive
 # so we can maintain the window title for AeroSpace detection.
 x2ssh -et "$host" \
   -t "$tunnel_spec" \
+  -r "$NVS_CLIP_PORT:$NVS_CLIP_PORT" \
   -c "zsh -lc '${remote_cmd}'" &
 et_pid=$!
 
