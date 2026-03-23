@@ -19,7 +19,7 @@ nvs_port() {
   printf '%s' "$1" | cksum | awk '{ print 7000 + ($1 % 1000) }'
 }
 
-tunnel_flags=()
+tunnel_spec=""
 remote_parts=()
 
 for spec in "$@"; do
@@ -28,7 +28,10 @@ for spec in "$@"; do
   [[ "$workdir" == "$spec" ]] && workdir=""
 
   port=$(nvs_port "$session")
-  tunnel_flags+=(-t "$port:$port")
+  if [[ -n "$tunnel_spec" ]]; then
+    tunnel_spec+=","
+  fi
+  tunnel_spec+="${port}:${port}"
   remote_parts+=("nvs --server-only ${session}${workdir:+ ${workdir}}")
 
   echo "  $session -> localhost:$port"
@@ -45,5 +48,5 @@ echo "Connecting to $host (Duo auth may be required)..."
 echo ""
 
 exec x2ssh -et "$host" \
-  "${tunnel_flags[@]}" \
+  -t "$tunnel_spec" \
   -c "zsh -lc '${remote_cmd}'"
