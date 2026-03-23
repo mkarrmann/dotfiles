@@ -19,6 +19,11 @@ nvs_port() {
   printf '%s' "$1" | cksum | awk '{ print 7000 + ($1 % 1000) }'
 }
 
+# Derive tunnel label from first session's prefix (e.g. "FTW" from "FTW-main1")
+first_session="${1%%:*}"
+prefix="${first_session%%-*}"
+tunnel_label="${prefix}: tunnels"
+
 tunnel_spec=""
 remote_parts=()
 
@@ -47,6 +52,18 @@ echo ""
 echo "Connecting to $host (Duo auth may be required)..."
 echo ""
 
-exec x2ssh -et "$host" \
+# Run ET in foreground (for Duo auth), but don't exec — keep our shell alive
+# so we can maintain the window title for AeroSpace detection.
+x2ssh -et "$host" \
   -t "$tunnel_spec" \
-  -c "zsh -lc '${remote_cmd}'"
+  -c "zsh -lc '${remote_cmd}'" &
+et_pid=$!
+
+# Periodically reset the window title so AeroSpace can identify this window,
+# even if ET/remote shell overrides it.
+while kill -0 "$et_pid" 2>/dev/null; do
+  printf '\033]0;%s\007' "$tunnel_label"
+  sleep 10
+done
+
+wait "$et_pid" 2>/dev/null || true

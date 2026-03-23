@@ -29,6 +29,7 @@ start() {
     local expanded="${workdir/#\~/$HOME}"
     cmd+=(--cmd "cd $expanded")
   fi
+  cmd+=(--cmd "set title titlestring=$name\\ —\\ %t")
   nohup "${cmd[@]}" >>"$log" 2>&1 </dev/null &
   for _ in $(seq 1 50); do
     if is_live; then return 0; fi
