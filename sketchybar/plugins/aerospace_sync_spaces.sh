@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+# On display changes, give AeroSpace time to reassign workspaces
+if [ "$SENDER" = "display_change" ] || [ "$SENDER" = "system_woke" ]; then
+    sleep 2
+fi
+
 FOCUSED=$(aerospace list-workspaces --focused)
 VISIBLE=$(aerospace list-workspaces --monitor all --visible)
 

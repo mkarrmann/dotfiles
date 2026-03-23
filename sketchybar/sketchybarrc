@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Reload after changes: pkill sketchybar && sketchybar
 
 PLUGIN_DIR="$CONFIG_DIR/plugins"
 
