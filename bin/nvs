@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-name="${1:?usage: nvs SESSION_NAME [WORKDIR]}"
-workdir="${2:-}"
+server_only=false
+args=()
+for arg in "$@"; do
+  case "$arg" in
+    --server-only) server_only=true ;;
+    *) args+=("$arg") ;;
+  esac
+done
+
+name="${args[0]:?usage: nvs [--server-only] SESSION_NAME [WORKDIR]}"
+workdir="${args[1]:-}"
 
 base="${XDG_STATE_HOME:-$HOME/.local/state}/nvim-sessions"
 log="$base/$name.log"
-
 mkdir -p "$base"
 
-# Deterministic port from session name (range 7100-7899)
-port=$(($(echo -n "$name" | cksum | cut -d' ' -f1) % 800 + 7100))
+port=$(printf '%s' "$name" | cksum | awk '{ print 7000 + ($1 % 1000) }')
 
 is_live() {
   nvim --server "localhost:$port" --remote-expr '1' >/dev/null 2>&1
@@ -27,12 +34,22 @@ start() {
     if is_live; then return 0; fi
     sleep 0.1
   done
-  echo "Failed to start session: $name" >&2
-  exit 1
+  return 1
 }
 
 if ! is_live; then
-  start
+  start || { echo "Failed to start session: $name" >&2; exit 1; }
 fi
 
-echo "$port"
+if $server_only; then
+  echo "nvs: server '$name' ready on port $port"
+  while true; do
+    sleep 5
+    if ! is_live; then
+      echo "nvs: server '$name' died, restarting..." >&2
+      start || echo "nvs: restart failed, will retry..." >&2
+    fi
+  done
+fi
+
+exec nvim --server "localhost:$port" --remote-ui

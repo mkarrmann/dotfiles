@@ -111,9 +111,8 @@ sync_link_dir "$DOTFILES_DIR/nvim/lua/config" "$HOME/.config/nvim/lua/config" "*
 sync_link_dir "$DOTFILES_DIR/nvim/lua/plugins" "$HOME/.config/nvim/lua/plugins" "*.lua"
 sync_link_dir "$DOTFILES_DIR/nvim/lua/lib" "$HOME/.config/nvim/lua/lib" "*.lua"
 
-# ~/bin (cross-platform + platform-specific, with stale-link cleanup)
+# ~/bin (platform-specific takes priority over cross-platform)
 mkdir -p "$HOME/bin"
-sync_link_dir "$DOTFILES_DIR/bin" "$HOME/bin" "*"
 case "$(uname -s)" in
   Darwin) platform_bin="$DOTFILES_DIR/bin-macos" ;;
   Linux)  platform_bin="$DOTFILES_DIR/bin-linux" ;;
@@ -122,6 +121,7 @@ esac
 if [[ -n "$platform_bin" && -d "$platform_bin" ]]; then
   sync_link_dir "$platform_bin" "$HOME/bin" "*"
 fi
+sync_link_dir "$DOTFILES_DIR/bin" "$HOME/bin" "*"
 
 # wofi
 mkdir -p "$HOME/.config/wofi"

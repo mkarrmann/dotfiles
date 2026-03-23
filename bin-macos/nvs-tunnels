@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Establish ET tunnels for nvim remote sessions on a single devvm.
+# Runs in a dedicated Ghostty window (workspace 1).
+#
+# Usage: nvs-tunnels HOST SESSION[:WORKDIR] [SESSION[:WORKDIR] ...]
+# Example: nvs-tunnels devvm36111.ftw0.facebook.com FTW-main1 FTW-fbsource1:~/fbsource
+
+host="${1:?usage: nvs-tunnels HOST SESSION[:WORKDIR] ...}"
+shift
+
+if [[ $# -eq 0 ]]; then
+  echo "ERROR: at least one SESSION required" >&2
+  exit 1
+fi
+
+nvs_port() {
+  printf '%s' "$1" | cksum | awk '{ print 7000 + ($1 % 1000) }'
+}
+
+tunnel_flags=()
+remote_parts=()
+
+for spec in "$@"; do
+  session="${spec%%:*}"
+  workdir="${spec#*:}"
+  [[ "$workdir" == "$spec" ]] && workdir=""
+
+  port=$(nvs_port "$session")
+  tunnel_flags+=(-t "$port:$port")
+  remote_parts+=("nvs --server-only ${session}${workdir:+ ${workdir}}")
+
+  echo "  $session -> localhost:$port"
+done
+
+remote_cmd=""
+for part in "${remote_parts[@]}"; do
+  remote_cmd+="${part} & "
+done
+remote_cmd+="wait"
+
+echo ""
+echo "Connecting to $host (Duo auth may be required)..."
+echo ""
+
+exec x2ssh -et "$host" \
+  "${tunnel_flags[@]}" \
+  -c "zsh -lc '${remote_cmd}'"

@@ -12,15 +12,17 @@ set -euo pipefail
 # Stray windows are swept to workspace "Z".
 WORKSPACES=(
   "1|cmux|Local MacOS|."
-  "2|ghostty|FTW: main1|FTW-main1|~|nvs devvm36111.ftw0.facebook.com FTW-main1"
-  "3|ghostty|FTW: fbsource1|FTW-fbsource1|~|nvs devvm36111.ftw0.facebook.com FTW-fbsource1 ~/fbsource"
+  "1|ghostty|FTW: tunnels|FTW-tunnels|~|nvs-tunnels devvm36111.ftw0.facebook.com FTW-main1 FTW-fbsource1:~/fbsource FTW-fbsource2:~/fbsource2"
+  "1|ghostty|CCO: tunnels|CCO-tunnels|~|nvs-tunnels devvm20365.cco0.facebook.com CCO-main1 CCO-fbsource1:~/fbsource CCO-fbsource2:~/fbsource2"
+  "2|ghostty|FTW: main1|FTW-main1|~|nvs FTW-main1"
+  "3|ghostty|FTW: fbsource1|FTW-fbsource1|~|nvs FTW-fbsource1"
   "3|vscode|FTW: vscode-fbsource1|devvm36111.ftw0 \\(Workspace\\)|${HOME}/Library/Application Support/VS Code @ FB/MetaWorkspaces/devvm36111.ftw0.code-workspace"
-  "4|ghostty|FTW: fbsource2|FTW-fbsource2|~|nvs devvm36111.ftw0.facebook.com FTW-fbsource2 ~/fbsource2"
+  "4|ghostty|FTW: fbsource2|FTW-fbsource2|~|nvs FTW-fbsource2"
   "4|vscode|FTW: vscode-fbsource2|fbsource2.*devvm36111.ftw0|vscode-remote://fb-remote+devvm36111.ftw0.facebook.com/home/mkarrmann/fbsource2.code-workspace"
-  "5|ghostty|CCO: main1|CCO-main1|~|nvs devvm20365.cco0.facebook.com CCO-main1"
-  "6|ghostty|CCO: fbsource1|CCO-fbsource1|~|nvs devvm20365.cco0.facebook.com CCO-fbsource1 ~/fbsource"
+  "5|ghostty|CCO: main1|CCO-main1|~|nvs CCO-main1"
+  "6|ghostty|CCO: fbsource1|CCO-fbsource1|~|nvs CCO-fbsource1"
   "6|vscode|CCO: vscode-fbsource1|devvm20365.cco0 \\(Workspace\\)|${HOME}/Library/Application Support/VS Code @ FB/MetaWorkspaces/devvm20365.cco0.code-workspace"
-  "7|ghostty|CCO: fbsource2|CCO-fbsource2|~|nvs devvm20365.cco0.facebook.com CCO-fbsource2 ~/fbsource2"
+  "7|ghostty|CCO: fbsource2|CCO-fbsource2|~|nvs CCO-fbsource2"
   "7|vscode|CCO: vscode-fbsource2|fbsource2.*devvm20365.cco0|vscode-remote://fb-remote+devvm20365.cco0.facebook.com/home/mkarrmann/fbsource2.code-workspace"
 )
 

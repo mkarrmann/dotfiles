@@ -1,38 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-host="${1:?usage: nvs HOST SESSION_NAME [WORKDIR]}"
-name="${2:?usage: nvs HOST SESSION_NAME [WORKDIR]}"
-workdir="${3:-}"
+# Local nvim client — connects to a remote nvim server through an existing ET tunnel.
+# The tunnel must be established first by nvs-tunnels (typically in workspace 1).
+#
+# Usage: nvs SESSION_NAME
 
-# Deterministic port from session name (must match remote nvs)
-port=$(($(echo -n "$name" | cksum | cut -d' ' -f1) % 800 + 7100))
+session="${1:?usage: nvs SESSION_NAME}"
 
-cleanup() {
-  if [[ -n "${tunnel_pid:-}" ]]; then
-    kill "$tunnel_pid" 2>/dev/null || true
-    wait "$tunnel_pid" 2>/dev/null || true
-  fi
+port=$(printf '%s' "$session" | cksum | awk '{ print 7000 + ($1 % 1000) }')
+
+is_ready() {
+  nvim --server "localhost:$port" --remote-expr '1' >/dev/null 2>&1
 }
-trap cleanup EXIT
 
-# Ensure remote headless server is running (also caches auth for ET)
-x2ssh "$host" -c "nvs '$name' '$workdir'" >/dev/null
+if ! is_ready; then
+  echo "Waiting for tunnel (session: $session, port: $port)..."
+  for _ in $(seq 1 120); do
+    sleep 1
+    if is_ready; then break; fi
+  done
+fi
 
-# Start ET tunnel with TCP port forwarding in background
-x2ssh -et "$host" -t "$port:$port" -c 'exec cat' </dev/null &
-tunnel_pid=$!
-
-# Wait for tunnel to be ready
-for _ in $(seq 1 40); do
-  nvim --server "localhost:$port" --remote-expr '1' >/dev/null 2>&1 && break
-  sleep 0.25
-done
-
-if ! nvim --server "localhost:$port" --remote-expr '1' >/dev/null 2>&1; then
-  echo "Failed to establish ET tunnel to $host:$port" >&2
+if ! is_ready; then
+  echo "ERROR: nvim server not reachable on port $port" >&2
+  echo "Ensure ET tunnel is running (check workspace 1)" >&2
   exit 1
 fi
 
-# Attach local Neovim as remote UI
-nvim --server "localhost:$port" --remote-ui
+exec nvim --server "localhost:$port" --remote-ui
