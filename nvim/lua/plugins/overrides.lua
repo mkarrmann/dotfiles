@@ -1,3 +1,5 @@
+local _hostname = vim.uv.os_gethostname():gsub("%.facebook%.com$", "")
+
 return {
 	{
 		"nvim-treesitter/nvim-treesitter",
@@ -42,6 +44,16 @@ return {
 			end
 			opts.winbar = { lualine_b = { cwd }, lualine_c = { custom_or_filename } }
 			opts.inactive_winbar = { lualine_b = { cwd }, lualine_c = { custom_or_filename } }
+
+			opts.sections = opts.sections or {}
+			opts.sections.lualine_y = {
+				{ "progress", separator = " ", padding = { left = 1, right = 0 } },
+				{ "location", padding = { left = 0, right = 1 } },
+			}
+			opts.sections.lualine_z = {
+				function() return _hostname end,
+				function() return os.date("%H:%M") end,
+			}
 		end,
 	},
 	{
