@@ -13,5 +13,5 @@ if lsof -i "TCP:$NVS_CLIP_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
 fi
 
 while true; do
-  nc -l "$NVS_CLIP_PORT" | pbcopy 2>/dev/null || sleep 0.1
+  nc -d -l "$NVS_CLIP_PORT" | pbcopy 2>/dev/null || sleep 0.1
 done
