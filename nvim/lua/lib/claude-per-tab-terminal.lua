@@ -140,6 +140,7 @@ local function open_terminal(cmd_string, env_table, effective_config, focus, t)
 
 	new_state.winid = new_winid
 	new_state.bufnr = vim.api.nvim_get_current_buf()
+	vim.b[new_state.bufnr].claude_per_tab_terminal = t
 	vim.bo[new_state.bufnr].bufhidden = "hide"
 
 	if focus then
@@ -188,13 +189,17 @@ local function hide(t)
 end
 
 local function find_existing_in_tab(t)
+	-- Check visible buffers in windows first
 	for _, win in ipairs(vim.api.nvim_tabpage_list_wins(t)) do
 		local buf = vim.api.nvim_win_get_buf(win)
-		if vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].buftype == "terminal" then
-			local name = vim.api.nvim_buf_get_name(buf):lower()
-			if name:find("claude") then
-				return buf, win
-			end
+		if vim.api.nvim_buf_is_valid(buf) and vim.b[buf].claude_per_tab_terminal == t then
+			return buf, win
+		end
+	end
+	-- Check hidden buffers owned by this tab (no window, but buffer still alive)
+	for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+		if vim.api.nvim_buf_is_valid(buf) and vim.b[buf].claude_per_tab_terminal == t then
+			return buf, nil
 		end
 	end
 	return nil, nil
@@ -202,11 +207,15 @@ end
 
 local function recover_or_open(cmd_string, env_table, effective_config, focus, t)
 	local existing_buf, existing_win = find_existing_in_tab(t)
-	if existing_buf and existing_win then
+	if existing_buf then
 		tabs[t] = { bufnr = existing_buf, winid = existing_win }
-		if focus then
-			vim.api.nvim_set_current_win(existing_win)
-			vim.cmd("startinsert")
+		if existing_win then
+			if focus then
+				vim.api.nvim_set_current_win(existing_win)
+				vim.cmd("startinsert")
+			end
+		else
+			show_hidden(effective_config, focus, t)
 		end
 	else
 		open_terminal(cmd_string, env_table, effective_config, focus, t)
@@ -280,13 +289,17 @@ function M.focus_toggle(cmd_string, env_table, effective_config)
 		end
 	else
 		local existing_buf, existing_win = find_existing_in_tab(t)
-		if existing_buf and existing_win then
+		if existing_buf then
 			tabs[t] = { bufnr = existing_buf, winid = existing_win }
-			if existing_win == vim.api.nvim_get_current_win() then
-				hide(t)
+			if existing_win then
+				if existing_win == vim.api.nvim_get_current_win() then
+					hide(t)
+				else
+					vim.api.nvim_set_current_win(existing_win)
+					vim.cmd("startinsert")
+				end
 			else
-				vim.api.nvim_set_current_win(existing_win)
-				vim.cmd("startinsert")
+				show_hidden(effective_config, true, t)
 			end
 		else
 			open_terminal(cmd_string, env_table, effective_config, true, t)
