@@ -71,6 +71,7 @@ return {
 				HTTPS_PROXY = "",
 			},
 			terminal = {
+				provider = require("lib.claude-per-tab-terminal"),
 				split_width_percentage = 0.45,
 			},
 		},
