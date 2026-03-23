@@ -65,10 +65,6 @@ return {
 			env = {
 				EDITOR = "nvim",
 				CLAUDECODE = "",
-				http_proxy = "",
-				https_proxy = "",
-				HTTP_PROXY = "",
-				HTTPS_PROXY = "",
 			},
 			terminal = {
 				provider = require("lib.claude-per-tab-terminal"),
