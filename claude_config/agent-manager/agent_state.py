@@ -9,7 +9,7 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -19,7 +19,6 @@ from typing import List, Optional
 
 IDLE_WARN_SECS = 600
 IDLE_ALERT_SECS = 1800
-SPINNER = set("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 PIDS_DIR = Path.home() / ".claude" / "agent-manager" / "pids"
 NVIM_SERVER_FILE = Path.home() / ".claude" / "agent-manager" / "nvim-server"
 _ANSI_RE = re.compile(r"\033\[[^m]*m")
@@ -77,7 +76,7 @@ def fmt_dur(secs: int) -> str:
     return f"{h}h{m}m"
 
 
-def _read_nvim_server() -> Optional[str]:
+def read_nvim_server() -> Optional[str]:
     try:
         s = NVIM_SERVER_FILE.read_text().strip()
         return s if s else None
@@ -85,7 +84,7 @@ def _read_nvim_server() -> Optional[str]:
         return None
 
 
-def _nvim_expr(server: str, expr: str) -> Optional[str]:
+def nvim_expr(server: str, expr: str) -> Optional[str]:
     try:
         r = subprocess.run(
             ["nvim", "--server", server, "--remote-expr", expr],
@@ -115,7 +114,6 @@ class Agent:
     claude_state: Optional[str] = None
     smart_status: str = ""
     smart_detail: str = ""
-    pane_lines: List[str] = field(default_factory=list)
     idle_secs: int = 0
 
     @property
@@ -239,7 +237,7 @@ def enrich_pids(agents: List[Agent]) -> None:
 
 
 def enrich_nvim(agents: List[Agent]) -> None:
-    server = _read_nvim_server()
+    server = read_nvim_server()
     if not server:
         return
     for a in agents:
@@ -249,7 +247,7 @@ def enrich_nvim(agents: List[Agent]) -> None:
             tab = int(a.od[len("nvim:tab-"):])
         except ValueError:
             continue
-        state = _nvim_expr(
+        state = nvim_expr(
             server,
             f"luaeval('(function() local ok,v=pcall(vim.api.nvim_tabpage_get_var,{tab},\"claude_state\"); return ok and v or \"\" end)()')",
         )
@@ -272,69 +270,6 @@ def load_agents() -> List[Agent]:
         detect_status(a)
     compute_idle(agents)
     return agents
-
-
-# ── Chrome Filtering ──────────────────────────────────────
-
-
-_CHROME_RE = re.compile(
-    r"TERMINAL\s+term:"         # neovim terminal statusline
-    r"|NORMAL\s+term:"          # neovim normal mode statusline
-    r"|INSERT\s+.*term:"        # neovim insert mode statusline
-    r"|-- INSERT --"            # vim insert mode indicator
-    r"|-- NORMAL --"            # vim normal mode indicator
-    r"|⏵⏵\s*accept"            # claude accept edits hint
-    r"|shift\+tab to cycle"     # claude mode hint
-    r"|📁\s+\w+.*🤖"           # claude statusline
-    r"|Bot \d+:\d+"             # neovim statusline right side
-    r"|^\s*\d+\s+\d+\s*$"      # bare neovim line number pairs
-    r"|^\s*\d{1,5}\s*$"        # bare single line numbers
-    r"|^[─━═]{5,}$"            # horizontal rules
-    r"|▏"                       # neovim indent guides
-    r"|^\s*$"                   # blank lines
-)
-
-
-def is_chrome(line: str) -> bool:
-    return bool(_CHROME_RE.search(line))
-
-
-_NVIM_LINENUM_RE = re.compile(r"^\s*\d{1,5}\s{2,}\S")
-
-
-def clean_line(line: str) -> str:
-    s = line.strip()
-    s = re.sub(r"^\d+\s+\d+\s+", "", s)
-    if "│" in s:
-        parts = [p.strip() for p in s.split("│") if p.strip()]
-        if not parts:
-            return ""
-        non_code = [p for p in parts if not _NVIM_LINENUM_RE.match(p)]
-        if non_code:
-            return max(non_code, key=len)
-        return max(parts, key=len)
-    if _NVIM_LINENUM_RE.match(s):
-        return ""
-    s = re.sub(r"^\d{1,5}\s{2,}", "", s)
-    return s
-
-
-def get_preview(pane_lines: List[str], count: int) -> List[str]:
-    raw = "\n".join(pane_lines[-10:])
-    is_nvim = bool(re.search(r"NORMAL\s+term:|TERMINAL\s+term:|INSERT\s+.*term:", raw))
-    cleaned = []
-    for line in pane_lines:
-        if is_chrome(line):
-            continue
-        s = clean_line(line)
-        if not s or is_chrome(s):
-            continue
-        if is_nvim and re.match(r"^\d{1,5}\s+\S", s):
-            continue
-        cleaned.append(s)
-    if len(cleaned) > count + 2:
-        cleaned = cleaned[:-2]
-    return cleaned[-count:]
 
 
 # ── Smart Status Detection ────────────────────────────────
@@ -361,7 +296,6 @@ def detect_status(a: Agent) -> None:
         a.smart_status = a.status_text or "stopped"
         return
 
-    # Watcher-classified sessions: use detail from watcher state
     if a.status_text in ("stuck", "waiting"):
         a.smart_status = a.status_text
         _load_watcher_detail(a)
@@ -372,78 +306,12 @@ def detect_status(a: Agent) -> None:
         a.smart_detail = f"on {a.od} (unverified)"
         return
 
-    if a.claude_state == "⚙":
-        _detect_activity(a)
-    elif a.claude_state == "!":
+    if a.claude_state == "!":
         a.smart_status = "waiting"
-        _extract_detail(a)
     elif a.claude_state in ("✓", "~"):
         a.smart_status = "complete"
-        _extract_detail(a)
-    elif a.pane_lines:
-        _detect_activity(a)
     else:
         a.smart_status = "active"
-
-
-def _detect_activity(a: Agent) -> None:
-    if not a.pane_lines:
-        a.smart_status = "active"
-        return
-
-    chunk = "\n".join(a.pane_lines[-12:])[-800:]
-
-    m = re.search(r"(?:Running|Executing)[:\s]+(.+?)(?:\n|$)", chunk)
-    if m:
-        a.smart_status = "tool"
-        a.smart_detail = m.group(1).strip()[:60]
-        return
-
-    if "esc to interrupt" in chunk.lower():
-        a.smart_status = "processing"
-        for line in reversed(a.pane_lines[-8:]):
-            s = line.strip()
-            if s and "esc to interrupt" not in s.lower() and len(s) > 5:
-                a.smart_detail = s[:60]
-                break
-        return
-
-    if any(c in SPINNER for c in chunk[-200:]) or "Thinking" in chunk[-300:]:
-        a.smart_status = "thinking"
-        return
-
-    m = re.search(r"(?:Writ|Edit|Creat)\w*\s+(\S+)", chunk)
-    if m:
-        a.smart_status = "writing"
-        a.smart_detail = m.group(1)[:60]
-        return
-
-    m = re.search(r"Read(?:ing)?\s+(\S+)", chunk)
-    if m:
-        a.smart_status = "reading"
-        a.smart_detail = m.group(1)[:60]
-        return
-
-    m = re.search(r"(?:Grep|Glob|Search)\w*\s+(.*?)(?:\n|$)", chunk)
-    if m:
-        a.smart_status = "searching"
-        a.smart_detail = m.group(1).strip()[:60]
-        return
-
-    a.smart_status = "active"
-
-
-def _extract_detail(a: Agent) -> None:
-    if not a.pane_lines:
-        return
-    for line in reversed(a.pane_lines[:-3]):
-        if is_chrome(line):
-            continue
-        s = clean_line(line)
-        if not s or len(s) < 6 or is_chrome(s):
-            continue
-        a.smart_detail = s[:60]
-        break
 
 
 def compute_idle(agents: List[Agent]) -> None:

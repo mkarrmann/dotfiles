@@ -18,13 +18,11 @@ from typing import List, Tuple
 
 from agent_state import (
     Agent, C, IDLE_ALERT_SECS, IDLE_WARN_SECS, SMART_ICONS,
-    compute_idle, detect_status, enrich_pids, enrich_nvim, fmt_dur,
-    get_preview, load_agents, parse_agents, print_summary,
-    resolve_agents_file, _read_nvim_server, _nvim_expr, vlen,
+    fmt_dur, load_agents, print_summary,
+    resolve_agents_file, read_nvim_server, nvim_expr, vlen,
 )
 
 REFRESH_SECS = 2.0
-PREVIEW_LINES = 4
 
 
 # ── TUI Helpers ───────────────────────────────────────────
@@ -246,14 +244,6 @@ class Dashboard:
                 f"{C.RED}☠ PID {a.pid} dead — status may be stale{C.RESET}"
             )
 
-        if a.pane_lines and a.is_live:
-            content.append(f"{C.DIM}{'┄' * min(inner, 50)}{C.RESET}")
-            preview = get_preview(a.pane_lines, PREVIEW_LINES)
-            for pl in preview:
-                content.append(
-                    f"  {C.DIM}{vtrunc(pl, inner - 4)}{C.RESET}"
-                )
-
         home = str(Path.home())
         dir_short = a.directory.replace(home, "~") if a.directory else ""
         title_parts = [a.status_emoji, a.name]
@@ -318,11 +308,13 @@ class Dashboard:
                 if a.is_local and a.od.startswith("nvim:tab-"):
                     try:
                         tab_handle = int(a.od[len("nvim:tab-"):])
-                        server = _read_nvim_server()
+                        server = read_nvim_server()
                         if server:
-                            _nvim_expr(server, f"execute('lua _G._claude_focus_tab_by_handle({tab_handle})')")
+                            nvim_expr(server, f"execute('lua _G._claude_focus_tab_by_handle({tab_handle})')")
                     except ValueError:
                         pass
+        elif key == "r":
+            self.refresh()
 
     def paint(self):
         _, rows = term_size()
