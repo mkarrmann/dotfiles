@@ -87,6 +87,57 @@ On non-Meta machines (where only `init.sh` runs), neither file is symlinked — 
 
 **For meta.nvim capabilities reference**, see the `neovim-meta` skill if available on this machine.
 
+## Remote Neovim Sessions (nvs)
+
+Neovim runs as a **headless server** on devvms (`nvim --headless --listen PORT`) with a thin **TUI client** on the Mac (`nvim --server localhost:PORT --remote-ui`) connected through ET tunnels. This gives persistent sessions that survive disconnects — the headless server keeps running, and you just reconnect the UI.
+
+### Architecture
+
+```
+Mac (Ghostty)                    ET tunnel                    Devvm
+┌──────────────┐                                        ┌──────────────────┐
+│ bin-macos/nvs │── forward tunnel (-t) ──────────────► │ bin/nvs           │
+│ (TUI client)  │   localhost:PORT → localhost:PORT      │ (headless server) │
+│               │                                        │                   │
+│ nvs-clip-listen◄── reverse tunnel (-r) ◄──── nc ◄────│ clipboard-relay   │
+│ (port 8765)   │   devvm:8765 → Mac:8765               │ (vim.g.clipboard) │
+└──────────────┘                                        └──────────────────┘
+         ▲
+         │ nvs-tunnels sets up both tunnels + starts listener + remote servers
+```
+
+### Key files
+
+| File | Where | Purpose |
+|------|-------|---------|
+| `bin/nvs` | Remote (cross-platform) | Starts headless nvim server, loads clipboard-relay |
+| `bin-macos/nvs` | Mac only | TUI client — waits for tunnel, connects `--remote-ui` |
+| `bin-macos/nvs-tunnels` | Mac only | Sets up ET tunnels (forward + reverse) per devvm |
+| `bin-macos/nvs-clip-listen` | Mac only | Listens on port 8765, pipes to `pbcopy` |
+| `nvim/lua/lib/clipboard-relay.lua` | Remote | Custom `g:clipboard` — sends yanks via nc to Mac |
+| `bin-macos/startup-windows` | Mac only | Launches tunnel + session windows via AeroSpace |
+
+### Clipboard
+
+The headless server has no terminal, so OSC 52 (the normal clipboard mechanism) has nowhere to go. Instead, a **reverse ET tunnel** (`-r 8765:8765`) connects the devvm back to the Mac. On yank, `clipboard-relay.lua` spawns `nc -w 1 localhost 8765` asynchronously and sends the text. On the Mac, `nvs-clip-listen` receives it and pipes to `pbcopy`.
+
+- **Copy (remote → Mac):** Automatic on every yank. `clipboard-relay.lua` handles `"+y` via `vim.g.clipboard` and regular `y` via a `TextYankPost` autocmd.
+- **Paste (Mac → remote):** Use `Cmd+V` in Ghostty (sends clipboard as bracketed paste). `"+p` pastes the last *remote* yank, not the current Mac clipboard.
+
+### Session naming
+
+Sessions are named like `FTW-main1`, `FTW-fbsource1`, `CCO-main1`. Ports are deterministic: `cksum(name) % 1000 + 7000`.
+
+### Workspace layout
+
+| Workspace | Content |
+|-----------|---------|
+| T | Tunnel windows (one per devvm) |
+| 2 | FTW: main1 |
+| 3 | FTW: fbsource1 + vscode |
+| 4 | FTW: fbsource2 + vscode |
+| 5-7 | CCO equivalents |
+
 ## Adding a New Skill
 
 1. **Portable:** Create `~/dotfiles/agent_config/skills/<name>/SKILL.md`, then re-run `init.sh` (or manually symlink to `~/.claude/skills/<name>`)

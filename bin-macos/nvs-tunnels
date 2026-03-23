@@ -2,10 +2,18 @@
 set -euo pipefail
 
 # Establish ET tunnels for nvim remote sessions on a single devvm.
-# Runs in a dedicated Ghostty window (workspace 1).
+# Runs in a dedicated Ghostty window (workspace T).
+#
+# Sets up:
+#   - Forward tunnels (-t) for each nvim session's RPC port
+#   - Reverse tunnel (-r) for clipboard relay (devvm → Mac pbcopy)
+#   - Remote headless nvim servers via nvs --server-only
+#   - Local clipboard listener (nvs-clip-listen) for receiving yanked text
 #
 # Usage: nvs-tunnels HOST SESSION[:WORKDIR] [SESSION[:WORKDIR] ...]
 # Example: nvs-tunnels devvm36111.ftw0.facebook.com FTW-main1 FTW-fbsource1:~/fbsource
+
+NVS_CLIP_PORT="${NVS_CLIP_PORT:-8765}"
 
 host="${1:?usage: nvs-tunnels HOST SESSION[:WORKDIR] ...}"
 shift
@@ -52,10 +60,15 @@ echo ""
 echo "Connecting to $host (Duo auth may be required)..."
 echo ""
 
+# Start clipboard listener if not already running
+nvs-clip-listen &
+disown
+
 # Run ET in foreground (for Duo auth), but don't exec — keep our shell alive
 # so we can maintain the window title for AeroSpace detection.
 x2ssh -et "$host" \
   -t "$tunnel_spec" \
+  -r "$NVS_CLIP_PORT:$NVS_CLIP_PORT" \
   -c "zsh -lc '${remote_cmd}'" &
 et_pid=$!
 
