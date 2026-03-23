@@ -44,6 +44,10 @@ if ! is_live; then
 fi
 
 if $server_only; then
+  # Ignore SIGHUP so the watchdog survives ET disconnection. The nohup'd nvim
+  # server already ignores SIGHUP; this keeps the watchdog alive too, so it can
+  # restart the server if it dies while the tunnel is down.
+  trap '' HUP
   echo "nvs: server '$name' ready on port $port"
   while true; do
     sleep 5

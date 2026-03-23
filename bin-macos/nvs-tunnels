@@ -10,6 +10,9 @@ set -euo pipefail
 #   - Remote headless nvim servers via nvs --server-only
 #   - Local clipboard listener (nvs-clip-listen) for receiving yanked text
 #
+# Auto-reconnects if the ET session terminates (devvm restart, network
+# outage beyond ET's tolerance, Duo expiry). Duo re-auth may be required.
+#
 # Usage: nvs-tunnels HOST SESSION[:WORKDIR] [SESSION[:WORKDIR] ...]
 # Example: nvs-tunnels devvm36111.ftw0.facebook.com FTW-main1 FTW-fbsource1:~/fbsource
 
@@ -56,27 +59,34 @@ for part in "${remote_parts[@]}"; do
 done
 remote_cmd+="wait"
 
-echo ""
-echo "Connecting to $host (Duo auth may be required)..."
-echo ""
-
 # Start clipboard listener if not already running
 nvs-clip-listen &
 disown
 
-# Run ET in foreground (for Duo auth), but don't exec — keep our shell alive
-# so we can maintain the window title for AeroSpace detection.
-x2ssh -et "$host" \
-  -t "$tunnel_spec" \
-  -r "$NVS_CLIP_PORT:$NVS_CLIP_PORT" \
-  -c "zsh -lc '${remote_cmd}'" &
-et_pid=$!
+# Reconnect loop — ET handles transient network issues, but if the session
+# itself terminates (devvm restart, Duo expiry, prolonged outage), we retry.
+# Duo re-auth is interactive, so the user sees the prompt in this window.
+while true; do
+  echo ""
+  echo "Connecting to $host (Duo auth may be required)..."
+  echo ""
 
-# Periodically reset the window title so AeroSpace can identify this window,
-# even if ET/remote shell overrides it.
-while kill -0 "$et_pid" 2>/dev/null; do
-  printf '\033]0;%s\007' "$tunnel_label"
-  sleep 10
+  x2ssh -et "$host" \
+    -t "$tunnel_spec" \
+    -r "$NVS_CLIP_PORT:$NVS_CLIP_PORT" \
+    -c "zsh -lc '${remote_cmd}'" &
+  et_pid=$!
+
+  # Periodically reset the window title so AeroSpace can identify this window,
+  # even if ET/remote shell overrides it.
+  while kill -0 "$et_pid" 2>/dev/null; do
+    printf '\033]0;%s\007' "$tunnel_label"
+    sleep 10
+  done
+
+  wait "$et_pid" 2>/dev/null || true
+
+  echo ""
+  echo "ET session terminated. Reconnecting in 5s..."
+  sleep 5
 done
-
-wait "$et_pid" 2>/dev/null || true
