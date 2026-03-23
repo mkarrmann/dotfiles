@@ -26,7 +26,7 @@
 --   yank → vim.g.clipboard copy (for "+y) or TextYankPost autocmd (for y)
 --     → vim.fn.jobstart nc → reverse ET tunnel → Mac nvs-clip-listen → pbcopy
 --
--- Loaded only on headless servers via: nvs -c "lua pcall(require, 'lib.clipboard-relay')"
+-- Loaded only on headless servers via: nvs --cmd "lua pcall(require, 'lib.clipboard-relay')"
 
 local CLIP_PORT = tonumber(vim.env.NVS_CLIP_PORT) or 8765
 local last_clip = {}
