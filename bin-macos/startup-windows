@@ -257,7 +257,7 @@ for ws in $(managed_workspaces); do
   if [[ "$win_count" -gt 1 ]]; then
     aerospace workspace "$ws" 2>/dev/null || true
     aerospace flatten-workspace-tree 2>/dev/null || true
-    aerospace layout accordion 2>/dev/null || true
+    aerospace layout accordion vertical 2>/dev/null || true
   fi
 done
 

@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# arrange-workspaces: On each workspace, put Ghostty + VSCode windows into
+# an accordion on the right and all other windows as tiles on the left.
+# If a workspace only has Ghostty/VSCode, it stays as a flat accordion.
+# Can be run standalone or called from startup-windows.
+
+VSCODE_APP="VS Code @ Meta"
+
+arrange_workspace() {
+  local ws="$1"
+
+  local windows
+  windows=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null) || return 0
+  local total
+  total=$(echo "$windows" | jq 'length')
+
+  [[ "$total" -lt 2 ]] && return 0
+
+  local accordion_ids sidebar_ids
+  accordion_ids=$(echo "$windows" | jq -r \
+    --arg vscode "$VSCODE_APP" \
+    '[.[] | select(."app-name" == "Ghostty" or ."app-name" == $vscode)] | .[]["window-id"]') || true
+  sidebar_ids=$(echo "$windows" | jq -r \
+    --arg vscode "$VSCODE_APP" \
+    '[.[] | select(."app-name" != "Ghostty" and ."app-name" != $vscode)] | .[]["window-id"]') || true
+
+  local accordion_count=0 sidebar_count=0
+  [[ -n "$accordion_ids" ]] && accordion_count=$(echo "$accordion_ids" | wc -l | tr -d ' ')
+  [[ -n "$sidebar_ids" ]] && sidebar_count=$(echo "$sidebar_ids" | wc -l | tr -d ' ')
+
+  # Only accordion windows → flat accordion, no nesting needed
+  if [[ "$sidebar_count" -eq 0 ]]; then
+    echo "  [$ws] ${accordion_count} accordion window(s), no sidebar → flat accordion"
+    aerospace workspace "$ws" 2>/dev/null
+    aerospace flatten-workspace-tree 2>/dev/null || true
+    aerospace layout accordion vertical 2>/dev/null || true
+    return 0
+  fi
+
+  # No accordion windows → leave as-is
+  if [[ "$accordion_count" -eq 0 ]]; then
+    echo "  [$ws] no Ghostty/VSCode windows, skipping"
+    return 0
+  fi
+
+  echo "  [$ws] ${sidebar_count} sidebar + ${accordion_count} accordion → tiles | accordion"
+
+  aerospace workspace "$ws" 2>/dev/null
+  aerospace flatten-workspace-tree 2>/dev/null || true
+
+  # Push accordion windows to the right end of the tree
+  for wid in $accordion_ids; do
+    aerospace focus --window-id "$wid" 2>/dev/null || continue
+    for _ in $(seq 1 "$total"); do
+      aerospace move right 2>/dev/null || true
+    done
+  done
+
+  # Group accordion windows together under one container
+  local first_accordion
+  first_accordion=$(echo "$accordion_ids" | head -1)
+  aerospace focus --window-id "$first_accordion" 2>/dev/null
+
+  if [[ "$accordion_count" -gt 1 ]]; then
+    for _ in $(seq 1 $((accordion_count - 1))); do
+      aerospace join-with right 2>/dev/null || true
+    done
+  fi
+
+  # Set the grouped container to accordion
+  aerospace layout accordion 2>/dev/null || true
+
+  # Change root to horizontal tiles so sidebar sits on the left
+  local first_sidebar
+  first_sidebar=$(echo "$sidebar_ids" | head -1)
+  aerospace focus --window-id "$first_sidebar" 2>/dev/null
+  aerospace layout tiles horizontal 2>/dev/null || true
+}
+
+# ── Main ──────────────────────────────────────────────────────────────
+
+# Accept workspace list as args, or default to all non-empty workspaces
+if [[ $# -gt 0 ]]; then
+  workspaces=("$@")
+else
+  while IFS= read -r w; do
+    workspaces+=("$w")
+  done < <(
+    aerospace list-workspaces --all --json 2>/dev/null \
+      | jq -r '.[]["workspace"]'
+  )
+fi
+
+echo "Arranging workspace layouts..."
+for ws in "${workspaces[@]}"; do
+  arrange_workspace "$ws"
+done
+echo "Done."
