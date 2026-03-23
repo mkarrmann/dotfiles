@@ -72,6 +72,16 @@ return {
 			},
 		},
 		config = function(_, opts)
+			-- Merge the original process environment (snapshotted before any
+			-- vim.env modifications) into the terminal env so that Claude Code
+			-- gets the same environment as a shell-launched session.
+			-- opts.env values take priority ("keep"), then original_env fills
+			-- in everything else; termopen merges both on top of environ().
+			local env_mod = require("lib.env")
+			if env_mod.original_env then
+				opts.env = vim.tbl_extend("keep", opts.env or {}, env_mod.original_env)
+			end
+
 			require("claudecode").setup(opts)
 
 			-- Patch closeAllDiffTabs to only close diffs that claudecode.nvim

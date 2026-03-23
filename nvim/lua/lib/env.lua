@@ -3,6 +3,12 @@
 
 local M = {}
 
+-- Snapshot the full process environment at module load time (before any
+-- modifications). Child processes (e.g. Claude Code terminals via termopen)
+-- can use this to get the original shell environment, regardless of what
+-- Neovim or plugins do to vim.env during their lifecycle.
+M.original_env = vim.fn.environ()
+
 -- Detect current environment
 function M.detect()
   -- Meta detection
