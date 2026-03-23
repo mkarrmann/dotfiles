@@ -1,5 +1,7 @@
 local vim = vim
 
+vim.opt.clipboard = "unnamedplus"
+
 vim.opt.scrolloff = 25
 vim.opt.tabstop = 4
 vim.opt.shiftwidth = 4
