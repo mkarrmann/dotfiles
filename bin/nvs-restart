@@ -26,19 +26,18 @@ for arg in "$@"; do
   esac
 done
 
-# Detect current session: find the nvim server that owns our $NVIM socket
+# Detect current session: ask the parent Neovim for its PID
 if [[ "$mode" == "current" ]]; then
   if [[ -z "${NVIM:-}" ]]; then
     echo "Not inside a Neovim session. Use nvs-restart NAME or nvs-restart --all" >&2
     exit 1
   fi
-  server_pid=$(nvim --server "$NVIM" --remote-expr "v:servername" 2>/dev/null | grep -oP 'localhost:\K\d+' || true)
-  if [[ -z "$server_pid" ]]; then
-    echo "Could not determine current server. Use nvs-restart NAME or nvs-restart --all" >&2
+  filter=$(nvim --server "$NVIM" --remote-expr "getpid()" 2>/dev/null || true)
+  if [[ -z "$filter" ]]; then
+    echo "Could not determine current server PID. Use nvs-restart NAME or nvs-restart --all" >&2
     exit 1
   fi
-  filter="$server_pid"
-  mode="port"
+  mode="pid"
 fi
 
 pids=()
@@ -47,13 +46,12 @@ names=()
 while IFS= read -r line; do
   [[ -z "$line" ]] && continue
   pid=$(echo "$line" | awk '{print $2}')
-  name=$(echo "$line" | grep -oP 'titlestring=\K[^ \\]+')
-  port=$(echo "$line" | grep -oP 'listen\s+localhost:\K\d+' || true)
+  name=$(echo "$line" | grep -oP 'titlestring=\K[^ \\]+' || true)
 
   case "$mode" in
     all) ;;
     named) [[ "$name" != "$filter" ]] && continue ;;
-    port)  [[ "$port" != "$filter" ]] && continue ;;
+    pid)   [[ "$pid" != "$filter" ]] && continue ;;
   esac
 
   pids+=("$pid")
@@ -63,7 +61,7 @@ done < <(ps aux | grep 'nvim.*--headless.*--listen' | grep -v grep)
 if [[ ${#pids[@]} -eq 0 ]]; then
   case "$mode" in
     named) echo "No nvim server found for session: $filter" >&2 ;;
-    port)  echo "No nvim server found on port: $filter" >&2 ;;
+    pid)   echo "No nvim server found with pid: $filter" >&2 ;;
     all)   echo "No headless nvim servers found." >&2 ;;
   esac
   exit 1
