@@ -92,17 +92,17 @@ function M.get_session_id()
 		end
 	end
 
-	local g_sid = vim.g.claude_session_id
-	if g_sid and g_sid ~= "" then
-		return g_sid
+	local ok, t_sid = pcall(vim.api.nvim_tabpage_get_var, 0, "claude_session_id")
+	if ok and t_sid and t_sid ~= "" then
+		return t_sid
 	end
 
-	local f = io.open(LAST_SESSION_FILE, "r")
-	if not f then
+	local f2 = io.open(LAST_SESSION_FILE, "r")
+	if not f2 then
 		return nil
 	end
-	local sid = trim(f:read("*l"))
-	f:close()
+	local sid = trim(f2:read("*l"))
+	f2:close()
 	return sid ~= "" and sid or nil
 end
 

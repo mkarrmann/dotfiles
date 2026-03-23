@@ -805,7 +805,11 @@ cmd_active() {
           mv "$tmpfile" "$AGENTS_FILE_LOCAL"
           echo "$sid" > ~/.claude-last-session
           if [ -n "${NVIM:-}" ]; then
-            nvim --server "$NVIM" --remote-expr "execute('lua _G._nvim_rename_current_tab(\"${name}\")')" >/dev/null 2>&1
+            if [ -n "${NVIM_TAB_HANDLE:-}" ]; then
+              nvim --server "$NVIM" --remote-expr "execute('lua _G._claude_rename_tab(${NVIM_TAB_HANDLE}, \"${name}\")')" >/dev/null 2>&1
+            else
+              nvim --server "$NVIM" --remote-expr "execute('lua _G._nvim_rename_current_tab(\"${name}\")')" >/dev/null 2>&1
+            fi
           fi
           sort_agents
           exit 0
@@ -820,7 +824,11 @@ cmd_active() {
       origin_ctx=$(_origin_context)
       echo "| ${name} | ⚡ active | ${host} | ${sid} | ${origin_ctx} | ${ts} | ${ts} | ${PWD} |" >> "$AGENTS_FILE_LOCAL"
       if [ -n "${NVIM:-}" ]; then
-        nvim --server "$NVIM" --remote-expr "execute('lua _G._nvim_rename_current_tab(\"${name}\")')" >/dev/null 2>&1
+        if [ -n "${NVIM_TAB_HANDLE:-}" ]; then
+          nvim --server "$NVIM" --remote-expr "execute('lua _G._claude_rename_tab(${NVIM_TAB_HANDLE}, \"${name}\")')" >/dev/null 2>&1
+        else
+          nvim --server "$NVIM" --remote-expr "execute('lua _G._nvim_rename_current_tab(\"${name}\")')" >/dev/null 2>&1
+        fi
       fi
       sort_agents
     fi

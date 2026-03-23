@@ -98,6 +98,8 @@ local function open_terminal(cmd_string, env_table, effective_config, focus, t)
 
 	local new_state = ensure_state(t)
 
+	vim.env.NVIM_TAB_HANDLE = tostring(t)
+
 	new_state.jobid = vim.fn.termopen(term_cmd_arg, {
 		env = env_table,
 		cwd = effective_config.cwd,

@@ -7,7 +7,12 @@
 sid=$(cat | jq -r '.session_id // empty')
 [ -z "$sid" ] && exit 0
 
-nvim --server "$NVIM" --remote-expr "execute('let g:claude_session_id = \"$sid\"')" > /dev/null 2>&1
+if [ -n "$NVIM_TAB_HANDLE" ]; then
+  nvim --server "$NVIM" --remote-expr \
+    "execute('lua vim.api.nvim_tabpage_set_var(${NVIM_TAB_HANDLE}, \"claude_session_id\", \"$sid\")')" > /dev/null 2>&1
+else
+  nvim --server "$NVIM" --remote-expr "execute('let g:claude_session_id = \"$sid\"')" > /dev/null 2>&1
+fi
 
 if [ -n "$NVIM_TAB_HANDLE" ]; then
   mkdir -p ~/.claude/agent-manager/pids
