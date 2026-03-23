@@ -61,7 +61,7 @@ return {
 	{
 		"coder/claudecode.nvim",
 		opts = {
-			terminal_cmd = "~/.claude/agent-manager/bin/claude-nvim-wrapper.sh",
+			terminal_cmd = vim.fn.expand("~/.claude/agent-manager/bin/claude-nvim-wrapper.sh"),
 			env = {
 				EDITOR = "nvim",
 				CLAUDECODE = "",
