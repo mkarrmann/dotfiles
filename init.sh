@@ -149,12 +149,7 @@ link_one "$DOTFILES_DIR/claude_config/agent-manager/statusline-ext.sh" "$HOME/.c
 # Obsidian vault config (source of truth for AGENTS.md location)
 link_one "$DOTFILES_DIR/claude_config/obsidian-vault.conf" "$HOME/.claude/obsidian-vault.conf"
 # Hooks
-shopt -s nullglob
-for src in "$DOTFILES_DIR/claude_config/hooks/"*; do
-  base="$(basename "$src")"
-  link_one "$src" "$HOME/.claude/hooks/$base"
-done
-shopt -u nullglob
+sync_link_dir "$DOTFILES_DIR/claude_config/hooks" "$HOME/.claude/hooks" "*"
 # Skills (shared between Claude Code and Codex)
 mkdir -p "$HOME/.claude/skills"
 sync_link_subdirs "$DOTFILES_DIR/agent_config/skills" "$HOME/.claude/skills" "SKILL.md"
@@ -175,7 +170,7 @@ tmp=$(jq '
       "hooks": [
         {
           "type": "command",
-          "command": "bash ~/.claude/hooks/tmux-notify.sh"
+          "command": "bash ~/.claude/hooks/nvim-notify.sh"
         }
       ]
     },
@@ -214,7 +209,7 @@ tmp=$(jq '
       "hooks": [
         {
           "type": "command",
-          "command": "bash ~/.claude/hooks/tmux-notify.sh"
+          "command": "bash ~/.claude/hooks/nvim-notify.sh"
         }
       ]
     },
@@ -233,7 +228,7 @@ tmp=$(jq '
       "hooks": [
         {
           "type": "command",
-          "command": "bash ~/.claude/hooks/tmux-notify.sh"
+          "command": "bash ~/.claude/hooks/nvim-notify.sh"
         }
       ]
     },
@@ -252,7 +247,7 @@ tmp=$(jq '
       "hooks": [
         {
           "type": "command",
-          "command": "bash ~/.claude/hooks/tmux-notify.sh"
+          "command": "bash ~/.claude/hooks/nvim-notify.sh"
         }
       ]
     },
@@ -281,7 +276,7 @@ tmp=$(jq '
       "hooks": [
         {
           "type": "command",
-          "command": "bash ~/.claude/hooks/tmux-notify.sh"
+          "command": "bash ~/.claude/hooks/nvim-notify.sh"
         },
         {
           "type": "command",
@@ -296,7 +291,7 @@ tmp=$(jq '
       "hooks": [
         {
           "type": "command",
-          "command": "bash ~/.claude/hooks/tmux-notify.sh"
+          "command": "bash ~/.claude/hooks/nvim-notify.sh"
         }
       ]
     }

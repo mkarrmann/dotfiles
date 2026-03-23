@@ -81,23 +81,20 @@ function M.resolve_agents_file()
 end
 
 function M.get_session_id()
+	local tab_handle = tostring(vim.api.nvim_get_current_tabpage())
+	local tab_file = vim.fn.expand("~/.claude/agent-manager/pids/tab-" .. tab_handle)
+	local f = io.open(tab_file, "r")
+	if f then
+		local sid = trim(f:read("*l"))
+		f:close()
+		if sid ~= "" then
+			return sid
+		end
+	end
+
 	local g_sid = vim.g.claude_session_id
 	if g_sid and g_sid ~= "" then
 		return g_sid
-	end
-
-	local tmux_pane = vim.env.TMUX_PANE
-	if tmux_pane and tmux_pane ~= "" then
-		local safe_pane = tmux_pane:gsub("[^%w_]", "_")
-		local pane_file = vim.fn.expand("~/.claude/agent-manager/pids/pane-" .. safe_pane)
-		local f = io.open(pane_file, "r")
-		if f then
-			local sid = trim(f:read("*l"))
-			f:close()
-			if sid ~= "" then
-				return sid
-			end
-		end
 	end
 
 	local f = io.open(LAST_SESSION_FILE, "r")
@@ -257,13 +254,14 @@ function M.is_uuid(value)
 	return trim(value):lower():match(UUID_PATTERN) ~= nil
 end
 
-function M.rename_tmux_window(name)
+function M.rename_current_tab(name)
 	name = trim(name)
-	if name == "" or not vim.env.TMUX then
+	if name == "" then
 		return false
 	end
-	vim.fn.system({ "tmux", "rename-window", name })
-	return vim.v.shell_error == 0
+	vim.api.nvim_tabpage_set_var(0, "tab_name", name)
+	vim.cmd("redrawtabline")
+	return true
 end
 
 function M.latest_codex_sid()

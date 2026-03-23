@@ -21,6 +21,7 @@ IDLE_WARN_SECS = 600
 IDLE_ALERT_SECS = 1800
 SPINNER = set("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 PIDS_DIR = Path.home() / ".claude" / "agent-manager" / "pids"
+NVIM_SERVER_FILE = Path.home() / ".claude" / "agent-manager" / "nvim-server"
 _ANSI_RE = re.compile(r"\033\[[^m]*m")
 
 
@@ -76,10 +77,19 @@ def fmt_dur(secs: int) -> str:
     return f"{h}h{m}m"
 
 
-def tmux_cmd(*args: str) -> Optional[str]:
+def _read_nvim_server() -> Optional[str]:
+    try:
+        s = NVIM_SERVER_FILE.read_text().strip()
+        return s if s else None
+    except OSError:
+        return None
+
+
+def _nvim_expr(server: str, expr: str) -> Optional[str]:
     try:
         r = subprocess.run(
-            ["tmux", *args], capture_output=True, text=True, timeout=2
+            ["nvim", "--server", server, "--remote-expr", expr],
+            capture_output=True, text=True, timeout=2,
         )
         return r.stdout.strip() if r.returncode == 0 else None
     except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -102,7 +112,6 @@ class Agent:
     pid: Optional[int] = None
     pid_alive: bool = False
     is_local: bool = False
-    tmux_target: Optional[str] = None
     claude_state: Optional[str] = None
     smart_status: str = ""
     smart_detail: str = ""
@@ -229,48 +238,23 @@ def enrich_pids(agents: List[Agent]) -> None:
                 pass
 
 
-def enrich_tmux(agents: List[Agent]) -> None:
-    raw = tmux_cmd(
-        "list-windows", "-a", "-F",
-        "#{session_name}:#{window_index} #{window_name}"
-    )
-    if not raw:
+def enrich_nvim(agents: List[Agent]) -> None:
+    server = _read_nvim_server()
+    if not server:
         return
-    windows = {}
-    for line in raw.split("\n"):
-        parts = line.split(" ", 1)
-        if len(parts) == 2:
-            windows[parts[1].rstrip("-")] = parts[0]
-
     for a in agents:
-        if not a.is_local:
+        if not a.is_local or not a.od.startswith("nvim:tab-"):
             continue
-
-        for wname, target in windows.items():
-            if a.name and (a.name in wname or wname in a.name):
-                a.tmux_target = target
-                break
-
-        if not a.tmux_target and a.description and ":" in a.description:
-            desc = a.description.strip()
-            if any(c.isdigit() for c in desc):
-                a.tmux_target = desc
-
-        if not a.tmux_target:
+        try:
+            tab = int(a.od[len("nvim:tab-"):])
+        except ValueError:
             continue
-
-        st = tmux_cmd(
-            "show-options", "-wqv", "-t", a.tmux_target, "@claude_state"
+        state = _nvim_expr(
+            server,
+            f"luaeval('(function() local ok,v=pcall(vim.api.nvim_tabpage_get_var,{tab},\"claude_state\"); return ok and v or \"\" end)()')",
         )
-        if st:
-            a.claude_state = st
-
-        if a.is_live:
-            raw_pane = tmux_cmd(
-                "capture-pane", "-t", a.tmux_target, "-p", "-S", "-30"
-            )
-            if raw_pane:
-                a.pane_lines = [l for l in raw_pane.split("\n") if l.strip()]
+        if state:
+            a.claude_state = state
 
 
 def parse_all_agents() -> List[Agent]:
@@ -283,7 +267,7 @@ def parse_all_agents() -> List[Agent]:
 def load_agents() -> List[Agent]:
     agents = parse_all_agents()
     enrich_pids(agents)
-    enrich_tmux(agents)
+    enrich_nvim(agents)
     for a in agents:
         detect_status(a)
     compute_idle(agents)
@@ -488,8 +472,8 @@ def _print_agent_card(a: Agent, show_od: bool = False):
     print(name_line)
 
     parts = []
-    if a.tmux_target:
-        parts.append(f"{C.DIM}{a.tmux_target}{C.RESET}")
+    if a.od.startswith("nvim:tab-"):
+        parts.append(f"{C.DIM}{a.od}{C.RESET}")
     parts.append(f"{color}{label}{C.RESET}")
     if a.smart_status in IDLE_STATUSES:
         if a.idle_secs >= IDLE_ALERT_SECS:

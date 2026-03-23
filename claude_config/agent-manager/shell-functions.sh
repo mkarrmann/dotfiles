@@ -71,6 +71,17 @@ claude() {
 # Internal helpers
 # ============================================================
 
+# _nvim_tab_handle — get the current Neovim tab handle (integer)
+_nvim_tab_handle() {
+  [ -z "$NVIM" ] && return 0
+  nvim --server "$NVIM" --remote-expr "luaeval('vim.api.nvim_get_current_tabpage()')" 2>/dev/null
+}
+
+# _nvim_exec_lua <lua-code> — execute Lua in the parent Neovim instance
+_nvim_exec_lua() {
+  [ -z "$NVIM" ] || nvim --server "$NVIM" --remote-expr "execute('lua $1')" >/dev/null 2>&1
+}
+
 # _lookup_sid <name> — resolve session name to full session ID (searches all per-host files)
 _lookup_sid() {
   local name="$1"
@@ -99,43 +110,59 @@ _lookup_dir() {
 #   If sid is empty, starts a new session (cn -b).
 _start_bg_session() {
   local name="$1" prompt="$2" sid="${3:-}"
-  local tmux_name="cb-${name}"
+  local tab_name="cb-${name}"
   local logfile="${CLAUDE_BG_LOGDIR}/${name}.log"
 
   sudo ondemand-idle-checks disable 2>/dev/null
-  tmux kill-session -t "$tmux_name" 2>/dev/null
 
-  local claude_cmd=""
-  local done_cmd=""
+  # Kill any existing Neovim tab for this bg session
+  _nvim_exec_lua "_G._claude_kill_tab_by_name('${tab_name}')"
+
+  local tmpscript
+  tmpscript=$(mktemp /tmp/claude-bg-XXXXXX.sh)
+  chmod +x "$tmpscript"
+  mkdir -p "$(dirname "$logfile")"
 
   if [ -n "$sid" ]; then
     # Resume mode (cr -b): has session ID, use --resume
     bash "$AGENT_TRACKER" background "$name" "$sid" "$prompt"
-    claude_cmd="command claude --dangerously-skip-permissions -p --resume '${sid}' --fork-session '${prompt}'"
-    done_cmd="bash '${AGENT_TRACKER}' bg-done '${sid}'"
+    cat > "$tmpscript" <<SCRIPT
+#!/bin/bash
+command claude --dangerously-skip-permissions -p --resume '${sid}' --fork-session '${prompt}' 2>&1 | tee '${logfile}'
+bash '${AGENT_TRACKER}' bg-done '${sid}'
+echo ''
+echo '=== DONE (exit to close) ==='
+rm -f "\$0"
+exec bash
+SCRIPT
   else
     # New mode (cn -b): no session ID yet, no --resume
     echo "$name" > ~/.claude-next-name
     touch ~/.claude-next-bg
-    claude_cmd="command claude --dangerously-skip-permissions -p '${prompt}'"
-    # Read session ID after claude finishes (SessionStart hook writes it)
-    done_cmd="sid=\$(cat ~/.claude-last-session 2>/dev/null); [ -n \"\$sid\" ] && bash '${AGENT_TRACKER}' bg-done \"\$sid\""
+    cat > "$tmpscript" <<SCRIPT
+#!/bin/bash
+command claude --dangerously-skip-permissions -p '${prompt}' 2>&1 | tee '${logfile}'
+_sid=\$(cat ~/.claude-last-session 2>/dev/null)
+[ -n "\$_sid" ] && bash '${AGENT_TRACKER}' bg-done "\$_sid"
+echo ''
+echo '=== DONE (exit to close) ==='
+rm -f "\$0"
+exec bash
+SCRIPT
   fi
 
-  mkdir -p "$(dirname "$logfile")"
-  tmux new-session -d -s "$tmux_name" \
-    "CLAUDE_BG_ACTIVE=1 ${claude_cmd} 2>&1 | tee '${logfile}'; ${done_cmd}; echo ''; echo '=== DONE (exit to close) ==='; bash"
+  _nvim_exec_lua "_G._claude_open_bg_session('${tab_name}', '${tmpscript}')"
 
-  echo "Background session '${name}' started in tmux."
+  echo "Background session '${name}' started in Neovim tab."
   echo "  cbp ${name}   # peek at output"
-  echo "  cba ${name}   # attach to tmux"
+  echo "  cba ${name}   # focus tab"
   echo "  cr ${name}    # resume interactively"
 }
 
 # ============================================================
 # cn [-b] <name> [prompt...] — Start a named Claude session
 #   cn <name>              → interactive session tracked in AGENTS.md
-#   cn -b <name> <prompt>  → new background session in tmux
+#   cn -b <name> <prompt>  → new background session in Neovim tab
 # ============================================================
 cn() {
   local bg_mode=false
@@ -180,15 +207,17 @@ cn() {
     _start_bg_session "$name" "$prompt" ""
   else
     echo "$name" > ~/.claude-next-name
-    [ -n "$TMUX" ] && tmux rename-window "$name" 2>/dev/null
+    export NVIM_TAB_HANDLE
+    NVIM_TAB_HANDLE=$(_nvim_tab_handle)
+    _nvim_exec_lua "_G._nvim_rename_current_tab('${name}')"
     claude
   fi
 }
 
 # ============================================================
 # cr [-b] <name> [prompt...] — Resume an existing session
-#   cr <name>              → resume interactively (kills tmux first)
-#   cr -b <name> <prompt>  → resume in background via tmux
+#   cr <name>              → resume interactively (kills bg Neovim tab first)
+#   cr -b <name> <prompt>  → resume in background in a new Neovim tab
 # ============================================================
 cr() {
   local bg_mode=false
@@ -215,11 +244,13 @@ cr() {
       echo "cd $session_dir"
       cd "$session_dir" || { echo "Cannot cd to $session_dir"; return 1; }
     fi
-    tmux kill-session -t "cb-${name}" 2>/dev/null && echo "Killed tmux session cb-${name}"
+    _nvim_exec_lua "_G._claude_kill_tab_by_name('cb-${name}')"
     echo "Resuming session ${sid:0:8}... (${name}) interactively..."
     # Pre-set name so if session was compacted (new UUID), the hook inherits the name
     echo "$name" > ~/.claude-next-name
-    [ -n "$TMUX" ] && tmux rename-window "$name" 2>/dev/null
+    export NVIM_TAB_HANDLE
+    NVIM_TAB_HANDLE=$(_nvim_tab_handle)
+    _nvim_exec_lua "_G._nvim_rename_current_tab('${name}')"
     claude --resume "$sid" --fork-session
     local exit_code=$?
     # Clean up: if compacted, hook already consumed it; if normal resume, it's orphaned
@@ -316,19 +347,29 @@ agents() {
 }
 
 # ============================================================
-# cbls — List active tmux sessions + agents table
+# cbls — List active Neovim Claude tabs + agents table
 # ============================================================
 cbls() {
-  echo "=== Active tmux sessions ==="
-  local has_sessions=false
-  while IFS= read -r line; do
-    if [[ "$line" == cb-* ]]; then
-      has_sessions=true
-      echo "  $line"
+  echo "=== Active Claude tabs ==="
+  if [ -n "$NVIM" ]; then
+    local tmpfile
+    tmpfile=$(mktemp)
+    _nvim_exec_lua "_G._claude_list_tabs_to_file('${tmpfile}')"
+    local has_tabs=false
+    if [ -f "$tmpfile" ]; then
+      while IFS=$'\t' read -r _handle name state; do
+        if [ -n "$name" ]; then
+          has_tabs=true
+          echo "  ${name}${state:+ [${state}]}"
+        fi
+      done < "$tmpfile"
+      rm -f "$tmpfile"
     fi
-  done < <(tmux ls 2>/dev/null)
-  if ! $has_sessions; then
-    echo "  (none running)"
+    if ! $has_tabs; then
+      echo "  (none)"
+    fi
+  else
+    echo "  (not in Neovim)"
   fi
   echo ""
   agents
@@ -340,8 +381,7 @@ cbls() {
 cbp() {
   if [ -z "$1" ]; then
     echo "Usage: cbp <name>"
-    echo "Active sessions:"
-    tmux ls 2>/dev/null | grep "^cb-" | sed 's/^cb-/  /' | cut -d: -f1
+    echo "Run cbls to see active Claude tabs."
     return 1
   fi
   local logfile="${CLAUDE_BG_LOGDIR}/${1}.log"
@@ -353,43 +393,40 @@ cbp() {
 }
 
 # ============================================================
-# cba <name> — Attach to a background session's tmux
+# cba <name> — Focus a background session's Neovim tab
 # ============================================================
 cba() {
   if [ -z "$1" ]; then
     echo "Usage: cba <name>"
-    echo "Active sessions:"
-    tmux ls 2>/dev/null | grep "^cb-" | sed 's/^cb-/  /' | cut -d: -f1
+    echo "Run cbls to see active Claude tabs."
     return 1
   fi
-  tmux attach -t "cb-${1}"
+  if [ -z "$NVIM" ]; then
+    echo "Not in a Neovim terminal session."
+    return 1
+  fi
+  _nvim_exec_lua "_G._claude_focus_tab_by_name('cb-${1}')"
 }
 
 # ============================================================
 # cbk <name> — Kill a running background session
-#   Kills the tmux session and marks it stopped in AGENTS.md
+#   Kills the Neovim tab and marks it stopped in AGENTS.md
 # ============================================================
 cbk() {
   if [ -z "$1" ]; then
     echo "Usage: cbk <name>"
-    echo "Active sessions:"
-    tmux ls 2>/dev/null | grep "^cb-" | sed 's/^cb-/  /' | cut -d: -f1
+    echo "Run cbls to see active Claude tabs."
     return 1
   fi
   local name="$1"
-  local tmux_name="cb-${name}"
-  if tmux has-session -t "$tmux_name" 2>/dev/null; then
-    tmux kill-session -t "$tmux_name"
-    # Look up session ID and mark as stopped
-    local sid
-    sid=$(_lookup_sid "$name")
-    if [ -n "$sid" ]; then
-      echo "{\"session_id\": \"$sid\", \"transcript_path\": \"\"}" | bash "$AGENT_TRACKER" stop 2>/dev/null
-    fi
-    echo "Killed background session '${name}'."
-  else
-    echo "No running background session '${name}' found."
+  _nvim_exec_lua "_G._claude_kill_tab_by_name('cb-${name}')"
+  # Look up session ID and mark as stopped
+  local sid
+  sid=$(_lookup_sid "$name")
+  if [ -n "$sid" ]; then
+    echo "{\"session_id\": \"$sid\", \"transcript_path\": \"\"}" | bash "$AGENT_TRACKER" stop 2>/dev/null
   fi
+  echo "Killed background session '${name}'."
 }
 
 # ============================================================
@@ -522,7 +559,7 @@ cclean() {
 }
 
 # ============================================================
-# Codex session helpers (tmux naming + lightweight index)
+# Codex session helpers (Neovim tab naming + lightweight index)
 # ============================================================
 
 _codex_index_upsert() {
@@ -574,7 +611,7 @@ PY
 _codex_set_name() {
   local name="$1" sid="$2" dir="${3:-$PWD}"
   [ -z "$name" ] && return 1
-  [ -n "$TMUX" ] && tmux rename-window "$name" 2>/dev/null
+  _nvim_exec_lua "_G._nvim_rename_current_tab('${name}')"
   [ -n "$sid" ] && _codex_index_upsert "$name" "$sid" "$dir"
 }
 

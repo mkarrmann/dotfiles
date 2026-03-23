@@ -174,6 +174,7 @@ def parse_agents(path: Path) -> List[dict]:
             "name": parts[1],
             "status_raw": status_raw,
             "status_text": status_text,
+            "od": parts[3],
             "session_id": parts[4],
             "description": parts[5],
             "updated": parts[7],
@@ -399,6 +400,27 @@ def rename_in_agents_md(sid: str, old_name: str, new_name: str) -> None:
             pass
 
 
+# ── Neovim IPC ────────────────────────────────────────────
+
+
+def _nvim_server() -> Optional[str]:
+    try:
+        s = (STATE_DIR / "nvim-server").read_text().strip()
+        return s if s else None
+    except OSError:
+        return None
+
+
+def _nvim_call(server: str, expr: str) -> None:
+    try:
+        subprocess.run(
+            ["nvim", "--server", server, "--remote-expr", expr],
+            capture_output=True, timeout=2,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
+
 # ── AGENTS.md update ──────────────────────────────────────
 
 
@@ -455,28 +477,18 @@ def update_agents_md(sid: str, new_status: str) -> None:
 
 
 def notify_stuck(agent: dict) -> None:
-    """Ring the terminal bell on the agent's tmux window and set @claude_state."""
-    # The description field stores the tmux session:window context (e.g. "main:3")
-    target = agent.get("description", "").strip()
-    if not target or ":" not in target:
+    """Set the ! state on the agent's Neovim tab."""
+    od = agent.get("od", "").strip()
+    if not od.startswith("nvim:tab-"):
         return
     try:
-        # Find the pane TTY and ring the bell
-        result = subprocess.run(
-            ["tmux", "display-message", "-t", target, "-p", "#{pane_tty}"],
-            capture_output=True, text=True, timeout=2,
-        )
-        tty = result.stdout.strip()
-        if tty:
-            with open(tty, "w") as f:
-                f.write("\a")
-        # Set @claude_state to "!" so the window gets flagged
-        subprocess.run(
-            ["tmux", "set-option", "-wq", "-t", target, "@claude_state", "!"],
-            capture_output=True, timeout=2,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        pass
+        tab_handle = int(od[len("nvim:tab-"):])
+    except ValueError:
+        return
+    server = _nvim_server()
+    if not server:
+        return
+    _nvim_call(server, f"execute('lua _G._claude_set_tab_state({tab_handle}, \"!\")')")
 
 
 # ── Watcher state ─────────────────────────────────────────
@@ -645,15 +657,15 @@ def main():
                     if new_name:
                         qq_name = f"qq:{new_name}"
                         rename_in_agents_md(sid, name, qq_name)
-                        try:
-                            target = agent.get("description", "").strip()
-                            if target and ":" in target:
-                                subprocess.run(
-                                    ["tmux", "rename-window", "-t", target, qq_name],
-                                    capture_output=True, timeout=2,
-                                )
-                        except (subprocess.TimeoutExpired, FileNotFoundError):
-                            pass
+                        od = agent.get("od", "").strip()
+                        if od.startswith("nvim:tab-"):
+                            try:
+                                tab_handle = int(od[len("nvim:tab-"):])
+                                server = _nvim_server()
+                                if server:
+                                    _nvim_call(server, f"execute('lua _G._claude_rename_tab({tab_handle}, \"{qq_name}\")')")
+                            except ValueError:
+                                pass
                         state[naming_key]["new_name"] = qq_name
                     else:
                         log.info("quick-naming failed for %s, keeping default", sid[:8])
@@ -696,29 +708,29 @@ def main():
 
                     if new_name:
                         rename_in_agents_md(sid, name, new_name)
-                        try:
-                            target = agent.get("description", "").strip()
-                            if target and ":" in target:
-                                subprocess.run(
-                                    ["tmux", "rename-window", "-t", target, new_name],
-                                    capture_output=True, timeout=2,
-                                )
-                        except (subprocess.TimeoutExpired, FileNotFoundError):
-                            pass
+                        od = agent.get("od", "").strip()
+                        if od.startswith("nvim:tab-"):
+                            try:
+                                tab_handle = int(od[len("nvim:tab-"):])
+                                server = _nvim_server()
+                                if server:
+                                    _nvim_call(server, f"execute('lua _G._claude_rename_tab({tab_handle}, \"{new_name}\")')")
+                            except ValueError:
+                                pass
                         state[rename_key]["new_name"] = new_name
                     else:
                         # LLM failed — just strip qq: from existing name
                         stripped = name[3:]
                         rename_in_agents_md(sid, name, stripped)
-                        try:
-                            target = agent.get("description", "").strip()
-                            if target and ":" in target:
-                                subprocess.run(
-                                    ["tmux", "rename-window", "-t", target, stripped],
-                                    capture_output=True, timeout=2,
-                                )
-                        except (subprocess.TimeoutExpired, FileNotFoundError):
-                            pass
+                        od = agent.get("od", "").strip()
+                        if od.startswith("nvim:tab-"):
+                            try:
+                                tab_handle = int(od[len("nvim:tab-"):])
+                                server = _nvim_server()
+                                if server:
+                                    _nvim_call(server, f"execute('lua _G._claude_rename_tab({tab_handle}, \"{stripped}\")')")
+                            except ValueError:
+                                pass
                         state[rename_key]["new_name"] = stripped
                         log.info("full-naming failed for %s, stripped qq: prefix", sid[:8])
 

@@ -124,17 +124,14 @@ _start_watcher() {
     fi
   fi
 
-  TMUX="" TMUX_PANE="" setsid python3 "$WATCHER_SCRIPT" </dev/null >/dev/null 2>&1 &
+  setsid python3 "$WATCHER_SCRIPT" </dev/null >/dev/null 2>&1 &
   _log "  watcher: started (pid=$!)"
 }
 
-# Get tmux session:window context for the current pane.
-_tmux_context() {
-  if [ -n "${TMUX:-}" ]; then
-    local s w
-    s=$(tmux display-message -p '#S' 2>/dev/null)
-    w=$(tmux display-message -p '#I' 2>/dev/null)
-    [ -n "$s" ] && echo "${s}:${w}" && return
+# Get origin context (Neovim tab handle) for the current session.
+_origin_context() {
+  if [ -n "${NVIM:-}" ] && [ -n "${NVIM_TAB_HANDLE:-}" ]; then
+    echo "nvim:tab-${NVIM_TAB_HANDLE}"
   fi
 }
 
@@ -330,15 +327,14 @@ cmd_register() {
 
   _log "register sid=${sid:0:8} source=$source next-name=$(cat ~/.claude-next-name 2>/dev/null || echo NONE)"
 
-  # Track previous session in this pane for compaction detection.
+  # Track previous session in this tab for compaction detection.
   # Must read before overwriting ~/.claude-last-session.
   local prev_pane_sid=""
-  if [ -n "${TMUX_PANE:-}" ]; then
-    local safe_pane="${TMUX_PANE//[^a-zA-Z0-9_]/_}"
-    local pane_file="${PID_DIR}/pane-${safe_pane}"
-    prev_pane_sid=$(cat "$pane_file" 2>/dev/null || true)
+  if [ -n "${NVIM_TAB_HANDLE:-}" ]; then
+    local tab_file="${PID_DIR}/tab-${NVIM_TAB_HANDLE}"
+    prev_pane_sid=$(cat "$tab_file" 2>/dev/null || true)
     mkdir -p "$PID_DIR" 2>/dev/null
-    echo "$sid" > "$pane_file"
+    echo "$sid" > "$tab_file"
   elif [ -f ~/.claude-last-session ]; then
     prev_pane_sid=$(cat ~/.claude-last-session)
   fi
@@ -357,9 +353,9 @@ cmd_register() {
     echo "$tp" > "${PID_DIR}/${sid}.transcript"
   fi
 
-  # Capture tmux context (session:window) for display
-  local tmux_ctx
-  tmux_ctx=$(_tmux_context)
+  # Capture origin context (Neovim tab handle) for display
+  local origin_ctx
+  origin_ctx=$(_origin_context)
 
   # Start heartbeat daemon (updates AGENTS.md timestamp periodically)
   local claude_pid
@@ -402,7 +398,7 @@ cmd_register() {
         else
           _log "  resume: sid found, marking as resumed"
           local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
-          awk -v sid="$sid" -v ts="$ts" -v host="$host" -v dir="$PWD" -v desc="$tmux_ctx" -F'|' 'BEGIN{OFS="|"} {
+          awk -v sid="$sid" -v ts="$ts" -v host="$host" -v dir="$PWD" -v desc="$origin_ctx" -F'|' 'BEGIN{OFS="|"} {
             if (NR > 4 && index($5, sid) > 0) {
               $3 = " 🔄 resumed "
               $4 = " " host " "
@@ -465,7 +461,7 @@ cmd_register() {
       current_status=$(grep "| ${sid} |" "$AGENTS_FILE_LOCAL" | awk -F'|' '{print $3}')
       if [[ "$current_status" != *"bg:running"* ]]; then
         local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
-        awk -v sid="$sid" -v ts="$ts" -v host="$host" -v dir="$PWD" -v desc="$tmux_ctx" -F'|' 'BEGIN{OFS="|"} {
+        awk -v sid="$sid" -v ts="$ts" -v host="$host" -v dir="$PWD" -v desc="$origin_ctx" -F'|' 'BEGIN{OFS="|"} {
           if (NR > 4 && index($5, sid) > 0) {
             $3 = " 🟢 interactive "
             $4 = " " host " "
@@ -506,8 +502,8 @@ cmd_register() {
           age=$(( now_epoch - prev_epoch ))
           if [ "$age" -lt 120 ]; then
             local compaction_confirmed=true
-            # For non-tmux, require same directory as additional guard
-            if [ -z "${TMUX_PANE:-}" ]; then
+            # For sessions without a tab handle, require same directory as additional guard
+            if [ -z "${NVIM_TAB_HANDLE:-}" ]; then
               local prev_dir
               prev_dir=$(echo "$prev_row" | awk -F'|' '{gsub(/^ +| +$/, "", $9); print $9}')
               [ "$prev_dir" != "$PWD" ] && compaction_confirmed=false
@@ -529,14 +525,15 @@ cmd_register() {
         fi
       fi
 
-      # Fallback: tmux window name or auto-generate
+      # Fallback: Neovim tab name or auto-generate
       if [ -z "$name" ]; then
-        if [ -n "${TMUX:-}" ]; then
-          local tmux_name
-          tmux_name=$(tmux display-message -p '#W' 2>/dev/null)
-          if [ -n "$tmux_name" ] && ! echo "$tmux_name" | grep -qxE "nvim|bash|zsh|sh|fish|tmux|systemd"; then
-            name="$tmux_name"
-            _log "  startup: using tmux window name='${name}'"
+        if [ -n "${NVIM:-}" ] && [ -n "${NVIM_TAB_HANDLE:-}" ]; then
+          local nvim_tab_name
+          nvim_tab_name=$(nvim --server "$NVIM" --remote-expr \
+            "luaeval('(function() local ok,n=pcall(vim.api.nvim_tabpage_get_var,${NVIM_TAB_HANDLE},\"tab_name\"); return ok and n or \"\" end)()')" 2>/dev/null)
+          if [ -n "$nvim_tab_name" ] && ! echo "$nvim_tab_name" | grep -qxE "nvim|bash|zsh|sh|fish|systemd"; then
+            name="$nvim_tab_name"
+            _log "  startup: using Neovim tab name='${name}'"
           else
             name="${host}-${sid:0:4}"
             _log "  startup: genuine new session, auto-name='${name}'"
@@ -556,7 +553,7 @@ cmd_register() {
           # without creating phantom auto-named entries.
           _log "  startup: name '${name}' active with different sid — updating sid in place"
           local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
-          awk -v sid="$sid" -v name="$name" -v ts="$ts" -v host="$host" -v dir="$PWD" -v desc="$tmux_ctx" -F'|' 'BEGIN{OFS="|"} {
+          awk -v sid="$sid" -v name="$name" -v ts="$ts" -v host="$host" -v dir="$PWD" -v desc="$origin_ctx" -F'|' 'BEGIN{OFS="|"} {
             if (NR > 4 && index($0, "| " name " |") > 0) {
               $3 = " 🟢 interactive "
               $4 = " " host " "
@@ -584,7 +581,7 @@ cmd_register() {
         initial_status="🔵 bg:running"
         rm -f ~/.claude-next-bg
       fi
-      local desc="${old_desc:-${tmux_ctx}}"
+      local desc="${old_desc:-${origin_ctx}}"
       local started="${old_started:-$ts}"
       echo "| ${name} | ${initial_status} | ${host} | ${sid} | ${desc} | ${started} | ${ts} | ${PWD} |" >> "$AGENTS_FILE_LOCAL"
       _log "  startup: created row name='${name}' sid=${sid:0:8}"
@@ -681,7 +678,7 @@ cmd_background() {
 }
 
 # ============================================================
-# bg-done <sid> — called when tmux claude process exits
+# bg-done <sid> — called when background claude process exits
 # ============================================================
 cmd_bg_done() {
   local sid="$1"
@@ -730,8 +727,8 @@ cmd_active() {
   # Fallback PID capture in case SessionStart hook failed
   [ ! -f "${PID_DIR}/${sid}" ] && _save_pid "$sid"
 
-  local tmux_ctx
-  tmux_ctx=$(_tmux_context)
+  local origin_ctx
+  origin_ctx=$(_origin_context)
 
   local ts
   ts=$(now)
@@ -747,7 +744,7 @@ cmd_active() {
       current_status=$(grep "| ${sid} |" "$AGENTS_FILE_LOCAL" | awk -F'|' '{print $3}')
       if [[ "$current_status" != *"⚡"* ]]; then
         local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
-        awk -v sid="$sid" -v ts="$ts" -v desc="$tmux_ctx" -F'|' 'BEGIN{OFS="|"} {
+        awk -v sid="$sid" -v ts="$ts" -v desc="$origin_ctx" -F'|' 'BEGIN{OFS="|"} {
           if (NR > 4 && index($5, sid) > 0) {
             $3 = " ⚡ active "
             if (desc != "") $6 = " " desc " "
@@ -758,13 +755,13 @@ cmd_active() {
         mv "$tmpfile" "$AGENTS_FILE_LOCAL"
         sort_agents
       else
-        # Already active — refresh tmux context without touching timestamp
-        if [ -n "$tmux_ctx" ]; then
+        # Already active — refresh origin context without touching timestamp
+        if [ -n "$origin_ctx" ]; then
           local current_desc
           current_desc=$(grep "| ${sid} |" "$AGENTS_FILE_LOCAL" | awk -F'|' '{print $6}' | xargs)
-          if [ "$current_desc" != "$tmux_ctx" ]; then
+          if [ "$current_desc" != "$origin_ctx" ]; then
             local tmpfile="${AGENTS_FILE_LOCAL}.tmp"
-            awk -v sid="$sid" -v desc="$tmux_ctx" -F'|' 'BEGIN{OFS="|"} {
+            awk -v sid="$sid" -v desc="$origin_ctx" -F'|' 'BEGIN{OFS="|"} {
               if (NR > 4 && index($5, sid) > 0) {
                 $6 = " " desc " "
               }
@@ -807,8 +804,8 @@ cmd_active() {
           }' "$AGENTS_FILE_LOCAL" > "$tmpfile"
           mv "$tmpfile" "$AGENTS_FILE_LOCAL"
           echo "$sid" > ~/.claude-last-session
-          if [ -n "${TMUX:-}" ]; then
-            tmux rename-window "$name" 2>/dev/null
+          if [ -n "${NVIM:-}" ]; then
+            nvim --server "$NVIM" --remote-expr "execute('lua _G._nvim_rename_current_tab(\"${name}\")')" >/dev/null 2>&1
           fi
           sort_agents
           exit 0
@@ -819,11 +816,11 @@ cmd_active() {
       fi
 
       echo "$sid" > ~/.claude-last-session
-      local tmux_ctx
-      tmux_ctx=$(_tmux_context)
-      echo "| ${name} | ⚡ active | ${host} | ${sid} | ${tmux_ctx} | ${ts} | ${ts} | ${PWD} |" >> "$AGENTS_FILE_LOCAL"
-      if [ -n "${TMUX:-}" ]; then
-        tmux rename-window "$name" 2>/dev/null
+      local origin_ctx
+      origin_ctx=$(_origin_context)
+      echo "| ${name} | ⚡ active | ${host} | ${sid} | ${origin_ctx} | ${ts} | ${ts} | ${PWD} |" >> "$AGENTS_FILE_LOCAL"
+      if [ -n "${NVIM:-}" ]; then
+        nvim --server "$NVIM" --remote-expr "execute('lua _G._nvim_rename_current_tab(\"${name}\")')" >/dev/null 2>&1
       fi
       sort_agents
     fi
@@ -984,7 +981,7 @@ cmd_heartbeat() {
     fi
   done
 
-  # Claude process died without Stop hook firing (e.g. tmux window killed).
+  # Claude process died without Stop hook firing (e.g. terminal closed).
   # Mark the session as stopped so the dashboard reflects reality.
   # Update AGENTS.md BEFORE removing the PID file — if the update fails,
   # the PID file must remain so the statusline's _check_pid can detect the

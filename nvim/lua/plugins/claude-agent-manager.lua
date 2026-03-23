@@ -13,9 +13,8 @@ local function start_named_session(name)
 	end
 	f:write(name)
 	f:close()
-	if vim.env.TMUX then
-		vim.fn.system("tmux rename-window " .. vim.fn.shellescape(name))
-	end
+	agent_session.rename_current_tab(name)
+	vim.env.NVIM_TAB_HANDLE = tostring(vim.api.nvim_get_current_tabpage())
 	vim.cmd("ClaudeCode")
 end
 
@@ -86,10 +85,8 @@ local function rename_session(name)
 		nf:close()
 	end
 
-	-- Rename tmux window
-	if vim.env.TMUX then
-		vim.fn.system("tmux rename-window " .. vim.fn.shellescape(name))
-	end
+	-- Rename current tab
+	agent_session.rename_current_tab(name)
 
 	vim.notify("Session renamed to '" .. name .. "'")
 
@@ -266,9 +263,8 @@ local function resume_by_name()
 						nf:write(agent.name)
 						nf:close()
 					end
-					if vim.env.TMUX then
-						vim.fn.system("tmux rename-window " .. vim.fn.shellescape(agent.name))
-					end
+					agent_session.rename_current_tab(agent.name)
+					vim.env.NVIM_TAB_HANDLE = tostring(vim.api.nvim_get_current_tabpage())
 					vim.cmd("ClaudeCode --resume " .. agent.sid .. " --fork-session")
 					-- Open the session's pad note
 					if agent.name ~= "" then
@@ -281,11 +277,7 @@ local function resume_by_name()
 		:find()
 end
 
-local function fork_to(make_tmux_cmd)
-	if not vim.env.TMUX then
-		vim.notify("Not in tmux", vim.log.levels.WARN)
-		return
-	end
+local function fork_to_window()
 	local sid = agent_session.get_session_id()
 	if not sid or sid == "" then
 		vim.notify("No active Claude session to fork", vim.log.levels.WARN)
@@ -293,62 +285,37 @@ local function fork_to(make_tmux_cmd)
 	end
 	local agent = lookup_agent_by_sid(sid)
 	local name = agent and agent.name or nil
+	vim.cmd("tabnew")
 	if name then
+		vim.api.nvim_tabpage_set_var(0, "tab_name", name)
+		vim.cmd("redrawtabline")
 		local nf = io.open(next_name_file, "w")
 		if nf then
 			nf:write(name)
 			nf:close()
 		end
 	end
-	local cwd = vim.fn.getcwd()
-	local label = name or ("fork-" .. sid:sub(1, 8))
-	vim.fn.system(make_tmux_cmd(label, sid, cwd))
-end
-
-local function fork_to_window()
-	fork_to(function(label, sid, cwd)
-		return {
-			"tmux", "new-window", "-d",
-			"-c", cwd,
-			"-n", label,
-			"-e", "CLAUDE_AUTO_RESUME=" .. sid,
-			"-e", "CLAUDECODE=",
-			"--", "nvim",
-		}
-	end)
+	vim.env.NVIM_TAB_HANDLE = tostring(vim.api.nvim_get_current_tabpage())
+	vim.cmd("ClaudeCode --resume " .. sid .. " --fork-session")
 end
 
 local function fork_to_pane()
-	fork_to(function(_, sid, cwd)
-		return {
-			"tmux", "split-window", "-h", "-l", "33%",
-			"-c", cwd,
-			"-e", "CLAUDE_AUTO_RESUME=" .. sid,
-			"-e", "CLAUDECODE=",
-			"--", "nvim",
-		}
-	end)
-end
-
-local function prompt_and_launch(make_tmux_cmd)
-	if not vim.env.TMUX then
-		vim.notify("Not in tmux", vim.log.levels.WARN)
+	local sid = agent_session.get_session_id()
+	if not sid or sid == "" then
+		vim.notify("No active Claude session to fork", vim.log.levels.WARN)
 		return
 	end
+	vim.env.NVIM_TAB_HANDLE = tostring(vim.api.nvim_get_current_tabpage())
+	vim.cmd("vsplit")
+	vim.cmd("ClaudeCode --resume " .. sid .. " --fork-session")
+end
+
+local function prompt_new_window()
 	local cwd = vim.fn.getcwd()
 	vim.ui.input({ prompt = "Claude prompt: " }, function(text)
 		if not text or text == "" then
 			return
 		end
-
-		local prompt_file = string.format("/tmp/.claude-auto-prompt-%d", vim.uv.hrtime())
-		local f = io.open(prompt_file, "w")
-		if not f then
-			vim.notify("Failed to write prompt file", vim.log.levels.ERROR)
-			return
-		end
-		f:write(text)
-		f:close()
 
 		local label = text:sub(1, 15):gsub("[^%w%-_ ]", ""):match("^%s*(.-)%s*$") or ""
 		if label == "" then
@@ -362,32 +329,72 @@ local function prompt_and_launch(make_tmux_cmd)
 			nf:close()
 		end
 
-		vim.fn.system(make_tmux_cmd(label, prompt_file, cwd))
-	end)
-end
+		vim.cmd("tabnew")
+		local target_tab = vim.api.nvim_get_current_tabpage()
+		vim.api.nvim_tabpage_set_var(target_tab, "tab_name", label)
+		vim.cmd("redrawtabline")
+		vim.env.NVIM_TAB_HANDLE = tostring(target_tab)
+		vim.fn.chdir(cwd)
+		vim.cmd("ClaudeCode")
 
-local function prompt_new_window()
-	prompt_and_launch(function(label, prompt_file, cwd)
-		return {
-			"tmux", "new-window", "-d",
-			"-c", cwd,
-			"-n", label,
-			"-e", "CLAUDE_AUTO_PROMPT=" .. prompt_file,
-			"-e", "CLAUDECODE=",
-			"--", "nvim",
-		}
+		vim.defer_fn(function()
+			for _, win in ipairs(vim.api.nvim_tabpage_list_wins(target_tab)) do
+				local buf = vim.api.nvim_win_get_buf(win)
+				if vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].buftype == "terminal" then
+					local bname = vim.api.nvim_buf_get_name(buf)
+					if bname:lower():find("claude") then
+						local chan = vim.bo[buf].channel
+						if chan and chan > 0 then
+							vim.api.nvim_chan_send(chan, text .. "\n")
+						end
+						break
+					end
+				end
+			end
+		end, 2000)
 	end)
 end
 
 local function prompt_new_pane()
-	prompt_and_launch(function(_, prompt_file, cwd)
-		return {
-			"tmux", "split-window", "-h", "-l", "33%",
-			"-c", cwd,
-			"-e", "CLAUDE_AUTO_PROMPT=" .. prompt_file,
-			"-e", "CLAUDECODE=",
-			"--", "nvim",
-		}
+	local cwd = vim.fn.getcwd()
+	vim.ui.input({ prompt = "Claude prompt: " }, function(text)
+		if not text or text == "" then
+			return
+		end
+
+		local label = text:sub(1, 15):gsub("[^%w%-_ ]", ""):match("^%s*(.-)%s*$") or ""
+		if label == "" then
+			label = "claude"
+		end
+		label = "qq: " .. label
+
+		local nf = io.open(next_name_file, "w")
+		if nf then
+			nf:write(label)
+			nf:close()
+		end
+
+		local target_tab = vim.api.nvim_get_current_tabpage()
+		vim.env.NVIM_TAB_HANDLE = tostring(target_tab)
+		vim.cmd("vsplit")
+		vim.fn.chdir(cwd)
+		vim.cmd("ClaudeCode")
+
+		vim.defer_fn(function()
+			for _, win in ipairs(vim.api.nvim_tabpage_list_wins(target_tab)) do
+				local buf = vim.api.nvim_win_get_buf(win)
+				if vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].buftype == "terminal" then
+					local bname = vim.api.nvim_buf_get_name(buf)
+					if bname:lower():find("claude") then
+						local chan = vim.bo[buf].channel
+						if chan and chan > 0 then
+							vim.api.nvim_chan_send(chan, text .. "\n")
+						end
+						break
+					end
+				end
+			end
+		end, 2000)
 	end)
 end
 
@@ -444,13 +451,12 @@ return {
 									nf:write(agent.name)
 									nf:close()
 								end
-								if vim.env.TMUX then
-									vim.fn.system("tmux rename-window " .. vim.fn.shellescape(agent.name))
-								end
+								agent_session.rename_current_tab(agent.name)
 							else
 								local resolved = agent_session.resolve_cwd_for_sid(id)
 								chdir_if_needed(resolved)
 							end
+							vim.env.NVIM_TAB_HANDLE = tostring(vim.api.nvim_get_current_tabpage())
 							vim.cmd("ClaudeCode --resume " .. id .. " --fork-session")
 						end
 					end)
@@ -460,22 +466,22 @@ return {
 			{
 				"<leader>af",
 				fork_to_window,
-				desc = "Fork Claude session in new tmux window",
+				desc = "Fork Claude session in new tab",
 			},
 			{
 				"<leader>aF",
 				fork_to_pane,
-				desc = "Fork Claude session in new tmux pane",
+				desc = "Fork Claude session in vertical split",
 			},
 			{
 				"<leader>ap",
 				prompt_new_window,
-				desc = "Prompt Claude in new tmux window",
+				desc = "Prompt Claude in new tab",
 			},
 			{
 				"<leader>aP",
 				prompt_new_pane,
-				desc = "Prompt Claude in new tmux pane",
+				desc = "Prompt Claude in vertical split",
 			},
 		},
 		init = function()
@@ -516,128 +522,6 @@ return {
 			vim.api.nvim_create_user_command("ClaudeCodeResume", resume_by_name, {
 				desc = "Resume Claude session by name (Telescope picker)",
 			})
-
-			if vim.env.CLAUDE_AUTO_PROMPT then
-				vim.api.nvim_create_autocmd("VimEnter", {
-					once = true,
-					callback = function()
-						vim.defer_fn(function()
-							local prompt_file = vim.env.CLAUDE_AUTO_PROMPT
-							local f = io.open(prompt_file, "r")
-							local prompt = f and f:read("*a") or nil
-							if f then
-								f:close()
-							end
-							os.remove(prompt_file)
-
-							require("lazy").load({ plugins = { "claudecode.nvim" } })
-							vim.cmd("ClaudeCode")
-
-							if prompt and prompt ~= "" then
-								vim.defer_fn(function()
-									for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-										if vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].buftype == "terminal" then
-											local name = vim.api.nvim_buf_get_name(buf)
-											if name:lower():find("claude") then
-												local chan = vim.bo[buf].channel
-												if chan and chan > 0 then
-													vim.api.nvim_chan_send(chan, prompt .. "\n")
-												end
-												break
-											end
-										end
-									end
-								end, 2000)
-							end
-						end, 200)
-					end,
-				})
-			elseif vim.env.CLAUDE_AUTO_RESUME then
-				vim.api.nvim_create_autocmd("VimEnter", {
-					once = true,
-					callback = function()
-						vim.defer_fn(function()
-							local sid = vim.env.CLAUDE_AUTO_RESUME
-							require("lazy").load({ plugins = { "claudecode.nvim" } })
-							vim.cmd("ClaudeCode --resume " .. sid .. " --fork-session")
-						end, 200)
-					end,
-				})
-			elseif vim.env.TMUX then
-				-- tmux-resurrect: auto-resume Claude session if this window was
-				-- saved with one. The manifest is written by tmux-resurrect-save.sh
-				-- (post-save-all) and gated by tmux-resurrect-restore.sh (post-restore-all).
-				vim.api.nvim_create_autocmd("VimEnter", {
-					once = true,
-					callback = function()
-						vim.defer_fn(function()
-							local resurrect_dir = vim.fn.expand("~/.claude/agent-manager/resurrect")
-							local ts_path = resurrect_dir .. "/.restore-ts"
-
-							local ts_file = io.open(ts_path, "r")
-							if not ts_file then
-								return
-							end
-							local ts_str = ts_file:read("*l")
-							ts_file:close()
-							local restore_epoch = tonumber(ts_str)
-							if not restore_epoch or os.time() - restore_epoch > 30 then
-								pcall(os.remove, ts_path)
-								return
-							end
-
-							local manifest_path = resurrect_dir .. "/manifest.json"
-							local mf = io.open(manifest_path, "r")
-							if not mf then
-								return
-							end
-							local content = mf:read("*a")
-							mf:close()
-
-							local ok, manifest = pcall(vim.json.decode, content)
-							if not ok or type(manifest) ~= "table" then
-								pcall(os.remove, manifest_path)
-								pcall(os.remove, ts_path)
-								return
-							end
-
-							local win_name = vim.fn.system("tmux display-message -p '#W'"):gsub("%s+$", "")
-							local entry = manifest[win_name]
-							if not entry or type(entry) ~= "table" or not entry.sid or entry.sid == "" then
-								return
-							end
-
-							-- Claim our entry and update the manifest
-							manifest[win_name] = nil
-							local remaining = 0
-							for _ in pairs(manifest) do
-								remaining = remaining + 1
-							end
-							if remaining == 0 then
-								pcall(os.remove, manifest_path)
-								pcall(os.remove, ts_path)
-							else
-								local wf = io.open(manifest_path, "w")
-								if wf then
-									wf:write(vim.json.encode(manifest))
-									wf:close()
-								end
-							end
-
-							chdir_if_needed(entry.dir)
-
-							local nf = io.open(next_name_file, "w")
-							if nf then
-								nf:write(win_name)
-								nf:close()
-							end
-
-							require("lazy").load({ plugins = { "claudecode.nvim" } })
-							vim.cmd("ClaudeCode --resume " .. entry.sid)
-						end, 3000)
-					end,
-				})
-			end
 		end,
 	},
 }

@@ -90,7 +90,7 @@ return {
 						end
 					end
 					if label_name then
-						renamed = agent_session.rename_tmux_window(label_name)
+						renamed = agent_session.rename_current_tab(label_name)
 					end
 				elseif subcommand == "fork" then
 					local target
@@ -111,7 +111,7 @@ return {
 						end
 					end
 					if label_name then
-						renamed = agent_session.rename_tmux_window(label_name)
+						renamed = agent_session.rename_current_tab(label_name)
 					end
 				end
 				if known_sid and target_idx and cmd_args[target_idx] then
@@ -188,7 +188,7 @@ return {
 					if sid and agent_session.is_uuid(sid) then
 						agent_session.upsert_codex_session(name, sid, cwd)
 					end
-					agent_session.rename_tmux_window(name)
+					agent_session.rename_current_tab(name)
 					vim.notify("Codex window named '" .. name .. "'")
 				end
 

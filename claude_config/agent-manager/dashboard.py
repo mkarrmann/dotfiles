@@ -18,9 +18,9 @@ from typing import List, Tuple
 
 from agent_state import (
     Agent, C, IDLE_ALERT_SECS, IDLE_WARN_SECS, SMART_ICONS,
-    compute_idle, detect_status, enrich_pids, enrich_tmux, fmt_dur,
+    compute_idle, detect_status, enrich_pids, enrich_nvim, fmt_dur,
     get_preview, load_agents, parse_agents, print_summary,
-    resolve_agents_file, tmux_cmd, vlen,
+    resolve_agents_file, _read_nvim_server, _nvim_expr, vlen,
 )
 
 REFRESH_SECS = 2.0
@@ -259,10 +259,8 @@ class Dashboard:
         title_parts = [a.status_emoji, a.name]
         if not a.is_local:
             title_parts.append(f"📡 {a.od}")
-        if a.tmux_target:
-            title_parts.append(a.tmux_target)
-        elif a.description and ":" in a.description:
-            title_parts.append(a.description)
+        elif a.od.startswith("nvim:tab-"):
+            title_parts.append(a.od)
         if dir_short:
             title_parts.append(dir_short)
         title = " ── ".join(title_parts)
@@ -317,8 +315,14 @@ class Dashboard:
         elif key in ("\r", "\n"):
             if 0 <= self.selected < len(vis):
                 a = vis[self.selected]
-                if a.is_local and a.tmux_target:
-                    tmux_cmd("select-window", "-t", a.tmux_target)
+                if a.is_local and a.od.startswith("nvim:tab-"):
+                    try:
+                        tab_handle = int(a.od[len("nvim:tab-"):])
+                        server = _read_nvim_server()
+                        if server:
+                            _nvim_expr(server, f"execute('lua _G._claude_focus_tab_by_handle({tab_handle})')")
+                    except ValueError:
+                        pass
 
     def paint(self):
         _, rows = term_size()
