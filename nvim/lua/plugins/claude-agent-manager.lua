@@ -403,6 +403,12 @@ return {
 	{
 		"coder/claudecode.nvim",
 		keys = {
+			-- Standard plugin keybindings (keep in sync with dev-config.lua in claudecode.nvim)
+			{ "<leader>ac", "<cmd>ClaudeCode<cr>", desc = "Toggle Claude" },
+			{ "<leader>aC", "<cmd>ClaudeCode --continue<cr>", desc = "Continue Claude" },
+			{ "<leader>am", "<cmd>ClaudeCodeSelectModel<cr>", desc = "Select Claude model" },
+
+			-- Custom workflow keybindings
 			{
 				"<leader>an",
 				function()
