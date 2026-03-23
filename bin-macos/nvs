@@ -2,7 +2,11 @@
 set -euo pipefail
 
 # Local nvim client — connects to a remote nvim server through an existing ET tunnel.
-# The tunnel must be established first by nvs-tunnels (typically in workspace 1).
+# The tunnel must be established first by nvs-tunnels (typically in workspace T).
+#
+# Includes a background clipboard watcher that long-polls the remote server for
+# yank events and writes OSC 52 escape sequences to Ghostty, syncing the remote
+# clipboard to the local Mac system clipboard.
 #
 # Usage: nvs SESSION_NAME
 
@@ -24,8 +28,28 @@ fi
 
 if ! is_ready; then
   echo "ERROR: nvim server not reachable on port $port" >&2
-  echo "Ensure ET tunnel is running (check workspace 1)" >&2
+  echo "Ensure ET tunnel is running (check workspace T)" >&2
   exit 1
 fi
 
-exec nvim --server "localhost:$port" --remote-ui
+# Clipboard watcher: long-poll remote server for yank events, emit OSC 52.
+# _clip_wait() blocks server-side (via vim.wait) until a yank happens or 30s
+# timeout, so we only reconnect on timeout — not polling.
+_clip_sync() {
+  local last_seq=0
+  while true; do
+    local result
+    result=$(nvim --server "localhost:$port" --remote-expr "v:lua._clip_wait($last_seq)" 2>/dev/null) || { sleep 1; continue; }
+    if [[ -n "$result" ]]; then
+      last_seq="${result%%:*}"
+      local encoded="${result#*:}"
+      if [[ -n "$encoded" ]]; then
+        printf '\033]52;c;%s\007' "$encoded" > /dev/tty
+      fi
+    fi
+  done
+}
+_clip_sync &
+trap "kill $! 2>/dev/null" EXIT
+
+nvim --server "localhost:$port" --remote-ui
