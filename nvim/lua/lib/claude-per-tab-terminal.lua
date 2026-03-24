@@ -10,6 +10,10 @@ local tabs = {}
 local config = {}
 
 local function cleanup(t)
+	local s = tabs[t]
+	if s and s.bufnr and vim.api.nvim_buf_is_valid(s.bufnr) then
+		vim.b[s.bufnr].claude_per_tab_terminal = nil
+	end
 	tabs[t] = nil
 end
 
@@ -249,8 +253,14 @@ end
 function M.close()
 	local t = vim.api.nvim_get_current_tabpage()
 	local s = tabs[t]
-	if s and s.winid and vim.api.nvim_win_is_valid(s.winid) then
+	if not s then
+		return
+	end
+	if s.winid and vim.api.nvim_win_is_valid(s.winid) then
 		vim.api.nvim_win_close(s.winid, true)
+	end
+	if s.bufnr and vim.api.nvim_buf_is_valid(s.bufnr) then
+		pcall(vim.api.nvim_buf_delete, s.bufnr, { force = true })
 	end
 	cleanup(t)
 end
@@ -326,8 +336,12 @@ vim.api.nvim_create_autocmd("TabClosed", {
 		for _, t in ipairs(vim.api.nvim_list_tabpages()) do
 			valid[t] = true
 		end
-		for t in pairs(tabs) do
+		for t, s in pairs(tabs) do
 			if not valid[t] then
+				if s.bufnr and vim.api.nvim_buf_is_valid(s.bufnr) then
+					vim.b[s.bufnr].claude_per_tab_terminal = nil
+					pcall(vim.api.nvim_buf_delete, s.bufnr, { force = true })
+				end
 				tabs[t] = nil
 			end
 		end
