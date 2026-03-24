@@ -31,7 +31,7 @@ if [[ "$mode" == "current" ]]; then
     echo "Not inside a Neovim session. Use nvs-restart NAME or nvs-restart --all" >&2
     exit 1
   fi
-  filter=$(nvim --server "$NVIM" --remote-expr "getpid()" 2>/dev/null | tr -cd '0-9' || true)
+  filter=$(nvim --headless --server "$NVIM" --remote-expr "getpid()" 2>/dev/null || true)
   if [[ -z "$filter" ]]; then
     echo "Could not determine current server PID. Use nvs-restart NAME or nvs-restart --all" >&2
     exit 1
