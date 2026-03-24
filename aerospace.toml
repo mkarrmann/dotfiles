@@ -9,7 +9,7 @@ after-startup-command = [
 ]
 
 exec-on-workspace-change = ['/bin/bash', '-c',
-    'sketchybar --trigger aerospace_workspace_change'
+    'sketchybar --trigger aerospace_workspace_change FOCUSED="$AEROSPACE_FOCUSED_WORKSPACE" PREV="$AEROSPACE_PREV_WORKSPACE"'
 ]
 
 # Persistent workspaces: 1-9, A, B, Z (overflow)
