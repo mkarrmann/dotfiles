@@ -415,6 +415,8 @@ vim.keymap.set("n", "<leader>aX", function()
 end, { desc = "Cancel running command" })
 
 vim.keymap.set("n", "<leader><tab>n", "<cmd>tabnew<cr>", { desc = "New tab" })
+vim.keymap.set("n", "<leader><tab>h", "<cmd>tabprevious<cr>", { desc = "Previous Tab" })
+vim.keymap.set("n", "<leader><tab>l", "<cmd>tabnext<cr>", { desc = "Next Tab" })
 
 vim.keymap.set("n", "<leader><tab>r", function()
 	vim.ui.input({ prompt = "Tab name: " }, function(name)
