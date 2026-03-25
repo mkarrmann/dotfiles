@@ -75,7 +75,9 @@ orchest_aero_windows=$(aerospace list-windows --all \
   | grep 'Orchest \[' || true)
 for ws in "${ORCHEST_MANAGED_WORKSPACES[@]}"; do
   label="Workspace ${ws}"
-  match=$(echo "$orchest_aero_windows" | grep -F "$label" | head -1)
+  ws_id=$(echo "$workspace_lines" | grep -F "$label" | awk '{print $1}')
+  [[ -z "$ws_id" ]] && continue
+  match=$(echo "$orchest_aero_windows" | grep -F "[$ws_id]" | head -1)
   [[ -z "$match" ]] && continue
   IFS='|' read -r aero_wid current_ws _ <<< "$match"
   if [[ "$current_ws" != "$ws" ]]; then
