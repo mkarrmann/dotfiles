@@ -272,7 +272,7 @@ for ws in $(managed_workspaces); do
         ."app-name" != "Ghostty" and
         ."app-name" != "cmux" and
         ."app-name" != $vscode and
-        (.["window-title"] | test("Orchest") | not)
+        (.["window-title"] | test("Orchest \\[") | not)
       )] | .[]["window-id"]') || true
   for wid in $stray_ids; do
     [[ -z "$wid" ]] && continue
