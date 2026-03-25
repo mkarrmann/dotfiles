@@ -260,9 +260,6 @@ orchest-open-workspaces || {
 
 # ─────────────────────────────────────────────────────────────────────
 
-# Arrange layouts (tiles | accordion) on managed workspaces
-arrange-workspaces $(managed_workspaces)
-
 # Sweep stray windows: move unrecognized windows off managed workspaces to Z
 swept=0
 for ws in $(managed_workspaces); do
@@ -283,6 +280,9 @@ done
 if [[ "$swept" -gt 0 ]]; then
   echo "Swept ${swept} stray window(s) to workspace ${SWEEP_WORKSPACE}."
 fi
+
+# Arrange layouts (tiles | accordion) on managed workspaces
+arrange-workspaces $(managed_workspaces)
 
 # Focus workspace 1
 aerospace workspace 1 2>/dev/null || true

@@ -8,7 +8,7 @@ set -euo pipefail
 # to preserve manual size adjustments. Use --force to override.
 # Can be run standalone or called from startup-windows.
 
-SIDEBAR_TITLE_PATTERN="Orchest"
+SIDEBAR_TITLE_PATTERN="Orchest \\["
 SIDEBAR_PERCENT=20
 MARKER_DIR="/tmp/aerospace-arrange-markers"
 FORCE=false
