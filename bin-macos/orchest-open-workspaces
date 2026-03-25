@@ -75,12 +75,9 @@ orchest_aero_windows=$(aerospace list-windows --all \
   | grep 'Orchest \[' || true)
 for ws in "${ORCHEST_MANAGED_WORKSPACES[@]}"; do
   label="Workspace ${ws}"
-  ws_id=$(echo "$workspace_lines" | grep -F "$label" | awk '{print $1}')
-  [[ -z "$ws_id" ]] && continue
-  match=$(echo "$orchest_aero_windows" | grep -F "$ws_id" || true)
+  match=$(echo "$orchest_aero_windows" | grep -F "$label" | head -1)
   [[ -z "$match" ]] && continue
-  aero_wid=$(echo "$match" | cut -d'|' -f1)
-  current_ws=$(echo "$match" | cut -d'|' -f2)
+  IFS='|' read -r aero_wid current_ws _ <<< "$match"
   if [[ "$current_ws" != "$ws" ]]; then
     echo "[Orchest] moving \"${label}\" from workspace ${current_ws} to ${ws}..."
     aerospace move-node-to-workspace --window-id "$aero_wid" "$ws" 2>/dev/null || true
