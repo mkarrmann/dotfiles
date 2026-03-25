@@ -251,22 +251,80 @@ for i in "${!WORKSPACES[@]}"; do
   esac
 done
 
-# Set accordion layout on workspaces with multiple windows
-for ws in $(managed_workspaces); do
-  win_count=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null | jq 'length')
-  if [[ "$win_count" -gt 1 ]]; then
-    aerospace workspace "$ws" 2>/dev/null || true
-    aerospace flatten-workspace-tree 2>/dev/null || true
-    aerospace layout accordion vertical 2>/dev/null || true
-  fi
-done
+# ── Orchest ──────────────────────────────────────────────────────────
 
-# Sweep stray windows: move non-Ghostty/VS Code windows off workspaces 1-9,A,B to Z
+ORCHEST_PORT=3100
+ORCHEST_MANAGED_WORKSPACES=(1 2 3 4 5 6 7)
+
+orchest_is_running() {
+  curl -sf "http://127.0.0.1:${ORCHEST_PORT}" >/dev/null 2>&1
+}
+
+# Launch Orchest if not running
+if ! orchest_is_running; then
+  echo "[Orchest] launching..."
+  (cd ~/dev/orchest && ORCHEST_PROVIDER=macos-aerospace nohup pnpm dev > /tmp/orchest.log 2>&1 &)
+
+  for _ in $(seq 1 40); do
+    sleep 0.5
+    if orchest_is_running; then
+      break
+    fi
+  done
+
+  if ! orchest_is_running; then
+    echo "WARNING: [Orchest] did not start within 20s, skipping workspace setup" >&2
+    ((failures++)) || true
+  fi
+fi
+
+# Ensure workspaces exist and open windows for each managed AeroSpace workspace
+if orchest_is_running; then
+  existing_labels=$(orchest workspace list 2>/dev/null || true)
+
+  for ws in "${ORCHEST_MANAGED_WORKSPACES[@]}"; do
+    label="Workspace ${ws}"
+    if ! echo "$existing_labels" | grep -qF "$label"; then
+      echo "[Orchest] creating workspace \"${label}\"..."
+      orchest workspace create "$label" 2>/dev/null || {
+        echo "WARNING: [Orchest] failed to create workspace \"${label}\"" >&2
+        ((failures++)) || true
+        continue
+      }
+    fi
+  done
+
+  # Re-fetch workspace list to get IDs for opening
+  workspace_lines=$(orchest workspace list 2>/dev/null || true)
+  for ws in "${ORCHEST_MANAGED_WORKSPACES[@]}"; do
+    label="Workspace ${ws}"
+    ws_id=$(echo "$workspace_lines" | grep -F "$label" | awk '{print $1}')
+    if [[ -n "$ws_id" ]]; then
+      echo "[Orchest] opening workspace \"${label}\"..."
+      orchest workspace open "$ws_id" 2>/dev/null || {
+        echo "WARNING: [Orchest] failed to open workspace \"${label}\"" >&2
+        ((failures++)) || true
+      }
+    fi
+  done
+fi
+
+# ─────────────────────────────────────────────────────────────────────
+
+# Arrange layouts (tiles | accordion) on managed workspaces
+arrange-workspaces $(managed_workspaces)
+
+# Sweep stray windows: move unrecognized windows off managed workspaces to Z
 swept=0
 for ws in $(managed_workspaces); do
   stray_ids=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
     | jq -r --arg vscode "$VSCODE_APP_AEROSPACE" \
-      '[.[] | select(."app-name" != "Ghostty" and ."app-name" != "cmux" and ."app-name" != $vscode)] | .[]["window-id"]') || true
+      '[.[] | select(
+        ."app-name" != "Ghostty" and
+        ."app-name" != "cmux" and
+        ."app-name" != $vscode and
+        (.["window-title"] | test("Orchest") | not)
+      )] | .[]["window-id"]') || true
   for wid in $stray_ids; do
     [[ -z "$wid" ]] && continue
     aerospace move-node-to-workspace --window-id "$wid" "$SWEEP_WORKSPACE" 2>/dev/null && ((swept++)) || true
