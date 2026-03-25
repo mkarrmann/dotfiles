@@ -253,85 +253,10 @@ done
 
 # ── Orchest ──────────────────────────────────────────────────────────
 
-ORCHEST_PORT=3100
-ORCHEST_MANAGED_WORKSPACES=(1 2 3 4 5 6 7)
-ORCHEST_DIR="${HOME}/dev/orchest"
-
-orchest_is_running() {
-  curl -sf "http://127.0.0.1:${ORCHEST_PORT}" >/dev/null 2>&1
+orchest-open-workspaces || {
+  echo "WARNING: orchest-open-workspaces failed" >&2
+  ((failures++)) || true
 }
-
-orchest_cli() {
-  (cd "$ORCHEST_DIR" && pnpm --silent --filter @orchest/cli orchest "$@")
-}
-
-# Launch Orchest if not running
-if ! orchest_is_running; then
-  echo "[Orchest] launching..."
-  (cd "$ORCHEST_DIR" && ORCHEST_PROVIDER=macos-aerospace nohup pnpm dev > /tmp/orchest.log 2>&1 &)
-
-  for _ in $(seq 1 40); do
-    sleep 0.5
-    if orchest_is_running; then
-      break
-    fi
-  done
-
-  if ! orchest_is_running; then
-    echo "WARNING: [Orchest] did not start within 20s, skipping workspace setup" >&2
-    ((failures++)) || true
-  fi
-fi
-
-# Ensure workspaces exist and open windows for each managed AeroSpace workspace
-if orchest_is_running; then
-  existing_labels=$(orchest_cli workspace list 2>/dev/null || true)
-
-  for ws in "${ORCHEST_MANAGED_WORKSPACES[@]}"; do
-    label="Workspace ${ws}"
-    if ! echo "$existing_labels" | grep -qF "$label"; then
-      echo "[Orchest] creating workspace \"${label}\"..."
-      orchest_cli workspace create "$label" 2>/dev/null || {
-        echo "WARNING: [Orchest] failed to create workspace \"${label}\"" >&2
-        ((failures++)) || true
-        continue
-      }
-    fi
-  done
-
-  # Re-fetch workspace list to get IDs for opening
-  workspace_lines=$(orchest_cli workspace list 2>/dev/null || true)
-  for ws in "${ORCHEST_MANAGED_WORKSPACES[@]}"; do
-    label="Workspace ${ws}"
-    ws_id=$(echo "$workspace_lines" | grep -F "$label" | awk '{print $1}')
-    if [[ -n "$ws_id" ]]; then
-      echo "[Orchest] opening workspace \"${label}\"..."
-      orchest_cli workspace open "$ws_id" 2>/dev/null || {
-        echo "WARNING: [Orchest] failed to open workspace \"${label}\"" >&2
-        ((failures++)) || true
-      }
-    fi
-  done
-
-  # Ensure Orchest workspace windows are on the correct AeroSpace workspaces
-  sleep 0.5
-  orchest_aero_windows=$(aerospace list-windows --all \
-    --format '%{window-id}|%{workspace}|%{window-title}' 2>/dev/null \
-    | grep 'Orchest \[' || true)
-  for ws in "${ORCHEST_MANAGED_WORKSPACES[@]}"; do
-    label="Workspace ${ws}"
-    ws_id=$(echo "$workspace_lines" | grep -F "$label" | awk '{print $1}')
-    [[ -z "$ws_id" ]] && continue
-    match=$(echo "$orchest_aero_windows" | grep -F "$ws_id" || true)
-    [[ -z "$match" ]] && continue
-    aero_wid=$(echo "$match" | cut -d'|' -f1)
-    current_ws=$(echo "$match" | cut -d'|' -f2)
-    if [[ "$current_ws" != "$ws" ]]; then
-      echo "[Orchest] moving \"${label}\" from workspace ${current_ws} to ${ws}..."
-      aerospace move-node-to-workspace --window-id "$aero_wid" "$ws" 2>/dev/null || true
-    fi
-  done
-fi
 
 # ─────────────────────────────────────────────────────────────────────
 
