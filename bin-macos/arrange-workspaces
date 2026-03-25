@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# arrange-workspaces: On each workspace, put Ghostty + VSCode windows into
-# an accordion on the right and all other windows as tiles on the left.
-# If a workspace only has Ghostty/VSCode, it stays as a flat accordion.
+# arrange-workspaces: On each workspace, put Orchest windows as tiles on the
+# left (sidebar) and all other windows in an accordion on the right.
+# If a workspace has no Orchest windows, it stays as a flat accordion.
 # Skips workspaces whose window set hasn't changed since last arrangement
 # to preserve manual size adjustments. Use --force to override.
 # Can be run standalone or called from startup-windows.
 
-VSCODE_APP="VS Code @ Meta"
+SIDEBAR_TITLE_PATTERN="Orchest"
 SIDEBAR_PERCENT=30
 MARKER_DIR="/tmp/aerospace-arrange-markers"
 FORCE=false
@@ -51,13 +51,13 @@ arrange_workspace() {
     return 0
   fi
 
-  local accordion_ids sidebar_ids
-  accordion_ids=$(echo "$windows" | jq -r \
-    --arg vscode "$VSCODE_APP" \
-    '[.[] | select(."app-name" == "Ghostty" or ."app-name" == $vscode)] | .[]["window-id"]') || true
+  local sidebar_ids accordion_ids
   sidebar_ids=$(echo "$windows" | jq -r \
-    --arg vscode "$VSCODE_APP" \
-    '[.[] | select(."app-name" != "Ghostty" and ."app-name" != $vscode)] | .[]["window-id"]') || true
+    --arg pat "$SIDEBAR_TITLE_PATTERN" \
+    '[.[] | select(.["window-title"] | test($pat))] | .[]["window-id"]') || true
+  accordion_ids=$(echo "$windows" | jq -r \
+    --arg pat "$SIDEBAR_TITLE_PATTERN" \
+    '[.[] | select(.["window-title"] | test($pat) | not)] | .[]["window-id"]') || true
 
   local accordion_count=0 sidebar_count=0
   [[ -n "$accordion_ids" ]] && accordion_count=$(echo "$accordion_ids" | wc -l | tr -d ' ')
@@ -75,7 +75,7 @@ arrange_workspace() {
 
   # No accordion windows → leave as-is
   if [[ "$accordion_count" -eq 0 ]]; then
-    echo "  [$ws] no Ghostty/VSCode windows, skipping"
+    echo "  [$ws] no non-Orchest windows, skipping"
     return 0
   fi
 
