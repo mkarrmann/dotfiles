@@ -529,7 +529,7 @@ cmd_register() {
       if [ -z "$name" ]; then
         if [ -n "${NVIM:-}" ] && [ -n "${NVIM_TAB_HANDLE:-}" ]; then
           local nvim_tab_name
-          nvim_tab_name=$(nvim --server "$NVIM" --remote-expr \
+          nvim_tab_name=$(nvim --headless --server "$NVIM" --remote-expr \
             "luaeval('(function() local ok,n=pcall(vim.api.nvim_tabpage_get_var,${NVIM_TAB_HANDLE},\"tab_name\"); return ok and n or \"\" end)()')" 2>/dev/null)
           if [ -n "$nvim_tab_name" ] && ! echo "$nvim_tab_name" | grep -qxE "nvim|bash|zsh|sh|fish|systemd"; then
             name="$nvim_tab_name"

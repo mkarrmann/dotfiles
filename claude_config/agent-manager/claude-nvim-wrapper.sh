@@ -8,7 +8,7 @@ GENERIC_NAMES="nvim|bash|zsh|sh|fish|systemd"
 # If no name is queued (e.g., from `cn`), derive one from the current tab name
 if [ ! -f ~/.claude-next-name ] && [ -n "$NVIM" ]; then
   local_tab="${NVIM_TAB_HANDLE:-0}"
-  tab_name=$(nvim --server "$NVIM" --remote-expr \
+  tab_name=$(nvim --headless --server "$NVIM" --remote-expr \
     "luaeval('(function() local ok,n=pcall(vim.api.nvim_tabpage_get_var,${local_tab},\"tab_name\"); return ok and n or \"\" end)()')" 2>/dev/null)
   if [ -n "$tab_name" ] && ! echo "$tab_name" | grep -qxE "$GENERIC_NAMES"; then
     echo "$tab_name" > ~/.claude-next-name
@@ -31,7 +31,7 @@ fi
 # Also publish the NVIM socket path so Python tools (watcher, dashboard) can reach Neovim.
 if [ -n "$NVIM" ]; then
   if [ -z "$NVIM_TAB_HANDLE" ]; then
-    NVIM_TAB_HANDLE=$(nvim --server "$NVIM" \
+    NVIM_TAB_HANDLE=$(nvim --headless --server "$NVIM" \
       --remote-expr "luaeval('vim.api.nvim_get_current_tabpage()')" 2>/dev/null)
   fi
   export NVIM_TAB_HANDLE
