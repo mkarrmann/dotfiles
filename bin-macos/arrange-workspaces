@@ -4,9 +4,33 @@ set -euo pipefail
 # arrange-workspaces: On each workspace, put Ghostty + VSCode windows into
 # an accordion on the right and all other windows as tiles on the left.
 # If a workspace only has Ghostty/VSCode, it stays as a flat accordion.
+# Skips workspaces whose window set hasn't changed since last arrangement
+# to preserve manual size adjustments. Use --force to override.
 # Can be run standalone or called from startup-windows.
 
 VSCODE_APP="VS Code @ Meta"
+SIDEBAR_PERCENT=30
+MARKER_DIR="/tmp/aerospace-arrange-markers"
+FORCE=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --force|-f) FORCE=true; shift ;;
+    *) break ;;
+  esac
+done
+
+mkdir -p "$MARKER_DIR"
+
+get_screen_width() {
+  osascript -l JavaScript -e \
+    'ObjC.import("AppKit"); $.NSScreen.mainScreen.frame.size.width' 2>/dev/null || echo 0
+}
+
+workspace_fingerprint() {
+  local windows="$1"
+  echo "$windows" | jq -r '.[] | "\(.["window-id"]):\(.["app-name"])"' | sort | md5 -q
+}
 
 arrange_workspace() {
   local ws="$1"
@@ -17,6 +41,15 @@ arrange_workspace() {
   total=$(echo "$windows" | jq 'length')
 
   [[ "$total" -lt 2 ]] && return 0
+
+  # Skip if the window set hasn't changed since last arrangement
+  local fingerprint marker_file
+  fingerprint=$(workspace_fingerprint "$windows")
+  marker_file="$MARKER_DIR/ws-$ws"
+  if [[ "$FORCE" != true ]] && [[ -f "$marker_file" ]] && [[ "$(cat "$marker_file")" == "$fingerprint" ]]; then
+    echo "  [$ws] already arranged, skipping"
+    return 0
+  fi
 
   local accordion_ids sidebar_ids
   accordion_ids=$(echo "$windows" | jq -r \
@@ -36,6 +69,7 @@ arrange_workspace() {
     aerospace workspace "$ws" 2>/dev/null
     aerospace flatten-workspace-tree 2>/dev/null || true
     aerospace layout accordion vertical 2>/dev/null || true
+    echo "$fingerprint" > "$marker_file"
     return 0
   fi
 
@@ -72,11 +106,38 @@ arrange_workspace() {
   # Set the grouped container to accordion
   aerospace layout accordion 2>/dev/null || true
 
-  # Change root to horizontal tiles so sidebar sits on the left
+  # Set root layout to horizontal tiles (while sidebar windows are still
+  # direct children of root, so layout applies to root)
   local first_sidebar
   first_sidebar=$(echo "$sidebar_ids" | head -1)
   aerospace focus --window-id "$first_sidebar" 2>/dev/null
   aerospace layout tiles horizontal 2>/dev/null || true
+
+  # Group sidebar windows so root has exactly 2 children → even split
+  if [[ "$sidebar_count" -gt 1 ]]; then
+    aerospace focus --window-id "$first_sidebar" 2>/dev/null
+    for _ in $(seq 1 $((sidebar_count - 1))); do
+      aerospace join-with right 2>/dev/null || true
+    done
+    # Set sidebar container to horizontal tiles
+    aerospace layout tiles horizontal 2>/dev/null || true
+  fi
+
+  # Resize from the default 50/50 to the configured split.
+  # Focusing the accordion window propagates the width resize up through
+  # the accordion container (which doesn't split horizontally) to root.
+  local accordion_percent=$((100 - SIDEBAR_PERCENT))
+  if [[ "$accordion_percent" -ne 50 ]]; then
+    local screen_width
+    screen_width=$(get_screen_width)
+    if [[ "$screen_width" -gt 0 ]]; then
+      local delta=$(( screen_width * (accordion_percent - 50) / 100 ))
+      aerospace focus --window-id "$first_accordion" 2>/dev/null
+      aerospace resize width "+$delta" 2>/dev/null || true
+    fi
+  fi
+
+  echo "$fingerprint" > "$marker_file"
 }
 
 # ── Main ──────────────────────────────────────────────────────────────
