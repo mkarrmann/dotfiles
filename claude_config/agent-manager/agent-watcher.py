@@ -414,7 +414,7 @@ def _nvim_server() -> Optional[str]:
 def _nvim_call(server: str, expr: str) -> None:
     try:
         subprocess.run(
-            ["nvim", "--server", server, "--remote-expr", expr],
+            ["nvim", "--headless", "--server", server, "--remote-expr", expr],
             capture_output=True, timeout=2,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):

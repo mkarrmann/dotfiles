@@ -74,7 +74,7 @@ claude() {
 # _nvim_tab_handle — get the current Neovim tab handle (integer)
 _nvim_tab_handle() {
   [ -z "$NVIM" ] && return 0
-  nvim --server "$NVIM" --remote-expr "luaeval('vim.api.nvim_get_current_tabpage()')" 2>/dev/null
+  nvim --headless --server "$NVIM" --remote-expr "luaeval('vim.api.nvim_get_current_tabpage()')" 2>/dev/null
 }
 
 # _nvim_exec_lua <lua-code> — execute Lua in the parent Neovim instance
