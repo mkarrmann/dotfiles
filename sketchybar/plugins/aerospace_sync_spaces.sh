@@ -21,35 +21,25 @@ add_space_item() {
         click_script="aerospace workspace $sid"
 }
 
-# Hot path: workspace switch — only update the 2 items that changed
-if [ "$SENDER" = "aerospace_workspace_change" ] && [ -n "$FOCUSED" ] && [ -n "$PREV" ]; then
+# Hot path: workspace switch — updates all workspaces (not just FOCUSED/PREV)
+# to avoid stale highlights from cross-monitor switches or rapid switching races.
+if [ "$SENDER" = "aerospace_workspace_change" ]; then
+    FOCUSED=$(aerospace list-workspaces --focused)
     VISIBLE=" $(aerospace list-workspaces --monitor all --visible | tr '\n' ' ') "
 
-    if [[ "$VISIBLE" == *" $PREV "* ]]; then
-        sketchybar \
-            --set "space.$FOCUSED" background.drawing=on background.color=0xff89b4fa label.color=0xffffffff \
-            --set "space.$PREV" background.drawing=on background.color=0xff585b70 label.color=0xffffffff \
-            2>/dev/null
-    else
-        sketchybar \
-            --set "space.$FOCUSED" background.drawing=on background.color=0xff89b4fa label.color=0xffffffff \
-            --set "space.$PREV" background.drawing=off label.color=0xff888888 \
-            2>/dev/null
-    fi
-
-    # If --set failed, the item doesn't exist yet — create and retry
-    if [ $? -ne 0 ]; then
-        add_space_item "$FOCUSED" 2>/dev/null
-        add_space_item "$PREV" 2>/dev/null
-        if [[ "$VISIBLE" == *" $PREV "* ]]; then
-            sketchybar \
-                --set "space.$FOCUSED" background.drawing=on background.color=0xff89b4fa label.color=0xffffffff \
-                --set "space.$PREV" background.drawing=on background.color=0xff585b70 label.color=0xffffffff
+    ARGS=()
+    for sid in $(aerospace list-workspaces --all); do
+        if [ "$sid" = "$FOCUSED" ]; then
+            ARGS+=(--set "space.$sid" background.drawing=on background.color=0xff89b4fa label.color=0xffffffff)
+        elif [[ "$VISIBLE" == *" $sid "* ]]; then
+            ARGS+=(--set "space.$sid" background.drawing=on background.color=0xff585b70 label.color=0xffffffff)
         else
-            sketchybar \
-                --set "space.$FOCUSED" background.drawing=on background.color=0xff89b4fa label.color=0xffffffff \
-                --set "space.$PREV" background.drawing=off label.color=0xff888888
+            ARGS+=(--set "space.$sid" background.drawing=off label.color=0xff888888)
         fi
+    done
+
+    if [ ${#ARGS[@]} -gt 0 ]; then
+        sketchybar "${ARGS[@]}" 2>/dev/null
     fi
     exit 0
 fi
