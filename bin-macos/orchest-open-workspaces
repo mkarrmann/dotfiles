@@ -68,11 +68,19 @@ for ws in "${ORCHEST_MANAGED_WORKSPACES[@]}"; do
   fi
 done
 
-# Ensure Orchest workspace windows are on the correct AeroSpace workspaces
-sleep 0.5
-orchest_aero_windows=$(aerospace list-windows --all \
-  --format '%{window-id}|%{workspace}|%{window-title}' 2>/dev/null \
-  | grep 'Orchest \[' || true)
+# Wait for all Orchest workspace windows to appear in AeroSpace
+expected=${#ORCHEST_MANAGED_WORKSPACES[@]}
+orchest_aero_windows=""
+for _ in $(seq 1 30); do
+  sleep 0.5
+  orchest_aero_windows=$(aerospace list-windows --all \
+    --format '%{window-id}|%{workspace}|%{window-title}' 2>/dev/null \
+    | grep 'Orchest \[' || true)
+  count=$(echo "$orchest_aero_windows" | grep -c . || true)
+  if [[ "$count" -ge "$expected" ]]; then
+    break
+  fi
+done
 for ws in "${ORCHEST_MANAGED_WORKSPACES[@]}"; do
   label="Workspace ${ws}"
   ws_id=$(echo "$workspace_lines" | grep -F "$label" | awk '{print $1}')
