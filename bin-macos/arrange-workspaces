@@ -9,7 +9,7 @@ set -euo pipefail
 # Can be run standalone or called from startup-windows.
 
 SIDEBAR_TITLE_PATTERN="Orchest"
-SIDEBAR_PERCENT=30
+SIDEBAR_PERCENT=20
 MARKER_DIR="/tmp/aerospace-arrange-markers"
 FORCE=false
 
