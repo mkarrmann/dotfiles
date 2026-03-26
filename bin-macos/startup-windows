@@ -6,6 +6,7 @@ set -euo pipefail
 #   ghostty: ws|ghostty|title|title_match|workdir|command
 #   cmux:    ws|cmux|title|title_match
 #   vscode:  ws|vscode|title|title_match|workspace (local path or remote URI)
+#   chrome:  ws|chrome|title
 # title_match is a regex used to find existing windows in AeroSpace.
 # ws is the AeroSpace workspace to place the window in.
 # Multiple entries can share a workspace (accordion layout toggles between them).
@@ -24,6 +25,8 @@ WORKSPACES=(
   "6|vscode|CCO: vscode-fbsource1|devvm20365.cco0 \\(Workspace\\)|${HOME}/Library/Application Support/VS Code @ FB/MetaWorkspaces/devvm20365.cco0.code-workspace"
   "7|ghostty|CCO: fbsource2|CCO.*fbsource2|~|nvs CCO-fbsource2"
   "7|vscode|CCO: vscode-fbsource2|fbsource2.*devvm20365.cco0|vscode-remote://fb-remote+devvm20365.cco0.facebook.com/home/mkarrmann/fbsource2.code-workspace"
+  "8|chrome|Chrome: ws8"
+  "9|chrome|Chrome: ws9"
 )
 
 SWEEP_WORKSPACE="Z"
@@ -31,6 +34,7 @@ SWEEP_WORKSPACE="Z"
 VSCODE_APP_AEROSPACE="VS Code @ Meta"
 VSCODE_APP_MACOS="VS Code @ FB"
 VSCODE_CMD="/Applications/VS Code @ FB.app/Contents/Resources/app/bin/code"
+CHROME_APP="Google Chrome"
 # ─────────────────────────────────────────────────────────────────────
 
 # ── Window creation ─────────────────────────────────────────────────
@@ -248,6 +252,35 @@ for i in "${!WORKSPACES[@]}"; do
         SNAPSHOT=$(snapshot_windows)
       fi
       ;;
+    chrome)
+      app_name="$CHROME_APP"
+
+      # Check if Chrome already exists on this workspace
+      existing=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
+        | jq -r --arg app "$app_name" \
+          '[.[] | select(."app-name" == $app)] | first | .["window-id"] // empty') || true
+      if [[ -n "$existing" ]]; then
+        echo "[$title] Chrome already on workspace $ws"
+      else
+        echo "[$title] creating on workspace $ws..."
+        before_snapshot="$SNAPSHOT"
+        open -na "$CHROME_APP" --args --new-window 2>/dev/null || {
+          echo "WARNING: [$title] creation failed, skipping" >&2
+          ((failures++)) || true
+          continue
+        }
+        window_id=$(wait_for_new_window "$app_name" "$before_snapshot") || {
+          window_id=$(get_focused_window_id)
+        }
+        if [[ -n "$window_id" ]]; then
+          aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || true
+        else
+          echo "WARNING: [$title] could not find new Chrome window" >&2
+          ((failures++)) || true
+        fi
+        SNAPSHOT=$(snapshot_windows)
+      fi
+      ;;
   esac
 done
 
@@ -264,11 +297,12 @@ orchest-open-workspaces || {
 swept=0
 for ws in $(managed_workspaces); do
   stray_ids=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
-    | jq -r --arg vscode "$VSCODE_APP_AEROSPACE" \
+    | jq -r --arg vscode "$VSCODE_APP_AEROSPACE" --arg chrome "$CHROME_APP" \
       '[.[] | select(
         ."app-name" != "Ghostty" and
         ."app-name" != "cmux" and
         ."app-name" != $vscode and
+        ."app-name" != $chrome and
         (.["window-title"] | test("Orchest \\[") | not)
       )] | .[]["window-id"]') || true
   for wid in $stray_ids; do

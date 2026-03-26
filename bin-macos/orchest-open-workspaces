@@ -8,7 +8,7 @@ set -euo pipefail
 # Called by startup-windows, but can also be invoked independently.
 
 ORCHEST_PORT=3100
-ORCHEST_MANAGED_WORKSPACES=(1 2 3 4 5 6 7)
+ORCHEST_MANAGED_WORKSPACES=(1 2 3 4 5 6 7 8 9)
 ORCHEST_DIR="${HOME}/dev/orchest"
 
 orchest_is_running() {
