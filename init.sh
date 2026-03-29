@@ -330,12 +330,12 @@ sync_link_subdirs "$DOTFILES_DIR/agent_config/skills" "$HOME/.codex/skills" "SKI
 
 # default.rules is machine-specific — managed by Codex itself
 
+# Ghostty
+mkdir -p "$HOME/.config/ghostty"
+link_one "$DOTFILES_DIR/ghostty_config" "$HOME/.config/ghostty/config"
+
 # macOS-only: Hammerspoon, AeroSpace, SketchyBar
 if [[ "$(uname -s)" == "Darwin" ]]; then
-  # Ghostty
-  mkdir -p "$HOME/.config/ghostty"
-  link_one "$DOTFILES_DIR/ghostty_config" "$HOME/.config/ghostty/config"
-
   # Hammerspoon
   mkdir -p "$HOME/.hammerspoon"
   link_one "$DOTFILES_DIR/hammerspoon.lua" "$HOME/.hammerspoon/init.lua"
