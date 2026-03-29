@@ -1,0 +1,5 @@
+# Example machine-local Codex overrides.
+# Copy the settings you want into ~/.codex/config.local.toml.
+
+[projects."/absolute/path/to/project"]
+trust_level = "trusted"

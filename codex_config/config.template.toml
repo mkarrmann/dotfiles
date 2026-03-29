@@ -1,0 +1,5 @@
+# Shared Codex defaults. Machine-specific overrides belong in
+# ~/.codex/config.local.toml, which init.sh appends after generating
+# ~/.codex/config.toml from this template.
+model = "gpt-5.4"
+model_reasoning_effort = "high"

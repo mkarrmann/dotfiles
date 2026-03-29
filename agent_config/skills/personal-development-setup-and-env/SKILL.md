@@ -29,7 +29,8 @@ Config is split into **source-controlled** (portable, in `~/dotfiles/`) and **lo
 │   ├── CLAUDE.md                    → ~/.claude/CLAUDE.md
 │   ├── statusline.sh                → ~/.claude/statusline.sh
 │   └── hooks/*                      → ~/.claude/hooks/
-├── codex_config/config.toml         Templated → ~/.codex/config.toml
+├── codex_config/config.template.toml Templated → ~/.codex/config.toml
+├── codex_config/config.local.example.toml Example local overrides
 ├── agent_config/
 │   ├── global-development-preferences.md  → ~/.claude/rules/ AND ~/.codex/rules/
 │   └── skills/*/                    → ~/.claude/skills/* (directory symlinks)
@@ -46,7 +47,7 @@ Every layer uses the same pattern — load portable config, then silently load l
 | Shell | `.shellrc` | `~/.localrc` | `source ~/.localrc` in `.shellrc` |
 | Tmux | `.tmux.conf` | `~/.tmux.conf.local` | `source-file` if exists |
 | Claude | `CLAUDE.md` | `CLAUDE.local.md` | `@~/.claude/CLAUDE.local.md` reference |
-| Codex | `config.toml` template | `config.local.toml` | Appended by `init.sh` |
+| Codex | `config.template.toml` | `config.local.toml` | Appended by `init.sh` |
 
 **Rule of thumb:** `local.lua` / `localrc` / etc. are the machine-specific escape hatches — not in dotfiles. Shared config (even Meta-specific) lives in dotfiles under a descriptive name.
 

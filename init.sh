@@ -303,10 +303,10 @@ tmp=$(jq '
 # Codex
 mkdir -p "$HOME/.codex/rules" "$HOME/.codex/skills"
 
-# Portable settings (templated) + machine-local overrides (config.local.toml)
+# Portable Codex template + machine-local overrides (config.local.toml)
 codex_config="$HOME/.codex/config.toml"
 codex_existed=$([[ -f "$codex_config" ]] && echo true || echo false)
-sed "s|__HOME__|$HOME|g" "$DOTFILES_DIR/codex_config/config.toml" > "$codex_config"
+sed "s|__HOME__|$HOME|g" "$DOTFILES_DIR/codex_config/config.template.toml" > "$codex_config"
 if [[ -f "$HOME/.codex/config.local.toml" ]]; then
   echo "" >> "$codex_config"
   cat "$HOME/.codex/config.local.toml" >> "$codex_config"
