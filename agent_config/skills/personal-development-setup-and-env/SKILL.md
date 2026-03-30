@@ -139,6 +139,39 @@ Sessions are named like `FTW-main1`, `FTW-fbsource1`, `CCO-main1`. Ports are det
 | 4 | FTW: fbsource2 + vscode |
 | 5-7 | CCO equivalents |
 
+### Workspace management scripts
+
+| Script | Purpose |
+|--------|---------|
+| `startup-windows` | Creates/places all windows on correct AeroSpace workspaces, runs orchest, reconciles late-appearing windows, sweeps strays to Z |
+| `arrange-workspaces` | Sets sidebar\|accordion layout per workspace (Orchest 20% left, rest in accordion right). Use `--force` to bypass fingerprint caching. |
+| `auto-accordion` | AeroSpace `on-window-detected` callback — moves new windows into the accordion container. Suppressed by `/tmp/startup-windows.lock`. |
+
+### AeroSpace gotchas
+
+These behaviors differ from what you'd expect and have caused bugs:
+
+- **`move left/right` at a container boundary creates nesting.** Instead of stopping or wrapping, it creates a perpendicular sub-container (e.g. `v_tiles` inside `h_tiles`). Only use `move` for interior swaps where there's a neighbor on both sides.
+- **`layout accordion` on a root-level child changes the ROOT layout.** It sets the parent container's layout, and if the parent is root, all windows become accordion. Only use `layout accordion` on windows inside a nested container (created by `join-with`).
+- **`flatten-workspace-tree` resets root to `default-root-container-layout` (accordion).** Always follow flatten with `layout tiles horizontal` to override.
+- **Spatial order after flatten is unpredictable.** Windows added last (e.g. Orchest from `orchest-open-workspaces`) end up rightmost. Discover order by walking `focus left`/`focus right`; don't assume positions.
+- **`wait_for_new_window` uses a 10s timeout.** Remote VS Code connections (`vscode-remote://`) often take longer. The reconciliation pass in `startup-windows` catches these late-appearing windows.
+- **macOS bash is 3.2.** No associative arrays (`declare -A`). Use `grep -qx` against newline-separated ID lists instead.
+
+### Debugging workspace layouts
+
+```bash
+# Check layout structure for a workspace
+aerospace list-windows --workspace N --format \
+  '%{window-id} %{app-name} | parent=%{window-parent-container-layout} | root=%{workspace-root-container-layout}'
+
+# Re-arrange a single workspace
+arrange-workspaces --force N
+
+# Re-run full startup (idempotent — moves existing windows, creates missing ones)
+startup-windows
+```
+
 ## Adding a New Skill
 
 1. **Portable:** Create `~/dotfiles/agent_config/skills/<name>/SKILL.md`, then re-run `init.sh` (or manually symlink to `~/.claude/skills/<name>`)

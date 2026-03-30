@@ -123,17 +123,24 @@ wait_for_new_window() {
 
 # ── Main ─────────────────────────────────────────────────────────────
 
+# Prevent auto-accordion callback from interfering during startup
+touch /tmp/startup-windows.lock
+trap 'rm -f /tmp/startup-windows.lock' EXIT
+
 if ! command -v aerospace &>/dev/null; then
   echo "ERROR: aerospace CLI not found." >&2
   echo "Install AeroSpace: brew install --cask nikitabobko/tap/aerospace" >&2
   exit 1
 fi
 
-# Ensure Ghostty is running
+# Ensure Ghostty is running (but don't close its default window).
+# Ghostty creates a default window on launch. We leave it open so the
+# SNAPSHOT captures it — this prevents wait_for_new_window from
+# misidentifying it as a newly created window. The reconciliation pass
+# at the end sweeps it to workspace Z.
 if ! osascript -e 'application "Ghostty" is running' 2>/dev/null | grep -q 'true'; then
   open -a Ghostty
   sleep 2
-  osascript -e 'tell application "Ghostty" to close window 1' 2>/dev/null || true
 fi
 
 # Ensure VS Code is running if any vscode workspaces are defined
@@ -291,10 +298,66 @@ orchest-open-workspaces || {
   ((failures++)) || true
 }
 
+# ── Reconciliation pass ───────────────────────────────────────────────
+# Relocate windows that appeared after their wait_for_new_window timed
+# out, and sweep unmatched Ghostty/VS Code windows from managed
+# workspaces (e.g. the default Ghostty window created on launch).
+
+swept=0
+RECON_SNAPSHOT=$(snapshot_windows)
+matched_ids=()
+
+for entry in "${WORKSPACES[@]}"; do
+  IFS='|' read -r ws type title rest <<< "$entry"
+  case "$type" in
+    ghostty)
+      IFS='|' read -r title_match _ <<< "$rest"
+      app_name="Ghostty"
+      ;;
+    cmux)
+      IFS='|' read -r title_match _ <<< "$rest"
+      app_name="cmux"
+      ;;
+    vscode)
+      IFS='|' read -r title_match _ <<< "$rest"
+      app_name="$VSCODE_APP_AEROSPACE"
+      ;;
+    *) continue ;;
+  esac
+
+  window_id=$(find_window_id "$app_name" "$title_match" "$RECON_SNAPSHOT")
+  [[ -z "$window_id" ]] && continue
+  matched_ids+=("$window_id")
+
+  # Check if already on the correct workspace
+  already=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
+    | jq -r --argjson wid "$window_id" \
+      '[.[] | select(.["window-id"] == $wid)] | first | .["window-id"] // empty') || true
+  if [[ -z "$already" ]]; then
+    echo "[$title] relocating to workspace $ws..."
+    aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || true
+  fi
+done
+
+# Sweep unmatched Ghostty/VS Code windows from managed workspaces
+matched_pattern=$(printf '%s\n' "${matched_ids[@]}" | jq -R -s 'split("\n") | map(select(. != "") | tonumber)')
+for ws in $(managed_workspaces); do
+  stray_ids=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
+    | jq -r --argjson matched "$matched_pattern" \
+      '[.[] | select(
+        (."app-name" == "Ghostty" or ."app-name" == "'"$VSCODE_APP_AEROSPACE"'") and
+        (.["window-id"] | IN($matched[]) | not)
+      )] | .[]["window-id"]') || true
+  for wid in $stray_ids; do
+    [[ -z "$wid" ]] && continue
+    echo "Sweeping unmatched window $wid from workspace $ws to $SWEEP_WORKSPACE..."
+    aerospace move-node-to-workspace --window-id "$wid" "$SWEEP_WORKSPACE" 2>/dev/null && ((swept++)) || true
+  done
+done
+
 # ─────────────────────────────────────────────────────────────────────
 
 # Sweep stray windows: move unrecognized windows off managed workspaces to Z
-swept=0
 for ws in $(managed_workspaces); do
   stray_ids=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
     | jq -r --arg vscode "$VSCODE_APP_AEROSPACE" --arg chrome "$CHROME_APP" \
@@ -316,7 +379,7 @@ if [[ "$swept" -gt 0 ]]; then
 fi
 
 # Arrange layouts (tiles | accordion) on managed workspaces
-arrange-workspaces $(managed_workspaces)
+arrange-workspaces --force $(managed_workspaces)
 
 # Focus workspace 1
 aerospace workspace 1 2>/dev/null || true

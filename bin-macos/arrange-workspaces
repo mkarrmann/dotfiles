@@ -7,6 +7,23 @@ set -euo pipefail
 # Skips workspaces whose window set hasn't changed since last arrangement
 # to preserve manual size adjustments. Use --force to override.
 # Can be run standalone or called from startup-windows.
+#
+# AeroSpace gotchas this script works around:
+#   - default-root-container-layout is 'accordion', so flatten-workspace-tree
+#     resets root to accordion. We immediately override with tiles horizontal.
+#   - `move left/right` at a container boundary creates UNINTENDED nesting
+#     (e.g. v_tiles sub-container) instead of stopping. Never use `move` to
+#     push a window past the edge — only use it for interior swaps.
+#   - `layout accordion` on a direct child of root changes the ROOT layout,
+#     not the child's. Only use it on windows inside a nested container
+#     (created by join-with).
+#   - Spatial order after flatten is unpredictable — Orchest (added last by
+#     orchest-open-workspaces) often ends up rightmost. Discover order by
+#     walking focus left-to-right; don't assume sidebar is leftmost.
+#
+# Debugging: check layout state with:
+#   aerospace list-windows --workspace N --format \
+#     '%{window-id} %{app-name} | parent=%{window-parent-container-layout} | root=%{workspace-root-container-layout}'
 
 SIDEBAR_TITLE_PATTERN="Orchest \\["
 SIDEBAR_PERCENT=20
@@ -91,21 +108,68 @@ arrange_workspace() {
   aerospace focus --window-id "$first_sidebar" 2>/dev/null
   aerospace layout tiles horizontal 2>/dev/null || true
 
-  # Determine accordion windows in SPATIAL order (left to right) by walking
-  # right from the sidebar. The jq output order does NOT match spatial order
-  # after flatten, so we must navigate to discover the actual positions.
-  local spatial_accordion=()
+  # Discover full spatial order by walking from the left edge.
+  # Avoid using `move` to reposition — it can create unintended nesting
+  # at container boundaries.
   aerospace focus --window-id "$first_sidebar" 2>/dev/null
   while true; do
-    local prev_wid
-    prev_wid=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+    local p; p=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+    aerospace focus left 2>/dev/null
+    local n; n=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+    [[ "$n" == "$p" ]] && break
+  done
+
+  local all_spatial=()
+  all_spatial+=($(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null))
+  while true; do
+    local p; p=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
     aerospace focus right 2>/dev/null
-    local next_wid
-    next_wid=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
-    [[ "$next_wid" == "$prev_wid" ]] && break
-    spatial_accordion+=("$next_wid")
+    local n; n=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+    [[ "$n" == "$p" ]] && break
+    all_spatial+=("$n")
+  done
+
+  # Build a set of sidebar IDs and extract accordion windows in spatial order
+  local spatial_accordion=()
+  for wid in "${all_spatial[@]}"; do
+    if ! echo "$sidebar_ids" | grep -qx "$wid"; then
+      spatial_accordion+=("$wid")
+    fi
   done
   local spatial_count=${#spatial_accordion[@]}
+
+  # If accordion windows aren't adjacent (sidebar between them), do a safe
+  # interior swap: move the left-side accordion window right to push past
+  # the sidebar.  This avoids boundary moves that create nesting.
+  if [[ "$spatial_count" -ge 2 ]]; then
+    local need_swap=false
+    for ((idx = 0; idx < ${#all_spatial[@]} - 1; idx++)); do
+      local cur="${all_spatial[$idx]}" nxt="${all_spatial[$((idx + 1))]}"
+      # Accordion window followed by sidebar → they're not adjacent
+      if [[ -n "$(echo "$accordion_ids" | grep "^${cur}$")" ]] && \
+         [[ -n "$(echo "$sidebar_ids" | grep "^${nxt}$")" ]]; then
+        aerospace focus --window-id "$cur" 2>/dev/null
+        aerospace move right 2>/dev/null || true
+        need_swap=true
+      fi
+    done
+    if $need_swap; then
+      # Re-flatten to clean up any side effects, re-discover order
+      aerospace flatten-workspace-tree 2>/dev/null || true
+      aerospace focus --window-id "$first_sidebar" 2>/dev/null
+      aerospace layout tiles horizontal 2>/dev/null || true
+      spatial_accordion=()
+      aerospace focus --window-id "$first_sidebar" 2>/dev/null
+      while true; do
+        local p; p=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+        aerospace focus right 2>/dev/null
+        local n; n=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+        [[ "$n" == "$p" ]] && break
+        spatial_accordion+=("$n")
+      done
+      spatial_count=${#spatial_accordion[@]}
+    fi
+  fi
 
   # Build the accordion group from right to left:
   # 1. Focus the rightmost accordion window, join-with left → creates a
@@ -131,11 +195,9 @@ arrange_workspace() {
       aerospace focus --window-id "${spatial_accordion[$i]}" 2>/dev/null || continue
       aerospace move right 2>/dev/null || true
     done
-  elif [[ "$spatial_count" -eq 1 ]]; then
-    # Single accordion window — no grouping needed
-    aerospace focus --window-id "${spatial_accordion[0]}" 2>/dev/null
-    aerospace layout accordion 2>/dev/null || true
   fi
+  # spatial_count == 1: single accordion window needs no grouping — it
+  # already fills the right side of the tiles split.
 
   # Group sidebar windows so root has exactly 2 children → even split
   if [[ "$sidebar_count" -gt 1 ]]; then

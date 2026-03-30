@@ -176,3 +176,11 @@ if.app-id = 'com.mitchellh.ghostty'
 if.window-title-regex-substring = '^CCO: fbsource2'
 run = 'move-node-to-workspace 7'
 
+# ── Auto-accordion: move new windows into the RHS accordion ──────────
+# Uses a helper script that checks workspace, title, and lock file
+# to avoid interfering with startup-windows or Orchest sidebar windows.
+
+[[on-window-detected]]
+if.during-aerospace-startup = false
+run = 'exec-and-forget ~/bin/auto-accordion'
+
