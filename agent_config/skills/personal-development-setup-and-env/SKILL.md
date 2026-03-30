@@ -153,6 +153,7 @@ These behaviors differ from what you'd expect and have caused bugs:
 
 - **`move left/right` at a container boundary creates nesting.** Instead of stopping or wrapping, it creates a perpendicular sub-container (e.g. `v_tiles` inside `h_tiles`). Only use `move` for interior swaps where there's a neighbor on both sides.
 - **`layout accordion` on a root-level child changes the ROOT layout.** It sets the parent container's layout, and if the parent is root, all windows become accordion. Only use `layout accordion` on windows inside a nested container (created by `join-with`).
+- **AeroSpace auto-collapses single-child containers.** You cannot pre-create an accordion container with one window — it gets flattened. `auto-accordion` handles this by calling `arrange-workspaces --force` when the second non-Orchest window arrives.
 - **`flatten-workspace-tree` resets root to `default-root-container-layout` (accordion).** Always follow flatten with `layout tiles horizontal` to override.
 - **Spatial order after flatten is unpredictable.** Windows added last (e.g. Orchest from `orchest-open-workspaces`) end up rightmost. Discover order by walking `focus left`/`focus right`; don't assume positions.
 - **`wait_for_new_window` uses a 10s timeout.** Remote VS Code connections (`vscode-remote://`) often take longer. The reconciliation pass in `startup-windows` catches these late-appearing windows.

@@ -381,6 +381,11 @@ fi
 # Arrange layouts (tiles | accordion) on managed workspaces
 arrange-workspaces --force $(managed_workspaces)
 
+# Let any in-flight auto-accordion callbacks (exec-and-forget, 0.3s sleep)
+# drain while the lock file still exists, so they exit harmlessly rather
+# than disrupting the layouts arrange-workspaces just set up.
+sleep 1
+
 # Focus workspace 1
 aerospace workspace 1 2>/dev/null || true
 

@@ -171,12 +171,18 @@ arrange_workspace() {
     fi
   fi
 
-  # Build the accordion group from right to left:
-  # 1. Focus the rightmost accordion window, join-with left → creates a
-  #    2-child container with the second-to-rightmost
-  # 2. Set that container to accordion layout
-  # 3. For each preceding window (right-to-left): move right → enters the
-  #    accordion container (AeroSpace adds the window as a child)
+  # Build the accordion group.
+  #
+  # Goal: all accordion windows inside a nested accordion container so that
+  # auto-accordion's `move right` has a container to enter when the user
+  # later opens new windows manually.
+  #
+  # For 2+ windows: focus the rightmost, join-with left → creates a 2-child
+  #   container, set it to accordion, then move preceding windows in.
+  # For 1 window: `split vertical` wraps it in its own sub-container, then
+  #   set that to accordion.  Without the split, `layout accordion` would
+  #   target the ROOT (the parent of a root-level child), breaking the
+  #   sidebar | accordion split.
   local first_accordion
   first_accordion=$(echo "$accordion_ids" | head -1)
 
@@ -195,9 +201,14 @@ arrange_workspace() {
       aerospace focus --window-id "${spatial_accordion[$i]}" 2>/dev/null || continue
       aerospace move right 2>/dev/null || true
     done
+  elif [[ "$spatial_count" -eq 1 ]]; then
+    # Single accordion window — can't create a nested container because
+    # AeroSpace auto-collapses single-child containers. Leave it as a
+    # direct child of root (flat tiles split with sidebar). When a second
+    # window arrives, auto-accordion detects the missing container and
+    # calls arrange-workspaces to build it.
+    :
   fi
-  # spatial_count == 1: single accordion window needs no grouping — it
-  # already fills the right side of the tiles split.
 
   # Group sidebar windows so root has exactly 2 children → even split
   if [[ "$sidebar_count" -gt 1 ]]; then
