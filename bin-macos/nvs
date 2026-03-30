@@ -29,7 +29,7 @@ wait_for_server() {
 # Initial connection — wait for tunnel + server
 if ! is_ready; then
   echo "Waiting for tunnel (session: $session, port: $port)..."
-  if ! wait_for_server 120; then
+  if ! wait_for_server 7200; then
     echo "ERROR: nvim server not reachable on port $port" >&2
     echo "Ensure ET tunnel is running (check workspace T)" >&2
     exit 1
