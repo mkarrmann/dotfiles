@@ -10,9 +10,9 @@ if [[ -z "$NODE" ]] || ! "$NODE" --version &>/dev/null; then
   NODE="$(command -v node)"
 fi
 
-SCRIPT="$HOME/.nori/acp/node_modules/@zed-industries/claude-agent-acp/dist/index.js"
+SCRIPT="$HOME/.local/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"
 if [[ ! -f "$SCRIPT" ]]; then
-  echo "ACP adapter not installed. Run: cd ~/.nori/acp && npm install @zed-industries/claude-agent-acp" >&2
+  echo "ACP adapter not installed. Run: npm install --prefix ~/.local @agentclientprotocol/claude-agent-acp" >&2
   exit 1
 fi
 

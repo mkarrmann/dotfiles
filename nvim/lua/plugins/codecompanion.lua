@@ -22,6 +22,10 @@ return {
                 defaults = {
                   model = "claude-opus-4-6",
                 },
+                env = {},
+                handlers = {
+                  auth = function() return true end,
+                },
               })
             end,
           },
