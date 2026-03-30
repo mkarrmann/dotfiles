@@ -1,5 +1,5 @@
 #!/bin/bash
-export CLAUDE_CODE_EXECUTABLE="/usr/local/bin/claude"
+export CLAUDE_CODE_EXECUTABLE="${CLAUDE_CODE_EXECUTABLE:-$(command -v claude)}"
 export NODE_EXTRA_CA_CERTS="/var/facebook/rootcanal/ca.pem"
 export CODEX_MANAGED_CONFIG_PATH=/dev/null
 unset CLAUDECODE
