@@ -42,6 +42,9 @@ function _G._codecompanion_input_statusline()
   end
 
   local right = {}
+  if adapter_type == "acp" and chat.acp_connection and chat.acp_connection.session_id then
+    right[#right + 1] = chat.acp_connection.session_id
+  end
   if adapter_type == "http" and meta.tokens and meta.tokens > 0 then
     right[#right + 1] = format_tokens(meta.tokens) .. " tokens"
   end
