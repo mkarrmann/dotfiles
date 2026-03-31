@@ -36,6 +36,14 @@ return {
                 },
               })
             end,
+            codex = function()
+              return require("codecompanion.adapters").extend("codex", {
+                env = {},
+                handlers = {
+                  auth = function() return true end,
+                },
+              })
+            end,
           },
         },
 
