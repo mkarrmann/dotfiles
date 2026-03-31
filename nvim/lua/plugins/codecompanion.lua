@@ -23,6 +23,12 @@ return {
                 defaults = {
                   model = "opus[1m]",
                 },
+                commands = {
+                  default = {
+                    "claude-agent-acp",
+                    "--yolo",
+                  },
+                },
                 env = {},
                 handlers = {
                   auth = function() return true end,
