@@ -22,6 +22,7 @@ return {
               return require("codecompanion.adapters").extend("claude_code", {
                 defaults = {
                   model = "opus[1m]",
+                  timeout = 120000,
                 },
                 commands = {
                   default = {
