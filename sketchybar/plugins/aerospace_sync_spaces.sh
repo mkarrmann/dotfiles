@@ -135,3 +135,13 @@ done
 if [ ${#ARGS[@]} -gt 0 ]; then
     sketchybar "${ARGS[@]}"
 fi
+
+# Reorder items to match aerospace workspace ordering (items added dynamically
+# appear at the end regardless of their logical position)
+if [ ${#NEW_ITEMS[@]} -gt 0 ]; then
+    REORDER_ARGS=(--reorder)
+    for sid in $CURRENT_WORKSPACES; do
+        REORDER_ARGS+=("space.$sid")
+    done
+    sketchybar "${REORDER_ARGS[@]}" 2>/dev/null
+fi
