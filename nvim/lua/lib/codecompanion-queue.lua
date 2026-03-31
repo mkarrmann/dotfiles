@@ -12,11 +12,11 @@ local state = {
   suppress_unqueue = false,
 }
 
-local function format_tokens(n)
-  if n < 1000 then
-    return tostring(n)
+local function fmt_tokens(n)
+  if n >= 1000 then
+    return string.format("%.1fk", n / 1000)
   end
-  return string.format("%s,%03d", math.floor(n / 1000), n % 1000)
+  return tostring(n)
 end
 
 function _G._codecompanion_input_statusline()
@@ -32,32 +32,35 @@ function _G._codecompanion_input_statusline()
   local chat = require("codecompanion").buf_get_chat(state.chat_bufnr)
   local adapter_type = chat and chat.adapter and chat.adapter.type
 
-  local parts = {}
-  parts[#parts + 1] = " " .. (meta.adapter.name or "unknown")
+  -- Left side: adapter · model · turn N
+  local left = " %#Function#" .. (meta.adapter.name or "unknown") .. "%*"
   if meta.adapter.model then
-    parts[#parts + 1] = meta.adapter.model
+    left = left .. sep .. "%#String#" .. meta.adapter.model .. "%*"
   end
   if meta.cycles and meta.cycles > 0 then
-    parts[#parts + 1] = "turn " .. meta.cycles
+    left = left .. sep .. "%#Number#turn " .. meta.cycles .. "%*"
   end
 
-  local right = {}
+  -- Right side: session · mode · tools · ctx items · tokens
+  local right_parts = {}
   if adapter_type == "acp" and chat.acp_connection and chat.acp_connection.session_id then
-    right[#right + 1] = chat.acp_connection.session_id
-  end
-  if adapter_type == "http" and meta.tokens and meta.tokens > 0 then
-    right[#right + 1] = format_tokens(meta.tokens) .. " tokens"
+    right_parts[#right_parts + 1] = "%#Constant#" .. chat.acp_connection.session_id .. "%*"
   end
   if meta.mode and meta.mode.name then
-    right[#right + 1] = meta.mode.name
+    right_parts[#right_parts + 1] = "%#String#" .. meta.mode.name .. "%*"
+  end
+  if meta.tools and meta.tools > 0 then
+    right_parts[#right_parts + 1] = "%#DiagnosticInfo#" .. meta.tools .. " tools%*"
   end
   if meta.context_items and meta.context_items > 0 then
-    right[#right + 1] = meta.context_items .. " ctx"
+    right_parts[#right_parts + 1] = "%#DiagnosticInfo#" .. meta.context_items .. " ctx%*"
+  end
+  if adapter_type == "http" and meta.tokens and meta.tokens > 0 then
+    right_parts[#right_parts + 1] = "%#DiagnosticInfo#" .. fmt_tokens(meta.tokens) .. " tokens%*"
   end
 
-  local left = table.concat(parts, sep)
-  if #right > 0 then
-    return left .. "%=" .. table.concat(right, sep) .. " "
+  if #right_parts > 0 then
+    return left .. "%=" .. table.concat(right_parts, sep) .. " "
   end
   return left
 end
