@@ -23,12 +23,18 @@ add_space_item() {
 
 # Hot path: workspace switch — updates all workspaces (not just FOCUSED/PREV)
 # to avoid stale highlights from cross-monitor switches or rapid switching races.
-# $FOCUSED is already set as an env var by the exec-on-workspace-change trigger.
+# The three aerospace queries run in parallel via process substitution.
 if [ "$SENDER" = "aerospace_workspace_change" ]; then
-    VISIBLE=" $(aerospace list-workspaces --monitor all --visible | tr '\n' ' ') "
+    exec 3< <(aerospace list-workspaces --focused)
+    exec 4< <(aerospace list-workspaces --monitor all --visible | tr '\n' ' ')
+    ALL_WS=$(aerospace list-workspaces --all)
+    read -r FOCUSED <&3
+    read -r VISIBLE <&4
+    VISIBLE=" $VISIBLE "
+    exec 3<&- 4<&-
 
     ARGS=()
-    for sid in $(aerospace list-workspaces --all); do
+    for sid in $ALL_WS; do
         if [ "$sid" = "$FOCUSED" ]; then
             ARGS+=(--set "space.$sid" background.drawing=on background.color=0xff89b4fa label.color=0xffffffff)
         elif [[ "$VISIBLE" == *" $sid "* ]]; then
