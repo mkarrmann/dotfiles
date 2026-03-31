@@ -141,7 +141,7 @@ arrange_workspace() {
   # If accordion windows aren't adjacent (sidebar between them), do a safe
   # interior swap: move the left-side accordion window right to push past
   # the sidebar.  This avoids boundary moves that create nesting.
-  if [[ "$spatial_count" -ge 2 ]]; then
+  if [[ "$spatial_count" -ge 1 ]]; then
     local need_swap=false
     for ((idx = 0; idx < ${#all_spatial[@]} - 1; idx++)); do
       local cur="${all_spatial[$idx]}" nxt="${all_spatial[$((idx + 1))]}"
@@ -153,8 +153,11 @@ arrange_workspace() {
         need_swap=true
       fi
     done
-    if $need_swap; then
-      # Re-flatten to clean up any side effects, re-discover order
+    if $need_swap && [[ "$spatial_count" -ge 2 ]]; then
+      # Re-flatten to clean up any nesting side effects, re-discover order.
+      # Only needed with multiple accordion windows — a single accordion
+      # window swaps cleanly (interior move, no nesting possible) and
+      # re-flatten could scramble the corrected order back.
       aerospace flatten-workspace-tree 2>/dev/null || true
       aerospace focus --window-id "$first_sidebar" 2>/dev/null
       aerospace layout tiles horizontal 2>/dev/null || true
