@@ -2,6 +2,8 @@ local M = {}
 
 local ns = vim.api.nvim_create_namespace("codecompanion_input_status")
 
+local sep = "%#Comment# · %*"
+
 local state = {
   bufnr = nil,
   winnr = nil,
@@ -9,6 +11,53 @@ local state = {
   queued = false,
   suppress_unqueue = false,
 }
+
+local function format_tokens(n)
+  if n < 1000 then
+    return tostring(n)
+  end
+  return string.format("%s,%03d", math.floor(n / 1000), n % 1000)
+end
+
+function _G._codecompanion_input_statusline()
+  if not state.chat_bufnr then
+    return " "
+  end
+
+  local meta = (_G.codecompanion_chat_metadata or {})[state.chat_bufnr]
+  if not meta then
+    return " "
+  end
+
+  local chat = require("codecompanion").buf_get_chat(state.chat_bufnr)
+  local adapter_type = chat and chat.adapter and chat.adapter.type
+
+  local parts = {}
+  parts[#parts + 1] = " " .. (meta.adapter.name or "unknown")
+  if meta.adapter.model then
+    parts[#parts + 1] = meta.adapter.model
+  end
+  if meta.cycles and meta.cycles > 0 then
+    parts[#parts + 1] = "turn " .. meta.cycles
+  end
+
+  local right = {}
+  if adapter_type == "http" and meta.tokens and meta.tokens > 0 then
+    right[#right + 1] = format_tokens(meta.tokens) .. " tokens"
+  end
+  if meta.mode and meta.mode.name then
+    right[#right + 1] = meta.mode.name
+  end
+  if meta.context_items and meta.context_items > 0 then
+    right[#right + 1] = meta.context_items .. " ctx"
+  end
+
+  local left = table.concat(parts, sep)
+  if #right > 0 then
+    return left .. "%=" .. table.concat(right, sep) .. " "
+  end
+  return left
+end
 
 local function get_draft_text()
   if not state.bufnr or not vim.api.nvim_buf_is_valid(state.bufnr) then
@@ -77,7 +126,7 @@ end
 
 local function create_buf()
   local buf = vim.api.nvim_create_buf(false, true)
-  vim.bo[buf].filetype = "markdown"
+  vim.bo[buf].filetype = "codecompanion_input"
   vim.bo[buf].bufhidden = "hide"
 
   vim.keymap.set({ "n", "i" }, "<C-s>", send, { buffer = buf, desc = "Send/queue prompt" })
@@ -127,7 +176,7 @@ function M.on_chat_opened(chat_bufnr)
   vim.wo[win].signcolumn = "no"
   vim.wo[win].winfixheight = true
   vim.wo[win].statusline = " "
-  vim.wo[win].winbar = ""
+  vim.wo[win].winbar = "%!v:lua._codecompanion_input_statusline()"
   vim.wo[win].wrap = true
   vim.wo[win].linebreak = true
 

@@ -42,6 +42,14 @@ return {
 				end
 				return name
 			end
+
+			opts.options = opts.options or {}
+			opts.options.disabled_filetypes = opts.options.disabled_filetypes or {}
+			opts.options.disabled_filetypes.winbar = opts.options.disabled_filetypes.winbar or {}
+			opts.options.disabled_filetypes.statusline = opts.options.disabled_filetypes.statusline or {}
+			vim.list_extend(opts.options.disabled_filetypes.winbar, { "codecompanion_input" })
+			vim.list_extend(opts.options.disabled_filetypes.statusline, { "codecompanion_input" })
+
 			opts.winbar = { lualine_b = { cwd }, lualine_c = { custom_or_filename } }
 			opts.inactive_winbar = { lualine_b = { cwd }, lualine_c = { custom_or_filename } }
 
