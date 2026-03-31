@@ -111,6 +111,24 @@ return {
       })
 
       vim.api.nvim_create_autocmd("User", {
+        pattern = "CodeCompanionChatOpened",
+        callback = function(args)
+          vim.schedule(function()
+            require("lib.codecompanion-queue").on_chat_opened(args.data.bufnr)
+          end)
+        end,
+      })
+
+      vim.api.nvim_create_autocmd("User", {
+        pattern = "CodeCompanionChatHidden",
+        callback = function(args)
+          vim.schedule(function()
+            require("lib.codecompanion-queue").on_chat_hidden(args.data.bufnr)
+          end)
+        end,
+      })
+
+      vim.api.nvim_create_autocmd("User", {
         pattern = "CodeCompanionChatDone",
         callback = function(args)
           vim.schedule(function()
@@ -125,7 +143,7 @@ return {
       { "<leader>ae", "<cmd>CodeCompanionActions<cr>", mode = { "n", "v" }, desc = "CodeCompanion Actions" },
       { "<leader>ah", "<cmd>CodeCompanionChat Toggle<cr>", mode = { "n", "v" }, desc = "CodeCompanion Chat" },
       { "<leader>av", "<cmd>CodeCompanion<cr>", mode = { "n", "v" }, desc = "CodeCompanion Inline" },
-      { "<leader>aq", function() require("lib.codecompanion-queue").open_draft() end, desc = "CodeCompanion Queue" },
+      { "<leader>aq", function() require("lib.codecompanion-queue").focus() end, desc = "Focus CodeCompanion Input" },
     },
   },
 }

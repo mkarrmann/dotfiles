@@ -1,26 +1,27 @@
 local M = {}
 
-local draft = {}
+local state = {
+  bufnr = nil,
+  winnr = nil,
+  chat_bufnr = nil,
+  queued = false,
+  suppress_unqueue = false,
+}
 
 local function get_draft_text()
-  if not draft.bufnr or not vim.api.nvim_buf_is_valid(draft.bufnr) then
+  if not state.bufnr or not vim.api.nvim_buf_is_valid(state.bufnr) then
     return nil
   end
-  local lines = vim.api.nvim_buf_get_lines(draft.bufnr, 0, -1, false)
+  local lines = vim.api.nvim_buf_get_lines(state.bufnr, 0, -1, false)
   local text = vim.trim(table.concat(lines, "\n"))
   return text ~= "" and text or nil
 end
 
 local function update_ui()
-  if not draft.winnr or not vim.api.nvim_win_is_valid(draft.winnr) then
+  if not state.winnr or not vim.api.nvim_win_is_valid(state.winnr) then
     return
   end
-  local title = draft.queued and " Queued " or " Draft "
-  vim.api.nvim_win_set_config(draft.winnr, {
-    title = title,
-    title_pos = "center",
-    border = draft.queued and "double" or "rounded",
-  })
+  vim.wo[state.winnr].winbar = state.queued and " %#DiagnosticWarn# Queued" or " %#Comment# Draft"
 end
 
 local function submit_to_chat(chat_bufnr, text)
@@ -37,23 +38,118 @@ local function submit_to_chat(chat_bufnr, text)
 end
 
 local function clear_draft_buf()
-  if draft.bufnr and vim.api.nvim_buf_is_valid(draft.bufnr) then
-    draft.suppress_unqueue = true
-    vim.api.nvim_buf_set_lines(draft.bufnr, 0, -1, false, {})
-    draft.suppress_unqueue = false
+  if state.bufnr and vim.api.nvim_buf_is_valid(state.bufnr) then
+    state.suppress_unqueue = true
+    vim.api.nvim_buf_set_lines(state.bufnr, 0, -1, false, {})
+    state.suppress_unqueue = false
   end
-  draft.queued = false
+  state.queued = false
   update_ui()
 end
 
+local function send()
+  local text = get_draft_text()
+  if not text then
+    return
+  end
+
+  local cc = require("codecompanion")
+  local chat = cc.buf_get_chat(state.chat_bufnr)
+  if chat and not chat.current_request then
+    clear_draft_buf()
+    submit_to_chat(state.chat_bufnr, text)
+  else
+    state.queued = true
+    update_ui()
+  end
+end
+
+local function create_buf()
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].filetype = "markdown"
+  vim.bo[buf].bufhidden = "hide"
+
+  vim.keymap.set({ "n", "i" }, "<C-s>", send, { buffer = buf, desc = "Send/queue prompt" })
+
+  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+    buffer = buf,
+    callback = function()
+      if state.suppress_unqueue then
+        return
+      end
+      if state.queued then
+        state.queued = false
+        update_ui()
+      end
+    end,
+  })
+
+  return buf
+end
+
+function M.on_chat_opened(chat_bufnr)
+  if state.winnr and vim.api.nvim_win_is_valid(state.winnr) then
+    return
+  end
+
+  if not state.bufnr or not vim.api.nvim_buf_is_valid(state.bufnr) then
+    state.bufnr = create_buf()
+  end
+
+  state.chat_bufnr = chat_bufnr
+
+  local chat_winnr = vim.fn.bufwinid(chat_bufnr)
+  if chat_winnr == -1 then
+    return
+  end
+
+  local prev_win = vim.api.nvim_get_current_win()
+  vim.api.nvim_set_current_win(chat_winnr)
+  vim.cmd("belowright split")
+  vim.cmd("resize 8")
+
+  local win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(win, state.bufnr)
+
+  vim.wo[win].number = false
+  vim.wo[win].relativenumber = false
+  vim.wo[win].signcolumn = "no"
+  vim.wo[win].winfixheight = true
+  vim.wo[win].statusline = " "
+  vim.wo[win].wrap = true
+  vim.wo[win].linebreak = true
+
+  state.winnr = win
+  update_ui()
+
+  -- HACK: On first open, focus the input box. On subsequent opens (toggle
+  -- cycles), restore focus to wherever the user was — CodeCompanion's toggle
+  -- already handles focus for the chat pane.
+  if prev_win == chat_winnr then
+    vim.cmd("startinsert")
+  else
+    vim.api.nvim_set_current_win(prev_win)
+  end
+end
+
+function M.on_chat_hidden(chat_bufnr)
+  if state.chat_bufnr ~= chat_bufnr then
+    return
+  end
+  if state.winnr and vim.api.nvim_win_is_valid(state.winnr) then
+    vim.api.nvim_win_close(state.winnr, true)
+  end
+  state.winnr = nil
+end
+
 function M.on_chat_done(chat_bufnr)
-  if not draft.queued or draft.chat_bufnr ~= chat_bufnr then
+  if not state.queued or state.chat_bufnr ~= chat_bufnr then
     return
   end
 
   local text = get_draft_text()
   if not text then
-    draft.queued = false
+    state.queued = false
     update_ui()
     return
   end
@@ -62,84 +158,13 @@ function M.on_chat_done(chat_bufnr)
   submit_to_chat(chat_bufnr, text)
 end
 
-function M.open_draft()
-  local cc = require("codecompanion")
-  local chat = cc.last_chat()
-  if not chat then
-    vim.notify("No active CodeCompanion chat", vim.log.levels.WARN)
-    return
+function M.focus()
+  if state.winnr and vim.api.nvim_win_is_valid(state.winnr) then
+    vim.api.nvim_set_current_win(state.winnr)
+    vim.cmd("startinsert")
+  else
+    vim.notify("No CodeCompanion input box open", vim.log.levels.WARN)
   end
-
-  local chat_bufnr = chat.bufnr
-
-  if draft.winnr and vim.api.nvim_win_is_valid(draft.winnr) then
-    vim.api.nvim_set_current_win(draft.winnr)
-    return
-  end
-
-  local width = math.floor(vim.o.columns * 0.4)
-  local height = 8
-  local row = vim.o.lines - height - 4
-  local col = vim.o.columns - width - 2
-
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.bo[buf].filetype = "markdown"
-  vim.bo[buf].bufhidden = "hide"
-
-  local win = vim.api.nvim_open_win(buf, true, {
-    relative = "editor",
-    width = width,
-    height = height,
-    row = row,
-    col = col,
-    style = "minimal",
-    border = "rounded",
-    title = " Draft ",
-    title_pos = "center",
-  })
-
-  draft = { bufnr = buf, winnr = win, chat_bufnr = chat_bufnr, queued = false, suppress_unqueue = false }
-
-  local function send()
-    local text = get_draft_text()
-    if not text then
-      return
-    end
-
-    local current_chat = cc.buf_get_chat(chat_bufnr)
-    if current_chat and not current_chat.current_request then
-      clear_draft_buf()
-      submit_to_chat(chat_bufnr, text)
-    else
-      draft.queued = true
-      update_ui()
-    end
-  end
-
-  local function close()
-    if vim.api.nvim_win_is_valid(win) then
-      vim.api.nvim_win_close(win, true)
-    end
-  end
-
-  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
-    buffer = buf,
-    callback = function()
-      if draft.suppress_unqueue then
-        return
-      end
-      if draft.queued then
-        draft.queued = false
-        update_ui()
-      end
-    end,
-  })
-
-  vim.keymap.set({ "n", "i" }, "<C-s>", send, { buffer = buf, desc = "Send/queue prompt" })
-  vim.keymap.set("n", "q", close, { buffer = buf, desc = "Close draft" })
-  vim.keymap.set("n", "<Esc>", close, { buffer = buf, desc = "Close draft" })
-
-  vim.cmd("startinsert")
 end
 
 return M
