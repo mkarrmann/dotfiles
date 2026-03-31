@@ -1,5 +1,7 @@
 local M = {}
 
+local ns = vim.api.nvim_create_namespace("codecompanion_input_status")
+
 local state = {
   bufnr = nil,
   winnr = nil,
@@ -18,10 +20,15 @@ local function get_draft_text()
 end
 
 local function update_ui()
-  if not state.winnr or not vim.api.nvim_win_is_valid(state.winnr) then
+  if not state.bufnr or not vim.api.nvim_buf_is_valid(state.bufnr) then
     return
   end
-  vim.wo[state.winnr].winbar = state.queued and " %#DiagnosticWarn# Queued" or " %#Comment# Draft"
+  vim.api.nvim_buf_clear_namespace(state.bufnr, ns, 0, -1)
+  local label = state.queued and { " Queued ", "DiagnosticWarn" } or { " Draft ", "Comment" }
+  vim.api.nvim_buf_set_extmark(state.bufnr, ns, 0, 0, {
+    virt_text = { label },
+    virt_text_pos = "right_align",
+  })
 end
 
 local function submit_to_chat(chat_bufnr, text)
@@ -60,7 +67,11 @@ local function send()
     submit_to_chat(state.chat_bufnr, text)
   else
     state.queued = true
+    state.suppress_unqueue = true
     update_ui()
+    vim.schedule(function()
+      state.suppress_unqueue = false
+    end)
   end
 end
 
@@ -116,6 +127,7 @@ function M.on_chat_opened(chat_bufnr)
   vim.wo[win].signcolumn = "no"
   vim.wo[win].winfixheight = true
   vim.wo[win].statusline = " "
+  vim.wo[win].winbar = ""
   vim.wo[win].wrap = true
   vim.wo[win].linebreak = true
 
@@ -156,6 +168,10 @@ function M.on_chat_done(chat_bufnr)
 
   clear_draft_buf()
   submit_to_chat(chat_bufnr, text)
+end
+
+function M.bufnr()
+  return state.bufnr
 end
 
 function M.focus()

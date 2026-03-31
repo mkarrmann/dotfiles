@@ -23,8 +23,8 @@ add_space_item() {
 
 # Hot path: workspace switch — updates all workspaces (not just FOCUSED/PREV)
 # to avoid stale highlights from cross-monitor switches or rapid switching races.
+# $FOCUSED is already set as an env var by the exec-on-workspace-change trigger.
 if [ "$SENDER" = "aerospace_workspace_change" ]; then
-    FOCUSED=$(aerospace list-workspaces --focused)
     VISIBLE=" $(aerospace list-workspaces --monitor all --visible | tr '\n' ' ') "
 
     ARGS=()

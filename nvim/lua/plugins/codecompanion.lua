@@ -85,6 +85,7 @@ return {
         callback = function()
           local bufnr = vim.api.nvim_get_current_buf()
           if vim.bo[bufnr].filetype == "codecompanion" then return end
+          if bufnr == require("lib.codecompanion-queue").bufnr() then return end
 
           clear()
           local line = vim.api.nvim_win_get_cursor(0)[1] - 1
