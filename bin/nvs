@@ -31,7 +31,12 @@ start() {
   fi
   cmd+=(--cmd "set title titlestring=$name\\ —\\ %t")
   cmd+=(--cmd "lua pcall(require, 'lib.clipboard-relay')")
-  nohup "${cmd[@]}" >>"$log" 2>&1 </dev/null &
+  # setsid, not nohup: nohup only ignores SIGHUP, but the process stays in the
+  # ET session's process group. When ET tears down a dead session (e.g. Mac
+  # restart), it can SIGTERM/SIGKILL the entire process tree — nohup doesn't
+  # protect against that. setsid moves nvim into its own session+process group,
+  # making it invisible to ET's cleanup.
+  setsid "${cmd[@]}" >>"$log" 2>&1 </dev/null &
   for _ in $(seq 1 50); do
     if is_live; then return 0; fi
     sleep 0.1
