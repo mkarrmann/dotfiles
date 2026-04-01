@@ -8,6 +8,7 @@ sketchybar --bar height=28 position=top color=0xff1e1e2e display=all
 
 # Event from AeroSpace
 sketchybar --add event aerospace_workspace_change
+sketchybar --add event aerospace_reconcile
 
 # Create workspace indicators for initial workspaces
 for sid in $(aerospace list-workspaces --all); do
@@ -28,7 +29,7 @@ done
 # One hidden updater item that reassigns all spaces to the right monitor
 sketchybar --add item aerospace_spaces_updater left \
     --set aerospace_spaces_updater drawing=off script="$PLUGIN_DIR/aerospace_sync_spaces.sh" \
-    --subscribe aerospace_spaces_updater aerospace_workspace_change display_change system_woke
+    --subscribe aerospace_spaces_updater aerospace_workspace_change aerospace_reconcile display_change system_woke
 
 # Initial sync
 "$PLUGIN_DIR/aerospace_sync_spaces.sh"

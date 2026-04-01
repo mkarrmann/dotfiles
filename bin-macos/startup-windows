@@ -389,6 +389,10 @@ sleep 1
 # Focus workspace 1
 aerospace workspace 1 2>/dev/null || true
 
+# Trigger SketchBar reconciliation so items are created for any workspaces
+# that appeared after SketchBar's initial sync (T, Z, Orchest workspaces, etc.)
+sketchybar --trigger aerospace_reconcile 2>/dev/null || true
+
 if [[ "$failures" -gt 0 ]]; then
   echo "Done with ${failures} warning(s)."
 else
