@@ -14,9 +14,10 @@ return {
         local seen = {}
 
         local function add(name, path)
-          if seen[path] then return end
-          seen[path] = true
-          skills[#skills + 1] = { name = name, path = path }
+          local real = vim.uv.fs_realpath(path) or path
+          if seen[real] then return end
+          seen[real] = true
+          skills[#skills + 1] = { name = name, path = real }
         end
 
         for _, dir in ipairs({
@@ -68,7 +69,9 @@ return {
                   }, function(choice)
                     if not choice then return end
                     local content = table.concat(vim.fn.readfile(choice.path), "\n")
-                    chat:add_message({ role = "system", content = content }, { visible = false })
+                    local preamble = "Follow the instructions in this skill for all subsequent messages:\n\n"
+                    chat:add_buf_message({ role = "user", content = preamble .. content })
+                    chat:submit()
                     vim.notify("Loaded skill: " .. choice.name)
                   end)
                 end,
@@ -136,6 +139,38 @@ return {
 
     config = function(_, opts)
       require("codecompanion").setup(opts)
+
+      local has_cmp, cmp = pcall(require, "cmp")
+      if has_cmp then
+        local QueueSlash = {}
+        QueueSlash.new = function() return setmetatable({}, { __index = QueueSlash }) end
+        function QueueSlash:is_available() return vim.bo.filetype == "codecompanion_input" end
+        function QueueSlash:get_trigger_characters() return { "/" } end
+        function QueueSlash:get_keyword_pattern() return [[/\%(\w\|-\)\+]] end
+        function QueueSlash:complete(params, callback)
+          local items = require("codecompanion.providers.completion").slash_commands("chat")
+          local kind = cmp.lsp.CompletionItemKind.Function
+          vim.iter(items):map(function(item)
+            item.kind = kind
+            item.context = { bufnr = params.context.bufnr, cursor = params.context.cursor }
+          end)
+          callback({ items = items, isIncomplete = false })
+        end
+        function QueueSlash:execute(item, callback)
+          vim.api.nvim_set_current_line("")
+          local chat_bufnr = require("lib.codecompanion-queue").chat_bufnr()
+          local chat = chat_bufnr and require("codecompanion").buf_get_chat(chat_bufnr)
+          if chat then
+            require("codecompanion.interactions.chat.slash_commands").run(item, chat)
+          end
+          callback(item)
+        end
+
+        cmp.register_source("codecompanion_queue_slash", QueueSlash)
+        local sources = vim.deepcopy(cmp.get_config().sources or {})
+        table.insert(sources, { name = "codecompanion_queue_slash" })
+        cmp.setup({ sources = sources })
+      end
 
       local ns = vim.api.nvim_create_namespace("codecompanion_inline_indicator")
       local spinner_frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }

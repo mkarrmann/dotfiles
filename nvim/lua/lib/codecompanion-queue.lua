@@ -274,6 +274,10 @@ function M.bufnr()
   return state.bufnr
 end
 
+function M.chat_bufnr()
+  return state.chat_bufnr
+end
+
 function M.focus()
   if state.winnr and vim.api.nvim_win_is_valid(state.winnr) then
     vim.api.nvim_set_current_win(state.winnr)
