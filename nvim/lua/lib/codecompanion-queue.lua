@@ -20,6 +20,35 @@ local function fmt_tokens(n)
   return tostring(n)
 end
 
+vim.api.nvim_create_autocmd("WinNew", {
+  group = vim.api.nvim_create_augroup("codecompanion_queue_redirect", { clear = true }),
+  callback = function()
+    if not state.winnr or not vim.api.nvim_win_is_valid(state.winnr) then
+      return
+    end
+    if vim.fn.win_getid(vim.fn.winnr("#")) ~= state.winnr then
+      return
+    end
+
+    local new_win = vim.api.nvim_get_current_win()
+    vim.schedule(function()
+      if not vim.api.nvim_win_is_valid(new_win) then
+        return
+      end
+      local chat_win = state.chat_bufnr and vim.fn.bufwinid(state.chat_bufnr)
+      if not chat_win or chat_win == -1 then
+        return
+      end
+
+      local buf = vim.api.nvim_win_get_buf(new_win)
+      vim.api.nvim_win_close(new_win, false)
+      vim.api.nvim_set_current_win(chat_win)
+      vim.cmd("vertical rightbelow split")
+      vim.api.nvim_win_set_buf(vim.api.nvim_get_current_win(), buf)
+    end)
+  end,
+})
+
 function _G._codecompanion_input_statusline()
   if not state.chat_bufnr then
     return " "
