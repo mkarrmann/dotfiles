@@ -9,9 +9,72 @@ return {
     opts = function()
       local has_snacks = pcall(require, "snacks")
 
+      local function discover_skills()
+        local skills = {}
+        local seen = {}
+
+        local function add(name, path)
+          if seen[path] then return end
+          seen[path] = true
+          skills[#skills + 1] = { name = name, path = path }
+        end
+
+        for _, dir in ipairs({
+          vim.fn.expand("~/dotfiles/agent_config/skills"),
+          vim.fn.expand("~/.claude/skills"),
+        }) do
+          for _, path in ipairs(vim.fn.globpath(dir, "*/SKILL.md", false, true)) do
+            add(vim.fn.fnamemodify(path, ":h:t"), path)
+          end
+        end
+
+        local manifest_path = vim.fn.expand("~/.claude/.claude-templates-manifest.json")
+        if vim.fn.filereadable(manifest_path) == 1 then
+          local ok, text = pcall(vim.fn.readfile, manifest_path)
+          if ok then
+            local manifest = vim.json.decode(table.concat(text, "\n"))
+            local installed = (manifest.components or {}).skills or {}
+            local base = "/opt/facebook/claude-templates-cli/components"
+            for comp_name, _ in pairs(installed) do
+              for _, subdir in ipairs({ "skills", "plugins" }) do
+                local skill_path = base .. "/" .. subdir .. "/" .. comp_name .. "/SKILL.md"
+                if vim.fn.filereadable(skill_path) == 1 then
+                  add(comp_name, skill_path)
+                end
+              end
+            end
+          end
+        end
+
+        table.sort(skills, function(a, b) return a.name < b.name end)
+        return skills
+      end
+
       return {
         interactions = {
-          chat = { adapter = "claude_code" },
+          chat = {
+            adapter = "claude_code",
+            slash_commands = {
+              ["skill"] = {
+                description = "Load a Claude Code skill",
+                callback = function(chat)
+                  local skills = discover_skills()
+                  if #skills == 0 then
+                    return vim.notify("No skills found", vim.log.levels.WARN)
+                  end
+                  vim.ui.select(skills, {
+                    prompt = "Select skill:",
+                    format_item = function(item) return item.name end,
+                  }, function(choice)
+                    if not choice then return end
+                    local content = table.concat(vim.fn.readfile(choice.path), "\n")
+                    chat:add_message({ role = "system", content = content }, { visible = false })
+                    vim.notify("Loaded skill: " .. choice.name)
+                  end)
+                end,
+              },
+            },
+          },
           inline = { adapter = "claude_code" },
           cmd = { adapter = "claude_code" },
         },
