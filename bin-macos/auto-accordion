@@ -57,15 +57,25 @@ has_container=$(aerospace list-windows --workspace "$ws" \
   | awk -F'|' '$3 != $4 { found=1 } END { print found+0 }')
 
 if [[ "$has_container" -eq 1 ]]; then
-  # Accordion container exists to the left of the new window:
-  #   [Orchest, {v_accordion: ...}, new_window]
+  # Accordion container exists. The new window is at root level and needs
+  # to enter the accordion. It may appear on EITHER side of the container
+  # depending on which window had focus when it was created:
+  #   [Orchest, new_window, {v_accordion: ...}]  — focused on Orchest
+  #   [Orchest, {v_accordion: ...}, new_window]  — focused on accordion
   #
-  # AeroSpace's `move left` toward a sibling container enters it (becomes
-  # a child), so a single `move left` places the new window inside the
-  # accordion. No second move needed — `move right` would exit the
-  # container, undoing the operation.
+  # Strategy: try move left first (handles the common case where the new
+  # window is to the right of the accordion). If the window is still at
+  # root level after the move, it was to the left — try move right instead.
   aerospace focus --window-id "$wid" 2>/dev/null
   aerospace move left 2>/dev/null
+
+  new_parent=$(aerospace list-windows --focused \
+    --format '%{window-parent-container-layout}' 2>/dev/null)
+  new_root=$(aerospace list-windows --focused \
+    --format '%{workspace-root-container-layout}' 2>/dev/null)
+  if [[ "$new_parent" == "$new_root" ]]; then
+    aerospace move right 2>/dev/null
+  fi
 else
   # No accordion container yet — this is the first additional window on a
   # workspace that previously had only sidebar | single-window.  Delegate
