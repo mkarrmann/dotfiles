@@ -1,7 +1,5 @@
 local M = {}
 
-local ns = vim.api.nvim_create_namespace("codecompanion_input_status")
-
 local sep = "%#Comment# · %*"
 
 local state = {
@@ -12,6 +10,34 @@ local state = {
   suppress_unqueue = false,
   fullscreen = false,
 }
+
+local function setup_highlights()
+  local normal_hl = vim.api.nvim_get_hl(0, { name = "Normal", link = false })
+  local warn_hl = vim.api.nvim_get_hl(0, { name = "DiagnosticWarn", link = false })
+
+  local bg = normal_hl.bg
+  if bg == nil then
+    bg = vim.o.background == "light" and 0xFFFFFF or 0x1E1E2E
+  end
+  local warn_fg = warn_hl.fg or 0xE0A500
+
+  local function blend(c1, c2, alpha)
+    local r1, g1, b1 = math.floor(c1 / 65536) % 256, math.floor(c1 / 256) % 256, c1 % 256
+    local r2, g2, b2 = math.floor(c2 / 65536) % 256, math.floor(c2 / 256) % 256, c2 % 256
+    return math.floor(r1 * alpha + r2 * (1 - alpha)) * 65536
+      + math.floor(g1 * alpha + g2 * (1 - alpha)) * 256
+      + math.floor(b1 * alpha + b2 * (1 - alpha))
+  end
+
+  vim.api.nvim_set_hl(0, "CCQueuedNormal", { bg = blend(warn_fg, bg, 0.1) })
+  vim.api.nvim_set_hl(0, "CCQueuedBorder", { fg = warn_fg })
+end
+
+setup_highlights()
+vim.api.nvim_create_autocmd("ColorScheme", {
+  group = vim.api.nvim_create_augroup("codecompanion_queue_highlights", { clear = true }),
+  callback = setup_highlights,
+})
 
 local function fmt_tokens(n)
   if n >= 1000 then
@@ -62,8 +88,12 @@ function _G._codecompanion_input_statusline()
   local chat = require("codecompanion").buf_get_chat(state.chat_bufnr)
   local adapter_type = chat and chat.adapter and chat.adapter.type
 
-  -- Left side: adapter · model · turn N
-  local left = " %#Function#" .. (meta.adapter.name or "unknown") .. "%*"
+  local status_label = state.queued
+      and "%#DiagnosticWarn# Queued %*"
+    or "%#Comment# Draft %*"
+
+  -- Left side: status · adapter · model · turn N
+  local left = " " .. status_label .. sep .. "%#Function#" .. (meta.adapter.name or "unknown") .. "%*"
   if meta.adapter.model then
     left = left .. sep .. "%#String#" .. meta.adapter.model .. "%*"
   end
@@ -105,15 +135,16 @@ local function get_draft_text()
 end
 
 local function update_ui()
-  if not state.bufnr or not vim.api.nvim_buf_is_valid(state.bufnr) then
+  if not state.winnr or not vim.api.nvim_win_is_valid(state.winnr) then
     return
   end
-  vim.api.nvim_buf_clear_namespace(state.bufnr, ns, 0, -1)
-  local label = state.queued and { " Queued ", "DiagnosticWarn" } or { " Draft ", "Comment" }
-  vim.api.nvim_buf_set_extmark(state.bufnr, ns, 0, 0, {
-    virt_text = { label },
-    virt_text_pos = "right_align",
-  })
+
+  if state.queued then
+    vim.wo[state.winnr].winhighlight =
+      "Normal:CCQueuedNormal,EndOfBuffer:CCQueuedNormal,WinSeparator:CCQueuedBorder"
+  else
+    vim.wo[state.winnr].winhighlight = ""
+  end
 end
 
 local function submit_to_chat(chat_bufnr, text)
