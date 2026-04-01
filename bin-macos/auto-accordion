@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Called by AeroSpace on-window-detected to auto-move new windows into
+# the accordion container on workspaces that have an Orchest sidebar.
+#
+# Two modes:
+#   1. Accordion container exists (2+ non-Orchest windows already arranged):
+#      move the new window left into the container.
+#   2. No accordion container (was a sidebar | single-window flat split):
+#      AeroSpace collapses single-child containers, so arrange-workspaces
+#      can't pre-create one. Now that a second non-Orchest window has
+#      arrived, call arrange-workspaces --force to build the container.
+#
+# AeroSpace `move` semantics (verified empirically):
+#   - `move <dir>` toward a sibling CONTAINER enters the container
+#     (becomes a child), regardless of the container's orientation.
+#     This differs from i3/sway where `move` past a container swaps
+#     positions at the same tree level.
+#   - `move <dir>` at the boundary of a container from INSIDE exits
+#     the container (or creates unintended nesting).
+
+sleep 0.3
+
+wid="${AEROSPACE_WINDOW_ID}"
+[[ -z "$wid" ]] && exit 0
+
+# Get window info
+info=$(aerospace list-windows --all --format '%{window-id}|%{workspace}|%{window-title}' 2>/dev/null \
+  | grep "^${wid}|")
+[[ -z "$info" ]] && exit 0
+
+ws=$(echo "$info" | cut -d'|' -f2)
+title=$(echo "$info" | cut -d'|' -f3-)
+
+# Don't move Orchest sidebar windows
+[[ "$title" == *"Orchest ["* ]] && exit 0
+
+# Only act on managed workspaces 1-9
+case "$ws" in [1-9]) ;; *) exit 0 ;; esac
+
+# Only act if this workspace has an Orchest sidebar (i.e. the layout is set up)
+has_orchest=$(aerospace list-windows --workspace "$ws" --format '%{window-title}' 2>/dev/null \
+  | grep -c 'Orchest \[')
+[[ "$has_orchest" -eq 0 ]] && exit 0
+
+# Don't act during startup-windows
+[[ -f /tmp/startup-windows.lock ]] && exit 0
+
+# Check if a nested accordion container exists by looking at whether any
+# non-Orchest window has a parent layout different from the root layout.
+# If parent != root, there's a nested container; if parent == root, all
+# windows are flat children of root (no container to enter).
+has_container=$(aerospace list-windows --workspace "$ws" \
+  --format '%{window-title}|%{window-parent-container-layout}|%{workspace-root-container-layout}' 2>/dev/null \
+  | grep -v 'Orchest \[' \
+  | awk -F'|' '$2 != $3 { found=1 } END { print found+0 }')
+
+if [[ "$has_container" -eq 1 ]]; then
+  # Accordion container exists to the left of the new window:
+  #   [Orchest, {v_accordion: ...}, new_window]
+  #
+  # AeroSpace's `move left` toward a sibling container enters it (becomes
+  # a child), so a single `move left` places the new window inside the
+  # accordion. No second move needed — `move right` would exit the
+  # container, undoing the operation.
+  aerospace focus --window-id "$wid" 2>/dev/null
+  aerospace move left 2>/dev/null
+else
+  # No accordion container yet — this is the first additional window on a
+  # workspace that previously had only sidebar | single-window.  Delegate
+  # to arrange-workspaces which handles the full flatten → discover → group
+  # sequence correctly.
+  arrange-workspaces --force "$ws" >/dev/null 2>&1
+fi
