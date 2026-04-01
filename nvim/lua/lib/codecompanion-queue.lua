@@ -10,6 +10,7 @@ local state = {
   chat_bufnr = nil,
   queued = false,
   suppress_unqueue = false,
+  fullscreen = false,
 }
 
 local function fmt_tokens(n)
@@ -130,12 +131,26 @@ local function send()
   end
 end
 
+local function toggle_fullscreen()
+  if not state.winnr or not vim.api.nvim_win_is_valid(state.winnr) then
+    return
+  end
+
+  if state.fullscreen then
+    vim.api.nvim_win_set_height(state.winnr, 8)
+  else
+    vim.api.nvim_win_set_height(state.winnr, vim.o.lines)
+  end
+  state.fullscreen = not state.fullscreen
+end
+
 local function create_buf()
   local buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].filetype = "codecompanion_input"
   vim.bo[buf].bufhidden = "hide"
 
   vim.keymap.set({ "n", "i" }, "<C-s>", send, { buffer = buf, desc = "Send/queue prompt" })
+  vim.keymap.set({ "n", "i" }, "<C-g>", toggle_fullscreen, { buffer = buf, desc = "Toggle fullscreen" })
 
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
     buffer = buf,
@@ -203,6 +218,7 @@ function M.on_chat_hidden(chat_bufnr)
   if state.chat_bufnr ~= chat_bufnr then
     return
   end
+  state.fullscreen = false
   if state.winnr and vim.api.nvim_win_is_valid(state.winnr) then
     vim.api.nvim_win_close(state.winnr, true)
   end
