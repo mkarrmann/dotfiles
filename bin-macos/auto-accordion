@@ -45,14 +45,16 @@ has_orchest=$(aerospace list-windows --workspace "$ws" --format '%{window-title}
 # Don't act during startup-windows
 [[ -f /tmp/startup-windows.lock ]] && exit 0
 
-# Check if a nested accordion container exists by looking at whether any
-# non-Orchest window has a parent layout different from the root layout.
-# If parent != root, there's a nested container; if parent == root, all
-# windows are flat children of root (no container to enter).
+# Check if a nested accordion container already existed BEFORE this window
+# arrived. We exclude the new window ($wid) from the check because AeroSpace
+# may temporarily place it with parent != root during insertion, which would
+# falsely indicate a container exists and skip the arrange-workspaces call
+# needed to build one.
 has_container=$(aerospace list-windows --workspace "$ws" \
-  --format '%{window-title}|%{window-parent-container-layout}|%{workspace-root-container-layout}' 2>/dev/null \
+  --format '%{window-id}|%{window-title}|%{window-parent-container-layout}|%{workspace-root-container-layout}' 2>/dev/null \
   | grep -v 'Orchest \[' \
-  | awk -F'|' '$2 != $3 { found=1 } END { print found+0 }')
+  | grep -v "^${wid}|" \
+  | awk -F'|' '$3 != $4 { found=1 } END { print found+0 }')
 
 if [[ "$has_container" -eq 1 ]]; then
   # Accordion container exists to the left of the new window:
