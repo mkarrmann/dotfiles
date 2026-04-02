@@ -347,10 +347,11 @@ function M.on_chat_opened(chat_bufnr)
   vim.api.nvim_win_set_buf(input_win, state.bufnr)
 
   vim.cmd("aboveleft split")
-  vim.cmd("resize 1")
   local status_win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(status_win, state.status_bufnr)
 
+  vim.wo[status_win].winfixheight = true
+  vim.api.nvim_win_set_height(status_win, 1)
   vim.api.nvim_win_set_height(input_win, 8)
 
   vim.wo[status_win].number = false
