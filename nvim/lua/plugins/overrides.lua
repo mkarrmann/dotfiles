@@ -3,9 +3,16 @@ local _hostname = vim.uv.os_gethostname():gsub("%.facebook%.com$", "")
 return {
 	{
 		"nvim-treesitter/nvim-treesitter",
-		opts = {
-			ensure_installed = { "vim" },
-		},
+		opts = function(_, opts)
+			vim.list_extend(opts.ensure_installed or {}, { "cpp", "rust", "thrift", "hack" })
+			local install = require("nvim-treesitter.install")
+			install.prefer_git = false
+			if not vim.env.HTTP_PROXY then
+				install.command_extra_args = {
+					curl = { "--proxy", "http://fwdproxy:8080" },
+				}
+			end
+		end,
 	},
 	{
 		"nvim-treesitter/nvim-treesitter-context",
