@@ -1,10 +1,13 @@
 local M = {}
 
-local sep = "%#Comment# · %*"
+local status_ns = vim.api.nvim_create_namespace("codecompanion_status")
 
 local state = {
   bufnr = nil,
   winnr = nil,
+  status_bufnr = nil,
+  status_winnr = nil,
+  status_timer = nil,
   chat_bufnr = nil,
   queued = false,
   suppress_unqueue = false,
@@ -52,7 +55,8 @@ vim.api.nvim_create_autocmd("WinNew", {
     if not state.winnr or not vim.api.nvim_win_is_valid(state.winnr) then
       return
     end
-    if vim.fn.win_getid(vim.fn.winnr("#")) ~= state.winnr then
+    local prev = vim.fn.win_getid(vim.fn.winnr("#"))
+    if prev ~= state.winnr and prev ~= state.status_winnr then
       return
     end
 
@@ -75,54 +79,127 @@ vim.api.nvim_create_autocmd("WinNew", {
   end,
 })
 
-function _G._codecompanion_input_statusline()
+local function build_status_segments()
+  local left = {}
+  local right = {}
+
   if not state.chat_bufnr then
-    return " "
+    return left, right
   end
 
   local meta = (_G.codecompanion_chat_metadata or {})[state.chat_bufnr]
   if not meta then
-    return " "
+    return left, right
   end
 
   local chat = require("codecompanion").buf_get_chat(state.chat_bufnr)
   local adapter_type = chat and chat.adapter and chat.adapter.type
 
-  local status_label = state.queued
-      and "%#DiagnosticWarn# Queued %*"
-    or "%#Comment# Draft %*"
-
-  -- Left side: status · adapter · model · turn N
-  local left = " " .. status_label .. sep .. "%#Function#" .. (meta.adapter.name or "unknown") .. "%*"
+  if state.queued then
+    left[#left + 1] = { " Queued ", "DiagnosticWarn" }
+  else
+    left[#left + 1] = { " Draft ", "Comment" }
+  end
+  left[#left + 1] = { " · ", "Comment" }
+  left[#left + 1] = { meta.adapter.name or "unknown", "Function" }
   if meta.adapter.model then
-    left = left .. sep .. "%#String#" .. meta.adapter.model .. "%*"
+    left[#left + 1] = { " · ", "Comment" }
+    left[#left + 1] = { meta.adapter.model, "String" }
   end
   if meta.cycles and meta.cycles > 0 then
-    left = left .. sep .. "%#Number#turn " .. meta.cycles .. "%*"
+    left[#left + 1] = { " · ", "Comment" }
+    left[#left + 1] = { "turn " .. meta.cycles, "Number" }
   end
 
-  -- Right side: session · mode · tools · ctx items · tokens
-  local right_parts = {}
   if adapter_type == "acp" and chat.acp_connection and chat.acp_connection.session_id then
-    right_parts[#right_parts + 1] = "%#Constant#" .. chat.acp_connection.session_id .. "%*"
+    right[#right + 1] = { chat.acp_connection.session_id, "Constant" }
   end
   if meta.mode and meta.mode.name then
-    right_parts[#right_parts + 1] = "%#String#" .. meta.mode.name .. "%*"
+    right[#right + 1] = { meta.mode.name, "String" }
   end
   if meta.tools and meta.tools > 0 then
-    right_parts[#right_parts + 1] = "%#DiagnosticInfo#" .. meta.tools .. " tools%*"
+    right[#right + 1] = { meta.tools .. " tools", "DiagnosticInfo" }
   end
   if meta.context_items and meta.context_items > 0 then
-    right_parts[#right_parts + 1] = "%#DiagnosticInfo#" .. meta.context_items .. " ctx%*"
+    right[#right + 1] = { meta.context_items .. " ctx", "DiagnosticInfo" }
   end
   if adapter_type == "http" and meta.tokens and meta.tokens > 0 then
-    right_parts[#right_parts + 1] = "%#DiagnosticInfo#" .. fmt_tokens(meta.tokens) .. " tokens%*"
+    right[#right + 1] = { fmt_tokens(meta.tokens) .. " tokens", "DiagnosticInfo" }
   end
 
-  if #right_parts > 0 then
-    return left .. "%=" .. table.concat(right_parts, sep) .. " "
+  return left, right
+end
+
+local function refresh_status()
+  if not state.status_bufnr or not vim.api.nvim_buf_is_valid(state.status_bufnr) then
+    return
   end
-  return left
+
+  local left, right = build_status_segments()
+
+  local left_text = ""
+  for _, seg in ipairs(left) do
+    left_text = left_text .. seg[1]
+  end
+
+  local right_sep = " · "
+  local right_text = ""
+  for i, seg in ipairs(right) do
+    if i > 1 then right_text = right_text .. right_sep end
+    right_text = right_text .. seg[1]
+  end
+  if #right > 0 then right_text = right_text .. " " end
+
+  local width = (state.status_winnr and vim.api.nvim_win_is_valid(state.status_winnr))
+    and vim.api.nvim_win_get_width(state.status_winnr) or 80
+  local padding = math.max(1, width - vim.fn.strdisplaywidth(left_text) - vim.fn.strdisplaywidth(right_text))
+  local full_text = left_text .. string.rep(" ", padding) .. right_text
+
+  vim.bo[state.status_bufnr].modifiable = true
+  vim.api.nvim_buf_set_lines(state.status_bufnr, 0, -1, false, { full_text })
+  vim.bo[state.status_bufnr].modifiable = false
+
+  vim.api.nvim_buf_clear_namespace(state.status_bufnr, status_ns, 0, -1)
+  local col = 0
+  for _, seg in ipairs(left) do
+    if seg[2] then
+      vim.api.nvim_buf_add_highlight(state.status_bufnr, status_ns, seg[2], 0, col, col + #seg[1])
+    end
+    col = col + #seg[1]
+  end
+
+  col = col + padding
+
+  for i, seg in ipairs(right) do
+    if i > 1 then
+      vim.api.nvim_buf_add_highlight(state.status_bufnr, status_ns, "Comment", 0, col, col + #right_sep)
+      col = col + #right_sep
+    end
+    if seg[2] then
+      vim.api.nvim_buf_add_highlight(state.status_bufnr, status_ns, seg[2], 0, col, col + #seg[1])
+    end
+    col = col + #seg[1]
+  end
+end
+
+local function stop_status_timer()
+  if state.status_timer then
+    state.status_timer:stop()
+    state.status_timer:close()
+    state.status_timer = nil
+  end
+end
+
+local function start_status_timer()
+  if state.status_timer then return end
+  state.status_timer = vim.uv.new_timer()
+  state.status_timer:start(0, 1000, vim.schedule_wrap(function()
+    if not state.status_winnr or not vim.api.nvim_win_is_valid(state.status_winnr) then
+      stop_status_timer()
+      return
+    end
+    refresh_status()
+  end))
 end
 
 local function get_draft_text()
@@ -135,16 +212,22 @@ local function get_draft_text()
 end
 
 local function update_ui()
-  if not state.winnr or not vim.api.nvim_win_is_valid(state.winnr) then
-    return
-  end
+  local whl_input = ""
+  local whl_status = ""
 
   if state.queued then
-    vim.wo[state.winnr].winhighlight =
-      "Normal:CCQueuedNormal,EndOfBuffer:CCQueuedNormal,WinSeparator:CCQueuedBorder"
-  else
-    vim.wo[state.winnr].winhighlight = ""
+    whl_input = "Normal:CCQueuedNormal,EndOfBuffer:CCQueuedNormal,WinSeparator:CCQueuedBorder"
+    whl_status = "Normal:CCQueuedNormal,WinSeparator:CCQueuedBorder"
   end
+
+  if state.winnr and vim.api.nvim_win_is_valid(state.winnr) then
+    vim.wo[state.winnr].winhighlight = whl_input
+  end
+  if state.status_winnr and vim.api.nvim_win_is_valid(state.status_winnr) then
+    vim.wo[state.status_winnr].winhighlight = whl_status
+  end
+
+  refresh_status()
 end
 
 local function submit_to_chat(chat_bufnr, text)
@@ -228,6 +311,15 @@ local function create_buf()
   return buf
 end
 
+local function create_status_buf()
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].buftype = "nofile"
+  vim.bo[buf].bufhidden = "hide"
+  vim.bo[buf].swapfile = false
+  vim.bo[buf].modifiable = false
+  return buf
+end
+
 function M.on_chat_opened(chat_bufnr)
   if state.winnr and vim.api.nvim_win_is_valid(state.winnr) then
     return
@@ -235,6 +327,9 @@ function M.on_chat_opened(chat_bufnr)
 
   if not state.bufnr or not vim.api.nvim_buf_is_valid(state.bufnr) then
     state.bufnr = create_buf()
+  end
+  if not state.status_bufnr or not vim.api.nvim_buf_is_valid(state.status_bufnr) then
+    state.status_bufnr = create_status_buf()
   end
 
   state.chat_bufnr = chat_bufnr
@@ -246,28 +341,44 @@ function M.on_chat_opened(chat_bufnr)
 
   local prev_win = vim.api.nvim_get_current_win()
   vim.api.nvim_set_current_win(chat_winnr)
+
   vim.cmd("belowright split")
-  vim.cmd("resize 8")
+  local input_win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(input_win, state.bufnr)
 
-  local win = vim.api.nvim_get_current_win()
-  vim.api.nvim_win_set_buf(win, state.bufnr)
+  vim.cmd("aboveleft split")
+  vim.cmd("resize 1")
+  local status_win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(status_win, state.status_bufnr)
 
-  vim.wo[win].number = false
-  vim.wo[win].relativenumber = false
-  vim.wo[win].signcolumn = "no"
-  vim.wo[win].winfixheight = true
-  vim.wo[win].statusline = " "
-  vim.wo[win].winbar = "%!v:lua._codecompanion_input_statusline()"
-  vim.wo[win].wrap = true
-  vim.wo[win].linebreak = true
+  vim.api.nvim_win_set_height(input_win, 8)
 
-  state.winnr = win
+  vim.wo[status_win].number = false
+  vim.wo[status_win].relativenumber = false
+  vim.wo[status_win].signcolumn = "no"
+  vim.wo[status_win].winfixheight = true
+  vim.wo[status_win].statusline = " "
+  vim.wo[status_win].cursorline = false
+  vim.wo[status_win].wrap = false
+
+  vim.wo[input_win].number = false
+  vim.wo[input_win].relativenumber = false
+  vim.wo[input_win].signcolumn = "no"
+  vim.wo[input_win].winfixheight = true
+  vim.wo[input_win].statusline = " "
+  vim.wo[input_win].wrap = true
+  vim.wo[input_win].linebreak = true
+
+  state.winnr = input_win
+  state.status_winnr = status_win
   update_ui()
+  start_status_timer()
 
   -- HACK: On first open, focus the input box. On subsequent opens (toggle
   -- cycles), restore focus to wherever the user was — CodeCompanion's toggle
   -- already handles focus for the chat pane.
   if prev_win == chat_winnr then
+    vim.api.nvim_set_current_win(input_win)
     vim.cmd("startinsert")
   else
     vim.api.nvim_set_current_win(prev_win)
@@ -279,6 +390,11 @@ function M.on_chat_hidden(chat_bufnr)
     return
   end
   state.fullscreen = false
+  stop_status_timer()
+  if state.status_winnr and vim.api.nvim_win_is_valid(state.status_winnr) then
+    vim.api.nvim_win_close(state.status_winnr, true)
+  end
+  state.status_winnr = nil
   if state.winnr and vim.api.nvim_win_is_valid(state.winnr) then
     vim.api.nvim_win_close(state.winnr, true)
   end
