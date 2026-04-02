@@ -89,6 +89,7 @@ return {
                 defaults = {
                   model = "opus[1m]",
                   timeout = 120000,
+                  mode = "bypassPermissions",
                 },
                 commands = {
                   default = {
