@@ -91,13 +91,6 @@ return {
                   timeout = 120000,
                   mode = "bypassPermissions",
                 },
-                commands = {
-                  default = {
-                    "claude-agent-acp",
-                    "--yolo",
-                  },
-                },
-                env = {},
                 handlers = {
                   auth = function() return true end,
                 },
