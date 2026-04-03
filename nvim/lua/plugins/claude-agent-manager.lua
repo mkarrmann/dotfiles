@@ -402,6 +402,9 @@ end
 return {
 	{
 		"coder/claudecode.nvim",
+		opts = {
+			terminal_cmd = "claude --dangerously-skip-permissions",
+		},
 		keys = {
 			-- Standard plugin keybindings (keep in sync with dev-config.lua in claudecode.nvim)
 			{ "<leader>ac", "<cmd>ClaudeCode<cr>", desc = "Toggle Claude" },
