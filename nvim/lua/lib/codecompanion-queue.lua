@@ -346,7 +346,7 @@ function M.on_chat_opened(chat_bufnr)
   local input_win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(input_win, state.bufnr)
 
-  vim.cmd("aboveleft split")
+  vim.cmd("belowright split")
   local status_win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(status_win, state.status_bufnr)
 
