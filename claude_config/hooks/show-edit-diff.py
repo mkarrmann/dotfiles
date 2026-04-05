@@ -42,11 +42,14 @@ def main():
         # New file (Write to a path that didn't exist) — diff against empty.
         snap_arg = ""
 
+    tab_handle = os.environ.get("NVIM_TAB_HANDLE", "")
+
     def lua_escape(s):
         return s.replace("\\", "\\\\").replace("'", "\\'")
 
-    expr = "luaeval(\"require('lib.claude-edit-diff').show('{}', '{}')\")".format(
-        lua_escape(file_path), lua_escape(snap_arg)
+    tab_arg = tab_handle if tab_handle else "nil"
+    expr = "luaeval(\"require('lib.claude-edit-diff').show('{}', '{}', {})\")".format(
+        lua_escape(file_path), lua_escape(snap_arg), tab_arg
     )
 
     try:

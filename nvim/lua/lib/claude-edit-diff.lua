@@ -60,12 +60,15 @@ local function setup_win_autocmd(session)
 	})
 end
 
-local function ensure_session()
+local function ensure_session(tab_handle)
 	local session = get_session()
 	if session then
 		return session
 	end
 
+	if tab_handle then
+		pcall(vim.api.nvim_set_current_tabpage, tab_handle)
+	end
 	_term_win = find_terminal_win()
 	if _term_win then
 		vim.api.nvim_set_current_win(_term_win)
@@ -182,7 +185,10 @@ local function reload_live_buffer(file_path)
 	end
 end
 
-function M.show(file_path, snapshot_path)
+function M.show(file_path, snapshot_path, tab_handle)
+	if type(tab_handle) == "number" and tab_handle == 0 then
+		tab_handle = nil
+	end
 	vim.schedule(function()
 		local ok, err = pcall(function()
 			file_path = vim.fn.fnamemodify(file_path, ":p")
@@ -213,7 +219,7 @@ function M.show(file_path, snapshot_path)
 			end
 
 			local prev_win = vim.api.nvim_get_current_win()
-			session = ensure_session()
+			session = ensure_session(tab_handle)
 			table.insert(session.pairs, pair)
 			diff_session.register(SESSION_KEY, session)
 			diff_session.show_pair(session, #session.pairs)
