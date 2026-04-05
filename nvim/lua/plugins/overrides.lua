@@ -57,8 +57,11 @@ return {
 			vim.list_extend(opts.options.disabled_filetypes.winbar, { "codecompanion_input" })
 			vim.list_extend(opts.options.disabled_filetypes.statusline, { "codecompanion_input" })
 
-			opts.winbar = { lualine_b = { cwd }, lualine_c = { custom_or_filename } }
-			opts.inactive_winbar = { lualine_b = { cwd }, lualine_c = { custom_or_filename } }
+			local winbar_color = { fg = "#888888", bg = "#1a1a2e" }
+			local winbar_cwd = { cwd, color = winbar_color }
+			local winbar_file = { custom_or_filename, color = winbar_color }
+			opts.winbar = { lualine_b = { winbar_cwd }, lualine_c = { winbar_file } }
+			opts.inactive_winbar = { lualine_b = { winbar_cwd }, lualine_c = { winbar_file } }
 
 			opts.sections = opts.sections or {}
 			opts.sections.lualine_y = {
@@ -71,6 +74,8 @@ return {
 			}
 			opts.inactive_sections = opts.inactive_sections or {}
 			opts.inactive_sections.lualine_z = opts.sections.lualine_z
+
+			return opts
 		end,
 	},
 	{

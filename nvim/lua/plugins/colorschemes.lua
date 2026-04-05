@@ -14,6 +14,8 @@ return {
 					vim.api.nvim_set_hl(0, "DiffDelete", { sp = "#fa4d56", underline = true })
 					vim.api.nvim_set_hl(0, "DiffChange", { sp = "#d2a106", underline = true })
 					vim.api.nvim_set_hl(0, "DiffText", { sp = "#d2a106", bg = "#302a0e" })
+					vim.api.nvim_set_hl(0, "WinBar", { fg = "#888888", bg = "#1a1a2e" })
+					vim.api.nvim_set_hl(0, "WinBarNC", { fg = "#555555", bg = "#1a1a2e" })
 				end,
 			})
 		end,
