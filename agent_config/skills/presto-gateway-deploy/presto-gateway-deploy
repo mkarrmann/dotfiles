@@ -4,7 +4,8 @@ set -euo pipefail
 # presto-gateway-deploy: Builds, packages, and deploys the Presto Gateway to the test gateway.
 #
 # Steps:
-#   1. Maven install presto-gateway
+#   0. Maven install OSS presto-trunk modules (ensures .m2 deps match current checkout)
+#   1. Maven install presto-gateway (FB trunk)
 #   2. Maven deploy to Nexus — extracts version
 #   3. Build fbpkg (download from Nexus, package via make-fbpkg.sh)
 #   4. Tag fbpkg with version tag
@@ -17,39 +18,25 @@ set -euo pipefail
 # presto-gateway-deploy-finish companion script run by the user.
 #
 # Usage:
-#   presto-gateway-deploy              Full pipeline: build + deploy + apply-task-ops
-#   presto-gateway-deploy -v <ver>     Skip Maven, use existing Nexus version
-#   presto-gateway-deploy -h <hash>    Skip Maven + fbpkg, use existing fbpkg hash
+#   presto-gateway-deploy              Full pipeline: OSS build + gateway build + deploy
+#   presto-gateway-deploy -O           Skip OSS rebuild (when .m2 deps already match checkout)
+#   presto-gateway-deploy -v <ver>     Skip all Maven, use existing Nexus version
+#   presto-gateway-deploy -h <hash>    Skip all Maven + fbpkg, use existing fbpkg hash
 #   presto-gateway-deploy -s           Skip apply-task-ops (let TW roll out gradually)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# === Config ===
-# Auto-detect fbcode root from CWD, falling back to ~/fbsource/fbcode.
-_detect_fbcode() {
-    local d="$PWD"
-    while [[ "$d" != "/" ]]; do
-        if [[ -d "$d/github/presto-trunk" && "$(basename "$d")" == "fbcode" ]]; then
-            echo "$d"
-            return
-        fi
-        d="$(dirname "$d")"
-    done
-    echo "$HOME/fbsource/fbcode"
-}
-_FBCODE="$(_detect_fbcode)"
-PRESTO_FB_TRUNK="$_FBCODE/github/presto-facebook-trunk"
-TW_CONFIG="$_FBCODE/tupperware/config/presto/gateway/gateway-test.tw"
-FBPACKAGE_DIR="$_FBCODE/datainfra/presto/fbpackage"
+# === Reuse presto-build config ===
+# Source presto-build in library mode to get shared Maven flags (COMMON_OPTS,
+# OSS_OPTS, FB_OPTS), OSS_MODULES, checkout detection, and eden_prefetch().
+source "$(dirname "$SCRIPT_DIR")/presto-build/presto-build"
+
+# === Deploy-specific config ===
+PRESTO_FB_TRUNK="${DEV_HOME}/presto-facebook-trunk"
+TW_CONFIG="${FBCODE_HOME}/tupperware/config/presto/gateway/gateway-test.tw"
+FBPACKAGE_DIR="${FBCODE_HOME}/datainfra/presto/fbpackage"
 DEPLOY_LOG="/tmp/presto_gateway_deploy.log"
 NEXUS_BASE="https://maven.thefacebook.com/nexus"
-
-# Checkout isolation suffix
-_CK_SUFFIX=""
-case "$_FBCODE" in
-    "$HOME"/fbsource2|"$HOME"/fbsource2/*) _CK_SUFFIX="-2";;
-    "$HOME"/fbsource3|"$HOME"/fbsource3/*) _CK_SUFFIX="-3";;
-esac
 
 # Test gateway job handles (3 regions)
 GATEWAY_JOBS=(
@@ -58,34 +45,9 @@ GATEWAY_JOBS=(
     "tsp_ftw/presto/test-gateway"
 )
 
-# Maven flags for presto-facebook-trunk builds.
-# These intentionally omit `dependency:go-offline` and `dependency:sources`
-# (present in the ~/.localrc _f alias) since those are only useful for IDE
-# setup, not for build-and-deploy.
-#
-# Do NOT add `-am` (also-make). Dependencies must be pre-installed in
-# ~/.m2/repository. Using `-am` rebuilds all transitive dependencies,
-# which is slow and may fail on modules unrelated to the gateway.
-MVN_FLAGS=(
-    -Dmaven.gitcommitid.skip=true
-    -DuseParallelDependencyResolution=false
-    -T 48
-    -nsu
-    -Dout-of-tree-build-root="${BUILD_ROOT:-/data/users/$USER/builds}/presto-facebook-trunk${_CK_SUFFIX}"
-    -Dout-of-tree-build=true
-    -Dlicense.report.skip=true
-    -DwithPlugins=true
-    -Dos.detected.name=linux
-    -Dos.detected.arch=x86_64
-    -Dos.detected.classifier=linux-x86_64
-    -DskipTests
-)
-if [[ -n "$_CK_SUFFIX" ]]; then
-    MVN_FLAGS+=("-Dmaven.repo.local=${BUILD_ROOT:-/data/users/$USER/builds}/m2-repo${_CK_SUFFIX}")
-fi
-
 # === Flags ===
 SKIP_BUILD=false
+SKIP_OSS=false
 EXISTING_VERSION=""
 EXISTING_HASH=""
 SKIP_APPLY_OPS=false
@@ -95,18 +57,20 @@ usage() {
 Usage: presto-gateway-deploy [options]
 
 FULL PIPELINE (default):
-  (no flags)         Build, deploy to Nexus, create fbpkg, push to test gateway
+  (no flags)         Build OSS + gateway, deploy to Nexus, create fbpkg, push to test gateway
 
 SKIP BUILD:
-  -v <version>       Skip Maven build/deploy, use existing Nexus version for fbpkg
-  -h <fbpkg_hash>    Skip Maven + fbpkg, deploy existing hash to test gateway
+  -O                 Skip OSS rebuild (when .m2 deps already match the current checkout)
+  -v <version>       Skip all Maven build/deploy, use existing Nexus version for fbpkg
+  -h <fbpkg_hash>    Skip all Maven + fbpkg, deploy existing hash to test gateway
 
 OPTIONS:
   -s                 Skip apply-task-ops (allow gradual TW rollout)
   --help             Show this help
 
 EXAMPLES:
-  presto-gateway-deploy                           # Full pipeline
+  presto-gateway-deploy                           # Full pipeline (OSS + gateway)
+  presto-gateway-deploy -O                        # Skip OSS, build gateway only
   presto-gateway-deploy -v 0.297-20260221.070005-19   # Skip Maven, build fbpkg from version
   presto-gateway-deploy -h abc1234                # Deploy existing fbpkg hash
 EOF
@@ -140,6 +104,10 @@ print_manual_commands() {
 # === Parse args ===
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        -O)
+            SKIP_OSS=true
+            shift
+            ;;
         -v)
             EXISTING_VERSION="$2"
             SKIP_BUILD=true
@@ -164,14 +132,23 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# === Step 0: OSS presto-trunk install ===
+if [ "$SKIP_BUILD" = false ] && [ "$SKIP_OSS" = false ]; then
+    eden_prefetch
+    echo "=== Step 0: Maven install OSS presto-trunk ==="
+    (cd "${DEV_HOME}/presto-trunk" && mvn clean install -DskipTests \
+        "${OSS_OPTS[@]}" -pl "$OSS_MODULES" -am)
+fi
+
 # === Step 1 & 2: Maven install + deploy ===
 if [ "$SKIP_BUILD" = false ]; then
+    echo ""
     echo "=== Step 1: Maven install presto-gateway ==="
-    (cd "$PRESTO_FB_TRUNK" && mvn install "${MVN_FLAGS[@]}" -pl presto-gateway)
+    (cd "$PRESTO_FB_TRUNK" && mvn install -DskipTests "${FB_OPTS[@]}" -pl presto-gateway -am)
 
     echo ""
     echo "=== Step 2: Maven deploy to Nexus ==="
-    (cd "$PRESTO_FB_TRUNK" && mvn deploy "${MVN_FLAGS[@]}" -pl presto-gateway) 2>&1 | tee "$DEPLOY_LOG"
+    (cd "$PRESTO_FB_TRUNK" && mvn deploy -DskipTests "${FB_OPTS[@]}" -pl presto-gateway) 2>&1 | tee "$DEPLOY_LOG"
 
     # Extract version from deploy log (format: 0.NNN-YYYYMMDD.HHMMSS-N)
     EXISTING_VERSION=$(grep -oP '\d+\.\d+-\d{8}\.\d+-\d+' "$DEPLOY_LOG" | tail -1)
@@ -245,7 +222,7 @@ echo "Version: ${EXISTING_VERSION:-<from fbpkg>}"
 
 if ! TW_OUTPUT=$(GATEWAY_VERSION="${EXISTING_VERSION}" tw update "$TW_CONFIG" --all-jobs --force 2>&1); then
     echo "$TW_OUTPUT"
-    if echo "$TW_OUTPUT" | grep -qE 'context-based policy|Access was denied|Proxy CONNECT aborted'; then
+    if echo "$TW_OUTPUT" | grep -qE 'context-based policy|Access was denied|Proxy CONNECT aborted|AI agent.*denied'; then
         print_manual_commands 5
         exit 1
     fi
