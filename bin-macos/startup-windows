@@ -133,6 +133,12 @@ if ! command -v aerospace &>/dev/null; then
   exit 1
 fi
 
+if ! aerospace list-windows --all &>/dev/null; then
+  echo "ERROR: AeroSpace is not running." >&2
+  echo "Start AeroSpace.app first." >&2
+  exit 1
+fi
+
 # Ensure Ghostty is running (but don't close its default window).
 # Ghostty creates a default window on launch. We leave it open so the
 # SNAPSHOT captures it — this prevents wait_for_new_window from
@@ -146,7 +152,7 @@ fi
 # Ensure VS Code is running if any vscode workspaces are defined
 has_vscode=false
 for entry in "${WORKSPACES[@]}"; do
-  if [[ "$entry" == vscode\|* ]]; then has_vscode=true; break; fi
+  if [[ "$entry" == *\|vscode\|* ]]; then has_vscode=true; break; fi
 done
 if $has_vscode; then
   if ! osascript -e "application \"${VSCODE_APP_MACOS}\" is running" 2>/dev/null | grep -q 'true'; then
