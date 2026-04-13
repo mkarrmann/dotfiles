@@ -45,6 +45,26 @@ workspace_fingerprint() {
   echo "$windows" | jq -r '.[] | "\(.["window-id"]):\(.["app-name"])"' | sort | md5 -q
 }
 
+# Walk left-to-right from the currently focused window to discover
+# the full spatial order. Results stored in global _spatial array.
+discover_spatial_order() {
+  _spatial=()
+  while true; do
+    local p; p=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+    aerospace focus left 2>/dev/null
+    local n; n=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+    [[ "$n" == "$p" ]] && break
+  done
+  _spatial+=($(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null))
+  while true; do
+    local p; p=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+    aerospace focus right 2>/dev/null
+    local n; n=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+    [[ "$n" == "$p" ]] && break
+    _spatial+=("$n")
+  done
+}
+
 arrange_workspace() {
   local ws="$1"
 
@@ -104,45 +124,39 @@ arrange_workspace() {
   aerospace focus --window-id "$first_sidebar" 2>/dev/null
   aerospace layout tiles horizontal 2>/dev/null || true
 
-  # Discover spatial order by walking from the left edge.
+  # Sort windows so all sidebar windows are on the left and all accordion
+  # windows are on the right. Swaps accordion windows rightward past sidebar
+  # windows — an interior swap between flat root-level siblings.
+  # Multiple passes handle cascading cases (e.g. [acc, acc, sidebar]).
+  while true; do
+    aerospace focus --window-id "$first_sidebar" 2>/dev/null
+    discover_spatial_order
+
+    local did_swap=false
+    for ((idx = 0; idx < ${#_spatial[@]} - 1; idx++)); do
+      local cur="${_spatial[$idx]}" nxt="${_spatial[$((idx + 1))]}"
+      if echo "$accordion_ids" | grep -qx "$cur" && \
+         echo "$sidebar_ids" | grep -qx "$nxt"; then
+        aerospace focus --window-id "$cur" 2>/dev/null
+        aerospace move right 2>/dev/null || true
+        did_swap=true
+        break
+      fi
+    done
+    $did_swap || break
+  done
+
+  # Final spatial discovery after sorting
   aerospace focus --window-id "$first_sidebar" 2>/dev/null
-  while true; do
-    local p; p=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
-    aerospace focus left 2>/dev/null
-    local n; n=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
-    [[ "$n" == "$p" ]] && break
-  done
+  discover_spatial_order
 
-  local all_spatial=()
-  all_spatial+=($(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null))
-  while true; do
-    local p; p=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
-    aerospace focus right 2>/dev/null
-    local n; n=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
-    [[ "$n" == "$p" ]] && break
-    all_spatial+=("$n")
-  done
-
-  # Extract accordion windows in spatial order
   local spatial_accordion=()
-  for wid in "${all_spatial[@]}"; do
+  for wid in "${_spatial[@]}"; do
     if ! echo "$sidebar_ids" | grep -qx "$wid"; then
       spatial_accordion+=("$wid")
     fi
   done
   local spatial_count=${#spatial_accordion[@]}
-
-  # If accordion windows aren't adjacent (sidebar between them), swap the
-  # accordion window right past the sidebar. This is an interior swap between
-  # siblings at the same level, so `move` is safe here.
-  for ((idx = 0; idx < ${#all_spatial[@]} - 1; idx++)); do
-    local cur="${all_spatial[$idx]}" nxt="${all_spatial[$((idx + 1))]}"
-    if [[ -n "$(echo "$accordion_ids" | grep "^${cur}$")" ]] && \
-       [[ -n "$(echo "$sidebar_ids" | grep "^${nxt}$")" ]]; then
-      aerospace focus --window-id "$cur" 2>/dev/null
-      aerospace move right 2>/dev/null || true
-    fi
-  done
 
   # Build the accordion group.
   local first_accordion
