@@ -2,9 +2,11 @@
 # Called by AeroSpace on-window-detected to auto-move new windows into
 # the accordion container on workspaces that have an Orchest sidebar.
 #
-# With enable-normalization-flatten-containers = false, the accordion
-# container persists even with a single child, so we can always just
-# move the new window into it.
+# Tries `move left/right` to enter an existing accordion container.
+# Falls back to arrange-workspaces when no container exists yet (the
+# initial single-window case where join-with can't create one). Once
+# the container is built, it persists (flatten-containers = false), so
+# the fallback only fires once per workspace.
 
 sleep 0.3
 
@@ -45,4 +47,15 @@ new_root=$(aerospace list-windows --focused \
   --format '%{workspace-root-container-layout}' 2>/dev/null)
 if [[ "$new_parent" == "$new_root" ]]; then
   aerospace move right 2>/dev/null
+
+  new_parent=$(aerospace list-windows --focused \
+    --format '%{window-parent-container-layout}' 2>/dev/null)
+  new_root=$(aerospace list-windows --focused \
+    --format '%{workspace-root-container-layout}' 2>/dev/null)
+  if [[ "$new_parent" == "$new_root" ]]; then
+    # No accordion container exists yet (workspace had sidebar + single
+    # window). Now that there are 2+ non-Orchest windows, build the
+    # container. Once created, it persists (flatten-containers = false).
+    arrange-workspaces --force "$ws" >/dev/null 2>&1
+  fi
 fi
