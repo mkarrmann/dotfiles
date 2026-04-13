@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PostToolUse hook: show a diff in the parent Neovim after Edit/Write."""
+"""PostToolUse hook: notify Neovim about file edits for the diff viewer."""
 
 import filecmp
 import hashlib
@@ -7,7 +7,25 @@ import json
 import os
 import subprocess
 import sys
-import uuid
+
+
+def get_session_id(data):
+    sid = data.get("session_id", "")
+    if sid:
+        return sid
+    tab_handle = os.environ.get("NVIM_TAB_HANDLE", "")
+    if tab_handle:
+        pid_file = os.path.expanduser(f"~/.claude/agent-manager/pids/tab-{tab_handle}")
+        try:
+            with open(pid_file) as f:
+                return f.read().strip()
+        except FileNotFoundError:
+            pass
+    return ""
+
+
+def lua_escape(s):
+    return s.replace("\\", "\\\\").replace("'", "\\'")
 
 
 def main():
@@ -25,31 +43,30 @@ def main():
         return
 
     file_path = os.path.abspath(file_path)
+    session_id = get_session_id(data)
+    if not session_id:
+        return
+
     h = hashlib.md5(file_path.encode()).hexdigest()
-    snapshot = f"/tmp/.claude-edit-snapshot-{h}"
 
-    if os.path.isfile(snapshot):
-        if os.path.isfile(file_path) and filecmp.cmp(snapshot, file_path, shallow=False):
-            # File unchanged (tool probably failed) — skip diff, clean up.
-            os.remove(snapshot)
+    # Check if the file actually changed (compare against per-edit snapshot)
+    edit_snap = f"/tmp/.claude-edit-snap-{session_id}-{h}"
+    if os.path.isfile(edit_snap):
+        if os.path.isfile(file_path) and filecmp.cmp(edit_snap, file_path, shallow=False):
+            os.remove(edit_snap)
             return
-        # Move to a unique path so the shared snapshot location is immediately
-        # free for the next PreToolUse hook (avoids race with rapid edits).
-        unique = f"/tmp/.claude-edit-before-{uuid.uuid4().hex}"
-        os.rename(snapshot, unique)
-        snap_arg = unique
-    else:
-        # New file (Write to a path that didn't exist) — diff against empty.
-        snap_arg = ""
+        os.remove(edit_snap)
+    elif not os.path.isfile(file_path):
+        return
 
-    tab_handle = os.environ.get("NVIM_TAB_HANDLE", "")
+    turn_snap = f"/tmp/.claude-turn-snap-{session_id}-{h}"
+    session_snap = f"/tmp/.claude-session-snap-{session_id}-{h}"
 
-    def lua_escape(s):
-        return s.replace("\\", "\\\\").replace("'", "\\'")
-
-    tab_arg = tab_handle if tab_handle else "nil"
-    expr = "luaeval(\"require('lib.claude-edit-diff').show('{}', '{}', {})\")".format(
-        lua_escape(file_path), lua_escape(snap_arg), tab_arg
+    expr = "luaeval(\"require('lib.claude-diff').file_edited('{}', '{}', '{}', '{}')\")".format(
+        lua_escape(file_path),
+        lua_escape(turn_snap),
+        lua_escape(session_snap),
+        lua_escape(session_id),
     )
 
     try:

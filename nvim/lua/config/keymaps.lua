@@ -111,8 +111,8 @@ vim.keymap.set("n", "<leader>aS", agent_send_path, {
 	-- Works from any buffer; file explorer plugins set ft-specific overrides if needed
 })
 vim.keymap.set("n", "<leader>aD", function()
-	require("lib.claude-edit-diff").toggle()
-end, { desc = "Toggle Claude edit diff viewer" })
+	require("lib.claude-diff").toggle()
+end, { desc = "Toggle Claude diff viewer" })
 
 -- Run a command and send its output to the active agent terminal.
 local _run_state = nil -- { job, float_win, float_buf, timer, start_ms, output, line_count, agent_term }

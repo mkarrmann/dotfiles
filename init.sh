@@ -240,6 +240,14 @@ tmp=$(jq '
           "timeout": 5
         }
       ]
+    },
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash ~/.claude/hooks/new-turn-diff.sh"
+        }
+      ]
     }
   ] |
   .hooks.SessionStart = [
@@ -292,6 +300,14 @@ tmp=$(jq '
         {
           "type": "command",
           "command": "bash ~/.claude/hooks/nvim-notify.sh"
+        }
+      ]
+    },
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash ~/.claude/hooks/cleanup-diff.sh"
         }
       ]
     }
