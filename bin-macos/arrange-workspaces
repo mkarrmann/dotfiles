@@ -115,6 +115,20 @@ arrange_workspace() {
   echo "  [$ws] ${sidebar_count} sidebar + ${accordion_count} accordion → tiles | accordion"
 
   aerospace workspace "$ws" 2>/dev/null
+
+  # Unfloat any floating windows so they participate in the tiling tree
+  local all_ids
+  all_ids=$(echo "$windows" | jq -r '.[]["window-id"]')
+  for wid in $all_ids; do
+    local parent_layout
+    parent_layout=$(aerospace list-windows --all --format '%{window-id}|%{window-parent-container-layout}' 2>/dev/null \
+      | grep "^${wid}|" | cut -d'|' -f2)
+    if [[ "$parent_layout" == "floating" ]]; then
+      aerospace focus --window-id "$wid" 2>/dev/null
+      aerospace layout tiling 2>/dev/null || true
+    fi
+  done
+
   aerospace flatten-workspace-tree 2>/dev/null || true
 
   # Root defaults to accordion after flatten (default-root-container-layout).
