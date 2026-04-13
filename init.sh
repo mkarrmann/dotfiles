@@ -381,6 +381,12 @@ else
   echo "generated $nori_config"
 fi
 
+# Nori CLI
+if ! command -v nori &>/dev/null; then
+    "$DOTFILES_DIR/bin/install-or-upgrade-nori" && echo "installed nori" \
+        || echo "WARNING: nori install failed" >&2
+fi
+
 if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
     KEEP_ZSHRC=yes sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
     echo "installed oh-my-zsh"

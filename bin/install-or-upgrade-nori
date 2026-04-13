@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO="tilework-tech/nori-cli"
+BINARY_NAME="nori"
+INSTALL_DIR="${HOME}/.local/bin"
+REQUESTED_VERSION="latest"
+FORCE=0
+
+usage() {
+  cat <<'EOF'
+Usage:
+  install-or-upgrade-nori [options]
+
+Options:
+  --version <ver>       Install a specific version like 0.17.0
+                        Default: latest
+  --install-dir <dir>   Where to install the binary
+                        Default: ~/.local/bin
+  --force               Reinstall even if the requested version is already installed
+  -h, --help            Show this help
+
+Examples:
+  install-or-upgrade-nori
+  install-or-upgrade-nori --version 0.17.0
+  install-or-upgrade-nori --install-dir /usr/local/bin
+  sudo install-or-upgrade-nori --install-dir /usr/local/bin
+EOF
+}
+
+log() {
+  printf '%s\n' "$*" >&2
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    log "Missing required command: $1"
+    exit 1
+  }
+}
+
+ensure_proxy() {
+  # Meta devservers can't resolve external DNS directly — route through fwdproxy.
+  if [[ -n "${https_proxy:-}" ]]; then
+    return
+  fi
+  if [[ -n "${THRIFT_TLS_CL_CERT_PATH:-}" ]] || getent hosts fwdproxy &>/dev/null; then
+    export http_proxy="http://fwdproxy:8080"
+    export https_proxy="http://fwdproxy:8080"
+    log "Detected Meta devserver; using fwdproxy for external downloads"
+  fi
+}
+
+detect_platform() {
+  local arch
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64)
+      printf 'linux-x86_64\n'
+      ;;
+    aarch64|arm64)
+      printf 'linux-arm64\n'
+      ;;
+    *)
+      log "Unsupported architecture: $arch"
+      exit 1
+      ;;
+  esac
+}
+
+resolve_latest_version() {
+  local final_url tag
+  final_url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+    "https://github.com/${REPO}/releases/latest")"
+  tag="${final_url##*/}"   # e.g. nori-v0.17.0
+  tag="${tag#nori-v}"      # e.g. 0.17.0
+
+  if [[ -z "$tag" || "$tag" == "$final_url" ]]; then
+    log "Failed to resolve latest Nori version from GitHub Releases"
+    exit 1
+  fi
+
+  printf '%s\n' "$tag"
+}
+
+get_installed_version() {
+  local bin="$1"
+  if [[ -x "$bin" ]]; then
+    "$bin" --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.]+)?' | head -n1 || true
+  fi
+}
+
+download_and_install() {
+  local version="$1"
+  local platform="$2"
+  local install_dir="$3"
+
+  local url tmpdir tarball extracted_bin target_bin
+  url="https://github.com/${REPO}/releases/download/nori-v${version}/nori-${version}-${platform}.tar.gz"
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "$tmpdir"' EXIT
+
+  tarball="${tmpdir}/nori.tar.gz"
+  log "Downloading ${url}"
+  curl -fL --retry 3 --retry-delay 1 -o "$tarball" "$url"
+
+  tar -xzf "$tarball" -C "$tmpdir"
+
+  extracted_bin="$(find "$tmpdir" -type f -name "$BINARY_NAME" -perm -u+x | head -n1 || true)"
+  if [[ -z "$extracted_bin" ]]; then
+    log "Could not find extracted '${BINARY_NAME}' binary in release archive"
+    exit 1
+  fi
+
+  mkdir -p "$install_dir"
+  target_bin="${install_dir}/${BINARY_NAME}"
+
+  install -m 0755 "$extracted_bin" "$target_bin"
+
+  log "Installed ${BINARY_NAME} ${version} to ${target_bin}"
+  "$target_bin" --version || true
+}
+
+main() {
+  need_cmd curl
+  need_cmd tar
+  need_cmd find
+  need_cmd grep
+  need_cmd head
+  need_cmd install
+  need_cmd uname
+  need_cmd mktemp
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --version)
+        [[ $# -ge 2 ]] || { log "--version requires a value"; exit 1; }
+        REQUESTED_VERSION="$2"
+        shift 2
+        ;;
+      --install-dir)
+        [[ $# -ge 2 ]] || { log "--install-dir requires a value"; exit 1; }
+        INSTALL_DIR="$2"
+        shift 2
+        ;;
+      --force)
+        FORCE=1
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        log "Unknown argument: $1"
+        usage
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ "$(uname -s)" != "Linux" ]]; then
+    log "This script is for Linux only"
+    exit 1
+  fi
+
+  ensure_proxy
+
+  local platform version installed_version target_bin
+  platform="$(detect_platform)"
+  target_bin="${INSTALL_DIR}/${BINARY_NAME}"
+
+  if [[ "$REQUESTED_VERSION" == "latest" ]]; then
+    version="$(resolve_latest_version)"
+  else
+    version="$REQUESTED_VERSION"
+  fi
+
+  installed_version="$(get_installed_version "$target_bin")"
+
+  if [[ -n "$installed_version" ]]; then
+    log "Currently installed: ${installed_version}"
+  else
+    log "Currently installed: none"
+  fi
+  log "Requested version: ${version}"
+
+  if [[ "$FORCE" -eq 0 && -n "$installed_version" && "$installed_version" == "$version" ]]; then
+    log "Nori ${version} is already installed at ${target_bin}"
+    exit 0
+  fi
+
+  download_and_install "$version" "$platform" "$INSTALL_DIR"
+}
+
+main "$@"
