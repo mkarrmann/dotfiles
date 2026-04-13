@@ -2,21 +2,9 @@
 # Called by AeroSpace on-window-detected to auto-move new windows into
 # the accordion container on workspaces that have an Orchest sidebar.
 #
-# Two modes:
-#   1. Accordion container exists (2+ non-Orchest windows already arranged):
-#      move the new window left into the container.
-#   2. No accordion container (was a sidebar | single-window flat split):
-#      AeroSpace collapses single-child containers, so arrange-workspaces
-#      can't pre-create one. Now that a second non-Orchest window has
-#      arrived, call arrange-workspaces --force to build the container.
-#
-# AeroSpace `move` semantics (verified empirically):
-#   - `move <dir>` toward a sibling CONTAINER enters the container
-#     (becomes a child), regardless of the container's orientation.
-#     This differs from i3/sway where `move` past a container swaps
-#     positions at the same tree level.
-#   - `move <dir>` at the boundary of a container from INSIDE exits
-#     the container (or creates unintended nesting).
+# With enable-normalization-flatten-containers = false, the accordion
+# container persists even with a single child, so we can always just
+# move the new window into it.
 
 sleep 0.3
 
@@ -45,41 +33,16 @@ has_orchest=$(aerospace list-windows --workspace "$ws" --format '%{window-title}
 # Don't act during startup-windows
 [[ -f /tmp/startup-windows.lock ]] && exit 0
 
-# Check if a nested accordion container already existed BEFORE this window
-# arrived. We exclude the new window ($wid) from the check because AeroSpace
-# may temporarily place it with parent != root during insertion, which would
-# falsely indicate a container exists and skip the arrange-workspaces call
-# needed to build one.
-has_container=$(aerospace list-windows --workspace "$ws" \
-  --format '%{window-id}|%{window-title}|%{window-parent-container-layout}|%{workspace-root-container-layout}' 2>/dev/null \
-  | grep -v 'Orchest \[' \
-  | grep -v "^${wid}|" \
-  | awk -F'|' '$3 != $4 { found=1 } END { print found+0 }')
+# Move the new window into the accordion container. It may appear on either
+# side of the container depending on which window had focus when it was
+# created. Try move left first; if still at root level, try move right.
+aerospace focus --window-id "$wid" 2>/dev/null
+aerospace move left 2>/dev/null
 
-if [[ "$has_container" -eq 1 ]]; then
-  # Accordion container exists. The new window is at root level and needs
-  # to enter the accordion. It may appear on EITHER side of the container
-  # depending on which window had focus when it was created:
-  #   [Orchest, new_window, {v_accordion: ...}]  — focused on Orchest
-  #   [Orchest, {v_accordion: ...}, new_window]  — focused on accordion
-  #
-  # Strategy: try move left first (handles the common case where the new
-  # window is to the right of the accordion). If the window is still at
-  # root level after the move, it was to the left — try move right instead.
-  aerospace focus --window-id "$wid" 2>/dev/null
-  aerospace move left 2>/dev/null
-
-  new_parent=$(aerospace list-windows --focused \
-    --format '%{window-parent-container-layout}' 2>/dev/null)
-  new_root=$(aerospace list-windows --focused \
-    --format '%{workspace-root-container-layout}' 2>/dev/null)
-  if [[ "$new_parent" == "$new_root" ]]; then
-    aerospace move right 2>/dev/null
-  fi
-else
-  # No accordion container yet — this is the first additional window on a
-  # workspace that previously had only sidebar | single-window.  Delegate
-  # to arrange-workspaces which handles the full flatten → discover → group
-  # sequence correctly.
-  arrange-workspaces --force "$ws" >/dev/null 2>&1
+new_parent=$(aerospace list-windows --focused \
+  --format '%{window-parent-container-layout}' 2>/dev/null)
+new_root=$(aerospace list-windows --focused \
+  --format '%{workspace-root-container-layout}' 2>/dev/null)
+if [[ "$new_parent" == "$new_root" ]]; then
+  aerospace move right 2>/dev/null
 fi

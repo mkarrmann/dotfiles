@@ -2,6 +2,8 @@ config-version = 2
 start-at-login = true
 default-root-container-layout = 'accordion'
 default-root-container-orientation = 'vertical'
+enable-normalization-flatten-containers = false
+enable-normalization-opposite-orientation-for-nested-containers = true
 
 after-startup-command = [
     'exec-and-forget /bin/bash -l -c "sleep 3 && startup-windows"',
