@@ -6,6 +6,8 @@ BINARY_NAME="nori"
 INSTALL_DIR="${HOME}/.local/bin"
 REQUESTED_VERSION="latest"
 FORCE=0
+CLEANUP_DIR=""
+trap '[[ -n "$CLEANUP_DIR" ]] && rm -rf "$CLEANUP_DIR"' EXIT
 
 usage() {
   cat <<'EOF'
@@ -95,18 +97,17 @@ download_and_install() {
   local platform="$2"
   local install_dir="$3"
 
-  local url tmpdir tarball extracted_bin target_bin
+  local url tarball extracted_bin target_bin
   url="https://github.com/${REPO}/releases/download/nori-v${version}/nori-${version}-${platform}.tar.gz"
-  tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' EXIT
+  CLEANUP_DIR="$(mktemp -d)"
 
   tarball="${tmpdir}/nori.tar.gz"
   log "Downloading ${url}"
   curl -fL --retry 3 --retry-delay 1 -o "$tarball" "$url"
 
-  tar -xzf "$tarball" -C "$tmpdir"
+  tar -xzf "$tarball" -C "$CLEANUP_DIR"
 
-  extracted_bin="$(find "$tmpdir" -type f -name "$BINARY_NAME" -perm -u+x | head -n1 || true)"
+  extracted_bin="$(find "$CLEANUP_DIR" -type f -name "$BINARY_NAME" | head -n1 || true)"
   if [[ -z "$extracted_bin" ]]; then
     log "Could not find extracted '${BINARY_NAME}' binary in release archive"
     exit 1
