@@ -27,3 +27,8 @@ export PATH="$HOME/.local/share/bob/nvim-bin:$PATH"
 export PATH="$HOME/ob-headless:$PATH"
 
 export OBSIDIAN_VAULT="${OBSIDIAN_VAULT:-$HOME/obsidian}"
+
+# Local env (not source-controlled)
+if [[ -f ~/.shell_env.local ]]; then
+  source ~/.shell_env.local
+fi
