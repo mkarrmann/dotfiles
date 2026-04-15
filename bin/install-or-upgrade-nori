@@ -43,7 +43,8 @@ need_cmd() {
 
 ensure_proxy() {
   # Meta devservers can't resolve external DNS directly — route through fwdproxy.
-  if [[ -n "${https_proxy:-}" ]]; then
+  # Macs connect directly — only apply on Linux.
+  if [[ "$(uname -s)" != "Linux" || -n "${https_proxy:-}" ]]; then
     return
   fi
   if [[ -n "${THRIFT_TLS_CL_CERT_PATH:-}" ]] || getent hosts fwdproxy &>/dev/null; then
@@ -54,20 +55,31 @@ ensure_proxy() {
 }
 
 detect_platform() {
-  local arch
+  local os arch
+  os="$(uname -s)"
   arch="$(uname -m)"
+
+  local os_label
+  case "$os" in
+    Linux)  os_label="linux" ;;
+    Darwin) os_label="darwin" ;;
+    *)
+      log "Unsupported OS: $os"
+      exit 1
+      ;;
+  esac
+
+  local arch_label
   case "$arch" in
-    x86_64|amd64)
-      printf 'linux-x86_64\n'
-      ;;
-    aarch64|arm64)
-      printf 'linux-arm64\n'
-      ;;
+    x86_64|amd64)   arch_label="x86_64" ;;
+    aarch64|arm64)   arch_label="arm64" ;;
     *)
       log "Unsupported architecture: $arch"
       exit 1
       ;;
   esac
+
+  printf '%s-%s\n' "$os_label" "$arch_label"
 }
 
 resolve_latest_version() {
@@ -101,7 +113,7 @@ download_and_install() {
   url="https://github.com/${REPO}/releases/download/nori-v${version}/nori-${version}-${platform}.tar.gz"
   CLEANUP_DIR="$(mktemp -d)"
 
-  tarball="${tmpdir}/nori.tar.gz"
+  tarball="${CLEANUP_DIR}/nori.tar.gz"
   log "Downloading ${url}"
   curl -fL --retry 3 --retry-delay 1 -o "$tarball" "$url"
 
@@ -159,11 +171,6 @@ main() {
         ;;
     esac
   done
-
-  if [[ "$(uname -s)" != "Linux" ]]; then
-    log "This script is for Linux only"
-    exit 1
-  fi
 
   ensure_proxy
 
