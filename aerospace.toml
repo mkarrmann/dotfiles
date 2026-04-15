@@ -120,6 +120,13 @@ alt-u = 'workspace prev --wrap-around'
 alt-tab = 'workspace-back-and-forth'
 alt-shift-tab = 'move-workspace-to-monitor --wrap-around next'
 
+# Resize
+alt-shift-minus = 'resize smart -50'
+alt-shift-equal = 'resize smart +50'
+
+# Fullscreen
+alt-f = 'fullscreen'
+
 # Enter service mode
 alt-shift-semicolon = 'mode service'
 
