@@ -198,13 +198,13 @@ arrange_workspace() {
             aerospace move right 2>/dev/null || true
         done
     elif [[ "$spatial_count" -eq 1 ]]; then
-        # Single accordion window — can't create a nested container because
-        # join-with requires two windows, and `layout accordion` on a direct
-        # child of root changes the ROOT layout. Leave it as a flat tiles split
-        # with the sidebar. When a second non-Orchest window arrives,
-        # auto-accordion calls arrange-workspaces to build the container.
-        # Once built, the container persists (flatten-containers = false).
-        :
+        # Single accordion window — create a container by joining with a
+        # sidebar, then moving the sidebar back out. The single-child
+        # container persists because flatten-containers is disabled.
+        aerospace focus --window-id "$first_accordion" 2>/dev/null
+        aerospace join-with left 2>/dev/null || true
+        aerospace focus --window-id "$first_sidebar" 2>/dev/null
+        aerospace move left 2>/dev/null || true
     fi
 
     # Group sidebar windows so root has exactly 2 children → even split
@@ -219,7 +219,7 @@ arrange_workspace() {
     # layouts after structure-building avoids ambiguous spatial semantics
     # when moving windows into accordion containers (which only show one
     # window at a time).
-    if [[ "$spatial_count" -gt 1 ]]; then
+    if [[ "$spatial_count" -ge 1 ]]; then
         aerospace focus --window-id "$first_accordion" 2>/dev/null
         aerospace layout accordion 2>/dev/null || true
     fi

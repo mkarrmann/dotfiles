@@ -6,8 +6,11 @@
 # right of the sidebar). Checks parent-layout for "accordion" to verify
 # success — the parent==root heuristic can't distinguish the sidebar
 # container from root since both use tiles layout. Falls back to
-# arrange-workspaces when the move fails or no container exists yet.
-# Once the container is built, it persists (flatten-containers = false).
+# arrange-workspaces when the move fails.
+#
+# The accordion container always exists on workspaces with an Orchest
+# sidebar — arrange-workspaces creates it even for a single window
+# (using join-then-extract, enabled by flatten-containers = false).
 
 sleep 0.3
 
