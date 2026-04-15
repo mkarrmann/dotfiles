@@ -277,7 +277,7 @@ for i in "${!WORKSPACES[@]}"; do
       else
         echo "[$title] creating on workspace $ws..."
         before_snapshot="$SNAPSHOT"
-        open -na "$CHROME_APP" --args --new-window 2>/dev/null || {
+        open -na "$CHROME_APP" --args --profile-directory=Default --new-window 2>/dev/null || {
           echo "WARNING: [$title] creation failed, skipping" >&2
           ((failures++)) || true
           continue
