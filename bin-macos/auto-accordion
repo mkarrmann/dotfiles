@@ -2,11 +2,12 @@
 # Called by AeroSpace on-window-detected to auto-move new windows into
 # the accordion container on workspaces that have an Orchest sidebar.
 #
-# Tries `move left/right` to enter an existing accordion container.
-# Falls back to arrange-workspaces when no container exists yet (the
-# initial single-window case where join-with can't create one). Once
-# the container is built, it persists (flatten-containers = false), so
-# the fallback only fires once per workspace.
+# Tries `move right` to enter the accordion container (always to the
+# right of the sidebar). Checks parent-layout for "accordion" to verify
+# success — the parent==root heuristic can't distinguish the sidebar
+# container from root since both use tiles layout. Falls back to
+# arrange-workspaces when the move fails or no container exists yet.
+# Once the container is built, it persists (flatten-containers = false).
 
 sleep 0.3
 
@@ -35,27 +36,25 @@ has_orchest=$(aerospace list-windows --workspace "$ws" --format '%{window-title}
 # Don't act during startup-windows
 [[ -f /tmp/startup-windows.lock ]] && exit 0
 
-# Move the new window into the accordion container. It may appear on either
-# side of the container depending on which window had focus when it was
-# created. Try move left first; if still at root level, try move right.
+# Move the new window into the accordion container (always to the right of
+# the sidebar). Try move right only — move left risks entering the sidebar
+# container (which has the same layout type as root, making it
+# indistinguishable via the parent==root heuristic). If the window doesn't
+# land in an accordion container, fall back to a full rebuild rather than
+# trying more moves that could corrupt the tree.
 aerospace focus --window-id "$wid" 2>/dev/null
-aerospace move left 2>/dev/null
 
-new_parent=$(aerospace list-windows --focused \
+parent=$(aerospace list-windows --focused \
   --format '%{window-parent-container-layout}' 2>/dev/null)
-new_root=$(aerospace list-windows --focused \
-  --format '%{workspace-root-container-layout}' 2>/dev/null)
-if [[ "$new_parent" == "$new_root" ]]; then
-  aerospace move right 2>/dev/null
+if [[ "$parent" == *accordion* ]]; then
+  exit 0
+fi
 
-  new_parent=$(aerospace list-windows --focused \
-    --format '%{window-parent-container-layout}' 2>/dev/null)
-  new_root=$(aerospace list-windows --focused \
-    --format '%{workspace-root-container-layout}' 2>/dev/null)
-  if [[ "$new_parent" == "$new_root" ]]; then
-    # No accordion container exists yet (workspace had sidebar + single
-    # window). Now that there are 2+ non-Orchest windows, build the
-    # container. Once created, it persists (flatten-containers = false).
-    arrange-workspaces --force "$ws" >/dev/null 2>&1
-  fi
+aerospace move right 2>/dev/null
+parent=$(aerospace list-windows --focused \
+  --format '%{window-parent-container-layout}' 2>/dev/null)
+if [[ "$parent" != *accordion* ]]; then
+  # Either no accordion container exists yet, or the window landed in the
+  # wrong place. Rebuild the layout from scratch (flatten + reconstruct).
+  arrange-workspaces --force "$ws" >/dev/null 2>&1
 fi

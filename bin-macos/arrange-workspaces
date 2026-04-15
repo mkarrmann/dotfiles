@@ -140,7 +140,6 @@ arrange_workspace() {
 
     # Root defaults to accordion after flatten (default-root-container-layout).
     # Set to tiles horizontal immediately so move/join commands behave correctly.
-    # TODO is that assumption correct? Is it possible that actually the layout is preserved after flatening, and therefore we can't yet assume anything about the layout?
     local first_sidebar
     first_sidebar=$(echo "$sidebar_ids" | head -1)
     aerospace focus --window-id "$first_sidebar" 2>/dev/null
@@ -187,14 +186,13 @@ arrange_workspace() {
     if [[ "$spatial_count" -gt 1 ]]; then
         local rightmost="${spatial_accordion[$((spatial_count - 1))]}"
 
-        # Create initial 2-child container from the rightmost pair
+        # Phase 1: Build the container structure while everything is in tiles
+        # mode, where spatial semantics of move/join are unambiguous.
+        # Create initial 2-child container from the rightmost pair.
         aerospace focus --window-id "$rightmost" 2>/dev/null
         aerospace join-with left 2>/dev/null || true
 
-        # Set it to accordion
-        aerospace layout accordion 2>/dev/null || true
-
-        # Move preceding windows into the accordion (right-to-left)
+        # Move preceding windows into the container (right-to-left)
         for ((i = spatial_count - 3; i >= 0; i--)); do
             aerospace focus --window-id "${spatial_accordion[$i]}" 2>/dev/null || continue
             aerospace move right 2>/dev/null || true
@@ -215,7 +213,18 @@ arrange_workspace() {
         for _ in $(seq 1 $((sidebar_count - 1))); do
             aerospace join-with right 2>/dev/null || true
         done
-        # Set sidebar container to horizontal tiles
+    fi
+
+    # Phase 2: Apply layouts now that all containers are built. Setting
+    # layouts after structure-building avoids ambiguous spatial semantics
+    # when moving windows into accordion containers (which only show one
+    # window at a time).
+    if [[ "$spatial_count" -gt 1 ]]; then
+        aerospace focus --window-id "$first_accordion" 2>/dev/null
+        aerospace layout accordion 2>/dev/null || true
+    fi
+    if [[ "$sidebar_count" -gt 1 ]]; then
+        aerospace focus --window-id "$first_sidebar" 2>/dev/null
         aerospace layout tiles horizontal 2>/dev/null || true
     fi
 
