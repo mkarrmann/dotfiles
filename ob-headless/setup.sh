@@ -34,7 +34,7 @@ fi
 export PATH="$NODE_DIR/bin:$PATH"
 
 # 2. Install npm packages
-if [[ ! -d "$OB_DIR/node_modules/obsidian-headless" ]]; then
+if [[ ! -d "$OB_DIR/node_modules/obsidian-headless" ]] || [[ ! -d "$OB_DIR/node_modules/ws" ]]; then
   echo "Installing obsidian-headless and ws..."
   cd "$OB_DIR"
   [[ -f package.json ]] || npm init -y --silent
