@@ -68,6 +68,13 @@ EOF
   echo "created $LOCAL_LUA"
 fi
 
+# Obsidian headless sync (Linux devservers only)
+if [[ "$(uname -s)" == "Linux" ]]; then
+  echo ""
+  echo "--- Obsidian headless sync ---"
+  bash "$DOTFILES_DIR/ob-headless/setup.sh"
+fi
+
 if [[ ${#SKIPPED_FILES[@]} -gt 0 ]]; then
   echo ""
   echo "Skipped (already exist):"

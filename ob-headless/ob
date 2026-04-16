@@ -1,0 +1,3 @@
+#!/bin/bash
+export PATH="$HOME/ob-headless/node-v22.22.0-linux-x64/bin:$PATH"
+exec node --require "$HOME/ob-headless/proxy-preload.js" "$HOME/ob-headless/node_modules/.bin/ob" "$@"

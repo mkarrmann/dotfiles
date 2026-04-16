@@ -1,0 +1,15 @@
+[Unit]
+Description=Obsidian Headless Sync
+After=network.target
+
+[Service]
+Environment=http_proxy=http://fwdproxy:8080
+Environment=https_proxy=http://fwdproxy:8080
+ExecStart=%h/ob-headless/ob sync --path %h/obsidian/Personal --continuous
+Restart=always
+RestartSec=10
+StandardOutput=append:%h/.local/log/obsidian-sync.log
+StandardError=append:%h/.local/log/obsidian-sync.log
+
+[Install]
+WantedBy=default.target

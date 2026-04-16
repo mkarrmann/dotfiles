@@ -27,238 +27,237 @@ MARKER_DIR="/tmp/aerospace-arrange-markers"
 FORCE=false
 
 while [[ $# -gt 0 ]]; do
-    case "$1" in
-    --force | -f)
-        FORCE=true
-        shift
-        ;;
+  case "$1" in
+    --force|-f) FORCE=true; shift ;;
     *) break ;;
-    esac
+  esac
 done
 
 mkdir -p "$MARKER_DIR"
 
 get_screen_width() {
-    osascript -l JavaScript -e \
-        'ObjC.import("AppKit"); $.NSScreen.mainScreen.frame.size.width' 2>/dev/null || echo 0
+  osascript -l JavaScript -e \
+    'ObjC.import("AppKit"); $.NSScreen.mainScreen.frame.size.width' 2>/dev/null || echo 0
 }
 
 workspace_fingerprint() {
-    local windows="$1"
-    echo "$windows" | jq -r '.[] | "\(.["window-id"]):\(.["app-name"])"' | sort | md5 -q
+  local windows="$1"
+  echo "$windows" | jq -r '.[] | "\(.["window-id"]):\(.["app-name"])"' | sort | md5 -q
 }
 
 # Walk left-to-right from the currently focused window to discover
 # the full spatial order. Results stored in global _spatial array.
 discover_spatial_order() {
-    _spatial=()
-    while true; do
-        local p
-        p=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
-        aerospace focus left 2>/dev/null
-        local n
-        n=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
-        [[ "$n" == "$p" ]] && break
-    done
-    _spatial+=($(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null))
-    while true; do
-        local p
-        p=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
-        aerospace focus right 2>/dev/null
-        local n
-        n=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
-        [[ "$n" == "$p" ]] && break
-        _spatial+=("$n")
-    done
+  _spatial=()
+  while true; do
+    local p; p=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+    aerospace focus left 2>/dev/null
+    local n; n=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+    [[ "$n" == "$p" ]] && break
+  done
+  _spatial+=($(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null))
+  while true; do
+    local p; p=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+    aerospace focus right 2>/dev/null
+    local n; n=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+    [[ "$n" == "$p" ]] && break
+    _spatial+=("$n")
+  done
 }
 
 arrange_workspace() {
-    local ws="$1"
+  local ws="$1"
 
-    local windows
-    windows=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null) || return 0
-    local total
-    total=$(echo "$windows" | jq 'length')
+  local windows
+  windows=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null) || return 0
+  local total
+  total=$(echo "$windows" | jq 'length')
 
-    [[ "$total" -lt 2 ]] && return 0
+  [[ "$total" -lt 2 ]] && return 0
 
-    # Skip if the window set hasn't changed since last arrangement
-    local fingerprint marker_file
-    fingerprint=$(workspace_fingerprint "$windows")
-    marker_file="$MARKER_DIR/ws-$ws"
-    if [[ "$FORCE" != true ]] && [[ -f "$marker_file" ]] && [[ "$(cat "$marker_file")" == "$fingerprint" ]]; then
-        echo "  [$ws] already arranged, skipping"
-        return 0
-    fi
+  # Skip if the window set hasn't changed since last arrangement
+  local fingerprint marker_file
+  fingerprint=$(workspace_fingerprint "$windows")
+  marker_file="$MARKER_DIR/ws-$ws"
+  if [[ "$FORCE" != true ]] && [[ -f "$marker_file" ]] && [[ "$(cat "$marker_file")" == "$fingerprint" ]]; then
+    echo "  [$ws] already arranged, skipping"
+    return 0
+  fi
 
-    local sidebar_ids accordion_ids
-    sidebar_ids=$(echo "$windows" | jq -r \
-        --arg pat "$SIDEBAR_TITLE_PATTERN" \
-        '[.[] | select(.["window-title"] | test($pat))] | .[]["window-id"]') || true
-    accordion_ids=$(echo "$windows" | jq -r \
-        --arg pat "$SIDEBAR_TITLE_PATTERN" \
-        '[.[] | select(.["window-title"] | test($pat) | not)] | .[]["window-id"]') || true
+  local sidebar_ids accordion_ids
+  sidebar_ids=$(echo "$windows" | jq -r \
+    --arg pat "$SIDEBAR_TITLE_PATTERN" \
+    '[.[] | select(.["window-title"] | test($pat))] | .[]["window-id"]') || true
+  accordion_ids=$(echo "$windows" | jq -r \
+    --arg pat "$SIDEBAR_TITLE_PATTERN" \
+    '[.[] | select(.["window-title"] | test($pat) | not)] | .[]["window-id"]') || true
 
-    local accordion_count=0 sidebar_count=0
-    [[ -n "$accordion_ids" ]] && accordion_count=$(echo "$accordion_ids" | wc -l | tr -d ' ')
-    [[ -n "$sidebar_ids" ]] && sidebar_count=$(echo "$sidebar_ids" | wc -l | tr -d ' ')
+  local accordion_count=0 sidebar_count=0
+  [[ -n "$accordion_ids" ]] && accordion_count=$(echo "$accordion_ids" | wc -l | tr -d ' ')
+  [[ -n "$sidebar_ids" ]] && sidebar_count=$(echo "$sidebar_ids" | wc -l | tr -d ' ')
 
-    # Only accordion windows → flat accordion, no nesting needed
-    if [[ "$sidebar_count" -eq 0 ]]; then
-        echo "  [$ws] ${accordion_count} accordion window(s), no sidebar → flat accordion"
-        aerospace workspace "$ws" 2>/dev/null
-        aerospace flatten-workspace-tree 2>/dev/null || true
-        aerospace layout accordion vertical 2>/dev/null || true
-        echo "$fingerprint" >"$marker_file"
-        return 0
-    fi
-
-    # No accordion windows → leave as-is
-    if [[ "$accordion_count" -eq 0 ]]; then
-        echo "  [$ws] no non-Orchest windows, skipping"
-        return 0
-    fi
-
-    echo "  [$ws] ${sidebar_count} sidebar + ${accordion_count} accordion → tiles | accordion"
-
+  # Only accordion windows → flat accordion, no nesting needed
+  if [[ "$sidebar_count" -eq 0 ]]; then
+    echo "  [$ws] ${accordion_count} accordion window(s), no sidebar → flat accordion"
     aerospace workspace "$ws" 2>/dev/null
-
-    # Unfloat any floating windows so they participate in the tiling tree
-    local all_ids
-    all_ids=$(echo "$windows" | jq -r '.[]["window-id"]')
-    for wid in $all_ids; do
-        local parent_layout
-        parent_layout=$(aerospace list-windows --all --format '%{window-id}|%{window-parent-container-layout}' 2>/dev/null |
-            grep "^${wid}|" | cut -d'|' -f2)
-        if [[ "$parent_layout" == "floating" ]]; then
-            aerospace focus --window-id "$wid" 2>/dev/null
-            aerospace layout tiling 2>/dev/null || true
-        fi
-    done
-
     aerospace flatten-workspace-tree 2>/dev/null || true
+    aerospace layout accordion vertical 2>/dev/null || true
+    echo "$fingerprint" > "$marker_file"
+    return 0
+  fi
 
-    # Root defaults to accordion after flatten (default-root-container-layout).
-    # Set to tiles horizontal immediately so move/join commands behave correctly.
-    local first_sidebar
-    first_sidebar=$(echo "$sidebar_ids" | head -1)
-    aerospace focus --window-id "$first_sidebar" 2>/dev/null
-    aerospace layout tiles horizontal 2>/dev/null || true
+  # No accordion windows → leave as-is
+  if [[ "$accordion_count" -eq 0 ]]; then
+    echo "  [$ws] no non-Orchest windows, skipping"
+    return 0
+  fi
 
-    # Sort windows so all sidebar windows are on the left and all accordion
-    # windows are on the right. Swaps accordion windows rightward past sidebar
-    # windows — an interior swap between flat root-level siblings.
-    # Multiple passes handle cascading cases (e.g. [acc, acc, sidebar]).
-    while true; do
-        aerospace focus --window-id "$first_sidebar" 2>/dev/null
-        discover_spatial_order
+  echo "  [$ws] ${sidebar_count} sidebar + ${accordion_count} accordion → tiles | accordion"
+  echo "    sidebar_ids: $(echo $sidebar_ids | tr '\n' ' ')"
+  echo "    accordion_ids: $(echo $accordion_ids | tr '\n' ' ')"
 
-        local did_swap=false
-        for ((idx = 0; idx < ${#_spatial[@]} - 1; idx++)); do
-            local cur="${_spatial[$idx]}" nxt="${_spatial[$((idx + 1))]}"
-            if echo "$accordion_ids" | grep -qx "$cur" &&
-                echo "$sidebar_ids" | grep -qx "$nxt"; then
-                aerospace focus --window-id "$cur" 2>/dev/null
-                aerospace move right 2>/dev/null || true
-                did_swap=true
-                break
-            fi
-        done
-        $did_swap || break
-    done
+  aerospace workspace "$ws" 2>/dev/null
 
-    # Final spatial discovery after sorting
+  # Unfloat any floating windows so they participate in the tiling tree
+  local all_ids
+  all_ids=$(echo "$windows" | jq -r '.[]["window-id"]')
+  for wid in $all_ids; do
+    local parent_layout
+    parent_layout=$(aerospace list-windows --all --format '%{window-id}|%{window-parent-container-layout}' 2>/dev/null \
+      | grep "^${wid}|" | cut -d'|' -f2)
+    if [[ "$parent_layout" == "floating" ]]; then
+      echo "    unfloating window $wid"
+      aerospace focus --window-id "$wid" 2>/dev/null
+      aerospace layout tiling 2>/dev/null || true
+    fi
+  done
+
+  aerospace flatten-workspace-tree 2>/dev/null || true
+
+  echo "    after flatten: $(aerospace list-windows --workspace "$ws" --format '%{window-id}:%{window-parent-container-layout}' 2>/dev/null | tr '\n' ' ')"
+
+  # Root defaults to accordion after flatten (default-root-container-layout).
+  # Set to tiles horizontal immediately so move/join commands behave correctly.
+  local first_sidebar
+  first_sidebar=$(echo "$sidebar_ids" | head -1)
+  aerospace focus --window-id "$first_sidebar" 2>/dev/null
+  aerospace layout tiles horizontal 2>/dev/null || true
+
+  echo "    after tiles horizontal: $(aerospace list-windows --workspace "$ws" --format '%{window-id}:%{window-parent-container-layout}' 2>/dev/null | tr '\n' ' ')"
+
+  # Sort windows so all sidebar windows are on the left and all accordion
+  # windows are on the right. Swaps accordion windows rightward past sidebar
+  # windows — an interior swap between flat root-level siblings.
+  # Multiple passes handle cascading cases (e.g. [acc, acc, sidebar]).
+  while true; do
     aerospace focus --window-id "$first_sidebar" 2>/dev/null
     discover_spatial_order
+    echo "    swap scan: ${_spatial[*]}"
 
-    local spatial_accordion=()
-    for wid in "${_spatial[@]}"; do
-        if ! echo "$sidebar_ids" | grep -qx "$wid"; then
-            spatial_accordion+=("$wid")
-        fi
+    local did_swap=false
+    for ((idx = 0; idx < ${#_spatial[@]} - 1; idx++)); do
+      local cur="${_spatial[$idx]}" nxt="${_spatial[$((idx + 1))]}"
+      if echo "$accordion_ids" | grep -qx "$cur" && \
+         echo "$sidebar_ids" | grep -qx "$nxt"; then
+        echo "    swapping $cur right (past sidebar $nxt)"
+        aerospace focus --window-id "$cur" 2>/dev/null
+        aerospace move right 2>/dev/null || true
+        did_swap=true
+        break
+      fi
     done
-    local spatial_count=${#spatial_accordion[@]}
+    $did_swap || break
+  done
 
-    # Build the accordion group.
-    local first_accordion
-    first_accordion=$(echo "$accordion_ids" | head -1)
+  # Final spatial discovery after sorting
+  aerospace focus --window-id "$first_sidebar" 2>/dev/null
+  discover_spatial_order
+  echo "    final spatial: ${_spatial[*]}"
 
-    if [[ "$spatial_count" -gt 1 ]]; then
-        local rightmost="${spatial_accordion[$((spatial_count - 1))]}"
-
-        # Phase 1: Build the container structure while everything is in tiles
-        # mode, where spatial semantics of move/join are unambiguous.
-        # Create initial 2-child container from the rightmost pair.
-        aerospace focus --window-id "$rightmost" 2>/dev/null
-        aerospace join-with left 2>/dev/null || true
-
-        # Move preceding windows into the container (right-to-left)
-        for ((i = spatial_count - 3; i >= 0; i--)); do
-            aerospace focus --window-id "${spatial_accordion[$i]}" 2>/dev/null || continue
-            aerospace move right 2>/dev/null || true
-        done
-    elif [[ "$spatial_count" -eq 1 ]]; then
-        # Single accordion window — create a container by joining with a
-        # sidebar, then moving the sidebar back out. The single-child
-        # container persists because flatten-containers is disabled.
-        aerospace focus --window-id "$first_accordion" 2>/dev/null
-        aerospace join-with left 2>/dev/null || true
-        aerospace focus --window-id "$first_sidebar" 2>/dev/null
-        aerospace move left 2>/dev/null || true
+  local spatial_accordion=()
+  for wid in "${_spatial[@]}"; do
+    if ! echo "$sidebar_ids" | grep -qx "$wid"; then
+      spatial_accordion+=("$wid")
     fi
+  done
+  local spatial_count=${#spatial_accordion[@]}
+  echo "    spatial_accordion: ${spatial_accordion[*]} (count=$spatial_count)"
 
-    # Group sidebar windows so root has exactly 2 children → even split
-    if [[ "$sidebar_count" -gt 1 ]]; then
-        aerospace focus --window-id "$first_sidebar" 2>/dev/null
-        for _ in $(seq 1 $((sidebar_count - 1))); do
-            aerospace join-with right 2>/dev/null || true
-        done
-    fi
+  # Build the accordion group.
+  local first_accordion
+  first_accordion=$(echo "$accordion_ids" | head -1)
 
-    # Phase 2: Apply layouts now that all containers are built. Setting
-    # layouts after structure-building avoids ambiguous spatial semantics
-    # when moving windows into accordion containers (which only show one
-    # window at a time).
-    if [[ "$spatial_count" -ge 1 ]]; then
-        aerospace focus --window-id "$first_accordion" 2>/dev/null
-        aerospace layout accordion 2>/dev/null || true
-    fi
-    if [[ "$sidebar_count" -gt 1 ]]; then
-        aerospace focus --window-id "$first_sidebar" 2>/dev/null
-        aerospace layout tiles horizontal 2>/dev/null || true
-    fi
+  if [[ "$spatial_count" -gt 1 ]]; then
+    local rightmost="${spatial_accordion[$((spatial_count - 1))]}"
 
-    # Resize from the default 50/50 to the configured split.
-    local accordion_percent=$((100 - SIDEBAR_PERCENT))
-    if [[ "$accordion_percent" -ne 50 ]]; then
-        local screen_width
-        screen_width=$(get_screen_width)
-        if [[ "$screen_width" -gt 0 ]]; then
-            local delta=$((screen_width * (accordion_percent - 50) / 100))
-            aerospace focus --window-id "$first_accordion" 2>/dev/null
-            aerospace resize width "+$delta" 2>/dev/null || true
-        fi
-    fi
+    echo "    join-with: focusing $rightmost, join-with left"
+    # Create initial 2-child container from the rightmost pair
+    aerospace focus --window-id "$rightmost" 2>/dev/null
+    aerospace join-with left 2>/dev/null || true
 
-    echo "$fingerprint" >"$marker_file"
+    echo "    after join-with: $(aerospace list-windows --workspace "$ws" --format '%{window-id}:%{window-parent-container-layout}' 2>/dev/null | tr '\n' ' ')"
+
+    # Set it to accordion
+    aerospace layout accordion 2>/dev/null || true
+
+    echo "    after layout accordion: $(aerospace list-windows --workspace "$ws" --format '%{window-id}:%{window-parent-container-layout}' 2>/dev/null | tr '\n' ' ')"
+
+    # Move preceding windows into the accordion (right-to-left)
+    for (( i = spatial_count - 3; i >= 0; i-- )); do
+      aerospace focus --window-id "${spatial_accordion[$i]}" 2>/dev/null || continue
+      aerospace move right 2>/dev/null || true
+    done
+  elif [[ "$spatial_count" -eq 1 ]]; then
+    # Single accordion window — can't create a nested container because
+    # join-with requires two windows, and `layout accordion` on a direct
+    # child of root changes the ROOT layout. Leave it as a flat tiles split
+    # with the sidebar. When a second non-Orchest window arrives,
+    # auto-accordion calls arrange-workspaces to build the container.
+    # Once built, the container persists (flatten-containers = false).
+    :
+  fi
+
+  # Group sidebar windows so root has exactly 2 children → even split
+  if [[ "$sidebar_count" -gt 1 ]]; then
+    aerospace focus --window-id "$first_sidebar" 2>/dev/null
+    for _ in $(seq 1 $((sidebar_count - 1))); do
+      aerospace join-with right 2>/dev/null || true
+    done
+    # Set sidebar container to horizontal tiles
+    aerospace layout tiles horizontal 2>/dev/null || true
+  fi
+
+  # Resize from the default 50/50 to the configured split.
+  local accordion_percent=$((100 - SIDEBAR_PERCENT))
+  if [[ "$accordion_percent" -ne 50 ]]; then
+    local screen_width
+    screen_width=$(get_screen_width)
+    if [[ "$screen_width" -gt 0 ]]; then
+      local delta=$(( screen_width * (accordion_percent - 50) / 100 ))
+      aerospace focus --window-id "$first_accordion" 2>/dev/null
+      aerospace resize width "+$delta" 2>/dev/null || true
+    fi
+  fi
+
+  echo "$fingerprint" > "$marker_file"
 }
 
 # ── Main ──────────────────────────────────────────────────────────────
 
 # Accept workspace list as args, or default to all non-empty workspaces
 if [[ $# -gt 0 ]]; then
-    workspaces=("$@")
+  workspaces=("$@")
 else
-    while IFS= read -r w; do
-        workspaces+=("$w")
-    done < <(
-        aerospace list-workspaces --all --json 2>/dev/null |
-            jq -r '.[]["workspace"]'
-    )
+  while IFS= read -r w; do
+    workspaces+=("$w")
+  done < <(
+    aerospace list-workspaces --all --json 2>/dev/null \
+      | jq -r '.[]["workspace"]'
+  )
 fi
 
 echo "Arranging workspace layouts..."
 for ws in "${workspaces[@]}"; do
-    arrange_workspace "$ws"
+  arrange_workspace "$ws"
 done
 echo "Done."
