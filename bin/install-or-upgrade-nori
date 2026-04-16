@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO="tilework-tech/nori-cli"
-BINARY_NAME="nori"
+BINARY_NAME="nori-bin"
 INSTALL_DIR="${HOME}/.local/bin"
 REQUESTED_VERSION="latest"
 FORCE=0
