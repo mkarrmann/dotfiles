@@ -32,3 +32,6 @@ export OBSIDIAN_VAULT="${OBSIDIAN_VAULT:-$HOME/obsidian}"
 if [[ -f ~/.shell_env.local ]]; then
   source ~/.shell_env.local
 fi
+
+export CLAUDE_CODE_NO_FLICKER=0
+
