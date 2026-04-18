@@ -161,8 +161,8 @@ local function chdir_if_needed(dir)
 	if dir and dir ~= "" and vim.fn.isdirectory(dir) == 1 then
 		local cwd = vim.fn.getcwd()
 		if dir ~= cwd then
-			vim.fn.chdir(dir)
-			vim.notify("cd " .. dir)
+			vim.cmd.tcd(dir)
+			vim.notify("tcd " .. dir)
 		end
 	end
 end
@@ -335,7 +335,7 @@ local function prompt_new_window()
 		vim.api.nvim_tabpage_set_var(target_tab, "tab_name", label)
 		vim.cmd("redrawtabline")
 		vim.env.NVIM_TAB_HANDLE = tostring(target_tab)
-		vim.fn.chdir(cwd)
+		vim.cmd.tcd(cwd)
 		vim.cmd("ClaudeCode")
 
 		vim.defer_fn(function()
@@ -378,7 +378,7 @@ local function prompt_new_pane()
 		local target_tab = vim.api.nvim_get_current_tabpage()
 		vim.env.NVIM_TAB_HANDLE = tostring(target_tab)
 		vim.cmd("vsplit")
-		vim.fn.chdir(cwd)
+		vim.cmd.tcd(cwd)
 		vim.cmd("ClaudeCode")
 
 		vim.defer_fn(function()
