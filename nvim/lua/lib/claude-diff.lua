@@ -383,9 +383,7 @@ local function setup_diff_tab(state, session_id)
 		update_winbar(state)
 	end
 
-	if state.work_tab and vim.api.nvim_tabpage_is_valid(state.work_tab) then
-		vim.api.nvim_set_current_tabpage(state.work_tab)
-	end
+	vim.api.nvim_set_current_win(state.left_win)
 end
 
 --- Public API ---
@@ -398,7 +396,17 @@ function M.toggle()
 	end
 	local state = get_state(session_id)
 	if state.diff_tab and vim.api.nvim_tabpage_is_valid(state.diff_tab) then
-		close_diff_tab(state)
+		local current_tab = vim.api.nvim_get_current_tabpage()
+		if current_tab == state.diff_tab then
+			if state.work_tab and vim.api.nvim_tabpage_is_valid(state.work_tab) then
+				vim.api.nvim_set_current_tabpage(state.work_tab)
+			end
+		else
+			vim.api.nvim_set_current_tabpage(state.diff_tab)
+			if state.left_win and vim.api.nvim_win_is_valid(state.left_win) then
+				vim.api.nvim_set_current_win(state.left_win)
+			end
+		end
 	else
 		setup_diff_tab(state, session_id)
 	end
@@ -540,6 +548,21 @@ function M.cleanup(session_id)
 		pcall(vim.api.nvim_del_augroup_by_name, "claude_diff_" .. session_id)
 	end)
 	return true
+end
+
+function M.debug()
+	local tab_sid = vim.t.claude_session_id
+	local lines = { "claude-diff debug:" }
+	table.insert(lines, "  vim.t.claude_session_id = " .. vim.inspect(tab_sid))
+	table.insert(lines, "  sessions:")
+	for sid, state in pairs(_sessions) do
+		local match = (sid == tab_sid) and " (MATCH)" or ""
+		table.insert(lines, string.format("    %s%s: %d files, %d turn_files", sid, match, #state.files, #state.turn_files))
+	end
+	if not next(_sessions) then
+		table.insert(lines, "    (none — file_edited was never called)")
+	end
+	vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO)
 end
 
 return M
