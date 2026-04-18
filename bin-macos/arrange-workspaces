@@ -208,27 +208,31 @@ arrange_workspace() {
       aerospace move right 2>/dev/null || true
     done
   elif [[ "$spatial_count" -eq 1 ]]; then
-    # Single accordion window — create a single-child accordion container.
-    # join-with puts both windows in one container; since it's root's only
-    # child, `move` can't extract the sidebar (no target). Float→tile
-    # bypasses this: floating detaches from the container, tiling re-inserts
-    # at root level. The single-child accordion persists (flatten-containers
-    # = false), so auto-accordion's `move right` finds it when new windows
-    # arrive.
-    echo "    join-then-extract: creating single-child accordion container"
-    aerospace focus --window-id "${spatial_accordion[0]}" 2>/dev/null
-    aerospace join-with left 2>/dev/null || true
-    aerospace layout accordion 2>/dev/null || true
+    # Single accordion window — create a single-child accordion container
+    # using a scaffold window. We can't join the accordion with the sidebar
+    # because extracting the sidebar afterward always lands it rightmost,
+    # and `move left` enters the accordion rather than swapping.
+    # Instead: borrow a window from Z, join it with the accordion window
+    # (scaffold lands rightmost, so join-with left pairs them), set to
+    # accordion, then return the scaffold. The sidebar never moves.
+    local scaffold_wid
+    scaffold_wid=$(aerospace list-windows --workspace Z \
+      --format '%{window-id}|%{window-parent-container-layout}' 2>/dev/null \
+      | grep -v '|floating$' | head -1 | cut -d'|' -f1)
 
-    # Float sidebar out of the accordion, then re-tile at root level
-    aerospace focus --window-id "$first_sidebar" 2>/dev/null
-    aerospace layout floating 2>/dev/null || true
-    aerospace layout tiling 2>/dev/null || true
+    if [[ -n "$scaffold_wid" ]]; then
+      echo "    scaffold: borrowing $scaffold_wid from Z"
+      aerospace move-node-to-workspace --window-id "$scaffold_wid" "$ws" 2>/dev/null || true
 
-    # Re-tiled windows may land rightmost; move sidebar left if needed
-    discover_spatial_order
-    if [[ "${#_spatial[@]}" -ge 2 && "${_spatial[0]}" != "$first_sidebar" ]]; then
-      aerospace move left 2>/dev/null || true
+      # Scaffold lands rightmost: [..., accordion, scaffold]
+      aerospace focus --window-id "$scaffold_wid" 2>/dev/null
+      aerospace join-with left 2>/dev/null || true
+      aerospace layout accordion 2>/dev/null || true
+
+      # Return scaffold — single-child accordion persists
+      aerospace move-node-to-workspace --window-id "$scaffold_wid" Z 2>/dev/null || true
+    else
+      echo "    no scaffold window on Z, skipping single-child accordion"
     fi
   fi
 
