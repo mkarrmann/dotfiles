@@ -208,27 +208,28 @@ arrange_workspace() {
       aerospace move right 2>/dev/null || true
     done
   elif [[ "$spatial_count" -eq 1 ]]; then
-    # Single accordion window — create a single-child accordion container
-    # via join-then-extract: join with the adjacent sidebar to get a 2-child
-    # container, set it to accordion, then extract the sidebar back to root.
-    # The single-child container persists (flatten-containers = false), so
-    # auto-accordion's `move right` can find it when new windows arrive.
+    # Single accordion window — create a single-child accordion container.
+    # join-with puts both windows in one container; since it's root's only
+    # child, `move` can't extract the sidebar (no target). Float→tile
+    # bypasses this: floating detaches from the container, tiling re-inserts
+    # at root level. The single-child accordion persists (flatten-containers
+    # = false), so auto-accordion's `move right` finds it when new windows
+    # arrive.
     echo "    join-then-extract: creating single-child accordion container"
     aerospace focus --window-id "${spatial_accordion[0]}" 2>/dev/null
     aerospace join-with left 2>/dev/null || true
-
-    echo "    after join-with: $(aerospace list-windows --workspace "$ws" --format '%{window-id}:%{window-parent-container-layout}' 2>/dev/null | tr '\n' ' ')"
-
     aerospace layout accordion 2>/dev/null || true
 
-    echo "    after layout accordion: $(aerospace list-windows --workspace "$ws" --format '%{window-id}:%{window-parent-container-layout}' 2>/dev/null | tr '\n' ' ')"
+    # Float sidebar out of the accordion, then re-tile at root level
+    aerospace focus --window-id "$first_sidebar" 2>/dev/null
+    aerospace layout floating 2>/dev/null || true
+    aerospace layout tiling 2>/dev/null || true
 
-    # Extract the sidebar back to root: focus left reaches the sidebar
-    # inside the accordion, then move left extracts it to the parent.
-    aerospace focus left 2>/dev/null
-    aerospace move left 2>/dev/null || true
-
-    echo "    after extract: $(aerospace list-windows --workspace "$ws" --format '%{window-id}:%{window-parent-container-layout}' 2>/dev/null | tr '\n' ' ')"
+    # Re-tiled windows may land rightmost; move sidebar left if needed
+    discover_spatial_order
+    if [[ "${#_spatial[@]}" -ge 2 && "${_spatial[0]}" != "$first_sidebar" ]]; then
+      aerospace move left 2>/dev/null || true
+    fi
   fi
 
   # Group sidebar windows so root has exactly 2 children → even split
