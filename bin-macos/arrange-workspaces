@@ -208,13 +208,27 @@ arrange_workspace() {
       aerospace move right 2>/dev/null || true
     done
   elif [[ "$spatial_count" -eq 1 ]]; then
-    # Single accordion window — can't create a nested container because
-    # join-with requires two windows, and `layout accordion` on a direct
-    # child of root changes the ROOT layout. Leave it as a flat tiles split
-    # with the sidebar. When a second non-Orchest window arrives,
-    # auto-accordion calls arrange-workspaces to build the container.
-    # Once built, the container persists (flatten-containers = false).
-    :
+    # Single accordion window — create a single-child accordion container
+    # via join-then-extract: join with the adjacent sidebar to get a 2-child
+    # container, set it to accordion, then extract the sidebar back to root.
+    # The single-child container persists (flatten-containers = false), so
+    # auto-accordion's `move right` can find it when new windows arrive.
+    echo "    join-then-extract: creating single-child accordion container"
+    aerospace focus --window-id "${spatial_accordion[0]}" 2>/dev/null
+    aerospace join-with left 2>/dev/null || true
+
+    echo "    after join-with: $(aerospace list-windows --workspace "$ws" --format '%{window-id}:%{window-parent-container-layout}' 2>/dev/null | tr '\n' ' ')"
+
+    aerospace layout accordion 2>/dev/null || true
+
+    echo "    after layout accordion: $(aerospace list-windows --workspace "$ws" --format '%{window-id}:%{window-parent-container-layout}' 2>/dev/null | tr '\n' ' ')"
+
+    # Extract the sidebar back to root: focus left reaches the sidebar
+    # inside the accordion, then move left extracts it to the parent.
+    aerospace focus left 2>/dev/null
+    aerospace move left 2>/dev/null || true
+
+    echo "    after extract: $(aerospace list-windows --workspace "$ws" --format '%{window-id}:%{window-parent-container-layout}' 2>/dev/null | tr '\n' ' ')"
   fi
 
   # Group sidebar windows so root has exactly 2 children → even split
