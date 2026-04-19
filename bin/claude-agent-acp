@@ -1,4 +1,20 @@
 #!/bin/bash
+# DO NOT "clean up" by switching CLAUDE_CODE_EXECUTABLE to `command -v claude`.
+# The two settings below are both load-bearing — removing either causes silent
+# hangs or 401s from aiplatform.googleapis.com when used through CodeCompanion / nori:
+#
+#   1. PATH prepend: ~/bin/nosandbox/sandbox-exec is a shim that strips macOS
+#      sandbox flags. Meta's claude_code/claude launcher uses sandbox-exec to
+#      start its local auth revproxy (the one that injects Vertex tokens).
+#      Without the shim, the proxy can't reach the network and the SDK either
+#      hangs or falls back to direct Vertex calls with no creds.
+#   2. CLAUDE_CODE_EXECUTABLE points directly at os/claude (NOT ~/bin/claude),
+#      because ~/bin/claude echoes 'using custom wrapper' to stdout, which
+#      corrupts the ACP JSON-RPC stream the parent process reads from claude.
+#
+# Also: nvim launched outside an interactive shell (e.g. AeroSpace) may not have
+# ~/bin in PATH, so `command -v claude` would silently miss the wrapper anyway.
+export PATH="$HOME/bin/nosandbox:$PATH"
 export CLAUDE_CODE_EXECUTABLE="${CLAUDE_CODE_EXECUTABLE:-/usr/local/bin/claude_code/os/claude}"
 export NODE_EXTRA_CA_CERTS="/var/facebook/rootcanal/ca.pem"
 export CODEX_MANAGED_CONFIG_PATH=/dev/null
