@@ -375,6 +375,20 @@ local function setup_diff_tab(state, session_id)
 		end,
 	})
 
+	vim.api.nvim_create_autocmd("BufWinEnter", {
+		group = group,
+		callback = function(args)
+			if not state.diff_tab or vim.api.nvim_get_current_tabpage() ~= state.diff_tab then
+				return
+			end
+			set_keymaps(args.buf, session_id)
+		end,
+	})
+
+	for _, win in ipairs({ state.left_win, state.right_win }) do
+		set_keymaps(vim.api.nvim_win_get_buf(win), session_id)
+	end
+
 	if #state.turn_files == 0 and #state.files > 0 then
 		state.mode = "session"
 	end
