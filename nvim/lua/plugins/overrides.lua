@@ -47,6 +47,10 @@ return {
 				if vim.bo.modified then
 					name = name .. " [+]"
 				end
+				local autosave = require("lib.autosave").status()
+				if autosave ~= "" then
+					name = name .. " " .. autosave
+				end
 				return name
 			end
 

@@ -63,4 +63,6 @@ function _G._open_from_terminal(path)
 	vim.cmd.vsplit(vim.fn.fnameescape(path))
 end
 
+require("lib.autosave").setup()
+
 pcall(require, "config.local")
