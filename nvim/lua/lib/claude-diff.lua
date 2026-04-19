@@ -375,6 +375,10 @@ local function setup_diff_tab(state, session_id)
 		end,
 	})
 
+	if #state.turn_files == 0 and #state.files > 0 then
+		state.mode = "session"
+	end
+
 	local file_list = get_file_list(state)
 	if #file_list > 0 then
 		state.index = math.min(state.index, #file_list)
