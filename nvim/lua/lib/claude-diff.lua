@@ -205,6 +205,8 @@ end
 
 --- Keymaps ---
 
+local close_diff_tab
+
 local function set_keymaps(buf, session_id)
 	if not buf or not vim.api.nvim_buf_is_valid(buf) then
 		return
@@ -265,7 +267,7 @@ local function set_keymaps(buf, session_id)
 	end, { buffer = buf, desc = "Jump to diff file" })
 
 	vim.keymap.set("n", "gq", function()
-		M.toggle()
+		close_diff_tab(get_state(session_id))
 	end, { buffer = buf, desc = "Close diff tab" })
 
 	vim.keymap.set("n", "gm", function()
@@ -303,7 +305,7 @@ end
 
 --- Tab management ---
 
-local function close_diff_tab(state)
+close_diff_tab = function(state)
 	if not state.diff_tab then
 		return
 	end
