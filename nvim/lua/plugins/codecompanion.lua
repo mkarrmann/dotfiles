@@ -107,7 +107,7 @@ return {
         },
 
         opts = {
-          log_level = "ERROR",
+          log_level = "DEBUG",
         },
 
         extensions = {
