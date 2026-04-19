@@ -141,9 +141,11 @@ arrange_workspace() {
   local first_sidebar
   first_sidebar=$(echo "$sidebar_ids" | head -1)
   aerospace focus --window-id "$first_sidebar" 2>/dev/null
-  aerospace layout tiles horizontal 2>/dev/null || true
+  # Use h_tiles directly — `layout tiles horizontal` cycles through args
+  # rather than setting both, so it leaves a v_accordion root as v_tiles.
+  aerospace layout h_tiles 2>/dev/null || true
 
-  echo "    after tiles horizontal: $(aerospace list-windows --workspace "$ws" --format '%{window-id}:%{window-parent-container-layout}' 2>/dev/null | tr '\n' ' ')"
+  echo "    after h_tiles: $(aerospace list-windows --workspace "$ws" --format '%{window-id}:%{window-parent-container-layout}' 2>/dev/null | tr '\n' ' ')"
 
   # Sort windows so all sidebar windows are on the left and all accordion
   # windows are on the right. Swaps accordion windows rightward past sidebar
@@ -181,7 +183,8 @@ arrange_workspace() {
     fi
   done
   local spatial_count=${#spatial_accordion[@]}
-  echo "    spatial_accordion: ${spatial_accordion[*]} (count=$spatial_count)"
+  # `${arr[*]}` on an empty array trips `set -u` in bash 3.2.
+  echo "    spatial_accordion: ${spatial_accordion[*]:-} (count=$spatial_count)"
 
   # Build the accordion group.
   local first_accordion
@@ -243,7 +246,7 @@ arrange_workspace() {
       aerospace join-with right 2>/dev/null || true
     done
     # Set sidebar container to horizontal tiles
-    aerospace layout tiles horizontal 2>/dev/null || true
+    aerospace layout h_tiles 2>/dev/null || true
   fi
 
   # Resize from the default 50/50 to the configured split.
