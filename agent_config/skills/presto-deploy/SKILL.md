@@ -31,16 +31,14 @@ Handles the full Nexus deploy, fbpkg packaging, and cluster deployment pipeline.
 - `presto-build` -- Local builds, unit tests, and checkstyle
 - `presto-e2e-test` -- End-to-end testing against remote clusters (correctness verification, performance regression)
 
-## CRITICAL: SAP Policy Blocks fbpkg Tag + TW Operations
+## SAP Policy — fbpkg Tag Still Blocked
 
-SAP blocks the `claude_code` agent identity from `fbpkg tag`, `tw task-control apply-task-ops`, and `tw restart`. The `presto-deploy` script does everything it can (build, package, `pt pcm deploy`), then prints a single `presto-deploy-finish` command for the user to run.
+All Presto test/verifier TW specs now have an `allowAgents` policy (D99740807) granting Claude Code `MUTATE` and `CONTROL` permissions. This means Claude Code can run `tw update`, `tw task-control apply-task-ops`, and `tw restart` directly on test/verifier tiers. **`fbpkg tag` is still blocked** (separate fbpkg SAP policy).
 
-**What Claude Code CAN do:** `pt pcm deploy`, `fbpkg build`, `fbpkg fetch`, `fbpkg info`, `fbpkg versions`, `presto --smc`, `mvn deploy`.
+**What Claude Code CAN do:** `pt pcm deploy`, `tw update`, `tw task-control apply-task-ops`, `tw restart`, `fbpkg build`, `fbpkg fetch`, `fbpkg info`, `fbpkg versions`, `presto --smc`, `mvn deploy`.
 
 **What the user MUST do via `presto-deploy-finish`:**
-- `fbpkg tag` -- tag the hybrid package
-- `tw task-control apply-task-ops` -- accelerate deploy rollout
-- `tw restart` -- recover broken clusters
+- `fbpkg tag` -- tag the hybrid package (only needed for hybrid builds)
 
 ## CRITICAL: Prefer Existing fbpkgs Over Building from Source
 
@@ -113,9 +111,9 @@ Run `presto-deploy`, then paste the `presto-deploy-finish` command for the user 
    presto-deploy -J <hash> -c <cluster> -r "<reason>"  # Existing Java fbpkg
    ```
 
-3. **Paste the `presto-deploy-finish` command** from the script output for the user to run. This handles `fbpkg tag` (if hybrid) and `accelerate` (apply-task-ops to speed up rollout).
+3. **Accelerate the rollout** -- the `presto-deploy` script now runs `presto-deploy-finish accelerate` automatically after deployment. For hybrid builds, paste the `presto-deploy-finish tag` command for the user to run (`fbpkg tag` is still blocked).
 
-4. **Verify** after the user runs the finish command:
+4. **Verify** the deployment:
    ```bash
    presto --smc <cluster> --oncall presto_release_internal \
        --execute "SELECT node_version, coordinator, count(*) FROM system.runtime.nodes GROUP BY 1, 2"
@@ -149,7 +147,7 @@ Or manually via `pt pcm deploy`:
 pt pcm deploy -c <cluster> -l -r "<reason>" -f -ni -dt 0
 ```
 
-Then ask the user to run:
+Then accelerate the rollout:
 ```bash
 presto-deploy-finish accelerate <cluster>
 ```
@@ -163,7 +161,7 @@ Cancel the stale PCM request before retrying:
 pt pcm cancel --request_id <request_id>
 ```
 
-If workers are crash-looping and need a restart, ask the user to run:
+If workers are crash-looping and need a restart:
 ```bash
 presto-deploy-finish restart <cluster>
 ```
@@ -541,9 +539,9 @@ If the cluster is still restarting, this will fail with connection refused. Chec
 tw.real job show tsp_<region>/presto/<cluster_name>.worker
 ```
 
-### Recommended (human operator): `tw update` + `apply-task-ops`
+### Fast path: `tw update` + `apply-task-ops`
 
-This is the fastest deployment method but requires TW mutation permissions (not available to AI agents). It pushes the update and immediately forces all tasks to restart simultaneously:
+This is the fastest deployment method. Claude Code now has TW `MUTATE` and `CONTROL` permissions on test/verifier tiers (D99740807). It pushes the update and immediately forces all tasks to restart simultaneously:
 
 ```bash
 # 1. Verify this is a test cluster you have reserved
@@ -571,7 +569,7 @@ Note: `tw update --fast` is **deprecated** under Spec 2.0. The `apply-task-ops` 
 
 ### Restart without version change
 
-When you only need to restart tasks (e.g., after a config-only change), ask the user to run:
+When you only need to restart tasks (e.g., after a config-only change):
 
 ```bash
 presto-deploy-finish restart <cluster>
@@ -585,10 +583,10 @@ presto-deploy-finish restart <cluster>
 | fbpkg build fails | Ensure `mvn deploy` succeeded; check `/tmp/presto_dev_deploy.log` |
 | `fbpkg build` refuses to run (dirty repo) | `fbpkg build` rejects untracked files. Move `etc-local/` dirs out of repo before building, restore after. |
 | C++ fbpkg hash empty | Check `fbpkg build fbcode//fb_presto_cpp:<target>` output directly |
-| Cluster shows old version after deploy | Ask user to run `presto-deploy-finish accelerate <cluster>` |
+| Cluster shows old version after deploy | Run `presto-deploy-finish accelerate <cluster>` |
 | `presto --smc` connection refused | Cluster may still be restarting; check `tw.real job show tsp_<region>/presto/<cluster>.worker` |
-| Deploy seems stuck / rolling slowly | Ask user to run `presto-deploy-finish accelerate <cluster>` |
+| Deploy seems stuck / rolling slowly | Run `presto-deploy-finish accelerate <cluster>` |
 | `pt pcm deploy` stuck in QUEUED | A previous deploy request may be blocking. Cancel it with `pt pcm cancel --request_id <id>` (request ID is in the deploy output) |
 | `fbpkg tag` blocked by AI agent policy | The `presto-deploy` script handles this -- it prints a `presto-deploy-finish tag` command for the user |
-| Workers crash after `pt pcm deploy -l -pv` | Version mismatch: `-pv` overrides the binary but not the CONFIG_BLOB. Never combine `-l` with `-pv`. Ask user to run `presto-deploy-finish restart <cluster>` |
-| Workers crash-looping, need restart | Ask user to run `presto-deploy-finish restart <cluster>` |
+| Workers crash after `pt pcm deploy -l -pv` | Version mismatch: `-pv` overrides the binary but not the CONFIG_BLOB. Never combine `-l` with `-pv`. Run `presto-deploy-finish restart <cluster>` |
+| Workers crash-looping, need restart | Run `presto-deploy-finish restart <cluster>` |

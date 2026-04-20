@@ -4,10 +4,10 @@ set -euo pipefail
 # presto-deploy-finish: Completes the SAP-blocked steps of Presto deployment.
 #
 # Run this in your own shell after Claude Code has built packages (presto-deploy).
-# This script handles operations blocked by AI agent policy:
-#   - fbpkg tag (hybrid package tagging)
-#   - tw task-control apply-task-ops (accelerate deploy rollout)
-#   - tw restart (recover broken clusters)
+# As of D99740807, TW operations (accelerate, restart) work from Claude Code
+# on test/verifier tiers. This script is still needed for:
+#   - fbpkg tag (hybrid package tagging — still blocked by SAP)
+# The accelerate and restart commands remain available for manual use.
 #
 # Usage:
 #   presto-deploy-finish tag <hash> <version_tag> [<cpp_tag>]

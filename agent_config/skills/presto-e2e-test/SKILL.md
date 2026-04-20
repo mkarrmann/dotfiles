@@ -412,7 +412,7 @@ However, in sequential A/B on the **same cluster**, shadow tables from the contr
 | Wall time as metric | Confounded by queuing, scheduling, run ordering | Use `total_split_cpu_time_ms`; wall time is unreliable in sequential A/B |
 | Single run, small effect | 5-10% natural variance masks small effects | Run each condition twice, or increase query count |
 | Custom `--target-client-tags` not in stats | Tags may not appear in `client_tags` | Use the goshadow run ID (printed at completion) to filter query stats |
-| `tw job update` blocked by AI agent policy | Server-side policy blocks TW mutations | Use `pt pcm deploy -l` (**without `-pv`**) with local TW config. See `presto-deploy` "Claude Code Deployment" for the fast deploy pattern |
+| `tw update` on test/verifier tiers | No longer blocked — D99740807 grants Claude Code `MUTATE` and `CONTROL` permissions. Use `tw update` directly, or `pt pcm deploy -l` (**without `-pv`**) with local TW config |
 | Not verifying the config took effect | Change may not have propagated | After deploying, spot-check a query or inspect worker config before running the full suite |
 | Config-only A/B (not session property) | Requires redeployment between arms; adds time for cluster restart | Use post-construction override in `batch_native.cinc` + `pt pcm deploy -l` (**without `-pv`**); see `presto-deploy` "Modifying Cluster Config for Testing". Never combine `-l` with `-pv` — causes version mismatch that crashes workers |
 | Uncontrolled variables in A/B | Experiment measures wrong thing | Before running, explicitly list EVERY dimension that differs between arms. Confirm only the intended variable changes. Config toggles often have cascading side effects |

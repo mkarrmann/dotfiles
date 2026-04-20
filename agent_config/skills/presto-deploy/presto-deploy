@@ -4,10 +4,10 @@ set -e
 # presto-deploy: Builds, packages, and deploys Presto to remote clusters.
 # Sources presto-build for shared Maven config and build functions.
 #
-# SAP limitation: fbpkg tag, tw task-control, and tw restart are blocked when
-# run from Claude Code. This script does everything it can (build, package,
-# pt pcm deploy), then prints a single presto-deploy-finish command for the
-# user to run to complete the blocked steps.
+# SAP limitation: fbpkg tag is still blocked when run from Claude Code.
+# TW operations (tw update, tw task-control, tw restart) now work on
+# test/verifier tiers (D99740807). This script handles build, package,
+# deploy, and accelerate; only fbpkg tag is deferred to presto-deploy-finish.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -399,9 +399,11 @@ if [ -n "$HYBRID_IDENTIFIER" ] && [ -n "$HYBRID_BASE_VERSION" ]; then
     FINISH_COMMANDS+=("$FINISH_SCRIPT tag ${HYBRID_IDENTIFIER} ${local_tag} ${CPP_TARGET}-${CPP_FBPKG_HASH}")
 fi
 
-# Accelerate deploy (if deploying to cluster)
+# Accelerate deploy directly (Claude Code has TW CONTROL permissions on test/verifier tiers)
 if [ -n "$DEPLOY_CLUSTER" ]; then
-    FINISH_COMMANDS+=("$FINISH_SCRIPT accelerate ${DEPLOY_CLUSTER}")
+    set +e
+    "$FINISH_SCRIPT" accelerate "$DEPLOY_CLUSTER"
+    set -e
 fi
 
 if [ ${#FINISH_COMMANDS[@]} -gt 0 ]; then
