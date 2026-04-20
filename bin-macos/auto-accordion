@@ -12,7 +12,18 @@
 # sidebar — arrange-workspaces creates it even for a single window
 # (using join-then-extract, enabled by flatten-containers = false).
 
+# Don't act during startup-windows. Check FIRST — before sleep and before
+# any aerospace calls. startup-windows creates ~30 windows in quick
+# succession, spawning ~30 concurrent auto-accordion processes. If each
+# makes list-windows calls before bailing, the AeroSpace CLI server
+# saturates and `list-windows --all --json` can block indefinitely,
+# deadlocking startup-windows itself.
+[[ -f /tmp/startup-windows.lock ]] && exit 0
+
 sleep 0.3
+
+# Re-check: startup-windows may have grabbed the lock during our sleep.
+[[ -f /tmp/startup-windows.lock ]] && exit 0
 
 wid="${AEROSPACE_WINDOW_ID}"
 [[ -z "$wid" ]] && exit 0
@@ -35,9 +46,6 @@ case "$ws" in [1-9]) ;; *) exit 0 ;; esac
 has_orchest=$(aerospace list-windows --workspace "$ws" --format '%{window-title}' 2>/dev/null \
   | grep -c 'Orchest \[')
 [[ "$has_orchest" -eq 0 ]] && exit 0
-
-# Don't act during startup-windows
-[[ -f /tmp/startup-windows.lock ]] && exit 0
 
 # If the workspace was just arranged (< 3s ago), skip incremental moves and
 # go straight to a full rebuild. This handles the startup race: windows that
