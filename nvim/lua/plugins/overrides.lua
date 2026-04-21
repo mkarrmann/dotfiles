@@ -132,6 +132,12 @@ return {
 		end,
 	},
 	{
+		"MeanderingProgrammer/render-markdown.nvim",
+		opts = {
+			file_types = { "markdown", "codecompanion" },
+		},
+	},
+	{
 		"folke/snacks.nvim",
 		opts = {
 			notifier = {
