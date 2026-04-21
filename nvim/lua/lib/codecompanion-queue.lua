@@ -12,6 +12,7 @@ local state = {
   queued = false,
   suppress_unqueue = false,
   fullscreen = false,
+  request_start_at = nil,
 }
 
 local function setup_highlights()
@@ -125,6 +126,17 @@ local function build_status_segments()
   end
   if adapter_type == "http" and meta.tokens and meta.tokens > 0 then
     right[#right + 1] = { fmt_tokens(meta.tokens) .. " tokens", "DiagnosticInfo" }
+  end
+
+  if state.request_start_at then
+    local elapsed = os.time() - state.request_start_at
+    local hl = "DiagnosticInfo"
+    if elapsed >= 90 then
+      hl = "DiagnosticError"
+    elseif elapsed >= 30 then
+      hl = "DiagnosticWarn"
+    end
+    right[#right + 1] = { string.format("%ds", elapsed), hl }
   end
 
   return left, right
@@ -424,6 +436,22 @@ end
 
 function M.chat_bufnr()
   return state.chat_bufnr
+end
+
+function M.on_request_started(bufnr)
+  if state.chat_bufnr ~= bufnr then
+    return
+  end
+  state.request_start_at = os.time()
+  refresh_status()
+end
+
+function M.on_request_finished(bufnr)
+  if state.chat_bufnr ~= bufnr then
+    return
+  end
+  state.request_start_at = nil
+  refresh_status()
 end
 
 function M.focus()

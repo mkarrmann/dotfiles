@@ -182,7 +182,12 @@ return {
 
       vim.api.nvim_create_autocmd("User", {
         pattern = "CodeCompanionRequestStarted",
-        callback = function()
+        callback = function(args)
+          local data = args.data or {}
+          if data.bufnr then
+            require("lib.codecompanion-queue").on_request_started(data.bufnr)
+          end
+
           local bufnr = vim.api.nvim_get_current_buf()
           if vim.bo[bufnr].filetype == "codecompanion" then return end
           if bufnr == require("lib.codecompanion-queue").bufnr() then return end
@@ -212,8 +217,22 @@ return {
 
       vim.api.nvim_create_autocmd("User", {
         pattern = "CodeCompanionRequestFinished",
-        callback = function()
+        callback = function(args)
+          local data = args.data or {}
+          if data.bufnr then
+            require("lib.codecompanion-queue").on_request_finished(data.bufnr)
+          end
           clear()
+        end,
+      })
+
+      vim.api.nvim_create_user_command("CodeCompanionDoctor", function()
+        require("lib.codecompanion-doctor").run()
+      end, { desc = "Diagnose CodeCompanion / ACP state" })
+
+      vim.api.nvim_create_autocmd("VimLeavePre", {
+        callback = function()
+          pcall(function() require("lib.codecompanion-doctor").cleanup_orphans() end)
         end,
       })
 
@@ -251,6 +270,7 @@ return {
       { "<leader>ah", "<cmd>CodeCompanionChat Toggle<cr>", mode = { "n", "v" }, desc = "CodeCompanion Chat" },
       { "<leader>av", "<cmd>CodeCompanion<cr>", mode = { "n", "v" }, desc = "CodeCompanion Inline" },
       { "<leader>aq", function() require("lib.codecompanion-queue").focus() end, desc = "Focus CodeCompanion Input" },
+      { "<leader>ad", "<cmd>CodeCompanionDoctor<cr>", desc = "CodeCompanion Doctor" },
     },
   },
 }
