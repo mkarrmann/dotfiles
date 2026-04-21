@@ -72,10 +72,17 @@ vim.api.nvim_create_autocmd("WinNew", {
       end
 
       local buf = vim.api.nvim_win_get_buf(new_win)
+      -- HACK: pin bufhidden across the close so a buf with bufhidden=wipe
+      -- isn't destroyed when its only window closes.
+      local prev_bufhidden = vim.bo[buf].bufhidden
+      vim.bo[buf].bufhidden = "hide"
       vim.api.nvim_win_close(new_win, false)
       vim.api.nvim_set_current_win(chat_win)
       vim.cmd("vertical rightbelow split")
       vim.api.nvim_win_set_buf(vim.api.nvim_get_current_win(), buf)
+      if vim.api.nvim_buf_is_valid(buf) then
+        vim.bo[buf].bufhidden = prev_bufhidden
+      end
     end)
   end,
 })
