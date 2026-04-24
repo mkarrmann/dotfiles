@@ -85,7 +85,18 @@ return {
         adapters = {
           acp = {
             claude_code = function()
+              local broker_socket = vim.env.ACP_BROKER_SOCKET
+                or ((vim.env.XDG_RUNTIME_DIR or "/tmp") .. "/acp-broker.sock")
+              local attach_bin = vim.fn.expand("~/.cargo/bin/acp-broker-attach")
               return require("codecompanion.adapters").extend("claude_code", {
+                commands = {
+                  default = { attach_bin },
+                  yolo = { attach_bin },
+                },
+                env = {
+                  CLAUDE_CODE_OAUTH_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN",
+                  ACP_BROKER_SOCKET = broker_socket,
+                },
                 defaults = {
                   timeout = 120000,
                   mode = "bypassPermissions",

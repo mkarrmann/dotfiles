@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ── Args ─────────────────────────────────────────────────────────────
+ORCHEST_MODE_FLAG=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --orchest-prod) ORCHEST_MODE_FLAG="--prod"; shift ;;
+    --orchest-dev)  ORCHEST_MODE_FLAG="--dev";  shift ;;
+    -h|--help)
+      echo "Usage: startup-windows [--orchest-dev|--orchest-prod]"
+      echo "  --orchest-dev   (default) launch Orchest via 'pnpm dev' with HMR"
+      echo "  --orchest-prod  launch built Orchest from apps/desktop/out/ (lower memory)"
+      exit 0
+      ;;
+    *) echo "Unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
 # ── Workspace definitions ────────────────────────────────────────────
 # Format: ws|type|title|title_match|...
 #   ghostty: ws|ghostty|title|title_match|workdir|command
@@ -306,7 +322,7 @@ done
 
 # ── Orchest ──────────────────────────────────────────────────────────
 
-orchest-open-workspaces || {
+orchest-open-workspaces ${ORCHEST_MODE_FLAG:+$ORCHEST_MODE_FLAG} || {
   echo "WARNING: orchest-open-workspaces failed" >&2
   ((failures++)) || true
 }
