@@ -144,6 +144,30 @@ return {
     config = function(_, opts)
       require("codecompanion").setup(opts)
 
+      -- HACK: Ctrl+C during a streaming response can wipe the chat buffer before
+      -- the cancellation cleanup finishes. The call chain is:
+      --   Chat:done() -> Chat:ready_for_input() -> Chat:add_buf_message()
+      --     -> Builder:_write_to_buffer() -> UI:unlock_buf()
+      -- By the time unlock_buf runs, the buffer id stored in self.chat_bufnr may
+      -- already be invalid, causing "Invalid buffer id: N" from vim.bo[].
+      --
+      -- Upstream fix: lock_buf/unlock_buf in interactions/chat/ui/init.lua should
+      -- guard with nvim_buf_is_valid before touching vim.bo[]. Remove this patch
+      -- once that lands (check the unlock_buf function body after plugin updates).
+      local UI = require("codecompanion.interactions.chat.ui")
+      local orig_lock = UI.lock_buf
+      local orig_unlock = UI.unlock_buf
+      function UI:lock_buf()
+        if vim.api.nvim_buf_is_valid(self.chat_bufnr) then
+          orig_lock(self)
+        end
+      end
+      function UI:unlock_buf()
+        if vim.api.nvim_buf_is_valid(self.chat_bufnr) then
+          orig_unlock(self)
+        end
+      end
+
       local has_cmp, cmp = pcall(require, "cmp")
       if has_cmp then
         local QueueSlash = {}
