@@ -15,6 +15,19 @@
 # Also: nvim launched outside an interactive shell (e.g. AeroSpace) may not have
 # ~/bin in PATH, so `command -v claude` would silently miss the wrapper anyway.
 export PATH="$HOME/bin/nosandbox:$PATH"
+
+# Drop a stale, partially-inherited launcher state. Meta's claude_code/claude
+# launcher exports CLAUDE_CODE_EXECUTABLE=native/claude to its children only
+# AFTER setting up a localhost Vertex revproxy and exporting
+# ANTHROPIC_VERTEX_BASE_URL. If we inherit the executable path without the
+# revproxy URL (e.g. the broker was started from a shell that no longer has
+# the launcher running), the SDK launches native/claude directly, skips the
+# launcher, and gets "Invalid API key" from api.anthropic.com. In that case
+# clear CLAUDE_CODE_EXECUTABLE so the os/claude default below re-runs the
+# launcher. An explicit override paired with a real revproxy still works.
+if [[ -z "${ANTHROPIC_VERTEX_BASE_URL:-}" ]]; then
+  unset CLAUDE_CODE_EXECUTABLE
+fi
 export CLAUDE_CODE_EXECUTABLE="${CLAUDE_CODE_EXECUTABLE:-/usr/local/bin/claude_code/os/claude}"
 export NODE_EXTRA_CA_CERTS="/var/facebook/rootcanal/ca.pem"
 export CODEX_MANAGED_CONFIG_PATH=/dev/null
