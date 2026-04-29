@@ -76,6 +76,30 @@ return {
                   end)
                 end,
               },
+              ["join"] = {
+                description = "Join an existing broker session",
+                callback = function(chat)
+                  local conn = require("codecompanion.acp").new({ adapter = chat.adapter })
+                  if not conn:connect_and_authenticate() then
+                    return vim.notify("Failed to connect to broker", vim.log.levels.ERROR)
+                  end
+                  local sessions = conn:session_list()
+                  pcall(function() conn:disconnect() end)
+                  if vim.tbl_isempty(sessions) then
+                    return vim.notify("No active broker sessions", vim.log.levels.WARN)
+                  end
+                  vim.ui.select(sessions, {
+                    prompt = "Join broker session:",
+                    format_item = function(item) return item.sessionId or "<unknown>" end,
+                  }, function(choice)
+                    if not choice then return end
+                    require("codecompanion.interactions.chat").new({
+                      adapter = chat.adapter,
+                      acp_session_id = choice.sessionId,
+                    })
+                  end)
+                end,
+              },
             },
           },
           inline = { adapter = "claude_code" },
