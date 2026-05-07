@@ -138,6 +138,61 @@ return {
                 },
               })
             end,
+            devmate = function()
+              local wrapper = vim.fn.expand("~/devmate-acp/packages/acp-wrapper/dist/index.js")
+              local fbsource = vim.fn.expand("~/fbsource")
+              -- The wrapper resolves the Devmate bridge binary relative to its
+              -- own cwd. CodeCompanion spawns adapters with cwd = vim.fn.getcwd()
+              -- and has no per-adapter cwd, so we force it here.
+              -- CodeCompanion swallows the spawned process's stderr. Redirect it to a
+              -- file so wrapper-side errors (failed bridge spawn, etc.) are visible.
+              local stderr_log = vim.fn.expand("~/.local/state/nvim/devmate-acp.stderr.log")
+              local launch = string.format("cd %s && exec node %s 2>>%s",
+                vim.fn.shellescape(fbsource),
+                vim.fn.shellescape(wrapper),
+                vim.fn.shellescape(stderr_log))
+              return require("codecompanion.adapters").extend("claude_code", {
+                name = "devmate",
+                formatted_name = "Devmate",
+                commands = {
+                  default = { "sh", "-c", launch },
+                  yolo = { "sh", "-c", launch },
+                },
+                env = {},
+                defaults = {
+                  timeout = 120000,
+                },
+                handlers = {
+                  auth = function() return true end,
+                },
+              })
+            end,
+            dvsc_core = function()
+              local wrapper = vim.fn.expand(
+                "~/fbsource/users/mk/mkarrmann/dvsc-core-acp/packages/acp-wrapper/dist/index.js"
+              )
+              local fbsource = vim.fn.expand("~/fbsource")
+              local stderr_log = vim.fn.expand("~/.local/state/nvim/dvsc-core-acp.stderr.log")
+              local launch = string.format("cd %s && exec node %s 2>>%s",
+                vim.fn.shellescape(fbsource),
+                vim.fn.shellescape(wrapper),
+                vim.fn.shellescape(stderr_log))
+              return require("codecompanion.adapters").extend("claude_code", {
+                name = "dvsc_core",
+                formatted_name = "Dvsc Core",
+                commands = {
+                  default = { "sh", "-c", launch },
+                  yolo = { "sh", "-c", launch },
+                },
+                env = {},
+                defaults = {
+                  timeout = 120000,
+                },
+                handlers = {
+                  auth = function() return true end,
+                },
+              })
+            end,
           },
         },
 
@@ -358,6 +413,8 @@ return {
       { "<leader>av", "<cmd>CodeCompanion<cr>", mode = { "n", "v" }, desc = "CodeCompanion Inline" },
       { "<leader>aq", function() require("lib.codecompanion-queue").focus() end, desc = "Focus CodeCompanion Input" },
       { "<leader>ad", "<cmd>CodeCompanionDoctor<cr>", desc = "CodeCompanion Doctor" },
+      { "<leader>aD", "<cmd>CodeCompanionChat adapter=devmate<cr>", desc = "CodeCompanion Chat (Devmate)" },
+      { "<leader>aS", "<cmd>CodeCompanionChat adapter=dvsc_core<cr>", desc = "CodeCompanion Chat (Dvsc Core)" },
     },
   },
 }
