@@ -247,6 +247,81 @@ if (( DRY_RUN )); then
 fi
 confirm "Proceed?"
 
+# ── Phase 4b: Free busy mounts ──────────────────────────────────────
+# Anything with cwd or open files inside an in-scope mount will block
+# 'eden rm'. Auto-kill the user's own nvs-managed nvim servers (and
+# their watchdogs); list anything else for manual handling.
+log "Phase 4b: Free busy mounts"
+
+# Kill watchdogs first so they don't respawn the nvim servers we're
+# about to kill.
+killed_any=0
+mapfile -t watchdog_pids < <(pgrep -u "$USER" -f 'nvs --server-only' 2>/dev/null || true)
+for pid in "${watchdog_pids[@]}"; do
+  [[ -z "$pid" ]] && continue
+  echo "  killing nvs watchdog pid $pid"
+  if (( ! DRY_RUN )); then kill "$pid" 2>/dev/null && killed_any=1; fi
+done
+
+# Then kill any headless nvim whose cwd is inside an in-scope mount.
+mapfile -t headless_pids < <(pgrep -u "$USER" -f 'nvim --headless --listen' 2>/dev/null || true)
+for pid in "${headless_pids[@]}"; do
+  cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)
+  for m in "${TO_REMOVE[@]}"; do
+    case "$cwd" in
+      "$m"|"$m"/*)
+        echo "  killing nvim pid $pid (cwd $cwd)"
+        if (( ! DRY_RUN )); then kill "$pid" 2>/dev/null && killed_any=1; fi
+        break
+        ;;
+    esac
+  done
+done
+
+(( killed_any )) && sleep 1   # let processes actually exit
+
+# Now look for anything else holding files in the mounts.
+busy_log="$LOG_DIR/busy-mounts.txt"
+: > "$busy_log"
+any_busy=0
+for m in "${TO_REMOVE[@]}"; do
+  busy=""
+  for pid_dir in /proc/[0-9]*; do
+    pid=$(basename "$pid_dir")
+    cwd=$(readlink "$pid_dir/cwd" 2>/dev/null || true)
+    case "$cwd" in
+      "$m"|"$m"/*)
+        comm=$(cat "$pid_dir/comm" 2>/dev/null || echo "?")
+        busy+="    $pid  $comm  (cwd: $cwd)"$'\n'
+        ;;
+    esac
+  done
+  if [[ -n "$busy" ]]; then
+    any_busy=1
+    {
+      printf '\n=== %s ===\n' "$m"
+      printf '%s' "$busy"
+    } >> "$busy_log"
+  fi
+done
+
+if (( any_busy )); then
+  echo
+  cat "$busy_log"
+  echo
+  if (( ! FORCE_DESTROY )); then
+    cat <<EOF >&2
+Processes above have cwd inside in-scope mounts. They will block
+'eden rm'. Kill them and re-run, or use --force-destroy.
+EOF
+    exit 1
+  else
+    warn "Proceeding with --force-destroy despite busy mounts."
+  fi
+else
+  echo "  No remaining processes hold files in in-scope mounts."
+fi
+
 # ── Phase 5: Destroy ────────────────────────────────────────────────
 log "Phase 5: eden rm"
 for m in "${TO_REMOVE[@]}"; do

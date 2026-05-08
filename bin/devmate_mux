@@ -1,5 +1,5 @@
 #!/bin/bash
 # cd into fbsource so the real devmate_mux finds .hg/reponame
 # and skips the broken `scsc lookup` (fails with machine identity on devvms).
-cd "$HOME/fbsource" 2>/dev/null
+cd "$HOME/main/fbsource" 2>/dev/null
 exec /usr/local/bin/devmate_mux "$@"
