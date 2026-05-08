@@ -11,7 +11,7 @@ set -euo pipefail
 #   presto-gateway-deploy-finish <version> -s           # Skip apply-task-ops
 #   presto-gateway-deploy-finish -h <hash> <version>    # Skip fbpkg build, deploy existing hash
 
-TW_CONFIG="$HOME/fbsource/fbcode/tupperware/config/presto/gateway/gateway-test.tw"
+TW_CONFIG="$HOME/checkout1/fbsource/fbcode/tupperware/config/presto/gateway/gateway-test.tw"
 
 GATEWAY_JOBS=(
     "tsp_prn/presto/test-gateway"

@@ -7,7 +7,7 @@ local ENV_SKIP_PREFIXES = {
 	"LINTTOOL_CALLER", "CLIENT_LOG_SESSION", "LOG_SESSION",
 }
 
-local DEBUGPY_DOTSLASH = vim.fn.expand("~/fbsource/fbcode/sand/python_debugging/adapter/dotslash/debugpy_adapter")
+local DEBUGPY_DOTSLASH = vim.fn.expand("~/checkout1/fbsource/fbcode/sand/python_debugging/adapter/dotslash/debugpy_adapter")
 
 local function should_keep_env(key)
 	for _, prefix in ipairs(ENV_SKIP_PREFIXES) do
@@ -172,7 +172,7 @@ local function run_fdb(buck_cmd, target, mode)
 	local mode_arg = mode ~= "" and (mode .. " ") or ""
 	local shell_cmd = string.format(
 		"cd %s && fdb --dry-debug --launch-mode=dapconfig buck2 %s %s%s < /dev/null > %s 2>&1",
-		vim.fn.shellescape(vim.fn.expand("~/fbsource/fbcode")),
+		vim.fn.shellescape(vim.fn.expand("~/checkout1/fbsource/fbcode")),
 		buck_cmd,
 		mode_arg,
 		vim.fn.shellescape(target),

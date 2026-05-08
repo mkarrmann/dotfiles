@@ -14,7 +14,7 @@ set -euo pipefail
 # outage beyond ET's tolerance, Duo expiry). Duo re-auth may be required.
 #
 # Usage: nvs-tunnels HOST SESSION[:WORKDIR] [SESSION[:WORKDIR] ...]
-# Example: nvs-tunnels devvm36111.ftw0.facebook.com FTW-main1 FTW-fbsource1:~/fbsource
+# Example: nvs-tunnels devvm36111.ftw0.facebook.com FTW-main1 FTW-main:~/main
 
 NVS_CLIP_PORT="${NVS_CLIP_PORT:-8765}"
 

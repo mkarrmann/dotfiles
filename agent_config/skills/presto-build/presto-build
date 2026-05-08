@@ -15,7 +15,7 @@ fi
 
 # === Configuration ===
 # Auto-detect FBCODE_HOME from CWD: walk up to find an fbcode/ parent.
-# Falls back to ~/fbsource/fbcode if CWD is not inside an fbsource checkout.
+# Falls back to ~/checkout1/fbsource/fbcode if CWD is not inside an fbsource checkout.
 _detect_fbcode_home() {
     local d="$PWD"
     while [[ "$d" != "/" ]]; do
@@ -25,18 +25,23 @@ _detect_fbcode_home() {
         fi
         d="$(dirname "$d")"
     done
-    echo "$HOME/fbsource/fbcode"
+    echo "$HOME/checkout1/fbsource/fbcode"
 }
 FBCODE_HOME="${FBCODE_HOME:-$(_detect_fbcode_home)}"
 DEV_HOME="${FBCODE_HOME}/github"
 BUILD_ROOT="${BUILD_ROOT:-/data/users/${USER}/builds}"
 
-# Checkout isolation: append a suffix to build dirs and maven local repo
-# so that builds from different fbsource checkouts don't clobber each other.
+# Workspace isolation: derive a suffix from the parent workspace dir
+# (~/checkout1, ~/checkout2, ...) so builds from different workspaces
+# don't clobber each other. Empty for ~/checkout1; '-<workspace>' otherwise.
 _CHECKOUT_SUFFIX=""
 case "$FBCODE_HOME" in
-    "$HOME"/fbsource2|"$HOME"/fbsource2/*) _CHECKOUT_SUFFIX="-2";;
-    "$HOME"/fbsource3|"$HOME"/fbsource3/*) _CHECKOUT_SUFFIX="-3";;
+    "$HOME"/checkout1/*)     _CHECKOUT_SUFFIX="" ;;
+    "$HOME"/*/fbsource|"$HOME"/*/fbsource/*)
+        _ws="${FBCODE_HOME#"$HOME"/}"
+        _ws="${_ws%%/*}"
+        _CHECKOUT_SUFFIX="-${_ws}"
+        ;;
 esac
 
 _MAVEN_REPO_LOCAL_OPT=()

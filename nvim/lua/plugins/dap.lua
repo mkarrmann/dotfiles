@@ -42,9 +42,9 @@ return {
 					cwd = "${workspaceFolder}",
 					stopOnEntry = false,
 					sourceMap = {
-						{ ".", vim.fn.expand("~/fbsource/fbcode") },
-						{ ".", vim.fn.expand("~/fbsource") },
-						{ "/home/engshare", vim.fn.expand("~/fbsource/fbcode") },
+						{ ".", vim.fn.expand("~/checkout1/fbsource/fbcode") },
+						{ ".", vim.fn.expand("~/checkout1/fbsource") },
+						{ "/home/engshare", vim.fn.expand("~/checkout1/fbsource/fbcode") },
 					},
 				},
 			}

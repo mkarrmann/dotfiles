@@ -1,7 +1,7 @@
 local M = {}
 
 local BUILD_ROOT = vim.env.BUILD_ROOT or ("/data/users/" .. vim.env.USER .. "/builds")
-local DEV_HOME = vim.uv.fs_realpath(vim.fn.expand("~/fbsource/fbcode/github")) or vim.fn.expand("~/fbsource/fbcode/github")
+local DEV_HOME = vim.uv.fs_realpath(vim.fn.expand("~/checkout1/fbsource/fbcode/github")) or vim.fn.expand("~/checkout1/fbsource/fbcode/github")
 
 local COMMON = table.concat({
 	"-Dmaven.gitcommitid.skip=true",

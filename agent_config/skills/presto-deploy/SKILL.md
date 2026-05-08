@@ -332,11 +332,11 @@ fbpkg build fbcode//fb_presto_cpp:presto.presto_cpp
 # -> prints hash like "presto.presto_cpp:<hash>"
 
 # 2. Merge with Java coordinator to create deployable hybrid (~5 min)
-~/fbsource/fbcode/fb_presto_cpp/scripts/build.sh <hash>
+~/checkout1/fbsource/fbcode/fb_presto_cpp/scripts/build.sh <hash>
 # -> prints hybrid hash like "presto.presto:<hybrid_hash>"
 ```
 
-NOTE: Replace `~/fbsource` with the actual checkout root (e.g., `~/fbsource2`) if working from a secondary checkout.
+NOTE: Replace `~/checkout1/fbsource` with the actual checkout root (e.g., `~/checkout2/fbsource`) if working from the secondary workspace.
 
 # 3. Deploy the opt hybrid
 pt pcm deploy -c <cluster> -pv <hybrid_version> -r "opt build" -f -ni -dt 0
@@ -484,7 +484,7 @@ Reference files: `include/utils.cinc` (`get_maven_version_from_env()`), `include
 #### Workflow
 
 1. **Modify the TW config file** using one of the approaches above.
-2. **Validate:** `tw.real validate <checkout>/fbcode/tupperware/config/presto/testing/<your_tw_file>.tw` (use the `.tw` file that manages your cluster -- see "Which TW Config File Manages Your Cluster?" above). If you modified a `.cinc` file, validate the `.tw` file that imports it. Replace `<checkout>` with the current fbsource checkout root (e.g., `~/fbsource` or `~/fbsource2`).
+2. **Validate:** `tw.real validate <checkout>/fbcode/tupperware/config/presto/testing/<your_tw_file>.tw` (use the `.tw` file that manages your cluster -- see "Which TW Config File Manages Your Cluster?" above). If you modified a `.cinc` file, validate the `.tw` file that imports it. Replace `<checkout>` with the current fbsource checkout root (e.g., `~/checkout1/fbsource` or `~/checkout2/fbsource`).
 3. **Deploy with local config:** `pt pcm deploy -c <cluster> -l -r "<reason>" -f -ni -dt 0`
    - **Do NOT pass `-pv`** -- see "CRITICAL: Never use `-pv` with `-l`" above.
 4. **Ask the user to accelerate:** `presto-deploy-finish accelerate <cluster>`
