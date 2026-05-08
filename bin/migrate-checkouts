@@ -10,6 +10,7 @@
 #
 # Usage:
 #   migrate-checkouts [--dry-run] [--force-destroy]
+#                     [--no-restore-drafts] [--no-restore-shelves]
 #                     [--primary NAME] [--secondary NAME]
 #
 # Env overrides: PRIMARY_NAME, SECONDARY_NAME
@@ -20,13 +21,17 @@ PRIMARY_NAME="${PRIMARY_NAME:-main}"
 SECONDARY_NAME="${SECONDARY_NAME:-scratch}"
 DRY_RUN=0
 FORCE_DESTROY=0
+RESTORE_DRAFTS=1
+RESTORE_SHELVES=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --dry-run)        DRY_RUN=1; shift ;;
-    --force-destroy)  FORCE_DESTROY=1; shift ;;
-    --primary)        PRIMARY_NAME="$2"; shift 2 ;;
-    --secondary)      SECONDARY_NAME="$2"; shift 2 ;;
+    --dry-run)            DRY_RUN=1; shift ;;
+    --force-destroy)      FORCE_DESTROY=1; shift ;;
+    --no-restore-drafts)  RESTORE_DRAFTS=0; shift ;;
+    --no-restore-shelves) RESTORE_SHELVES=0; shift ;;
+    --primary)            PRIMARY_NAME="$2"; shift 2 ;;
+    --secondary)          SECONDARY_NAME="$2"; shift 2 ;;
     -h|--help)
       sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
@@ -306,30 +311,111 @@ for name in "$PRIMARY_NAME" "$SECONDARY_NAME"; do
   run ln -s "$src" "$dest"
 done
 
-# ── Phase 8: Cleanup ────────────────────────────────────────────────
-log "Phase 8: Cleanup"
+# ── Phase 8: Restore drafts from Commit Cloud ───────────────────────
+NEW_CLONES=(
+  "$PRIMARY_DIR/fbsource"
+  "$PRIMARY_DIR/configerator"
+  "$SECONDARY_DIR/fbsource"
+  "$SECONDARY_DIR/configerator"
+)
+if (( RESTORE_DRAFTS )); then
+  log "Phase 8: Restore drafts (sl cloud sync) in each new clone"
+  for d in "${NEW_CLONES[@]}"; do
+    [[ -d "$d/.eden" ]] || { warn "$d not an Eden mount, skipping cloud sync"; continue; }
+    echo "+ sl cloud sync --cwd $d"
+    if (( ! DRY_RUN )); then
+      sl --cwd "$d" cloud sync 2>&1 | sed 's/^/    /' || warn "cloud sync failed for $d"
+    fi
+  done
+else
+  log "Phase 8: Skipping draft restore (--no-restore-drafts)"
+fi
+
+# ── Phase 9: Restore shelves ────────────────────────────────────────
+# Map each old Eden client's shelves into the appropriate new clone.
+# Heuristic: bare client name (e.g. "fbsource", "configerator") -> primary
+# workspace; any suffixed client (e.g. "fbsource2", "fbsource2-1",
+# "configerator3") -> secondary workspace. Same kind (fbsource/configerator)
+# stays paired with the same kind.
+restore_shelves_for_client() {
+  local old="$1"  # e.g. "fbsource", "fbsource2-1", "configerator2"
+  local kind ws_dir
+  case "$old" in
+    fbsource)      kind=fbsource;     ws_dir="$PRIMARY_DIR" ;;
+    fbsource*)     kind=fbsource;     ws_dir="$SECONDARY_DIR" ;;
+    configerator)  kind=configerator; ws_dir="$PRIMARY_DIR" ;;
+    configerator*) kind=configerator; ws_dir="$SECONDARY_DIR" ;;
+    *) warn "Unknown old client kind: $old"; return ;;
+  esac
+  local new_clone="$ws_dir/$kind"
+  [[ -d "$new_clone/.eden" ]] || { warn "$new_clone not an Eden mount, skipping shelve restore"; return; }
+  local new_state; new_state=$(readlink "$new_clone/.eden/client" 2>/dev/null)
+  [[ -n "$new_state" ]] || { warn "Cannot resolve client dir for $new_clone"; return; }
+
+  for sub in shelved shelve-backup; do
+    local src="$LOG_DIR/shelves/$old/$sub"
+    [[ -d "$src" ]] || continue
+    [[ -z "$(ls -A "$src" 2>/dev/null)" ]] && continue
+    local dest="$new_state/sl-repo-dir/$sub"
+    run mkdir -p "$dest"
+    if (( ! DRY_RUN )); then
+      # -n = no-clobber. Warn on collisions so user can resolve manually.
+      local collisions
+      collisions=$(comm -12 \
+        <(ls -1 "$src"  2>/dev/null | sort) \
+        <(ls -1 "$dest" 2>/dev/null | sort))
+      if [[ -n "$collisions" ]]; then
+        warn "Shelve name collision(s) in $dest (kept existing):"
+        echo "$collisions" | sed 's/^/    /' >&2
+      fi
+      cp -an "$src/." "$dest/" || warn "cp failed for $src -> $dest"
+    fi
+    echo "  $old/$sub -> $new_clone ($dest)"
+  done
+}
+
+if (( RESTORE_SHELVES )); then
+  log "Phase 9: Restore shelves into new clones"
+  if [[ -d "$LOG_DIR/shelves" ]]; then
+    for old_dir in "$LOG_DIR/shelves"/*; do
+      [[ -d "$old_dir" ]] || continue
+      restore_shelves_for_client "$(basename "$old_dir")"
+    done
+  else
+    echo "  (no shelves were backed up)"
+  fi
+else
+  log "Phase 9: Skipping shelve restore (--no-restore-shelves)"
+fi
+
+# ── Phase 10: Verify ────────────────────────────────────────────────
+log "Phase 10: Verify"
+echo "+ eden list"
+if (( ! DRY_RUN )); then eden list 2>&1 | sed 's/^/    /'; fi
+for d in "$PRIMARY_DIR" "$SECONDARY_DIR"; do
+  echo "+ ls $d"
+  if (( ! DRY_RUN )); then ls "$d" 2>&1 | sed 's/^/    /'; fi
+done
+for ws in "$PRIMARY_NAME" "$SECONDARY_NAME"; do
+  link="$HOME/$ws.code-workspace"
+  if [[ -L "$link" ]]; then
+    echo "  $link -> $(readlink "$link")"
+  else
+    warn "$link is not a symlink"
+  fi
+done
+
+# ── Phase 11: Cleanup ───────────────────────────────────────────────
+log "Phase 11: Cleanup"
 if command -v watchman >/dev/null; then
   run watchman watch-del-all || warn "watchman watch-del-all failed"
 fi
 
 log "Done"
-cat <<EOF
-
-Next steps:
-  1. Review redirections at $REDIRECT_LOG. Re-apply any custom
-     'eden redirect add' you want to preserve.
-  2. Restore drafts from Commit Cloud in each new clone:
-       for d in $PRIMARY_DIR/{fbsource,configerator} $SECONDARY_DIR/{fbsource,configerator}; do
-         sl cloud sync --cwd "\$d"
-       done
-  3. (Optional) Restore shelves. Backups are at $LOG_DIR/shelves/.
-     For each new clone you want shelves in:
-       NEW_CLIENT=\$(readlink $PRIMARY_DIR/fbsource/.eden/client)
-       cp -av $LOG_DIR/shelves/<old-client-name>/shelved/. \\
-              "\$NEW_CLIENT/sl-repo-dir/shelved/"
-       sl --cwd $PRIMARY_DIR/fbsource shelve --list
-  4. Verify:
-       ls $PRIMARY_DIR $SECONDARY_DIR
-       eden list
-
-EOF
+echo
+echo "Logs / backups: $LOG_DIR"
+echo "  - mounts.txt    : pre-migration Eden mount list"
+echo "  - redirects.txt : pre-migration eden redirect state (re-apply manually if any)"
+echo "  - shelves/      : raw shelve files copied out of old mounts"
+echo "  - at-risk.txt   : items that would have been lost (if any)"
+echo
