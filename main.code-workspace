@@ -1,0 +1,26 @@
+{
+  "folders": [
+    {
+      "path": "/home/mkarrmann/main/fbsource"
+    },
+    {
+      "path": "/home/mkarrmann/main/configerator"
+    }
+  ],
+  "settings": {
+    "workbench.colorCustomizations": {
+      "commandCenter.border": "#e7e7e799",
+      "sash.hoverBorder": "#42a5f5",
+      "statusBar.background": "#1565c0",
+      "statusBar.foreground": "#e7e7e7",
+      "statusBarItem.hoverBackground": "#1976d2",
+      "statusBarItem.remoteBackground": "#1565c0",
+      "statusBarItem.remoteForeground": "#e7e7e7",
+      "titleBar.activeBackground": "#1565c0",
+      "titleBar.activeForeground": "#e7e7e7",
+      "titleBar.inactiveBackground": "#1565c099",
+      "titleBar.inactiveForeground": "#e7e7e799"
+    },
+    "peacock.remoteColor": "#1565c0"
+  }
+}

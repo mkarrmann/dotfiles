@@ -115,14 +115,51 @@ for m in "${TO_REMOVE[@]}"; do
 done
 echo "Redirections -> $REDIRECT_LOG"
 
-# ── Phase 3: Loss check ─────────────────────────────────────────────
-# 'eden rm' destroys the local overlay. What that actually loses:
-#   1. Uncommitted working-copy edits ('sl status').
-#   2. Shelved changes ('sl shelve --list') — these live in the overlay.
-#   3. Draft commits NOT yet uploaded to Commit Cloud.
-# Plain draft commits with Commit Cloud sync ON are safe — they're
-# auto-backed-up and 'sl cloud sync' restores them in any new clone.
-log "Phase 3: Check for state that would actually be lost"
+# ── Phase 3a: Auto-backup shelves ───────────────────────────────────
+# Shelves live in the Eden client state dir at <state_dir>/sl-repo-dir/
+# {shelved,shelve-backup}/. They're local-only — Commit Cloud does NOT
+# sync them. Copy them out before destruction so they survive.
+log "Phase 3a: Auto-backup shelves to $LOG_DIR/shelves/"
+SHELVE_LOG="$LOG_DIR/shelves.txt"
+: > "$SHELVE_LOG"
+for m in "${TO_REMOVE[@]}"; do
+  client=$(readlink "$m/.eden/client" 2>/dev/null || true)
+  [[ -z "$client" ]] && { warn "No .eden/client for $m, skipping shelve backup"; continue; }
+  src_shelved="$client/sl-repo-dir/shelved"
+  src_backup="$client/sl-repo-dir/shelve-backup"
+  basename=$(basename "$client")
+  dest="$LOG_DIR/shelves/$basename"
+  for src in "$src_shelved" "$src_backup"; do
+    [[ -d "$src" ]] || continue
+    [[ -z "$(ls -A "$src" 2>/dev/null)" ]] && continue
+    sub=$(basename "$src")
+    run mkdir -p "$dest/$sub"
+    if (( ! DRY_RUN )); then
+      cp -a "$src/." "$dest/$sub/" || warn "Failed to copy $src"
+    fi
+    echo "  $m -> $dest/$sub" | tee -a "$SHELVE_LOG"
+    ls -1 "$src" 2>/dev/null | sed 's/^/    /' | tee -a "$SHELVE_LOG"
+  done
+done
+[[ -s "$SHELVE_LOG" ]] || echo "  (no shelves found)"
+
+# ── Phase 3b: Flush Commit Cloud ────────────────────────────────────
+# Push any not-yet-uploaded drafts before we check for unbacked drafts.
+log "Phase 3b: Flush Commit Cloud (sl cloud sync)"
+for m in "${TO_REMOVE[@]}"; do
+  echo "+ sl cloud sync --cwd $m"
+  if (( ! DRY_RUN )); then
+    sl --cwd "$m" cloud sync 2>&1 | sed 's/^/    /' || warn "cloud sync failed for $m"
+  fi
+done
+
+# ── Phase 3c: Loss check ────────────────────────────────────────────
+# What 'eden rm' actually destroys that we can't recover:
+#   1. Uncommitted working-copy edits ('sl status'). Not in any backup.
+#   2. Draft commits NOT yet uploaded to Commit Cloud (post-flush).
+# Shelves are handled by Phase 3a above. Cloud-synced drafts come back
+# via 'sl cloud sync' in the new clones.
+log "Phase 3c: Check for state that would still be lost"
 LOSS_LOG="$LOG_DIR/at-risk.txt"
 : > "$LOSS_LOG"
 ANY_LOSS=0
@@ -135,28 +172,16 @@ note_loss() {
 for m in "${TO_REMOVE[@]}"; do
   printf '\n=== %s ===\n' "$m" >> "$LOSS_LOG"
 
-  # 1. Pending working-copy changes.
   pending=$(sl --cwd "$m" status 2>/dev/null || true)
   if [[ -n "$pending" ]]; then
-    note_loss "Uncommitted changes:"
+    note_loss "Uncommitted changes (NOT recoverable):"
     note_loss "$pending"
   fi
 
-  # 2. Shelved changes.
-  shelves=$(sl --cwd "$m" shelve --list 2>/dev/null || true)
-  if [[ -n "$shelves" ]]; then
-    note_loss "Shelved changes (lost on eden rm):"
-    note_loss "$shelves"
-  fi
-
-  # 3. Drafts that aren't safely in Commit Cloud.
-  #    'sl cloud check -r draft()' prints '<hash> backed up' or
-  #    '<hash> not backed up' for each draft. Anything 'not backed up'
-  #    will vanish.
   unbacked=$(sl --cwd "$m" cloud check -r 'draft()' 2>/dev/null \
              | awk '/not backed up/ {print $1}' || true)
   if [[ -n "$unbacked" ]]; then
-    note_loss "Draft commits NOT in Commit Cloud:"
+    note_loss "Draft commits NOT in Commit Cloud (post-flush):"
     while IFS= read -r h; do
       [[ -z "$h" ]] && continue
       summary=$(sl --cwd "$m" log -r "$h" \
@@ -166,24 +191,13 @@ for m in "${TO_REMOVE[@]}"; do
   fi
 done
 
-# Cloud sync sanity check — if it's off, ALL local drafts are at risk.
 CLOUD_AUTO=$(sl --cwd "${TO_REMOVE[0]:-$HOME}" cloud status 2>/dev/null \
              | awk -F': *' '/Automatic Sync \(on local changes\)/ {print $2}')
 if [[ "$CLOUD_AUTO" != "ON" ]]; then
   note_loss ""
   note_loss "WARNING: Commit Cloud automatic sync is '$CLOUD_AUTO' (expected 'ON')."
   note_loss "All draft commits across all mounts may be at risk."
-  ANY_LOSS=1
 fi
-
-# Proactively flush any not-yet-uploaded commits to Commit Cloud.
-log "Phase 3b: Flush Commit Cloud (sl cloud sync)"
-for m in "${TO_REMOVE[@]}"; do
-  echo "+ sl cloud sync --cwd $m"
-  if (( ! DRY_RUN )); then
-    sl --cwd "$m" cloud sync 2>&1 | sed 's/^/    /' || warn "cloud sync failed for $m"
-  fi
-done
 
 if (( ANY_LOSS )); then
   echo
@@ -194,22 +208,21 @@ if (( ANY_LOSS )); then
 
 The state above is NOT recoverable after 'eden rm'. Options:
 
-  - Commit + cloud-sync the changes:
+  - Commit + cloud-sync uncommitted edits:
       sl commit --cwd <mount> -m '...'   # then 'sl cloud sync'
-  - For shelves you care about, 'sl unshelve' and commit them.
   - For unbacked drafts, push to a personal bookmark:
       sl push --cwd <mount> --to user/$USER/<name> -r <hash>
   - If you don't care, re-run with --force-destroy.
 
-(Plain draft commits already in Commit Cloud are safe — restored via
-'sl cloud sync' in the new clones. They are NOT flagged here.)
+Shelves are already auto-backed up to $LOG_DIR/shelves/.
+Cloud-synced drafts are recoverable via 'sl cloud sync' in new clones.
 EOF
     exit 1
   else
     warn "Proceeding with --force-destroy despite at-risk state above."
   fi
 else
-  echo "No at-risk state. All drafts are backed up to Commit Cloud."
+  echo "No at-risk state. Shelves backed up; cloud-synced drafts recoverable."
 fi
 
 # ── Phase 4: Confirm ────────────────────────────────────────────────
@@ -270,8 +283,31 @@ clone_one configerator "$PRIMARY_DIR/configerator"
 clone_one fbsource     "$SECONDARY_DIR/fbsource"
 clone_one configerator "$SECONDARY_DIR/configerator"
 
-# ── Phase 7: Cleanup ────────────────────────────────────────────────
-log "Phase 7: Cleanup"
+# ── Phase 7: Workspace symlinks ─────────────────────────────────────
+# Symlink ~/<name>.code-workspace -> ~/dotfiles/<name>.code-workspace
+# so VS Code remote-SSH (referenced from the Mac startup-windows script)
+# can open them. Idempotent.
+log "Phase 7: VS Code workspace symlinks"
+for name in "$PRIMARY_NAME" "$SECONDARY_NAME"; do
+  src="$HOME/dotfiles/$name.code-workspace"
+  dest="$HOME/$name.code-workspace"
+  if [[ ! -e "$src" ]]; then
+    warn "$src missing — skipping symlink for $name (create it in dotfiles first)"
+    continue
+  fi
+  if [[ -L "$dest" ]] && [[ "$(readlink "$dest")" == "$src" ]]; then
+    echo "  $dest -> $src (already linked)"
+    continue
+  fi
+  if [[ -e "$dest" ]]; then
+    warn "$dest exists and is not the expected symlink; leaving alone"
+    continue
+  fi
+  run ln -s "$src" "$dest"
+done
+
+# ── Phase 8: Cleanup ────────────────────────────────────────────────
+log "Phase 8: Cleanup"
 if command -v watchman >/dev/null; then
   run watchman watch-del-all || warn "watchman watch-del-all failed"
 fi
@@ -282,12 +318,17 @@ cat <<EOF
 Next steps:
   1. Review redirections at $REDIRECT_LOG. Re-apply any custom
      'eden redirect add' you want to preserve.
-  2. Restore your drafts from Commit Cloud in each new clone:
-       sl cloud sync --cwd $PRIMARY_DIR/fbsource
-       sl cloud sync --cwd $PRIMARY_DIR/configerator
-       sl cloud sync --cwd $SECONDARY_DIR/fbsource
-       sl cloud sync --cwd $SECONDARY_DIR/configerator
-  3. Verify:
+  2. Restore drafts from Commit Cloud in each new clone:
+       for d in $PRIMARY_DIR/{fbsource,configerator} $SECONDARY_DIR/{fbsource,configerator}; do
+         sl cloud sync --cwd "\$d"
+       done
+  3. (Optional) Restore shelves. Backups are at $LOG_DIR/shelves/.
+     For each new clone you want shelves in:
+       NEW_CLIENT=\$(readlink $PRIMARY_DIR/fbsource/.eden/client)
+       cp -av $LOG_DIR/shelves/<old-client-name>/shelved/. \\
+              "\$NEW_CLIENT/sl-repo-dir/shelved/"
+       sl --cwd $PRIMARY_DIR/fbsource shelve --list
+  4. Verify:
        ls $PRIMARY_DIR $SECONDARY_DIR
        eden list
 

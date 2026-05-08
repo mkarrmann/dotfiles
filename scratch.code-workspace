@@ -1,0 +1,26 @@
+{
+  "folders": [
+    {
+      "path": "/home/mkarrmann/scratch/fbsource"
+    },
+    {
+      "path": "/home/mkarrmann/scratch/configerator"
+    }
+  ],
+  "settings": {
+    "workbench.colorCustomizations": {
+      "commandCenter.border": "#e7e7e799",
+      "sash.hoverBorder": "#05c3c7",
+      "statusBar.background": "#049295",
+      "statusBar.foreground": "#e7e7e7",
+      "statusBarItem.hoverBackground": "#05c3c7",
+      "statusBarItem.remoteBackground": "#049295",
+      "statusBarItem.remoteForeground": "#e7e7e7",
+      "titleBar.activeBackground": "#049295",
+      "titleBar.activeForeground": "#e7e7e7",
+      "titleBar.inactiveBackground": "#04929599",
+      "titleBar.inactiveForeground": "#e7e7e799"
+    },
+    "peacock.remoteColor": "#049295"
+  }
+}
