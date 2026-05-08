@@ -16,6 +16,19 @@
 # ~/bin in PATH, so `command -v claude` would silently miss the wrapper anyway.
 export PATH="$HOME/bin/nosandbox:$PATH"
 
+# Diagnostic logging — surfaces which auth mode the Meta launcher picks and
+# what api-key-helper returns. Stderr is teed to a fixed file so the broker's
+# JSON-RPC stream on stdout stays clean. Inspect ~/.cache/claude-agent-acp.log
+# after a 401/hang to see which mode fired and whether the helper minted a
+# valid token. Disable by unsetting these three vars.
+export META_CLAUDE_BASH_WRAPPER_DEBUG=1
+export META_LAUNCHER_LOG_LEVEL=debug
+export RUST_LOG="${RUST_LOG:-info,launcher=debug,tpai_inference_revproxy=debug}"
+exec 2> >(tee -a "$HOME/.cache/claude-agent-acp.log" >&2)
+echo "=== claude-agent-acp wrapper start: $(date -Iseconds) pid=$$ ===" >&2
+env | grep -E '^(META_CLAUDE|CLAUDE_CODE|ANTHROPIC|CLAUDE_AGENT_SDK)_' | sort >&2
+echo "=== begin launcher output ===" >&2
+
 # Drop a stale, partially-inherited launcher state. Meta's claude_code/claude
 # launcher exports CLAUDE_CODE_EXECUTABLE=native/claude to its children only
 # AFTER setting up a localhost Vertex revproxy and exporting

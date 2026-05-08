@@ -192,6 +192,34 @@ return {
         end
       end
 
+      -- HACK: ACPHandler:ensure_connection doesn't pass Chat.acp_session_id to
+      -- Connection.new, so /join (session loading) has no effect. Patch it through.
+      local ACPHandler = require("codecompanion.interactions.chat.acp.handler")
+      local orig_ensure_connection = ACPHandler.ensure_connection
+      function ACPHandler:ensure_connection()
+        if not self.chat.acp_connection and self.chat.acp_session_id then
+          self.chat.acp_connection = require("codecompanion.acp").new({
+            adapter = self.chat.adapter,
+            session_id = self.chat.acp_session_id,
+          })
+        end
+        return orig_ensure_connection(self)
+      end
+
+      -- HACK: Connection:_establish_session gates session/load on the agent
+      -- advertising loadSession capability. The broker handles session/load
+      -- directly for known sessions (the agent is never consulted), so the
+      -- capability check is irrelevant. Patch it out.
+      local Connection = require("codecompanion.acp")
+      local orig_establish = Connection._establish_session
+      function Connection:_establish_session()
+        if self.session_id and self._agent_info then
+          self._agent_info.agentCapabilities = self._agent_info.agentCapabilities or {}
+          self._agent_info.agentCapabilities.loadSession = true
+        end
+        return orig_establish(self)
+      end
+
       local has_cmp, cmp = pcall(require, "cmp")
       if has_cmp then
         local QueueSlash = {}
