@@ -115,43 +115,101 @@ for m in "${TO_REMOVE[@]}"; do
 done
 echo "Redirections -> $REDIRECT_LOG"
 
-# ── Phase 3: Draft check ────────────────────────────────────────────
-log "Phase 3: Check for draft commits in mounts to be destroyed"
-DRAFT_LOG="$LOG_DIR/drafts.txt"
-: > "$DRAFT_LOG"
-ANY_DRAFTS=0
+# ── Phase 3: Loss check ─────────────────────────────────────────────
+# 'eden rm' destroys the local overlay. What that actually loses:
+#   1. Uncommitted working-copy edits ('sl status').
+#   2. Shelved changes ('sl shelve --list') — these live in the overlay.
+#   3. Draft commits NOT yet uploaded to Commit Cloud.
+# Plain draft commits with Commit Cloud sync ON are safe — they're
+# auto-backed-up and 'sl cloud sync' restores them in any new clone.
+log "Phase 3: Check for state that would actually be lost"
+LOSS_LOG="$LOG_DIR/at-risk.txt"
+: > "$LOSS_LOG"
+ANY_LOSS=0
+
+note_loss() {
+  ANY_LOSS=1
+  printf '%s\n' "$*" >> "$LOSS_LOG"
+}
+
 for m in "${TO_REMOVE[@]}"; do
-  drafts=$(sl --cwd "$m" log -r 'draft()' \
-              -T '{node|short} {bookmarks} {desc|firstline}\n' 2>/dev/null || true)
-  if [[ -n "$drafts" ]]; then
-    ANY_DRAFTS=1
-    {
-      printf '\n=== %s ===\n' "$m"
-      echo "$drafts"
-    } >> "$DRAFT_LOG"
+  printf '\n=== %s ===\n' "$m" >> "$LOSS_LOG"
+
+  # 1. Pending working-copy changes.
+  pending=$(sl --cwd "$m" status 2>/dev/null || true)
+  if [[ -n "$pending" ]]; then
+    note_loss "Uncommitted changes:"
+    note_loss "$pending"
+  fi
+
+  # 2. Shelved changes.
+  shelves=$(sl --cwd "$m" shelve --list 2>/dev/null || true)
+  if [[ -n "$shelves" ]]; then
+    note_loss "Shelved changes (lost on eden rm):"
+    note_loss "$shelves"
+  fi
+
+  # 3. Drafts that aren't safely in Commit Cloud.
+  #    'sl cloud check -r draft()' prints '<hash> backed up' or
+  #    '<hash> not backed up' for each draft. Anything 'not backed up'
+  #    will vanish.
+  unbacked=$(sl --cwd "$m" cloud check -r 'draft()' 2>/dev/null \
+             | awk '/not backed up/ {print $1}' || true)
+  if [[ -n "$unbacked" ]]; then
+    note_loss "Draft commits NOT in Commit Cloud:"
+    while IFS= read -r h; do
+      [[ -z "$h" ]] && continue
+      summary=$(sl --cwd "$m" log -r "$h" \
+                  -T '{node|short} {date|isodate} {desc|firstline}\n' 2>/dev/null || echo "$h")
+      note_loss "  $summary"
+    done <<< "$unbacked"
   fi
 done
 
-if (( ANY_DRAFTS )); then
+# Cloud sync sanity check — if it's off, ALL local drafts are at risk.
+CLOUD_AUTO=$(sl --cwd "${TO_REMOVE[0]:-$HOME}" cloud status 2>/dev/null \
+             | awk -F': *' '/Automatic Sync \(on local changes\)/ {print $2}')
+if [[ "$CLOUD_AUTO" != "ON" ]]; then
+  note_loss ""
+  note_loss "WARNING: Commit Cloud automatic sync is '$CLOUD_AUTO' (expected 'ON')."
+  note_loss "All draft commits across all mounts may be at risk."
+  ANY_LOSS=1
+fi
+
+# Proactively flush any not-yet-uploaded commits to Commit Cloud.
+log "Phase 3b: Flush Commit Cloud (sl cloud sync)"
+for m in "${TO_REMOVE[@]}"; do
+  echo "+ sl cloud sync --cwd $m"
+  if (( ! DRY_RUN )); then
+    sl --cwd "$m" cloud sync 2>&1 | sed 's/^/    /' || warn "cloud sync failed for $m"
+  fi
+done
+
+if (( ANY_LOSS )); then
   echo
-  cat "$DRAFT_LOG"
+  cat "$LOSS_LOG"
   echo
   if (( ! FORCE_DESTROY )); then
     cat <<EOF >&2
 
-Draft commits exist in one or more mounts above. They will be DESTROYED
-by 'eden rm'. Push anything you care about first:
+The state above is NOT recoverable after 'eden rm'. Options:
 
-  sl push --cwd <mount> --to user/$USER/<bookmark> -r <rev>
+  - Commit + cloud-sync the changes:
+      sl commit --cwd <mount> -m '...'   # then 'sl cloud sync'
+  - For shelves you care about, 'sl unshelve' and commit them.
+  - For unbacked drafts, push to a personal bookmark:
+      sl push --cwd <mount> --to user/$USER/<name> -r <hash>
+  - If you don't care, re-run with --force-destroy.
 
-Then re-run with --force-destroy.
+(Plain draft commits already in Commit Cloud are safe — restored via
+'sl cloud sync' in the new clones. They are NOT flagged here.)
 EOF
     exit 1
   else
-    warn "Proceeding with --force-destroy despite drafts."
+    warn "Proceeding with --force-destroy despite at-risk state above."
   fi
 else
-  echo "No draft commits in any in-scope mount."
+  echo "No at-risk state. All drafts are backed up to Commit Cloud."
 fi
 
 # ── Phase 4: Confirm ────────────────────────────────────────────────
@@ -224,8 +282,11 @@ cat <<EOF
 Next steps:
   1. Review redirections at $REDIRECT_LOG. Re-apply any custom
      'eden redirect add' you want to preserve.
-  2. If you had drafts, pull the wip bookmarks back into the new clones:
-       sl pull -B user/$USER/<bookmark> --cwd $PRIMARY_DIR/fbsource
+  2. Restore your drafts from Commit Cloud in each new clone:
+       sl cloud sync --cwd $PRIMARY_DIR/fbsource
+       sl cloud sync --cwd $PRIMARY_DIR/configerator
+       sl cloud sync --cwd $SECONDARY_DIR/fbsource
+       sl cloud sync --cwd $SECONDARY_DIR/configerator
   3. Verify:
        ls $PRIMARY_DIR $SECONDARY_DIR
        eden list
