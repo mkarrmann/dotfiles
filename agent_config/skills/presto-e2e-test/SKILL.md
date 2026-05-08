@@ -246,6 +246,36 @@ presto-test cli -c <cluster>
 presto-test cli -c <cluster> -e "SELECT count(*) FROM hive.default.<table>"
 ```
 
+## Ad-hoc Throwaway CTAS (Warehouse Writes for Verification)
+
+When verifying a write-path change end-to-end (e.g., metastore stats, partition layout, bucket file synthesis), you sometimes need to write a small real table to the warehouse rather than rely on unit tests with mocked file systems.
+
+**The sanctioned mechanism is the `retention_days` table property.** The warehouse auto-expires the table (and its WarmStorage data) after N days, eliminating cleanup obligations.
+
+```sql
+CREATE TABLE prism.<schema>.<unixname>_<purpose>
+WITH (
+  format = 'DWRF',                          -- or 'ORC', 'PAGEFILE', etc.
+  bucketed_by = ARRAY['k'],                 -- if exercising bucketing
+  bucket_count = 11,
+  retention_days = 1                        -- THE safety mechanism
+)
+AS SELECT ...                               -- shape data to trigger your code path
+```
+
+**Catalog**: `prism` (or `prism_batch` for batch tiers) is the documented Hive-family catalog for ad-hoc writes. There is no separate non-prod write catalog — `retention_days` is what makes this safe, not catalog choice.
+
+**Key conventions:**
+- Prefix table name with your unixname (`mkarrmann_missing_buckets_test`) to avoid collisions and make ownership obvious.
+- Always set `retention_days` (1 is fine for a one-shot verification). Without it, the table persists indefinitely.
+- For format-sensitive bugs (e.g., empty-file behavior), use the actual production format — DWRF/ORC empty files are ~27 bytes in production but may be 0 bytes in unit-test environments where `OrcOutputFormat.close(false)` short-circuits. The real warehouse path is the only way to verify.
+
+**Caveats:**
+- Writing to `prism` from a locally-built coordinator (`presto-local-dev`) talks to the production metastore and warmstorage. Prefer running the CTAS through an officially-deployed adhoc cluster (`presto --smc <adhoc_cluster>`) when possible, so the write path matches a sanctioned binary.
+- After the CTAS, read back metastore parameters via `SELECT * FROM "<table>$properties"` or directly via the Hive metastore client to verify the stat (e.g., `totalSize`, `numFiles`).
+
+**Source:** `Presto/Debugging and Optimizing Presto Queries` wiki documents the `retention_days` pattern.
+
 ## Verifier (Regression Suite)
 
 Runs curated queries and compares results against a control cluster.

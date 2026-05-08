@@ -105,7 +105,12 @@ Full builds run `mvn clean install` on a subset of OSS trunk (only the ~40 modul
 ```bash
 # Run tests for a module (mvn test -P ci)
 presto-build -t -l <module-name>
+
+# Run a single test method in OSS trunk (must include useManifestOnlyJar=false; see below)
+mpt -pl presto-tests -Dtest=TestLocalQueries#testIOExplainForUnsupportedStatements -Dsurefire.failIfNoSpecifiedTests=false -Dsurefire.useManifestOnlyJar=false
 ```
+
+**Targeted test runs in OSS trunk require `-Dsurefire.useManifestOnlyJar=false`.** Without it, surefire's forked VM dies with "Could not find or load main class org.apache.maven.surefire.booter.ForkedBooter" or "The forked VM terminated without properly saying goodbye". The OSS trunk's `out-of-tree-build` profile (`pom.xml`) symlinks `target/` to `${BUILD_ROOT}/presto-trunk/${project.groupId}:${project.artifactId}` — the `:` in that directory name (from `com.facebook.presto:presto-tests` etc.) breaks surefire's manifest-only booter jar load. Disabling the booter jar makes surefire pass the classpath directly via `-cp` and sidesteps the issue. Also add `-Dsurefire.failIfNoSpecifiedTests=false` so dependent modules built via `-am` don't error when the test pattern doesn't match anything in them.
 
 ### Checkstyle
 
@@ -172,6 +177,7 @@ Build output goes to `$BUILD_ROOT` (`/data/users/$USER/builds` by default).
 | Problem | Fix |
 |---------|-----|
 | Build fails on checkstyle | `presto-build -C` to skip, or `gf && mfcc` to run checkstyle only |
+| Surefire "Could not find or load main class ForkedBooter" or "VM terminated without properly saying goodbye" when running targeted tests in OSS trunk | Add `-Dsurefire.useManifestOnlyJar=false`. Caused by the `:` in the out-of-tree-build symlink target (`com.facebook.presto:<artifact>`). See Tests section. |
 | Pre-existing trunk compile error (unrelated test file) | Add `-Dmaven.test.skip=true` to skip test compilation, or skip the failing module with `-pl '!<module>'` |
 | Eden mount slow/stale | `eden prefetch 'fbcode/github/presto-*-trunk/**'` |
 | Module not found | Ensure CWD is inside the correct repo (`presto-trunk` or `presto-facebook-trunk`) |
