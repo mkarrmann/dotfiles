@@ -173,8 +173,13 @@ return {
               )
               local fbsource = vim.fn.expand("~/fbsource")
               local stderr_log = vim.fn.expand("~/.local/state/nvim/dvsc-core-acp.stderr.log")
-              local launch = string.format("cd %s && exec node %s 2>>%s",
+              -- /usr/local/bin/node is Node 16, which lacks global `fetch`. The
+              -- wrapper's HTTP client to dvsc-core requires Node 18+. fbsource
+              -- ships a pinned Node toolchain we use instead.
+              local node_bin = vim.fn.expand("~/fbsource/xplat/third-party/node/bin/node")
+              local launch = string.format("cd %s && exec %s %s 2>>%s",
                 vim.fn.shellescape(fbsource),
+                vim.fn.shellescape(node_bin),
                 vim.fn.shellescape(wrapper),
                 vim.fn.shellescape(stderr_log))
               return require("codecompanion.adapters").extend("claude_code", {
