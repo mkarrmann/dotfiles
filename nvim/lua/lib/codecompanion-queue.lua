@@ -50,6 +50,20 @@ local function fmt_tokens(n)
   return tostring(n)
 end
 
+vim.api.nvim_create_autocmd("WinClosed", {
+  group = vim.api.nvim_create_augroup("codecompanion_queue_close", { clear = true }),
+  callback = function(args)
+    local closed = tonumber(args.match)
+    if closed ~= state.winnr and closed ~= state.status_winnr then
+      return
+    end
+    local chat_win = state.chat_bufnr and vim.fn.bufwinid(state.chat_bufnr)
+    if chat_win and chat_win ~= -1 then
+      pcall(vim.api.nvim_win_close, chat_win, true)
+    end
+  end,
+})
+
 vim.api.nvim_create_autocmd("WinNew", {
   group = vim.api.nvim_create_augroup("codecompanion_queue_redirect", { clear = true }),
   callback = function()
