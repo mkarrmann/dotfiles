@@ -54,7 +54,11 @@ for spec in "$@"; do
   echo "  $session -> localhost:$port"
 done
 
-remote_cmd=""
+# Bring up the per-devvm acp-broker before the per-session nvims fire
+# (~/dotfiles/bin/acp-broker-up). Idempotent: no-op if already running.
+# Failure is non-fatal — nvim still works, only CodeCompanion's broker
+# adapter is affected, and the warning surfaces in this terminal.
+remote_cmd="acp-broker-up >/dev/null 2>&1 || echo 'WARN: acp-broker-up failed' >&2; "
 for part in "${remote_parts[@]}"; do
   remote_cmd+="${part} & "
 done
