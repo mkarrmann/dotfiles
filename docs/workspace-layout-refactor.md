@@ -26,7 +26,7 @@ Engineers typically `fbclone fbsource` into `~/fbsource` and `fbclone configerat
 
 ### 1.2 Multi-checkout workflow
 
-I keep two parallel checkouts so I can do "checkout2" work (experiments, oncall, hack-day code) without clobbering my "checkout1" branch state. Pre-migration this looked like:
+I keep three parallel checkouts so I can do non-primary work (experiments, oncall, hack-day code) without clobbering my "checkout1" branch state. Pre-migration this looked like:
 
 ```
 ~/fbsource          → /home/mkarrmann/local/fbsource  (symlink)
@@ -42,11 +42,13 @@ Post-migration this is:
 ```
 ~/checkout1/fbsource         → real Eden mount  (primary)
 ~/checkout1/configerator     → real Eden mount  (primary)
-~/checkout2/fbsource      → real Eden mount  (parallel work)
-~/checkout2/configerator  → real Eden mount  (parallel work)
+~/checkout2/fbsource         → real Eden mount  (parallel work)
+~/checkout2/configerator     → real Eden mount  (parallel work)
+~/checkout3/fbsource         → real Eden mount  (parallel work)
+~/checkout3/configerator     → real Eden mount  (parallel work)
 ```
 
-The motivation for the rename: opening a single VS Code multi-root workspace per top-level dir (`~/checkout1` vs `~/checkout2`) gives me both `fbsource` and `configerator` side-by-side, and `~/checkout1`/`~/checkout2` are more meaningful directory names than `~/fbsource2`.
+The motivation for the rename: opening a single VS Code multi-root workspace per top-level dir (`~/checkout1`, `~/checkout2`, `~/checkout3`) gives me both `fbsource` and `configerator` side-by-side, and `~/checkoutN` are more meaningful directory names than `~/fbsourceN`.
 
 ### 1.3 Maven build isolation
 
@@ -60,7 +62,7 @@ So my `~/.localrc` defines a `_checkout_suffix` function that returns `""` for t
 - `-Dmaven.repo.local=${BUILD_ROOT}/m2-repo${suffix}`
 - `-Dout-of-tree-build-root=${BUILD_ROOT}/<project>${suffix}`
 
-`BUILD_ROOT` is `/data/users/mkarrmann/builds`. After this refactor, the secondary workspace `~/checkout2` produces `${BUILD_ROOT}/m2-repo-checkout2` and `${BUILD_ROOT}/presto-trunk-checkout2` etc.
+`BUILD_ROOT` is `/data/users/mkarrmann/builds`. After this refactor, non-primary workspaces (`~/checkout2`, `~/checkout3`) produce `${BUILD_ROOT}/m2-repo-checkoutN` and `${BUILD_ROOT}/presto-trunk-checkoutN` etc.
 
 ### 1.4 Multi-devserver orchestration
 
@@ -69,7 +71,7 @@ I work across **two devservers** simultaneously, both reachable from my Mac via 
 - **FTW**: `devvm36111.ftw0.facebook.com`
 - **CCO**: `devvm20365.cco0.facebook.com`
 
-Each devserver has both workspaces (`~/checkout1` and `~/checkout2`). Window orchestration on the Mac is via `~/dotfiles/bin-macos/startup-windows`, which uses [AeroSpace](https://github.com/nikitabobko/AeroSpace) to lay out 9 numeric workspaces:
+Each devserver has all three workspaces (`~/checkout1`, `~/checkout2`, `~/checkout3`). Window orchestration on the Mac is via `~/dotfiles/bin-macos/startup-windows`, which uses [AeroSpace](https://github.com/nikitabobko/AeroSpace) to lay out 9 numeric workspaces:
 
 | WS | Contents |
 |----|----------|
@@ -94,7 +96,7 @@ The Mac side runs `nvs-tunnels` per devserver, which:
 1. Sets up SSH port forwarding for each session's port.
 2. Invokes `nvs --server-only <session> <workdir>` on the remote — this starts the headless server with the right `cd` and a watchdog that auto-restarts it within ~5s if it dies.
 
-Post-migration sessions are named `FTW-checkout1`, `FTW-checkout2`, `CCO-checkout1`, `CCO-checkout2`.
+Post-migration sessions are named `FTW-checkout1`, `FTW-checkout2`, `FTW-checkout3`, `CCO-checkout1`, `CCO-checkout2`, `CCO-checkout3`.
 
 ### 1.6 Dotfiles distribution
 
@@ -110,7 +112,7 @@ The recent migration from `~/fbsource{,2,3}` to `~/checkout1/fbsource` + `~/chec
 2. `~/dotfiles/bin-macos/startup-windows` — workspace table, regexes, nvs args, vscode-remote URIs
 3. `~/dotfiles/bin-macos/nvs-tunnels` — example comment
 4. `~/dotfiles/bin/devmate_mux` — `cd "$HOME/fbsource"`
-5. `~/dotfiles/bin/migrate-checkouts` — script accepts `--primary`/`--secondary` flags (already parameterized but defaults baked in)
+5. `~/dotfiles/bin/setup-checkouts` — script accepts `--primary`/`--secondary`/`--tertiary` flags (already parameterized but defaults baked in)
 6. `~/dotfiles/nvim/lua/lib/presto-maven.lua` — `DEV_HOME = ~/fbsource/fbcode/github`
 7. `~/dotfiles/nvim/lua/lib/fdb-dap.lua` — DEBUGPY_DOTSLASH path + buck cwd
 8. `~/dotfiles/nvim/lua/plugins/dap.lua` — DAP source-map paths × 3
@@ -171,7 +173,7 @@ After this refactor: one-line edit to `workspaces.sh`, plus per-workspace files 
 
 ### Non-Goals
 
-- Refactoring `migrate-checkouts` itself. It already takes `--primary`/`--secondary` flags; auto-reading from `workspaces.sh` is a nice-to-have but not blocking.
+- Refactoring `setup-checkouts` itself. It already takes `--primary`/`--secondary`/`--tertiary` flags; auto-reading from `workspaces.sh` is a nice-to-have but not blocking.
 - Auto-creating workspace `.code-workspace` files when adding a workspace. They have unique colors and folder lists that benefit from manual review.
 - Changing the workspace layout itself (e.g. flat vs nested). The `~/<workspace>/{fbsource,configerator}` structure is fine.
 - Touching Meta-side tooling. Out of scope.
@@ -189,7 +191,7 @@ Detailed list of every place workspace assumptions live, with file path, line ra
 | `~/.localrc` | 50–95 | `_workspace_root`, `_fbsource_root`, `_configerator_root`, `_checkout_suffix`, `gfb`, `con`, `gf`, `gp`, `_mf_flags`, `_mp_flags` | C (shortcuts) + B (suffix) | `_workspace_root` already case-matches `~/checkout1` and `~/checkout2` literally — needs to become a loop over `WORKSPACES` |
 | `~/.local_init.sh` | 62, 63, 94, 232 | Sphinx venv + Rust toolchain paths, all under `~/checkout1/fbsource/...` | B (default) | Setup runs from `$HOME` so cwd-walking won't help — needs `$PRIMARY_FBSOURCE` |
 | `~/dotfiles/bin/devmate_mux` | 4 | `cd "$HOME/main/fbsource"` before invoking real `devmate_mux` | B/C | Wrapper exists because real devmate_mux's auto-detect is broken on devvms |
-| `~/dotfiles/bin/migrate-checkouts` | top | `PRIMARY_NAME=main`, `SECONDARY_NAME=scratch` defaults | already parameterized | Could read defaults from `workspaces.sh` |
+| `~/dotfiles/bin/setup-checkouts` | top | `PRIMARY_NAME=checkout1`, `SECONDARY_NAME=checkout2`, `TERTIARY_NAME=checkout3` defaults | already parameterized | Could read defaults from `workspaces.sh` |
 
 ### Neovim layer
 
@@ -230,7 +232,8 @@ Detailed list of every place workspace assumptions live, with file path, line ra
 |------|------|
 | `~/dotfiles/checkout1.code-workspace` | Multi-root workspace, blue peacock theme |
 | `~/dotfiles/checkout2.code-workspace` | Multi-root workspace, teal peacock theme |
-| `~/checkout1.code-workspace`, `~/checkout2.code-workspace` | Symlinks → dotfiles |
+| `~/dotfiles/checkout3.code-workspace` | Multi-root workspace, orange peacock theme |
+| `~/checkout1.code-workspace`, `~/checkout2.code-workspace`, `~/checkout3.code-workspace` | Symlinks → dotfiles |
 
 ---
 
@@ -246,7 +249,7 @@ Detailed list of every place workspace assumptions live, with file path, line ra
 # To add a workspace:
 #   1. Add it to WORKSPACES (and decide if it should be PRIMARY).
 #   2. Create ~/dotfiles/<name>.code-workspace (peacock-themed).
-#   3. Re-run ~/bin/migrate-checkouts to clone into ~/<name>/{fbsource,configerator}.
+#   3. Re-run ~/bin/setup-checkouts to clone into ~/<name>/{fbsource,configerator}.
 
 export WORKSPACES=(main scratch)
 export PRIMARY_WORKSPACE="${PRIMARY_WORKSPACE:-main}"
@@ -512,7 +515,7 @@ Estimated effort: ~2 hours including testing.
 4. **Refactor Category B files** (`.local_init.sh`, `presto-build`'s fallback). Don't run `.local_init.sh` blindly — it has side effects; just verify the paths it would use. (15 min)
 5. **Refactor Category A** (DAP files). Test by setting a breakpoint in a buck-built C++ binary and confirming the source resolves in nvim. (20 min)
 6. **Refactor `startup-windows`** to generate from `WORKSPACES` (§5.4). Test by running it on the Mac and confirming no functional change. (20 min)
-7. **Update `migrate-checkouts`** to read defaults from `workspaces.sh` instead of hardcoding `checkout1`/`checkout2`. Optional. (15 min)
+7. **Update `setup-checkouts`** to read defaults from `workspaces.sh` instead of hardcoding `checkout1`/`checkout2`/`checkout3`. Optional. (15 min)
 8. **Doc pass** — update SKILL.md files, `~/.claude/projects/presto.md`, and the workspace-layout-refactor doc itself to reference `workspaces.sh`. (15 min)
 9. **Cross-devserver smoke test** — `dotsync2` to FTW, source `.localrc`, run `gfb && pwd`, `presto-build --help`. (10 min)
 10. **Add a memory entry** at `~/.claude/projects/-data-users-mkarrmann-fbsource/memory/` noting the new central workspace config so future Claude sessions don't re-introduce hardcoded paths. (5 min)
@@ -554,7 +557,7 @@ Walk `~/*` looking for dirs containing both `fbsource` and `configerator`. Rejec
 
 4. **What about the `gfb` / `con` "current vs primary" semantics?** Today `gfb` cd's to the *current* fbsource (the one PWD is inside). Sometimes I want "go to the primary" instead. Could add `gfb-main` / `gfb-scratch` variants. Defer.
 
-5. **Should `migrate-checkouts` enforce that the workspaces in `workspaces.sh` exist after migration?** I.e. for each workspace in the list, ensure there's a clone. Currently the script defaults to two and accepts overrides. Could iterate over `${WORKSPACES[@]}` instead. Worth doing if I add a third workspace.
+5. **Should `setup-checkouts` enforce that the workspaces in `workspaces.sh` exist after provisioning?** I.e. for each workspace in the list, ensure there's a clone. Currently the script hardcodes the three defaults (`checkout1`, `checkout2`, `checkout3`) and accepts overrides. Could iterate over `${WORKSPACES[@]}` instead — likely worthwhile next time the workspace list changes.
 
 ---
 
@@ -562,7 +565,7 @@ Walk `~/*` looking for dirs containing both `fbsource` and `configerator`. Rejec
 
 - **EdenFS docs:** `/data/users/mkarrmann/checkout1/fbsource/fbcode/eden/fs/cli/main.py` (`remove_checkout_impl`)
 - **fbclone:** `/data/users/mkarrmann/checkout1/fbsource/fbcode/eden/scm/fb/fbclone/src/main.rs`
-- **Migration script:** `~/dotfiles/bin/migrate-checkouts`
+- **Provisioning script:** `~/dotfiles/bin/setup-checkouts`
 - **Pre-migration audit:** the conversation that produced this doc (Claude session 2026-05-07)
 - **AeroSpace:** https://github.com/nikitabobko/AeroSpace
 - **Internal: New to EdenFS:** https://www.internalfb.com/wiki/Source-Control-Users/Get_Started/NewToEden/

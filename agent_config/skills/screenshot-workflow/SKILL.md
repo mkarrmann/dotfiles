@@ -36,7 +36,7 @@ Then use the `Read` tool on the returned path.
 Managed by `~/dotfiles/init.sh`:
 
 - **`~/screenshots/`** — landing directory for uploaded images
-- **`~/<workspace>/fbsource/screenshots`** — symlink so the folder is visible in the VS Code Explorer (workspace root is `~/<workspace>` containing both fbsource and configerator; e.g. `~/checkout1` or `~/checkout2`)
+- **`~/<workspace>/fbsource/screenshots`** — symlink so the folder is visible in the VS Code Explorer (workspace root is `~/<workspace>` containing both fbsource and configerator; e.g. `~/checkout1`, `~/checkout2`, or `~/checkout3`)
 - **`~/bin/latest-screenshot`** — helper script (source-controlled in `~/dotfiles/bin/`)
 
 ## Why This Exists
