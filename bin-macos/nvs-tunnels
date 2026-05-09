@@ -76,10 +76,12 @@ while true; do
   echo "Connecting to $host (Duo auth may be required)..."
   echo ""
 
+  # ET requires reverse tunnels to be merged into a single -r flag
+  # (comma-separated), not passed as multiple -r flags. Same shape as
+  # the -t forward-tunnel spec built above.
   x2ssh -et "$host" \
     -t "$tunnel_spec" \
-    -r "$NVS_CLIP_PORT:$NVS_CLIP_PORT" \
-    -r "$PERSISTENCE_PORT:$PERSISTENCE_PORT" \
+    -r "$NVS_CLIP_PORT:$NVS_CLIP_PORT,$PERSISTENCE_PORT:$PERSISTENCE_PORT" \
     -c "zsh -lc '${remote_cmd}'" &
   et_pid=$!
 
