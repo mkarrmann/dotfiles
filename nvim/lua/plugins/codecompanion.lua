@@ -1,3 +1,85 @@
+-- ── dvsc-core-acp via acp-broker: per-launch picker state ─────────────────
+--
+-- The broker-fronted `dvsc_core_broker` adapter (defined alongside
+-- `dvsc_core` below) reads `_dvsc.pending` when CodeCompanion spawns it,
+-- bakes that JSON into `ACP_BROKER_CLIENT_METADATA_JSON`, and runs
+-- `acp-broker-attach-tag` which forwards the metadata through the broker
+-- via `_meta/broker/connection/set_metadata`. The dvsc-core-acp wrapper
+-- (`extractDvscMetadata` in `agent.ts`) then sources mode/model/
+-- thinking_effort from `_meta.broker.client.metadata.dvsc`.
+local _dvsc = { pending = nil }
+
+local DVSC_CACHE_PATH = vim.fn.stdpath("data") .. "/dvsc-acp-last.json"
+
+local DVSC_MODES = { "native", "claude", "codex", "metacode" }
+
+-- Per-mode model lists. Sample set culled from dm-core tests; the live list
+-- lives in Configerator and is queryable via `GET /models` on a running
+-- dvsc-core server. Replace with a one-shot fetch + disk cache when the
+-- hardcoded list goes stale.
+local DVSC_MODELS_BY_MODE = {
+  native = {
+    "claude-opus-4-7",
+    "claude-sonnet-4.6",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex",
+    "avocado-taster",
+    "gemini-3-pro",
+  },
+  claude = { "claude-opus-4-7", "claude-sonnet-4.6", "claude-opus-4-6" },
+  codex = { "gpt-5.1-codex-max", "gpt-5.1-codex", "gpt-5-codex", "gpt-5.2", "gpt-5.3-codex" },
+  metacode = { "avocado-taster" },
+}
+
+-- Mirrors dvsc-core's ReasoningEffort enum (lowercased on the wire); the
+-- wrapper translates per-provider before sending to dvsc-core.
+local DVSC_EFFORTS = { "high", "medium", "low", "xhigh", "minimal" }
+
+local function _dvsc_read_cache()
+  local f = io.open(DVSC_CACHE_PATH, "r")
+  if not f then return {} end
+  local body = f:read("*a")
+  f:close()
+  local ok, t = pcall(vim.fn.json_decode, body)
+  return (ok and type(t) == "table") and t or {}
+end
+
+local function _dvsc_write_cache(t)
+  local f = io.open(DVSC_CACHE_PATH, "w")
+  if not f then return end
+  f:write(vim.fn.json_encode(t))
+  f:close()
+end
+
+local function _dvsc_pick(items, prompt, cb)
+  vim.ui.select(items, { prompt = prompt }, function(choice)
+    if choice ~= nil then cb(choice) end
+  end)
+end
+
+local function _dvsc_launch(sel)
+  -- Stash for the adapter function to consume on next spawn. Racy if you
+  -- start two chats simultaneously; fine for single-user.
+  _dvsc.pending = vim.fn.json_encode({ dvsc = sel })
+  vim.cmd("CodeCompanionChat adapter=dvsc_core_broker")
+end
+
+local function dvsc_pick_and_launch(force)
+  local cache = _dvsc_read_cache()
+  if not force and cache.mode and cache.model and cache.thinking_effort then
+    return _dvsc_launch(cache)
+  end
+  _dvsc_pick(DVSC_MODES, "Harness:", function(mode)
+    _dvsc_pick(DVSC_MODELS_BY_MODE[mode] or {}, "Model:", function(model)
+      _dvsc_pick(DVSC_EFFORTS, "Thinking effort:", function(effort)
+        local sel = { mode = mode, model = model, thinking_effort = effort }
+        _dvsc_write_cache(sel)
+        _dvsc_launch(sel)
+      end)
+    end)
+  end)
+end
+
 return {
   {
     "olimorris/codecompanion.nvim",
@@ -204,6 +286,44 @@ return {
               return require("codecompanion.adapters").extend("claude_code", {
                 name = "dvsc_core",
                 formatted_name = "Dvsc Core",
+                commands = {
+                  default = { "sh", "-c", launch },
+                  yolo = { "sh", "-c", launch },
+                },
+                env = {},
+                defaults = {
+                  timeout = 120000,
+                },
+                handlers = {
+                  auth = function() return true end,
+                },
+              })
+            end,
+            -- Broker-fronted variant. Spawns `acp-broker-attach-tag`, which
+            -- stamps the metadata JSON read from `ACP_BROKER_CLIENT_METADATA_JSON`
+            -- onto every envelope via `_meta/broker/connection/set_metadata`.
+            -- The dvsc-core-acp wrapper picks up `mode`/`model`/`thinking_effort`
+            -- from there. Requires the broker to be running on the canonical
+            -- socket (`${XDG_RUNTIME_DIR:-/tmp}/acp-broker.sock`) with the
+            -- dvsc-core-acp wrapper as its upstream agent. Drive via
+            -- `dvsc_pick_and_launch` (see `<leader>ag`/`<leader>aG`).
+            dvsc_core_broker = function()
+              local payload = _dvsc.pending
+                  or vim.fn.json_encode({ dvsc = { mode = "native" } })
+              _dvsc.pending = nil
+              local stderr_log = vim.fn.expand("~/.local/state/nvim/dvsc-core-acp.stderr.log")
+              -- Default location after `cargo build --release` in ~/repos/acp-broker.
+              -- Symlink into ~/bin or adjust this path if you keep the binary elsewhere.
+              local attach_bin = vim.fn.expand("~/repos/acp-broker/target/release/acp-broker-attach-tag")
+              local launch = string.format(
+                "ACP_BROKER_CLIENT_METADATA_JSON=%s exec %s 2>>%s",
+                vim.fn.shellescape(payload),
+                vim.fn.shellescape(attach_bin),
+                vim.fn.shellescape(stderr_log)
+              )
+              return require("codecompanion.adapters").extend("claude_code", {
+                name = "dvsc_core_broker",
+                formatted_name = "Dvsc Core (Broker)",
                 commands = {
                   default = { "sh", "-c", launch },
                   yolo = { "sh", "-c", launch },
@@ -439,6 +559,8 @@ return {
       { "<leader>ad", "<cmd>CodeCompanionDoctor<cr>", desc = "CodeCompanion Doctor" },
       { "<leader>aD", "<cmd>CodeCompanionChat adapter=devmate<cr>", desc = "CodeCompanion Chat (Devmate)" },
       { "<leader>aS", "<cmd>CodeCompanionChat adapter=dvsc_core<cr>", desc = "CodeCompanion Chat (Dvsc Core)" },
+      { "<leader>ag", function() dvsc_pick_and_launch(false) end, desc = "Dvsc Chat via broker (last config)" },
+      { "<leader>aG", function() dvsc_pick_and_launch(true)  end, desc = "Dvsc Chat via broker (pick config)" },
     },
   },
 }
