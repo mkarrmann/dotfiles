@@ -17,6 +17,7 @@ set -euo pipefail
 # Example: nvs-tunnels devvm36111.ftw0.facebook.com FTW-main1 FTW-main:~/main
 
 NVS_CLIP_PORT="${NVS_CLIP_PORT:-8765}"
+PERSISTENCE_PORT="${PERSISTENCE_PORT:-7847}"
 
 host="${1:?usage: nvs-tunnels HOST SESSION[:WORKDIR] ...}"
 shift
@@ -74,6 +75,7 @@ while true; do
   x2ssh -et "$host" \
     -t "$tunnel_spec" \
     -r "$NVS_CLIP_PORT:$NVS_CLIP_PORT" \
+    -r "$PERSISTENCE_PORT:$PERSISTENCE_PORT" \
     -c "zsh -lc '${remote_cmd}'" &
   et_pid=$!
 
