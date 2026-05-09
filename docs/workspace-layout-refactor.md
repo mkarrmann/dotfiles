@@ -78,12 +78,13 @@ Each devserver has all three workspaces (`~/checkout1`, `~/checkout2`, `~/checko
 | 1  | local Mac terminal + Chrome |
 | T  | per-devserver SSH tunnel windows (Ghostty) |
 | 2  | FTW general shell |
-| 3  | FTW main workspace (Ghostty + VS Code) |
-| 4  | FTW scratch workspace (Ghostty + VS Code) |
-| 5  | CCO general shell |
-| 6  | CCO main workspace |
-| 7  | CCO scratch workspace |
-| 8/9| Chrome scratch |
+| 3  | FTW checkout1 (Ghostty + VS Code) |
+| 4  | FTW checkout2 (Ghostty + VS Code) |
+| 5  | FTW checkout3 (Ghostty + VS Code) |
+| 6  | CCO general shell |
+| 7  | CCO checkout1 (Ghostty + VS Code) |
+| 8  | CCO checkout2 (Ghostty + VS Code) |
+| 9  | CCO checkout3 (Ghostty + VS Code) |
 | Z  | sweep / stragglers |
 
 VS Code remote opens are via `vscode-remote://fb-remote+<devvm>/home/mkarrmann/<name>.code-workspace` — multi-root files that bundle `fbsource` and `configerator` from the same workspace dir.
