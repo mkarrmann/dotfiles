@@ -3,6 +3,7 @@
 # layout:
 #   ~/<PRIMARY_NAME>/{fbsource,configerator}
 #   ~/<SECONDARY_NAME>/{fbsource,configerator}
+#   ~/<TERTIARY_NAME>/{fbsource,configerator}
 #
 # Plus the legacy convenience symlinks that older tools / cached references
 # expect:
@@ -19,14 +20,15 @@
 #
 # Usage:
 #   setup-checkouts [--dry-run]
-#                   [--primary NAME] [--secondary NAME]
+#                   [--primary NAME] [--secondary NAME] [--tertiary NAME]
 #
-# Env overrides: PRIMARY_NAME, SECONDARY_NAME
+# Env overrides: PRIMARY_NAME, SECONDARY_NAME, TERTIARY_NAME
 
 set -euo pipefail
 
 PRIMARY_NAME="${PRIMARY_NAME:-checkout1}"
 SECONDARY_NAME="${SECONDARY_NAME:-checkout2}"
+TERTIARY_NAME="${TERTIARY_NAME:-checkout3}"
 DRY_RUN=0
 
 while [[ $# -gt 0 ]]; do
@@ -34,7 +36,8 @@ while [[ $# -gt 0 ]]; do
     --dry-run)   DRY_RUN=1; shift ;;
     --primary)   PRIMARY_NAME="$2"; shift 2 ;;
     --secondary) SECONDARY_NAME="$2"; shift 2 ;;
-    -h|--help)   sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --tertiary)  TERTIARY_NAME="$2"; shift 2 ;;
+    -h|--help)   sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -42,6 +45,7 @@ done
 LOG_DIR="$HOME/setup-checkouts-$(date +%Y%m%d-%H%M%S)"
 PRIMARY_DIR="$HOME/$PRIMARY_NAME"
 SECONDARY_DIR="$HOME/$SECONDARY_NAME"
+TERTIARY_DIR="$HOME/$TERTIARY_NAME"
 
 log()  { printf '\n=== %s ===\n' "$*"; }
 warn() { printf 'WARN: %s\n' "$*" >&2; }
@@ -96,6 +100,7 @@ log "Setup log: $LOG_DIR"
 echo "Hostname:  $(hostname)"
 echo "Primary:   $PRIMARY_DIR"
 echo "Secondary: $SECONDARY_DIR"
+echo "Tertiary:  $TERTIARY_DIR"
 (( DRY_RUN )) && echo "Mode:      DRY RUN — no changes will be made"
 
 cd "$HOME"
@@ -129,6 +134,8 @@ TARGETS=(
   "$PRIMARY_DIR/configerator:configerator"
   "$SECONDARY_DIR/fbsource:fbsource"
   "$SECONDARY_DIR/configerator:configerator"
+  "$TERTIARY_DIR/fbsource:fbsource"
+  "$TERTIARY_DIR/configerator:configerator"
 )
 echo "Will fbclone:"
 for t in "${TARGETS[@]}"; do
@@ -143,6 +150,7 @@ echo
 echo "Will create symlinks:"
 echo "  ~/$PRIMARY_NAME.code-workspace   -> ~/dotfiles/$PRIMARY_NAME.code-workspace"
 echo "  ~/$SECONDARY_NAME.code-workspace -> ~/dotfiles/$SECONDARY_NAME.code-workspace"
+echo "  ~/$TERTIARY_NAME.code-workspace  -> ~/dotfiles/$TERTIARY_NAME.code-workspace"
 echo "  ~/local/fbsource                 -> $PRIMARY_DIR/fbsource"
 echo "  ~/local/configerator             -> $PRIMARY_DIR/configerator"
 echo "  ~/fbsource                       -> ~/local/fbsource"
@@ -157,7 +165,7 @@ confirm "Proceed?"
 
 # ── Phase 3: fbclone ────────────────────────────────────────────────
 log "Phase 3: fbclone"
-run mkdir -p "$PRIMARY_DIR" "$SECONDARY_DIR"
+run mkdir -p "$PRIMARY_DIR" "$SECONDARY_DIR" "$TERTIARY_DIR"
 
 clone_one() {
   local repo="$1" dest="$2"
@@ -174,10 +182,12 @@ clone_one fbsource     "$PRIMARY_DIR/fbsource"
 clone_one configerator "$PRIMARY_DIR/configerator"
 clone_one fbsource     "$SECONDARY_DIR/fbsource"
 clone_one configerator "$SECONDARY_DIR/configerator"
+clone_one fbsource     "$TERTIARY_DIR/fbsource"
+clone_one configerator "$TERTIARY_DIR/configerator"
 
 # ── Phase 4: VS Code workspace symlinks ─────────────────────────────
 log "Phase 4: VS Code workspace symlinks"
-for name in "$PRIMARY_NAME" "$SECONDARY_NAME"; do
+for name in "$PRIMARY_NAME" "$SECONDARY_NAME" "$TERTIARY_NAME"; do
   src="$HOME/dotfiles/$name.code-workspace"
   dest="$HOME/$name.code-workspace"
   if [[ ! -e "$src" ]]; then
@@ -203,12 +213,12 @@ log "Phase 6: Verify"
 echo "+ eden list"
 eden list 2>&1 | sed 's/^/    /'
 echo
-for d in "$PRIMARY_DIR" "$SECONDARY_DIR"; do
+for d in "$PRIMARY_DIR" "$SECONDARY_DIR" "$TERTIARY_DIR"; do
   echo "+ ls $d"
   ls "$d" 2>&1 | sed 's/^/    /'
 done
 echo
-for ws in "$PRIMARY_NAME" "$SECONDARY_NAME"; do
+for ws in "$PRIMARY_NAME" "$SECONDARY_NAME" "$TERTIARY_NAME"; do
   link="$HOME/$ws.code-workspace"
   if [[ -L "$link" ]]; then
     echo "  $link -> $(readlink "$link")"
