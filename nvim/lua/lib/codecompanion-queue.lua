@@ -391,6 +391,7 @@ function M.on_chat_opened(chat_bufnr)
   vim.wo[status_win].relativenumber = false
   vim.wo[status_win].signcolumn = "no"
   vim.wo[status_win].winfixheight = true
+  vim.wo[status_win].winfixbuf = true
   vim.wo[status_win].statusline = " "
   vim.wo[status_win].cursorline = false
   vim.wo[status_win].wrap = false
@@ -399,6 +400,7 @@ function M.on_chat_opened(chat_bufnr)
   vim.wo[input_win].relativenumber = false
   vim.wo[input_win].signcolumn = "no"
   vim.wo[input_win].winfixheight = true
+  vim.wo[input_win].winfixbuf = true
   vim.wo[input_win].statusline = " "
   vim.wo[input_win].wrap = true
   vim.wo[input_win].linebreak = true
