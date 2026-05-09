@@ -1,0 +1,239 @@
+#!/usr/bin/env bash
+# Provision a fresh devserver with the standard per-workspace Eden checkout
+# layout:
+#   ~/<PRIMARY_NAME>/{fbsource,configerator}
+#   ~/<SECONDARY_NAME>/{fbsource,configerator}
+#
+# Plus the legacy convenience symlinks that older tools / cached references
+# expect:
+#   ~/fbsource     -> ~/local/fbsource     -> ~/<PRIMARY_NAME>/fbsource
+#   ~/configerator -> ~/local/configerator -> ~/<PRIMARY_NAME>/configerator
+#
+# And the VS Code workspace symlinks:
+#   ~/<NAME>.code-workspace -> ~/dotfiles/<NAME>.code-workspace
+#
+# Assumes a fresh machine: ~/dotfiles is already cloned and init.sh has run.
+# Idempotent: safe to re-run after partial success.
+#
+# Out of scope: ~/.localrc, Maven, Rust, ~/.claude, gdrive, BUILD_ROOT, etc.
+#
+# Usage:
+#   setup-checkouts [--dry-run]
+#                   [--primary NAME] [--secondary NAME]
+#
+# Env overrides: PRIMARY_NAME, SECONDARY_NAME
+
+set -euo pipefail
+
+PRIMARY_NAME="${PRIMARY_NAME:-checkout1}"
+SECONDARY_NAME="${SECONDARY_NAME:-checkout2}"
+DRY_RUN=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run)   DRY_RUN=1; shift ;;
+    --primary)   PRIMARY_NAME="$2"; shift 2 ;;
+    --secondary) SECONDARY_NAME="$2"; shift 2 ;;
+    -h|--help)   sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "Unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+LOG_DIR="$HOME/setup-checkouts-$(date +%Y%m%d-%H%M%S)"
+PRIMARY_DIR="$HOME/$PRIMARY_NAME"
+SECONDARY_DIR="$HOME/$SECONDARY_NAME"
+
+log()  { printf '\n=== %s ===\n' "$*"; }
+warn() { printf 'WARN: %s\n' "$*" >&2; }
+die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+run()  { echo "+ $*"; if (( ! DRY_RUN )); then "$@"; fi; }
+
+confirm() {
+  local prompt="$1" ans
+  read -rp "$prompt [type 'yes' to proceed]: " ans
+  [[ "$ans" == "yes" ]] || die "Aborted by user."
+}
+
+eden_mounts() {
+  eden list 2>/dev/null | awk 'NR>1 {print $1}' | sort -u
+}
+
+is_inside_mount() {
+  local path="$1" m
+  for m in $(eden_mounts); do
+    case "$path" in "$m"|"$m"/*) return 0 ;; esac
+  done
+  return 1
+}
+
+# Symlink helper: ensure $link -> $target. Idempotent. Refuses to clobber
+# anything that isn't already the expected symlink.
+ensure_symlink() {
+  local target="$1" link="$2"
+  if [[ -L "$link" ]]; then
+    local current; current=$(readlink "$link")
+    if [[ "$current" == "$target" ]]; then
+      echo "  $link -> $target (already linked)"
+      return 0
+    fi
+    if [[ ! -e "$link" ]]; then
+      echo "  $link is a dangling symlink to $current; replacing"
+      run rm "$link"
+    else
+      warn "$link is a symlink to $current (expected $target); leaving alone"
+      return 1
+    fi
+  elif [[ -e "$link" ]]; then
+    warn "$link exists and is not a symlink; leaving alone"
+    return 1
+  fi
+  run ln -s "$target" "$link"
+}
+
+# ── Preflight ───────────────────────────────────────────────────────
+mkdir -p "$LOG_DIR"
+log "Setup log: $LOG_DIR"
+echo "Hostname:  $(hostname)"
+echo "Primary:   $PRIMARY_DIR"
+echo "Secondary: $SECONDARY_DIR"
+(( DRY_RUN )) && echo "Mode:      DRY RUN — no changes will be made"
+
+cd "$HOME"
+if is_inside_mount "$PWD"; then
+  die "cwd $PWD is inside an Eden mount. Open a fresh shell in \$HOME and re-run."
+fi
+
+for cmd in eden fbclone sl; do
+  command -v "$cmd" >/dev/null || die "$cmd not on PATH"
+done
+
+[[ -d "$HOME/dotfiles" ]] || die "$HOME/dotfiles not found — clone dotfiles and run init.sh first"
+
+# ── Phase 1: Inventory ──────────────────────────────────────────────
+# Record existing mounts for the log. We don't remove anything — fresh-machine
+# script. If there's a real conflict (a mount already at one of our target
+# paths), we skip its clone in Phase 3.
+log "Phase 1: Inventory existing Eden mounts"
+mapfile -t MOUNTS < <(eden_mounts)
+if (( ${#MOUNTS[@]} == 0 )); then
+  echo "  (none)"
+else
+  printf '  %s\n' "${MOUNTS[@]}"
+fi
+printf '%s\n' "${MOUNTS[@]}" > "$LOG_DIR/mounts.txt"
+
+# ── Phase 2: Plan + confirm ─────────────────────────────────────────
+log "Phase 2: Plan"
+TARGETS=(
+  "$PRIMARY_DIR/fbsource:fbsource"
+  "$PRIMARY_DIR/configerator:configerator"
+  "$SECONDARY_DIR/fbsource:fbsource"
+  "$SECONDARY_DIR/configerator:configerator"
+)
+echo "Will fbclone:"
+for t in "${TARGETS[@]}"; do
+  dest="${t%:*}"; repo="${t#*:}"
+  if [[ -e "$dest" ]]; then
+    echo "  $dest  (SKIP — already exists)"
+  else
+    echo "  $dest  (fbclone $repo)"
+  fi
+done
+echo
+echo "Will create symlinks:"
+echo "  ~/$PRIMARY_NAME.code-workspace   -> ~/dotfiles/$PRIMARY_NAME.code-workspace"
+echo "  ~/$SECONDARY_NAME.code-workspace -> ~/dotfiles/$SECONDARY_NAME.code-workspace"
+echo "  ~/local/fbsource                 -> $PRIMARY_DIR/fbsource"
+echo "  ~/local/configerator             -> $PRIMARY_DIR/configerator"
+echo "  ~/fbsource                       -> ~/local/fbsource"
+echo "  ~/configerator                   -> ~/local/configerator"
+echo
+
+if (( DRY_RUN )); then
+  log "Dry run complete. No changes made."
+  exit 0
+fi
+confirm "Proceed?"
+
+# ── Phase 3: fbclone ────────────────────────────────────────────────
+log "Phase 3: fbclone"
+run mkdir -p "$PRIMARY_DIR" "$SECONDARY_DIR"
+
+clone_one() {
+  local repo="$1" dest="$2"
+  if [[ -e "$dest" ]]; then
+    echo "  $dest already exists, skipping fbclone"
+    return
+  fi
+  if ! run fbclone "$repo" "$dest"; then
+    warn "fbclone $repo $dest failed"
+  fi
+}
+
+clone_one fbsource     "$PRIMARY_DIR/fbsource"
+clone_one configerator "$PRIMARY_DIR/configerator"
+clone_one fbsource     "$SECONDARY_DIR/fbsource"
+clone_one configerator "$SECONDARY_DIR/configerator"
+
+# ── Phase 4: VS Code workspace symlinks ─────────────────────────────
+log "Phase 4: VS Code workspace symlinks"
+for name in "$PRIMARY_NAME" "$SECONDARY_NAME"; do
+  src="$HOME/dotfiles/$name.code-workspace"
+  dest="$HOME/$name.code-workspace"
+  if [[ ! -e "$src" ]]; then
+    warn "$src missing — skipping symlink for $name (create it in dotfiles first)"
+    continue
+  fi
+  ensure_symlink "$src" "$dest" || true
+done
+
+# ── Phase 5: Legacy convenience symlinks ────────────────────────────
+# Older tools, cached paths, and various scripts still reference
+# ~/fbsource and ~/configerator. Maintain the chain:
+#   ~/<repo> -> ~/local/<repo> -> ~/<PRIMARY>/<repo>
+log "Phase 5: Legacy ~/local and ~/<repo> symlinks"
+run mkdir -p "$HOME/local"
+for repo in fbsource configerator; do
+  ensure_symlink "$PRIMARY_DIR/$repo" "$HOME/local/$repo" || true
+  ensure_symlink "$HOME/local/$repo" "$HOME/$repo" || true
+done
+
+# ── Phase 6: Verify ─────────────────────────────────────────────────
+log "Phase 6: Verify"
+echo "+ eden list"
+eden list 2>&1 | sed 's/^/    /'
+echo
+for d in "$PRIMARY_DIR" "$SECONDARY_DIR"; do
+  echo "+ ls $d"
+  ls "$d" 2>&1 | sed 's/^/    /'
+done
+echo
+for ws in "$PRIMARY_NAME" "$SECONDARY_NAME"; do
+  link="$HOME/$ws.code-workspace"
+  if [[ -L "$link" ]]; then
+    echo "  $link -> $(readlink "$link")"
+  else
+    warn "$link is not a symlink"
+  fi
+done
+for link in "$HOME/local/fbsource" "$HOME/local/configerator" \
+            "$HOME/fbsource" "$HOME/configerator"; do
+  if [[ -L "$link" ]]; then
+    resolved=$(readlink -f "$link" 2>/dev/null || true)
+    echo "  $link -> $(readlink "$link")  (resolves to: ${resolved:-MISSING})"
+    [[ -e "$link" ]] || warn "  ^ symlink chain is dangling"
+  else
+    warn "$link is not a symlink"
+  fi
+done
+
+# ── Phase 7: Cleanup ────────────────────────────────────────────────
+log "Phase 7: Cleanup"
+if command -v watchman >/dev/null; then
+  run watchman watch-del-all || warn "watchman watch-del-all failed"
+fi
+
+log "Done"
+echo
+echo "Logs: $LOG_DIR"
+echo "  - mounts.txt : Eden mounts present before this script ran"
