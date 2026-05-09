@@ -111,7 +111,25 @@ return {
             claude_code = function()
               local broker_socket = vim.env.ACP_BROKER_SOCKET
                 or ((vim.env.XDG_RUNTIME_DIR or "/tmp") .. "/acp-broker.sock")
-              local attach_bin = vim.fn.expand("~/.cargo/bin/acp-broker-attach")
+              -- Use the -tag wrapper so the broker stamps per-launch
+              -- identity onto every session/new envelope, attributing
+              -- captured sessions to the right nvim/host/cwd in the
+              -- central persistence-server. See acp-broker
+              -- docs/RUNBOOK.md §3.3.
+              local attach_bin = vim.fn.expand("~/.cargo/bin/acp-broker-attach-tag")
+
+              -- Per-launch metadata sourced from env vars exported by
+              -- ~/dotfiles/bin/nvs. Falls back to a minimal identity
+              -- when run outside an nvs-managed session (ad-hoc nvims,
+              -- local dev, etc.) so attribution still produces
+              -- something queryable.
+              local metadata_json = vim.json.encode({
+                nvim_session = vim.env.NVS_SESSION_NAME or "ad-hoc",
+                host         = vim.env.NVS_HOST or vim.fn.hostname(),
+                cwd          = vim.env.NVS_WORKDIR or vim.fn.getcwd(),
+                nvim_pid     = vim.fn.getpid(),
+              })
+
               return require("codecompanion.adapters").extend("claude_code", {
                 commands = {
                   default = { attach_bin },
@@ -120,6 +138,7 @@ return {
                 env = {
                   CLAUDE_CODE_OAUTH_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN",
                   ACP_BROKER_SOCKET = broker_socket,
+                  ACP_BROKER_CLIENT_METADATA_JSON = metadata_json,
                 },
                 defaults = {
                   timeout = 120000,
