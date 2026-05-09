@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Authoritative copy of the launchd job for the acp-broker
+  persistence-server daemon.
+
+  To activate (or after editing):
+    cp ~/dotfiles/launchd/com.mkarrmann.persistence-server.plist \
+       ~/Library/LaunchAgents/
+    launchctl unload ~/Library/LaunchAgents/com.mkarrmann.persistence-server.plist 2>/dev/null
+    launchctl load   ~/Library/LaunchAgents/com.mkarrmann.persistence-server.plist
+    lsof -iTCP:7847 -sTCP:LISTEN   # expect: persistence-server
+
+  Symlinks into ~/Library/LaunchAgents are intentionally avoided —
+  launchd's behavior across system upgrades is more predictable when
+  the file is materialized rather than symlinked. See
+  acp-broker docs/RUNBOOK.md §3.2.
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.mkarrmann.persistence-server</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/mkarrmann/.cargo/bin/persistence-server</string>
+      <string>--listen</string>
+      <string>127.0.0.1:7847</string>
+    </array>
+
+    <!-- Start at login and keep the daemon up; SQLite on disk so
+         brief restarts lose no data. Brokers reconnect with 1s→60s
+         exponential backoff (sqlite-persistence-plugin/src/client.rs). -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/mkarrmann/.local/state/persistence-server/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mkarrmann/.local/state/persistence-server/stderr.log</string>
+  </dict>
+</plist>
