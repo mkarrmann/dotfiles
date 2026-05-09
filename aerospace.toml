@@ -121,8 +121,8 @@ alt-tab = 'workspace-back-and-forth'
 alt-shift-tab = 'move-workspace-to-monitor --wrap-around next'
 
 # Resize
-alt-shift-minus = 'resize smart -50'
-alt-shift-equal = 'resize smart +50'
+alt-shift-comma = 'resize smart -50'
+alt-shift-period = 'resize smart +50'
 
 # Fullscreen
 alt-f = 'fullscreen'
