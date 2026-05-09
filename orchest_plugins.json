@@ -1,0 +1,40 @@
+{
+  "plugins": [
+    {
+      "id": "task-status",
+      "module": "/Users/mkarrmann/dev/orchest/packages/plugin-task-status/dist/index.js",
+      "config": { "staleAfterMs": 300000 },
+      "policy": {
+        "attention": { "maxLevel": "flash" },
+        "notification": { "rateLimitPerMinute": 10 }
+      }
+    },
+    {
+      "id": "orchest-acp-bridge",
+      "module": "/Users/mkarrmann/dev/orchest/packages/plugin-acp-bridge/dist/index.js",
+      "config": {
+        "serverHost": "127.0.0.1",
+        "serverPort": 7847,
+        "clientId": "orchest-local",
+        "attribution": {
+          "byNvimSession": {
+            "FTW-main1": "2",
+            "FTW-checkout1": "3",
+            "FTW-checkout2": "4",
+            "CCO-main1": "5",
+            "CCO-checkout1": "6",
+            "CCO-checkout2": "7"
+          },
+          "byCwd": {
+            "/home/mkarrmann/checkout1": "3",
+            "/home/mkarrmann/checkout1/fbsource": "3",
+            "/home/mkarrmann/checkout1/configerator": "3",
+            "/home/mkarrmann/checkout2": "4",
+            "/home/mkarrmann/checkout2/fbsource": "4",
+            "/home/mkarrmann/checkout2/configerator": "4"
+          }
+        }
+      }
+    }
+  ]
+}

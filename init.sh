@@ -364,6 +364,10 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   mkdir -p "$HOME/.config/sketchybar/plugins"
   link_one "$DOTFILES_DIR/sketchybar/sketchybarrc" "$HOME/.config/sketchybar/sketchybarrc"
   sync_link_dir "$DOTFILES_DIR/sketchybar/plugins" "$HOME/.config/sketchybar/plugins" "*"
+
+  # Orchest plugin manifest
+  mkdir -p "$HOME/Library/Application Support/@orchest/desktop"
+  link_one "$DOTFILES_DIR/orchest_plugins.json" "$HOME/Library/Application Support/@orchest/desktop/plugins.json"
 fi
 #
 # Nori
