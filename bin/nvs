@@ -31,6 +31,13 @@ start() {
   fi
   cmd+=(--cmd "set title titlestring=$name\\ —\\ %t")
   cmd+=(--cmd "lua pcall(require, 'lib.clipboard-relay')")
+  # Per-launch identity for acp-broker per-client metadata attribution
+  # (acp-broker docs/RUNBOOK.md §3.3). Subprocesses (CodeCompanion ->
+  # acp-broker-attach-tag) read these to build
+  # ACP_BROKER_CLIENT_METADATA_JSON.
+  export NVS_SESSION_NAME="$name"
+  export NVS_HOST="$(hostname -s)"
+  export NVS_WORKDIR="${workdir:-$PWD}"
   # setsid, not nohup: nohup only ignores SIGHUP, but the process stays in the
   # ET session's process group. When ET tears down a dead session (e.g. Mac
   # restart), it can SIGTERM/SIGKILL the entire process tree — nohup doesn't
