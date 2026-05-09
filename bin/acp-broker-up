@@ -16,6 +16,7 @@ set -euo pipefail
 
 PIDFILE="${XDG_RUNTIME_DIR:-/tmp}/acp-broker.pid"
 SOCKET="${XDG_RUNTIME_DIR:-/tmp}/acp-broker.sock"
+LOCKFILE="${PIDFILE}.lock"
 LOGDIR="${XDG_STATE_HOME:-$HOME/.local/state}/acp-broker"
 LOGFILE="$LOGDIR/server.log"
 BROKER_ID="${ACP_BROKER_ID:-$(hostname -s)}"
@@ -32,10 +33,30 @@ fi
 
 mkdir -p "$LOGDIR"
 
-# Already up? PID alive AND socket bound — guards against the case
-# where a prior broker died but left a stale socket file behind.
-if [[ -S "$SOCKET" ]] && [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-  exit 0
+# Serialize concurrent invocations so the liveness check + spawn
+# critical section is atomic. Without this, two simultaneous calls
+# can both observe "no broker" and both spawn, racing on bind() of
+# the UDS — one wins, the other exits with EADDRINUSE, and the PID
+# file may end up referencing the dead one. -w 30 caps the wait so
+# a wedged holder doesn't block ET reconnect indefinitely.
+exec 9>"$LOCKFILE"
+flock -w 30 9 || {
+  echo "acp-broker-up: another instance held $LOCKFILE for >30s, aborting" >&2
+  exit 1
+}
+
+# Already up? PID file points at a live process AND that process is
+# acp-broker (not some unrelated PID-reuse victim) AND the UDS is
+# bound. All three checks are needed:
+#   - kill -0 alone is fooled by PID reuse over long uptimes
+#   - process-name match alone misses crashed brokers
+#   - socket presence alone misses stale-socket-after-crash
+if [[ -S "$SOCKET" ]] && [[ -f "$PIDFILE" ]]; then
+  pid="$(cat "$PIDFILE")"
+  if kill -0 "$pid" 2>/dev/null \
+      && [[ "$(ps -p "$pid" -o comm= 2>/dev/null | tr -d '[:space:]')" == "acp-broker" ]]; then
+    exit 0
+  fi
 fi
 rm -f "$SOCKET" "$PIDFILE"
 
