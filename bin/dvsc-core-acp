@@ -1,0 +1,69 @@
+#!/bin/bash
+# Wrapper that exec's the dvsc-core-acp ACP server. Mirrors
+# ~/dotfiles/bin/claude-agent-acp's structure so that the broker's
+# `--declare-agent cmd=...` can point at a stable shell entry point
+# regardless of which fbsource checkout currently has the source
+# materialized.
+#
+# Resolution order for the dist entry point:
+#   1. $DVSC_ACP_DIST (explicit override)
+#   2. ~/checkout1/fbsource/users/mk/mkarrmann/dvsc-core-acp/.../dist/index.js
+#   3. ~/checkout2/fbsource/...
+#   4. ~/checkout3/fbsource/...
+#   5. ~/fbsource/users/mk/mkarrmann/dvsc-core-acp/.../dist/index.js
+#
+# Each candidate is checked for existence; the first hit wins.
+
+set -euo pipefail
+
+# Stderr is teed to a fixed log so that JSON-RPC traffic on stdout stays
+# clean. Inspect ~/.cache/dvsc-core-acp.log if a session fails to start.
+exec 2> >(tee -a "$HOME/.cache/dvsc-core-acp.log" >&2)
+echo "=== dvsc-core-acp wrapper start: $(date -Iseconds) pid=$$ ===" >&2
+
+readonly DIST_REL="users/mk/mkarrmann/dvsc-core-acp/packages/acp-wrapper/dist/index.js"
+
+resolve_dist() {
+  if [[ -n "${DVSC_ACP_DIST:-}" ]]; then
+    if [[ -f "$DVSC_ACP_DIST" ]]; then
+      echo "$DVSC_ACP_DIST"
+      return 0
+    fi
+    echo "DVSC_ACP_DIST=$DVSC_ACP_DIST set but not a file" >&2
+    return 1
+  fi
+  local candidate
+  for root in \
+    "$HOME/checkout1/fbsource" \
+    "$HOME/checkout2/fbsource" \
+    "$HOME/checkout3/fbsource" \
+    "$HOME/fbsource"; do
+    candidate="$root/$DIST_REL"
+    if [[ -f "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if ! SCRIPT="$(resolve_dist)"; then
+  echo "dvsc-core-acp dist not found. Build it with:" >&2
+  echo "  cd ~/fbsource/users/mk/mkarrmann/dvsc-core-acp && npx tsc -b" >&2
+  echo "Or set DVSC_ACP_DIST to the absolute path of dist/index.js." >&2
+  exit 1
+fi
+
+NODE="$(find "$HOME/.cache/dotslash" -name node -type f 2>/dev/null | head -1)"
+if [[ -z "$NODE" ]] || ! "$NODE" --version &>/dev/null; then
+  NODE="$(command -v node)"
+fi
+if [[ -z "$NODE" ]]; then
+  echo "no node binary found (checked ~/.cache/dotslash and PATH)" >&2
+  exit 1
+fi
+
+echo "node=$NODE script=$SCRIPT" >&2
+echo "=== begin dvsc-core-acp output ===" >&2
+
+exec "$NODE" "$SCRIPT" "$@"
