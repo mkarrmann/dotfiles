@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Kill the running acp-broker on this host. Optionally respawn it
+# afterwards via acp-broker-up.
+#
+# Usage:
+#   acp-broker-kill              # take the running broker down, leave dead
+#   acp-broker-kill --restart    # take it down, then re-run acp-broker-up
+#   acp-broker-kill -r           # short form
+#   acp-broker-kill -h | --help  # show usage
+#
+# Reads the PID from acp-broker-up's pidfile, signals the entire
+# process group (the broker leads its own session via setsid — see
+# ~/dotfiles/bin/acp-broker-up — so signaling the leader alone won't
+# reach any per-session agents or persistence links it spawned), drops
+# the stale pidfile + UDS, then optionally hands off to acp-broker-up.
+#
+# Idempotent: if no broker is running, --restart still spawns one
+# cleanly; bare invocation is a no-op.
+set -euo pipefail
+
+RESTART=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -r|--restart) RESTART=1; shift ;;
+    -h|--help)
+      sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *) echo "acp-broker-kill: unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+RUNTIME="${XDG_RUNTIME_DIR:-/tmp}"
+PIDFILE="$RUNTIME/acp-broker.pid"
+SOCKET="$RUNTIME/acp-broker.sock"
+
+if [[ -f "$PIDFILE" ]]; then
+  pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    kill -- -"$pid" 2>/dev/null && echo "acp-broker-kill: SIGTERM'd process group of PID $pid"
+    # Wait up to ~1s for graceful exit, then escalate.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "acp-broker-kill: SIGTERM ignored after 1s, sending SIGKILL" >&2
+      kill -KILL -- -"$pid" 2>/dev/null || true
+      sleep 0.2
+    fi
+  else
+    echo "acp-broker-kill: pidfile present but no live process (pid=${pid:-empty})"
+  fi
+fi
+
+rm -f "$PIDFILE" "$SOCKET"
+
+if [[ "$RESTART" == "1" ]]; then
+  # Hand off to the canonical spawn path — it performs its own flock +
+  # liveness check + setsid, so we don't duplicate any of that here.
+  exec acp-broker-up
+fi
