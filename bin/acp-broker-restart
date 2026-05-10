@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Restart the running acp-broker on this host.
+#
+# Reads the PID from acp-broker-up's pidfile, kills the entire process
+# group (the broker runs under setsid — see ~/dotfiles/bin/acp-broker-up
+# for why), drops the stale pidfile + UDS, then re-runs acp-broker-up
+# to spawn a fresh broker under whatever `acp-broker` binary is
+# currently on PATH.
+#
+# Use after `cargo install --path crates/acp-broker-server --bin
+# acp-broker --force` to pick up a new build without waiting for the
+# next ET reconnect to retrigger acp-broker-up.
+#
+# Idempotent: if no broker is running, just spawns one.
+set -euo pipefail
+
+RUNTIME="${XDG_RUNTIME_DIR:-/tmp}"
+PIDFILE="$RUNTIME/acp-broker.pid"
+SOCKET="$RUNTIME/acp-broker.sock"
+
+if [[ -f "$PIDFILE" ]]; then
+  pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    # Negative pid → process group. The broker leads its own session
+    # (setsid); reaching any per-session agents or persistence links
+    # it spawned requires signaling the group, not just the leader.
+    kill -- -"$pid" 2>/dev/null && echo "acp-broker-restart: SIGTERM'd process group of PID $pid"
+    # Wait up to ~1s for graceful exit, then escalate.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "acp-broker-restart: SIGTERM ignored after 1s, sending SIGKILL" >&2
+      kill -KILL -- -"$pid" 2>/dev/null || true
+      sleep 0.2
+    fi
+  else
+    echo "acp-broker-restart: pidfile present but no live process (pid=${pid:-empty})"
+  fi
+fi
+
+rm -f "$PIDFILE" "$SOCKET"
+
+# Hand off to the canonical spawn path — it performs its own flock +
+# liveness check + setsid, so we don't duplicate any of that here.
+exec acp-broker-up
