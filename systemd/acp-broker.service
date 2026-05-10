@@ -1,0 +1,35 @@
+# Authoritative copy of the systemd --user unit for the per-devvm
+# acp-broker. Symlinked into ~/.config/systemd/user/ by ~/dotfiles/init.sh
+# (Linux block); after editing this file, pick up changes with:
+#
+#   systemctl --user daemon-reload
+#   systemctl --user restart acp-broker
+#   ss -lxp | grep acp-broker.sock        # expect: acp-broker
+#
+# Companion to ~/dotfiles/launchd/com.mkarrmann.persistence-server.plist
+# on the Mac side: the broker connects out to that persistence-server
+# over the reverse tunnel established by nvs-tunnels (-r 7847:7847).
+#
+# Unit specifiers used:
+#   %h  $HOME
+#   %t  $XDG_RUNTIME_DIR  (matches the UDS path acp-broker-up used)
+#   %S  $XDG_STATE_HOME   (~/.local/state by default)
+#   %l  short hostname    (used as ACP_BROKER_ID for per-client metadata)
+
+[Unit]
+Description=ACP broker (one per devvm; brokers ACP traffic from per-session nvims)
+After=network.target
+
+[Service]
+Type=simple
+Environment=ACP_BROKER_ID=%l
+Environment=ACP_BROKER_SQLITE_PERSISTENCE_ADDR=127.0.0.1:7847
+StateDirectory=acp-broker
+ExecStart=%h/.cargo/bin/acp-broker --declare-agent name=claude,cmd=%h/bin/claude-agent-acp,default=true --socket %t/acp-broker.sock --per-session-agents --allow-agent-spawn
+Restart=always
+RestartSec=5
+StandardOutput=append:%S/acp-broker/server.log
+StandardError=append:%S/acp-broker/server.log
+
+[Install]
+WantedBy=default.target

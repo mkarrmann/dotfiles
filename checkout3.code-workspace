@@ -10,10 +10,10 @@
   "settings": {
     "workbench.colorCustomizations": {
       "commandCenter.border": "#e7e7e799",
-      "sash.hoverBorder": "#ff8a3d",
+      "sash.hoverBorder": "#ff6b1a",
       "statusBar.background": "#e65100",
       "statusBar.foreground": "#e7e7e7",
-      "statusBarItem.hoverBackground": "#ff8a3d",
+      "statusBarItem.hoverBackground": "#ff6b1a",
       "statusBarItem.remoteBackground": "#e65100",
       "statusBarItem.remoteForeground": "#e7e7e7",
       "titleBar.activeBackground": "#e65100",

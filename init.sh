@@ -369,7 +369,24 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   mkdir -p "$HOME/Library/Application Support/@orchest/desktop"
   link_one "$DOTFILES_DIR/orchest_plugins.json" "$HOME/Library/Application Support/@orchest/desktop/plugins.json"
 fi
-#
+
+# Linux-only: systemd --user units. Linger is expected to be enabled
+# (`loginctl enable-linger`) so these survive logout and start at boot.
+if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
+  sync_link_dir "$DOTFILES_DIR/systemd" "$HOME/.config/systemd/user" "*.service"
+  systemctl --user daemon-reload 2>/dev/null || true
+  shopt -s nullglob
+  for unit_src in "$DOTFILES_DIR"/systemd/*.service; do
+    unit_name="$(basename "$unit_src")"
+    if systemctl --user enable --now "$unit_name" &>/dev/null; then
+      echo "enabled $unit_name"
+    else
+      echo "WARNING: failed to enable $unit_name (try: systemctl --user status $unit_name)" >&2
+    fi
+  done
+  shopt -u nullglob
+fi
+
 # Nori
 mkdir -p "$HOME/.nori/cli"
 

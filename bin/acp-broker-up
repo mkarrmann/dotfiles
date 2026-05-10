@@ -1,75 +1,12 @@
 #!/usr/bin/env bash
-# Idempotently ensure one acp-broker is running on this devvm.
+# Idempotently ensure the per-devvm acp-broker is running.
 #
-# Called from nvs-tunnels' remote_cmd at each ET (re)connect. If the
-# broker is already up (PID alive, UDS present), this is a no-op.
-# Otherwise it spawns one — under setsid so it survives ET teardown
-# the same way headless nvim does (see ~/dotfiles/bin/nvs).
-#
-# Persistence routes to the Mac via the reverse tunnel established by
-# nvs-tunnels (-r 7847:7847 → ACP_BROKER_SQLITE_PERSISTENCE_ADDR).
-# Upstream agent comes from $ACP_BROKER_UPSTREAM_AGENT (default:
-# whatever `command -v claude-agent-acp` finds on PATH).
-#
-# See acp-broker docs/RUNBOOK.md §3.3 for the broader recipe.
+# The broker runs as a systemd --user unit (authoritative copy at
+# ~/dotfiles/systemd/acp-broker.service, symlinked into
+# ~/.config/systemd/user/ by ~/dotfiles/init.sh). With user lingering
+# enabled (loginctl enable-linger mkarrmann), the unit auto-starts at
+# boot and survives logout — this script is just a safety-net kick for
+# the rare case where it was disabled or systemd hit its restart burst
+# limit.
 set -euo pipefail
-
-PIDFILE="${XDG_RUNTIME_DIR:-/tmp}/acp-broker.pid"
-SOCKET="${XDG_RUNTIME_DIR:-/tmp}/acp-broker.sock"
-LOCKFILE="${PIDFILE}.lock"
-LOGDIR="${XDG_STATE_HOME:-$HOME/.local/state}/acp-broker"
-LOGFILE="$LOGDIR/server.log"
-BROKER_ID="${ACP_BROKER_ID:-$(hostname -s)}"
-PERSISTENCE_ADDR="${ACP_BROKER_SQLITE_PERSISTENCE_ADDR:-127.0.0.1:7847}"
-
-# Resolve the upstream agent. Letting the operator override via env
-# keeps this script agent-agnostic (acp-broker doesn't care which
-# agent it fronts).
-UPSTREAM_AGENT="${ACP_BROKER_UPSTREAM_AGENT:-$(command -v claude-agent-acp 2>/dev/null || true)}"
-if [[ -z "$UPSTREAM_AGENT" ]]; then
-  echo "acp-broker-up: ACP_BROKER_UPSTREAM_AGENT unset and no claude-agent-acp on PATH" >&2
-  exit 1
-fi
-
-mkdir -p "$LOGDIR"
-
-# Serialize concurrent invocations so the liveness check + spawn
-# critical section is atomic. Without this, two simultaneous calls
-# can both observe "no broker" and both spawn, racing on bind() of
-# the UDS — one wins, the other exits with EADDRINUSE, and the PID
-# file may end up referencing the dead one. -w 30 caps the wait so
-# a wedged holder doesn't block ET reconnect indefinitely.
-exec 9>"$LOCKFILE"
-flock -w 30 9 || {
-  echo "acp-broker-up: another instance held $LOCKFILE for >30s, aborting" >&2
-  exit 1
-}
-
-# Already up? PID file points at a live process AND that process is
-# acp-broker (not some unrelated PID-reuse victim) AND the UDS is
-# bound. All three checks are needed:
-#   - kill -0 alone is fooled by PID reuse over long uptimes
-#   - process-name match alone misses crashed brokers
-#   - socket presence alone misses stale-socket-after-crash
-if [[ -S "$SOCKET" ]] && [[ -f "$PIDFILE" ]]; then
-  pid="$(cat "$PIDFILE")"
-  if kill -0 "$pid" 2>/dev/null \
-      && [[ "$(ps -p "$pid" -o comm= 2>/dev/null | tr -d '[:space:]')" == "acp-broker" ]]; then
-    exit 0
-  fi
-fi
-rm -f "$SOCKET" "$PIDFILE"
-
-# setsid (not nohup): see ~/dotfiles/bin/nvs for the rationale —
-# nohup only ignores SIGHUP, but ET will SIGTERM/SIGKILL the whole
-# process group on session teardown. setsid moves the broker into
-# its own session so it survives.
-ACP_BROKER_ID="$BROKER_ID" \
-ACP_BROKER_SQLITE_PERSISTENCE_ADDR="$PERSISTENCE_ADDR" \
-setsid acp-broker "$UPSTREAM_AGENT" \
-  --socket "$SOCKET" \
-  --per-session-agents \
-  >>"$LOGFILE" 2>&1 </dev/null &
-
-echo $! > "$PIDFILE"
-echo "acp-broker-up: PID=$(cat "$PIDFILE") socket=$SOCKET broker_id=$BROKER_ID upstream=$UPSTREAM_AGENT"
+exec systemctl --user start acp-broker.service

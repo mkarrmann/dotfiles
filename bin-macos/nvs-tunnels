@@ -54,17 +54,14 @@ for spec in "$@"; do
   echo "  $session -> localhost:$port"
 done
 
-# Bring up the per-devvm acp-broker before the per-session nvims fire
-# (~/dotfiles/bin/acp-broker-up). Idempotent: no-op if already running.
-# Failure is non-fatal — nvim still works, only CodeCompanion's broker
-# adapter is affected; acp-broker-up prints its own diagnostics on
-# stderr, which surface in this terminal.
-#
 # IMPORTANT: do NOT add single quotes anywhere inside remote_cmd. The
 # whole string is embedded as `-c "zsh -lc '${remote_cmd}'"` below;
 # any inner ' breaks the outer quoting and the remote shell silently
 # parses only the prefix, producing a crash-loop with no nvs watchdogs.
-remote_cmd="acp-broker-up >/dev/null; "
+#
+# The acp-broker is owned by systemd --user on the devvm
+# (~/dotfiles/systemd/acp-broker.service) — not kicked from here.
+remote_cmd=""
 for part in "${remote_parts[@]}"; do
   remote_cmd+="${part} & "
 done
