@@ -182,6 +182,59 @@ return {
                   end)
                 end,
               },
+              ["resume"] = {
+                description = "Resume a saved session from the persistence-server",
+                callback = function(chat)
+                  -- Asks the broker to materialize a *fresh* live session
+                  -- loaded with the saved conversation history (calls
+                  -- meta.broker.persistence.resume_saved_session). Returns
+                  -- a new broker_session_id which the new chat connects
+                  -- to via session/load. The Connection:_establish_session
+                  -- patch below forces loadSession even when the agent
+                  -- doesn't advertise the capability.
+                  --
+                  -- The broker's list_saved_sessions wire surface returns
+                  -- only opaque IDs (no name/metadata), so paste-the-id
+                  -- is the only useful UX here. Get the ID via:
+                  --   sqlite3 ~/.local/share/acp-persistence-server/persistence.db \
+                  --     "SELECT saved_session_id, json_extract(metadata,'$.nvim_session') \
+                  --      FROM sessions ORDER BY started_at DESC LIMIT 20;"
+                  vim.ui.input({
+                    prompt = "saved_session_id: ",
+                    default = "ss-",
+                  }, function(saved_id)
+                    if not saved_id or saved_id == "" or saved_id == "ss-" then return end
+                    local conn = require("codecompanion.acp").new({ adapter = chat.adapter })
+                    if not conn:connect_and_authenticate() then
+                      return vim.notify("Failed to connect to broker", vim.log.levels.ERROR)
+                    end
+                    -- Default target_broker_id to the local broker (matches
+                    -- what acp-broker-up sets ACP_BROKER_ID to via
+                    -- `hostname -s`). User can override by editing the
+                    -- input, but rarely needed for personal-use setup.
+                    local local_broker = vim.fn.hostname():gsub("%..*", "")
+                    local resp = conn:send_rpc_request(
+                      "meta.broker.persistence.resume_saved_session",
+                      { saved_session_id = saved_id, target_broker_id = local_broker }
+                    )
+                    pcall(function() conn:disconnect() end)
+                    if not resp or not resp.broker_session_id then
+                      return vim.notify(
+                        "Resume failed; broker returned: " .. vim.inspect(resp),
+                        vim.log.levels.ERROR
+                      )
+                    end
+                    vim.notify(
+                      "Resumed " .. saved_id .. " -> " .. resp.broker_session_id,
+                      vim.log.levels.INFO
+                    )
+                    require("codecompanion.interactions.chat").new({
+                      adapter = chat.adapter,
+                      acp_session_id = resp.broker_session_id,
+                    })
+                  end)
+                end,
+              },
             },
           },
           inline = { adapter = "claude_code" },
