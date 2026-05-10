@@ -352,31 +352,75 @@ return {
                 },
               })
             end,
-            -- Broker-fronted variant. Spawns `acp-broker-attach-tag`, which
-            -- stamps the metadata JSON read from `ACP_BROKER_CLIENT_METADATA_JSON`
-            -- onto every envelope via `_meta/broker/connection/set_metadata`.
+            -- Broker-fronted variant. Spawns `acp-broker-attach-select-tag`,
+            -- which (a) stamps the metadata JSON from
+            -- `ACP_BROKER_CLIENT_METADATA_JSON` onto every envelope via
+            -- `_meta/broker/connection/set_metadata`, and (b) selects the
+            -- broker-registered agent named in `ACP_BROKER_AGENT_NAME` for
+            -- this connection's sessions (falling back to spawning
+            -- `ACP_BROKER_AGENT_CMD` via `_meta/broker/agent/spawn` if the
+            -- name doesn't resolve and the broker has `--allow-agent-spawn`).
             -- The dvsc-core-acp wrapper picks up `mode`/`model`/`thinking_effort`
-            -- from there. Requires the broker to be running on the canonical
-            -- socket (`${XDG_RUNTIME_DIR:-/tmp}/acp-broker.sock`) with the
-            -- dvsc-core-acp wrapper as its upstream agent. Drive via
+            -- from the stamped client metadata. Drive via
             -- `dvsc_pick_and_launch` (see `<leader>ag`/`<leader>aG`).
             dvsc_core_broker = function()
               local payload = _dvsc.pending
                   or vim.fn.json_encode({ dvsc = { mode = "native" } })
               _dvsc.pending = nil
               local stderr_log = vim.fn.expand("~/.local/state/nvim/dvsc-core-acp.stderr.log")
-              -- Default location after `cargo build --release` in ~/repos/acp-broker.
-              -- Symlink into ~/bin or adjust this path if you keep the binary elsewhere.
-              local attach_bin = vim.fn.expand("~/repos/acp-broker/target/release/acp-broker-attach-tag")
+              -- Installed into ~/.cargo/bin via `cargo install --path crates/acp-broker`
+              -- in ~/repos/acp-broker.
+              local attach_bin = vim.fn.expand("~/.cargo/bin/acp-broker-attach-select-tag")
+              local agent_cmd = vim.fn.expand("~/bin/dvsc-core-acp")
               local launch = string.format(
-                "ACP_BROKER_CLIENT_METADATA_JSON=%s exec %s 2>>%s",
+                "ACP_BROKER_CLIENT_METADATA_JSON=%s ACP_BROKER_AGENT_NAME=%s ACP_BROKER_AGENT_CMD=%s exec %s 2>>%s",
                 vim.fn.shellescape(payload),
+                vim.fn.shellescape("dvsc-core"),
+                vim.fn.shellescape(agent_cmd),
                 vim.fn.shellescape(attach_bin),
                 vim.fn.shellescape(stderr_log)
               )
               return require("codecompanion.adapters").extend("claude_code", {
                 name = "dvsc_core_broker",
                 formatted_name = "Dvsc Core (Broker)",
+                commands = {
+                  default = { "sh", "-c", launch },
+                  yolo = { "sh", "-c", launch },
+                },
+                env = {},
+                defaults = {
+                  timeout = 120000,
+                },
+                handlers = {
+                  auth = function() return true end,
+                },
+              })
+            end,
+            -- Broker-fronted direct claude-agent-acp variant. Same wrapper as
+            -- `dvsc_core_broker`, but pinned to `ACP_BROKER_AGENT_NAME=claude`
+            -- so the session is unconditionally routed to the broker's
+            -- claude-agent-acp registration rather than dvsc-core-acp. No
+            -- per-launch picker because claude-agent-acp has no
+            -- harness/model/effort knobs the broker can pass through; if the
+            -- claude-agent-acp registration is also the broker's configured
+            -- default, this adapter is observationally identical to letting
+            -- the broker pick — the explicit name selection just makes the
+            -- routing intent legible regardless of which agent currently
+            -- holds the `default = true` slot. Drive via `<leader>aC`.
+            claude_broker = function()
+              local stderr_log = vim.fn.expand("~/.local/state/nvim/claude-agent-acp.stderr.log")
+              local attach_bin = vim.fn.expand("~/.cargo/bin/acp-broker-attach-select-tag")
+              local agent_cmd = vim.fn.expand("~/bin/claude-agent-acp")
+              local launch = string.format(
+                "ACP_BROKER_AGENT_NAME=%s ACP_BROKER_AGENT_CMD=%s exec %s 2>>%s",
+                vim.fn.shellescape("claude"),
+                vim.fn.shellescape(agent_cmd),
+                vim.fn.shellescape(attach_bin),
+                vim.fn.shellescape(stderr_log)
+              )
+              return require("codecompanion.adapters").extend("claude_code", {
+                name = "claude_broker",
+                formatted_name = "Claude (Broker)",
                 commands = {
                   default = { "sh", "-c", launch },
                   yolo = { "sh", "-c", launch },
@@ -614,6 +658,7 @@ return {
       { "<leader>aS", "<cmd>CodeCompanionChat adapter=dvsc_core<cr>", desc = "CodeCompanion Chat (Dvsc Core)" },
       { "<leader>ag", function() dvsc_pick_and_launch(false) end, desc = "Dvsc Chat via broker (last config)" },
       { "<leader>aG", function() dvsc_pick_and_launch(true)  end, desc = "Dvsc Chat via broker (pick config)" },
+      { "<leader>aC", "<cmd>CodeCompanionChat adapter=claude_broker<cr>", desc = "Claude Chat via broker (direct)" },
     },
   },
 }
