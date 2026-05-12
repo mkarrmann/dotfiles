@@ -200,51 +200,58 @@ local function build_status_segments()
   return left, right
 end
 
+local function build_wrapped_status(left, right)
+  local merged = {}
+  for _, seg in ipairs(left) do
+    merged[#merged + 1] = seg
+  end
+  for i, seg in ipairs(right) do
+    if i == 1 and #merged > 0 then
+      merged[#merged + 1] = { " · ", "Comment" }
+    elseif i > 1 then
+      merged[#merged + 1] = { " · ", "Comment" }
+    end
+    merged[#merged + 1] = seg
+  end
+
+  local text = ""
+  for _, seg in ipairs(merged) do
+    text = text .. seg[1]
+  end
+
+  return merged, text
+end
+
+local function needed_status_height(text, width)
+  if text == "" then
+    return 1
+  end
+  local usable = math.max(1, width)
+  local display_width = vim.fn.strdisplaywidth(text)
+  return math.max(1, math.ceil(display_width / usable))
+end
+
 local function refresh_status()
   if not state.status_bufnr or not vim.api.nvim_buf_is_valid(state.status_bufnr) then
     return
   end
 
   local left, right = build_status_segments()
-
-  local left_text = ""
-  for _, seg in ipairs(left) do
-    left_text = left_text .. seg[1]
-  end
-
-  local right_sep = " · "
-  local right_text = ""
-  for i, seg in ipairs(right) do
-    if i > 1 then right_text = right_text .. right_sep end
-    right_text = right_text .. seg[1]
-  end
-  if #right > 0 then right_text = right_text .. " " end
-
-  local width = (state.status_winnr and vim.api.nvim_win_is_valid(state.status_winnr))
-    and vim.api.nvim_win_get_width(state.status_winnr) or 80
-  local padding = math.max(1, width - vim.fn.strdisplaywidth(left_text) - vim.fn.strdisplaywidth(right_text))
-  local full_text = left_text .. string.rep(" ", padding) .. right_text
+  local merged, full_text = build_wrapped_status(left, right)
 
   vim.bo[state.status_bufnr].modifiable = true
   vim.api.nvim_buf_set_lines(state.status_bufnr, 0, -1, false, { full_text })
   vim.bo[state.status_bufnr].modifiable = false
 
-  vim.api.nvim_buf_clear_namespace(state.status_bufnr, status_ns, 0, -1)
-  local col = 0
-  for _, seg in ipairs(left) do
-    if seg[2] then
-      vim.api.nvim_buf_add_highlight(state.status_bufnr, status_ns, seg[2], 0, col, col + #seg[1])
-    end
-    col = col + #seg[1]
+  if state.status_winnr and vim.api.nvim_win_is_valid(state.status_winnr) then
+    local width = vim.api.nvim_win_get_width(state.status_winnr)
+    local target_height = math.min(4, needed_status_height(full_text, width))
+    vim.api.nvim_win_set_height(state.status_winnr, target_height)
   end
 
-  col = col + padding
-
-  for i, seg in ipairs(right) do
-    if i > 1 then
-      vim.api.nvim_buf_add_highlight(state.status_bufnr, status_ns, "Comment", 0, col, col + #right_sep)
-      col = col + #right_sep
-    end
+  vim.api.nvim_buf_clear_namespace(state.status_bufnr, status_ns, 0, -1)
+  local col = 0
+  for _, seg in ipairs(merged) do
     if seg[2] then
       vim.api.nvim_buf_add_highlight(state.status_bufnr, status_ns, seg[2], 0, col, col + #seg[1])
     end
@@ -431,7 +438,8 @@ function M.on_chat_opened(chat_bufnr)
   vim.wo[status_win].winfixbuf = true
   vim.wo[status_win].statusline = " "
   vim.wo[status_win].cursorline = false
-  vim.wo[status_win].wrap = false
+  vim.wo[status_win].wrap = true
+  vim.wo[status_win].linebreak = true
 
   vim.wo[input_win].number = false
   vim.wo[input_win].relativenumber = false
