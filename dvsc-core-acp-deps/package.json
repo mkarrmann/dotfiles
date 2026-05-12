@@ -1,0 +1,17 @@
+{
+  "name": "dvsc-core-acp-deps-install-only",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Holds node_modules for dvsc-core-acp; symlinked from the fbsource project root because direct npm installs are blocked on production paths.",
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^0.14.1"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
+    "eslint": "^8.57.1",
+    "prettier": "^3.3.3",
+    "typescript": "^5.5.4",
+    "vitest": "^0.34.6"
+  }
+}
