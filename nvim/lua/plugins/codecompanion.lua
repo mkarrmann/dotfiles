@@ -20,33 +20,60 @@ local DVSC_CACHE_PATH = vim.fn.stdpath("data") .. "/dvsc-acp-last-v2.json"
 
 local DVSC_MODES = { "native", "claude", "codex", "metacode" }
 
--- Per-mode model lists. Sample set culled from dm-core tests; the live list
--- lives in Configerator and is queryable via `GET /models` on a running
--- dvsc-core server. Replace with a one-shot fetch + disk cache when the
--- hardcoded list goes stale.
-local DVSC_MODELS_BY_MODE = {
-  native = {
-    "claude-opus-4-7",
-    "claude-sonnet-4.6",
-    "gpt-5.1-codex-max",
-    "gpt-5.1-codex",
-    "avocado-taster",
-    "gemini-3-pro",
-  },
-  claude = { "claude-opus-4-7", "claude-sonnet-4.6", "claude-opus-4-6" },
-  codex = { "gpt-5.1-codex-max", "gpt-5.1-codex", "gpt-5-codex", "gpt-5.2", "gpt-5.3-codex" },
-  metacode = { "avocado-taster" },
+-- Canonical model catalog. Mirrors Configerator
+-- `devmate_vscode/model/model_config.cconf` (v22 as of 2026-05-12). Refresh
+-- by re-reading `configerator/source/devmate_vscode/model/model_config.cconf`
+-- or by querying `GET /models` on a running dvsc-core (note: the HTTP
+-- endpoint strips `supports_adaptive_thinking` — only the .cconf has it).
+--
+-- Per-harness applicability and `reasoning_config` shape are derived from
+-- `provider` and (for Anthropic) `adaptive`, mirroring `getModelsForAgent`
+-- and `getDevmateLLMConfig` in dm-core. Each model is also gated by an
+-- availability gatekeeper server-side; what's actually usable depends on
+-- which gates this user is in.
+local DVSC_MODELS = {
+  -- Anthropic
+  { id = "claude-opus-4.7-long",   provider = "anthropic", adaptive = true  },
+  { id = "claude-opus-4.6",        provider = "anthropic", adaptive = true  },
+  { id = "claude-opus-4.6-long",   provider = "anthropic", adaptive = true  },
+  { id = "claude-sonnet-4.6",      provider = "anthropic", adaptive = true  },
+  { id = "claude-sonnet-4.6-long", provider = "anthropic", adaptive = true  },
+  { id = "claude-haiku-4.5",       provider = "anthropic", adaptive = false },
+  { id = "claude-haiku-4.5-long",  provider = "anthropic", adaptive = false },
+  -- OpenAI
+  { id = "gpt-5-3-codex", provider = "openai" },
+  { id = "gpt-5-4",       provider = "openai" },
+  { id = "gpt-5-5",       provider = "openai" },
+  -- Google (Native only — `getModelsForAgent` has no Google-specific harness)
+  { id = "gemini-3-1-pro", provider = "google" },
+  { id = "gemini-3-flash", provider = "google" },
+  -- Meta
+  { id = "avocado-tester",       provider = "meta" },
+  { id = "metabrain-dogfooding", provider = "meta" },
 }
 
--- Anthropic models that accept the adaptive `{anthropic_effort: {effort}}`
--- variant of `reasoning_config`. Non-adaptive Claude models (Opus 4.6,
--- Sonnet 4.6, Haiku) instead use `{thinking_budget_tokens: N}`, which
--- isn't an effort enum — for those we omit the override and let dm-core's
--- default thinking_budget_tokens win. Hardcoded for now; in the future the
--- wrapper could expose this via an introspection RPC.
-local ADAPTIVE_CLAUDE_MODELS = {
-  ["claude-opus-4-7"] = true,
-}
+local function _dvsc_lookup_model(model_id)
+  for _, m in ipairs(DVSC_MODELS) do
+    if m.id == model_id then return m end
+  end
+  return nil
+end
+
+-- Mirror of `getModelsForAgent` (xplat/vscode/modules/dm-core/src/shared/
+-- types/agent-events.ts:117). Native gets all models; Claude gets Anthropic;
+-- Codex gets OpenAI; MetaCode gets Meta.
+local function _models_for_mode(mode)
+  local out = {}
+  for _, m in ipairs(DVSC_MODELS) do
+    if mode == "native"
+        or (mode == "claude"   and m.provider == "anthropic")
+        or (mode == "codex"    and m.provider == "openai")
+        or (mode == "metacode" and m.provider == "meta") then
+      table.insert(out, m.id)
+    end
+  end
+  return out
+end
 
 -- `reasoning_config` is a discriminated union shaped by provider in dm-core
 -- (xplat/vscode/modules/dm-core/src/shared/types/llm-types.ts). The picker
@@ -55,6 +82,11 @@ local ADAPTIVE_CLAUDE_MODELS = {
 --   openai             → { effort: "HIGH" }                       (uppercase)
 --   google             → { effort: "HIGH" }, server clamps XHIGH→HIGH
 --   anthropic_adaptive → { anthropic_effort: { effort: "high" } } (lowercase)
+--
+-- Non-adaptive Anthropic (Haiku 4.5) and Meta models have no effort knob —
+-- the picker skips the prompt and the wrapper sends no `llm_config`,
+-- letting dm-core's resolved defaults (e.g. `thinking_budget_tokens=4096`
+-- for Haiku) stand.
 local EFFORT_OPTIONS_BY_KIND = {
   openai = { "LOW", "MEDIUM", "HIGH", "XHIGH" },
   google = { "LOW", "MEDIUM", "HIGH" },
@@ -63,10 +95,20 @@ local EFFORT_OPTIONS_BY_KIND = {
 
 local function _dvsc_reasoning_kind(model)
   if not model then return nil end
+  local entry = _dvsc_lookup_model(model)
+  if entry then
+    if entry.provider == "openai" then return "openai" end
+    if entry.provider == "google" then return "google" end
+    if entry.provider == "anthropic" and entry.adaptive then return "anthropic_adaptive" end
+    return nil
+  end
+  -- Fallback: prefix-based detection for catalog entries this picker hasn't
+  -- been refreshed with yet. Errs on the side of offering an effort prompt
+  -- (worst case the server ignores or shallow-merge-clobbers); a missing
+  -- catalog entry is a more pressing fix than a stale prompt.
   local lower = model:lower()
-  if lower:match("^gpt%-") then return "openai" end
+  if lower:match("^gpt%-")    then return "openai" end
   if lower:match("^gemini%-") then return "google" end
-  if ADAPTIVE_CLAUDE_MODELS[lower] then return "anthropic_adaptive" end
   return nil
 end
 
@@ -128,7 +170,7 @@ local function dvsc_pick_and_launch(force)
     -- through to a fresh pick rather than launching with no effort.
   end
   _dvsc_pick(DVSC_MODES, "Harness:", function(mode)
-    _dvsc_pick(DVSC_MODELS_BY_MODE[mode] or {}, "Model:", function(model)
+    _dvsc_pick(_models_for_mode(mode), "Model:", function(model)
       local kind = _dvsc_reasoning_kind(model)
       if kind == nil then
         _dvsc_write_cache({ mode = mode, model = model })
