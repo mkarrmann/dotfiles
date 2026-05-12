@@ -14,7 +14,7 @@
 -- and applies them to the per-session `CreateAgentRequest`. The wrapper is
 -- a dumb pass-through for `llm_config` — provider-specific shaping of
 -- `reasoning_config` happens here, in this picker.
-local _dvsc = { pending = nil }
+local _dvsc = { pending = nil, launch_queue = {}, by_chat_bufnr = {} }
 
 local DVSC_CACHE_PATH = vim.fn.stdpath("data") .. "/dvsc-acp-last-v2.json"
 
@@ -153,10 +153,15 @@ local function _dvsc_launch_with(mode, model, effort)
   local sel = { mode = mode, model = model }
   local llm_config = _dvsc_build_llm_config(model, effort)
   if llm_config then sel.llm_config = llm_config end
+  table.insert(_dvsc.launch_queue, { mode = mode, model = model, effort = effort })
   -- Stash for the adapter function to consume on next spawn. Racy if you
   -- start two chats simultaneously; fine for single-user.
   _dvsc.pending = vim.fn.json_encode({ dvsc = sel })
   vim.cmd("CodeCompanionChat adapter=dvsc_core_broker")
+end
+
+_G.codecompanion_dvsc_selection_for_buf = function(bufnr)
+  return _dvsc.by_chat_bufnr[bufnr]
 end
 
 local function dvsc_pick_and_launch(force)
@@ -759,7 +764,16 @@ return {
         pattern = "CodeCompanionChatOpened",
         callback = function(args)
           vim.schedule(function()
-            require("lib.codecompanion-queue").on_chat_opened(args.data.bufnr)
+            local bufnr = args.data and args.data.bufnr
+            if bufnr then
+              local chat = require("codecompanion").buf_get_chat(bufnr)
+              if chat and chat.adapter and chat.adapter.name == "dvsc_core_broker" then
+                _dvsc.by_chat_bufnr[bufnr] = table.remove(_dvsc.launch_queue, 1)
+              else
+                _dvsc.by_chat_bufnr[bufnr] = nil
+              end
+              require("lib.codecompanion-queue").on_chat_opened(bufnr)
+            end
           end)
         end,
       })
@@ -768,7 +782,11 @@ return {
         pattern = "CodeCompanionChatHidden",
         callback = function(args)
           vim.schedule(function()
-            require("lib.codecompanion-queue").on_chat_hidden(args.data.bufnr)
+            local bufnr = args.data and args.data.bufnr
+            if bufnr then
+              _dvsc.by_chat_bufnr[bufnr] = nil
+              require("lib.codecompanion-queue").on_chat_hidden(bufnr)
+            end
           end)
         end,
       })

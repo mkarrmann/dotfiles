@@ -113,6 +113,13 @@ local function build_status_segments()
 
   local chat = require("codecompanion").buf_get_chat(state.chat_bufnr)
   local adapter_type = chat and chat.adapter and chat.adapter.type
+  local dvsc_sel
+  if chat and chat.adapter and chat.adapter.name == "dvsc_core_broker" then
+    local sel_for_buf = _G.codecompanion_dvsc_selection_for_buf
+    if type(sel_for_buf) == "function" then
+      dvsc_sel = sel_for_buf(state.chat_bufnr)
+    end
+  end
   local acp_session_id = (
     adapter_type == "acp"
     and chat
@@ -151,6 +158,14 @@ local function build_status_segments()
   end
   if meta.mode and meta.mode.name then
     right[#right + 1] = { meta.mode.name, "String" }
+  elseif dvsc_sel and dvsc_sel.mode then
+    right[#right + 1] = { dvsc_sel.mode, "String" }
+  end
+  if dvsc_sel and dvsc_sel.model then
+    right[#right + 1] = { dvsc_sel.model, "String" }
+  end
+  if dvsc_sel and dvsc_sel.effort then
+    right[#right + 1] = { "effort:" .. tostring(dvsc_sel.effort), "DiagnosticInfo" }
   end
   if meta.tools and meta.tools > 0 then
     right[#right + 1] = { meta.tools .. " tools", "DiagnosticInfo" }
