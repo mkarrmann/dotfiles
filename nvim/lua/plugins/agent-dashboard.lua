@@ -3,10 +3,17 @@
 
 local dashboard_bin = vim.fn.expand("~/.claude/agent-manager/bin/dashboard.py")
 
+-- HACK: disabled by returning an empty spec list. Removing `enabled = false`
+-- from the snacks.nvim override below would re-enable; the previous form
+-- (a `snacks.nvim` spec with `enabled = false`) propagated to folke/snacks.nvim
+-- itself and broke LazyVim's reliance on the `Snacks` global.
+if true then
+	return {}
+end
+
 return {
 	{
 		"snacks.nvim",
-		enabled = false,
 		opts = {
 			dashboard = {
 				width = 60,
