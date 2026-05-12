@@ -97,9 +97,14 @@ function M.on_finished(data)
     or (data.status == "cancelled" and "DiagnosticWarn")
     or "Comment"
 
+  -- right_align + priority>100 to draw above CC's render_headers separator
+  -- extmark (ui/init.lua:443, virt_text fills vim.go.columns with `─` at
+  -- priority=100). With virt_text_pos="eol" the label rendered behind the
+  -- separator and was invisible.
   pcall(vim.api.nvim_buf_set_extmark, bufnr, NS, line, 0, {
     virt_text = { { label, hl } },
-    virt_text_pos = "eol",
+    virt_text_pos = "right_align",
+    priority = 200,
     hl_mode = "combine",
   })
 end

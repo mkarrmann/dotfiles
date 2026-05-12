@@ -577,6 +577,13 @@ return {
       end
 
       require("lib.codecompanion-timing").setup()
+      -- Eager-load so the CodeCompanionACPSessionUpdate listener is registered
+      -- before any chat opens. The module registers its autocmd at load time;
+      -- if loaded lazily via lualine's cc_context (which only fires once a chat
+      -- buffer has both filetype=codecompanion and an active acp session_id),
+      -- the first prompt's usage_update notifications fire before the listener
+      -- exists and are dropped.
+      require("lib.codecompanion-stats")
 
       local ns = vim.api.nvim_create_namespace("codecompanion_inline_indicator")
       local spinner_frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
