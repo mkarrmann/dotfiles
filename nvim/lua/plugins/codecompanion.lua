@@ -9,12 +9,14 @@
 -- envelope (see `stamp_broker_client_metadata` in
 -- acp-broker/crates/acp-broker/src/client_link.rs — `session/new` only,
 -- which matches "selection is fixed at session creation"). The
--- dvsc-core-acp wrapper's `extractDvscSelection` (in `agent.ts`) then
--- sources mode/model/thinking_effort from `_meta.broker.client.metadata.dvsc`
--- and applies them to the per-session `CreateAgentRequest`.
+-- dvsc-core-acp wrapper's `extractDvscSelection` (in `agent.ts`) sources
+-- `mode`, `model`, and `llm_config` from `_meta.broker.client.metadata.dvsc`
+-- and applies them to the per-session `CreateAgentRequest`. The wrapper is
+-- a dumb pass-through for `llm_config` — provider-specific shaping of
+-- `reasoning_config` happens here, in this picker.
 local _dvsc = { pending = nil }
 
-local DVSC_CACHE_PATH = vim.fn.stdpath("data") .. "/dvsc-acp-last.json"
+local DVSC_CACHE_PATH = vim.fn.stdpath("data") .. "/dvsc-acp-last-v2.json"
 
 local DVSC_MODES = { "native", "claude", "codex", "metacode" }
 
@@ -36,9 +38,52 @@ local DVSC_MODELS_BY_MODE = {
   metacode = { "avocado-taster" },
 }
 
--- Mirrors dvsc-core's ReasoningEffort enum (lowercased on the wire); the
--- wrapper translates per-provider before sending to dvsc-core.
-local DVSC_EFFORTS = { "high", "medium", "low", "xhigh", "minimal" }
+-- Anthropic models that accept the adaptive `{anthropic_effort: {effort}}`
+-- variant of `reasoning_config`. Non-adaptive Claude models (Opus 4.6,
+-- Sonnet 4.6, Haiku) instead use `{thinking_budget_tokens: N}`, which
+-- isn't an effort enum — for those we omit the override and let dm-core's
+-- default thinking_budget_tokens win. Hardcoded for now; in the future the
+-- wrapper could expose this via an introspection RPC.
+local ADAPTIVE_CLAUDE_MODELS = {
+  ["claude-opus-4-7"] = true,
+}
+
+-- `reasoning_config` is a discriminated union shaped by provider in dm-core
+-- (xplat/vscode/modules/dm-core/src/shared/types/llm-types.ts). The picker
+-- emits the right shape literally — the wrapper just forwards.
+--
+--   openai             → { effort: "HIGH" }                       (uppercase)
+--   google             → { effort: "HIGH" }, server clamps XHIGH→HIGH
+--   anthropic_adaptive → { anthropic_effort: { effort: "high" } } (lowercase)
+local EFFORT_OPTIONS_BY_KIND = {
+  openai = { "LOW", "MEDIUM", "HIGH", "XHIGH" },
+  google = { "LOW", "MEDIUM", "HIGH" },
+  anthropic_adaptive = { "low", "medium", "high", "xhigh" },
+}
+
+local function _dvsc_reasoning_kind(model)
+  if not model then return nil end
+  local lower = model:lower()
+  if lower:match("^gpt%-") then return "openai" end
+  if lower:match("^gemini%-") then return "google" end
+  if ADAPTIVE_CLAUDE_MODELS[lower] then return "anthropic_adaptive" end
+  return nil
+end
+
+local function _dvsc_build_reasoning_config(model, effort)
+  local kind = _dvsc_reasoning_kind(model)
+  if not kind or not effort then return nil end
+  if kind == "anthropic_adaptive" then
+    return { anthropic_effort = { effort = effort } }
+  end
+  return { effort = effort }
+end
+
+local function _dvsc_build_llm_config(model, effort)
+  local rc = _dvsc_build_reasoning_config(model, effort)
+  if not rc then return nil end
+  return { model_params = { reasoning_config = rc } }
+end
 
 local function _dvsc_read_cache()
   local f = io.open(DVSC_CACHE_PATH, "r")
@@ -62,7 +107,10 @@ local function _dvsc_pick(items, prompt, cb)
   end)
 end
 
-local function _dvsc_launch(sel)
+local function _dvsc_launch_with(mode, model, effort)
+  local sel = { mode = mode, model = model }
+  local llm_config = _dvsc_build_llm_config(model, effort)
+  if llm_config then sel.llm_config = llm_config end
   -- Stash for the adapter function to consume on next spawn. Racy if you
   -- start two chats simultaneously; fine for single-user.
   _dvsc.pending = vim.fn.json_encode({ dvsc = sel })
@@ -71,15 +119,24 @@ end
 
 local function dvsc_pick_and_launch(force)
   local cache = _dvsc_read_cache()
-  if not force and cache.mode and cache.model and cache.thinking_effort then
-    return _dvsc_launch(cache)
+  if not force and cache.mode and cache.model then
+    local kind = _dvsc_reasoning_kind(cache.model)
+    if kind == nil or cache.effort then
+      return _dvsc_launch_with(cache.mode, cache.model, cache.effort)
+    end
+    -- Cache is for a model that needs an effort but lacks one; fall
+    -- through to a fresh pick rather than launching with no effort.
   end
   _dvsc_pick(DVSC_MODES, "Harness:", function(mode)
     _dvsc_pick(DVSC_MODELS_BY_MODE[mode] or {}, "Model:", function(model)
-      _dvsc_pick(DVSC_EFFORTS, "Thinking effort:", function(effort)
-        local sel = { mode = mode, model = model, thinking_effort = effort }
-        _dvsc_write_cache(sel)
-        _dvsc_launch(sel)
+      local kind = _dvsc_reasoning_kind(model)
+      if kind == nil then
+        _dvsc_write_cache({ mode = mode, model = model })
+        return _dvsc_launch_with(mode, model, nil)
+      end
+      _dvsc_pick(EFFORT_OPTIONS_BY_KIND[kind], "Thinking effort:", function(effort)
+        _dvsc_write_cache({ mode = mode, model = model, effort = effort })
+        _dvsc_launch_with(mode, model, effort)
       end)
     end)
   end)
