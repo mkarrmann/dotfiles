@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# Forcibly restart headless nvim sessions on the current host and verify
+# each one comes back. Discovery is pure `ps` parsing on the local
+# machine, so the script doesn't care where it's invoked from.
+#
+# Sessions are spawned by `nvs --server-only` watchdog loops (see
+# ~/dotfiles/bin/nvs); after this script kills the old nvim process the
+# watchdog re-spawns within ~5s with a fresh package.loaded.
+#
+# Usage:
+#   nvs-rebirth          Restart the current session (must be inside one)
+#   nvs-rebirth NAME...  Restart only sessions whose name matches NAME
+#   nvs-rebirth --all    Restart every headless nvim listening locally
+#
+# "Current session" is resolved from $NVIM, which nvim sets to its own
+# RPC address (e.g. "localhost:7685") in pty subprocesses (:terminal).
+# Verified empirically: in the headless server's :term children,
+# $NVIM = the headless server's listen address.
+
+set -euo pipefail
+
+KILL_GRACE=5    # seconds to wait for SIGTERM before SIGKILL
+RESPAWN_TIMEOUT=30  # seconds to wait for watchdog respawn
+
+# ── Discovery ──────────────────────────────────────────────────────────
+# Each entry: "<pid>|<port>|<session_name>"
+#
+# Parses titlestring=NAME from the spawn argv (set by nvs's `--cmd set
+# title titlestring=$name\ —\ %t`). Falls back to pid-based naming if
+# unset, so this still works for any rogue headless nvim a user spawned
+# manually.
+discover() {
+  ps -eo pid=,args= | awk '
+    /nvim --headless --listen / {
+      pid = $1
+      port = ""
+      name = ""
+      for (i = 2; i <= NF; i++) {
+        if ($i ~ /^localhost:/) {
+          split($i, a, ":")
+          port = a[2]
+        }
+        if ($i ~ /^titlestring=/) {
+          # titlestring=FTW-main1\\ —\\ %t  →  capture FTW-main1
+          sub(/^titlestring=/, "", $i)
+          gsub(/\\.*$/, "", $i)
+          name = $i
+        }
+      }
+      if (port == "") next
+      if (name == "") name = "pid-" pid
+      printf "%s|%s|%s\n", pid, port, name
+    }
+  '
+}
+
+# ── Argument parsing ──────────────────────────────────────────────────
+
+mode="current"
+names=()
+for arg in "$@"; do
+  case "$arg" in
+    --all|-a) mode="all" ;;
+    --help|-h)
+      sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    -*) echo "nvs-rebirth: unknown flag: $arg" >&2; exit 2 ;;
+    *)  mode="named"; names+=("$arg") ;;
+  esac
+done
+
+# ── Filtering ──────────────────────────────────────────────────────────
+
+mapfile -t entries < <(discover)
+
+if [[ ${#entries[@]} -eq 0 ]]; then
+  echo "nvs-rebirth: no headless nvim --headless --listen processes on $(hostname -s)." >&2
+  echo "Are you on the right host? Headless servers live on the devvm, not the Mac." >&2
+  exit 1
+fi
+
+case "$mode" in
+  all)
+    : # keep all entries
+    ;;
+  named)
+    filtered=()
+    for entry in "${entries[@]}"; do
+      name="${entry##*|}"
+      for want in "${names[@]}"; do
+        if [[ "$name" == "$want" ]]; then
+          filtered+=("$entry")
+          break
+        fi
+      done
+    done
+    if [[ ${#filtered[@]} -eq 0 ]]; then
+      echo "nvs-rebirth: no headless nvim found matching: ${names[*]}" >&2
+      echo "Available:" >&2
+      for e in "${entries[@]}"; do echo "  ${e##*|}" >&2; done
+      exit 1
+    fi
+    entries=("${filtered[@]}")
+    ;;
+  current)
+    if [[ -z "${NVIM:-}" ]]; then
+      echo "nvs-rebirth: \$NVIM is unset — not inside a Neovim :term subshell." >&2
+      echo "Either invoke from inside :term of the session you want to restart," >&2
+      echo "or pass --all / a session name explicitly." >&2
+      exit 1
+    fi
+    cur_port="${NVIM##*:}"
+    filtered=()
+    for entry in "${entries[@]}"; do
+      IFS='|' read -r _pid port _name <<<"$entry"
+      [[ "$port" == "$cur_port" ]] && filtered+=("$entry")
+    done
+    if [[ ${#filtered[@]} -eq 0 ]]; then
+      echo "nvs-rebirth: \$NVIM=$NVIM but no local headless nvim listens on port $cur_port." >&2
+      echo "\$NVIM may point at a UI client rather than the headless server. Pass a session" >&2
+      echo "name or --all to be explicit. Available sessions:" >&2
+      for e in "${entries[@]}"; do echo "  ${e##*|}" >&2; done
+      exit 1
+    fi
+    entries=("${filtered[@]}")
+    ;;
+esac
+
+# ── Helpers ────────────────────────────────────────────────────────────
+
+# Ask the server on $port for its pid via RPC. Empty on failure.
+remote_pid() {
+  local port="$1"
+  nvim --headless --server "localhost:$port" --remote-expr 'getpid()' 2>/dev/null \
+    | tr -d '[:space:]' || true
+}
+
+# ── Restart loop ───────────────────────────────────────────────────────
+
+declare -A old_by_port
+declare -A name_by_port
+
+echo "nvs-rebirth: restarting on $(hostname -s)"
+for entry in "${entries[@]}"; do
+  IFS='|' read -r pid port name <<<"$entry"
+  old_by_port[$port]="$pid"
+  name_by_port[$port]="$name"
+  echo "  $name (port $port, pid $pid): SIGTERM"
+  kill "$pid" 2>/dev/null || true
+done
+
+# Escalate to SIGKILL for any that haven't exited after KILL_GRACE.
+sleep "$KILL_GRACE"
+for port in "${!old_by_port[@]}"; do
+  pid="${old_by_port[$port]}"
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "  ${name_by_port[$port]}: still alive after ${KILL_GRACE}s, SIGKILL"
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+done
+
+# Wait for watchdog respawn: poll until each port answers RPC with a NEW pid.
+echo "nvs-rebirth: waiting up to ${RESPAWN_TIMEOUT}s for watchdog respawn…"
+deadline=$(( $(date +%s) + RESPAWN_TIMEOUT ))
+declare -A new_by_port
+
+while [[ $(date +%s) -lt $deadline ]]; do
+  done=true
+  for port in "${!old_by_port[@]}"; do
+    [[ -n "${new_by_port[$port]:-}" ]] && continue
+    new_pid=$(remote_pid "$port")
+    if [[ -n "$new_pid" && "$new_pid" != "${old_by_port[$port]}" ]]; then
+      new_by_port[$port]="$new_pid"
+    else
+      done=false
+    fi
+  done
+  $done && break
+  sleep 0.5
+done
+
+# ── Report ─────────────────────────────────────────────────────────────
+
+echo
+failures=0
+for port in "${!old_by_port[@]}"; do
+  name="${name_by_port[$port]}"
+  old="${old_by_port[$port]}"
+  new="${new_by_port[$port]:-}"
+  if [[ -n "$new" ]]; then
+    echo "  ✓ $name: $old → $new (port $port)"
+  else
+    echo "  ✗ $name: did not respawn within ${RESPAWN_TIMEOUT}s on port $port" >&2
+    echo "    Check: pgrep -af 'nvs --server-only $name'" >&2
+    ((failures++)) || true
+  fi
+done
+
+echo
+echo "Mac UI clients (nvs SESSION) lost their connection — re-run nvs SESSION"
+echo "in each affected Ghostty window to reattach to the fresh server."
+
+[[ $failures -eq 0 ]] || exit 1
