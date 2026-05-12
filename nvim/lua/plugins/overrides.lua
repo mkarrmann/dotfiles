@@ -54,6 +54,48 @@ return {
 				return name
 			end
 
+			local function cc_session_id()
+				if vim.bo.filetype ~= "codecompanion" then return nil end
+				local ok, cc = pcall(require, "codecompanion")
+				if not ok then return nil end
+				local chat = cc.buf_get_chat(vim.api.nvim_get_current_buf())
+				if not chat then return nil end
+				return chat.acp_session_id or (chat.acp_connection and chat.acp_connection.session_id)
+			end
+
+			-- Mirrors fmt_tok in ~/dotfiles/claude_config/statusline.sh:
+			-- 12500 -> "12.5k", 999 -> "999".
+			local function fmt_tok(n)
+				if n >= 1000 then
+					return string.format("%d.%dk", math.floor(n / 1000), math.floor((n % 1000) / 100))
+				end
+				return tostring(n)
+			end
+
+			local function cc_context()
+				local sid = cc_session_id()
+				if not sid then return "" end
+				local stats = require("lib.codecompanion-stats")
+				local s = stats.get(sid)
+				if not s or not s.size or s.size == 0 then return "" end
+				local pct = math.floor(100 * s.used / s.size)
+				local cost_str = ""
+				if s.cost and s.cost.amount and s.cost.amount > 0 then
+					cost_str = string.format(" 💰 $%.4f", s.cost.amount)
+				end
+				return string.format("📊 %d%% ctx:%s/%s%s", pct, fmt_tok(s.used), fmt_tok(s.size), cost_str)
+			end
+
+			local function cc_context_color()
+				local sid = cc_session_id()
+				if not sid then return nil end
+				local pct = require("lib.codecompanion-stats").context_pct(sid) or 0
+				if pct >= 85 then return { fg = "#ff5555" } end
+				if pct >= 70 then return { fg = "#ff8800" } end
+				if pct >= 50 then return { fg = "#ffcc00" } end
+				return { fg = "#00cc00" }
+			end
+
 			opts.options = opts.options or {}
 			opts.options.disabled_filetypes = opts.options.disabled_filetypes or {}
 			opts.options.disabled_filetypes.winbar = opts.options.disabled_filetypes.winbar or {}
@@ -68,6 +110,8 @@ return {
 			opts.inactive_winbar = { lualine_b = { winbar_cwd }, lualine_c = { winbar_file } }
 
 			opts.sections = opts.sections or {}
+			opts.sections.lualine_x = opts.sections.lualine_x or {}
+			table.insert(opts.sections.lualine_x, 1, { cc_context, color = cc_context_color })
 			opts.sections.lualine_y = {
 				{ "progress", separator = " ", padding = { left = 1, right = 0 } },
 				{ "location", padding = { left = 0, right = 1 } },

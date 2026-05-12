@@ -516,6 +516,29 @@ return {
         return orig_establish(self)
       end
 
+      -- HACK: PromptBuilder:handle_session_update only branches on the
+      -- session/update kinds it knows how to render (agent_message_chunk,
+      -- agent_thought_chunk, plan, tool_call, tool_call_update). Other
+      -- discriminators — notably usage_update — fall through with no else
+      -- branch and are silently dropped before any consumer can see them.
+      -- Tap the method to fire a User autocmd with the raw payload first,
+      -- then delegate. lib/codecompanion-stats consumes this for the
+      -- lualine context-% display.
+      -- Upstream fix: prompt_builder.lua should expose an extension point
+      -- or fire an autocmd unconditionally. Remove this patch once that lands.
+      local PromptBuilder = require("codecompanion.acp.prompt_builder")
+      local orig_handle_su = PromptBuilder.handle_session_update
+      function PromptBuilder:handle_session_update(update)
+        vim.api.nvim_exec_autocmds("User", {
+          pattern = "CodeCompanionACPSessionUpdate",
+          data = {
+            session_id = self.connection and self.connection.session_id or nil,
+            update = update,
+          },
+        })
+        return orig_handle_su(self, update)
+      end
+
       local has_cmp, cmp = pcall(require, "cmp")
       if has_cmp then
         local QueueSlash = {}
