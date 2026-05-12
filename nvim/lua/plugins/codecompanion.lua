@@ -3,10 +3,15 @@
 -- The broker-fronted `dvsc_core_broker` adapter (defined alongside
 -- `dvsc_core` below) reads `_dvsc.pending` when CodeCompanion spawns it,
 -- bakes that JSON into `ACP_BROKER_CLIENT_METADATA_JSON`, and runs
--- `acp-broker-attach-tag` which forwards the metadata through the broker
--- via `_meta/broker/connection/set_metadata`. The dvsc-core-acp wrapper
--- (`extractDvscMetadata` in `agent.ts`) then sources mode/model/
--- thinking_effort from `_meta.broker.client.metadata.dvsc`.
+-- `acp-broker-attach-select-tag` which forwards the metadata through
+-- the broker via `_meta/broker/connection/set_metadata`. The broker
+-- then stamps `_meta.broker.client.metadata` onto the next `session/new`
+-- envelope (see `stamp_broker_client_metadata` in
+-- acp-broker/crates/acp-broker/src/client_link.rs — `session/new` only,
+-- which matches "selection is fixed at session creation"). The
+-- dvsc-core-acp wrapper's `extractDvscSelection` (in `agent.ts`) then
+-- sources mode/model/thinking_effort from `_meta.broker.client.metadata.dvsc`
+-- and applies them to the per-session `CreateAgentRequest`.
 local _dvsc = { pending = nil }
 
 local DVSC_CACHE_PATH = vim.fn.stdpath("data") .. "/dvsc-acp-last.json"
