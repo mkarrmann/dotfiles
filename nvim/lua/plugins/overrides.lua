@@ -54,11 +54,19 @@ return {
 				return name
 			end
 
+			-- Resolve via the queue's tracked chat bufnr rather than the focused
+			-- buffer. With laststatus=3 the statusline always renders against the
+			-- current window — but the user spends the whole prompt-typing time
+			-- in the codecompanion_input buffer, not the chat buffer, so a
+			-- focus-based lookup hides the pill exactly when it matters.
 			local function cc_session_id()
-				if vim.bo.filetype ~= "codecompanion" then return nil end
 				local ok, cc = pcall(require, "codecompanion")
 				if not ok then return nil end
-				local chat = cc.buf_get_chat(vim.api.nvim_get_current_buf())
+				local ok_q, queue = pcall(require, "lib.codecompanion-queue")
+				if not ok_q then return nil end
+				local bufnr = queue.chat_bufnr()
+				if not bufnr then return nil end
+				local chat = cc.buf_get_chat(bufnr)
 				if not chat then return nil end
 				return chat.acp_session_id or (chat.acp_connection and chat.acp_connection.session_id)
 			end
