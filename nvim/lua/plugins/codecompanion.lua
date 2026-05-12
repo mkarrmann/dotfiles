@@ -571,6 +571,8 @@ return {
         cmp.setup({ sources = sources })
       end
 
+      require("lib.codecompanion-timing").setup()
+
       local ns = vim.api.nvim_create_namespace("codecompanion_inline_indicator")
       local spinner_frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
       local indicator = {}
