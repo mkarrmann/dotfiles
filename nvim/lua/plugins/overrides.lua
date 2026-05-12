@@ -71,27 +71,14 @@ return {
 				return chat.acp_session_id or (chat.acp_connection and chat.acp_connection.session_id)
 			end
 
-			-- Mirrors fmt_tok in ~/dotfiles/claude_config/statusline.sh:
-			-- 12500 -> "12.5k", 999 -> "999".
-			local function fmt_tok(n)
-				if n >= 1000 then
-					return string.format("%d.%dk", math.floor(n / 1000), math.floor((n % 1000) / 100))
-				end
-				return tostring(n)
-			end
-
 			local function cc_context()
 				local sid = cc_session_id()
 				if not sid then return "" end
-				local stats = require("lib.codecompanion-stats")
-				local s = stats.get(sid)
-				if not s or not s.size or s.size == 0 then return "" end
-				local pct = math.floor(100 * s.used / s.size)
-				local cost_str = ""
-				if s.cost and s.cost.amount and s.cost.amount > 0 then
-					cost_str = string.format(" 💰 $%.4f", s.cost.amount)
+				local pct = require("lib.codecompanion-stats").context_pct(sid)
+				if not pct then
+					return "CC"
 				end
-				return string.format("📊 %d%% ctx:%s/%s%s", pct, fmt_tok(s.used), fmt_tok(s.size), cost_str)
+				return string.format("CC %d%%", pct)
 			end
 
 			local function cc_context_color()

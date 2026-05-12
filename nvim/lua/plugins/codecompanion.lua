@@ -681,6 +681,7 @@ return {
       end
 
       require("lib.codecompanion-timing").setup()
+      require("lib.codecompanion-status-panel").setup()
       -- Eager-load so the CodeCompanionACPSessionUpdate listener is registered
       -- before any chat opens. The module registers its autocmd at load time;
       -- if loaded lazily via lualine's cc_context (which only fires once a chat
