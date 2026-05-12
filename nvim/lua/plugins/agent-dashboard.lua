@@ -6,6 +6,7 @@ local dashboard_bin = vim.fn.expand("~/.claude/agent-manager/bin/dashboard.py")
 return {
 	{
 		"snacks.nvim",
+		enabled = false,
 		opts = {
 			dashboard = {
 				width = 60,
