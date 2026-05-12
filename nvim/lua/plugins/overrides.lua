@@ -109,7 +109,6 @@ return {
 			opts.options.disabled_filetypes.winbar = opts.options.disabled_filetypes.winbar or {}
 			opts.options.disabled_filetypes.statusline = opts.options.disabled_filetypes.statusline or {}
 			vim.list_extend(opts.options.disabled_filetypes.winbar, { "codecompanion_input" })
-			vim.list_extend(opts.options.disabled_filetypes.statusline, { "codecompanion_input" })
 
 			local winbar_color = { fg = "#888888", bg = "#1a1a2e" }
 			local winbar_cwd = { cwd, color = winbar_color }

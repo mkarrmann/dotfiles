@@ -109,13 +109,23 @@ local function build_status_segments()
     return left, right
   end
 
-  local meta = (_G.codecompanion_chat_metadata or {})[state.chat_bufnr]
-  if not meta then
-    return left, right
-  end
+  local meta = (_G.codecompanion_chat_metadata or {})[state.chat_bufnr] or {}
 
   local chat = require("codecompanion").buf_get_chat(state.chat_bufnr)
   local adapter_type = chat and chat.adapter and chat.adapter.type
+  local acp_session_id = (
+    adapter_type == "acp"
+    and chat
+    and chat.acp_connection
+    and chat.acp_connection.session_id
+  ) or nil
+  local acp_usage
+  if acp_session_id then
+    local ok_stats, stats = pcall(require, "lib.codecompanion-stats")
+    if ok_stats then
+      acp_usage = stats.get(acp_session_id)
+    end
+  end
 
   if state.queued then
     left[#left + 1] = { " Queued ", "DiagnosticWarn" }
@@ -123,8 +133,11 @@ local function build_status_segments()
     left[#left + 1] = { " Draft ", "Comment" }
   end
   left[#left + 1] = { " · ", "Comment" }
-  left[#left + 1] = { meta.adapter.name or "unknown", "Function" }
-  if meta.adapter.model then
+  local adapter_name = (meta.adapter and meta.adapter.name)
+    or (chat and chat.adapter and (chat.adapter.name or chat.adapter.formatted_name))
+    or "unknown"
+  left[#left + 1] = { adapter_name, "Function" }
+  if meta.adapter and meta.adapter.model then
     left[#left + 1] = { " · ", "Comment" }
     left[#left + 1] = { meta.adapter.model, "String" }
   end
@@ -133,8 +146,8 @@ local function build_status_segments()
     left[#left + 1] = { "turn " .. meta.cycles, "Number" }
   end
 
-  if adapter_type == "acp" and chat.acp_connection and chat.acp_connection.session_id then
-    right[#right + 1] = { chat.acp_connection.session_id, "Constant" }
+  if acp_session_id then
+    right[#right + 1] = { acp_session_id, "Constant" }
   end
   if meta.mode and meta.mode.name then
     right[#right + 1] = { meta.mode.name, "String" }
@@ -145,8 +158,17 @@ local function build_status_segments()
   if meta.context_items and meta.context_items > 0 then
     right[#right + 1] = { meta.context_items .. " ctx", "DiagnosticInfo" }
   end
-  if adapter_type == "http" and meta.tokens and meta.tokens > 0 then
+  if meta.tokens and meta.tokens > 0 then
     right[#right + 1] = { fmt_tokens(meta.tokens) .. " tokens", "DiagnosticInfo" }
+  elseif acp_usage and acp_usage.used and acp_usage.used > 0 then
+    right[#right + 1] = { fmt_tokens(acp_usage.used) .. " tokens", "DiagnosticInfo" }
+  end
+  if acp_usage and acp_usage.used and acp_usage.size and acp_usage.size > 0 then
+    local pct = math.floor(100 * acp_usage.used / acp_usage.size)
+    right[#right + 1] = {
+      string.format("%d%% %s/%s", pct, fmt_tokens(acp_usage.used), fmt_tokens(acp_usage.size)),
+      "DiagnosticInfo",
+    }
   end
 
   if state.request_start_at then
