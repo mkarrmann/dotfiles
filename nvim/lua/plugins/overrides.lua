@@ -32,13 +32,17 @@ return {
 	{
 		"nvim-lualine/lualine.nvim",
 		opts = function(_, opts)
+			-- lualine inserts component return values into the statusline format
+			-- string verbatim, so any literal `%` must be doubled or Neovim will
+			-- raise E539 when the next char isn't a valid stl format specifier.
+			local function esc(s) return (s:gsub("%%", "%%%%")) end
 			local function cwd()
-				return vim.fn.fnamemodify(vim.fn.getcwd(0), ":~")
+				return esc(vim.fn.fnamemodify(vim.fn.getcwd(0), ":~"))
 			end
 			local function custom_or_filename()
 				local ok, text = pcall(vim.api.nvim_win_get_var, 0, "custom_winbar_text")
 				if ok then
-					return text
+					return esc(text)
 				end
 				local name = vim.fn.expand("%:.")
 				if name == "" then
@@ -51,7 +55,7 @@ return {
 				if autosave ~= "" then
 					name = name .. " " .. autosave
 				end
-				return name
+				return esc(name)
 			end
 
 			-- Resolve via the queue's tracked chat bufnr rather than the focused
@@ -78,7 +82,7 @@ return {
 				if not pct then
 					return "CC"
 				end
-				return string.format("CC %d%%", pct)
+				return string.format("CC %d%%%%", pct)
 			end
 
 			local function cc_context_color()
