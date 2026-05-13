@@ -130,3 +130,17 @@ if [[ ${#SKIPPED_FILES[@]} -gt 0 ]]; then
     echo "  $f"
   done
 fi
+#
+# Ensure key Codex marketplace components are present.
+if command -v agent-market >/dev/null 2>&1; then
+  if [[ ! -f "$HOME/.codex/agents/vsp-code-search.toml" ]]; then
+    agent-market agent vsp-code-search install --agent codex --scope user --quiet || true
+  fi
+  if [[ ! -f "$HOME/.codex/agents/meta-knowledge.toml" ]]; then
+    agent-market agent meta-knowledge install --agent codex --scope user --quiet || true
+  fi
+  if ! grep -Fq '[plugins."meta-search-cli@claude-templates"]' "$HOME/.codex/config.toml" 2>/dev/null; then
+    agent-market plugin meta-search-cli install --agent codex --scope user --quiet || true
+  fi
+fi
+
