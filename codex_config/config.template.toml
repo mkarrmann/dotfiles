@@ -3,3 +3,7 @@
 # ~/.codex/config.toml from this template.
 model = "gpt-5.4"
 model_reasoning_effort = "high"
+
+[features]
+plugin_hooks = true
+remote_plugin = true
