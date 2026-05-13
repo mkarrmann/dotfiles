@@ -648,6 +648,36 @@ return {
         return orig_handle_su(self, update)
       end
 
+      -- HACK: CodeCompanion's chat submit path allows a blank user section
+      -- after a previous user message. ACP adapters then filter the blank
+      -- message out and send `prompt = {}` to the agent. Treat that as a
+      -- no-op for normal ACP submits; tool auto-submit and regenerate keep
+      -- their existing behavior.
+      local Chat = require("codecompanion.interactions.chat")
+      local orig_chat_submit = Chat.submit
+      function Chat:submit(opts)
+        opts = opts or {}
+        if
+          self.adapter
+          and self.adapter.type == "acp"
+          and not self.current_request
+          and not opts.auto_submit
+          and not opts.regenerate
+        then
+          local ok_parser, parser = pcall(require, "codecompanion.interactions.chat.parser")
+          local ok_message, message_to_submit = false, nil
+          if ok_parser then
+            ok_message, message_to_submit = pcall(parser.messages, self, self.header_line)
+          end
+          local has_user_text = ok_message and message_to_submit ~= nil
+          if not has_user_text then
+            require("codecompanion.utils.log"):warn("[chat::submit] No ACP user message to submit")
+            return
+          end
+        end
+        return orig_chat_submit(self, opts)
+      end
+
       local has_cmp, cmp = pcall(require, "cmp")
       if has_cmp then
         local QueueSlash = {}
