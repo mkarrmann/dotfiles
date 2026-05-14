@@ -4,12 +4,14 @@
   Authoritative copy of the launchd job for the acp-broker
   persistence-server daemon.
 
-  To activate (or after editing):
-    cp ~/dotfiles/launchd/com.mkarrmann.persistence-server.plist \
-       ~/Library/LaunchAgents/
-    launchctl unload ~/Library/LaunchAgents/com.mkarrmann.persistence-server.plist 2>/dev/null
-    launchctl load   ~/Library/LaunchAgents/com.mkarrmann.persistence-server.plist
+  Activation is automatic — ~/dotfiles/init.sh's sync_launchd_plist
+  helper copies this into ~/Library/LaunchAgents/ and bootstraps it
+  under gui/$UID. After editing, just re-run init.sh; the helper diffs
+  by content and only reloads when something actually changed.
+
+  Quick verify:
     lsof -iTCP:7847 -sTCP:LISTEN   # expect: persistence-server
+    launchctl print gui/$UID/com.mkarrmann.persistence-server | head
 
   Symlinks into ~/Library/LaunchAgents are intentionally avoided —
   launchd's behavior across system upgrades is more predictable when

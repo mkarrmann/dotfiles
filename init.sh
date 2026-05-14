@@ -51,6 +51,34 @@ sync_link_dir() {
   shopt -u nullglob
 }
 
+sync_launchd_plist() {
+  local src="$1"
+  local dst="$HOME/Library/LaunchAgents/$(basename "$src")"
+  local label="$(basename "$src" .plist)"
+
+  if [[ ! -f "$src" ]]; then
+    echo "ERROR: launchd plist source missing: $src" >&2
+    return 1
+  fi
+
+  # Up-to-date copy: nothing to do.
+  if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then
+    return 0
+  fi
+
+  cp "$src" "$dst"
+  echo "synced $dst"
+
+  # bootout is harmless if the job isn't loaded; bootstrap (re)loads it
+  # under the user's GUI domain so it runs at next login automatically.
+  launchctl bootout "gui/$UID/$label" 2>/dev/null || true
+  if launchctl bootstrap "gui/$UID" "$dst" 2>/dev/null; then
+    echo "loaded $label"
+  else
+    echo "WARNING: launchctl bootstrap $label failed" >&2
+  fi
+}
+
 sync_link_subdirs() {
   local src_parent="$1"
   local dst_parent="$2"
@@ -368,6 +396,15 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   # Orchest plugin manifest
   mkdir -p "$HOME/Library/Application Support/@orchest/desktop"
   link_one "$DOTFILES_DIR/orchest_plugins.json" "$HOME/Library/Application Support/@orchest/desktop/plugins.json"
+
+  # Launchd jobs. Plists are copied (not symlinked) — launchd's behavior
+  # across system upgrades is more predictable when the file is
+  # materialized. See acp-broker docs/RUNBOOK.md §3.2.
+  mkdir -p "$HOME/Library/LaunchAgents" \
+           "$HOME/.local/state/acp-broker" \
+           "$HOME/.local/state/persistence-server"
+  sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.persistence-server.plist"
+  sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.acp-broker.plist"
 fi
 
 # Linux-only: systemd --user units. Linger is expected to be enabled
