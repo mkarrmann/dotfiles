@@ -592,6 +592,41 @@ return {
                 },
               })
             end,
+            -- Broker-fronted codex variant. Same wrapper pattern as
+            -- `claude_broker`, pinned to `ACP_BROKER_AGENT_NAME=codex` so
+            -- the session is routed to the broker's codex-acp registration
+            -- (declared in ~/dotfiles/bin-macos/acp-broker-launch). Extends
+            -- the upstream `codex` adapter so capability negotiation,
+            -- prompt shape, and `auth_method` defaults match the codex
+            -- ACP wire protocol; the broker just transports envelopes.
+            -- Drive via `<leader>aO`.
+            codex_broker = function()
+              local stderr_log = vim.fn.expand("~/.local/state/nvim/codex-acp.stderr.log")
+              local attach_bin = vim.fn.expand("~/.cargo/bin/acp-broker-attach-select-tag")
+              local agent_cmd = vim.fn.expand("~/bin/codex-acp")
+              local launch = string.format(
+                "ACP_BROKER_AGENT_NAME=%s ACP_BROKER_AGENT_CMD=%s exec %s 2>>%s",
+                vim.fn.shellescape("codex"),
+                vim.fn.shellescape(agent_cmd),
+                vim.fn.shellescape(attach_bin),
+                vim.fn.shellescape(stderr_log)
+              )
+              return require("codecompanion.adapters").extend("codex", {
+                name = "codex_broker",
+                formatted_name = "Codex (Broker)",
+                commands = {
+                  default = { "sh", "-c", launch },
+                  yolo = { "sh", "-c", launch },
+                },
+                env = {},
+                defaults = {
+                  timeout = 120000,
+                },
+                handlers = {
+                  auth = function() return true end,
+                },
+              })
+            end,
           },
         },
 
@@ -913,6 +948,7 @@ return {
       { "<leader>ag", function() dvsc_pick_and_launch(false) end, desc = "Dvsc Chat via broker (last config)" },
       { "<leader>aG", function() dvsc_pick_and_launch(true)  end, desc = "Dvsc Chat via broker (pick config)" },
       { "<leader>aC", function() tab_chat_open_or_toggle({ adapter = "claude_broker" }) end, desc = "Claude Chat via broker (direct)" },
+      { "<leader>aO", function() tab_chat_open_or_toggle({ adapter = "codex_broker" }) end, desc = "Codex Chat via broker" },
     },
   },
 }

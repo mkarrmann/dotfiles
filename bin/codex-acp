@@ -1,0 +1,42 @@
+#!/bin/bash
+# Mirrors ~/bin/claude-agent-acp; same load-bearing constraints apply:
+#
+#   1. PATH prepend ~/bin/nosandbox so Meta's codex_cli launcher (which
+#      uses sandbox-exec to start its local auth revproxy) can reach
+#      the network. Without the shim, the proxy can't fetch creds and
+#      codex either hangs or 401s.
+#   2. Stderr is teed to ~/.cache/codex-acp.log so wrapper-side errors
+#      survive the broker swallowing the spawned process's stderr.
+#
+# codex-acp resolves its underlying codex binary via $CODEX_PATH (default
+# "codex" in PATH); we point it at Meta's installed codex_cli so auth
+# routes through the same launcher path the codex CLI uses interactively.
+export PATH="$HOME/bin/nosandbox:$PATH"
+
+export META_CLAUDE_BASH_WRAPPER_DEBUG=1
+export META_LAUNCHER_LOG_LEVEL=debug
+export RUST_LOG="${RUST_LOG:-info,launcher=debug,tpai_inference_revproxy=debug}"
+exec 2> >(tee -a "$HOME/.cache/codex-acp.log" >&2)
+echo "=== codex-acp wrapper start: $(date -Iseconds) pid=$$ ===" >&2
+env | grep -E '^(META_CLAUDE|CODEX|OPENAI)_' | sort >&2
+echo "=== begin launcher output ===" >&2
+
+# Meta's codex on macOS is a dotslash binary at /usr/local/bin/codex
+# (symlink into /usr/local/bin/codex_cli/codex). On devvms the same
+# path generally exists; override CODEX_PATH per-machine if not.
+export CODEX_PATH="${CODEX_PATH:-/usr/local/bin/codex}"
+export NODE_EXTRA_CA_CERTS="/var/facebook/rootcanal/ca.pem"
+
+# Discover Node.js: prefer dotslash-cached modern Node, fall back to system.
+NODE="$(find "$HOME/.cache/dotslash" -name node -type f 2>/dev/null | head -1)"
+if [[ -z "$NODE" ]] || ! "$NODE" --version &>/dev/null; then
+  NODE="$(command -v node)"
+fi
+
+SCRIPT="$HOME/.local/node_modules/@agentclientprotocol/codex-acp/dist/index.js"
+if [[ ! -f "$SCRIPT" ]]; then
+  echo "codex-acp not installed. Run: npm install --prefix ~/.local @agentclientprotocol/codex-acp" >&2
+  exit 1
+fi
+
+exec "$NODE" "$SCRIPT" "$@"

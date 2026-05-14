@@ -15,6 +15,12 @@ set -euo pipefail
 
 mkdir -p "$HOME/.local/state/acp-broker"
 
+# launchd starts daemons with PATH=/usr/bin:/bin:/usr/sbin:/sbin which
+# is too narrow for the agent wrappers (~/bin/claude-agent-acp needs
+# `node` from /opt/homebrew/bin; dvsc-core-acp needs node + npx). Set
+# a richer PATH here so it propagates to spawned agents.
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$HOME/bin:$PATH"
+
 export ACP_BROKER_ID="$(hostname -s)"
 export ACP_BROKER_SQLITE_PERSISTENCE_ADDR="127.0.0.1:7847"
 
@@ -22,9 +28,14 @@ export ACP_BROKER_SQLITE_PERSISTENCE_ADDR="127.0.0.1:7847"
 # ~/dotfiles/nvim/lua/plugins/codecompanion.lua:
 #   vim.env.ACP_BROKER_SOCKET or ((vim.env.XDG_RUNTIME_DIR or "/tmp") .. "/acp-broker.sock")
 # so editor configs find the broker without needing ACP_BROKER_SOCKET set.
+#
+# dvsc-core-acp is intentionally not declared here — it lives in fbsource
+# and is only built/used on devvms. The Mac broker serves claude only.
+# The diff: drop `--declare-agent` for dvsc-core; CodeCompanion's
+# `dvsc_core_broker` adapter will fail fast on Mac, which is correct.
 exec "$HOME/.cargo/bin/acp-broker" \
   --declare-agent "name=claude,cmd=$HOME/bin/claude-agent-acp,default=true" \
-  --declare-agent "name=dvsc-core,cmd=$HOME/bin/dvsc-core-acp" \
+  --declare-agent "name=codex,cmd=$HOME/bin/codex-acp" \
   --socket /tmp/acp-broker.sock \
   --per-session-agents \
   --allow-agent-spawn
