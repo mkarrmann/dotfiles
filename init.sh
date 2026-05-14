@@ -191,7 +191,20 @@ tmp=$(jq '
   .model = "claude-opus-4-7" |
   .env |= ((. // {}) + {
     "DISABLE_AUTOUPDATER": "1",
-    "MCP_TIMEOUT": "120000"
+    "MCP_TIMEOUT": "120000",
+    "ENABLE_LSP_TOOL": "1"
+  }) |
+  .enabledPlugins |= ((. // {}) + {
+    "meta-lsp@claude-templates": true,
+    "meta-lsp-hack@claude-templates": true,
+    "meta-lsp-flow@claude-templates": true,
+    "meta-lsp-buck2@claude-templates": true,
+    "meta-lsp-thrift@claude-templates": true,
+    "meta-lsp-pyrefly@claude-templates": true,
+    "meta-lsp-relay@claude-templates": true,
+    "meta-lsp-go@claude-templates": true,
+    "meta-lsp-rust@claude-templates": true,
+    "meta-lsp-typescript@claude-templates": true
   }) |
   .statusLine = {"type": "command", "command": "~/.claude/statusline.sh"} |
   .hooks.PreToolUse = [
