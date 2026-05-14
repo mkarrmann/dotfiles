@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# nvs-setup SESSION [WORKDIR]
+#
+# One-shot: declare a per-session headless nvim daemon. Writes
+# ~/.config/nvs/$SESSION.env (consumed by nvs@.service via
+# EnvironmentFile=) then `systemctl --user enable --now nvs@SESSION.service`.
+# Idempotent — safe to re-run.
+#
+# Driven by init.sh, which reads ~/.config/nvs/sessions and runs this for
+# each line. Can also be invoked manually to add one session ad-hoc.
+#
+# If a non-systemd nvim is currently bound to the session's port (legacy
+# from the pre-systemd watchdog era), it is killed first so the new
+# systemd-owned process can bind.
+
+session="${1:?usage: nvs-setup SESSION [WORKDIR]}"
+workdir="${2:-}"
+
+env_dir="$HOME/.config/nvs"
+env_file="$env_dir/$session.env"
+unit="nvs@${session}.service"
+port=$(printf '%s' "$session" | cksum | awk '{ print 7000 + ($1 % 1000) }')
+
+mkdir -p "$env_dir"
+if [[ -n "$workdir" ]]; then
+  expanded="${workdir/#\~/$HOME}"
+  printf 'WORKDIR=%s\n' "$expanded" > "$env_file"
+else
+  : > "$env_file"
+fi
+
+# Force-migrate any nvim squatting the port that isn't already this unit.
+legacy_pid=$(pgrep -f "nvim --headless --listen localhost:$port" | head -1 || true)
+if [[ -n "$legacy_pid" ]]; then
+  cgroup="$(cat /proc/$legacy_pid/cgroup 2>/dev/null || true)"
+  if [[ "$cgroup" != *"nvs@${session}.service"* ]]; then
+    echo "nvs-setup: killing legacy pid=$legacy_pid on port $port (not under $unit)"
+    kill "$legacy_pid" 2>/dev/null || true
+    for _ in $(seq 1 50); do
+      pgrep -f "nvim --headless --listen localhost:$port" >/dev/null || break
+      sleep 0.1
+    done
+    if pgrep -f "nvim --headless --listen localhost:$port" >/dev/null; then
+      kill -9 "$legacy_pid" 2>/dev/null || true
+      sleep 0.5
+    fi
+  fi
+fi
+
+systemctl --user enable --now "$unit"
+echo "nvs-setup: $unit → $(systemctl --user is-active "$unit") (port $port)"

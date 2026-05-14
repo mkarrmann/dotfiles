@@ -37,35 +37,34 @@ prefix="${first_session%%-*}"
 tunnel_label="${prefix}: tunnels"
 
 tunnel_spec=""
-remote_parts=()
+session_names=""
 
 for spec in "$@"; do
+  # Accept legacy `SESSION:WORKDIR` form for backward compatibility with
+  # startup-windows; workdir is ignored here (it's set per-session on the
+  # devvm in ~/.config/nvs/$SESSION.env, applied at nvs-setup time).
   session="${spec%%:*}"
-  workdir="${spec#*:}"
-  [[ "$workdir" == "$spec" ]] && workdir=""
 
   port=$(nvs_port "$session")
   if [[ -n "$tunnel_spec" ]]; then
     tunnel_spec+=","
   fi
   tunnel_spec+="${port}:${port}"
-  remote_parts+=("nvs --server-only ${session}${workdir:+ ${workdir}}")
+  session_names+=" $session"
 
   echo "  $session -> localhost:$port"
 done
 
+# Server lifecycle is owned by systemd --user on the devvm
+# (~/dotfiles/systemd/nvs@.service, enabled per ~/.config/nvs/sessions).
+# This script's only remote job is a status preflight + keeping ET alive
+# so the tunnels stay up.
+#
 # IMPORTANT: do NOT add single quotes anywhere inside remote_cmd. The
 # whole string is embedded as `-c "zsh -lc '${remote_cmd}'"` below;
 # any inner ' breaks the outer quoting and the remote shell silently
-# parses only the prefix, producing a crash-loop with no nvs watchdogs.
-#
-# The acp-broker is owned by systemd --user on the devvm
-# (~/dotfiles/systemd/acp-broker.service) — not kicked from here.
-remote_cmd=""
-for part in "${remote_parts[@]}"; do
-  remote_cmd+="${part} & "
-done
-remote_cmd+="wait"
+# parses only the prefix.
+remote_cmd="nvs-status${session_names}; exec sleep infinity"
 
 # Start clipboard listener if not already running
 nvs-clip-listen &

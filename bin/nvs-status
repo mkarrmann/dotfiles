@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Print active state for each named session's systemd unit.
+# Used by nvs-tunnels as a connection-time preflight (visible in workspace T).
+
+if [[ $# -eq 0 ]]; then
+  echo "usage: nvs-status SESSION [SESSION ...]" >&2
+  exit 2
+fi
+
+echo "nvs daemons:"
+for s in "$@"; do
+  state=$(systemctl --user is-active "nvs@$s.service" 2>/dev/null || echo unknown)
+  printf '  %s: %s\n' "$s" "$state"
+done

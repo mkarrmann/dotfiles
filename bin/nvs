@@ -2,27 +2,24 @@
 set -euo pipefail
 
 # Modes:
-#   nvs SESSION [WORKDIR]            client — attach UI to a running headless server
-#   nvs --server-only SESSION [WD]   ET-side bootstrap — write env file, enable+start
-#                                    nvs@SESSION.service, then block to keep ET alive
-#   nvs --launch SESSION             ExecStart for nvs@.service — exec headless nvim
+#   nvs SESSION [WORKDIR]   client — attach UI to a running headless server
+#   nvs --launch SESSION    ExecStart for nvs@.service — exec headless nvim
 #
 # Lifecycle of the headless server is owned by systemd --user
-# (~/dotfiles/systemd/nvs@.service). WORKDIR is plumbed via env file
-# at ~/.config/nvs/SESSION.env.
+# (~/dotfiles/systemd/nvs@.service). Sessions are declared in
+# ~/.config/nvs/sessions and enabled at init.sh time via nvs-setup.
 
 mode="client"
 args=()
 for arg in "$@"; do
   case "$arg" in
-    --server-only) mode="server-only" ;;
-    --launch)      mode="launch" ;;
+    --launch) mode="launch" ;;
     -*) echo "nvs: unknown flag: $arg" >&2; exit 2 ;;
     *)  args+=("$arg") ;;
   esac
 done
 
-name="${args[0]:?usage: nvs [--server-only | --launch] SESSION_NAME [WORKDIR]}"
+name="${args[0]:?usage: nvs [--launch] SESSION_NAME [WORKDIR]}"
 workdir="${args[1]:-}"
 
 base="${XDG_STATE_HOME:-$HOME/.local/state}/nvim-sessions"
@@ -30,23 +27,10 @@ log="$base/$name.log"
 mkdir -p "$base"
 
 port=$(printf '%s' "$name" | cksum | awk '{ print 7000 + ($1 % 1000) }')
-
 unit="nvs@${name}.service"
-env_dir="$HOME/.config/nvs"
-env_file="$env_dir/$name.env"
 
 is_live() {
   nvim --server "localhost:$port" --remote-expr '1' >/dev/null 2>&1
-}
-
-write_env_file() {
-  mkdir -p "$env_dir"
-  if [[ -n "$workdir" ]]; then
-    local expanded="${workdir/#\~/$HOME}"
-    printf 'WORKDIR=%s\n' "$expanded" > "$env_file"
-  elif [[ ! -f "$env_file" ]]; then
-    : > "$env_file"
-  fi
 }
 
 case "$mode" in
@@ -76,61 +60,19 @@ case "$mode" in
     exec "${cmd[@]}"
     ;;
 
-  server-only)
-    # Invoked by nvs-tunnels over ET. Two jobs:
-    #   1. Write the env file and ensure systemd owns the headless server.
-    #   2. Block to keep the ET session alive (ET tears down its tunnels
-    #      when the remote command exits).
-    write_env_file
-
-    # Force-migrate any legacy nvim that's holding the port outside
-    # systemd's control (e.g. surviving from before this transition).
-    if is_live; then
-      legacy_pid=$(pgrep -f "nvim --headless --listen localhost:$port" | head -1 || true)
-      if [[ -n "$legacy_pid" ]]; then
-        cgroup="$(cat /proc/$legacy_pid/cgroup 2>/dev/null || true)"
-        if [[ "$cgroup" != *"nvs@${name}.service"* ]]; then
-          echo "nvs: legacy nvim pid=$legacy_pid on port $port is not under $unit — killing for migration"
-          kill "$legacy_pid" 2>/dev/null || true
-          for _ in $(seq 1 50); do
-            is_live || break
-            sleep 0.1
-          done
-          if is_live; then
-            echo "nvs: legacy pid=$legacy_pid still bound to $port; SIGKILL"
-            kill -9 "$legacy_pid" 2>/dev/null || true
-            sleep 0.5
-          fi
-        fi
-      fi
-    fi
-
-    if ! systemctl --user enable --now "$unit" 2>>"$log"; then
-      echo "nvs: failed to enable+start $unit (see $log)" >&2
-      exit 1
-    fi
-    echo "nvs: '$name' managed by $unit (port $port)"
-
-    # Keep ET alive. SIGHUP would arrive from the dying ssh session;
-    # ignore it so this process outlives the SSH disconnect cleanup
-    # (matters less now that systemd owns the server, but harmless).
-    trap '' HUP
-    while true; do
-      sleep 60
-    done
-    ;;
-
   client)
     if ! is_live; then
-      if command -v systemctl &>/dev/null && systemctl --user list-unit-files nvs@.service &>/dev/null; then
-        write_env_file
+      if command -v systemctl &>/dev/null && systemctl --user list-unit-files "$unit" &>/dev/null; then
         systemctl --user start "$unit" 2>/dev/null || true
         for _ in $(seq 1 50); do
           is_live && break
           sleep 0.1
         done
       fi
-      is_live || { echo "nvs: server '$name' not reachable on port $port" >&2; exit 1; }
+      is_live || {
+        echo "nvs: '$name' not reachable on port $port — declare it in ~/.config/nvs/sessions and run nvs-setup" >&2
+        exit 1
+      }
     fi
     exec nvim --server "localhost:$port" --remote-ui
     ;;

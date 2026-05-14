@@ -416,7 +416,7 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   for unit_src in "$DOTFILES_DIR"/systemd/*.service; do
     unit_name="$(basename "$unit_src")"
     # Template units (foo@.service) can't be enabled without an instance —
-    # their instances are enabled on demand by the scripts that own them.
+    # their instances are managed declaratively below from a per-host config.
     [[ "$unit_name" == *@.service ]] && continue
     if systemctl --user enable --now "$unit_name" &>/dev/null; then
       echo "enabled $unit_name"
@@ -425,6 +425,22 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
     fi
   done
   shopt -u nullglob
+
+  # Per-session nvim daemons (nvs@SESSION.service instances).
+  # ~/.config/nvs/sessions is machine-local (not source-controlled, same as
+  # ~/.localrc). Lines: `SESSION_NAME [WORKDIR]`. Comments with #, blank ok.
+  nvs_sessions="$HOME/.config/nvs/sessions"
+  if [[ -f "$nvs_sessions" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${line%%#*}"
+      # shellcheck disable=SC2086
+      set -- $line
+      [[ $# -eq 0 ]] && continue
+      session="$1"; workdir="${2:-}"
+      "$HOME/bin/nvs-setup" "$session" ${workdir:+"$workdir"} \
+        || echo "WARNING: nvs-setup failed for $session" >&2
+    done < "$nvs_sessions"
+  fi
 fi
 
 # Nori
