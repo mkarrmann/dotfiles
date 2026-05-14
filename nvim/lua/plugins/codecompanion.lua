@@ -176,6 +176,28 @@ end
 -- via the `CodeCompanionChatOpened` autocmd below as
 -- `vim.t.codecompanion_chat_bufnr` and `vim.b[chat_bufnr].cc_tab_owner`.
 -- The chat is created in the current tab and never moves.
+-- Per-connection client identity stamped onto every broker session via
+-- `_meta.broker.client.metadata` (see acp-broker docs/SPEC.md §13.2).
+-- The persistence plugin captures the whole object verbatim into
+-- `sessions.metadata.broker_client_metadata` (capture.rs:659), so adding
+-- keys here is forward-compat — no broker change required to persist
+-- additional fields. `extra` lets adapter-specific selectors (e.g. the
+-- dvsc-core picker's `{ dvsc = sel }`) merge into the same object.
+local function build_client_metadata(extra)
+  local md = {
+    nvim_session    = vim.env.NVS_SESSION_NAME or "ad-hoc",
+    host            = vim.env.NVS_HOST or vim.fn.hostname(),
+    cwd             = vim.env.NVS_WORKDIR or vim.fn.getcwd(),
+    nvim_pid        = vim.fn.getpid(),
+    nvim_tab_handle = vim.api.nvim_get_current_tabpage(),
+    tab_name        = vim.t.tab_name,
+  }
+  if extra then
+    for k, v in pairs(extra) do md[k] = v end
+  end
+  return vim.json.encode(md)
+end
+
 local function tab_chat_open_or_toggle(opts)
   opts = opts or {}
   local existing = vim.t.codecompanion_chat_bufnr
@@ -220,8 +242,10 @@ local function _dvsc_launch_with(mode, model, effort)
   if llm_config then sel.llm_config = llm_config end
   table.insert(_dvsc.launch_queue, { mode = mode, model = model, effort = effort })
   -- Stash for the adapter function to consume on next spawn. Racy if you
-  -- start two chats simultaneously; fine for single-user.
-  _dvsc.pending = vim.fn.json_encode({ dvsc = sel })
+  -- start two chats simultaneously; fine for single-user. Stored as a
+  -- Lua table so `build_client_metadata` can merge it with per-launch
+  -- nvim identity rather than overwriting it.
+  _dvsc.pending = { dvsc = sel }
   tab_chat_open_or_toggle({ adapter = "dvsc_core_broker" })
 end
 
@@ -427,18 +451,6 @@ return {
               -- docs/RUNBOOK.md §3.3.
               local attach_bin = vim.fn.expand("~/.cargo/bin/acp-broker-attach-tag")
 
-              -- Per-launch metadata sourced from env vars exported by
-              -- ~/dotfiles/bin/nvs. Falls back to a minimal identity
-              -- when run outside an nvs-managed session (ad-hoc nvims,
-              -- local dev, etc.) so attribution still produces
-              -- something queryable.
-              local metadata_json = vim.json.encode({
-                nvim_session = vim.env.NVS_SESSION_NAME or "ad-hoc",
-                host         = vim.env.NVS_HOST or vim.fn.hostname(),
-                cwd          = vim.env.NVS_WORKDIR or vim.fn.getcwd(),
-                nvim_pid     = vim.fn.getpid(),
-              })
-
               return require("codecompanion.adapters").extend("claude_code", {
                 commands = {
                   default = { attach_bin },
@@ -447,7 +459,7 @@ return {
                 env = {
                   CLAUDE_CODE_OAUTH_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN",
                   ACP_BROKER_SOCKET = broker_socket,
-                  ACP_BROKER_CLIENT_METADATA_JSON = metadata_json,
+                  ACP_BROKER_CLIENT_METADATA_JSON = build_client_metadata(),
                 },
                 defaults = {
                   timeout = 120000,
@@ -538,9 +550,9 @@ return {
             -- from the stamped client metadata. Drive via
             -- `dvsc_pick_and_launch` (see `<leader>ag`/`<leader>aG`).
             dvsc_core_broker = function()
-              local payload = _dvsc.pending
-                  or vim.fn.json_encode({ dvsc = { mode = "native" } })
+              local extra = _dvsc.pending or { dvsc = { mode = "native" } }
               _dvsc.pending = nil
+              local payload = build_client_metadata(extra)
               local stderr_log = vim.fn.expand("~/.local/state/nvim/dvsc-core-acp.stderr.log")
               -- Installed into ~/.cargo/bin via `cargo install --path crates/acp-broker`
               -- in ~/repos/acp-broker.
@@ -586,7 +598,8 @@ return {
               local attach_bin = vim.fn.expand("~/.cargo/bin/acp-broker-attach-select-tag")
               local agent_cmd = vim.fn.expand("~/bin/claude-agent-acp")
               local launch = string.format(
-                "ACP_BROKER_AGENT_NAME=%s ACP_BROKER_AGENT_CMD=%s exec %s 2>>%s",
+                "ACP_BROKER_CLIENT_METADATA_JSON=%s ACP_BROKER_AGENT_NAME=%s ACP_BROKER_AGENT_CMD=%s exec %s 2>>%s",
+                vim.fn.shellescape(build_client_metadata()),
                 vim.fn.shellescape("claude"),
                 vim.fn.shellescape(agent_cmd),
                 vim.fn.shellescape(attach_bin),
@@ -621,7 +634,8 @@ return {
               local attach_bin = vim.fn.expand("~/.cargo/bin/acp-broker-attach-select-tag")
               local agent_cmd = vim.fn.expand("~/bin/codex-acp")
               local launch = string.format(
-                "ACP_BROKER_AGENT_NAME=%s ACP_BROKER_AGENT_CMD=%s exec %s 2>>%s",
+                "ACP_BROKER_CLIENT_METADATA_JSON=%s ACP_BROKER_AGENT_NAME=%s ACP_BROKER_AGENT_CMD=%s exec %s 2>>%s",
+                vim.fn.shellescape(build_client_metadata()),
                 vim.fn.shellescape("codex"),
                 vim.fn.shellescape(agent_cmd),
                 vim.fn.shellescape(attach_bin),
