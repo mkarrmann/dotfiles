@@ -648,6 +648,14 @@ return {
               position = "right",
               width = 0.42,
               full_height = true,
+              -- Make upstream's Chat lifecycle tab-aware. Without this,
+              -- `Chat.new` calls `close_last_chat` which hides whatever
+              -- chat is currently visible — including chats in *other*
+              -- tabs. Setting pertab=true makes close_last_chat skip
+              -- chats visible in non-current tabs (chat/init.lua:2025).
+              -- Our `tab_chat_open_or_toggle` still enforces the
+              -- one-chat-per-tab invariant on top.
+              pertab = true,
             },
           },
         },
