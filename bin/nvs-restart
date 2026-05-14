@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Restart headless nvim servers. The nvs --server-only watchdog relaunches
-# each one within ~5s with fresh config.
+# Restart headless nvim servers. systemd's nvs@SESSION.service relaunches
+# each one within ~5s (RestartSec=5) with fresh config.
 #
 # Usage:
 #   nvs-restart          Restart the current session (must be inside one)
@@ -77,4 +77,4 @@ for i in "${!pids[@]}"; do
   kill "${pids[$i]}"
 done
 
-echo "Done. Watchdog will relaunch within ~5s. Reconnect from macOS."
+echo "Done. systemd will relaunch within ~5s (RestartSec=5). Reconnect from macOS."

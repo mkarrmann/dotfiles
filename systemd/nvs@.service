@@ -1,0 +1,39 @@
+# Templated systemd --user unit for per-session headless nvim servers.
+# Symlinked into ~/.config/systemd/user/ by ~/dotfiles/init.sh (Linux block).
+# Instance name (%i) is the session name (e.g. nvs@FTW-checkout1.service).
+#
+# Lifecycle is normally driven by `nvs --server-only` (called by nvs-tunnels
+# over ET). It writes ~/.config/nvs/<session>.env, then `enable --now`s this
+# unit. Once enabled, the unit also auto-starts at devvm boot.
+#
+# Manual ops:
+#   systemctl --user enable --now nvs@FTW-main1
+#   systemctl --user restart nvs@FTW-main1
+#   systemctl --user disable --now nvs@FTW-main1
+#   journalctl --user -u nvs@FTW-main1 -e
+#
+# Per-instance config (optional WORKDIR for nvim's startup cwd):
+#   ~/.config/nvs/<session>.env  →  WORKDIR=/absolute/path
+# The leading `-` on EnvironmentFile makes it optional.
+#
+# Why this exists: the previous `nvs --server-only` watchdog ran inside the
+# ET-spawned shell. Even with setsid + KillUserProcesses=no, we lost
+# headless servers across some Mac-side disconnects (cause TBD). Owning
+# lifecycle in pid-1's user manager removes every session-scope dependency.
+
+[Unit]
+Description=Headless nvim server (session %i)
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/nvs/%i.env
+ExecStart=%h/bin/nvs --launch %i
+Restart=always
+RestartSec=5
+StateDirectory=nvim-sessions
+StandardOutput=append:%S/nvim-sessions/%i.log
+StandardError=append:%S/nvim-sessions/%i.log
+
+[Install]
+WantedBy=default.target

@@ -415,6 +415,9 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   shopt -s nullglob
   for unit_src in "$DOTFILES_DIR"/systemd/*.service; do
     unit_name="$(basename "$unit_src")"
+    # Template units (foo@.service) can't be enabled without an instance —
+    # their instances are enabled on demand by the scripts that own them.
+    [[ "$unit_name" == *@.service ]] && continue
     if systemctl --user enable --now "$unit_name" &>/dev/null; then
       echo "enabled $unit_name"
     else

@@ -1,16 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-server_only=false
+# Modes:
+#   nvs SESSION [WORKDIR]            client — attach UI to a running headless server
+#   nvs --server-only SESSION [WD]   ET-side bootstrap — write env file, enable+start
+#                                    nvs@SESSION.service, then block to keep ET alive
+#   nvs --launch SESSION             ExecStart for nvs@.service — exec headless nvim
+#
+# Lifecycle of the headless server is owned by systemd --user
+# (~/dotfiles/systemd/nvs@.service). WORKDIR is plumbed via env file
+# at ~/.config/nvs/SESSION.env.
+
+mode="client"
 args=()
 for arg in "$@"; do
   case "$arg" in
-    --server-only) server_only=true ;;
-    *) args+=("$arg") ;;
+    --server-only) mode="server-only" ;;
+    --launch)      mode="launch" ;;
+    -*) echo "nvs: unknown flag: $arg" >&2; exit 2 ;;
+    *)  args+=("$arg") ;;
   esac
 done
 
-name="${args[0]:?usage: nvs [--server-only] SESSION_NAME [WORKDIR]}"
+name="${args[0]:?usage: nvs [--server-only | --launch] SESSION_NAME [WORKDIR]}"
 workdir="${args[1]:-}"
 
 base="${XDG_STATE_HOME:-$HOME/.local/state}/nvim-sessions"
@@ -19,55 +31,107 @@ mkdir -p "$base"
 
 port=$(printf '%s' "$name" | cksum | awk '{ print 7000 + ($1 % 1000) }')
 
+unit="nvs@${name}.service"
+env_dir="$HOME/.config/nvs"
+env_file="$env_dir/$name.env"
+
 is_live() {
   nvim --server "localhost:$port" --remote-expr '1' >/dev/null 2>&1
 }
 
-start() {
-  local cmd=(nvim --headless --listen "localhost:$port")
+write_env_file() {
+  mkdir -p "$env_dir"
   if [[ -n "$workdir" ]]; then
     local expanded="${workdir/#\~/$HOME}"
-    cmd+=(--cmd "cd $expanded")
+    printf 'WORKDIR=%s\n' "$expanded" > "$env_file"
+  elif [[ ! -f "$env_file" ]]; then
+    : > "$env_file"
   fi
-  cmd+=(--cmd "set title titlestring=$name\\ —\\ %t")
-  cmd+=(--cmd "lua pcall(require, 'lib.clipboard-relay')")
-  # Per-launch identity for acp-broker per-client metadata attribution
-  # (acp-broker docs/RUNBOOK.md §3.3). Subprocesses (CodeCompanion ->
-  # acp-broker-attach-tag) read these to build
-  # ACP_BROKER_CLIENT_METADATA_JSON.
-  export NVS_SESSION_NAME="$name"
-  export NVS_HOST="$(hostname -s)"
-  export NVS_WORKDIR="${workdir:-$PWD}"
-  # setsid, not nohup: nohup only ignores SIGHUP, but the process stays in the
-  # ET session's process group. When ET tears down a dead session (e.g. Mac
-  # restart), it can SIGTERM/SIGKILL the entire process tree — nohup doesn't
-  # protect against that. setsid moves nvim into its own session+process group,
-  # making it invisible to ET's cleanup.
-  setsid "${cmd[@]}" >>"$log" 2>&1 </dev/null &
-  for _ in $(seq 1 50); do
-    if is_live; then return 0; fi
-    sleep 0.1
-  done
-  return 1
 }
 
-if ! is_live; then
-  start || { echo "Failed to start session: $name" >&2; exit 1; }
-fi
+case "$mode" in
+  launch)
+    # Invoked by systemd's ExecStart. WORKDIR comes from EnvironmentFile.
+    workdir="${WORKDIR:-}"
+    parent_cmd="$(ps -o cmd= -p $PPID 2>/dev/null | head -c 160 || true)"
+    printf '%s [launch] pid=%s ppid=%s parent=%q port=%s workdir=%q\n' \
+      "$(date -Iseconds)" "$$" "$PPID" "$parent_cmd" "$port" "${workdir:-}" >> "$log"
 
-if $server_only; then
-  # Ignore SIGHUP so the watchdog survives ET disconnection. The nohup'd nvim
-  # server already ignores SIGHUP; this keeps the watchdog alive too, so it can
-  # restart the server if it dies while the tunnel is down.
-  trap '' HUP
-  echo "nvs: server '$name' ready on port $port"
-  while true; do
-    sleep 5
-    if ! is_live; then
-      echo "nvs: server '$name' died, restarting..." >&2
-      start || echo "nvs: restart failed, will retry..." >&2
+    cmd=(nvim --headless --listen "localhost:$port")
+    if [[ -n "$workdir" ]]; then
+      expanded="${workdir/#\~/$HOME}"
+      cmd+=(--cmd "cd $expanded")
     fi
-  done
-fi
+    cmd+=(--cmd "set title titlestring=$name\\ —\\ %t")
+    cmd+=(--cmd "lua pcall(require, 'lib.clipboard-relay')")
 
-exec nvim --server "localhost:$port" --remote-ui
+    # Per-launch identity for acp-broker per-client metadata attribution
+    # (acp-broker docs/RUNBOOK.md §3.3). Subprocesses (CodeCompanion ->
+    # acp-broker-attach-tag) read these to build
+    # ACP_BROKER_CLIENT_METADATA_JSON.
+    export NVS_SESSION_NAME="$name"
+    export NVS_HOST="$(hostname -s)"
+    export NVS_WORKDIR="${workdir:-$PWD}"
+
+    exec "${cmd[@]}"
+    ;;
+
+  server-only)
+    # Invoked by nvs-tunnels over ET. Two jobs:
+    #   1. Write the env file and ensure systemd owns the headless server.
+    #   2. Block to keep the ET session alive (ET tears down its tunnels
+    #      when the remote command exits).
+    write_env_file
+
+    # Force-migrate any legacy nvim that's holding the port outside
+    # systemd's control (e.g. surviving from before this transition).
+    if is_live; then
+      legacy_pid=$(pgrep -f "nvim --headless --listen localhost:$port" | head -1 || true)
+      if [[ -n "$legacy_pid" ]]; then
+        cgroup="$(cat /proc/$legacy_pid/cgroup 2>/dev/null || true)"
+        if [[ "$cgroup" != *"nvs@${name}.service"* ]]; then
+          echo "nvs: legacy nvim pid=$legacy_pid on port $port is not under $unit — killing for migration"
+          kill "$legacy_pid" 2>/dev/null || true
+          for _ in $(seq 1 50); do
+            is_live || break
+            sleep 0.1
+          done
+          if is_live; then
+            echo "nvs: legacy pid=$legacy_pid still bound to $port; SIGKILL"
+            kill -9 "$legacy_pid" 2>/dev/null || true
+            sleep 0.5
+          fi
+        fi
+      fi
+    fi
+
+    if ! systemctl --user enable --now "$unit" 2>>"$log"; then
+      echo "nvs: failed to enable+start $unit (see $log)" >&2
+      exit 1
+    fi
+    echo "nvs: '$name' managed by $unit (port $port)"
+
+    # Keep ET alive. SIGHUP would arrive from the dying ssh session;
+    # ignore it so this process outlives the SSH disconnect cleanup
+    # (matters less now that systemd owns the server, but harmless).
+    trap '' HUP
+    while true; do
+      sleep 60
+    done
+    ;;
+
+  client)
+    if ! is_live; then
+      if command -v systemctl &>/dev/null && systemctl --user list-unit-files nvs@.service &>/dev/null; then
+        write_env_file
+        systemctl --user start "$unit" 2>/dev/null || true
+        for _ in $(seq 1 50); do
+          is_live && break
+          sleep 0.1
+        done
+      fi
+      is_live || { echo "nvs: server '$name' not reachable on port $port" >&2; exit 1; }
+    fi
+    exec nvim --server "localhost:$port" --remote-ui
+    ;;
+esac

@@ -3,9 +3,9 @@
 # each one comes back. Discovery is pure `ps` parsing on the local
 # machine, so the script doesn't care where it's invoked from.
 #
-# Sessions are spawned by `nvs --server-only` watchdog loops (see
-# ~/dotfiles/bin/nvs); after this script kills the old nvim process the
-# watchdog re-spawns within ~5s with a fresh package.loaded.
+# Sessions are owned by systemd --user (~/dotfiles/systemd/nvs@.service);
+# after this script kills the old nvim process, systemd respawns it
+# within ~5s (RestartSec=5) with a fresh package.loaded.
 #
 # Usage:
 #   nvs-rebirth          Restart the current session (must be inside one)
@@ -192,7 +192,7 @@ for port in "${!old_by_port[@]}"; do
     echo "  ✓ $name: $old → $new (port $port)"
   else
     echo "  ✗ $name: did not respawn within ${RESPAWN_TIMEOUT}s on port $port" >&2
-    echo "    Check: pgrep -af 'nvs --server-only $name'" >&2
+    echo "    Check: systemctl --user status nvs@$name" >&2
     ((failures++)) || true
   fi
 done
