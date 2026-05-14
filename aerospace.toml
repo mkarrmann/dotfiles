@@ -189,8 +189,9 @@ run = 'move-node-to-workspace 7'
 # ── Auto-accordion: move new windows into the RHS accordion ──────────
 # Uses a helper script that checks workspace, title, and lock file
 # to avoid interfering with startup-windows or Orchest sidebar windows.
+# DISABLED — re-enable by uncommenting the [[on-window-detected]] block below.
 
-[[on-window-detected]]
-if.during-aerospace-startup = false
-run = 'exec-and-forget ~/bin/auto-accordion'
+# [[on-window-detected]]
+# if.during-aerospace-startup = false
+# run = 'exec-and-forget ~/bin/auto-accordion'
 
