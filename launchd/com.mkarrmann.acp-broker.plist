@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Authoritative copy of the launchd job for the per-Mac acp-broker.
+
+  To activate (or after editing):
+    cp ~/dotfiles/launchd/com.mkarrmann.acp-broker.plist \
+       ~/Library/LaunchAgents/
+    launchctl unload ~/Library/LaunchAgents/com.mkarrmann.acp-broker.plist 2>/dev/null
+    launchctl load   ~/Library/LaunchAgents/com.mkarrmann.acp-broker.plist
+    ls -l /tmp/acp-broker.sock        # expect: srwxr-xr-x ... mkarrmann
+
+  Companion to ~/dotfiles/launchd/com.mkarrmann.persistence-server.plist:
+  the broker connects out to the persistence-server at 127.0.0.1:7847.
+
+  Args, env, and agent declarations live in the wrapper at
+  ~/dotfiles/bin-macos/acp-broker-launch (symlinked into ~/bin by
+  init.sh), mirroring the devvm systemd unit at
+  ~/dotfiles/systemd/acp-broker.service.
+
+  Symlinks into ~/Library/LaunchAgents are intentionally avoided —
+  launchd's behavior across system upgrades is more predictable when
+  the file is materialized rather than symlinked. See acp-broker
+  docs/RUNBOOK.md §3.2.
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.mkarrmann.acp-broker</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/mkarrmann/bin/acp-broker-launch</string>
+    </array>
+
+    <!-- Start at login and keep the daemon up. The broker stamps
+         per-launch metadata onto every session, so a restart loses no
+         attribution; in-flight sessions reconnect via the
+         sqlite-persistence-plugin's 1s→60s exponential backoff. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/mkarrmann/.local/state/acp-broker/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mkarrmann/.local/state/acp-broker/stderr.log</string>
+  </dict>
+</plist>

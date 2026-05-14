@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Launchd entry point for the per-Mac acp-broker.
+#
+# Mirrors the devvm-side systemd unit at
+# ~/dotfiles/systemd/acp-broker.service. launchd has no equivalent of
+# systemd's `%l` specifier (resolved at unit-load time), so the short
+# hostname is resolved here on every start. Functionally equivalent for
+# our purposes — the broker re-reads the env on each launch.
+#
+# Edit ~/dotfiles/launchd/com.mkarrmann.acp-broker.plist if launchd
+# wiring changes (label, log paths, KeepAlive, etc.); edit this file
+# for broker args, env, and agent declarations.
+
+set -euo pipefail
+
+mkdir -p "$HOME/.local/state/acp-broker"
+
+export ACP_BROKER_ID="$(hostname -s)"
+export ACP_BROKER_SQLITE_PERSISTENCE_ADDR="127.0.0.1:7847"
+
+# Socket path matches the fallback in
+# ~/dotfiles/nvim/lua/plugins/codecompanion.lua:
+#   vim.env.ACP_BROKER_SOCKET or ((vim.env.XDG_RUNTIME_DIR or "/tmp") .. "/acp-broker.sock")
+# so editor configs find the broker without needing ACP_BROKER_SOCKET set.
+exec "$HOME/.cargo/bin/acp-broker" \
+  --declare-agent "name=claude,cmd=$HOME/bin/claude-agent-acp,default=true" \
+  --declare-agent "name=dvsc-core,cmd=$HOME/bin/dvsc-core-acp" \
+  --socket /tmp/acp-broker.sock \
+  --per-session-agents \
+  --allow-agent-spawn
