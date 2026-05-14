@@ -37,6 +37,24 @@ local DVSC_MODES = { "native", "claude", "codex", "metacode" }
 -- and `getDevmateLLMConfig` in dm-core. Each model is also gated by an
 -- availability gatekeeper server-side; what's actually usable depends on
 -- which gates this user is in.
+--
+-- IMPORTANT: this list must only contain models the running dm-core actually
+-- has in its loaded snapshot. dm-core's `getDevmateLLMConfig` silently
+-- *falls back to the default model* (claude-opus-4.6) when an unknown
+-- modelId is requested (config.ts:108) — and the wrapper happily forwards
+-- the picker's provider-shaped `reasoning_config` (e.g. OpenAI's
+-- `{effort: "HIGH"}`) into that wrong-provider config, which the LLM
+-- gateway returns empty for, surfacing as `stopReason="refusal"` after a
+-- ~60s hang. Models removed from the configerator-source list because they
+-- aren't in dm-core's loaded `Loaded model config version 22` snapshot for
+-- this user (verify via `[INFO] Registered N dynamic GKs` in
+-- `/tmp/dvsc-core-acp-*.log` — missing `devmate_<model>` GK = absent):
+--   - gemini-3-flash  (no devmate_gemini_3_flash GK)
+--   - metabrain-dogfooding
+-- TODO: replace this hardcoded list with a one-time HTTP fetch of dm-core's
+-- `GET /models` endpoint when the picker opens, so drift between this file
+-- and the user's actual entitlement can't reintroduce the silent-refusal
+-- failure mode.
 local DVSC_MODELS = {
   -- Anthropic
   { id = "claude-opus-4.7-long",   provider = "anthropic", adaptive = true  },
@@ -52,10 +70,8 @@ local DVSC_MODELS = {
   { id = "gpt-5-5",       provider = "openai" },
   -- Google (Native only — `getModelsForAgent` has no Google-specific harness)
   { id = "gemini-3-1-pro", provider = "google" },
-  { id = "gemini-3-flash", provider = "google" },
   -- Meta
-  { id = "avocado-tester",       provider = "meta" },
-  { id = "metabrain-dogfooding", provider = "meta" },
+  { id = "avocado-tester", provider = "meta" },
 }
 
 local function _dvsc_lookup_model(model_id)
