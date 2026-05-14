@@ -253,6 +253,109 @@ _G.codecompanion_dvsc_selection_for_buf = function(bufnr)
   return _dvsc.by_chat_bufnr[bufnr]
 end
 
+-- ── Resume / fork against the acp-broker ──────────────────────────────────
+--
+-- Both flows take a `broker_session_id` (lookup via
+--   sqlite3 ~/.local/share/acp-persistence-server/persistence.db \
+--     "SELECT broker_session_id, broker_id,
+--             json_extract(metadata,'$.broker_client_metadata.nvim_session')
+--      FROM sessions ORDER BY started_at DESC LIMIT 20;"
+-- ). The last bsid used is cached so the next prompt prefills it.
+--
+-- Resume:  client sends `session/load(bsid)`; the broker live-joins the
+--          existing session (if alive) or replays via the persistence
+--          plugin's `try_resume`. Cross-broker resume is rejected — the
+--          broker that captured the session is the only one that can
+--          resume it (`docs/PROPOSAL-unified-session-id.md` §4.6).
+--
+-- Fork:    client sends `meta.broker.persistence.fork_saved_session`,
+--          which mints a fresh session whose history is replayed into
+--          the local broker. Cross-broker capable. The new session's
+--          persistence record carries `parent = source_bsid`.
+local BROKER_BSID_CACHE_PATH = vim.fn.stdpath("data") .. "/acp-broker-last-bsid.json"
+
+local function _broker_read_last_bsid()
+  local f = io.open(BROKER_BSID_CACHE_PATH, "r")
+  if not f then return nil end
+  local body = f:read("*a")
+  f:close()
+  local ok, t = pcall(vim.fn.json_decode, body)
+  return (ok and type(t) == "table") and t.bsid or nil
+end
+
+local function _broker_write_last_bsid(bsid)
+  local f = io.open(BROKER_BSID_CACHE_PATH, "w")
+  if not f then return end
+  f:write(vim.fn.json_encode({ bsid = bsid }))
+  f:close()
+end
+
+-- Open a chat in the current tab pre-loaded with an existing broker
+-- session. Bypasses `tab_chat_open_or_toggle` because the
+-- `:CodeCompanionChat` command path doesn't accept `acp_session_id` —
+-- the patched `ACPHandler:ensure_connection` (see config below) wires
+-- it through, and the patched `Connection:_establish_session` forces
+-- `loadSession` capability so the broker actually receives
+-- `session/load(bsid)`.
+local function _broker_open_chat_with_session(adapter, acp_session_id)
+  local existing = vim.t.codecompanion_chat_bufnr
+  if existing and vim.api.nvim_buf_is_valid(existing) then
+    vim.notify(
+      "Tab already has a CodeCompanion chat; close it before resuming/forking another session.",
+      vim.log.levels.WARN
+    )
+    return false
+  end
+  require("codecompanion.interactions.chat").new({
+    adapter = adapter,
+    acp_session_id = acp_session_id,
+  })
+  return true
+end
+
+-- Issue `meta.broker.persistence.fork_saved_session(bsid)` and return
+-- the freshly-minted bsid (or nil on failure, with a notification).
+local function _broker_fork_saved_session(adapter, source_bsid)
+  local conn = require("codecompanion.acp").new({ adapter = adapter })
+  if not conn:connect_and_authenticate() then
+    vim.notify("acp-broker: connect failed", vim.log.levels.ERROR)
+    return nil
+  end
+  local resp = conn:send_rpc_request(
+    "meta.broker.persistence.fork_saved_session",
+    { broker_session_id = source_bsid }
+  )
+  pcall(function() conn:disconnect() end)
+  if not resp or not resp.broker_session_id then
+    vim.notify("fork failed: " .. vim.inspect(resp), vim.log.levels.ERROR)
+    return nil
+  end
+  return resp.broker_session_id
+end
+
+-- Top-level entry point used by `<leader>br` / `<leader>bf`. `action`
+-- is `"resume"` or `"fork"`. The default adapter is `dvsc_core_broker`
+-- because most broker-captured sessions are dvsc/claude (both use the
+-- claude_code wire shape, so dvsc_core_broker resumes either cleanly).
+-- For codex sessions, swap to `codex_broker` here.
+local function broker_resume_or_fork(action, adapter_name)
+  adapter_name = adapter_name or "dvsc_core_broker"
+  local prompt = (action == "fork" and "Fork bsid: ") or "Resume bsid: "
+  local default = _broker_read_last_bsid() or "bsid_"
+  vim.ui.input({ prompt = prompt, default = default }, function(bsid)
+    if not bsid or bsid == "" or bsid == "bsid_" then return end
+    _broker_write_last_bsid(bsid)
+    local target_bsid = bsid
+    if action == "fork" then
+      local adapter = require("codecompanion.adapters").resolve(adapter_name)
+      target_bsid = _broker_fork_saved_session(adapter, bsid)
+      if not target_bsid then return end
+      vim.notify("forked " .. bsid .. " -> " .. target_bsid, vim.log.levels.INFO)
+    end
+    _broker_open_chat_with_session(adapter_name, target_bsid)
+  end)
+end
+
 local function dvsc_pick_and_launch(force)
   local cache = _dvsc_read_cache()
   if not force and cache.mode and cache.model then
@@ -381,54 +484,50 @@ return {
                 end,
               },
               ["resume"] = {
-                description = "Resume a saved session from the persistence-server",
+                description = "Resume a saved session via session/load(bsid)",
                 callback = function(chat)
-                  -- Asks the broker to materialize a *fresh* live session
-                  -- loaded with the saved conversation history (calls
-                  -- meta.broker.persistence.resume_saved_session). Returns
-                  -- a new broker_session_id which the new chat connects
-                  -- to via session/load. The Connection:_establish_session
-                  -- patch below forces loadSession even when the agent
-                  -- doesn't advertise the capability.
+                  -- Sends `session/load(bsid)` to the broker. Same-broker
+                  -- semantics: the broker live-joins the in-memory session
+                  -- (if alive) or replays via the persistence plugin's
+                  -- `try_resume`. Cross-broker resume is rejected — the
+                  -- standalone `meta.broker.persistence.resume_saved_session`
+                  -- wire method was deleted (commits 7db4fed/c458043).
+                  -- Use `/fork` instead for cross-broker.
                   --
-                  -- The broker's list_saved_sessions wire surface returns
-                  -- only opaque IDs (no name/metadata), so paste-the-id
-                  -- is the only useful UX here. Get the ID via:
+                  -- Look up bsids via:
                   --   sqlite3 ~/.local/share/acp-persistence-server/persistence.db \
-                  --     "SELECT saved_session_id, json_extract(metadata,'$.nvim_session') \
+                  --     "SELECT broker_session_id, broker_id,
+                  --             json_extract(metadata,'$.broker_client_metadata.nvim_session')
                   --      FROM sessions ORDER BY started_at DESC LIMIT 20;"
-                  vim.ui.input({
-                    prompt = "saved_session_id: ",
-                    default = "ss-",
-                  }, function(saved_id)
-                    if not saved_id or saved_id == "" or saved_id == "ss-" then return end
-                    local conn = require("codecompanion.acp").new({ adapter = chat.adapter })
-                    if not conn:connect_and_authenticate() then
-                      return vim.notify("Failed to connect to broker", vim.log.levels.ERROR)
-                    end
-                    -- Default target_broker_id to the local broker (matches
-                    -- what acp-broker-up sets ACP_BROKER_ID to via
-                    -- `hostname -s`). User can override by editing the
-                    -- input, but rarely needed for personal-use setup.
-                    local local_broker = vim.fn.hostname():gsub("%..*", "")
-                    local resp = conn:send_rpc_request(
-                      "meta.broker.persistence.resume_saved_session",
-                      { saved_session_id = saved_id, target_broker_id = local_broker }
-                    )
-                    pcall(function() conn:disconnect() end)
-                    if not resp or not resp.broker_session_id then
-                      return vim.notify(
-                        "Resume failed; broker returned: " .. vim.inspect(resp),
-                        vim.log.levels.ERROR
-                      )
-                    end
-                    vim.notify(
-                      "Resumed " .. saved_id .. " -> " .. resp.broker_session_id,
-                      vim.log.levels.INFO
-                    )
+                  local default = _broker_read_last_bsid() or "bsid_"
+                  vim.ui.input({ prompt = "broker_session_id: ", default = default }, function(bsid)
+                    if not bsid or bsid == "" or bsid == "bsid_" then return end
+                    _broker_write_last_bsid(bsid)
                     require("codecompanion.interactions.chat").new({
                       adapter = chat.adapter,
-                      acp_session_id = resp.broker_session_id,
+                      acp_session_id = bsid,
+                    })
+                  end)
+                end,
+              },
+              ["fork"] = {
+                description = "Fork a saved session onto the local broker",
+                callback = function(chat)
+                  -- Calls `meta.broker.persistence.fork_saved_session` —
+                  -- mints a fresh session whose history is replayed into
+                  -- the local broker. Cross-broker capable; the new
+                  -- session's persistence record carries
+                  -- `parent = source_bsid`.
+                  local default = _broker_read_last_bsid() or "bsid_"
+                  vim.ui.input({ prompt = "Fork bsid: ", default = default }, function(bsid)
+                    if not bsid or bsid == "" or bsid == "bsid_" then return end
+                    _broker_write_last_bsid(bsid)
+                    local new_bsid = _broker_fork_saved_session(chat.adapter, bsid)
+                    if not new_bsid then return end
+                    vim.notify("forked " .. bsid .. " -> " .. new_bsid, vim.log.levels.INFO)
+                    require("codecompanion.interactions.chat").new({
+                      adapter = chat.adapter,
+                      acp_session_id = new_bsid,
                     })
                   end)
                 end,
@@ -987,6 +1086,14 @@ return {
       { "<leader>aG", function() dvsc_pick_and_launch(true)  end, desc = "Dvsc Chat via broker (pick config)" },
       { "<leader>aC", function() tab_chat_open_or_toggle({ adapter = "claude_broker" }) end, desc = "Claude Chat via broker (direct)" },
       { "<leader>aO", function() tab_chat_open_or_toggle({ adapter = "codex_broker" }) end, desc = "Codex Chat via broker" },
+      -- ACP broker resume/fork by bsid. Distinct `<leader>b*` namespace
+      -- because `<leader>ar`/`<leader>af` are owned by claude-agent-manager
+      -- (Claude Code resume/fork). Defaults to `dvsc_core_broker` adapter
+      -- — broker routes by bsid, not by adapter, so this works for any
+      -- claude-code-shaped session (dvsc/claude/devmate). Use codex_broker
+      -- by editing `broker_resume_or_fork` for codex sessions.
+      { "<leader>br", function() broker_resume_or_fork("resume") end, desc = "ACP broker: resume saved session by bsid" },
+      { "<leader>bf", function() broker_resume_or_fork("fork")   end, desc = "ACP broker: fork saved session by bsid" },
     },
   },
 }
