@@ -14,6 +14,12 @@
 -- and applies them to the per-session `CreateAgentRequest`. The wrapper is
 -- a dumb pass-through for `llm_config` — provider-specific shaping of
 -- `reasoning_config` happens here, in this picker.
+--
+-- `_dvsc.pending` and `_dvsc.launch_queue` remain global because the
+-- adapter spawn that consumes them is synchronous in the same tab where
+-- the picker ran. The per-tab one-chat invariant (see
+-- `tab_chat_open_or_toggle` below) prevents a launch when the tab
+-- already owns a chat, so the FIFO never accumulates stale entries.
 local _dvsc = { pending = nil, launch_queue = {}, by_chat_bufnr = {} }
 
 local DVSC_CACHE_PATH = vim.fn.stdpath("data") .. "/dvsc-acp-last-v2.json"
@@ -149,7 +155,50 @@ local function _dvsc_pick(items, prompt, cb)
   end)
 end
 
+-- One-chat-per-tab invariant. Mirrors `claude-per-tab-terminal.lua`:
+-- each tabpage owns at most one CodeCompanion chat, stamped on creation
+-- via the `CodeCompanionChatOpened` autocmd below as
+-- `vim.t.codecompanion_chat_bufnr` and `vim.b[chat_bufnr].cc_tab_owner`.
+-- The chat is created in the current tab and never moves.
+local function tab_chat_open_or_toggle(opts)
+  opts = opts or {}
+  local existing = vim.t.codecompanion_chat_bufnr
+  if existing and vim.api.nvim_buf_is_valid(existing) then
+    local chat = require("codecompanion").buf_get_chat(existing)
+    if not chat then
+      vim.t.codecompanion_chat_bufnr = nil
+    else
+      if opts.adapter then
+        vim.notify(
+          "Tab already has a CodeCompanion chat; close it before switching adapters.",
+          vim.log.levels.WARN
+        )
+      end
+      if chat.ui:is_visible() then
+        chat.ui:hide()
+      else
+        chat.ui:open({ toggled = true })
+      end
+      return false
+    end
+  end
+  if opts.adapter then
+    vim.cmd("CodeCompanionChat adapter=" .. opts.adapter)
+  else
+    vim.cmd("CodeCompanionChat")
+  end
+  return true
+end
+
 local function _dvsc_launch_with(mode, model, effort)
+  -- Refuse if the tab already owns a chat — `tab_chat_open_or_toggle`
+  -- would just toggle visibility and the dvsc selection would be lost.
+  -- Skip the launch_queue/pending push so they don't accumulate stale
+  -- entries the next legitimate launch would consume.
+  local existing = vim.t.codecompanion_chat_bufnr
+  if existing and vim.api.nvim_buf_is_valid(existing) then
+    return tab_chat_open_or_toggle({ adapter = "dvsc_core_broker" })
+  end
   local sel = { mode = mode, model = model }
   local llm_config = _dvsc_build_llm_config(model, effort)
   if llm_config then sel.llm_config = llm_config end
@@ -157,7 +206,7 @@ local function _dvsc_launch_with(mode, model, effort)
   -- Stash for the adapter function to consume on next spawn. Racy if you
   -- start two chats simultaneously; fine for single-user.
   _dvsc.pending = vim.fn.json_encode({ dvsc = sel })
-  vim.cmd("CodeCompanionChat adapter=dvsc_core_broker")
+  tab_chat_open_or_toggle({ adapter = "dvsc_core_broker" })
 end
 
 _G.codecompanion_dvsc_selection_for_buf = function(bufnr)
@@ -793,17 +842,22 @@ return {
       vim.api.nvim_create_autocmd("User", {
         pattern = "CodeCompanionChatOpened",
         callback = function(args)
+          local bufnr = args.data and args.data.bufnr
+          if not bufnr then return end
+          local tab = vim.api.nvim_get_current_tabpage()
+          -- Stamp ownership synchronously so the queue lib's scheduled
+          -- callback can resolve bufnr -> tab regardless of focus changes
+          -- in between.
+          pcall(vim.api.nvim_buf_set_var, bufnr, "cc_tab_owner", tab)
+          pcall(vim.api.nvim_tabpage_set_var, tab, "codecompanion_chat_bufnr", bufnr)
           vim.schedule(function()
-            local bufnr = args.data and args.data.bufnr
-            if bufnr then
-              local chat = require("codecompanion").buf_get_chat(bufnr)
-              if chat and chat.adapter and chat.adapter.name == "dvsc_core_broker" then
-                _dvsc.by_chat_bufnr[bufnr] = table.remove(_dvsc.launch_queue, 1)
-              else
-                _dvsc.by_chat_bufnr[bufnr] = nil
-              end
-              require("lib.codecompanion-queue").on_chat_opened(bufnr)
+            local chat = require("codecompanion").buf_get_chat(bufnr)
+            if chat and chat.adapter and chat.adapter.name == "dvsc_core_broker" then
+              _dvsc.by_chat_bufnr[bufnr] = table.remove(_dvsc.launch_queue, 1)
+            else
+              _dvsc.by_chat_bufnr[bufnr] = nil
             end
+            require("lib.codecompanion-queue").on_chat_opened(bufnr)
           end)
         end,
       })
@@ -822,6 +876,22 @@ return {
       })
 
       vim.api.nvim_create_autocmd("User", {
+        pattern = "CodeCompanionChatClosed",
+        callback = function(args)
+          local bufnr = args.data and args.data.bufnr
+          if not bufnr then return end
+          local ok, tab = pcall(function() return vim.b[bufnr].cc_tab_owner end)
+          if ok and tab and vim.api.nvim_tabpage_is_valid(tab) then
+            pcall(vim.api.nvim_tabpage_del_var, tab, "codecompanion_chat_bufnr")
+          end
+          _dvsc.by_chat_bufnr[bufnr] = nil
+          vim.schedule(function()
+            require("lib.codecompanion-queue").on_chat_closed(bufnr)
+          end)
+        end,
+      })
+
+      vim.api.nvim_create_autocmd("User", {
         pattern = "CodeCompanionChatDone",
         callback = function(args)
           vim.schedule(function()
@@ -834,15 +904,15 @@ return {
     cmd = { "CodeCompanion", "CodeCompanionChat", "CodeCompanionActions" },
     keys = {
       { "<leader>ae", "<cmd>CodeCompanionActions<cr>", mode = { "n", "v" }, desc = "CodeCompanion Actions" },
-      { "<leader>ah", "<cmd>CodeCompanionChat Toggle<cr>", mode = { "n", "v" }, desc = "CodeCompanion Chat" },
+      { "<leader>ah", function() tab_chat_open_or_toggle() end, mode = { "n", "v" }, desc = "CodeCompanion Chat (this tab)" },
       { "<leader>av", "<cmd>CodeCompanion<cr>", mode = { "n", "v" }, desc = "CodeCompanion Inline" },
       { "<leader>aq", function() require("lib.codecompanion-queue").focus() end, desc = "Focus CodeCompanion Input" },
       { "<leader>ad", "<cmd>CodeCompanionDoctor<cr>", desc = "CodeCompanion Doctor" },
-      { "<leader>aD", "<cmd>CodeCompanionChat adapter=devmate<cr>", desc = "CodeCompanion Chat (Devmate)" },
-      { "<leader>aS", "<cmd>CodeCompanionChat adapter=dvsc_core<cr>", desc = "CodeCompanion Chat (Dvsc Core)" },
+      { "<leader>aD", function() tab_chat_open_or_toggle({ adapter = "devmate" }) end, desc = "CodeCompanion Chat (Devmate)" },
+      { "<leader>aS", function() tab_chat_open_or_toggle({ adapter = "dvsc_core" }) end, desc = "CodeCompanion Chat (Dvsc Core)" },
       { "<leader>ag", function() dvsc_pick_and_launch(false) end, desc = "Dvsc Chat via broker (last config)" },
       { "<leader>aG", function() dvsc_pick_and_launch(true)  end, desc = "Dvsc Chat via broker (pick config)" },
-      { "<leader>aC", "<cmd>CodeCompanionChat adapter=claude_broker<cr>", desc = "Claude Chat via broker (direct)" },
+      { "<leader>aC", function() tab_chat_open_or_toggle({ adapter = "claude_broker" }) end, desc = "Claude Chat via broker (direct)" },
     },
   },
 }
