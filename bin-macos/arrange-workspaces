@@ -200,6 +200,21 @@ arrange_workspace() {
 
     echo "    after join-with: $(aerospace list-windows --workspace "$ws" --format '%{window-id}:%{window-parent-container-layout}' 2>/dev/null | tr '\n' ' ')"
 
+    # Verify join-with actually nested $rightmost. join-with-left silently
+    # no-ops when the left neighbor isn't a joinable tiling sibling
+    # (mid-creation, just-unfloated, etc.). After a successful join from
+    # h_tiles root the parent is a perpendicular v_tiles sub-container; if
+    # parent is still h_tiles we'd be calling `layout accordion` on a
+    # root-level child and flipping ROOT to accordion (see gotcha above).
+    # Bail without writing the marker so the next pass retries.
+    local parent_layout
+    parent_layout=$(aerospace list-windows --focused \
+      --format '%{window-parent-container-layout}' 2>/dev/null)
+    if [[ "$parent_layout" == "h_tiles" ]]; then
+      echo "  [$ws] join-with no-op'd (parent still h_tiles); bailing before accordion to avoid root corruption"
+      return 0
+    fi
+
     # Set it to accordion
     aerospace layout accordion 2>/dev/null || true
 
@@ -230,6 +245,20 @@ arrange_workspace() {
       # Scaffold lands rightmost: [..., accordion, scaffold]
       aerospace focus --window-id "$scaffold_wid" 2>/dev/null
       aerospace join-with left 2>/dev/null || true
+
+      # Verify the scaffold actually joined. If parent is still h_tiles,
+      # join-with no-op'd (target window in transient state) — calling
+      # `layout accordion` here would flip ROOT to accordion. Return the
+      # scaffold and bail without the marker so the next pass retries.
+      local scaffold_parent
+      scaffold_parent=$(aerospace list-windows --focused \
+        --format '%{window-parent-container-layout}' 2>/dev/null)
+      if [[ "$scaffold_parent" == "h_tiles" ]]; then
+        echo "  [$ws] scaffold join-with no-op'd; returning scaffold and bailing"
+        aerospace move-node-to-workspace --window-id "$scaffold_wid" Z 2>/dev/null || true
+        return 0
+      fi
+
       aerospace layout accordion 2>/dev/null || true
 
       # Return scaffold — single-child accordion persists
