@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
-# Called by AeroSpace on-window-detected to auto-move new windows into
-# the accordion container on workspaces that have an Orchest sidebar.
+# Called by AeroSpace on-window-detected to integrate new windows into the
+# sidebar+accordion layout on workspaces that have an Orchest sidebar.
 #
-# Tries `move right` to enter the accordion container (always to the
-# right of the sidebar). Checks parent-layout for "accordion" to verify
-# success — the parent==root heuristic can't distinguish the sidebar
-# container from root since both use tiles layout. Falls back to
-# arrange-workspaces when the move fails.
-#
-# The accordion container always exists on workspaces with an Orchest
-# sidebar — arrange-workspaces creates it even for a single window
-# (using join-then-extract, enabled by flatten-containers = false).
+# Always does a full `arrange-workspaces --force` rebuild. Earlier versions
+# tried `aerospace move right` to slot the new window into the existing
+# accordion container, but `move right` at a root-level boundary creates a
+# perpendicular nested container (gotcha documented in arrange-workspaces),
+# which corrupts the layout in ways subsequent runs don't fully repair.
+# The full rebuild path was already the documented fallback — making it
+# the only path is both simpler and correct.
 
 # Don't act during startup-windows. Check FIRST — before sleep and before
 # any aerospace calls. startup-windows creates ~30 windows in quick
@@ -28,7 +26,6 @@ sleep 0.3
 wid="${AEROSPACE_WINDOW_ID}"
 [[ -z "$wid" ]] && exit 0
 
-# Get window info
 info=$(aerospace list-windows --all --format '%{window-id}|%{workspace}|%{window-title}' 2>/dev/null \
   | grep "^${wid}|")
 [[ -z "$info" ]] && exit 0
@@ -47,38 +44,4 @@ has_orchest=$(aerospace list-windows --workspace "$ws" --format '%{window-title}
   | grep -c 'Orchest \[')
 [[ "$has_orchest" -eq 0 ]] && exit 0
 
-# If the workspace was just arranged (< 3s ago), skip incremental moves and
-# go straight to a full rebuild. This handles the startup race: windows that
-# appear after startup-windows removes its lock get a clean rebuild instead
-# of incremental moves that could corrupt the just-set layout.
-marker_file="/tmp/aerospace-arrange-markers/ws-$ws"
-if [[ -f "$marker_file" ]]; then
-  marker_age=$(( $(date +%s) - $(stat -f %m "$marker_file") ))
-  if (( marker_age < 3 )); then
-    arrange-workspaces --force "$ws" >/dev/null 2>&1
-    exit 0
-  fi
-fi
-
-# Move the new window into the accordion container (always to the right of
-# the sidebar). Try move right only — move left risks entering the sidebar
-# container (which has the same layout type as root, making it
-# indistinguishable via the parent==root heuristic). If the window doesn't
-# land in an accordion container, fall back to a full rebuild rather than
-# trying more moves that could corrupt the tree.
-aerospace focus --window-id "$wid" 2>/dev/null
-
-parent=$(aerospace list-windows --focused \
-  --format '%{window-parent-container-layout}' 2>/dev/null)
-if [[ "$parent" == *accordion* ]]; then
-  exit 0
-fi
-
-aerospace move right 2>/dev/null
-parent=$(aerospace list-windows --focused \
-  --format '%{window-parent-container-layout}' 2>/dev/null)
-if [[ "$parent" != *accordion* ]]; then
-  # Either no accordion container exists yet, or the window landed in the
-  # wrong place. Rebuild the layout from scratch (flatten + reconstruct).
-  arrange-workspaces --force "$ws" >/dev/null 2>&1
-fi
+arrange-workspaces --force "$ws" >/dev/null 2>&1

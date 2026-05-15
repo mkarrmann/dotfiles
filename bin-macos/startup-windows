@@ -148,6 +148,50 @@ wait_for_new_window() {
   return 1
 }
 
+# Poll until every WORKSPACES entry has at least one matching window
+# present anywhere. wait_for_new_window in the main loop has a 10s
+# timeout, but remote VS Code can take 30s+ to appear and its title may
+# still be loading after the window exists. arrange-workspaces is
+# destructive (flatten + rebuild) and produces unrecoverable layouts
+# when the expected window set is incomplete — e.g. a workspace with
+# only Orchest + VS Code present hits the single-accordion-window
+# scaffold branch, then a late Ghostty/Chrome arrival triggers
+# auto-accordion and the resulting `move` calls create unwanted nesting.
+# Returns 0 if all entries are satisfied within the timeout, 1 otherwise.
+wait_for_expected_windows() {
+  local timeout="${1:-30}"
+  local deadline=$(($(date +%s) + timeout))
+
+  while [[ $(date +%s) -lt $deadline ]]; do
+    local snapshot all_present=true
+    snapshot=$(snapshot_windows)
+
+    for entry in "${WORKSPACES[@]}"; do
+      IFS='|' read -r _ws type _title rest <<< "$entry"
+      local app_name title_match
+      case "$type" in
+        ghostty) IFS='|' read -r title_match _ <<< "$rest"; app_name="Ghostty" ;;
+        cmux)    title_match="."; app_name="cmux" ;;
+        vscode)  IFS='|' read -r title_match _ <<< "$rest"; app_name="$VSCODE_APP_AEROSPACE" ;;
+        *)       continue ;;
+      esac
+
+      local found
+      found=$(echo "$snapshot" | jq -r \
+        --arg app "$app_name" --arg pat "$title_match" \
+        '[.[] | select(."app-name" == $app and (.["window-title"] | test($pat; "i")))] | length')
+      if [[ "$found" -lt 1 ]]; then
+        all_present=false
+        break
+      fi
+    done
+
+    $all_present && return 0
+    sleep 0.5
+  done
+  return 1
+}
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 # Prevent auto-accordion callback from interfering during startup
@@ -331,6 +375,16 @@ orchest-open-workspaces ${ORCHEST_MODE_FLAG:+$ORCHEST_MODE_FLAG} || {
   ((failures++)) || true
 }
 
+# ── Wait for late-appearing windows ──────────────────────────────────
+
+echo "Waiting up to 30s for any late-appearing windows..."
+if wait_for_expected_windows 30; then
+  echo "All expected windows present."
+else
+  echo "WARNING: some expected windows did not appear within 30s; layout may be incomplete" >&2
+  ((failures++)) || true
+fi
+
 # ── Reconciliation pass ───────────────────────────────────────────────
 # Relocate windows that appeared after their wait_for_new_window timed
 # out, and sweep unmatched Ghostty/VS Code windows from managed
@@ -414,9 +468,8 @@ fi
 # Arrange layouts (tiles | accordion) on managed workspaces
 arrange-workspaces --force $(managed_workspaces)
 
-# No drain sleep needed — auto-accordion checks the arrange marker's age
-# and does a full rebuild (instead of fragile incremental moves) for any
-# window that appears within 3 seconds of the last arrangement.
+# auto-accordion always does a full rebuild for any window that appears
+# after this point, so no drain sleep is needed.
 
 # Focus workspace 1
 aerospace workspace 1 2>/dev/null || true
