@@ -10,6 +10,31 @@
       }
     },
     {
+      "id": "todoist",
+      "module": "/Users/mkarrmann/dev/orchest/packages/plugin-todoist/dist/index.js",
+      "config": {
+        "apiTokenFile": "/Users/mkarrmann/Library/Application Support/@orchest/desktop/todoist_token",
+        "syncIntervalMs": 60000,
+        "staleAfterMs": 180000,
+        "filter": {
+          "projectIds": ["6Wp3m2rmXHgwWj3w"]
+        }
+      },
+      "policy": {
+        "stateChange": {
+          "complete": "confirm",
+          "rename": "deny",
+          "setUrgency": "deny",
+          "setPriority": "deny",
+          "setDuration": "deny",
+          "setWallDuration": "deny",
+          "default": "deny"
+        },
+        "attention": { "maxLevel": "pulse" },
+        "notification": { "rateLimitPerMinute": 5 }
+      }
+    },
+    {
       "id": "orchest-acp-bridge",
       "module": "/Users/mkarrmann/dev/orchest/packages/plugin-acp-bridge/dist/index.js",
       "config": {
