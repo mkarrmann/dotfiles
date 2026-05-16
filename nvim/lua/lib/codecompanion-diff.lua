@@ -5,6 +5,39 @@ local mgr = require("lib.diff-tab").new({
 
 local M = {}
 
+local function read_file_lines(path)
+	if not path or path == "" then
+		return nil
+	end
+	local f = io.open(path, "r")
+	if not f then
+		return nil
+	end
+	local content = f:read("*a")
+	f:close()
+	return vim.split(content, "\n", { plain = true })
+end
+
+local _conn_to_chat = setmetatable({}, { __mode = "k" })
+
+local function chat_bufnr_for_connection(conn)
+	local cached = _conn_to_chat[conn]
+	if cached and vim.api.nvim_buf_is_valid(cached) then
+		return cached
+	end
+	local ok, codecompanion = pcall(require, "codecompanion")
+	if not ok or not codecompanion.chats then
+		return nil
+	end
+	for _, chat in pairs(codecompanion.chats or {}) do
+		if chat.acp_connection == conn and chat.bufnr then
+			_conn_to_chat[conn] = chat.bufnr
+			return chat.bufnr
+		end
+	end
+	return nil
+end
+
 function M.record_write(chat_bufnr, path, before_lines, after_lines)
 	if not chat_bufnr or not path then
 		return
