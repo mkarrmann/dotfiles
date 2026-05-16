@@ -255,6 +255,110 @@ local function remove_keymaps_from_buf(buf)
 	end
 end
 
+--- Tab management ---
+
+close_diff_tab = function(state)
+	if not state.diff_tab then
+		return
+	end
+
+	local current_tab = vim.api.nvim_get_current_tabpage()
+	if
+		current_tab == state.diff_tab
+		and state.work_tab
+		and vim.api.nvim_tabpage_is_valid(state.work_tab)
+	then
+		vim.api.nvim_set_current_tabpage(state.work_tab)
+	end
+
+	for _, win in ipairs({ state.left_win, state.right_win }) do
+		if win and vim.api.nvim_win_is_valid(win) then
+			vim.api.nvim_win_call(win, function()
+				vim.cmd("diffoff")
+			end)
+			pcall(vim.api.nvim_win_del_var, win, "custom_winbar_text")
+		end
+	end
+
+	pcall(function()
+		local tabs = vim.api.nvim_list_tabpages()
+		for i, t in ipairs(tabs) do
+			if t == state.diff_tab then
+				vim.cmd(i .. "tabclose")
+				break
+			end
+		end
+	end)
+
+	state.diff_tab = nil
+	state.left_win = nil
+	state.right_win = nil
+	pcall(function()
+		require("lualine").refresh()
+	end)
+end
+
+local function setup_diff_tab(manager, state, session_id)
+	state.work_tab = vim.api.nvim_get_current_tabpage()
+	vim.cmd("tabnew")
+	state.diff_tab = vim.api.nvim_get_current_tabpage()
+	vim.t.tab_name = "diff"
+	vim.t[manager.opts.diff_tab_var] = session_id
+
+	state.left_win = vim.api.nvim_get_current_win()
+	vim.cmd("vsplit")
+	state.right_win = vim.api.nvim_get_current_win()
+
+	local group_name = manager.opts.name .. "_" .. session_id
+	local group = vim.api.nvim_create_augroup(group_name, { clear = true })
+	vim.api.nvim_create_autocmd("TabClosed", {
+		group = group,
+		callback = function()
+			if not state.diff_tab then
+				return
+			end
+			local tabs = vim.api.nvim_list_tabpages()
+			for _, t in ipairs(tabs) do
+				if t == state.diff_tab then
+					return
+				end
+			end
+			state.diff_tab = nil
+			state.left_win = nil
+			state.right_win = nil
+			pcall(vim.api.nvim_del_augroup_by_name, group_name)
+		end,
+	})
+
+	vim.api.nvim_create_autocmd("BufWinEnter", {
+		group = group,
+		callback = function(args)
+			if not state.diff_tab or vim.api.nvim_get_current_tabpage() ~= state.diff_tab then
+				return
+			end
+			set_keymaps(args.buf, manager, session_id)
+		end,
+	})
+
+	for _, win in ipairs({ state.left_win, state.right_win }) do
+		set_keymaps(vim.api.nvim_win_get_buf(win), manager, session_id)
+	end
+
+	if #state.turn_files == 0 and #state.files > 0 then
+		state.mode = "session"
+	end
+
+	local file_list = get_file_list(state)
+	if #file_list > 0 then
+		state.index = math.min(state.index, #file_list)
+		show_pair(state, state.index)
+	else
+		update_winbar(state)
+	end
+
+	vim.api.nvim_set_current_win(state.left_win)
+end
+
 --- Manager ---
 
 function M.new(opts)
