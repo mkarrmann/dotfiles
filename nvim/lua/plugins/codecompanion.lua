@@ -356,48 +356,253 @@ local function broker_resume_or_fork(action, adapter_name)
   end)
 end
 
-local function dvsc_pick_and_launch(force)
+-- Pick a dvsc selection (interactive or from cache), then invoke `cb`
+-- with `{ mode, model, effort? }`. Extracted from the original
+-- `dvsc_pick_and_launch` so the picker can drive both first-time launches
+-- and in-place adapter swaps without duplicating the cache+prompt logic.
+local function _dvsc_select(force, cb)
   local cache = _dvsc_read_cache()
   if not force and cache.mode and cache.model then
     local kind = _dvsc_reasoning_kind(cache.model)
     if kind == nil or cache.effort then
-      return _dvsc_launch_with(cache.mode, cache.model, cache.effort)
+      return cb(cache)
     end
     -- Cache is for a model that needs an effort but lacks one; fall
-    -- through to a fresh pick rather than launching with no effort.
+    -- through to a fresh pick rather than proceeding with no effort.
   end
   _dvsc_pick(DVSC_MODES, "Harness:", function(mode)
     _dvsc_pick(_models_for_mode(mode), "Model:", function(model)
       local kind = _dvsc_reasoning_kind(model)
       if kind == nil then
-        _dvsc_write_cache({ mode = mode, model = model })
-        return _dvsc_launch_with(mode, model, nil)
+        local sel = { mode = mode, model = model }
+        _dvsc_write_cache(sel)
+        return cb(sel)
       end
       _dvsc_pick(EFFORT_OPTIONS_BY_KIND[kind], "Thinking effort:", function(effort)
-        _dvsc_write_cache({ mode = mode, model = model, effort = effort })
-        _dvsc_launch_with(mode, model, effort)
+        local sel = { mode = mode, model = model, effort = effort }
+        _dvsc_write_cache(sel)
+        cb(sel)
       end)
     end)
   end)
 end
 
--- Restart the ACP session for the chat in the current tab in-place,
--- preserving the chat buffer and its sibling queue input/status
--- windows (closing the chat tears those down and they don't reconstruct
--- cleanly).
+local function dvsc_pick_and_launch(force)
+  _dvsc_select(force, function(sel)
+    _dvsc_launch_with(sel.mode, sel.model, sel.effort)
+  end)
+end
+
+-- Prime per-adapter spawn state for adapters that read `_dvsc.pending`
+-- or otherwise need bookkeeping aligned with a specific chat bufnr.
+-- Called immediately before `Chat:change_adapter` so the new ACP
+-- connection's spawn callback sees the right state.
+local function _prime_adapter_state(bufnr, adapter_name, sel)
+  if adapter_name == "dvsc_core_broker" then
+    local pending = { mode = sel.mode, model = sel.model }
+    local llm_config = _dvsc_build_llm_config(sel.model, sel.effort)
+    if llm_config then pending.llm_config = llm_config end
+    _dvsc.pending = { dvsc = pending }
+    _dvsc.by_chat_bufnr[bufnr] = sel
+  else
+    _dvsc.by_chat_bufnr[bufnr] = nil
+  end
+end
+
+-- Switch the current tab's chat to `adapter_name` in-place, reusing the
+-- chat buffer and its sibling queue input/status windows.
 --
--- Disconnects the existing ACP connection (kills the agent process via
--- `kill -9`), nils `acp_connection` and `acp_session_id` so the next
--- `chat:submit` triggers `ACPHandler:ensure_connection`, which spawns
--- a fresh agent process and a new session. Then `chat:clear()` resets
--- the chat buffer's local state (cycle, header_line, messages,
--- context_items, tool_registry, system prompt) so the next prompt
--- starts from a blank chat.
+-- Built on `Chat:change_adapter`, which (via
+-- `helpers.create_acp_connection` → `async_utils.sync`) sets up the new
+-- ACP connection inside a coroutine so `send_rpc_request` takes the
+-- yielding path. That avoids the `vim.wait()` polling loop that blocks
+-- the editor on first-message session establishment when a connection
+-- is created lazily from `_submit_acp`'s sync call chain.
 --
--- For `dvsc_core_broker` the per-launch selection (mode/model/effort)
--- is re-primed into `_dvsc.pending` from `_dvsc.by_chat_bufnr[bufnr]`
--- — the chat bufnr doesn't change so that map stays valid — so the
--- new adapter spawn sees the same selection without a re-prompt.
+-- Workarounds for upstream behavior:
+--   * `Chat:change_adapter` nils `acp_connection` without disconnecting
+--     it, leaking the agent process. We disconnect explicitly first.
+--   * `Chat:change_adapter` blocks swaps between adapters when there
+--     are tool calls or reasoning blocks in history. Pass `clear=true`
+--     to wipe history first so the swap is permitted (and to start the
+--     new adapter from a blank chat — usually what you want when
+--     switching agents).
+--
+-- For `dvsc_core_broker`, the picker runs through `_dvsc_select`
+-- (interactive or cached based on `force_pick`) and primes
+-- `_dvsc.pending` + `_dvsc.by_chat_bufnr[bufnr]` before the swap so the
+-- new spawn picks up the right mode/model/effort without firing
+-- `CodeCompanionChatOpened` (which is what normally consumes
+-- `_dvsc.launch_queue`).
+--
+-- If no chat exists in the tab, falls through to the normal launch
+-- path (`dvsc_pick_and_launch` for the broker, `tab_chat_open_or_toggle`
+-- otherwise).
+--
+-- @param adapter_name string
+-- @param opts? { clear?: boolean, force_pick?: boolean }
+local function tab_chat_set_adapter(adapter_name, opts)
+  opts = opts or {}
+  local bufnr = vim.t.codecompanion_chat_bufnr
+  local chat = bufnr
+    and vim.api.nvim_buf_is_valid(bufnr)
+    and require("codecompanion").buf_get_chat(bufnr)
+
+  if not chat then
+    if adapter_name == "dvsc_core_broker" then
+      return dvsc_pick_and_launch(opts.force_pick or false)
+    end
+    return tab_chat_open_or_toggle({ adapter = adapter_name })
+  end
+
+  if chat.current_request then
+    return vim.notify(
+      "Chat has a request in progress; cancel before switching adapters.",
+      vim.log.levels.WARN
+    )
+  end
+
+  -- Pre-flight: when keeping history, change_adapter refuses if any
+  -- message has reasoning/tools state and we're crossing adapter
+  -- boundaries. Bail before disconnecting so the chat isn't left in a
+  -- half-broken state.
+  local current_name = chat.adapter and chat.adapter.name
+  if not opts.clear and current_name and current_name ~= adapter_name then
+    local has_state = vim.iter(chat.messages or {}):any(function(m)
+      return m.reasoning ~= nil or (m.tools and m.tools.calls ~= nil)
+    end)
+    if has_state then
+      return vim.notify(
+        string.format(
+          "Cannot switch from %s to %s after tool calls/reasoning. Pass { clear = true } to start fresh.",
+          current_name, adapter_name
+        ),
+        vim.log.levels.WARN
+      )
+    end
+  end
+
+  local function apply(sel)
+    if chat.adapter and chat.adapter.type == "acp" and chat.acp_connection then
+      pcall(function() chat.acp_connection:disconnect() end)
+    end
+    chat.acp_session_id = nil
+    if opts.clear then chat:clear() end
+    _prime_adapter_state(bufnr, adapter_name, sel or {})
+    chat:change_adapter(adapter_name)
+  end
+
+  if adapter_name == "dvsc_core_broker" then
+    return _dvsc_select(opts.force_pick or false, apply)
+  end
+  apply(nil)
+end
+
+-- Interactive picker for the current chat's live ACP session config
+-- options. Reads `chat.acp_connection:get_config_options()` — the
+-- discrete-choice settings the running agent advertises (for dvsc:
+-- mode, model, and any other knobs the wrapper exposes via
+-- `configOptions`; for claude-code: typically just model) — and
+-- applies changes via `session/set_config_option` over the existing
+-- session.
+--
+-- Wrapped in `async_utils.sync(...)()` so `send_rpc_request` takes the
+-- coroutine-yielding path inside `Connection:set_config_option`,
+-- matching the pattern in `helpers.create_acp_connection`. Without
+-- this, the call goes through `vim.wait()` polling and freezes the
+-- editor while the agent applies the change (e.g. dvsc-core reloading
+-- its model snapshot when mode flips).
+--
+-- Limitation: only options the agent actually exposes via
+-- `configOptions` are settable live. Anything the dvsc-core-acp
+-- wrapper bakes into `_meta.broker.client.metadata.dvsc.llm_config` at
+-- session creation (e.g. provider-shaped `reasoning_config` for
+-- thinking effort, if not also re-exposed as a SessionConfigOption)
+-- requires a session restart — `<leader>aG` (force-pick + clear) does
+-- the full re-prompt, `<leader>aZ` reuses the cached selection.
+local function tab_chat_pick_option()
+  local bufnr = vim.t.codecompanion_chat_bufnr
+  local chat = bufnr
+    and vim.api.nvim_buf_is_valid(bufnr)
+    and require("codecompanion").buf_get_chat(bufnr)
+  if not chat then
+    return vim.notify("No CodeCompanion chat in this tab.", vim.log.levels.WARN)
+  end
+  if not chat.adapter or chat.adapter.type ~= "acp" or not chat.acp_connection then
+    return vim.notify("Current chat has no live ACP connection.", vim.log.levels.WARN)
+  end
+
+  local Connection = require("codecompanion.acp")
+  local async_utils = require("codecompanion.utils.async")
+
+  local options = vim.tbl_filter(function(o)
+    return o.type == "select"
+  end, chat.acp_connection:get_config_options() or {})
+
+  if #options == 0 then
+    return vim.notify("Agent exposes no selectable config options.", vim.log.levels.WARN)
+  end
+
+  local function value_label(opt, value_id)
+    for _, v in ipairs(Connection.flatten_config_options(opt.options or {})) do
+      if v.value == value_id then
+        return v.name or v.value
+      end
+    end
+    return value_id or "<unset>"
+  end
+
+  vim.ui.select(options, {
+    prompt = "Config option:",
+    format_item = function(o)
+      return string.format("%s: %s", o.name or o.category or o.id, value_label(o, o.currentValue))
+    end,
+  }, function(opt)
+    if not opt then return end
+
+    local values = Connection.flatten_config_options(opt.options or {})
+    if #values == 0 then
+      return vim.notify(
+        string.format("Option `%s` has no available values.", opt.name or opt.id),
+        vim.log.levels.WARN
+      )
+    end
+
+    vim.ui.select(values, {
+      prompt = string.format("%s:", opt.name or opt.category or opt.id),
+      format_item = function(v)
+        local label = v.name or v.value
+        if v.group then label = string.format("[%s] %s", v.group, label) end
+        if v.value == opt.currentValue then label = label .. "  (current)" end
+        return label
+      end,
+    }, function(value)
+      if not value or value.value == opt.currentValue then return end
+
+      async_utils.sync(function()
+        local ok = chat.acp_connection:set_config_option(opt.id, value.value)
+        vim.schedule(function()
+          if ok then
+            chat:update_metadata()
+            vim.notify(
+              string.format("%s → %s", opt.name or opt.id, value.name or value.value),
+              vim.log.levels.INFO
+            )
+          else
+            vim.notify(
+              string.format("Failed to set %s.", opt.name or opt.id),
+              vim.log.levels.ERROR
+            )
+          end
+        end)
+      end)()
+    end)
+  end)
+end
+
+-- Restart the chat in the current tab on the same adapter, with a
+-- fresh ACP session and blank chat. Equivalent to
+-- `tab_chat_set_adapter(<current>, { clear = true })`.
 local function tab_chat_restart()
   local bufnr = vim.t.codecompanion_chat_bufnr
   local chat = bufnr
@@ -406,29 +611,11 @@ local function tab_chat_restart()
   if not chat then
     return tab_chat_open_or_toggle()
   end
-  if chat.current_request then
-    return vim.notify("Chat has a request in progress; cancel before restarting.", vim.log.levels.WARN)
-  end
-
   local adapter_name = chat.adapter and chat.adapter.name
-
-  if chat.adapter and chat.adapter.type == "acp" and chat.acp_connection then
-    pcall(function() chat.acp_connection:disconnect() end)
+  if not adapter_name then
+    return vim.notify("Cannot determine current adapter for restart.", vim.log.levels.WARN)
   end
-  chat.acp_connection = nil
-  chat.acp_session_id = nil
-
-  if adapter_name == "dvsc_core_broker" then
-    local sel = _dvsc.by_chat_bufnr[bufnr]
-    if sel then
-      local pending = { mode = sel.mode, model = sel.model }
-      local llm_config = _dvsc_build_llm_config(sel.model, sel.effort)
-      if llm_config then pending.llm_config = llm_config end
-      _dvsc.pending = { dvsc = pending }
-    end
-  end
-
-  chat:clear()
+  return tab_chat_set_adapter(adapter_name, { clear = true, force_pick = false })
 end
 
 return {
@@ -1130,13 +1317,21 @@ return {
       { "<leader>av", "<cmd>CodeCompanion<cr>", mode = { "n", "v" }, desc = "CodeCompanion Inline" },
       { "<leader>aq", function() require("lib.codecompanion-queue").focus() end, desc = "Focus CodeCompanion Input" },
       { "<leader>ad", "<cmd>CodeCompanionDoctor<cr>", desc = "CodeCompanion Doctor" },
-      { "<leader>aD", function() tab_chat_open_or_toggle({ adapter = "devmate" }) end, desc = "CodeCompanion Chat (Devmate)" },
-      { "<leader>aS", function() tab_chat_open_or_toggle({ adapter = "dvsc_core" }) end, desc = "CodeCompanion Chat (Dvsc Core)" },
-      { "<leader>ag", function() dvsc_pick_and_launch(false) end, desc = "Dvsc Chat via broker (last config)" },
-      { "<leader>aG", function() dvsc_pick_and_launch(true)  end, desc = "Dvsc Chat via broker (pick config)" },
-      { "<leader>aC", function() tab_chat_open_or_toggle({ adapter = "claude_broker" }) end, desc = "Claude Chat via broker (direct)" },
-      { "<leader>aO", function() tab_chat_open_or_toggle({ adapter = "codex_broker" }) end, desc = "Codex Chat via broker" },
+      { "<leader>aD", function() tab_chat_set_adapter("devmate",          { clear = true }) end, desc = "CodeCompanion Chat (Devmate, fresh)" },
+      { "<leader>aS", function() tab_chat_set_adapter("dvsc_core",        { clear = true }) end, desc = "CodeCompanion Chat (Dvsc Core, fresh)" },
+      { "<leader>ag", function() tab_chat_set_adapter("dvsc_core_broker", { clear = true, force_pick = false }) end, desc = "Dvsc Chat via broker (last config, fresh)" },
+      { "<leader>aG", function() tab_chat_set_adapter("dvsc_core_broker", { clear = true, force_pick = true })  end, desc = "Dvsc Chat via broker (pick config, fresh)" },
+      { "<leader>aC", function() tab_chat_set_adapter("claude_broker",    { clear = true }) end, desc = "Claude Chat via broker (direct, fresh)" },
+      { "<leader>aO", function() tab_chat_set_adapter("codex_broker",     { clear = true }) end, desc = "Codex Chat via broker (fresh)" },
       { "<leader>aZ", tab_chat_restart, desc = "CodeCompanion: restart current tab's chat" },
+      { "<leader>ao", tab_chat_pick_option, desc = "CodeCompanion: change live ACP session config option" },
+      { "<leader>aQ", function()
+          local bufnr = vim.t.codecompanion_chat_bufnr
+          local chat = bufnr
+            and vim.api.nvim_buf_is_valid(bufnr)
+            and require("codecompanion").buf_get_chat(bufnr)
+          if chat then chat:close() end
+        end, desc = "CodeCompanion: close current tab's chat" },
       -- ACP broker resume/fork by bsid. Distinct `<leader>b*` namespace
       -- because `<leader>ar`/`<leader>af` are owned by claude-agent-manager
       -- (Claude Code resume/fork). Defaults to `dvsc_core_broker` adapter
