@@ -153,6 +153,108 @@ local function show_pair(state, index)
 	end)
 end
 
+--- Keymaps ---
+
+local KEYMAPS = { "]f", "[f", "]F", "[F", "gf", "gq", "gm" }
+
+local close_diff_tab
+
+local function set_keymaps(buf, manager, session_id)
+	if not buf or not vim.api.nvim_buf_is_valid(buf) then
+		return
+	end
+
+	vim.keymap.set("n", "]f", function()
+		local s = manager:get_state(session_id)
+		local fl = get_file_list(s)
+		if #fl <= 1 then
+			return
+		end
+		show_pair(s, (s.index % #fl) + 1)
+	end, { buffer = buf, desc = "Next diff file" })
+
+	vim.keymap.set("n", "[f", function()
+		local s = manager:get_state(session_id)
+		local fl = get_file_list(s)
+		if #fl <= 1 then
+			return
+		end
+		show_pair(s, ((s.index - 2) % #fl) + 1)
+	end, { buffer = buf, desc = "Previous diff file" })
+
+	vim.keymap.set("n", "]F", function()
+		local s = manager:get_state(session_id)
+		show_pair(s, #get_file_list(s))
+	end, { buffer = buf, desc = "Last diff file" })
+
+	vim.keymap.set("n", "[F", function()
+		local s = manager:get_state(session_id)
+		show_pair(s, 1)
+	end, { buffer = buf, desc = "First diff file" })
+
+	vim.keymap.set("n", "gf", function()
+		local s = manager:get_state(session_id)
+		local fl = get_file_list(s)
+		local items = {}
+		for i, path in ipairs(fl) do
+			table.insert(items, { index = i, file = path })
+		end
+		vim.ui.select(items, {
+			prompt = "Jump to file:",
+			format_item = function(item)
+				local marker = item.index == s.index and " (current)" or ""
+				return string.format(
+					"[%d/%d] %s%s",
+					item.index,
+					#fl,
+					vim.fn.fnamemodify(item.file, ":."),
+					marker
+				)
+			end,
+		}, function(choice)
+			if choice then
+				show_pair(s, choice.index)
+			end
+		end)
+	end, { buffer = buf, desc = "Jump to diff file" })
+
+	vim.keymap.set("n", "gq", function()
+		close_diff_tab(manager:get_state(session_id))
+	end, { buffer = buf, desc = "Close diff tab" })
+
+	vim.keymap.set("n", "gm", function()
+		local s = manager:get_state(session_id)
+		s.mode = s.mode == "turn" and "session" or "turn"
+		s.index = 1
+		local fl = get_file_list(s)
+		if #fl > 0 then
+			show_pair(s, 1)
+		else
+			if vim.api.nvim_win_is_valid(s.left_win) then
+				vim.api.nvim_win_call(s.left_win, function()
+					vim.cmd("diffoff")
+				end)
+			end
+			if vim.api.nvim_win_is_valid(s.right_win) then
+				vim.api.nvim_win_call(s.right_win, function()
+					vim.cmd("diffoff")
+				end)
+			end
+			update_winbar(s)
+		end
+		vim.notify("Diff mode: " .. s.mode)
+	end, { buffer = buf, desc = "Toggle turn/session mode" })
+end
+
+local function remove_keymaps_from_buf(buf)
+	if not buf or not vim.api.nvim_buf_is_valid(buf) then
+		return
+	end
+	for _, key in ipairs(KEYMAPS) do
+		pcall(vim.keymap.del, "n", key, { buffer = buf })
+	end
+end
+
 --- Manager ---
 
 function M.new(opts)
