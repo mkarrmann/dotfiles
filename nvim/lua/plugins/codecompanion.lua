@@ -381,13 +381,23 @@ local function dvsc_pick_and_launch(force)
   end)
 end
 
--- Restart the chat in the current tab using whatever adapter it was
--- launched with. Closes the current chat first (which disconnects its
--- ACP session and clears `vim.t.codecompanion_chat_bufnr` via the
--- `CodeCompanionChatClosed` autocmd), then re-launches through the
--- same path that originally created it — `dvsc_pick_and_launch` for
--- the dvsc broker adapter (so `_dvsc.pending` gets repopulated from
--- the cached mode/model/effort), `tab_chat_open_or_toggle` otherwise.
+-- Restart the ACP session for the chat in the current tab in-place,
+-- preserving the chat buffer and its sibling queue input/status
+-- windows (closing the chat tears those down and they don't reconstruct
+-- cleanly).
+--
+-- Disconnects the existing ACP connection (kills the agent process via
+-- `kill -9`), nils `acp_connection` and `acp_session_id` so the next
+-- `chat:submit` triggers `ACPHandler:ensure_connection`, which spawns
+-- a fresh agent process and a new session. Then `chat:clear()` resets
+-- the chat buffer's local state (cycle, header_line, messages,
+-- context_items, tool_registry, system prompt) so the next prompt
+-- starts from a blank chat.
+--
+-- For `dvsc_core_broker` the per-launch selection (mode/model/effort)
+-- is re-primed into `_dvsc.pending` from `_dvsc.by_chat_bufnr[bufnr]`
+-- — the chat bufnr doesn't change so that map stays valid — so the
+-- new adapter spawn sees the same selection without a re-prompt.
 local function tab_chat_restart()
   local bufnr = vim.t.codecompanion_chat_bufnr
   local chat = bufnr
@@ -396,17 +406,29 @@ local function tab_chat_restart()
   if not chat then
     return tab_chat_open_or_toggle()
   end
+  if chat.current_request then
+    return vim.notify("Chat has a request in progress; cancel before restarting.", vim.log.levels.WARN)
+  end
+
   local adapter_name = chat.adapter and chat.adapter.name
-  chat:close()
-  vim.schedule(function()
-    if adapter_name == "dvsc_core_broker" then
-      dvsc_pick_and_launch(false)
-    elseif adapter_name then
-      tab_chat_open_or_toggle({ adapter = adapter_name })
-    else
-      tab_chat_open_or_toggle()
+
+  if chat.adapter and chat.adapter.type == "acp" and chat.acp_connection then
+    pcall(function() chat.acp_connection:disconnect() end)
+  end
+  chat.acp_connection = nil
+  chat.acp_session_id = nil
+
+  if adapter_name == "dvsc_core_broker" then
+    local sel = _dvsc.by_chat_bufnr[bufnr]
+    if sel then
+      local pending = { mode = sel.mode, model = sel.model }
+      local llm_config = _dvsc_build_llm_config(sel.model, sel.effort)
+      if llm_config then pending.llm_config = llm_config end
+      _dvsc.pending = { dvsc = pending }
     end
-  end)
+  end
+
+  chat:clear()
 end
 
 return {
