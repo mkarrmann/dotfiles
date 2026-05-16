@@ -409,16 +409,199 @@ function Manager:get_state(session_id)
 	return self._sessions[session_id]
 end
 
-function Manager:add_file(session_id, file_path, opts) end
+function Manager:add_file(session_id, file_path, opts)
+	if not session_id or session_id == "" then
+		return
+	end
+	opts = opts or {}
+	local state = self:get_state(session_id)
+	local data = state.file_data[file_path]
+	local is_new_file = data == nil
 
-function Manager:refresh_after(session_id, file_path, lines) end
+	if not data then
+		data = {}
+		state.file_data[file_path] = data
+	end
 
-function Manager:new_turn(session_id) end
+	local after_lines = opts.after_lines or {}
+	if data.after_buf and vim.api.nvim_buf_is_valid(data.after_buf) then
+		update_scratch_buf(data.after_buf, after_lines)
+	else
+		data.after_buf = self:make_scratch_buf(after_lines, file_path, "after")
+		set_keymaps(data.after_buf, self, session_id)
+	end
 
-function Manager:cleanup(session_id) end
+	if not data.turn_buf or not vim.api.nvim_buf_is_valid(data.turn_buf) then
+		data.turn_buf = self:make_scratch_buf(opts.turn_before_lines or {}, file_path, "turn-before")
+		set_keymaps(data.turn_buf, self, session_id)
+	end
 
-function Manager:toggle() end
+	if not data.session_buf or not vim.api.nvim_buf_is_valid(data.session_buf) then
+		data.session_buf = self:make_scratch_buf(opts.session_before_lines or {}, file_path, "session-before")
+		set_keymaps(data.session_buf, self, session_id)
+	end
 
-function Manager:debug() end
+	if is_new_file then
+		table.insert(state.files, file_path)
+	end
+
+	local in_turn = false
+	for _, f in ipairs(state.turn_files) do
+		if f == file_path then
+			in_turn = true
+			break
+		end
+	end
+	if not in_turn then
+		table.insert(state.turn_files, file_path)
+	end
+
+	if state.diff_tab and vim.api.nvim_tabpage_is_valid(state.diff_tab) then
+		local file_list = get_file_list(state)
+		local current_file = file_list[state.index]
+		if current_file == file_path then
+			show_pair(state, state.index)
+		elseif #file_list == 1 then
+			state.index = 1
+			show_pair(state, 1)
+		else
+			update_winbar(state)
+		end
+	end
+end
+
+function Manager:refresh_after(session_id, file_path, lines)
+	if not session_id or session_id == "" then
+		return
+	end
+	local state = self._sessions[session_id]
+	if not state then
+		return
+	end
+	local data = state.file_data[file_path]
+	if not data or not data.after_buf or not vim.api.nvim_buf_is_valid(data.after_buf) then
+		return
+	end
+	update_scratch_buf(data.after_buf, lines or {})
+	if state.diff_tab and vim.api.nvim_tabpage_is_valid(state.diff_tab) then
+		local file_list = get_file_list(state)
+		local current_file = file_list[state.index]
+		if current_file == file_path then
+			show_pair(state, state.index)
+		end
+	end
+end
+
+function Manager:new_turn(session_id)
+	if not session_id or session_id == "" then
+		return
+	end
+
+	vim.schedule(function()
+		local state = self._sessions[session_id]
+		if not state then
+			return
+		end
+
+		for _, data in pairs(state.file_data) do
+			delete_buf(data.turn_buf)
+			data.turn_buf = nil
+		end
+		state.turn_files = {}
+
+		if
+			state.diff_tab
+			and vim.api.nvim_tabpage_is_valid(state.diff_tab)
+			and state.mode == "turn"
+		then
+			state.index = 1
+			if state.left_win and vim.api.nvim_win_is_valid(state.left_win) then
+				vim.api.nvim_win_call(state.left_win, function()
+					vim.cmd("diffoff")
+				end)
+			end
+			if state.right_win and vim.api.nvim_win_is_valid(state.right_win) then
+				vim.api.nvim_win_call(state.right_win, function()
+					vim.cmd("diffoff")
+				end)
+			end
+			update_winbar(state)
+		end
+	end)
+end
+
+function Manager:cleanup(session_id)
+	if not session_id or session_id == "" then
+		return
+	end
+
+	vim.schedule(function()
+		local state = self._sessions[session_id]
+		if not state then
+			return
+		end
+
+		if state.diff_tab and vim.api.nvim_tabpage_is_valid(state.diff_tab) then
+			close_diff_tab(state)
+		end
+
+		for _, data in pairs(state.file_data) do
+			delete_buf(data.after_buf)
+			delete_buf(data.turn_buf)
+			delete_buf(data.session_buf)
+		end
+
+		self._sessions[session_id] = nil
+		pcall(vim.api.nvim_del_augroup_by_name, self.opts.name .. "_" .. session_id)
+	end)
+end
+
+function Manager:toggle()
+	local session_id = vim.t[self.opts.diff_tab_var] or vim.t[self.opts.tab_var]
+	if not session_id then
+		vim.notify("No " .. self.opts.name .. " session in this tab", vim.log.levels.WARN)
+		return
+	end
+	local state = self:get_state(session_id)
+	if state.diff_tab and vim.api.nvim_tabpage_is_valid(state.diff_tab) then
+		local current_tab = vim.api.nvim_get_current_tabpage()
+		if current_tab == state.diff_tab then
+			if state.work_tab and vim.api.nvim_tabpage_is_valid(state.work_tab) then
+				vim.api.nvim_set_current_tabpage(state.work_tab)
+			end
+		else
+			vim.api.nvim_set_current_tabpage(state.diff_tab)
+			if state.left_win and vim.api.nvim_win_is_valid(state.left_win) then
+				vim.api.nvim_set_current_win(state.left_win)
+			end
+		end
+	else
+		setup_diff_tab(self, state, session_id)
+	end
+end
+
+function Manager:debug()
+	local tab_sid = vim.t[self.opts.tab_var]
+	local lines = { self.opts.name .. " debug:" }
+	table.insert(lines, "  vim.t." .. self.opts.tab_var .. " = " .. vim.inspect(tab_sid))
+	table.insert(lines, "  sessions:")
+	for sid, state in pairs(self._sessions) do
+		local match = (sid == tab_sid) and " (MATCH)" or ""
+		table.insert(
+			lines,
+			string.format(
+				"    %s%s: %d files, %d turn_files",
+				tostring(sid),
+				match,
+				#state.files,
+				#state.turn_files
+			)
+		)
+	end
+	if not next(self._sessions) then
+		table.insert(lines, "    (none — add_file was never called)")
+	end
+	vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO)
+end
 
 return M
