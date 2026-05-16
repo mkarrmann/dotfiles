@@ -1106,6 +1106,57 @@ return {
         return orig_handle_su(self, update)
       end
 
+      -- HACK: Chat:_submit_acp runs the entire ACP submit chain
+      -- (ensure_connection → connect_and_authenticate → ensure_session →
+      -- _establish_session → create_and_send_prompt) on the main thread
+      -- with no coroutine. Connection:send_rpc_request branches on
+      -- coroutine.running(): with a coroutine it yields via async.wait;
+      -- without one it falls back to wait_for_rpc_response, a
+      -- vim.wait(10ms) polling loop that blocks the editor for the
+      -- entire RPC round-trip. On the first message, that's three
+      -- sequential RPCs (initialize, authenticate, session/new) and the
+      -- session/new call is the slow one — for dvsc-core-acp it spans
+      -- the whole dm-core boot (model snapshot load, GK registration,
+      -- broker round-trip), regularly 5-30+ seconds.
+      --
+      -- The fix mirrors helpers.create_acp_connection (used by
+      -- Chat:change_adapter), which wraps the same handler chain in
+      -- async_utils.sync(fn)() so send_rpc_request takes the yielding
+      -- path. Editor stays responsive; subsequent prompts in the same
+      -- session were already async (acp_connection:is_ready() short-
+      -- circuits ensure_connection and the prompt streaming uses
+      -- on_stdout callbacks), so this only affects the first-message
+      -- spin-up.
+      --
+      -- self.current_request is set synchronously to a sentinel before
+      -- the coroutine runs to preserve the `current_request ~= nil`
+      -- guard against double-submit at chat/init.lua:1245. The real
+      -- request handle (with .cancel) replaces it once
+      -- create_and_send_prompt returns. If the user cancels during the
+      -- async window, current_request is already nil by the time the
+      -- coroutine completes; we call handle.cancel() ourselves so the
+      -- in-flight session/prompt doesn't orphan.
+      --
+      -- Upstream fix would be to either wrap _submit_acp in a coroutine
+      -- or change wait_for_rpc_response to never run from the main
+      -- thread for ACP. Remove this patch once that lands.
+      local async_utils = require("codecompanion.utils.async")
+      function Chat:_submit_acp(payload)
+        local sentinel = { _placeholder = true, cancel = function() end }
+        self.current_request = sentinel
+        async_utils.sync(function()
+          local acp_handler = require("codecompanion.interactions.chat.acp.handler").new(self)
+          local handle = acp_handler:submit(payload)
+          if self.current_request == sentinel then
+            self.current_request = handle
+          elseif handle and type(handle.cancel) == "function" then
+            -- Cancel raced the connection setup; the prompt may already
+            -- have been sent. Tell the agent to stop.
+            handle.cancel()
+          end
+        end)()
+      end
+
       -- HACK: CodeCompanion's chat submit path allows a blank user section
       -- after a previous user message. ACP adapters then filter the blank
       -- message out and send `prompt = {}` to the agent. Treat that as a
