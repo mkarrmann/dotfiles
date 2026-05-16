@@ -20,6 +20,8 @@ end
 
 local _conn_to_chat = setmetatable({}, { __mode = "k" })
 
+local _filepath_cache = {}
+
 local function chat_bufnr_for_connection(conn)
 	local cached = _conn_to_chat[conn]
 	if cached and vim.api.nvim_buf_is_valid(cached) then
@@ -99,6 +101,52 @@ function M.setup()
 				end)
 			end
 			return result
+		end
+	end
+
+	-- HACK: monkey-patches codecompanion.interactions.chat.tools.builtin.insert_edit_into_file.diff
+	-- (~/.local/share/nvim/lazy/codecompanion.nvim/lua/codecompanion/interactions/chat/tools/builtin/insert_edit_into_file/diff.lua:131).
+	-- `diff.review` is called unconditionally from insert_edit_into_file/init.lua:164
+	-- before any approval-branch dispatch, so patching here catches all HTTP-mode
+	-- edits (including auto-approved, inline, and display.diff-disabled cases).
+	-- Per design doc §1.4 (write-path chokepoint) and §8.3 option (b): `opts` has
+	-- no `filepath`, so we stash the tool's `args.filepath` from
+	-- `User CodeCompanionToolStarted` (fired by orchestrator.lua:376) keyed by chat
+	-- bufnr, then resolve against the cache here. Fallback resolves `opts.title`
+	-- (the source's display_name) against cwd. If upstream adds `opts.filepath`,
+	-- drop the cache and read it directly.
+	local diff_ok, diff_review = pcall(require, "codecompanion.interactions.chat.tools.builtin.insert_edit_into_file.diff")
+	if diff_ok and type(diff_review) == "table" and type(diff_review.review) == "function" then
+		local cache_group = vim.api.nvim_create_augroup("codecompanion_diff_tool_cache", { clear = true })
+		vim.api.nvim_create_autocmd("User", {
+			pattern = "CodeCompanionToolStarted",
+			group = cache_group,
+			callback = function(args)
+				local data = args.data
+				if not data or not data.bufnr then
+					return
+				end
+				local targs = data.args
+				if type(targs) ~= "table" or type(targs.filepath) ~= "string" then
+					return
+				end
+				_filepath_cache[data.bufnr] = targs.filepath
+			end,
+		})
+
+		local orig_review = diff_review.review
+		function diff_review.review(opts)
+			local chat_bufnr = opts and opts.chat_bufnr
+			local path = (chat_bufnr and _filepath_cache[chat_bufnr])
+				or (opts and opts.title and vim.fn.fnamemodify(opts.title, ":p"))
+			if chat_bufnr and path and opts and opts.from_lines then
+				local from_lines = opts.from_lines
+				local to_lines = opts.to_lines
+				vim.schedule(function()
+					pcall(M.record_write, chat_bufnr, path, from_lines, to_lines)
+				end)
+			end
+			return orig_review(opts)
 		end
 	end
 end
