@@ -28,6 +28,16 @@ function M.run()
 	if not ok2 then
 		error("cleanup threw: " .. tostring(err2))
 	end
+
+	local ok3, err3 = pcall(cc_diff.record_write, nil, "/tmp/x", nil, nil)
+	if not ok3 then
+		error("record_write(nil chat_bufnr) threw: " .. tostring(err3))
+	end
+
+	local ok4, err4 = pcall(cc_diff.record_write, 999, nil, {}, {})
+	if not ok4 then
+		error("record_write(nil path) threw: " .. tostring(err4))
+	end
 end
 
 return M
