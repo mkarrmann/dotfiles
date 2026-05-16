@@ -149,6 +149,30 @@ function M.setup()
 			return orig_review(opts)
 		end
 	end
+
+	local lifecycle_group = vim.api.nvim_create_augroup("codecompanion_diff_lifecycle", { clear = true })
+
+	vim.api.nvim_create_autocmd("User", {
+		pattern = "CodeCompanionRequestStarted",
+		group = lifecycle_group,
+		callback = function(args)
+			local bufnr = args.data and args.data.bufnr
+			if bufnr then
+				M.new_turn(bufnr)
+			end
+		end,
+	})
+
+	vim.api.nvim_create_autocmd("User", {
+		pattern = { "CodeCompanionChatClosed", "CodeCompanionChatCleared" },
+		group = lifecycle_group,
+		callback = function(args)
+			local bufnr = args.data and args.data.bufnr
+			if bufnr then
+				M.cleanup(bufnr)
+			end
+		end,
+	})
 end
 
 return M
