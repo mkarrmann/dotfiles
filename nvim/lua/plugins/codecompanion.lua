@@ -1141,7 +1141,8 @@ return {
       -- or change wait_for_rpc_response to never run from the main
       -- thread for ACP. Remove this patch once that lands.
       local async_utils = require("codecompanion.utils.async")
-      function Chat:_submit_acp(payload)
+      local ChatModule = require("codecompanion.interactions.chat")
+      function ChatModule:_submit_acp(payload)
         local sentinel = { _placeholder = true, cancel = function() end }
         self.current_request = sentinel
         async_utils.sync(function()
