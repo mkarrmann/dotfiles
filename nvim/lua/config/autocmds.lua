@@ -63,6 +63,36 @@ function _G._open_from_terminal(path)
 	vim.cmd.vsplit(vim.fn.fnameescape(path))
 end
 
+-- Strip inherited scrollbind/cursorbind/diff from newly-created windows.
+--
+-- Problem: Vim copies window-local options from the source window to the
+-- new window on `:split`/`:vsplit`. When the source window is a diff pane
+-- (or an hg-blame pane, or any other scrollbind-tagged window), every
+-- subsequent split — terminals, CodeCompanion chats, file buffers — joins
+-- the scrollbind group and scrolls along with the diff. Scrolling one
+-- diff pane then yanks unrelated windows along with it.
+--
+-- All our diff setups (lib/diff-opts.apply, lib/claude-diff.lua,
+-- lib/meta-hg.lua) explicitly set scrollbind/cursorbind on their
+-- intended windows AFTER creating them, so stripping the inherited
+-- values on WinNew does not break them. Vim's builtin `:diffsplit`
+-- and `:diffthis` also re-enable these via `diff=true`'s implied
+-- behavior, so they're unaffected.
+--
+-- Side effect: if you ever want to `:split` and have the new pane join
+-- an existing scrollbind group by inheritance, you'll need to either
+-- run the diff setup explicitly on the new window or call `:set
+-- scrollbind cursorbind` after the split.
+vim.api.nvim_create_autocmd("WinNew", {
+	group = vim.api.nvim_create_augroup("strip_inherited_bind_options", { clear = true }),
+	callback = function()
+		local win = vim.api.nvim_get_current_win()
+		vim.wo[win].scrollbind = false
+		vim.wo[win].cursorbind = false
+		vim.wo[win].diff = false
+	end,
+})
+
 require("lib.autosave").setup()
 
 pcall(require, "config.local")
