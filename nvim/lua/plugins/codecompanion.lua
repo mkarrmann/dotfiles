@@ -1083,6 +1083,28 @@ return {
         return orig_establish(self)
       end
 
+      -- HACK: Connection:set_config_option updates self._config_options but
+      -- never fires the autocmd that per-chat update_metadata listeners are
+      -- bound to (chat/init.lua:316 listens for "CodeCompanionChatACPModeChanged"
+      -- — a pattern upstream registers but never emits, so listeners are
+      -- effectively dead until the next ready_for_input cycle). Fire it here
+      -- so runtime model/effort changes (e.g. codex `gpt-5-codex[high]` via
+      -- /acp_session_options) flow into _G.codecompanion_chat_metadata
+      -- immediately rather than waiting for the next prompt turn.
+      -- Upstream fix: emit this autocmd from _apply_config_options or
+      -- set_config_option. Remove this patch once that lands.
+      local orig_set_config_option = Connection.set_config_option
+      function Connection:set_config_option(config_id, value)
+        local ok = orig_set_config_option(self, config_id, value)
+        if ok and self.session_id then
+          vim.api.nvim_exec_autocmds("User", {
+            pattern = "CodeCompanionChatACPModeChanged",
+            data = { session_id = self.session_id, config_id = config_id, value = value },
+          })
+        end
+        return ok
+      end
+
       -- HACK: PromptBuilder:handle_session_update only branches on the
       -- session/update kinds it knows how to render (agent_message_chunk,
       -- agent_thought_chunk, plan, tool_call, tool_call_update). Other
