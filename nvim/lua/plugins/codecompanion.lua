@@ -381,6 +381,34 @@ local function dvsc_pick_and_launch(force)
   end)
 end
 
+-- Restart the chat in the current tab using whatever adapter it was
+-- launched with. Closes the current chat first (which disconnects its
+-- ACP session and clears `vim.t.codecompanion_chat_bufnr` via the
+-- `CodeCompanionChatClosed` autocmd), then re-launches through the
+-- same path that originally created it — `dvsc_pick_and_launch` for
+-- the dvsc broker adapter (so `_dvsc.pending` gets repopulated from
+-- the cached mode/model/effort), `tab_chat_open_or_toggle` otherwise.
+local function tab_chat_restart()
+  local bufnr = vim.t.codecompanion_chat_bufnr
+  local chat = bufnr
+    and vim.api.nvim_buf_is_valid(bufnr)
+    and require("codecompanion").buf_get_chat(bufnr)
+  if not chat then
+    return tab_chat_open_or_toggle()
+  end
+  local adapter_name = chat.adapter and chat.adapter.name
+  chat:close()
+  vim.schedule(function()
+    if adapter_name == "dvsc_core_broker" then
+      dvsc_pick_and_launch(false)
+    elseif adapter_name then
+      tab_chat_open_or_toggle({ adapter = adapter_name })
+    else
+      tab_chat_open_or_toggle()
+    end
+  end)
+end
+
 return {
   {
     "olimorris/codecompanion.nvim",
@@ -1086,6 +1114,7 @@ return {
       { "<leader>aG", function() dvsc_pick_and_launch(true)  end, desc = "Dvsc Chat via broker (pick config)" },
       { "<leader>aC", function() tab_chat_open_or_toggle({ adapter = "claude_broker" }) end, desc = "Claude Chat via broker (direct)" },
       { "<leader>aO", function() tab_chat_open_or_toggle({ adapter = "codex_broker" }) end, desc = "Codex Chat via broker" },
+      { "<leader>aZ", tab_chat_restart, desc = "CodeCompanion: restart current tab's chat" },
       -- ACP broker resume/fork by bsid. Distinct `<leader>b*` namespace
       -- because `<leader>ar`/`<leader>af` are owned by claude-agent-manager
       -- (Claude Code resume/fork). Defaults to `dvsc_core_broker` adapter
