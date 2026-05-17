@@ -306,9 +306,15 @@ local function _broker_open_chat_with_session(adapter, acp_session_id)
     )
     return false
   end
+  -- Chat.new() dereferences self.buffer_context unconditionally
+  -- (chat/init.lua:504); it must be a real table, not nil. Mirror what
+  -- the CodeCompanion top-level entry points do (init.lua:170-179) and
+  -- build it from the current buffer via context_utils.
+  local buffer_context = require("codecompanion.utils.context").get(vim.api.nvim_get_current_buf())
   require("codecompanion.interactions.chat").new({
     adapter = adapter,
     acp_session_id = acp_session_id,
+    buffer_context = buffer_context,
   })
   return true
 end
