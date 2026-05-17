@@ -1185,7 +1185,15 @@ return {
       -- message out and send `prompt = {}` to the agent. Treat that as a
       -- no-op for normal ACP submits; tool auto-submit and regenerate keep
       -- their existing behavior.
+      --
+      -- Mirrors upstream's permissive condition at chat/init.lua:1264-1267:
+      -- the buffer parser may legitimately return nil after a cancelled turn
+      -- (header_line stale, Context-only `## Me` section) even though the
+      -- in-memory `self.messages` carries an un-acked user message that's
+      -- meant to be re-sent. Bail only when BOTH the buffer and the message
+      -- history are empty of user input.
       local Chat = require("codecompanion.interactions.chat")
+      local helpers = require("codecompanion.interactions.chat.helpers")
       local orig_chat_submit = Chat.submit
       function Chat:submit(opts)
         opts = opts or {}
@@ -1201,8 +1209,9 @@ return {
           if ok_parser then
             ok_message, message_to_submit = pcall(parser.messages, self, self.header_line)
           end
-          local has_user_text = ok_message and message_to_submit ~= nil
-          if not has_user_text then
+          local has_buf_text = ok_message and message_to_submit ~= nil
+          local has_pending_user_msg = helpers.has_user_messages(self.messages or {})
+          if not has_buf_text and not has_pending_user_msg then
             require("codecompanion.utils.log"):warn("[chat::submit] No ACP user message to submit")
             return
           end
