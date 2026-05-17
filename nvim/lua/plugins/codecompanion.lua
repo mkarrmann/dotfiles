@@ -1250,7 +1250,6 @@ return {
       -- the first prompt's usage_update notifications fire before the listener
       -- exists and are dropped.
       require("lib.codecompanion-stats")
-      require("lib.codecompanion-status-panel").setup()
       require("lib.codecompanion-diff").setup()
 
       local ns = vim.api.nvim_create_namespace("codecompanion_inline_indicator")
