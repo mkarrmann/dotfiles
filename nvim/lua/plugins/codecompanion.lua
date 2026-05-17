@@ -1423,14 +1423,15 @@ return {
             and require("codecompanion").buf_get_chat(bufnr)
           if chat then chat:close() end
         end, desc = "CodeCompanion: close current tab's chat" },
-      -- ACP broker resume/fork by bsid. Distinct `<leader>b*` namespace
-      -- because `<leader>ar`/`<leader>af` are owned by claude-agent-manager
-      -- (Claude Code resume/fork). Defaults to `dvsc_core_broker` adapter
-      -- — broker routes by bsid, not by adapter, so this works for any
-      -- claude-code-shaped session (dvsc/claude/devmate). Use codex_broker
-      -- by editing `broker_resume_or_fork` for codex sessions.
-      { "<leader>br", function() broker_resume_or_fork("resume") end, desc = "ACP broker: resume saved session by bsid" },
-      { "<leader>bf", function() broker_resume_or_fork("fork")   end, desc = "ACP broker: fork saved session by bsid" },
+      -- ACP broker resume/fork by bsid. The `<leader>ab*` namespace (b
+      -- for "broker") avoids collision with `<leader>ar`/`<leader>af`,
+      -- which are owned by claude-agent-manager (Claude Code resume/fork).
+      -- Defaults to the `dvsc_core_broker` adapter — broker routes by bsid,
+      -- not by adapter, so this works for any claude-code-shaped session
+      -- (dvsc/claude/devmate). Use codex_broker by editing
+      -- `broker_resume_or_fork` for codex sessions.
+      { "<leader>abr", function() broker_resume_or_fork("resume") end, desc = "ACP broker: resume saved session by bsid" },
+      { "<leader>abf", function() broker_resume_or_fork("fork")   end, desc = "ACP broker: fork saved session by bsid" },
     },
   },
 }
