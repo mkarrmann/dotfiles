@@ -345,15 +345,31 @@ local function update_ui(s)
   refresh_status(s)
 end
 
+-- Append a fresh `## Me` section containing the user's text and point
+-- `chat.header_line` at it before calling submit. The chat's last `## Me`
+-- may already contain stale content (a previous turn's Context block, an
+-- empty section ready_for_input wrote after a stopped request, etc.) — by
+-- always opening a new section we keep `parser.messages(chat, header_line)`
+-- unambiguous: it walks forward from a known-good user header and captures
+-- exactly the text we're submitting.
 local function submit_to_chat(chat_bufnr, text)
   local chat = require("codecompanion").buf_get_chat(chat_bufnr)
   if not chat then
     return
   end
 
-  local lines = vim.split(text, "\n")
-  local line_count = vim.api.nvim_buf_line_count(chat_bufnr)
-  vim.api.nvim_buf_set_lines(chat_bufnr, line_count, line_count, false, lines)
+  local lines = vim.api.nvim_buf_get_lines(chat_bufnr, 0, -1, false)
+  local appended = {}
+  if #lines > 0 and lines[#lines] ~= "" then
+    appended[#appended + 1] = ""
+  end
+  appended[#appended + 1] = "## Me"
+  appended[#appended + 1] = ""
+  local header_line = #lines + #appended -- 1-based line of the `## Me`
+  vim.list_extend(appended, vim.split(text, "\n"))
+
+  vim.api.nvim_buf_set_lines(chat_bufnr, #lines, #lines, false, appended)
+  chat.header_line = header_line
 
   chat:submit()
 end
