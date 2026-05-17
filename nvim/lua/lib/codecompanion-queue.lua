@@ -206,13 +206,50 @@ local function build_wrapped_status(left, right)
   return merged, text
 end
 
-local function needed_status_height(text, width)
-  if text == "" then
-    return 1
+-- Soft-wrapping in Lua. Vim's 'wrap'+'linebreak' won't break inside long
+-- tokens like the bsid (no 'breakat' char inside it), and capping the
+-- window height by a single-line strdisplaywidth/width estimate truncates
+-- the tail of the status when narrow. Pack `merged` into rows of
+-- byte-spans that each fit in `width` display cells, then write one
+-- buffer line per row with per-row highlight positions.
+local STATUS_MAX_ROWS = 6
+
+local function pack_rows(merged, width)
+  width = math.max(1, width)
+  local rows = {}
+  local cur_text, cur_hls, cur_width = "", {}, 0
+
+  local function flush()
+    rows[#rows + 1] = { text = cur_text, hls = cur_hls }
+    cur_text, cur_hls, cur_width = "", {}, 0
   end
-  local usable = math.max(1, width)
-  local display_width = vim.fn.strdisplaywidth(text)
-  return math.max(1, math.ceil(display_width / usable))
+
+  for _, seg in ipairs(merged) do
+    local text, hl = seg[1], seg[2]
+    for ch in text:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+      local cw = vim.fn.strdisplaywidth(ch)
+      if cur_width + cw > width and cur_width > 0 then
+        flush()
+      end
+      local start_col = #cur_text
+      cur_text = cur_text .. ch
+      cur_width = cur_width + cw
+      if hl then
+        local last = cur_hls[#cur_hls]
+        if last and last[1] == hl and last[3] == start_col then
+          last[3] = start_col + #ch
+        else
+          cur_hls[#cur_hls + 1] = { hl, start_col, start_col + #ch }
+        end
+      end
+    end
+  end
+
+  if cur_text ~= "" or #rows == 0 then
+    flush()
+  end
+
+  return rows
 end
 
 local function refresh_status(s)
@@ -221,25 +258,34 @@ local function refresh_status(s)
   end
 
   local left, right = build_status_segments(s)
-  local merged, full_text = build_wrapped_status(left, right)
+  local merged = build_wrapped_status(left, right)
+
+  local width = 80
+  if s.status_winnr and vim.api.nvim_win_is_valid(s.status_winnr) then
+    width = math.max(1, vim.api.nvim_win_get_width(s.status_winnr))
+  end
+
+  local rows = pack_rows(merged, width)
+
+  local lines = {}
+  for i, row in ipairs(rows) do
+    lines[i] = row.text
+  end
 
   vim.bo[s.status_bufnr].modifiable = true
-  vim.api.nvim_buf_set_lines(s.status_bufnr, 0, -1, false, { full_text })
+  vim.api.nvim_buf_set_lines(s.status_bufnr, 0, -1, false, lines)
   vim.bo[s.status_bufnr].modifiable = false
 
   if s.status_winnr and vim.api.nvim_win_is_valid(s.status_winnr) then
-    local width = vim.api.nvim_win_get_width(s.status_winnr)
-    local target_height = math.min(4, needed_status_height(full_text, width))
+    local target_height = math.min(STATUS_MAX_ROWS, math.max(1, #lines))
     vim.api.nvim_win_set_height(s.status_winnr, target_height)
   end
 
   vim.api.nvim_buf_clear_namespace(s.status_bufnr, status_ns, 0, -1)
-  local col = 0
-  for _, seg in ipairs(merged) do
-    if seg[2] then
-      vim.api.nvim_buf_add_highlight(s.status_bufnr, status_ns, seg[2], 0, col, col + #seg[1])
+  for i, row in ipairs(rows) do
+    for _, h in ipairs(row.hls) do
+      vim.api.nvim_buf_add_highlight(s.status_bufnr, status_ns, h[1], i - 1, h[2], h[3])
     end
-    col = col + #seg[1]
   end
 end
 
