@@ -122,6 +122,13 @@ function M.setup()
     pattern = "CodeCompanionRequestFinished",
     callback = function(args) M.on_finished(args.data or {}) end,
   })
+  vim.api.nvim_create_autocmd("User", {
+    pattern = "CodeCompanionChatClosed",
+    callback = function(args)
+      local bufnr = args.data and args.data.bufnr
+      if bufnr then M._pending[bufnr] = nil end
+    end,
+  })
 end
 
 return M

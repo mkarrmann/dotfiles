@@ -1340,7 +1340,7 @@ return {
         callback = function(args)
           local data = args.data or {}
           if data.bufnr then
-            require("lib.codecompanion-queue").on_request_started(data.bufnr)
+            require("lib.codecompanion-queue").on_request_started(data.bufnr, data.id)
           end
 
           local bufnr = vim.api.nvim_get_current_buf()
@@ -1375,7 +1375,7 @@ return {
         callback = function(args)
           local data = args.data or {}
           if data.bufnr then
-            require("lib.codecompanion-queue").on_request_finished(data.bufnr)
+            require("lib.codecompanion-queue").on_request_finished(data.bufnr, data.id, data.status)
           end
           clear()
         end,

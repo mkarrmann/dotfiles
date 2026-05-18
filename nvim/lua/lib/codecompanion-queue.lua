@@ -9,10 +9,14 @@
 -- `plugins/codecompanion.lua` as `vim.b[chat_bufnr].cc_tab_owner`. This
 -- module reads that to dispatch CodeCompanion lifecycle events to the
 -- right per-tab state.
+--
+-- Status-line rendering (segments, wrapping, the 1s tick) lives in
+-- `lib.codecompanion-statusline` and is invoked from here on draft/state
+-- changes.
+
+local statusline = require("lib.codecompanion-statusline")
 
 local M = {}
-
-local status_ns = vim.api.nvim_create_namespace("codecompanion_status")
 
 --- @class CCQueueState
 --- @field bufnr number?         input draft buffer
@@ -24,46 +28,11 @@ local status_ns = vim.api.nvim_create_namespace("codecompanion_status")
 --- @field suppress_unqueue boolean
 --- @field fullscreen boolean
 --- @field request_start_at number?
+--- @field in_flight_id any      request id of the in-flight prompt, or nil
+--- @field last_finished_status string? "success" | "cancelled" | "error" | ...
 
 --- @type table<number, CCQueueState>
 local states = {}
-
-local status_timer = nil
-
-local function setup_highlights()
-  local normal_hl = vim.api.nvim_get_hl(0, { name = "Normal", link = false })
-  local warn_hl = vim.api.nvim_get_hl(0, { name = "DiagnosticWarn", link = false })
-
-  local bg = normal_hl.bg
-  if bg == nil then
-    bg = vim.o.background == "light" and 0xFFFFFF or 0x1E1E2E
-  end
-  local warn_fg = warn_hl.fg or 0xE0A500
-
-  local function blend(c1, c2, alpha)
-    local r1, g1, b1 = math.floor(c1 / 65536) % 256, math.floor(c1 / 256) % 256, c1 % 256
-    local r2, g2, b2 = math.floor(c2 / 65536) % 256, math.floor(c2 / 256) % 256, c2 % 256
-    return math.floor(r1 * alpha + r2 * (1 - alpha)) * 65536
-      + math.floor(g1 * alpha + g2 * (1 - alpha)) * 256
-      + math.floor(b1 * alpha + b2 * (1 - alpha))
-  end
-
-  vim.api.nvim_set_hl(0, "CCQueuedNormal", { bg = blend(warn_fg, bg, 0.1) })
-  vim.api.nvim_set_hl(0, "CCQueuedBorder", { fg = warn_fg })
-end
-
-setup_highlights()
-vim.api.nvim_create_autocmd("ColorScheme", {
-  group = vim.api.nvim_create_augroup("codecompanion_queue_highlights", { clear = true }),
-  callback = setup_highlights,
-})
-
-local function fmt_tokens(n)
-  if n >= 1000 then
-    return string.format("%.1fk", n / 1000)
-  end
-  return tostring(n)
-end
 
 -- Resolve the owning tab for a chat buffer. The owner is stamped on the
 -- buffer at chat-open time; if the stamp is missing or the tab no longer
@@ -85,236 +54,9 @@ local function any_visible()
   return false
 end
 
-local function build_status_segments(s)
-  local left = {}
-  local right = {}
-
-  if not s.chat_bufnr then
-    return left, right
-  end
-
-  local meta = (_G.codecompanion_chat_metadata or {})[s.chat_bufnr] or {}
-
-  local chat = require("codecompanion").buf_get_chat(s.chat_bufnr)
-  local adapter_type = chat and chat.adapter and chat.adapter.type
-  local dvsc_sel
-  if chat and chat.adapter and chat.adapter.name == "dvsc_core_broker" then
-    local sel_for_buf = _G.codecompanion_dvsc_selection_for_buf
-    if type(sel_for_buf) == "function" then
-      dvsc_sel = sel_for_buf(s.chat_bufnr)
-    end
-  end
-  local acp_session_id = (
-    adapter_type == "acp"
-    and chat
-    and chat.acp_connection
-    and chat.acp_connection.session_id
-  ) or nil
-  local acp_usage
-  if acp_session_id then
-    local ok_stats, stats = pcall(require, "lib.codecompanion-stats")
-    if ok_stats then
-      acp_usage = stats.get(acp_session_id)
-    end
-  end
-
-  if s.queued then
-    left[#left + 1] = { " Queued ", "DiagnosticWarn" }
-  else
-    left[#left + 1] = { " Draft ", "Comment" }
-  end
-  left[#left + 1] = { " · ", "Comment" }
-  local adapter_name = (meta.adapter and meta.adapter.name)
-    or (chat and chat.adapter and (chat.adapter.name or chat.adapter.formatted_name))
-    or "unknown"
-  left[#left + 1] = { adapter_name, "Function" }
-  if meta.adapter and meta.adapter.model then
-    left[#left + 1] = { " · ", "Comment" }
-    left[#left + 1] = { meta.adapter.model, "String" }
-  end
-  if meta.cycles and meta.cycles > 0 then
-    left[#left + 1] = { " · ", "Comment" }
-    left[#left + 1] = { "turn " .. meta.cycles, "Number" }
-  end
-
-  if acp_session_id then
-    right[#right + 1] = { acp_session_id, "Constant" }
-  end
-  if meta.mode and meta.mode.name then
-    right[#right + 1] = { meta.mode.name, "String" }
-  elseif dvsc_sel and dvsc_sel.mode then
-    right[#right + 1] = { dvsc_sel.mode, "String" }
-  end
-  if dvsc_sel and dvsc_sel.model then
-    right[#right + 1] = { dvsc_sel.model, "String" }
-  end
-  if dvsc_sel and dvsc_sel.effort then
-    right[#right + 1] = { "effort:" .. tostring(dvsc_sel.effort), "DiagnosticInfo" }
-  end
-  if meta.tools and meta.tools > 0 then
-    right[#right + 1] = { meta.tools .. " tools", "DiagnosticInfo" }
-  end
-  if meta.context_items and meta.context_items > 0 then
-    right[#right + 1] = { meta.context_items .. " ctx", "DiagnosticInfo" }
-  end
-  if meta.tokens and meta.tokens > 0 then
-    right[#right + 1] = { fmt_tokens(meta.tokens) .. " tokens", "DiagnosticInfo" }
-  elseif acp_usage and acp_usage.used and acp_usage.used > 0 then
-    right[#right + 1] = { fmt_tokens(acp_usage.used) .. " tokens", "DiagnosticInfo" }
-  end
-  if acp_usage and acp_usage.used and acp_usage.size and acp_usage.size > 0 then
-    local pct = math.floor(100 * acp_usage.used / acp_usage.size)
-    right[#right + 1] = {
-      string.format("%d%% %s/%s", pct, fmt_tokens(acp_usage.used), fmt_tokens(acp_usage.size)),
-      "DiagnosticInfo",
-    }
-  end
-
-  if s.request_start_at then
-    local elapsed = os.time() - s.request_start_at
-    local hl = "DiagnosticInfo"
-    if elapsed >= 90 then
-      hl = "DiagnosticError"
-    elseif elapsed >= 30 then
-      hl = "DiagnosticWarn"
-    end
-    right[#right + 1] = { string.format("%ds", elapsed), hl }
-  end
-
-  return left, right
-end
-
-local function build_wrapped_status(left, right)
-  local merged = {}
-  for _, seg in ipairs(left) do
-    merged[#merged + 1] = seg
-  end
-  for i, seg in ipairs(right) do
-    if i == 1 and #merged > 0 then
-      merged[#merged + 1] = { " · ", "Comment" }
-    elseif i > 1 then
-      merged[#merged + 1] = { " · ", "Comment" }
-    end
-    merged[#merged + 1] = seg
-  end
-
-  local text = ""
-  for _, seg in ipairs(merged) do
-    text = text .. seg[1]
-  end
-
-  return merged, text
-end
-
--- Soft-wrapping in Lua. Vim's 'wrap'+'linebreak' won't break inside long
--- tokens like the bsid (no 'breakat' char inside it), and capping the
--- window height by a single-line strdisplaywidth/width estimate truncates
--- the tail of the status when narrow. Pack `merged` into rows of
--- byte-spans that each fit in `width` display cells, then write one
--- buffer line per row with per-row highlight positions.
-local STATUS_MAX_ROWS = 6
-
-local function pack_rows(merged, width)
-  width = math.max(1, width)
-  local rows = {}
-  local cur_text, cur_hls, cur_width = "", {}, 0
-
-  local function flush()
-    rows[#rows + 1] = { text = cur_text, hls = cur_hls }
-    cur_text, cur_hls, cur_width = "", {}, 0
-  end
-
-  for _, seg in ipairs(merged) do
-    local text, hl = seg[1], seg[2]
-    for ch in text:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
-      local cw = vim.fn.strdisplaywidth(ch)
-      if cur_width + cw > width and cur_width > 0 then
-        flush()
-      end
-      local start_col = #cur_text
-      cur_text = cur_text .. ch
-      cur_width = cur_width + cw
-      if hl then
-        local last = cur_hls[#cur_hls]
-        if last and last[1] == hl and last[3] == start_col then
-          last[3] = start_col + #ch
-        else
-          cur_hls[#cur_hls + 1] = { hl, start_col, start_col + #ch }
-        end
-      end
-    end
-  end
-
-  if cur_text ~= "" or #rows == 0 then
-    flush()
-  end
-
-  return rows
-end
-
-local function refresh_status(s)
-  if not s.status_bufnr or not vim.api.nvim_buf_is_valid(s.status_bufnr) then
-    return
-  end
-
-  local left, right = build_status_segments(s)
-  local merged = build_wrapped_status(left, right)
-
-  local width = 80
-  if s.status_winnr and vim.api.nvim_win_is_valid(s.status_winnr) then
-    width = math.max(1, vim.api.nvim_win_get_width(s.status_winnr))
-  end
-
-  local rows = pack_rows(merged, width)
-
-  local lines = {}
-  for i, row in ipairs(rows) do
-    lines[i] = row.text
-  end
-
-  vim.bo[s.status_bufnr].modifiable = true
-  vim.api.nvim_buf_set_lines(s.status_bufnr, 0, -1, false, lines)
-  vim.bo[s.status_bufnr].modifiable = false
-
-  if s.status_winnr and vim.api.nvim_win_is_valid(s.status_winnr) then
-    local target_height = math.min(STATUS_MAX_ROWS, math.max(1, #lines))
-    vim.api.nvim_win_set_height(s.status_winnr, target_height)
-  end
-
-  vim.api.nvim_buf_clear_namespace(s.status_bufnr, status_ns, 0, -1)
-  for i, row in ipairs(rows) do
-    for _, h in ipairs(row.hls) do
-      vim.api.nvim_buf_add_highlight(s.status_bufnr, status_ns, h[1], i - 1, h[2], h[3])
-    end
-  end
-end
-
-local function refresh_all()
-  for _, s in pairs(states) do
-    if s.status_bufnr and vim.api.nvim_buf_is_valid(s.status_bufnr) then
-      refresh_status(s)
-    end
-  end
-end
-
-local function stop_status_timer()
-  if status_timer then
-    status_timer:stop()
-    status_timer:close()
-    status_timer = nil
-  end
-end
-
-local function start_status_timer()
-  if status_timer then return end
-  status_timer = vim.uv.new_timer()
-  status_timer:start(0, 1000, vim.schedule_wrap(function()
-    if not any_visible() then
-      stop_status_timer()
-      return
-    end
-    refresh_all()
-  end))
+local function update_ui(s)
+  statusline.apply_winhighlight(s)
+  statusline.refresh(s)
 end
 
 local function get_draft_text(s)
@@ -324,58 +66,6 @@ local function get_draft_text(s)
   local lines = vim.api.nvim_buf_get_lines(s.bufnr, 0, -1, false)
   local text = vim.trim(table.concat(lines, "\n"))
   return text ~= "" and text or nil
-end
-
-local function update_ui(s)
-  local whl_input = ""
-  local whl_status = ""
-
-  if s.queued then
-    whl_input = "Normal:CCQueuedNormal,EndOfBuffer:CCQueuedNormal,WinSeparator:CCQueuedBorder"
-    whl_status = "Normal:CCQueuedNormal,WinSeparator:CCQueuedBorder"
-  end
-
-  if s.winnr and vim.api.nvim_win_is_valid(s.winnr) then
-    vim.wo[s.winnr].winhighlight = whl_input
-  end
-  if s.status_winnr and vim.api.nvim_win_is_valid(s.status_winnr) then
-    vim.wo[s.status_winnr].winhighlight = whl_status
-  end
-
-  refresh_status(s)
-end
-
--- Append a fresh `## Me` section containing the user's text and point
--- `chat.header_line` at it before calling submit. The chat's last `## Me`
--- may already contain stale content (a previous turn's Context block, an
--- empty section ready_for_input wrote after a stopped request, etc.) — by
--- always opening a new section we keep `parser.messages(chat, header_line)`
--- unambiguous: it walks forward from a known-good user header and captures
--- exactly the text we're submitting.
-local function submit_to_chat(chat_bufnr, text)
-  local chat = require("codecompanion").buf_get_chat(chat_bufnr)
-  if not chat then
-    return
-  end
-
-  local lines = vim.api.nvim_buf_get_lines(chat_bufnr, 0, -1, false)
-  local appended = {}
-  if #lines > 0 and lines[#lines] ~= "" then
-    appended[#appended + 1] = ""
-  end
-  appended[#appended + 1] = "## Me"
-  appended[#appended + 1] = ""
-  -- `## Me` is the penultimate entry of `appended`; the trailing "" comes after
-  -- it. parser.messages walks captures from `header_line - 1` (0-indexed), so
-  -- this must point AT the heading or tree-sitter never sees the role node and
-  -- silently captures nothing.
-  local header_line = #lines + #appended - 1
-  vim.list_extend(appended, vim.split(text, "\n"))
-
-  vim.api.nvim_buf_set_lines(chat_bufnr, #lines, #lines, false, appended)
-  chat.header_line = header_line
-
-  chat:submit()
 end
 
 local function clear_draft_buf(s)
@@ -388,27 +78,114 @@ local function clear_draft_buf(s)
   update_ui(s)
 end
 
+-- Append `text` to the chat buffer as a user message and call `chat:submit()`.
+--
+-- parser.messages walks captures from `chat.header_line - 1` (0-indexed),
+-- so `header_line` must be 1-indexed and point AT the `## Me` heading or
+-- tree-sitter never sees the role node and silently captures nothing.
+--
+-- Steady-state path: after every turn CodeCompanion's `ready_for_input`
+-- writes a fresh trailing `## Me`. We reuse that heading and put our text
+-- under it — this matches CodeCompanion's own submit path, keeps any
+-- Context block (turn 1) attached to the user message, and avoids the
+-- visible duplicate `## Me` the previous implementation produced.
+--
+-- Cold-start fallback: if no `## Me` exists at all (chat was just opened
+-- with no Context block, or some odd state), append a fresh section.
+--
+-- Returns true on success, false if the chat went away mid-flight.
+local function submit_to_chat(chat_bufnr, text)
+  local chat = require("codecompanion").buf_get_chat(chat_bufnr)
+  if not chat then return false end
+
+  local lines = vim.api.nvim_buf_get_lines(chat_bufnr, 0, -1, false)
+
+  local last_me_idx
+  for i = #lines, 1, -1 do
+    if lines[i] == "## Me" then
+      last_me_idx = i
+      break
+    end
+  end
+
+  local text_lines = vim.split(text, "\n")
+
+  if last_me_idx then
+    -- Reuse the heading. Replace anything (blank or otherwise) that
+    -- follows it with: a single blank separator, the existing content
+    -- (if any), and then our text. In the common case where ready_for_input
+    -- already wrote an empty trailing `## Me`, the "existing content"
+    -- list is just blank lines, which collapse cleanly.
+    local existing = {}
+    for i = last_me_idx + 1, #lines do
+      existing[#existing + 1] = lines[i]
+    end
+
+    -- Trim trailing blanks from existing so we get a single separator
+    -- before our text.
+    while #existing > 0 and existing[#existing] == "" do
+      existing[#existing] = nil
+    end
+
+    local new_tail = { "" }
+    for _, l in ipairs(existing) do new_tail[#new_tail + 1] = l end
+    if #existing > 0 then new_tail[#new_tail + 1] = "" end
+    for _, l in ipairs(text_lines) do new_tail[#new_tail + 1] = l end
+
+    vim.api.nvim_buf_set_lines(chat_bufnr, last_me_idx, -1, false, new_tail)
+    chat.header_line = last_me_idx
+  else
+    local appended = {}
+    if #lines > 0 and lines[#lines] ~= "" then
+      appended[#appended + 1] = ""
+    end
+    appended[#appended + 1] = "## Me"
+    appended[#appended + 1] = ""
+    local header_line = #lines + #appended - 1
+    for _, l in ipairs(text_lines) do appended[#appended + 1] = l end
+    vim.api.nvim_buf_set_lines(chat_bufnr, #lines, #lines, false, appended)
+    chat.header_line = header_line
+  end
+
+  chat:submit()
+  return true
+end
+
 local function send(t)
   local s = states[t]
   if not s then return end
   local text = get_draft_text(s)
-  if not text then
-    return
-  end
+  if not text then return end
 
   local cc = require("codecompanion")
   local chat = cc.buf_get_chat(s.chat_bufnr)
-  if chat and not chat.current_request then
-    clear_draft_buf(s)
-    submit_to_chat(s.chat_bufnr, text)
-  else
-    s.queued = true
-    s.suppress_unqueue = true
+  if not chat then
+    -- Chat is gone but the input window is still open. Don't queue
+    -- (nothing will ever flush it). Leave the draft so the user can
+    -- copy it.
+    vim.notify("CodeCompanion chat is closed; draft kept in input box.",
+      vim.log.levels.WARN)
+    s.queued = false
     update_ui(s)
-    vim.schedule(function()
-      s.suppress_unqueue = false
-    end)
+    return
   end
+
+  if not s.in_flight_id then
+    -- Submit immediately. Only clear the draft after the buffer mutation
+    -- succeeds, so a failed submit doesn't silently swallow the text.
+    if submit_to_chat(s.chat_bufnr, text) then
+      clear_draft_buf(s)
+    else
+      vim.notify("CodeCompanion submit failed; draft kept.", vim.log.levels.WARN)
+    end
+    return
+  end
+
+  -- Queue for after the in-flight request finishes.
+  s.queued = true
+  s.suppress_unqueue = true
+  update_ui(s)
+  vim.schedule(function() s.suppress_unqueue = false end)
 end
 
 local function toggle_fullscreen(t)
@@ -452,27 +229,26 @@ local function create_input_buf(t)
   return buf
 end
 
-local function create_status_buf()
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.bo[buf].buftype = "nofile"
-  vim.bo[buf].bufhidden = "hide"
-  vim.bo[buf].swapfile = false
-  vim.bo[buf].modifiable = false
-  return buf
-end
-
--- Closes the chat window when its sibling input/status window closes,
--- restricted to the tab that owns those windows.
+-- Closes the chat window when its sibling input/status window closes —
+-- but only when the closing window and the chat window live in the
+-- same tab. The previous implementation looked up the chat with
+-- `bufwinid(chat_bufnr)`, which finds any window showing the chat
+-- buffer; in a `:tab split` scenario that would close the wrong tab's
+-- chat.
 vim.api.nvim_create_autocmd("WinClosed", {
   group = vim.api.nvim_create_augroup("codecompanion_queue_close", { clear = true }),
   callback = function(args)
     local closed = tonumber(args.match)
     if not closed then return end
-    for _, s in pairs(states) do
+    for t, s in pairs(states) do
       if closed == s.winnr or closed == s.status_winnr then
-        local chat_win = s.chat_bufnr and vim.fn.bufwinid(s.chat_bufnr)
-        if chat_win and chat_win ~= -1 then
-          pcall(vim.api.nvim_win_close, chat_win, true)
+        if not s.chat_bufnr then return end
+        -- Find a chat window in the same tab as `t`.
+        for _, win in ipairs(vim.api.nvim_tabpage_list_wins(t)) do
+          if vim.api.nvim_win_get_buf(win) == s.chat_bufnr then
+            pcall(vim.api.nvim_win_close, win, true)
+            return
+          end
         end
       end
     end
@@ -497,13 +273,9 @@ vim.api.nvim_create_autocmd("WinNew", {
 
     local new_win = vim.api.nvim_get_current_win()
     vim.schedule(function()
-      if not vim.api.nvim_win_is_valid(new_win) then
-        return
-      end
+      if not vim.api.nvim_win_is_valid(new_win) then return end
       local chat_win = s.chat_bufnr and vim.fn.bufwinid(s.chat_bufnr)
-      if not chat_win or chat_win == -1 then
-        return
-      end
+      if not chat_win or chat_win == -1 then return end
       if vim.api.nvim_win_get_tabpage(chat_win) ~= vim.api.nvim_win_get_tabpage(new_win) then
         return
       end
@@ -528,11 +300,10 @@ vim.api.nvim_create_autocmd("TabClosed", {
   group = vim.api.nvim_create_augroup("codecompanion_queue_tabclosed", { clear = true }),
   callback = function()
     local valid = {}
-    for _, t in ipairs(vim.api.nvim_list_tabpages()) do
-      valid[t] = true
-    end
+    for _, t in ipairs(vim.api.nvim_list_tabpages()) do valid[t] = true end
     for t, s in pairs(states) do
       if not valid[t] then
+        statusline.stop(s)
         if s.bufnr and vim.api.nvim_buf_is_valid(s.bufnr) then
           pcall(vim.api.nvim_buf_delete, s.bufnr, { force = true })
         end
@@ -541,9 +312,6 @@ vim.api.nvim_create_autocmd("TabClosed", {
         end
         states[t] = nil
       end
-    end
-    if not any_visible() then
-      stop_status_timer()
     end
   end,
 })
@@ -565,7 +333,7 @@ function M.on_chat_opened(chat_bufnr)
     s.bufnr = create_input_buf(t)
   end
   if not s.status_bufnr or not vim.api.nvim_buf_is_valid(s.status_bufnr) then
-    s.status_bufnr = create_status_buf()
+    s.status_bufnr = statusline.create_buf()
   end
 
   s.chat_bufnr = chat_bufnr
@@ -574,9 +342,7 @@ function M.on_chat_opened(chat_bufnr)
   s.fullscreen = false
 
   local chat_winnr = vim.fn.bufwinid(chat_bufnr)
-  if chat_winnr == -1 then
-    return
-  end
+  if chat_winnr == -1 then return end
 
   local prev_win = vim.api.nvim_get_current_win()
   vim.api.nvim_set_current_win(chat_winnr)
@@ -593,29 +359,22 @@ function M.on_chat_opened(chat_bufnr)
   vim.api.nvim_win_set_height(status_win, 1)
   vim.api.nvim_win_set_height(input_win, 8)
 
-  vim.wo[status_win].number = false
-  vim.wo[status_win].relativenumber = false
-  vim.wo[status_win].signcolumn = "no"
-  vim.wo[status_win].winfixheight = true
-  vim.wo[status_win].winfixbuf = true
-  vim.wo[status_win].statusline = " "
+  for _, w in ipairs({ status_win, input_win }) do
+    vim.wo[w].number = false
+    vim.wo[w].relativenumber = false
+    vim.wo[w].signcolumn = "no"
+    vim.wo[w].winfixheight = true
+    vim.wo[w].winfixbuf = true
+    vim.wo[w].statusline = " "
+    vim.wo[w].wrap = true
+    vim.wo[w].linebreak = true
+  end
   vim.wo[status_win].cursorline = false
-  vim.wo[status_win].wrap = true
-  vim.wo[status_win].linebreak = true
-
-  vim.wo[input_win].number = false
-  vim.wo[input_win].relativenumber = false
-  vim.wo[input_win].signcolumn = "no"
-  vim.wo[input_win].winfixheight = true
-  vim.wo[input_win].winfixbuf = true
-  vim.wo[input_win].statusline = " "
-  vim.wo[input_win].wrap = true
-  vim.wo[input_win].linebreak = true
 
   s.winnr = input_win
   s.status_winnr = status_win
   update_ui(s)
-  start_status_timer()
+  statusline.start(s)
 
   -- HACK: On first open, focus the input box. On subsequent opens (toggle
   -- cycles), restore focus to wherever the user was — CodeCompanion's toggle
@@ -632,9 +391,7 @@ function M.on_chat_hidden(chat_bufnr)
   local t = tab_for_chat(chat_bufnr)
   if not t then return end
   local s = states[t]
-  if not s or s.chat_bufnr ~= chat_bufnr then
-    return
-  end
+  if not s or s.chat_bufnr ~= chat_bufnr then return end
   s.fullscreen = false
   if s.status_winnr and vim.api.nvim_win_is_valid(s.status_winnr) then
     vim.api.nvim_win_close(s.status_winnr, true)
@@ -644,16 +401,21 @@ function M.on_chat_hidden(chat_bufnr)
     vim.api.nvim_win_close(s.winnr, true)
   end
   s.winnr = nil
-  if not any_visible() then
-    stop_status_timer()
-  end
+  statusline.stop(s)
 end
 
+-- Auto-flush a queued draft when a request completes successfully.
+-- On cancel/error, drop the queued flag but keep the text in the input
+-- box so the user can decide whether to resend.
 function M.on_chat_done(chat_bufnr)
   local t = tab_for_chat(chat_bufnr)
   if not t then return end
   local s = states[t]
-  if not s or not s.queued or s.chat_bufnr ~= chat_bufnr then
+  if not s or not s.queued or s.chat_bufnr ~= chat_bufnr then return end
+
+  if s.last_finished_status and s.last_finished_status ~= "success" then
+    s.queued = false
+    update_ui(s)
     return
   end
 
@@ -664,17 +426,20 @@ function M.on_chat_done(chat_bufnr)
     return
   end
 
-  clear_draft_buf(s)
-  submit_to_chat(chat_bufnr, text)
+  if submit_to_chat(chat_bufnr, text) then
+    clear_draft_buf(s)
+  else
+    s.queued = false
+    update_ui(s)
+  end
 end
 
 function M.on_chat_closed(chat_bufnr)
   local t = tab_for_chat(chat_bufnr)
   if not t then return end
   local s = states[t]
-  if not s or s.chat_bufnr ~= chat_bufnr then
-    return
-  end
+  if not s or s.chat_bufnr ~= chat_bufnr then return end
+  statusline.stop(s)
   if s.status_winnr and vim.api.nvim_win_is_valid(s.status_winnr) then
     pcall(vim.api.nvim_win_close, s.status_winnr, true)
   end
@@ -688,9 +453,6 @@ function M.on_chat_closed(chat_bufnr)
     pcall(vim.api.nvim_buf_delete, s.status_bufnr, { force = true })
   end
   states[t] = nil
-  if not any_visible() then
-    stop_status_timer()
-  end
 end
 
 -- Returns the input bufnr for the current tab. Used by the cmp slash source.
@@ -716,26 +478,36 @@ function M.chat_bufnr()
   return s and s.chat_bufnr or nil
 end
 
-function M.on_request_started(bufnr)
+-- Lifecycle hooks driven by `User CodeCompanionRequestStarted/Finished`
+-- in plugins/codecompanion.lua. The id-based matching is the canonical
+-- "in flight" signal — `chat.current_request` is unreliable across
+-- cancellation (Chat:stop() clears it synchronously while the finish
+-- handler runs later).
+function M.on_request_started(bufnr, id)
   local t = tab_for_chat(bufnr)
   if not t then return end
   local s = states[t]
-  if not s or s.chat_bufnr ~= bufnr then
-    return
-  end
+  if not s or s.chat_bufnr ~= bufnr then return end
+  s.in_flight_id = id or true
+  s.last_finished_status = nil
   s.request_start_at = os.time()
-  refresh_status(s)
+  statusline.refresh(s)
 end
 
-function M.on_request_finished(bufnr)
+function M.on_request_finished(bufnr, id, status)
   local t = tab_for_chat(bufnr)
   if not t then return end
   local s = states[t]
-  if not s or s.chat_bufnr ~= bufnr then
-    return
+  if not s or s.chat_bufnr ~= bufnr then return end
+  -- Only clear if this is the request we were tracking. Out-of-order
+  -- Finished events (e.g. from a previous cancelled request arriving
+  -- after a newer one started) must not blow away in-flight state.
+  if id == nil or s.in_flight_id == nil or s.in_flight_id == id or s.in_flight_id == true then
+    s.in_flight_id = nil
+    s.request_start_at = nil
+    s.last_finished_status = status
   end
-  s.request_start_at = nil
-  refresh_status(s)
+  statusline.refresh(s)
 end
 
 function M.focus()

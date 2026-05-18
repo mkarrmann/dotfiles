@@ -34,6 +34,21 @@ function M.get(session_id)
   return M._by_session[session_id]
 end
 
+-- Evict the cache entry for a closed chat. The CodeCompanionChatClosed
+-- event fires before chat.acp_connection is torn down, so we can still
+-- resolve session_id from the chat object.
+vim.api.nvim_create_autocmd("User", {
+  pattern = "CodeCompanionChatClosed",
+  callback = function(args)
+    local bufnr = args.data and args.data.bufnr
+    if not bufnr then return end
+    local ok, chat = pcall(function() return require("codecompanion").buf_get_chat(bufnr) end)
+    if not ok or not chat then return end
+    local sid = chat.acp_connection and chat.acp_connection.session_id
+    if sid then M._by_session[sid] = nil end
+  end,
+})
+
 function M.context_pct(session_id)
   local s = M.get(session_id)
   if not s or not s.size or s.size == 0 then return nil end
