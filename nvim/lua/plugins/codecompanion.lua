@@ -311,11 +311,52 @@ local function _broker_open_chat_with_session(adapter, acp_session_id)
   -- the CodeCompanion top-level entry points do (init.lua:170-179) and
   -- build it from the current buffer via context_utils.
   local buffer_context = require("codecompanion.utils.context").get(vim.api.nvim_get_current_buf())
-  require("codecompanion.interactions.chat").new({
+  local chat = require("codecompanion.interactions.chat").new({
     adapter = adapter,
     acp_session_id = acp_session_id,
     buffer_context = buffer_context,
   })
+
+  -- The patched ACPHandler:ensure_connection (below) pre-sets `session_id`
+  -- on the Connection so the broker treats this as a resume. That makes
+  -- `ACPHandler:ensure_session` early-exit at handler.lua:103-105 — so the
+  -- actual `session/load(bsid)` RPC is never sent and the persistence
+  -- replay events have no consumer (acp/init.lua:631-635 silently drops
+  -- SESSION_UPDATE notifications when `_loading_session` is unset and no
+  -- `_active_prompt` exists). Trigger the proper load explicitly, mirroring
+  -- upstream's /resume slash command at slash_commands/builtin/resume.lua:
+  -- collect updates synchronously during load_session, then hand them to
+  -- `acp.render.restore_session` to repaint the chat buffer.
+  local function try_load(attempts)
+    local conn = chat.acp_connection
+    if conn and conn:is_ready() then
+      local updates = {}
+      local ok = conn:load_session(acp_session_id, {
+        on_session_update = function(u) table.insert(updates, u) end,
+      })
+      if not ok then
+        vim.notify("acp-broker: load_session failed for " .. acp_session_id, vim.log.levels.ERROR)
+        return
+      end
+      require("codecompanion.interactions.chat.acp.commands").link_buffer_to_session(
+        chat.bufnr, conn.session_id
+      )
+      require("codecompanion.interactions.chat.acp.render").restore_session(chat, updates)
+      require("codecompanion.utils").fire("ACPChatRestored", {
+        bufnr = chat.bufnr,
+        id = chat.id,
+        session_id = conn.session_id,
+      })
+      return
+    end
+    if attempts <= 0 then
+      vim.notify("acp-broker: timed out waiting for ACP connection", vim.log.levels.ERROR)
+      return
+    end
+    vim.defer_fn(function() try_load(attempts - 1) end, 100)
+  end
+  vim.defer_fn(function() try_load(100) end, 50)
+
   return true
 end
 
