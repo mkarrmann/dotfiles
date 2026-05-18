@@ -365,7 +365,11 @@ local function submit_to_chat(chat_bufnr, text)
   end
   appended[#appended + 1] = "## Me"
   appended[#appended + 1] = ""
-  local header_line = #lines + #appended -- 1-based line of the `## Me`
+  -- `## Me` is the penultimate entry of `appended`; the trailing "" comes after
+  -- it. parser.messages walks captures from `header_line - 1` (0-indexed), so
+  -- this must point AT the heading or tree-sitter never sees the role node and
+  -- silently captures nothing.
+  local header_line = #lines + #appended - 1
   vim.list_extend(appended, vim.split(text, "\n"))
 
   vim.api.nvim_buf_set_lines(chat_bufnr, #lines, #lines, false, appended)

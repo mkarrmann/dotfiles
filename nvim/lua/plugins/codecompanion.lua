@@ -1197,9 +1197,17 @@ return {
       -- (header_line stale, Context-only `## Me` section) even though the
       -- in-memory `self.messages` carries an un-acked user message that's
       -- meant to be re-sent. Bail only when BOTH the buffer and the message
-      -- history are empty of user input.
+      -- history are empty of pending user input.
+      --
+      -- The "pending" qualifier matters: upstream's `helpers.has_user_messages`
+      -- only checks `msg.role == USER_ROLE` and accepts any acked user message
+      -- from a prior turn, which made this guard a no-op once the chat had any
+      -- history. We need `_meta.sent == false` (the same flag `label_sent_items`
+      -- toggles when an agent ack arrives) so the guard actually fires on a
+      -- truly empty submit and only falls through for the cancel-resend case
+      -- that motivated this branch.
       local Chat = require("codecompanion.interactions.chat")
-      local helpers = require("codecompanion.interactions.chat.helpers")
+      local cc_config = require("codecompanion.config")
       local orig_chat_submit = Chat.submit
       function Chat:submit(opts)
         opts = opts or {}
@@ -1216,7 +1224,11 @@ return {
             ok_message, message_to_submit = pcall(parser.messages, self, self.header_line)
           end
           local has_buf_text = ok_message and message_to_submit ~= nil
-          local has_pending_user_msg = helpers.has_user_messages(self.messages or {})
+          local has_pending_user_msg = vim.iter(self.messages or {}):any(function(m)
+            return m.role == cc_config.constants.USER_ROLE
+              and m._meta and not m._meta.sent
+              and type(m.content) == "string" and m.content ~= ""
+          end)
           if not has_buf_text and not has_pending_user_msg then
             require("codecompanion.utils.log"):warn("[chat::submit] No ACP user message to submit")
             return
