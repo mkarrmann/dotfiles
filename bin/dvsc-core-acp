@@ -63,7 +63,11 @@ if [[ -z "$NODE" ]]; then
   exit 1
 fi
 
-echo "node=$NODE script=$SCRIPT" >&2
+# Defensive default for broker-spawned wrappers: the broker may have been
+# started from an environment that did not source ~/.localrc.
+export DM_AUTOCOMPACT_PCT_OVERRIDE="${DM_AUTOCOMPACT_PCT_OVERRIDE:-99}"
+
+echo "node=$NODE script=$SCRIPT DM_AUTOCOMPACT_PCT_OVERRIDE=$DM_AUTOCOMPACT_PCT_OVERRIDE" >&2
 echo "=== begin dvsc-core-acp output ===" >&2
 
 exec "$NODE" "$SCRIPT" "$@"
