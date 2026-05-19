@@ -962,9 +962,10 @@ local function diff_split_load_pair(session, pair)
   end
 
   local escaped_file = vim.fn.shellescape(pair.file)
+  local cwd_flag = "--cwd " .. vim.fn.shellescape(session.repo_root) .. " "
 
   local old_content = vim.fn.systemlist(
-    "hg cat -r " .. session.parent_rev .. " " .. escaped_file
+    "hg " .. cwd_flag .. "cat -r " .. session.parent_rev .. " " .. escaped_file
   )
   local old_ok = vim.v.shell_error == 0
 
@@ -983,7 +984,7 @@ local function diff_split_load_pair(session, pair)
 
   if not is_live then
     local new_content = vim.fn.systemlist(
-      "hg cat -r " .. session.commit.hash .. " " .. escaped_file
+      "hg " .. cwd_flag .. "cat -r " .. session.commit.hash .. " " .. escaped_file
     )
     local new_ok = vim.v.shell_error == 0
     if not old_ok and not new_ok then
