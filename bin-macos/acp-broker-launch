@@ -24,6 +24,14 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$HOME/bin:$PATH"
 export ACP_BROKER_ID="$(hostname -s)"
 export ACP_BROKER_SQLITE_PERSISTENCE_ADDR="127.0.0.1:7847"
 
+# Defensive: remove a stale UDS file left behind by a previous broker that
+# died without running Drop (SIGKILL/launchd KeepAlive kill). Without this,
+# every restart fails with EADDRINUSE. launchd serializes the relaunch so
+# this can't race a live listener. Mirrors the ExecStartPre in the devvm
+# systemd unit (~/dotfiles/systemd/acp-broker.service). Remove once
+# acp-broker's `UdsListener::bind` retries after a connect-probe.
+rm -f /tmp/acp-broker.sock
+
 # Socket path matches the fallback in
 # ~/dotfiles/nvim/lua/plugins/codecompanion.lua:
 #   vim.env.ACP_BROKER_SOCKET or ((vim.env.XDG_RUNTIME_DIR or "/tmp") .. "/acp-broker.sock")

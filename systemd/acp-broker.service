@@ -25,6 +25,13 @@ Type=simple
 Environment=ACP_BROKER_ID=%l
 Environment=ACP_BROKER_SQLITE_PERSISTENCE_ADDR=127.0.0.1:7847
 StateDirectory=acp-broker
+# Defensive: remove a stale UDS file left behind by a previous broker that
+# died without running Drop (SIGKILL/OOM/hard kill). Without this, every
+# restart fails with EADDRINUSE and `Restart=always` loops forever. Safe
+# because systemd serializes Stop -> ExecStartPre -> ExecStart, so the
+# previous broker is fully terminated by the time this runs. Remove once
+# acp-broker's `UdsListener::bind` retries after a connect-probe.
+ExecStartPre=/bin/rm -f %t/acp-broker.sock
 ExecStart=%h/.cargo/bin/acp-broker --declare-agent name=claude,cmd=%h/bin/claude-agent-acp,default=true --declare-agent name=dvsc-core,cmd=%h/bin/dvsc-core-acp --socket %t/acp-broker.sock --per-session-agents --allow-agent-spawn
 Restart=always
 RestartSec=5
