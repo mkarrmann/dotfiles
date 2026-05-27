@@ -45,27 +45,70 @@ workspace_fingerprint() {
   echo "$windows" | jq -r '.[] | "\(.["window-id"]):\(.["app-name"])"' | sort | md5 -q
 }
 
+# Try to focus a window by ID and verify focus actually landed there.
+# `aerospace focus --window-id` can silently land focus on a *different*
+# window when the target is phantom/transient (observed with cmux
+# occasionally reporting `window-id 0`, which AeroSpace treats as a
+# sentinel — focusing it from various neighbors lands on whichever window
+# AeroSpace picks, not 0). Such windows also break spatial navigation
+# (`focus left/right` wraps past them even with `--boundaries-action stop`)
+# and confuse join-with/move. The only reliable test is to attempt the
+# focus and verify the result.
+focus_verified() {
+  local wid="$1"
+  aerospace focus --window-id "$wid" 2>/dev/null || true
+  local actual
+  actual=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+  [[ "$actual" == "$wid" ]]
+}
+
+# Move any window on $ws that fails focus_verified to workspace Z.
+# Returns the number of windows swept (via stdout).
+sweep_unfocusable() {
+  local ws="$1" windows_json="$2"
+  local swept=0 wid
+  aerospace workspace "$ws" 2>/dev/null || true
+  for wid in $(echo "$windows_json" | jq -r '.[]["window-id"]'); do
+    if ! focus_verified "$wid"; then
+      echo "  [$ws] sweeping unfocusable window $wid → Z" >&2
+      aerospace move-node-to-workspace --window-id "$wid" Z 2>/dev/null || true
+      swept=$(( swept + 1 ))
+    fi
+  done
+  echo "$swept"
+}
+
 # Walk left-to-right from the currently focused window to discover
 # the full spatial order. Results stored in global _spatial array.
 #
-# `aerospace focus left/right` defaults to --boundaries-action
-# wrap-around-the-workspace, which makes the n==p terminator never trip
-# (focus always changes). Pass `stop` explicitly so focus holds at the
-# boundary.
+# Two terminator conditions, both needed:
+#   1. n == p — focus held at boundary (works when --boundaries-action stop
+#      engages cleanly).
+#   2. n already seen — focus cycled back. AeroSpace's `stop` action does
+#      not always engage if a phantom/unfocusable window survived the
+#      sweep_unfocusable pass. Cycle detection is the final backstop.
 discover_spatial_order() {
   _spatial=()
+  local p n seen
+  # Walk to leftmost
   while true; do
-    local p; p=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+    p=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
     aerospace focus --boundaries-action stop left 2>/dev/null
-    local n; n=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+    n=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
     [[ "$n" == "$p" ]] && break
   done
-  _spatial+=($(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null))
+  _spatial+=("$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)")
+  # Walk right collecting; break on stop OR cycle
   while true; do
-    local p; p=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+    p=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
     aerospace focus --boundaries-action stop right 2>/dev/null
-    local n; n=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+    n=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
     [[ "$n" == "$p" ]] && break
+    seen=false
+    for w in "${_spatial[@]}"; do
+      [[ "$w" == "$n" ]] && { seen=true; break; }
+    done
+    $seen && break
     _spatial+=("$n")
   done
 }
@@ -79,6 +122,17 @@ arrange_workspace() {
   total=$(echo "$windows" | jq 'length')
 
   [[ "$total" -lt 2 ]] && return 0
+
+  # Sweep phantom/unfocusable windows to Z before computing the layout.
+  # These break spatial navigation, join-with, and move commands. If any
+  # were swept, re-read the window list and re-check the early-exit.
+  local swept
+  swept=$(sweep_unfocusable "$ws" "$windows")
+  if [[ "$swept" -gt 0 ]]; then
+    windows=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null) || return 0
+    total=$(echo "$windows" | jq 'length')
+    [[ "$total" -lt 2 ]] && return 0
+  fi
 
   # Skip if the window set hasn't changed since last arrangement
   local fingerprint marker_file
@@ -156,7 +210,18 @@ arrange_workspace() {
   # windows are on the right. Swaps accordion windows rightward past sidebar
   # windows — an interior swap between flat root-level siblings.
   # Multiple passes handle cascading cases (e.g. [acc, acc, sidebar]).
+  #
+  # Capped at sidebar_count * accordion_count (bubble-sort worst case) so
+  # a silently-no-op'd `move right` can't infinite-loop the script.
+  local swap_max=$(( sidebar_count * accordion_count ))
+  local swap_iter=0
+  local swap_overflow=false
   while true; do
+    if [[ "$swap_iter" -ge "$swap_max" ]]; then
+      swap_overflow=true
+      break
+    fi
+    swap_iter=$(( swap_iter + 1 ))
     aerospace focus --window-id "$first_sidebar" 2>/dev/null
     discover_spatial_order
     echo "    swap scan: ${_spatial[*]}"
@@ -175,6 +240,10 @@ arrange_workspace() {
     done
     $did_swap || break
   done
+  if $swap_overflow; then
+    echo "  [$ws] swap budget ($swap_max) exhausted — bailing without marker so next pass retries"
+    return 0
+  fi
 
   # Final spatial discovery after sorting
   aerospace focus --window-id "$first_sidebar" 2>/dev/null
