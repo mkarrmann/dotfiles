@@ -66,8 +66,10 @@ fi
 # Defensive default for broker-spawned wrappers: the broker may have been
 # started from an environment that did not source ~/.localrc.
 export DM_AUTOCOMPACT_PCT_OVERRIDE="${DM_AUTOCOMPACT_PCT_OVERRIDE:-99}"
+# Likewise, keep dvsc-core in no-approval mode unless explicitly overridden.
+export DVSC_AUTO_RUN_MODE="${DVSC_AUTO_RUN_MODE:-autoRunAll}"
 
-echo "node=$NODE script=$SCRIPT DM_AUTOCOMPACT_PCT_OVERRIDE=$DM_AUTOCOMPACT_PCT_OVERRIDE" >&2
+echo "node=$NODE script=$SCRIPT DM_AUTOCOMPACT_PCT_OVERRIDE=$DM_AUTOCOMPACT_PCT_OVERRIDE DVSC_AUTO_RUN_MODE=$DVSC_AUTO_RUN_MODE" >&2
 echo "=== begin dvsc-core-acp output ===" >&2
 
 exec "$NODE" "$SCRIPT" "$@"

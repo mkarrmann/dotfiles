@@ -42,5 +42,18 @@
     <string>/Users/mkarrmann/.local/state/persistence-server/stdout.log</string>
     <key>StandardErrorPath</key>
     <string>/Users/mkarrmann/.local/state/persistence-server/stderr.log</string>
+
+    <!-- Verbose tracing — see the matching block in
+         ~/dotfiles/systemd/acp-broker.service. Persistence-server uses
+         its own crate names (persistence_server, persistence_server_protocol);
+         keep all *_persistence* crates verbose so broker-side and server-side
+         capture/upload events log at the same level. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>RUST_LOG</key>
+      <string>info,persistence_server=debug,persistence_server_protocol=debug,sqlite_persistence_plugin=debug</string>
+      <key>RUST_BACKTRACE</key>
+      <string>1</string>
+    </dict>
   </dict>
 </plist>

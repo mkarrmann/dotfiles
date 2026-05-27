@@ -24,6 +24,22 @@ After=network.target
 Type=simple
 Environment=ACP_BROKER_ID=%l
 Environment=ACP_BROKER_SQLITE_PERSISTENCE_ADDR=127.0.0.1:7847
+Environment=DVSC_AUTO_RUN_MODE=autoRunAll
+# Verbose tracing across every broker-internal crate (broker core, plugin
+# SDK, sqlite-persistence-plugin/persistence-plugin, persistence-server
+# client) so resume/load issues can be diagnosed from the log alone
+# without rebuilding. Notable INFO-level events become visible: dispatch
+# ladder branches in `client_link::dispatch_load_session`, `try_resume`
+# return values, `replay_session_history_to_client`, agent capability
+# lookups, capture/upload pipeline. `info` is kept for everything else
+# to avoid spamming hyper/tokio/tonic internals.
+# To temporarily raise to trace for a single crate at runtime:
+#   systemctl --user set-environment RUST_LOG=acp_broker=trace,...
+#   systemctl --user restart acp-broker
+Environment=RUST_LOG=info,acp_broker=debug,acp_broker_plugin_sdk=debug,sqlite_persistence_plugin=debug,persistence_plugin=debug,persistence_server_protocol=debug,ralph_loop_plugin=debug
+# Backtraces in panic logs — invaluable when the broker crashes mid-RPC
+# and the only surviving artifact is server.log.
+Environment=RUST_BACKTRACE=1
 StateDirectory=acp-broker
 # Defensive: remove a stale UDS file left behind by a previous broker that
 # died without running Drop (SIGKILL/OOM/hard kill). Without this, every

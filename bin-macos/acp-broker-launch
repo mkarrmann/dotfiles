@@ -24,6 +24,12 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$HOME/bin:$PATH"
 export ACP_BROKER_ID="$(hostname -s)"
 export ACP_BROKER_SQLITE_PERSISTENCE_ADDR="127.0.0.1:7847"
 
+# Verbose tracing — mirrors the devvm systemd unit's RUST_LOG. See the
+# comment there (~/dotfiles/systemd/acp-broker.service) for the rationale
+# and the per-crate trace-bump recipe.
+export RUST_LOG="info,acp_broker=debug,acp_broker_plugin_sdk=debug,sqlite_persistence_plugin=debug,persistence_plugin=debug,persistence_server_protocol=debug,ralph_loop_plugin=debug"
+export RUST_BACKTRACE=1
+
 # Defensive: remove a stale UDS file left behind by a previous broker that
 # died without running Drop (SIGKILL/launchd KeepAlive kill). Without this,
 # every restart fails with EADDRINUSE. launchd serializes the relaunch so
