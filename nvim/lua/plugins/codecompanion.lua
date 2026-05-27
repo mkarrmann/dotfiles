@@ -647,6 +647,102 @@ local function tab_chat_pick_option()
   end)
 end
 
+-- Compact the current ACP dvsc chat via the wrapper's `dm-core/compact`
+-- extension method, then prune the local transcript so the visible chat
+-- better matches the agent's compacted server-side context.
+--
+-- Why local pruning is required:
+-- - ACP adapters are stateful; future prompts send only unsent user messages,
+--   so the compact RPC itself is safe.
+-- - But CodeCompanion otherwise keeps showing the full pre-compact transcript,
+--   which drifts from the agent's retained context.
+-- - We cannot rebuild a faithful compact summary locally because the ACP
+--   ext-method returns only `{ compacted = bool }`, not the summary text.
+--   Instead we keep durable context messages (system/rules/file/editor
+--   context) plus a visible marker that the conversation was compacted.
+local function tab_chat_compact()
+  local bufnr = vim.t.codecompanion_chat_bufnr
+  local chat = bufnr
+    and vim.api.nvim_buf_is_valid(bufnr)
+    and require("codecompanion").buf_get_chat(bufnr)
+  if not chat then
+    return vim.notify("No CodeCompanion chat in this tab.", vim.log.levels.WARN)
+  end
+  if not chat.adapter or chat.adapter.type ~= "acp" or not chat.acp_connection then
+    return vim.notify("Current chat has no live ACP connection.", vim.log.levels.WARN)
+  end
+  if chat.current_request then
+    return vim.notify("Wait for the current request to finish before compacting.", vim.log.levels.WARN)
+  end
+
+  local adapter_name = chat.adapter.name
+  if adapter_name ~= "dvsc_core" and adapter_name ~= "dvsc_core_broker" then
+    return vim.notify(
+      string.format("Compact is only wired for dvsc ACP chats; current adapter is `%s`.", adapter_name),
+      vim.log.levels.WARN
+    )
+  end
+
+  local async_utils = require("codecompanion.utils.async")
+  local cc_config = require("codecompanion.config")
+  local parser = require("codecompanion.interactions.chat.parser")
+  local tags = require("codecompanion.interactions.shared.tags")
+
+  local keep_tags = {
+    [tags.EDITOR_CONTEXT] = true,
+    [tags.RULES] = true,
+    [tags.FILE] = true,
+  }
+
+  async_utils.sync(function()
+    local resp = chat.acp_connection:send_rpc_request("dm-core/compact", {
+      sessionId = chat.acp_connection.session_id,
+      triggerType = "CommandButton",
+    })
+
+    vim.schedule(function()
+      if not resp or not resp.compacted then
+        return vim.notify("ACP compact was not performed.", vim.log.levels.WARN)
+      end
+
+      local preserved = {}
+      for _, msg in ipairs(chat.messages or {}) do
+        if msg.role == cc_config.constants.SYSTEM_ROLE then
+          preserved[#preserved + 1] = msg
+        elseif msg.role == cc_config.constants.USER_ROLE then
+          local tag = msg._meta and msg._meta.tag
+          if tag and keep_tags[tag] then
+            preserved[#preserved + 1] = msg
+          end
+        end
+      end
+
+      chat.messages = preserved
+      chat:add_message({
+        role = cc_config.constants.LLM_ROLE,
+        content = "[dm-core] Conversation compacted on the agent. Earlier transcript hidden locally; continue from here.",
+      }, {
+        _meta = { tag = tags.COMPACT_SUMMARY },
+      })
+
+      -- `UI:render` mutates the messages table it receives while stripping the
+      -- final draft line, so render from a deep copy rather than `chat.messages`.
+      chat.ui:render(vim.deepcopy(chat.buffer_context), vim.deepcopy(chat.messages), {
+        stop_context_insertion = true,
+      })
+      chat:set_system_prompt()
+
+      local header_line = parser.headers(chat, chat.chat_parser)
+      chat.header_line = header_line and (header_line + 1) or 1
+      chat._last_role = cc_config.constants.LLM_ROLE
+      chat:ready_for_input()
+      chat:checkpoint()
+
+      vim.notify("CodeCompanion chat compacted.", vim.log.levels.INFO)
+    end)
+  end)()
+end
+
 -- Restart the chat in the current tab on the same adapter, with a
 -- fresh ACP session and blank chat. Equivalent to
 -- `tab_chat_set_adapter(<current>, { clear = true })`.
@@ -1385,6 +1481,10 @@ return {
         require("lib.codecompanion-doctor").run()
       end, { desc = "Diagnose CodeCompanion / ACP state" })
 
+      vim.api.nvim_create_user_command("CodeCompanionCompact", function()
+        tab_chat_compact()
+      end, { desc = "Compact the current CodeCompanion ACP dvsc chat" })
+
       vim.api.nvim_create_autocmd("VimLeavePre", {
         callback = function()
           pcall(function() require("lib.codecompanion-doctor").cleanup_orphans() end)
@@ -1467,6 +1567,7 @@ return {
       { "<leader>aG", function() tab_chat_set_adapter("dvsc_core_broker", { clear = true, force_pick = true })  end, desc = "Dvsc Chat via broker (pick config, fresh)" },
       { "<leader>aC", function() tab_chat_set_adapter("claude_broker",    { clear = true }) end, desc = "Claude Chat via broker (direct, fresh)" },
       { "<leader>aO", function() tab_chat_set_adapter("codex_broker",     { clear = true }) end, desc = "Codex Chat via broker (fresh)" },
+      { "<leader>ac", tab_chat_compact, desc = "CodeCompanion: compact current ACP dvsc chat" },
       { "<leader>aZ", tab_chat_restart, desc = "CodeCompanion: restart current tab's chat" },
       { "<leader>ao", tab_chat_pick_option, desc = "CodeCompanion: change live ACP session config option" },
       { "<leader>aQ", function()
