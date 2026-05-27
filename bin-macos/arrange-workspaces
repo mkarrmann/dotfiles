@@ -78,6 +78,58 @@ sweep_unfocusable() {
   echo "$swept"
 }
 
+# Check whether $ws is already in the desired arrangement so we can
+# skip the flatten + rebuild (which is wasteful and briefly disrupts
+# focus/animations). Returns 0 if correct, 1 otherwise.
+#
+# Desired:
+#   - Mixed sidebar+accordion: root = h_tiles; sidebar windows have
+#     parent = h_tiles (either root, or an h_tiles sub-container when
+#     there are multiple sidebars); accordion windows have parent =
+#     v_accordion (a single sub-container).
+#   - Accordion-only: every window has parent = v_accordion.
+#
+# Note: this checks parent layouts, not spatial order. If someone has
+# manually shuffled accordion-container to the *left* of the sidebar
+# (so visually wrong but structurally OK), we'll false-positive skip.
+# That's an acceptable trade-off — the common case is "no manual
+# tampering" and the rebuild is destructive enough that conservative
+# skipping is better than aggressive teardown.
+layout_already_correct() {
+  local ws="$1" sidebar_ids="$2" accordion_ids="$3"
+
+  local id_to_parent
+  id_to_parent=$(aerospace list-windows --workspace "$ws" \
+    --format '%{window-id}|%{window-parent-container-layout}' 2>/dev/null) || return 1
+
+  local wid parent
+
+  # Accordion-only: every window's parent is v_accordion
+  if [[ -z "$sidebar_ids" ]]; then
+    for wid in $accordion_ids; do
+      parent=$(echo "$id_to_parent" | awk -F'|' -v w="$wid" '$1==w {print $2; exit}')
+      [[ "$parent" == "v_accordion" ]] || return 1
+    done
+    return 0
+  fi
+
+  # Mixed: root must be h_tiles
+  local root_layout
+  root_layout=$(aerospace list-windows --workspace "$ws" \
+    --format '%{workspace-root-container-layout}' 2>/dev/null | head -1)
+  [[ "$root_layout" == "h_tiles" ]] || return 1
+
+  for wid in $sidebar_ids; do
+    parent=$(echo "$id_to_parent" | awk -F'|' -v w="$wid" '$1==w {print $2; exit}')
+    [[ "$parent" == "h_tiles" ]] || return 1
+  done
+  for wid in $accordion_ids; do
+    parent=$(echo "$id_to_parent" | awk -F'|' -v w="$wid" '$1==w {print $2; exit}')
+    [[ "$parent" == "v_accordion" ]] || return 1
+  done
+  return 0
+}
+
 # Walk left-to-right from the currently focused window to discover
 # the full spatial order. Results stored in global _spatial array.
 #
@@ -123,24 +175,28 @@ arrange_workspace() {
 
   [[ "$total" -lt 2 ]] && return 0
 
-  # Sweep phantom/unfocusable windows to Z before computing the layout.
-  # These break spatial navigation, join-with, and move commands. If any
-  # were swept, re-read the window list and re-check the early-exit.
-  local swept
-  swept=$(sweep_unfocusable "$ws" "$windows")
-  if [[ "$swept" -gt 0 ]]; then
-    windows=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null) || return 0
-    total=$(echo "$windows" | jq 'length')
-    [[ "$total" -lt 2 ]] && return 0
-  fi
-
-  # Skip if the window set hasn't changed since last arrangement
+  # Skip if the window set hasn't changed since last arrangement.
+  # The fingerprint covers window IDs + app names; if nothing changed
+  # there can't be a new phantom either, so we can skip the sweep too.
   local fingerprint marker_file
   fingerprint=$(workspace_fingerprint "$windows")
   marker_file="$MARKER_DIR/ws-$ws"
   if [[ "$FORCE" != true ]] && [[ -f "$marker_file" ]] && [[ "$(cat "$marker_file")" == "$fingerprint" ]]; then
     echo "  [$ws] already arranged, skipping"
     return 0
+  fi
+
+  # Sweep phantom/unfocusable windows to Z before computing the layout.
+  # These break spatial navigation, join-with, and move commands. If any
+  # were swept, re-read the window list, re-check the early-exit, and
+  # re-compute the fingerprint (it's what we'll write to the marker).
+  local swept
+  swept=$(sweep_unfocusable "$ws" "$windows")
+  if [[ "$swept" -gt 0 ]]; then
+    windows=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null) || return 0
+    total=$(echo "$windows" | jq 'length')
+    [[ "$total" -lt 2 ]] && return 0
+    fingerprint=$(workspace_fingerprint "$windows")
   fi
 
   local sidebar_ids accordion_ids
@@ -157,6 +213,11 @@ arrange_workspace() {
 
   # Only accordion windows → flat accordion, no nesting needed
   if [[ "$sidebar_count" -eq 0 ]]; then
+    if layout_already_correct "$ws" "" "$accordion_ids"; then
+      echo "  [$ws] flat accordion already correct → marker only"
+      echo "$fingerprint" > "$marker_file"
+      return 0
+    fi
     echo "  [$ws] ${accordion_count} accordion window(s), no sidebar → flat accordion"
     aerospace workspace "$ws" 2>/dev/null
     aerospace flatten-workspace-tree 2>/dev/null || true
@@ -168,6 +229,12 @@ arrange_workspace() {
   # No accordion windows → leave as-is
   if [[ "$accordion_count" -eq 0 ]]; then
     echo "  [$ws] no non-Orchest windows, skipping"
+    return 0
+  fi
+
+  if layout_already_correct "$ws" "$sidebar_ids" "$accordion_ids"; then
+    echo "  [$ws] sidebar+accordion already correct → marker only"
+    echo "$fingerprint" > "$marker_file"
     return 0
   fi
 
