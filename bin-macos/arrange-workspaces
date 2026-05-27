@@ -47,18 +47,23 @@ workspace_fingerprint() {
 
 # Walk left-to-right from the currently focused window to discover
 # the full spatial order. Results stored in global _spatial array.
+#
+# `aerospace focus left/right` defaults to --boundaries-action
+# wrap-around-the-workspace, which makes the n==p terminator never trip
+# (focus always changes). Pass `stop` explicitly so focus holds at the
+# boundary.
 discover_spatial_order() {
   _spatial=()
   while true; do
     local p; p=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
-    aerospace focus left 2>/dev/null
+    aerospace focus --boundaries-action stop left 2>/dev/null
     local n; n=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
     [[ "$n" == "$p" ]] && break
   done
   _spatial+=($(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null))
   while true; do
     local p; p=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
-    aerospace focus right 2>/dev/null
+    aerospace focus --boundaries-action stop right 2>/dev/null
     local n; n=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
     [[ "$n" == "$p" ]] && break
     _spatial+=("$n")
