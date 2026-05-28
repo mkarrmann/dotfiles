@@ -189,6 +189,53 @@ function M.run()
 			"wire response body")
 	end
 
+	-- ─── patch(): prepare_adapter wrap advertises elicitation cap ──
+	-- Regression guard: an earlier version wrapped
+	-- connect_and_authenticate and mutated self.adapter_modified.parameters,
+	-- but adapter_modified is {} at that point — the cap never landed in
+	-- INITIALIZE. Verify the cap now flows through prepare_adapter's
+	-- return value (which is the table assigned to adapter_modified and
+	-- then sent as the INITIALIZE body).
+	do
+		package.loaded["codecompanion.acp"] = nil
+		local fake_connection = {
+			prepare_adapter = function(self)
+				return vim.deepcopy(self.adapter)
+			end,
+			handle_incoming_request_or_notification = function(_self, _msg) end,
+		}
+		package.loaded["codecompanion.acp"] = fake_connection
+
+		-- Force re-installation; the module's `_patched` flag would
+		-- otherwise short-circuit a second patch() call.
+		package.loaded["lib.codecompanion-elicitation"] = nil
+		local fresh = require("lib.codecompanion-elicitation")
+		fresh.patch()
+
+		local conn = setmetatable({
+			adapter = {
+				parameters = {
+					protocolVersion = 1,
+					clientCapabilities = { fs = { readTextFile = true } },
+				},
+			},
+		}, { __index = fake_connection })
+
+		local got = conn:prepare_adapter()
+		assertEq(got.parameters.clientCapabilities.fs,
+			{ readTextFile = true },
+			"prepare_adapter preserves existing capabilities")
+		local form = got.parameters.clientCapabilities.elicitation
+			and got.parameters.clientCapabilities.elicitation.form
+		if form == nil then
+			error("prepare_adapter did not splice elicitation.form into parameters")
+		end
+		-- Clean up so the real codecompanion plugin can be loaded normally
+		-- in any subsequent test run within this nvim instance.
+		package.loaded["codecompanion.acp"] = nil
+		package.loaded["lib.codecompanion-elicitation"] = nil
+	end
+
 	-- ─── _handle_elicitation_create: rejects non-form mode ──────────
 	do
 		local sent = {}

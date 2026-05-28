@@ -318,18 +318,21 @@ function M.patch()
 
   -- 2. Capability advertisement.
   --    `Connection:connect_and_authenticate` sends `initialize` with
-  --    `self.adapter_modified.parameters` as the request body. Splice
-  --    `clientCapabilities.elicitation.form = {}` in before the
-  --    original call so agents that respect capabilities (including
-  --    the dvsc-core-acp wrapper) light up the elicitation path.
-  local orig_connect = Connection.connect_and_authenticate
-  if type(orig_connect) == "function" then
-    function Connection:connect_and_authenticate(...)
-      local mod = self.adapter_modified
-      local params = mod and mod.parameters
-      if type(params) == "table" then
-        params.clientCapabilities = params.clientCapabilities or {}
-        local caps = params.clientCapabilities
+  --    `self.adapter_modified.parameters` as the request body — but
+  --    `adapter_modified` is set to `{}` by `Connection.new` and
+  --    only populated later inside `start_agent_process` →
+  --    `prepare_adapter` (a `vim.deepcopy(self.adapter)`). So we
+  --    splice the cap into the adapter table that `prepare_adapter`
+  --    *returns* — that's the table assigned to `adapter_modified` and
+  --    read by INITIALIZE moments later in the same call.
+  local orig_prepare = Connection.prepare_adapter
+  if type(orig_prepare) == "function" then
+    function Connection:prepare_adapter()
+      local adapter = orig_prepare(self)
+      if type(adapter) == "table" then
+        adapter.parameters = adapter.parameters or {}
+        adapter.parameters.clientCapabilities = adapter.parameters.clientCapabilities or {}
+        local caps = adapter.parameters.clientCapabilities
         -- vim.empty_dict() serializes as `{}` (object) rather than `[]` (array)
         -- — important because the spec types `form` as an object.
         caps.elicitation = caps.elicitation or { form = vim.empty_dict() }
@@ -337,10 +340,10 @@ function M.patch()
           caps.elicitation.form = vim.empty_dict()
         end
       end
-      return orig_connect(self, ...)
+      return adapter
     end
   else
-    log_error("Connection.connect_and_authenticate missing; capability not advertised")
+    log_error("Connection.prepare_adapter missing; capability not advertised")
   end
 
   _patched = true
