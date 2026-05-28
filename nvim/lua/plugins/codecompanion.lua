@@ -1174,6 +1174,25 @@ return {
     config = function(_, opts)
       require("codecompanion").setup(opts)
 
+      -- HACK: CodeCompanion parses JSON-looking ACP tool titles like
+      -- `skill {"path":...}` as colon-delimited labels, producing
+      -- `Other: skill {"path"`. Prefer structured rawInput paths for
+      -- unknown dvsc-core tools instead of parsing the title string.
+      local acp_formatters = require("codecompanion.interactions.chat.acp.formatters")
+      local orig_tool_message = acp_formatters.tool_message
+      function acp_formatters.tool_message(tool_call, adapter)
+        if type(tool_call) == "table" and tool_call.kind == "other" then
+          local raw = tool_call.rawInput
+          local path = type(raw) == "table" and raw.path
+          if type(path) == "string" and path ~= "" then
+            local tool = (tool_call.title or ""):match("^(%S+)") or "Tool"
+            return tool:gsub("^%l", string.upper) .. ": " .. vim.fn.fnamemodify(path, ":t")
+          end
+        end
+
+        return orig_tool_message(tool_call, adapter)
+      end
+
       -- HACK: Ctrl+C during a streaming response can wipe the chat buffer before
       -- the cancellation cleanup finishes. The call chain is:
       --   Chat:done() -> Chat:ready_for_input() -> Chat:add_buf_message()
