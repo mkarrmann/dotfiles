@@ -28,7 +28,7 @@ done
 # Multiple entries can share a workspace (accordion layout toggles between them).
 # Stray windows are swept to workspace "Z".
 WORKSPACES=(
-  "1|cmux|Local MacOS|."
+  "1|ghostty|Local MacOS|^Local MacOS$|~|zsh"
   "1|chrome|Chrome: ws1"
   "T|ghostty|FTW: tunnels|FTW.*tunnels|~|nvs-tunnels devvm36111.ftw0.facebook.com FTW-main1 FTW-checkout1:~/checkout1 FTW-checkout2:~/checkout2 FTW-checkout3:~/checkout3"
   "T|ghostty|CCO: tunnels|CCO.*tunnels|~|nvs-tunnels devvm20365.cco0.facebook.com CCO-main1 CCO-checkout1:~/checkout1 CCO-checkout2:~/checkout2 CCO-checkout3:~/checkout3"
