@@ -43,25 +43,23 @@
         "clientId": "orchest-local",
         "attribution": {
           "byNvimSession": {
-            "FTW-main1": "2",
-            "FTW-checkout1": "3",
-            "FTW-checkout2": "4",
-            "FTW-checkout3": "5",
-            "CCO-main1": "6",
-            "CCO-checkout1": "7",
-            "CCO-checkout2": "8",
-            "CCO-checkout3": "9"
+            "FTW-checkout1": "2",
+            "FTW-checkout2": "3",
+            "FTW-checkout3": "4",
+            "CCO-checkout1": "5",
+            "CCO-checkout2": "6",
+            "CCO-checkout3": "7"
           },
           "byCwd": {
-            "/home/mkarrmann/checkout1": "3",
-            "/home/mkarrmann/checkout1/fbsource": "3",
-            "/home/mkarrmann/checkout1/configerator": "3",
-            "/home/mkarrmann/checkout2": "4",
-            "/home/mkarrmann/checkout2/fbsource": "4",
-            "/home/mkarrmann/checkout2/configerator": "4",
-            "/home/mkarrmann/checkout3": "5",
-            "/home/mkarrmann/checkout3/fbsource": "5",
-            "/home/mkarrmann/checkout3/configerator": "5"
+            "/home/mkarrmann/checkout1": "2",
+            "/home/mkarrmann/checkout1/fbsource": "2",
+            "/home/mkarrmann/checkout1/configerator": "2",
+            "/home/mkarrmann/checkout2": "3",
+            "/home/mkarrmann/checkout2/fbsource": "3",
+            "/home/mkarrmann/checkout2/configerator": "3",
+            "/home/mkarrmann/checkout3": "4",
+            "/home/mkarrmann/checkout3/fbsource": "4",
+            "/home/mkarrmann/checkout3/configerator": "4"
           }
         }
       }
