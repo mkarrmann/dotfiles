@@ -1248,6 +1248,18 @@ return {
         return ok
       end
 
+      -- ACP elicitation/create support. The wrapper at
+      -- users/mk/mkarrmann/dvsc-core-acp ships dm-core's
+      -- `ask_user_question` over `elicitation/create` (UNSTABLE) when
+      -- the client advertises `clientCapabilities.elicitation.form`;
+      -- without this patch, codecompanion.nvim has neither the
+      -- capability advertisement nor a dispatcher for the inbound
+      -- request, so the wrapper falls back to suppressing the tool.
+      -- Removing this patch is fine if/when codecompanion.nvim ships
+      -- native elicitation support — `patch()` is idempotent and
+      -- a future native dispatcher would take precedence on its own.
+      require("lib.codecompanion-elicitation").patch()
+
       -- HACK: PromptBuilder:handle_session_update only branches on the
       -- session/update kinds it knows how to render (agent_message_chunk,
       -- agent_thought_chunk, plan, tool_call, tool_call_update). Other
