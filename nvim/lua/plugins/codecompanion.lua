@@ -297,7 +297,14 @@ end
 -- it through, and the patched `Connection:_establish_session` forces
 -- `loadSession` capability so the broker actually receives
 -- `session/load(bsid)`.
-local function _broker_open_chat_with_session(adapter, acp_session_id)
+--
+-- `cwd_override` (optional) forces the follow-up `session/load` RPC to
+-- send a specific cwd instead of `vim.fn.getcwd()`. For broker forks
+-- this is the cwd the broker materialized the JSONL under (echoed back
+-- in `ForkSavedSessionResponse.cwd`) — see `_broker_fork_saved_session`
+-- above. The override is stored on the Connection as `_cwd_override`
+-- and consumed by the patched `Connection:_establish_session` below.
+local function _broker_open_chat_with_session(adapter, acp_session_id, cwd_override)
   local existing = vim.t.codecompanion_chat_bufnr
   if existing and vim.api.nvim_buf_is_valid(existing) then
     vim.notify(
@@ -330,6 +337,9 @@ local function _broker_open_chat_with_session(adapter, acp_session_id)
   local function try_load(attempts)
     local conn = chat.acp_connection
     if conn and conn:is_ready() then
+      if cwd_override then
+        conn._cwd_override = cwd_override
+      end
       local updates = {}
       local ok = conn:load_session(acp_session_id, {
         on_session_update = function(u) table.insert(updates, u) end,
@@ -361,7 +371,18 @@ local function _broker_open_chat_with_session(adapter, acp_session_id)
 end
 
 -- Issue `meta.broker.persistence.fork_saved_session(bsid)` and return
--- the freshly-minted bsid (or nil on failure, with a notification).
+-- `(new_bsid, resolved_cwd)` (or nil on failure, with a notification).
+--
+-- `target_cwd = vim.uv.cwd()` instructs the broker to materialize the
+-- forked JSONL under the local cwd, so the agent's later
+-- `session/load(new_bsid)` finds it. Without this, cross-broker forks
+-- would write the JSONL under the source machine's cwd path (which
+-- doesn't exist locally) and the resume would silently start fresh.
+-- See ralph-loops/fork-cwd-fix/context.md §6 in the broker repo.
+--
+-- The broker echoes the resolved cwd back in `response.cwd`; callers
+-- thread it into `_broker_open_chat_with_session` so the follow-up
+-- `session/load` uses the same cwd the JSONL was written under.
 local function _broker_fork_saved_session(adapter, source_bsid)
   local conn = require("codecompanion.acp").new({ adapter = adapter })
   if not conn:connect_and_authenticate() then
@@ -370,14 +391,14 @@ local function _broker_fork_saved_session(adapter, source_bsid)
   end
   local resp = conn:send_rpc_request(
     "meta.broker.persistence.fork_saved_session",
-    { broker_session_id = source_bsid }
+    { broker_session_id = source_bsid, target_cwd = vim.uv.cwd() }
   )
   pcall(function() conn:disconnect() end)
   if not resp or not resp.broker_session_id then
     vim.notify("fork failed: " .. vim.inspect(resp), vim.log.levels.ERROR)
     return nil
   end
-  return resp.broker_session_id
+  return resp.broker_session_id, resp.cwd
 end
 
 -- Top-level entry point used by `<leader>br` / `<leader>bf`. `action`
@@ -393,13 +414,14 @@ local function broker_resume_or_fork(action, adapter_name)
     if not bsid or bsid == "" or bsid == "bsid_" then return end
     _broker_write_last_bsid(bsid)
     local target_bsid = bsid
+    local target_cwd = nil
     if action == "fork" then
       local adapter = require("codecompanion.adapters").resolve(adapter_name)
-      target_bsid = _broker_fork_saved_session(adapter, bsid)
+      target_bsid, target_cwd = _broker_fork_saved_session(adapter, bsid)
       if not target_bsid then return end
       vim.notify("forked " .. bsid .. " -> " .. target_bsid, vim.log.levels.INFO)
     end
-    _broker_open_chat_with_session(adapter_name, target_bsid)
+    _broker_open_chat_with_session(adapter_name, target_bsid, target_cwd)
   end)
 end
 
@@ -1235,6 +1257,14 @@ return {
       -- advertising loadSession capability. The broker handles session/load
       -- directly for known sessions (the agent is never consulted), so the
       -- capability check is irrelevant. Patch it out.
+      --
+      -- Also: when `self._cwd_override` is set (broker fork resume — see
+      -- `_broker_open_chat_with_session` above), force the orig's
+      -- `vim.fn.getcwd()` call to return the override so the `session/load`
+      -- params carry the cwd the broker materialized the JSONL under
+      -- rather than the client's pwd. Without this, a fork issued from a
+      -- client whose pwd differs from the source session's cwd resumes
+      -- against a non-existent JSONL and silently starts fresh.
       local Connection = require("codecompanion.acp")
       local orig_establish = Connection._establish_session
       function Connection:_establish_session()
@@ -1242,7 +1272,16 @@ return {
           self._agent_info.agentCapabilities = self._agent_info.agentCapabilities or {}
           self._agent_info.agentCapabilities.loadSession = true
         end
-        return orig_establish(self)
+        local override = self._cwd_override
+        if not override then
+          return orig_establish(self)
+        end
+        local orig_getcwd = vim.fn.getcwd
+        vim.fn.getcwd = function() return override end
+        local ok, ret = pcall(orig_establish, self)
+        vim.fn.getcwd = orig_getcwd
+        if not ok then error(ret) end
+        return ret
       end
 
       -- HACK: Connection:set_config_option updates self._config_options but
