@@ -1637,7 +1637,7 @@ return {
       { "<leader>aG", function() tab_chat_set_adapter("dvsc_core_broker", { clear = true, force_pick = true })  end, desc = "Dvsc Chat via broker (pick config, fresh)" },
       { "<leader>aC", function() tab_chat_set_adapter("claude_broker",    { clear = true }) end, desc = "Claude Chat via broker (direct, fresh)" },
       { "<leader>aO", function() tab_chat_set_adapter("codex_broker",     { clear = true }) end, desc = "Codex Chat via broker (fresh)" },
-      { "<leader>ac", tab_chat_compact, desc = "CodeCompanion: compact current ACP dvsc chat" },
+      { "<leader>ak", tab_chat_compact, desc = "CodeCompanion: compact current ACP dvsc chat" },
       { "<leader>aZ", tab_chat_restart, desc = "CodeCompanion: restart current tab's chat" },
       { "<leader>ao", tab_chat_pick_option, desc = "CodeCompanion: change live ACP session config option" },
       { "<leader>aQ", function()
