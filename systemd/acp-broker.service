@@ -48,7 +48,7 @@ StateDirectory=acp-broker
 # previous broker is fully terminated by the time this runs. Remove once
 # acp-broker's `UdsListener::bind` retries after a connect-probe.
 ExecStartPre=/bin/rm -f %t/acp-broker.sock
-ExecStart=%h/.cargo/bin/acp-broker --declare-agent name=claude,cmd=%h/bin/claude-agent-acp,default=true --declare-agent name=dvsc-core,cmd=%h/bin/dvsc-core-acp --socket %t/acp-broker.sock --per-session-agents --allow-agent-spawn
+ExecStart=%h/.cargo/bin/acp-broker --declare-agent name=claude,cmd=%h/bin/claude-agent-acp,default=true,native_fork=claude --declare-agent name=dvsc-core,cmd=%h/bin/dvsc-core-acp,native_fork=claude --socket %t/acp-broker.sock --per-session-agents --allow-agent-spawn
 Restart=always
 RestartSec=5
 StandardOutput=append:%S/acp-broker/server.log
