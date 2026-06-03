@@ -46,10 +46,39 @@ export NODE_EXTRA_CA_CERTS="/var/facebook/rootcanal/ca.pem"
 export CODEX_MANAGED_CONFIG_PATH=/dev/null
 unset CLAUDECODE
 
-# Discover Node.js: prefer dotslash-cached modern Node, fall back to system
-NODE="$(find "$HOME/.cache/dotslash" -name node -type f 2>/dev/null | head -1)"
-if [[ -z "$NODE" ]] || ! "$NODE" --version &>/dev/null; then
-  NODE="$(command -v node)"
+# Discover Node.js >= 22. The packaged claude-agent-acp uses ES2025 import
+# attributes (`import x from "..." with { type: "json" }`) which only parse
+# on Node 22+. Without the >=22 gate the broker crash-loops at startup —
+# claude-agent-acp throws SyntaxError, the broker treats the declared agent
+# dying as fatal (SPEC §10.4), systemd restarts it, repeat. See
+# ~/.local/state/acp-broker/server.log for the recurring SyntaxError.
+#
+# Preference order, all gated on major>=22:
+#   1. fbsource pinned toolchain — deterministic and won't regress
+#   2. any dotslash cache entry — `find | head -1` is order-nondeterministic
+#      across processes, so the stale 18.16 entry that shipped with the
+#      cache could silently win; iterate and filter instead
+#   3. `node` on PATH as last resort (system /usr/local/bin/node is 16 here,
+#      which won't pass the version check anyway — but kept for portability)
+node_major_ge_22() {
+  local v
+  v="$("$1" -p 'process.versions.node' 2>/dev/null)" || return 1
+  [[ "${v%%.*}" -ge 22 ]]
+}
+
+NODE=""
+for candidate in \
+  "$HOME/fbsource/xplat/third-party/node/bin/node" \
+  $(find "$HOME/.cache/dotslash" -name node -type f 2>/dev/null) \
+  "$(command -v node 2>/dev/null)"; do
+  if [[ -x "$candidate" ]] && node_major_ge_22 "$candidate"; then
+    NODE="$candidate"
+    break
+  fi
+done
+if [[ -z "$NODE" ]]; then
+  echo "claude-agent-acp: no Node.js >= 22 found (fbsource, dotslash, PATH all checked)" >&2
+  exit 1
 fi
 
 SCRIPT="$HOME/.local/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"
