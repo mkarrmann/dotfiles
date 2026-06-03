@@ -35,5 +35,13 @@ StateDirectory=nvim-sessions
 StandardOutput=append:%S/nvim-sessions/%i.log
 StandardError=append:%S/nvim-sessions/%i.log
 
+# OOM protection: 2026-06-03 oomd cleared user.slice memory pressure (driven
+# by runaway buck2/pyrelsp) by walking app-nvs.slice and killing every nvs
+# session, including a 78 MB CCO-checkout1 that wasn't even big. Tell oomd
+# to skip us when picking victims, and reserve a memory floor the kernel
+# protects from reclaim so we're never the largest available target.
+ManagedOOMPreference=avoid
+MemoryLow=16G
+
 [Install]
 WantedBy=default.target
