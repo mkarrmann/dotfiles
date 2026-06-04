@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# Ephemeral sl-worktree wrapper for ralph / cc-fleet / Claude Code parallel
+# sessions. All ephemeral worktrees live at ~/wt/<label>, are linked off
+# ~/checkout1/fbsource (the main), and are intended to be short-lived.
+#
+# Usage:
+#   wt add <label> [--snapshot] [--at REV]   create ~/wt/<label>
+#   wt list                                  list all ephemeral worktrees
+#   wt rm  <label> [--force]                 remove one
+#   wt rm  --all [--force]                   remove all ephemeral worktrees
+#   wt path <label>                          print absolute path
+#   wt clean                                 sweep ~/wt entries that aren't
+#                                            actual sl worktrees
+#
+# Notes:
+#   - Default 'add' starts at the main's current commit with no uncommitted
+#     changes copied. Pass --snapshot to carry your WIP. Pass --at REV to
+#     start at a specific commit/bookmark.
+#   - 'rm' refuses to destroy a worktree with uncommitted changes unless
+#     --force is passed. Draft commits survive via commit cloud.
+#   - This wrapper does NOT touch ~/checkout1/2/3 — those are managed by
+#     migrate-to-worktrees / setup-checkouts.
+
+set -euo pipefail
+
+WT_ROOT="$HOME/wt"
+MAIN="$HOME/checkout1/fbsource"
+
+die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'WARN: %s\n' "$*" >&2; }
+
+require_worktree_enabled() {
+  local v
+  v=$(sl --cwd "$MAIN" config worktree.enabled 2>/dev/null || true)
+  [[ "$v" == "true" ]] || die "worktree.enabled is not true. Run migrate-to-worktrees or add '[worktree]\\nenabled = true' to ~/.hgrc."
+}
+
+require_main() {
+  [[ -d "$MAIN" ]] || die "main worktree $MAIN missing"
+}
+
+valid_label() {
+  local label="$1"
+  [[ "$label" =~ ^[A-Za-z0-9._-]+$ ]] || die "label '$label' must match [A-Za-z0-9._-]+ (no slashes)"
+  # Reserved: labels matching the stable checkout names would collide with
+  # the per-workspace Maven suffix scheme in ~/.localrc (_checkout_suffix).
+  case "$label" in
+    checkout1|checkout2|checkout3)
+      die "label '$label' is reserved — would collide with ~/$label's Maven build dirs"
+      ;;
+  esac
+}
+
+# Echoes the labels of ephemeral worktrees (anything under ~/wt that sl
+# lists as a member of the main's worktree group).
+list_ephemeral() {
+  sl --cwd "$MAIN" worktree list -Tjson 2>/dev/null \
+    | jq -r --arg root "$WT_ROOT/" '.[] | select(.path | startswith($root)) | .path'
+}
+
+cmd_add() {
+  local label="" snapshot="" at=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --snapshot) snapshot="--snapshot"; shift ;;
+      --at)       at="$2"; shift 2 ;;
+      -h|--help)  sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+      -*)         die "unknown flag: $1" ;;
+      *)
+        [[ -z "$label" ]] || die "extra positional arg: $1"
+        label="$1"; shift
+        ;;
+    esac
+  done
+  [[ -n "$label" ]] || die "usage: wt add <label> [--snapshot] [--at REV]"
+  valid_label "$label"
+  require_main
+  require_worktree_enabled
+
+  local path="$WT_ROOT/$label"
+  [[ -e "$path" ]] && die "$path already exists"
+
+  mkdir -p "$WT_ROOT"
+
+  # `sl worktree add` requires running from inside the main worktree.
+  # If --at is given, the new worktree's current commit is set there;
+  # otherwise it inherits the main's current commit. --snapshot copies
+  # uncommitted changes.
+  if [[ -n "$at" ]]; then
+    ( cd "$MAIN" && sl worktree add "$path" --label "$label" $snapshot )
+    ( cd "$path" && sl goto "$at" )
+  else
+    ( cd "$MAIN" && sl worktree add "$path" --label "$label" $snapshot )
+  fi
+
+  echo "Created $path"
+}
+
+cmd_list() {
+  require_main
+  echo "Main: $MAIN"
+  echo
+  sl --cwd "$MAIN" worktree list
+}
+
+# Resolves a label or path to an absolute path that is a known worktree
+# under WT_ROOT. Echoes the path; dies if not found.
+resolve_label() {
+  local arg="$1" path
+  case "$arg" in
+    /*) path="$arg" ;;
+    *)  path="$WT_ROOT/$arg" ;;
+  esac
+  list_ephemeral | grep -Fxq "$path" || die "$path is not an ephemeral worktree (not in 'sl worktree list')"
+  echo "$path"
+}
+
+rm_one() {
+  local path="$1" force="$2"
+
+  local st
+  st=$(sl --cwd "$path" status 2>/dev/null || true)
+  if [[ -n "$st" ]]; then
+    if [[ "$force" == "1" ]]; then
+      warn "$path is DIRTY — destroying anyway (--force)"
+    else
+      warn "$path is DIRTY:"
+      echo "$st" | sed 's/^/    /'
+      die "refusing to remove. Pass --force to destroy anyway."
+    fi
+  fi
+
+  ( cd "$MAIN" && sl worktree remove -y "$path" )
+  echo "Removed $path"
+}
+
+cmd_rm() {
+  local force=0 all=0 target=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --force)  force=1; shift ;;
+      --all)    all=1; shift ;;
+      -h|--help) echo "usage: wt rm <label> [--force]    or    wt rm --all [--force]"; exit 0 ;;
+      -*)       die "unknown flag: $1" ;;
+      *)
+        [[ -z "$target" ]] || die "extra positional arg: $1"
+        target="$1"; shift
+        ;;
+    esac
+  done
+  require_main
+
+  if (( all )); then
+    [[ -z "$target" ]] || die "cannot combine --all with a label"
+    local any=0
+    while IFS= read -r path; do
+      [[ -z "$path" ]] && continue
+      any=1
+      rm_one "$path" "$force" || true
+    done < <(list_ephemeral)
+    (( any )) || echo "No ephemeral worktrees to remove."
+  else
+    [[ -n "$target" ]] || die "usage: wt rm <label> [--force]    or    wt rm --all"
+    rm_one "$(resolve_label "$target")" "$force"
+  fi
+}
+
+cmd_path() {
+  [[ $# -eq 1 ]] || die "usage: wt path <label>"
+  resolve_label "$1"
+}
+
+cmd_clean() {
+  require_main
+  [[ -d "$WT_ROOT" ]] || { echo "Nothing to clean: $WT_ROOT does not exist."; return; }
+
+  local known
+  known=$(list_ephemeral)
+  local swept=0
+  for entry in "$WT_ROOT"/*; do
+    [[ -e "$entry" ]] || continue
+    if ! grep -Fxq "$entry" <<<"$known"; then
+      warn "stray entry: $entry (not a known worktree)"
+      ((swept++)) || true
+    fi
+  done
+  (( swept == 0 )) && echo "Clean."
+}
+
+case "${1:-}" in
+  add)        shift; cmd_add   "$@" ;;
+  list|ls)    shift; cmd_list  "$@" ;;
+  rm|remove)  shift; cmd_rm    "$@" ;;
+  path)       shift; cmd_path  "$@" ;;
+  clean)      shift; cmd_clean "$@" ;;
+  ""|-h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *)          die "unknown command: $1 (try 'wt --help')" ;;
+esac
