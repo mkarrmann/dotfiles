@@ -24,26 +24,29 @@
 #
 # Usage:
 #   migrate-to-worktrees [--dry-run] [--force]
-#                        [--primary NAME] [--secondary NAME] [--tertiary NAME]
+#                        [--primary NAME] [--secondary NAME]
+#                        [--tertiary NAME] [--quaternary NAME]
 #
-# Env overrides: PRIMARY_NAME, SECONDARY_NAME, TERTIARY_NAME
+# Env overrides: PRIMARY_NAME, SECONDARY_NAME, TERTIARY_NAME, QUATERNARY_NAME
 
 set -euo pipefail
 
 PRIMARY_NAME="${PRIMARY_NAME:-checkout1}"
 SECONDARY_NAME="${SECONDARY_NAME:-checkout2}"
 TERTIARY_NAME="${TERTIARY_NAME:-checkout3}"
+QUATERNARY_NAME="${QUATERNARY_NAME:-checkout4}"
 DRY_RUN=0
 FORCE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --dry-run)   DRY_RUN=1; shift ;;
-    --force)     FORCE=1; shift ;;
-    --primary)   PRIMARY_NAME="$2"; shift 2 ;;
-    --secondary) SECONDARY_NAME="$2"; shift 2 ;;
-    --tertiary)  TERTIARY_NAME="$2"; shift 2 ;;
-    -h|--help)   sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --dry-run)    DRY_RUN=1; shift ;;
+    --force)      FORCE=1; shift ;;
+    --primary)    PRIMARY_NAME="$2"; shift 2 ;;
+    --secondary)  SECONDARY_NAME="$2"; shift 2 ;;
+    --tertiary)   TERTIARY_NAME="$2"; shift 2 ;;
+    --quaternary) QUATERNARY_NAME="$2"; shift 2 ;;
+    -h|--help)    sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -53,6 +56,7 @@ PRIMARY_FBSOURCE="$HOME/$PRIMARY_NAME/fbsource"
 SECONDARIES=(
   "$HOME/$SECONDARY_NAME/fbsource:$SECONDARY_NAME"
   "$HOME/$TERTIARY_NAME/fbsource:$TERTIARY_NAME"
+  "$HOME/$QUATERNARY_NAME/fbsource:$QUATERNARY_NAME"
 )
 
 log()  { printf '\n=== %s ===\n' "$*"; }

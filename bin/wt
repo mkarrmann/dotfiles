@@ -45,7 +45,7 @@ valid_label() {
   # Reserved: labels matching the stable checkout names would collide with
   # the per-workspace Maven suffix scheme in ~/.localrc (_checkout_suffix).
   case "$label" in
-    checkout1|checkout2|checkout3)
+    checkout1|checkout2|checkout3|checkout4)
       die "label '$label' is reserved — would collide with ~/$label's Maven build dirs"
       ;;
   esac
