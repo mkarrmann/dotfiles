@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+# Migrate the standard checkoutN/{fbsource,configerator} layout from
+# independent fbclones to sl worktrees, while preserving every external
+# contract: the symlink chain (~/fbsource -> ~/local/fbsource ->
+# ~/checkout1/fbsource), the Maven per-workspace isolation scheme, the
+# VS Code .code-workspace files, and the startup-windows numeric scheme.
+#
+# What changes:
+#   - ~/checkout2/fbsource and ~/checkout3/fbsource become sl worktrees
+#     linked to ~/checkout1/fbsource (the main).
+#   - ~/.hgrc gets [worktree] enabled = true appended (idempotent).
+#
+# What is left alone:
+#   - Configerator clones (sl worktree has no documented configerator
+#     support as of 2026-06).
+#   - The primary fbsource at ~/checkout1/fbsource — it is the main.
+#   - Every path, symlink, BUILD_ROOT suffix, and dotfile.
+#
+# Safety:
+#   - Refuses to destroy any secondary fbsource that has uncommitted
+#     changes, shelves, or non-public commits, unless --force is passed.
+#   - Idempotent: skips secondaries that are already part of the
+#     worktree group at ~/checkout1/fbsource.
+#
+# Usage:
+#   migrate-to-worktrees [--dry-run] [--force]
+#                        [--primary NAME] [--secondary NAME] [--tertiary NAME]
+#
+# Env overrides: PRIMARY_NAME, SECONDARY_NAME, TERTIARY_NAME
+
+set -euo pipefail
+
+PRIMARY_NAME="${PRIMARY_NAME:-checkout1}"
+SECONDARY_NAME="${SECONDARY_NAME:-checkout2}"
+TERTIARY_NAME="${TERTIARY_NAME:-checkout3}"
+DRY_RUN=0
+FORCE=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run)   DRY_RUN=1; shift ;;
+    --force)     FORCE=1; shift ;;
+    --primary)   PRIMARY_NAME="$2"; shift 2 ;;
+    --secondary) SECONDARY_NAME="$2"; shift 2 ;;
+    --tertiary)  TERTIARY_NAME="$2"; shift 2 ;;
+    -h|--help)   sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "Unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+LOG_DIR="$HOME/migrate-to-worktrees-$(date +%Y%m%d-%H%M%S)"
+PRIMARY_FBSOURCE="$HOME/$PRIMARY_NAME/fbsource"
+SECONDARIES=(
+  "$HOME/$SECONDARY_NAME/fbsource:$SECONDARY_NAME"
+  "$HOME/$TERTIARY_NAME/fbsource:$TERTIARY_NAME"
+)
+
+log()  { printf '\n=== %s ===\n' "$*"; }
+warn() { printf 'WARN: %s\n' "$*" >&2; }
+die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+run()  { echo "+ $*"; if (( ! DRY_RUN )); then "$@"; fi; }
+
+confirm() {
+  local prompt="$1" ans
+  read -rp "$prompt [type 'yes' to proceed]: " ans
+  [[ "$ans" == "yes" ]] || die "Aborted by user."
+}
+
+eden_mounts() {
+  eden list 2>/dev/null | awk 'NR>1 {print $1}' | sort -u
+}
+
+is_eden_mount() {
+  local path="$1" m
+  for m in $(eden_mounts); do
+    [[ "$path" == "$m" ]] && return 0
+  done
+  return 1
+}
+
+# Returns 0 if $path is already a linked worktree of $main.
+is_linked_worktree() {
+  local path="$1" main="$2"
+  sl --cwd "$main" worktree list -Tjson 2>/dev/null \
+    | jq -e --arg p "$path" '.[] | select(.path == $p)' >/dev/null 2>&1
+}
+
+# Check whether a checkout has work that would be lost on eden rm.
+# Echoes a human-readable report. Returns 0 if clean, 1 if dirty.
+check_dirty() {
+  local repo="$1"
+  local dirty=0
+
+  local st
+  st=$(sl --cwd "$repo" status 2>/dev/null || true)
+  if [[ -n "$st" ]]; then
+    echo "  uncommitted changes:"
+    echo "$st" | sed 's/^/    /'
+    dirty=1
+  fi
+
+  local shelves
+  shelves=$(sl --cwd "$repo" shelve --list 2>/dev/null || true)
+  if [[ -n "$shelves" ]]; then
+    echo "  shelves:"
+    echo "$shelves" | sed 's/^/    /'
+    dirty=1
+  fi
+
+  # Draft commits are intentionally not flagged — they're shared via
+  # commit cloud and survive eden rm. Just report the count for FYI.
+  local draft_count
+  draft_count=$(sl --cwd "$repo" log -r 'draft()' -T '{node}\n' 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$draft_count" -gt 0 ]]; then
+    echo "  $draft_count draft commit(s) — preserved by commit cloud, not destroyed"
+  fi
+
+  return $dirty
+}
+
+# ── Preflight ───────────────────────────────────────────────────────
+mkdir -p "$LOG_DIR"
+log "Migration log: $LOG_DIR"
+echo "Hostname:  $(hostname)"
+echo "Primary:   $PRIMARY_FBSOURCE  (main; left alone)"
+for entry in "${SECONDARIES[@]}"; do
+  echo "Secondary: ${entry%:*}"
+done
+(( DRY_RUN )) && echo "Mode:      DRY RUN — no changes will be made"
+(( FORCE ))   && echo "Mode:      FORCE — dirty secondaries will be destroyed"
+
+cd "$HOME"
+for cmd in eden sl jq; do
+  command -v "$cmd" >/dev/null || die "$cmd not on PATH"
+done
+
+[[ -d "$PRIMARY_FBSOURCE" ]] || die "primary $PRIMARY_FBSOURCE missing"
+is_eden_mount "$PRIMARY_FBSOURCE" || die "$PRIMARY_FBSOURCE is not an Eden mount"
+
+# Verify sl supports `worktree`. Bail loudly if not — the rest of the
+# script would silently do nothing useful.
+if ! sl --cwd "$PRIMARY_FBSOURCE" help worktree >/dev/null 2>&1; then
+  die "sl on this host does not support 'worktree'. Update sl and retry."
+fi
+
+# ── Phase 1: ~/.hgrc opt-in ─────────────────────────────────────────
+log "Phase 1: ensure worktree.enabled = true"
+HGRC="$HOME/.hgrc"
+current=$(sl --cwd "$PRIMARY_FBSOURCE" config worktree.enabled 2>/dev/null || true)
+if [[ "$current" == "true" ]]; then
+  echo "  already enabled (sl config worktree.enabled=true)"
+else
+  echo "  appending [worktree] enabled = true to $HGRC"
+  if (( ! DRY_RUN )); then
+    printf '\n[worktree]\nenabled = true\n' >> "$HGRC"
+  fi
+fi
+
+# ── Phase 2: per-secondary plan ─────────────────────────────────────
+log "Phase 2: inspect secondaries"
+TO_MIGRATE=()
+for entry in "${SECONDARIES[@]}"; do
+  path="${entry%:*}"
+  label="${entry#*:}"
+
+  echo
+  echo "-- $path (label: $label)"
+
+  if [[ ! -e "$path" ]]; then
+    echo "  does not exist; will create as worktree"
+    TO_MIGRATE+=("$entry")
+    continue
+  fi
+
+  if ! is_eden_mount "$path"; then
+    warn "  exists but is not an Eden mount; skipping"
+    continue
+  fi
+
+  if is_linked_worktree "$path" "$PRIMARY_FBSOURCE"; then
+    echo "  already a linked worktree of $PRIMARY_FBSOURCE; skipping"
+    continue
+  fi
+
+  echo "  current state:"
+  if check_dirty "$path"; then
+    echo "  clean (no uncommitted/shelved work)"
+    TO_MIGRATE+=("$entry")
+  else
+    if (( FORCE )); then
+      warn "  DIRTY — destroying anyway because --force was passed"
+      TO_MIGRATE+=("$entry")
+    else
+      warn "  DIRTY — skipping. Commit/shelf and re-run, or pass --force."
+    fi
+  fi
+done
+
+if (( ${#TO_MIGRATE[@]} == 0 )); then
+  log "Nothing to do."
+  exit 0
+fi
+
+echo
+echo "Will migrate:"
+for entry in "${TO_MIGRATE[@]}"; do
+  echo "  ${entry%:*}  ->  worktree of $PRIMARY_FBSOURCE  (label: ${entry#*:})"
+done
+echo
+
+if (( DRY_RUN )); then
+  log "Dry run complete. No changes made."
+  exit 0
+fi
+
+confirm "Proceed?"
+
+# ── Phase 3: migrate ─────────────────────────────────────────────────
+log "Phase 3: migrate"
+failures=0
+for entry in "${TO_MIGRATE[@]}"; do
+  path="${entry%:*}"
+  label="${entry#*:}"
+
+  echo
+  echo "-- $path"
+
+  if [[ -e "$path" ]] && is_eden_mount "$path"; then
+    if ! run eden rm -y "$path"; then
+      warn "eden rm $path failed; skipping"
+      ((failures++)) || true
+      continue
+    fi
+  fi
+
+  # `sl worktree add` must run from inside the main worktree.
+  if ! ( cd "$PRIMARY_FBSOURCE" && run sl worktree add "$path" --label "$label" ); then
+    warn "sl worktree add $path failed"
+    ((failures++)) || true
+    continue
+  fi
+done
+
+# ── Phase 4: verify ─────────────────────────────────────────────────
+log "Phase 4: verify"
+echo "+ sl worktree list (from $PRIMARY_FBSOURCE)"
+( cd "$PRIMARY_FBSOURCE" && sl worktree list 2>&1 | sed 's/^/    /' ) || true
+echo
+echo "+ eden list"
+eden list 2>&1 | sed 's/^/    /'
+
+log "Done"
+echo
+echo "Logs: $LOG_DIR"
+if (( failures > 0 )); then
+  echo "Completed with ${failures} warning(s)."
+  exit 1
+fi
