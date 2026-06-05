@@ -66,9 +66,9 @@ local DVSC_MODELS = {
   { id = "claude-haiku-4.5",       provider = "anthropic", adaptive = false },
   { id = "claude-haiku-4.5-long",  provider = "anthropic", adaptive = false },
   -- OpenAI
-  { id = "gpt-5-3-codex", provider = "openai" },
-  { id = "gpt-5-4",       provider = "openai" },
   { id = "gpt-5-5",       provider = "openai" },
+  { id = "gpt-5-4",       provider = "openai" },
+  { id = "gpt-5-3-codex", provider = "openai" },
   -- Google (Native only — `getModelsForAgent` has no Google-specific harness)
   { id = "gemini-3-1-pro", provider = "google" },
   -- Meta
