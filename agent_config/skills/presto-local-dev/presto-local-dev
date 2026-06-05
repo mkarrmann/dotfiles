@@ -1,0 +1,335 @@
+#!/bin/bash
+set -euo pipefail
+
+# presto-local-dev: Run Presto components locally on a devserver.
+#
+# Usage:
+#   presto-local-dev coordinator        Start a local Presto coordinator
+#   presto-local-dev gateway            Start a local Presto gateway
+#   presto-local-dev all                Start both (coordinator first, then gateway)
+#   presto-local-dev stop               Stop all local Presto processes
+#   presto-local-dev status             Show status of local Presto processes
+#
+# Prerequisites:
+#   - Java modules must be built first (see presto-build skill)
+#   - x509 credentials at /var/facebook/credentials/$USER/x509/$USER.pem
+#
+# Ports (overridable via env vars; defaults work on most ODs):
+#   Coordinator HTTP: ${PRESTO_LOCAL_DEV_COORDINATOR_PORT:-8082}
+#   Gateway HTTP:     ${PRESTO_LOCAL_DEV_GATEWAY_PORT:-8081}
+#
+# The in-tree etc/config.properties files ship with port 8080, which collides with
+# system services (e.g. etserver) on some ODs. This script JVM-overrides the port
+# via -Dhttp-server.http.port and -Ddiscovery.uri so the in-tree configs stay
+# untouched.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Detect checkout root and build root
+detect_checkout() {
+    local cwd="${PWD}"
+    # Walk up to find fbsource root
+    local dir="$cwd"
+    while [[ "$dir" != "/" ]]; do
+        if [[ -d "$dir/fbcode/github/presto-facebook-trunk" ]]; then
+            echo "$dir"
+            return 0
+        fi
+        dir="$(dirname "$dir")"
+    done
+    # Default
+    echo "/data/users/$USER/fbsource"
+}
+
+CHECKOUT_ROOT="$(detect_checkout)"
+FB_TRUNK="$CHECKOUT_ROOT/fbcode/github/presto-facebook-trunk"
+
+# Determine build root and suffix based on checkout
+BUILD_ROOT="/data/users/$USER/builds"
+case "$CHECKOUT_ROOT" in
+    */fbsource2) SUFFIX="-2" ;;
+    */fbsource3) SUFFIX="-3" ;;
+    *) SUFFIX="" ;;
+esac
+FB_BUILD_ROOT="$BUILD_ROOT/presto-facebook-trunk${SUFFIX}"
+
+# x509 credentials
+X509_PEM="/var/facebook/credentials/$USER/x509/$USER.pem"
+
+# Java 17 — required for the --add-opens flags in MAVEN_OPTS. The script can be
+# invoked from non-interactive contexts (cron, agent harnesses) where ~/.localrc
+# isn't sourced, so set JAVA_HOME explicitly. Matches the path in ~/.localrc.
+if [[ -z "${JAVA_HOME:-}" ]] || [[ ! -x "${JAVA_HOME}/bin/java" ]]; then
+    export JAVA_HOME=/usr/local/java-runtime/impl/17
+fi
+export PATH="$JAVA_HOME/bin:$PATH"
+
+# Ports — overridable via env vars. The in-tree etc/config.properties uses 8080
+# which can collide with system services (e.g. etserver) on some ODs, so we
+# JVM-override via -Dhttp-server.http.port / -Ddiscovery.uri (see MAVEN_OPTS
+# blocks below).
+COORDINATOR_PORT="${PRESTO_LOCAL_DEV_COORDINATOR_PORT:-8082}"
+GATEWAY_PORT="${PRESTO_LOCAL_DEV_GATEWAY_PORT:-8081}"
+
+# PID files
+PID_DIR="/tmp/presto-local-dev-$$"
+COORDINATOR_PID_FILE="/tmp/presto-local-dev-coordinator.pid"
+GATEWAY_PID_FILE="/tmp/presto-local-dev-gateway.pid"
+
+# Common env vars
+export THRIFT_TLS_CL_KEY_PATH="$X509_PEM"
+export THRIFT_TLS_CL_CERT_PATH="$X509_PEM"
+
+# Common MAVEN_OPTS shared by all components
+COMMON_MAVEN_OPTS=(
+    "-Dio.netty.native.detectNativeLibraryDuplicates=false"
+    "-ea"
+    "-Xmx2G"
+    "-XX:+ExitOnOutOfMemoryError"
+    "-Duser.timezone=America/Bahia_Banderas"
+    "-Djdk.attach.allowAttachSelf=true"
+    "-Dconfigerator.timeout=5s"
+    "-Dws.client-proxy.local-enabled=false"
+    "-Dws.client-proxy.use-environment-tier=false"
+    # Full --add-opens set from the Presto IntelliJ-on-devserver wiki. Required
+    # to silence InaccessibleObjectException on Java 17+ for any reflection
+    # outside java.lang/java.lang.reflect.
+    "--add-opens=java.base/java.io=ALL-UNNAMED"
+    "--add-opens=java.base/java.lang=ALL-UNNAMED"
+    "--add-opens=java.base/java.lang.ref=ALL-UNNAMED"
+    "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED"
+    "--add-opens=java.base/java.net=ALL-UNNAMED"
+    "--add-opens=java.base/java.nio=ALL-UNNAMED"
+    "--add-opens=java.base/java.security=ALL-UNNAMED"
+    "--add-opens=java.base/javax.security.auth=ALL-UNNAMED"
+    "--add-opens=java.base/javax.security.auth.login=ALL-UNNAMED"
+    "--add-opens=java.base/java.text=ALL-UNNAMED"
+    "--add-opens=java.base/java.util=ALL-UNNAMED"
+    "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED"
+    "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED"
+    "--add-opens=java.base/java.util.regex=ALL-UNNAMED"
+    "--add-opens=java.base/jdk.internal.loader=ALL-UNNAMED"
+    "--add-opens=java.base/sun.security.action=ALL-UNNAMED"
+    "--add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED"
+)
+
+# Out-of-tree build flags passed to Maven (not JVM)
+MAVEN_BUILD_FLAGS=(
+    "-Dout-of-tree-build-root=$FB_BUILD_ROOT"
+    "-Dout-of-tree-build=true"
+)
+
+# Coordinator-specific MAVEN_OPTS
+COORDINATOR_MAVEN_OPTS=(
+    "${COMMON_MAVEN_OPTS[@]}"
+    "-Dprism.directory-listing-timeout=3m"
+    "-Dws.metadata.max-retry-time=2m"
+    "-Dws.metadata.max-backoff-time=15s"
+    "-Dws.thrift.client.write-timeout=15s"
+    "-Dws.thrift.client.read-timeout=15s"
+    "-Dws.thrift.client.receive-timeout=15s"
+    "-Dprism.otherRegion=nebraska"
+    "-Dclient-proxy.tier=ws.freeproxy.vll.client_proxy"
+    "-DUI"
+    "-Dout-of-tree-build-root=$FB_BUILD_ROOT"
+    "-Dout-of-tree-build=true"
+    "-Dlicense.report.skip=true"
+    "-DwithPlugins=true"
+    "-Dconfig=etc/config.properties"
+    "-Dlog.levels-file=etc/log.properties"
+    # Override the port baked into etc/config.properties (which is 8080 — taken
+    # by etserver on some ODs). Keep discovery.uri pointed at the same port so
+    # the coordinator can register itself.
+    "-Dhttp-server.http.port=$COORDINATOR_PORT"
+    "-Ddiscovery.uri=http://localhost:$COORDINATOR_PORT"
+    # Disable SOCKS proxy — the in-tree config points at localhost:1080 which
+    # may not be running after an OD restart.
+    "-Dthrift.client.socks-proxy="
+)
+
+# Gateway-specific MAVEN_OPTS
+GATEWAY_MAVEN_OPTS=(
+    "${COMMON_MAVEN_OPTS[@]}"
+)
+
+wait_for_port() {
+    local port="$1"
+    local name="$2"
+    local max_wait="${3:-120}"
+    local elapsed=0
+
+    echo "  Waiting for $name on port $port..."
+    while ! curl -s --noproxy '*' --connect-timeout 1 "http://localhost:$port/v1/info" >/dev/null 2>&1 \
+       && ! curl -s --noproxy '*' --connect-timeout 1 "http://localhost:$port/v1/gateway/status" >/dev/null 2>&1; do
+        sleep 5
+        elapsed=$((elapsed + 5))
+        if [[ $elapsed -ge $max_wait ]]; then
+            echo "  ERROR: $name did not start within ${max_wait}s"
+            return 1
+        fi
+        echo "  Still waiting... (${elapsed}s)"
+    done
+    echo "  $name is up on port $port"
+}
+
+start_coordinator() {
+    if [[ -f "$COORDINATOR_PID_FILE" ]] && kill -0 "$(cat "$COORDINATOR_PID_FILE")" 2>/dev/null; then
+        echo "Coordinator already running (PID $(cat "$COORDINATOR_PID_FILE"))"
+        return 0
+    fi
+
+    echo "=== Starting Presto Coordinator ==="
+    echo "  Checkout: $CHECKOUT_ROOT"
+    echo "  Build root: $FB_BUILD_ROOT"
+    echo "  Module: presto-facebook-main"
+    echo "  Port: $COORDINATOR_PORT"
+    echo ""
+
+    local log_file="/tmp/presto-local-coordinator.log"
+
+    (
+        cd "$FB_TRUNK/presto-facebook-main"
+        MAVEN_OPTS="${COORDINATOR_MAVEN_OPTS[*]}" \
+        mvn exec:java \
+            -Dexec.mainClass=com.facebook.presto.facebook.PrestoFacebook \
+            -Dexec.classpathScope=test \
+            "${MAVEN_BUILD_FLAGS[@]}" \
+            > "$log_file" 2>&1
+    ) &
+    local pid=$!
+    echo "$pid" > "$COORDINATOR_PID_FILE"
+    echo "  Started coordinator (PID $pid, log: $log_file)"
+
+    wait_for_port "$COORDINATOR_PORT" "Coordinator"
+}
+
+start_gateway() {
+    if [[ -f "$GATEWAY_PID_FILE" ]] && kill -0 "$(cat "$GATEWAY_PID_FILE")" 2>/dev/null; then
+        echo "Gateway already running (PID $(cat "$GATEWAY_PID_FILE"))"
+        return 0
+    fi
+
+    echo "=== Starting Presto Gateway ==="
+    echo "  Checkout: $CHECKOUT_ROOT"
+    echo "  Build root: $FB_BUILD_ROOT"
+    echo "  Module: presto-gateway"
+    echo "  Port: $GATEWAY_PORT"
+    echo ""
+
+    local log_file="/tmp/presto-local-gateway.log"
+
+    (
+        cd "$FB_TRUNK/presto-gateway"
+        MAVEN_OPTS="${GATEWAY_MAVEN_OPTS[*]}" \
+        mvn exec:java \
+            -Dexec.mainClass=com.facebook.presto.gateway.LocalPrestoGateway \
+            -Dexec.classpathScope=test \
+            "${MAVEN_BUILD_FLAGS[@]}" \
+            > "$log_file" 2>&1
+    ) &
+    local pid=$!
+    echo "$pid" > "$GATEWAY_PID_FILE"
+    echo "  Started gateway (PID $pid, log: $log_file)"
+
+    wait_for_port "$GATEWAY_PORT" "Gateway"
+}
+
+stop_all() {
+    echo "=== Stopping local Presto ==="
+    for pid_file in "$COORDINATOR_PID_FILE" "$GATEWAY_PID_FILE"; do
+        if [[ -f "$pid_file" ]]; then
+            local pid
+            pid="$(cat "$pid_file")"
+            local name
+            if [[ "$pid_file" == *coordinator* ]]; then name="Coordinator"; else name="Gateway"; fi
+            if kill -0 "$pid" 2>/dev/null; then
+                echo "  Stopping $name (PID $pid)..."
+                kill "$pid" 2>/dev/null || true
+                # Also kill child Java processes
+                pkill -P "$pid" 2>/dev/null || true
+                sleep 2
+                # Force kill if still alive
+                if kill -0 "$pid" 2>/dev/null; then
+                    kill -9 "$pid" 2>/dev/null || true
+                    pkill -9 -P "$pid" 2>/dev/null || true
+                fi
+                echo "  $name stopped"
+            else
+                echo "  $name not running"
+            fi
+            rm -f "$pid_file"
+        fi
+    done
+}
+
+show_status() {
+    echo "=== Local Presto Status ==="
+    echo ""
+
+    # Coordinator
+    if [[ -f "$COORDINATOR_PID_FILE" ]] && kill -0 "$(cat "$COORDINATOR_PID_FILE")" 2>/dev/null; then
+        local info
+        info=$(curl -s --noproxy '*' --connect-timeout 2 "http://localhost:$COORDINATOR_PORT/v1/info" 2>/dev/null || echo "unreachable")
+        echo "  Coordinator: RUNNING (PID $(cat "$COORDINATOR_PID_FILE"))"
+        echo "    http://localhost:$COORDINATOR_PORT  $info"
+        echo "    Log: /tmp/presto-local-coordinator.log"
+    else
+        echo "  Coordinator: STOPPED"
+    fi
+    echo ""
+
+    # Gateway
+    if [[ -f "$GATEWAY_PID_FILE" ]] && kill -0 "$(cat "$GATEWAY_PID_FILE")" 2>/dev/null; then
+        local status
+        status=$(curl -s --noproxy '*' --connect-timeout 2 "http://localhost:$GATEWAY_PORT/v1/gateway/status" 2>/dev/null || echo "unreachable")
+        echo "  Gateway: RUNNING (PID $(cat "$GATEWAY_PID_FILE"))"
+        echo "    http://localhost:$GATEWAY_PORT  $status"
+        echo "    Log: /tmp/presto-local-gateway.log"
+    else
+        echo "  Gateway: STOPPED"
+    fi
+}
+
+# --- Main ---
+
+cmd="${1:-}"
+case "$cmd" in
+    coordinator)
+        start_coordinator
+        ;;
+    gateway)
+        start_gateway
+        ;;
+    all)
+        start_coordinator
+        echo ""
+        start_gateway
+        echo ""
+        show_status
+        ;;
+    stop)
+        stop_all
+        ;;
+    status)
+        show_status
+        ;;
+    -h|--help|"")
+        echo "Usage: presto-local-dev {coordinator|gateway|all|stop|status}"
+        echo ""
+        echo "Commands:"
+        echo "  coordinator   Start a local Presto coordinator (port \$PRESTO_LOCAL_DEV_COORDINATOR_PORT, default 8082)"
+        echo "  gateway       Start a local Presto gateway (port \$PRESTO_LOCAL_DEV_GATEWAY_PORT, default 8081)"
+        echo "  all           Start both (coordinator first, then gateway)"
+        echo "  stop          Stop all local Presto processes"
+        echo "  status        Show status of local Presto processes"
+        echo ""
+        echo "Logs:"
+        echo "  /tmp/presto-local-coordinator.log"
+        echo "  /tmp/presto-local-gateway.log"
+        ;;
+    *)
+        echo "Unknown command: $cmd"
+        echo "Run with --help for usage"
+        exit 1
+        ;;
+esac
