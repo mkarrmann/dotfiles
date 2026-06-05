@@ -99,6 +99,8 @@ local SSL_STATE = {
   blocked = false,
   ---@type boolean controls how current status is displayed and what actions are available
   merge_conflict = false,
+  ---@type string[] hop labels currently bound as buffer-local keymaps
+  hop_labels_set = {},
 }
 
 ---@type table<integer, Hg.diff_session>
@@ -772,6 +774,10 @@ end
 ---@param lines string[]
 local function ssl_place_hop_labels(bufnr, lines)
   vim.api.nvim_buf_clear_namespace(bufnr, SSL_HOP_NS, 0, -1)
+  for _, label in ipairs(SSL_STATE.hop_labels_set) do
+    pcall(vim.api.nvim_buf_del_keymap, bufnr, "n", label)
+  end
+  SSL_STATE.hop_labels_set = {}
   for label_idx, line_nr in ipairs(ssl_hop_ordered_lines(lines)) do
     local label = HOP_LABELS[label_idx]
     if not label then
@@ -781,6 +787,11 @@ local function ssl_place_hop_labels(bufnr, lines)
       virt_text = { { " [" .. label .. "]", "HgSslHopLabel" } },
       virt_text_pos = "eol",
     })
+    local target_line = line_nr
+    vim.keymap.set("n", label, function()
+      vim.api.nvim_win_set_cursor(0, { target_line, 0 })
+    end, { buffer = bufnr, desc = "Hop to labeled commit" })
+    SSL_STATE.hop_labels_set[#SSL_STATE.hop_labels_set + 1] = label
   end
 end
 
@@ -1629,7 +1640,7 @@ local function HgSsl(opts)
       "HG SSL Buffer",
       "===================================================",
       "Navigate to next/prev commit with j/k",
-      "f     hop to a labeled commit",
+      "type the 2-char label shown at end of line to hop to that commit",
       "",
       "Keymaps:",
       "<cr>  select available commands for selected commit",
@@ -1681,35 +1692,6 @@ local function HgSsl(opts)
     end
   end, { buffer = true, desc = "Open diff in phabricator" })
 
-  vim.keymap.set("n", "f", function()
-    local lines = vim.api.nvim_buf_get_lines(SSL_STATE.bufnr, 0, -1, false)
-    local label_to_line = {}
-    for label_idx, line_nr in ipairs(ssl_hop_ordered_lines(lines)) do
-      local label = HOP_LABELS[label_idx]
-      if not label then
-        break
-      end
-      label_to_line[label] = line_nr
-    end
-
-    if label_idx == 0 then
-      return
-    end
-
-    local ok, c1 = pcall(vim.fn.getcharstr)
-    if not ok or not c1 then
-      return
-    end
-    local ok2, c2 = pcall(vim.fn.getcharstr)
-    if not ok2 or not c2 then
-      return
-    end
-
-    local target = label_to_line[c1 .. c2]
-    if target then
-      vim.api.nvim_win_set_cursor(0, { target, 0 })
-    end
-  end, { buffer = true, desc = "Hop to labeled commit" })
 end
 
 local function HgCommit()
