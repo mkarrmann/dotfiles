@@ -1,54 +1,69 @@
 #!/usr/bin/env bash
-# Provision a fresh devserver with the standard per-workspace Eden checkout
-# layout:
+# Provision the standard per-workspace checkout layout:
 #   ~/<PRIMARY_NAME>/{fbsource,configerator}
-#   ~/<SECONDARY_NAME>/{fbsource,configerator}
-#   ~/<TERTIARY_NAME>/{fbsource,configerator}
+#   ~/<NAME>/{fbsource,configerator}    (for each additional workspace)
 #
-# Plus the legacy convenience symlinks that older tools / cached references
-# expect:
-#   ~/fbsource     -> ~/local/fbsource     -> ~/<PRIMARY_NAME>/fbsource
-#   ~/configerator -> ~/local/configerator -> ~/<PRIMARY_NAME>/configerator
+# fbsource layout: primary is a full fbclone; every other workspace's
+# fbsource is an sl worktree linked to the primary (shared backing store,
+# inherited prefetch/redirections, one sl pull updates all).
 #
-# And the VS Code workspace symlinks:
-#   ~/<NAME>.code-workspace -> ~/dotfiles/<NAME>.code-workspace
+# configerator layout: every workspace gets an independent fbclone, since
+# sl worktree has no configerator support yet (as of 2026-06).
 #
-# Assumes a fresh machine: ~/dotfiles is already cloned and init.sh has run.
-# Idempotent: safe to re-run after partial success.
+# Also produces:
+#   ~/<NAME>.code-workspace   -> ~/dotfiles/<NAME>.code-workspace
+#   ~/local/fbsource          -> ~/<PRIMARY>/fbsource
+#   ~/local/configerator      -> ~/<PRIMARY>/configerator
+#   ~/fbsource                -> ~/local/fbsource
+#   ~/configerator            -> ~/local/configerator
 #
-# Out of scope: ~/.localrc, Maven, Rust, ~/.claude, gdrive, BUILD_ROOT, etc.
+# Idempotent. Safe to re-run after partial success and after adding a new
+# workspace to the WORKSPACES list.
+#
+# Migration behavior: if a non-primary fbsource exists as a standalone
+# fbclone (not linked to the primary), it's destroyed and re-added as an
+# sl worktree. The destruction is refused if there's uncommitted or
+# shelved work in that mount; pass --force to override. Draft commits
+# survive via commit cloud.
 #
 # Usage:
-#   setup-checkouts [--dry-run]
-#                   [--primary NAME] [--secondary NAME] [--tertiary NAME]
+#   setup-checkouts [--dry-run] [--force] [--primary NAME]
+#                   [--workspaces NAME,NAME,...]
 #
-# Env overrides: PRIMARY_NAME, SECONDARY_NAME, TERTIARY_NAME
+# Env overrides: PRIMARY_NAME, WORKSPACES (space-separated)
 
 set -euo pipefail
 
 PRIMARY_NAME="${PRIMARY_NAME:-checkout1}"
-SECONDARY_NAME="${SECONDARY_NAME:-checkout2}"
-TERTIARY_NAME="${TERTIARY_NAME:-checkout3}"
-QUATERNARY_NAME="${QUATERNARY_NAME:-checkout4}"
+# All workspaces, including the primary, in order. The first entry is the
+# primary; the rest are provisioned as worktrees.
+if [[ -z "${WORKSPACES+x}" ]]; then
+  WORKSPACES=(checkout1 checkout2 checkout3 checkout4)
+fi
 DRY_RUN=0
+FORCE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)    DRY_RUN=1; shift ;;
+    --force)      FORCE=1; shift ;;
     --primary)    PRIMARY_NAME="$2"; shift 2 ;;
-    --secondary)  SECONDARY_NAME="$2"; shift 2 ;;
-    --tertiary)   TERTIARY_NAME="$2"; shift 2 ;;
-    --quaternary) QUATERNARY_NAME="$2"; shift 2 ;;
-    -h|--help)    sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --workspaces) IFS=', ' read -r -a WORKSPACES <<< "$2"; shift 2 ;;
+    -h|--help)    sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 
+# Ensure primary is in WORKSPACES and is the first entry.
+_filtered=()
+for w in "${WORKSPACES[@]}"; do
+  [[ "$w" == "$PRIMARY_NAME" ]] || _filtered+=("$w")
+done
+WORKSPACES=("$PRIMARY_NAME" "${_filtered[@]}")
+
 LOG_DIR="$HOME/setup-checkouts-$(date +%Y%m%d-%H%M%S)"
 PRIMARY_DIR="$HOME/$PRIMARY_NAME"
-SECONDARY_DIR="$HOME/$SECONDARY_NAME"
-TERTIARY_DIR="$HOME/$TERTIARY_NAME"
-QUATERNARY_DIR="$HOME/$QUATERNARY_NAME"
+PRIMARY_FBSOURCE="$PRIMARY_DIR/fbsource"
 
 log()  { printf '\n=== %s ===\n' "$*"; }
 warn() { printf 'WARN: %s\n' "$*" >&2; }
@@ -61,20 +76,6 @@ confirm() {
   [[ "$ans" == "yes" ]] || die "Aborted by user."
 }
 
-eden_mounts() {
-  eden list 2>/dev/null | awk 'NR>1 {print $1}' | sort -u
-}
-
-is_inside_mount() {
-  local path="$1" m
-  for m in $(eden_mounts); do
-    case "$path" in "$m"|"$m"/*) return 0 ;; esac
-  done
-  return 1
-}
-
-# Symlink helper: ensure $link -> $target. Idempotent. Refuses to clobber
-# anything that isn't already the expected symlink.
 ensure_symlink() {
   local target="$1" link="$2"
   if [[ -L "$link" ]]; then
@@ -97,71 +98,190 @@ ensure_symlink() {
   run ln -s "$target" "$link"
 }
 
+eden_mounts() {
+  eden list 2>/dev/null | awk 'NR>1 {print $1}' | sort -u
+}
+
+is_eden_mount() {
+  local path="$1" m
+  for m in $(eden_mounts); do
+    [[ "$path" == "$m" ]] && return 0
+  done
+  return 1
+}
+
+is_inside_mount() {
+  local path="$1" m
+  for m in $(eden_mounts); do
+    case "$path" in "$m"|"$m"/*) return 0 ;; esac
+  done
+  return 1
+}
+
+# True iff $path is a linked worktree of the primary's worktree group.
+is_linked_worktree_of_primary() {
+  local path="$1"
+  [[ -d "$PRIMARY_FBSOURCE" ]] || return 1
+  sl --cwd "$PRIMARY_FBSOURCE" worktree list -Tjson 2>/dev/null \
+    | jq -e --arg p "$path" '.[] | select(.path == $p)' >/dev/null 2>&1
+}
+
+# True iff $repo is clean (no uncommitted changes, no shelves). Drafts
+# don't count — they survive via commit cloud.
+is_clean() {
+  local repo="$1"
+  [[ -z "$(sl --cwd "$repo" status 2>/dev/null)" ]] || return 1
+  [[ -z "$(sl --cwd "$repo" shelve --list 2>/dev/null)" ]] || return 1
+  return 0
+}
+
+# Prints the dirty details for $repo (called from the warning block).
+report_dirty() {
+  local repo="$1"
+  local st shelves draft_count
+
+  st=$(sl --cwd "$repo" status 2>/dev/null || true)
+  if [[ -n "$st" ]]; then
+    echo "    uncommitted changes:"
+    echo "$st" | sed 's/^/      /'
+  fi
+  shelves=$(sl --cwd "$repo" shelve --list 2>/dev/null || true)
+  if [[ -n "$shelves" ]]; then
+    echo "    shelves:"
+    echo "$shelves" | sed 's/^/      /'
+  fi
+  draft_count=$(sl --cwd "$repo" log -r 'draft()' -T '{node}\n' 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$draft_count" -gt 0 ]]; then
+    echo "    $draft_count draft commit(s) — preserved by commit cloud, not destroyed"
+  fi
+}
+
 # ── Preflight ───────────────────────────────────────────────────────
 mkdir -p "$LOG_DIR"
 log "Setup log: $LOG_DIR"
 echo "Hostname:    $(hostname)"
-echo "Primary:     $PRIMARY_DIR"
-echo "Secondary:   $SECONDARY_DIR"
-echo "Tertiary:    $TERTIARY_DIR"
-echo "Quaternary:  $QUATERNARY_DIR"
-(( DRY_RUN )) && echo "Mode:      DRY RUN — no changes will be made"
+echo "Primary:     $PRIMARY_DIR  (fbclone)"
+for ws in "${WORKSPACES[@]:1}"; do
+  echo "Workspace:   $HOME/$ws  (worktree + configerator fbclone)"
+done
+(( DRY_RUN )) && echo "Mode:        DRY RUN — no changes will be made"
+(( FORCE ))   && echo "Mode:        FORCE — dirty fbsource mounts will be destroyed"
 
 cd "$HOME"
 if is_inside_mount "$PWD"; then
   die "cwd $PWD is inside an Eden mount. Open a fresh shell in \$HOME and re-run."
 fi
 
-for cmd in eden fbclone sl; do
+for cmd in eden fbclone sl jq; do
   command -v "$cmd" >/dev/null || die "$cmd not on PATH"
 done
 
 [[ -d "$HOME/dotfiles" ]] || die "$HOME/dotfiles not found — clone dotfiles and run init.sh first"
 
-# ── Phase 1: Inventory ──────────────────────────────────────────────
-# Record existing mounts for the log. We don't remove anything — fresh-machine
-# script. If there's a real conflict (a mount already at one of our target
-# paths), we skip its clone in Phase 3.
-log "Phase 1: Inventory existing Eden mounts"
-mapfile -t MOUNTS < <(eden_mounts)
-if (( ${#MOUNTS[@]} == 0 )); then
-  echo "  (none)"
+# ── Phase 1: ~/.hgrc opt-in ─────────────────────────────────────────
+log "Phase 1: ensure worktree.enabled = true"
+HGRC="$HOME/.hgrc"
+hgrc_check_cwd="$PRIMARY_FBSOURCE"
+[[ -d "$hgrc_check_cwd" ]] || hgrc_check_cwd="$HOME"
+current=$(sl --cwd "$hgrc_check_cwd" config worktree.enabled 2>/dev/null || true)
+if [[ "$current" == "true" ]]; then
+  echo "  already enabled"
 else
-  printf '  %s\n' "${MOUNTS[@]}"
-fi
-printf '%s\n' "${MOUNTS[@]}" > "$LOG_DIR/mounts.txt"
-
-# ── Phase 2: Plan + confirm ─────────────────────────────────────────
-log "Phase 2: Plan"
-TARGETS=(
-  "$PRIMARY_DIR/fbsource:fbsource"
-  "$PRIMARY_DIR/configerator:configerator"
-  "$SECONDARY_DIR/fbsource:fbsource"
-  "$SECONDARY_DIR/configerator:configerator"
-  "$TERTIARY_DIR/fbsource:fbsource"
-  "$TERTIARY_DIR/configerator:configerator"
-  "$QUATERNARY_DIR/fbsource:fbsource"
-  "$QUATERNARY_DIR/configerator:configerator"
-)
-echo "Will fbclone:"
-for t in "${TARGETS[@]}"; do
-  dest="${t%:*}"; repo="${t#*:}"
-  if [[ -e "$dest" ]]; then
-    echo "  $dest  (SKIP — already exists)"
-  else
-    echo "  $dest  (fbclone $repo)"
+  echo "  appending [worktree] enabled = true to $HGRC"
+  if (( ! DRY_RUN )); then
+    printf '\n[worktree]\nenabled = true\n' >> "$HGRC"
   fi
+fi
+
+# ── Phase 2: Plan ───────────────────────────────────────────────────
+# Walk each workspace and classify what we'd do; show the plan; confirm.
+log "Phase 2: Plan"
+declare -A FBSOURCE_ACTION   # path -> action: skip|create|migrate|skip-dirty
+declare -A CONFIGERATOR_ACTION
+PLAN=()
+
+for ws in "${WORKSPACES[@]}"; do
+  ws_dir="$HOME/$ws"
+  fb="$ws_dir/fbsource"
+  conf="$ws_dir/configerator"
+
+  # ── fbsource ──
+  if [[ "$ws" == "$PRIMARY_NAME" ]]; then
+    if [[ ! -e "$fb" ]]; then
+      FBSOURCE_ACTION["$fb"]="fbclone-primary"
+    elif is_eden_mount "$fb"; then
+      FBSOURCE_ACTION["$fb"]="skip"
+    else
+      FBSOURCE_ACTION["$fb"]="error-exists-not-mount"
+    fi
+  else
+    if [[ ! -e "$fb" ]]; then
+      FBSOURCE_ACTION["$fb"]="create-worktree"
+    elif ! is_eden_mount "$fb"; then
+      FBSOURCE_ACTION["$fb"]="error-exists-not-mount"
+    elif is_linked_worktree_of_primary "$fb"; then
+      FBSOURCE_ACTION["$fb"]="skip"
+    else
+      # Standalone fbclone — needs migration.
+      if is_clean "$fb"; then
+        FBSOURCE_ACTION["$fb"]="migrate"
+      else
+        FBSOURCE_ACTION["$fb"]=$( (( FORCE )) && echo "migrate-force" || echo "skip-dirty" )
+      fi
+    fi
+  fi
+
+  # ── configerator ──
+  if [[ ! -e "$conf" ]]; then
+    CONFIGERATOR_ACTION["$conf"]="fbclone"
+  elif is_eden_mount "$conf"; then
+    CONFIGERATOR_ACTION["$conf"]="skip"
+  else
+    CONFIGERATOR_ACTION["$conf"]="error-exists-not-mount"
+  fi
+
+  PLAN+=("$ws|$fb|${FBSOURCE_ACTION[$fb]}|$conf|${CONFIGERATOR_ACTION[$conf]}")
+done
+
+# Render plan.
+echo
+printf '  %-12s  %-7s %-22s  %-22s\n' "workspace" "" "fbsource" "configerator"
+for entry in "${PLAN[@]}"; do
+  IFS='|' read -r ws fb fb_action conf conf_action <<< "$entry"
+  marker=""
+  [[ "$ws" == "$PRIMARY_NAME" ]] && marker="(primary)"
+  printf '  %-12s  %-7s %-22s  %-22s\n' "$ws" "$marker" "$fb_action" "$conf_action"
 done
 echo
-echo "Will create symlinks:"
-echo "  ~/$PRIMARY_NAME.code-workspace    -> ~/dotfiles/$PRIMARY_NAME.code-workspace"
-echo "  ~/$SECONDARY_NAME.code-workspace  -> ~/dotfiles/$SECONDARY_NAME.code-workspace"
-echo "  ~/$TERTIARY_NAME.code-workspace   -> ~/dotfiles/$TERTIARY_NAME.code-workspace"
-echo "  ~/$QUATERNARY_NAME.code-workspace -> ~/dotfiles/$QUATERNARY_NAME.code-workspace"
-echo "  ~/local/fbsource                 -> $PRIMARY_DIR/fbsource"
-echo "  ~/local/configerator             -> $PRIMARY_DIR/configerator"
-echo "  ~/fbsource                       -> ~/local/fbsource"
-echo "  ~/configerator                   -> ~/local/configerator"
+
+# Surface any dirty-skip warnings.
+any_dirty=0
+for entry in "${PLAN[@]}"; do
+  IFS='|' read -r ws fb fb_action _ _ <<< "$entry"
+  if [[ "$fb_action" == "skip-dirty" ]]; then
+    any_dirty=1
+    echo "  $fb has uncommitted/shelved work; will be SKIPPED (pass --force to destroy):"
+    report_dirty "$fb"
+    echo
+  fi
+done
+(( any_dirty )) && echo "  Re-run with --force to destroy dirty fbclones and re-add as worktrees."
+
+# Surface non-mount errors.
+for entry in "${PLAN[@]}"; do
+  IFS='|' read -r _ fb fb_action conf conf_action <<< "$entry"
+  [[ "$fb_action"   == "error-exists-not-mount" ]] && warn "$fb exists but is not an Eden mount; will skip"
+  [[ "$conf_action" == "error-exists-not-mount" ]] && warn "$conf exists but is not an Eden mount; will skip"
+done
+
+echo "Will also create symlinks:"
+for ws in "${WORKSPACES[@]}"; do
+  echo "  ~/$ws.code-workspace -> ~/dotfiles/$ws.code-workspace"
+done
+echo "  ~/local/fbsource      -> $PRIMARY_DIR/fbsource"
+echo "  ~/local/configerator  -> $PRIMARY_DIR/configerator"
+echo "  ~/fbsource            -> ~/local/fbsource"
+echo "  ~/configerator        -> ~/local/configerator"
 echo
 
 if (( DRY_RUN )); then
@@ -170,89 +290,124 @@ if (( DRY_RUN )); then
 fi
 confirm "Proceed?"
 
-# ── Phase 3: fbclone ────────────────────────────────────────────────
-log "Phase 3: fbclone"
-run mkdir -p "$PRIMARY_DIR" "$SECONDARY_DIR" "$TERTIARY_DIR" "$QUATERNARY_DIR"
+# ── Phase 3: Bootstrap primary (if missing) ─────────────────────────
+log "Phase 3: Primary"
+case "${FBSOURCE_ACTION[$PRIMARY_FBSOURCE]:-}" in
+  fbclone-primary)
+    run mkdir -p "$PRIMARY_DIR"
+    run fbclone fbsource "$PRIMARY_FBSOURCE" \
+      || die "fbclone primary fbsource failed — cannot continue (worktrees need a primary)"
+    ;;
+  skip)
+    echo "  $PRIMARY_FBSOURCE already an Eden mount"
+    ;;
+  *)
+    die "primary fbsource in unexpected state: ${FBSOURCE_ACTION[$PRIMARY_FBSOURCE]:-unknown}"
+    ;;
+esac
 
-clone_one() {
-  local repo="$1" dest="$2"
-  if [[ -e "$dest" ]]; then
-    echo "  $dest already exists, skipping fbclone"
-    return
-  fi
-  if ! run fbclone "$repo" "$dest"; then
-    warn "fbclone $repo $dest failed"
-  fi
-}
+primary_conf_path="$PRIMARY_DIR/configerator"
+case "${CONFIGERATOR_ACTION[$primary_conf_path]:-}" in
+  fbclone)  run fbclone configerator "$primary_conf_path" || warn "fbclone primary configerator failed" ;;
+  skip)     echo "  $primary_conf_path already an Eden mount" ;;
+esac
 
-clone_one fbsource     "$PRIMARY_DIR/fbsource"
-clone_one configerator "$PRIMARY_DIR/configerator"
-clone_one fbsource     "$SECONDARY_DIR/fbsource"
-clone_one configerator "$SECONDARY_DIR/configerator"
-clone_one fbsource     "$TERTIARY_DIR/fbsource"
-clone_one configerator "$TERTIARY_DIR/configerator"
-clone_one fbsource     "$QUATERNARY_DIR/fbsource"
-clone_one configerator "$QUATERNARY_DIR/configerator"
+# ── Phase 4: Provision non-primary workspaces ───────────────────────
+log "Phase 4: Workspaces (fbsource as worktree, configerator as fbclone)"
+failures=0
 
-# ── Phase 4: VS Code workspace symlinks ─────────────────────────────
-log "Phase 4: VS Code workspace symlinks"
-for name in "$PRIMARY_NAME" "$SECONDARY_NAME" "$TERTIARY_NAME" "$QUATERNARY_NAME"; do
-  src="$HOME/dotfiles/$name.code-workspace"
-  dest="$HOME/$name.code-workspace"
+for ws in "${WORKSPACES[@]:1}"; do
+  ws_dir="$HOME/$ws"
+  fb="$ws_dir/fbsource"
+  conf="$ws_dir/configerator"
+
+  echo
+  echo "-- $ws"
+  run mkdir -p "$ws_dir"
+
+  # fbsource
+  case "${FBSOURCE_ACTION[$fb]}" in
+    skip)
+      echo "  fbsource: already a worktree of primary"
+      ;;
+    create-worktree)
+      if ! ( cd "$PRIMARY_FBSOURCE" && run sl worktree add "$fb" --label "$ws" ); then
+        warn "sl worktree add $fb failed"
+        ((failures++)) || true
+      fi
+      ;;
+    migrate|migrate-force)
+      [[ "${FBSOURCE_ACTION[$fb]}" == "migrate-force" ]] && warn "  fbsource is DIRTY; destroying anyway (--force)"
+      if ! run eden rm -y "$fb"; then
+        warn "eden rm $fb failed; skipping fbsource"
+        ((failures++)) || true
+      elif ! ( cd "$PRIMARY_FBSOURCE" && run sl worktree add "$fb" --label "$ws" ); then
+        warn "sl worktree add $fb failed after eden rm"
+        ((failures++)) || true
+      fi
+      ;;
+    skip-dirty)
+      warn "  fbsource is dirty; skipped (re-run with --force to destroy)"
+      ;;
+    error-exists-not-mount)
+      warn "  fbsource path exists but is not an Eden mount; skipped"
+      ;;
+  esac
+
+  # configerator
+  case "${CONFIGERATOR_ACTION[$conf]}" in
+    fbclone)
+      if ! run fbclone configerator "$conf"; then
+        warn "fbclone configerator $conf failed"
+        ((failures++)) || true
+      fi
+      ;;
+    skip)
+      echo "  configerator: already an Eden mount"
+      ;;
+    error-exists-not-mount)
+      warn "  configerator path exists but is not an Eden mount; skipped"
+      ;;
+  esac
+done
+
+# ── Phase 5: code-workspace symlinks ────────────────────────────────
+log "Phase 5: VS Code workspace symlinks"
+for ws in "${WORKSPACES[@]}"; do
+  src="$HOME/dotfiles/$ws.code-workspace"
+  dest="$HOME/$ws.code-workspace"
   if [[ ! -e "$src" ]]; then
-    warn "$src missing — skipping symlink for $name (create it in dotfiles first)"
+    warn "$src missing — skipping symlink for $ws (create it in dotfiles first)"
     continue
   fi
   ensure_symlink "$src" "$dest" || true
 done
 
-# ── Phase 5: Legacy convenience symlinks ────────────────────────────
-# Older tools, cached paths, and various scripts still reference
-# ~/fbsource and ~/configerator. Maintain the chain:
-#   ~/<repo> -> ~/local/<repo> -> ~/<PRIMARY>/<repo>
-log "Phase 5: Legacy ~/local and ~/<repo> symlinks"
+# ── Phase 6: Legacy convenience symlinks ────────────────────────────
+log "Phase 6: Legacy ~/local and ~/<repo> symlinks"
 run mkdir -p "$HOME/local"
 for repo in fbsource configerator; do
   ensure_symlink "$PRIMARY_DIR/$repo" "$HOME/local/$repo" || true
   ensure_symlink "$HOME/local/$repo" "$HOME/$repo" || true
 done
 
-# ── Phase 6: Verify ─────────────────────────────────────────────────
-log "Phase 6: Verify"
+# ── Phase 7: Verify ─────────────────────────────────────────────────
+log "Phase 7: Verify"
 echo "+ eden list"
 eden list 2>&1 | sed 's/^/    /'
 echo
-for d in "$PRIMARY_DIR" "$SECONDARY_DIR" "$TERTIARY_DIR" "$QUATERNARY_DIR"; do
-  echo "+ ls $d"
-  ls "$d" 2>&1 | sed 's/^/    /'
-done
-echo
-for ws in "$PRIMARY_NAME" "$SECONDARY_NAME" "$TERTIARY_NAME" "$QUATERNARY_NAME"; do
-  link="$HOME/$ws.code-workspace"
-  if [[ -L "$link" ]]; then
-    echo "  $link -> $(readlink "$link")"
-  else
-    warn "$link is not a symlink"
-  fi
-done
-for link in "$HOME/local/fbsource" "$HOME/local/configerator" \
-            "$HOME/fbsource" "$HOME/configerator"; do
-  if [[ -L "$link" ]]; then
-    resolved=$(readlink -f "$link" 2>/dev/null || true)
-    echo "  $link -> $(readlink "$link")  (resolves to: ${resolved:-MISSING})"
-    [[ -e "$link" ]] || warn "  ^ symlink chain is dangling"
-  else
-    warn "$link is not a symlink"
-  fi
-done
+echo "+ sl worktree list (from $PRIMARY_FBSOURCE)"
+( cd "$PRIMARY_FBSOURCE" && sl worktree list 2>&1 | sed 's/^/    /' ) || true
 
-# ── Phase 7: Cleanup ────────────────────────────────────────────────
-log "Phase 7: Cleanup"
+# ── Phase 8: Cleanup ────────────────────────────────────────────────
+log "Phase 8: Cleanup"
 if command -v watchman >/dev/null; then
   run watchman watch-del-all || warn "watchman watch-del-all failed"
 fi
 
 log "Done"
-echo
 echo "Logs: $LOG_DIR"
-echo "  - mounts.txt : Eden mounts present before this script ran"
+if (( failures > 0 )); then
+  echo "Completed with ${failures} warning(s)."
+  exit 1
+fi
