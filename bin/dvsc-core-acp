@@ -10,7 +10,8 @@
 #   2. ~/checkout1/fbsource/users/mk/mkarrmann/dvsc-core-acp/.../dist/index.js
 #   3. ~/checkout2/fbsource/...
 #   4. ~/checkout3/fbsource/...
-#   5. ~/fbsource/users/mk/mkarrmann/dvsc-core-acp/.../dist/index.js
+#   5. ~/checkout4/fbsource/...
+#   6. ~/fbsource/users/mk/mkarrmann/dvsc-core-acp/.../dist/index.js
 #
 # Each candidate is checked for existence; the first hit wins.
 
@@ -37,6 +38,7 @@ resolve_dist() {
     "$HOME/checkout1/fbsource" \
     "$HOME/checkout2/fbsource" \
     "$HOME/checkout3/fbsource" \
+    "$HOME/checkout4/fbsource" \
     "$HOME/fbsource"; do
     candidate="$root/$DIST_REL"
     if [[ -f "$candidate" ]]; then
