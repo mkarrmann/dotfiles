@@ -465,6 +465,28 @@ local function dvsc_pick_and_launch(force)
   end)
 end
 
+-- Agent-path choices for the top-level picker in `<leader>aG`.
+-- `dvsc-core` defers to the existing harness/model/effort flow inside
+-- `tab_chat_set_adapter("dvsc_core_broker", …)`. The other two land on
+-- the broker-fronted direct wrappers (`claude_broker` /`codex_broker`)
+-- which have no per-launch knobs today, so they skip the inner picker.
+local AGENT_PATHS = {
+  { label = "dvsc-core (native / claude / codex / metacode)", adapter = "dvsc_core_broker" },
+  { label = "Claude (direct via claude-agent-acp)",           adapter = "claude_broker" },
+  { label = "Codex (direct via codex-acp)",                   adapter = "codex_broker" },
+}
+
+local function tab_chat_pick_agent_and_set(opts)
+  opts = opts or {}
+  vim.ui.select(AGENT_PATHS, {
+    prompt = "Agent:",
+    format_item = function(item) return item.label end,
+  }, function(choice)
+    if choice == nil then return end
+    tab_chat_set_adapter(choice.adapter, opts)
+  end)
+end
+
 -- Prime per-adapter spawn state for adapters that read `_dvsc.pending`
 -- or otherwise need bookkeeping aligned with a specific chat bufnr.
 -- Called immediately before `Chat:change_adapter` so the new ACP
@@ -1639,7 +1661,7 @@ return {
       { "<leader>aD", function() tab_chat_set_adapter("devmate",          { clear = true }) end, desc = "CodeCompanion Chat (Devmate, fresh)" },
       { "<leader>aS", function() tab_chat_set_adapter("dvsc_core",        { clear = true }) end, desc = "CodeCompanion Chat (Dvsc Core, fresh)" },
       { "<leader>ag", function() tab_chat_set_adapter("dvsc_core_broker", { clear = true, force_pick = false }) end, desc = "Dvsc Chat via broker (last config, fresh)" },
-      { "<leader>aG", function() tab_chat_set_adapter("dvsc_core_broker", { clear = true, force_pick = true })  end, desc = "Dvsc Chat via broker (pick config, fresh)" },
+      { "<leader>aG", function() tab_chat_pick_agent_and_set({ clear = true, force_pick = true }) end, desc = "Pick agent (dvsc / direct Claude / direct Codex), fresh" },
       { "<leader>aC", function() tab_chat_set_adapter("claude_broker",    { clear = true }) end, desc = "Claude Chat via broker (direct, fresh)" },
       { "<leader>aO", function() tab_chat_set_adapter("codex_broker",     { clear = true }) end, desc = "Codex Chat via broker (fresh)" },
       { "<leader>ak", tab_chat_compact, desc = "CodeCompanion: compact current ACP dvsc chat" },
