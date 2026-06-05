@@ -280,13 +280,14 @@ local function _broker_read_last_bsid()
   local body = f:read("*a")
   f:close()
   local ok, t = pcall(vim.fn.json_decode, body)
-  return (ok and type(t) == "table") and t.bsid or nil
+  if not (ok and type(t) == "table" and t.bsid) then return nil end
+  return vim.trim(t.bsid)
 end
 
 local function _broker_write_last_bsid(bsid)
   local f = io.open(BROKER_BSID_CACHE_PATH, "w")
   if not f then return end
-  f:write(vim.fn.json_encode({ bsid = bsid }))
+  f:write(vim.fn.json_encode({ bsid = vim.trim(bsid) }))
   f:close()
 end
 
@@ -411,6 +412,7 @@ local function broker_resume_or_fork(action, adapter_name)
   local prompt = (action == "fork" and "Fork bsid: ") or "Resume bsid: "
   local default = _broker_read_last_bsid() or "bsid_"
   vim.ui.input({ prompt = prompt, default = default }, function(bsid)
+    bsid = bsid and vim.trim(bsid)
     if not bsid or bsid == "" or bsid == "bsid_" then return end
     _broker_write_last_bsid(bsid)
     local target_bsid = bsid
@@ -903,6 +905,7 @@ return {
                   --      FROM sessions ORDER BY started_at DESC LIMIT 20;"
                   local default = _broker_read_last_bsid() or "bsid_"
                   vim.ui.input({ prompt = "broker_session_id: ", default = default }, function(bsid)
+                    bsid = bsid and vim.trim(bsid)
                     if not bsid or bsid == "" or bsid == "bsid_" then return end
                     _broker_write_last_bsid(bsid)
                     require("codecompanion.interactions.chat").new({
@@ -922,6 +925,7 @@ return {
                   -- `parent = source_bsid`.
                   local default = _broker_read_last_bsid() or "bsid_"
                   vim.ui.input({ prompt = "Fork bsid: ", default = default }, function(bsid)
+                    bsid = bsid and vim.trim(bsid)
                     if not bsid or bsid == "" or bsid == "bsid_" then return end
                     _broker_write_last_bsid(bsid)
                     local new_bsid = _broker_fork_saved_session(chat.adapter, bsid)
