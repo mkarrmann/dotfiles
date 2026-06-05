@@ -46,9 +46,11 @@
             "FTW-checkout1": "2",
             "FTW-checkout2": "3",
             "FTW-checkout3": "4",
-            "CCO-checkout1": "5",
-            "CCO-checkout2": "6",
-            "CCO-checkout3": "7"
+            "FTW-checkout4": "5",
+            "CCO-checkout1": "6",
+            "CCO-checkout2": "7",
+            "CCO-checkout3": "8",
+            "CCO-checkout4": "9"
           },
           "byCwd": {
             "/home/mkarrmann/checkout1": "2",
@@ -59,7 +61,10 @@
             "/home/mkarrmann/checkout2/configerator": "3",
             "/home/mkarrmann/checkout3": "4",
             "/home/mkarrmann/checkout3/fbsource": "4",
-            "/home/mkarrmann/checkout3/configerator": "4"
+            "/home/mkarrmann/checkout3/configerator": "4",
+            "/home/mkarrmann/checkout4": "5",
+            "/home/mkarrmann/checkout4/fbsource": "5",
+            "/home/mkarrmann/checkout4/configerator": "5"
           }
         }
       }
