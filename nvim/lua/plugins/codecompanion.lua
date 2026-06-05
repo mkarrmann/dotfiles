@@ -27,7 +27,7 @@ local DVSC_CACHE_PATH = vim.fn.stdpath("data") .. "/dvsc-acp-last-v2.json"
 local DVSC_MODES = { "native", "claude", "codex", "metacode" }
 
 -- Canonical model catalog. Mirrors Configerator
--- `devmate_vscode/model/model_config.cconf` (v22 as of 2026-05-12). Refresh
+-- `devmate_vscode/model/model_config.cconf` (v25 as of 2026-06-04). Refresh
 -- by re-reading `configerator/source/devmate_vscode/model/model_config.cconf`
 -- or by querying `GET /models` on a running dvsc-core (note: the HTTP
 -- endpoint strips `supports_adaptive_thinking` — only the .cconf has it).
@@ -46,7 +46,7 @@ local DVSC_MODES = { "native", "claude", "codex", "metacode" }
 -- `{effort: "HIGH"}`) into that wrong-provider config, which the LLM
 -- gateway returns empty for, surfacing as `stopReason="refusal"` after a
 -- ~60s hang. Models removed from the configerator-source list because they
--- aren't in dm-core's loaded `Loaded model config version 22` snapshot for
+-- aren't in dm-core's loaded `Loaded model config version 25` snapshot for
 -- this user (verify via `[INFO] Registered N dynamic GKs` in
 -- `/tmp/dvsc-core-acp-*.log` — missing `devmate_<model>` GK = absent):
 --   - gemini-3-flash  (no devmate_gemini_3_flash GK)
@@ -57,6 +57,7 @@ local DVSC_MODES = { "native", "claude", "codex", "metacode" }
 -- failure mode.
 local DVSC_MODELS = {
   -- Anthropic
+  { id = "claude-opus-4.8-long",   provider = "anthropic", adaptive = true  },
   { id = "claude-opus-4.7-long",   provider = "anthropic", adaptive = true  },
   { id = "claude-opus-4.6",        provider = "anthropic", adaptive = true  },
   { id = "claude-opus-4.6-long",   provider = "anthropic", adaptive = true  },
