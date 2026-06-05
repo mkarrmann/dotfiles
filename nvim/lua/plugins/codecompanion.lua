@@ -110,10 +110,12 @@ end
 -- the picker skips the prompt and the wrapper sends no `llm_config`,
 -- letting dm-core's resolved defaults (e.g. `thinking_budget_tokens=4096`
 -- for Haiku) stand.
+-- Order matters: `high` first (marked as default in the picker label), then
+-- the remaining levels low → medium → xhigh.
 local EFFORT_OPTIONS_BY_KIND = {
-  openai = { "LOW", "MEDIUM", "HIGH", "XHIGH" },
-  google = { "LOW", "MEDIUM", "HIGH" },
-  anthropic_adaptive = { "low", "medium", "high", "xhigh" },
+  openai = { "HIGH", "LOW", "MEDIUM", "XHIGH" },
+  google = { "HIGH", "LOW", "MEDIUM" },
+  anthropic_adaptive = { "high", "low", "medium", "xhigh" },
 }
 
 local function _dvsc_reasoning_kind(model)
@@ -450,7 +452,14 @@ local function _dvsc_select(force, cb)
         _dvsc_write_cache(sel)
         return cb(sel)
       end
-      _dvsc_pick(EFFORT_OPTIONS_BY_KIND[kind], "Thinking effort:", function(effort)
+      vim.ui.select(EFFORT_OPTIONS_BY_KIND[kind], {
+        prompt = "Thinking effort:",
+        format_item = function(e)
+          if e:lower() == "high" then return e .. " (default)" end
+          return e
+        end,
+      }, function(effort)
+        if effort == nil then return end
         local sel = { mode = mode, model = model, effort = effort }
         _dvsc_write_cache(sel)
         cb(sel)
