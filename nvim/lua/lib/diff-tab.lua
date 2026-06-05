@@ -155,7 +155,7 @@ end
 
 --- Keymaps ---
 
-local KEYMAPS = { "]f", "[f", "]F", "[F", "gf", "gq", "gm" }
+local KEYMAPS = { "]f", "[f", "]F", "[F", "gf", "gq", "gm", "?" }
 
 local close_diff_tab
 
@@ -221,6 +221,21 @@ local function set_keymaps(buf, manager, session_id)
 	vim.keymap.set("n", "gq", function()
 		close_diff_tab(manager:get_state(session_id))
 	end, { buffer = buf, desc = "Close diff tab" })
+
+	vim.keymap.set("n", "?", function()
+		local s = manager:get_state(session_id)
+		local lines = {
+			manager.opts.name .. " diff tab",
+			"===================================================",
+			"]f / [f   next / previous diff file",
+			"]F / [F   last / first diff file",
+			"gf        jump to diff file (picker)",
+			"gm        toggle turn / session mode (currently: " .. s.mode .. ")",
+			"gq        close diff tab",
+			"?         show this help",
+		}
+		vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO)
+	end, { buffer = buf, desc = "Show diff tab help" })
 
 	vim.keymap.set("n", "gm", function()
 		local s = manager:get_state(session_id)
@@ -357,6 +372,8 @@ local function setup_diff_tab(manager, state, session_id)
 	end
 
 	vim.api.nvim_set_current_win(state.left_win)
+
+	vim.notify("Diff tab open — press ? for help", vim.log.levels.INFO)
 end
 
 --- Manager ---
