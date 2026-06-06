@@ -485,17 +485,6 @@ local AGENT_PATHS = {
   { label = "Codex (direct via codex-acp)",                   adapter = "codex_broker" },
 }
 
-local function tab_chat_pick_agent_and_set(opts)
-  opts = opts or {}
-  vim.ui.select(AGENT_PATHS, {
-    prompt = "Agent:",
-    format_item = function(item) return item.label end,
-  }, function(choice)
-    if choice == nil then return end
-    tab_chat_set_adapter(choice.adapter, opts)
-  end)
-end
-
 -- Prime per-adapter spawn state for adapters that read `_dvsc.pending`
 -- or otherwise need bookkeeping aligned with a specific chat bufnr.
 -- Called immediately before `Chat:change_adapter` so the new ACP
@@ -599,6 +588,17 @@ local function tab_chat_set_adapter(adapter_name, opts)
     return _dvsc_select(opts.force_pick or false, apply)
   end
   apply(nil)
+end
+
+local function tab_chat_pick_agent_and_set(opts)
+  opts = opts or {}
+  vim.ui.select(AGENT_PATHS, {
+    prompt = "Agent:",
+    format_item = function(item) return item.label end,
+  }, function(choice)
+    if choice == nil then return end
+    tab_chat_set_adapter(choice.adapter, opts)
+  end)
 end
 
 -- Interactive picker for the current chat's live ACP session config
