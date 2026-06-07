@@ -24,6 +24,43 @@ local _dvsc = { pending = nil, launch_queue = {}, by_chat_bufnr = {} }
 
 local DVSC_CACHE_PATH = vim.fn.stdpath("data") .. "/dvsc-acp-last-v2.json"
 
+-- Per-launch state for the direct claude-agent-acp / codex-acp paths
+-- (`<leader>aG` → "Claude direct" / "Codex direct"). Mirrors `_dvsc` but with
+-- two channels because the direct agents take their knobs differently than the
+-- dvsc-core wrapper (which reads everything from `_meta.broker.client.metadata.dvsc`):
+--   * `pending_meta` is deep-merged into the next `session/new` `params._meta`.
+--     claude-agent-acp reads its thinking budget from
+--     `_meta.claudeCode.options.maxThinkingTokens` at session creation
+--     (acp-agent.js) — thinking is NOT a live config option, so it can only be
+--     set here. Consumed once by the patched `Connection:send_rpc_request`. The
+--     broker preserves client `_meta` siblings when it stamps its own
+--     `_meta.broker.client.metadata`, so the merged object reaches the agent.
+--   * `pending_apply` carries `{ provider, model, effort? }` applied
+--     post-establish via live config options (model for both agents; reasoning
+--     effort for codex, which exposes it as a live config option).
+-- Single-flight, same per-tab one-chat assumption as `_dvsc.pending`.
+local _direct = { pending_meta = nil, pending_apply = nil }
+
+local DIRECT_CACHE_PATH = vim.fn.stdpath("data") .. "/direct-acp-last.json"
+
+-- Claude thinking effort → `maxThinkingTokens`. claude-agent-acp reads this
+-- integer at session/new (acp-agent.js:922); there is no per-level enum. The
+-- budgets mirror Claude Code's built-in think levels. Keyed lowercase to match
+-- `EFFORT_OPTIONS_BY_KIND.anthropic_adaptive`.
+local CLAUDE_EFFORT_TOKENS = {
+  low = 4096,
+  medium = 10000,
+  high = 24000,
+  xhigh = 31999,
+}
+
+-- Direct broker adapters that support the model/effort picker, mapped to the
+-- DVSC_MODELS provider whose models they can run.
+local DIRECT_ADAPTERS = {
+  claude_broker = { provider = "anthropic" },
+  codex_broker  = { provider = "openai" },
+}
+
 local DVSC_MODES = { "native", "claude", "codex", "metacode" }
 
 -- Canonical model catalog. Mirrors Configerator
@@ -98,6 +135,18 @@ local function _models_for_mode(mode)
   return out
 end
 
+-- Models runnable by a direct broker agent, scoped to one provider. Used by the
+-- direct (`claude_broker` / `codex_broker`) picker, which has no harness dimension.
+local function _models_for_provider(provider)
+  local out = {}
+  for _, m in ipairs(DVSC_MODELS) do
+    if m.provider == provider then
+      table.insert(out, m.id)
+    end
+  end
+  return out
+end
+
 -- `reasoning_config` is a discriminated union shaped by provider in dm-core
 -- (xplat/vscode/modules/dm-core/src/shared/types/llm-types.ts). The picker
 -- emits the right shape literally — the wrapper just forwards.
@@ -163,6 +212,24 @@ end
 
 local function _dvsc_write_cache(t)
   local f = io.open(DVSC_CACHE_PATH, "w")
+  if not f then return end
+  f:write(vim.fn.json_encode(t))
+  f:close()
+end
+
+-- Direct-path cache is a dict keyed by provider ("anthropic" / "openai") so a
+-- claude selection doesn't clobber a codex one. Each slot is `{ model, effort? }`.
+local function _direct_read_cache()
+  local f = io.open(DIRECT_CACHE_PATH, "r")
+  if not f then return {} end
+  local body = f:read("*a")
+  f:close()
+  local ok, t = pcall(vim.fn.json_decode, body)
+  return (ok and type(t) == "table") and t or {}
+end
+
+local function _direct_write_cache(t)
+  local f = io.open(DIRECT_CACHE_PATH, "w")
   if not f then return end
   f:write(vim.fn.json_encode(t))
   f:close()
@@ -468,6 +535,123 @@ local function _dvsc_select(force, cb)
   end)
 end
 
+-- Pick a model (+ thinking/reasoning effort when the model supports it) for a
+-- direct broker agent, scoped to `provider`. Mirrors `_dvsc_select` minus the
+-- harness dimension, with a per-provider cache slot. Invokes `cb({ model, effort? })`.
+-- `force=true` (the `<leader>aG` path) always re-prompts.
+local function _direct_select(provider, force, cb)
+  local cache = _direct_read_cache()
+  local slot = cache[provider]
+  if not force and slot and slot.model then
+    local kind = _dvsc_reasoning_kind(slot.model)
+    if kind == nil or slot.effort then
+      return cb(slot)
+    end
+  end
+  _dvsc_pick(_models_for_provider(provider), "Model:", function(model)
+    local kind = _dvsc_reasoning_kind(model)
+    if kind == nil then
+      local sel = { model = model }
+      cache[provider] = sel
+      _direct_write_cache(cache)
+      return cb(sel)
+    end
+    vim.ui.select(EFFORT_OPTIONS_BY_KIND[kind], {
+      prompt = "Thinking effort:",
+      format_item = function(e)
+        if e:lower() == "high" then return e .. " (default)" end
+        return e
+      end,
+    }, function(effort)
+      if effort == nil then return end
+      local sel = { model = model, effort = effort }
+      cache[provider] = sel
+      _direct_write_cache(cache)
+      cb(sel)
+    end)
+  end)
+end
+
+-- Translate a `_direct_select` result for `adapter_name` into the two pending
+-- channels. claude thinking effort → `_meta.claudeCode.options.maxThinkingTokens`
+-- (creation-time only); model is always applied post-establish via config option.
+-- codex applies both model and effort post-establish.
+local function _direct_prime(adapter_name, sel)
+  local provider = DIRECT_ADAPTERS[adapter_name].provider
+  _direct.pending_meta = nil
+  _direct.pending_apply = { provider = provider, model = sel.model, effort = sel.effort }
+  if provider == "anthropic" and sel.effort then
+    local tokens = CLAUDE_EFFORT_TOKENS[sel.effort:lower()]
+    if tokens then
+      _direct.pending_meta = { claudeCode = { options = { maxThinkingTokens = tokens } } }
+    end
+  end
+end
+
+-- Apply `_direct.pending_apply` to a freshly launched chat via live config
+-- options. Model is set for both agents (with a fuzzy fallback when the
+-- hardcoded catalog id doesn't match the agent's advertised value id); reasoning
+-- effort is set for codex only (claude thinking rides session/new `_meta`).
+-- Polls for connection readiness + non-empty config options, mirroring the
+-- `try_load` pattern in `_broker_open_chat_with_session`. The set calls run
+-- inside `async_utils.sync` so `send_rpc_request` takes the coroutine-yielding
+-- path rather than blocking the editor on `vim.wait`.
+local function _direct_apply_pending(chat)
+  local apply = _direct.pending_apply
+  _direct.pending_apply = nil
+  if not apply or not chat then return end
+
+  local Connection = require("codecompanion.acp")
+  local async_utils = require("codecompanion.utils.async")
+
+  local function resolve_value(opt, wanted)
+    local lw = tostring(wanted):lower()
+    for _, v in ipairs(Connection.flatten_config_options(opt.options or {})) do
+      local name = tostring(v.name or ""):lower()
+      local val = tostring(v.value or ""):lower()
+      if val == lw or name == lw or val:find(lw, 1, true) or name:find(lw, 1, true) then
+        return v.value
+      end
+    end
+    return nil
+  end
+
+  local function run()
+    local conn = chat.acp_connection
+    async_utils.sync(function()
+      if apply.model then
+        local model_opt = conn:_find_config_option("model")
+        if model_opt then
+          conn:set_config_option(model_opt.id, resolve_value(model_opt, apply.model) or apply.model)
+        end
+      end
+      if apply.provider == "openai" and apply.effort then
+        for _, o in ipairs(conn:get_config_options()) do
+          if o.type == "select" and o.id ~= "model" then
+            local hay = ((o.id or "") .. " " .. (o.name or "") .. " " .. (o.category or "")):lower()
+            if hay:find("effort", 1, true) or hay:find("reason", 1, true) or hay:find("think", 1, true) then
+              local v = resolve_value(o, apply.effort)
+              if v then conn:set_config_option(o.id, v) end
+              break
+            end
+          end
+        end
+      end
+    end)()
+    vim.schedule(function() pcall(function() chat:update_metadata() end) end)
+  end
+
+  local function poll(attempts)
+    local conn = chat.acp_connection
+    if conn and conn:is_ready() and #(conn:get_config_options() or {}) > 0 then
+      return run()
+    end
+    if attempts <= 0 then return end
+    vim.defer_fn(function() poll(attempts - 1) end, 100)
+  end
+  vim.defer_fn(function() poll(300) end, 50)
+end
+
 local function dvsc_pick_and_launch(force)
   _dvsc_select(force, function(sel)
     _dvsc_launch_with(sel.mode, sel.model, sel.effort)
@@ -476,9 +660,12 @@ end
 
 -- Agent-path choices for the top-level picker in `<leader>aG`.
 -- `dvsc-core` defers to the existing harness/model/effort flow inside
--- `tab_chat_set_adapter("dvsc_core_broker", …)`. The other two land on
--- the broker-fronted direct wrappers (`claude_broker` /`codex_broker`)
--- which have no per-launch knobs today, so they skip the inner picker.
+-- `tab_chat_set_adapter("dvsc_core_broker", …)`. The direct wrappers
+-- (`claude_broker` / `codex_broker`) run the provider-scoped `_direct_select`
+-- picker (model + effort): the model (both) and reasoning effort (codex) are
+-- applied post-establish via live config options, and claude thinking effort is
+-- baked into the session/new `_meta` (see `_direct_apply_pending` and the
+-- `send_rpc_request` patch below).
 local AGENT_PATHS = {
   { label = "dvsc-core (native / claude / codex / metacode)", adapter = "dvsc_core_broker" },
   { label = "Claude (direct via claude-agent-acp)",           adapter = "claude_broker" },
@@ -544,6 +731,17 @@ local function tab_chat_set_adapter(adapter_name, opts)
     if adapter_name == "dvsc_core_broker" then
       return dvsc_pick_and_launch(opts.force_pick or false)
     end
+    if DIRECT_ADAPTERS[adapter_name] and opts.force_pick then
+      return _direct_select(DIRECT_ADAPTERS[adapter_name].provider, opts.force_pick or false, function(sel)
+        _direct_prime(adapter_name, sel)
+        tab_chat_open_or_toggle({ adapter = adapter_name })
+        vim.defer_fn(function()
+          local b = vim.t.codecompanion_chat_bufnr
+          local c = b and vim.api.nvim_buf_is_valid(b) and require("codecompanion").buf_get_chat(b)
+          if c then _direct_apply_pending(c) end
+        end, 50)
+      end)
+    end
     return tab_chat_open_or_toggle({ adapter = adapter_name })
   end
 
@@ -586,6 +784,13 @@ local function tab_chat_set_adapter(adapter_name, opts)
 
   if adapter_name == "dvsc_core_broker" then
     return _dvsc_select(opts.force_pick or false, apply)
+  end
+  if DIRECT_ADAPTERS[adapter_name] and opts.force_pick then
+    return _direct_select(DIRECT_ADAPTERS[adapter_name].provider, opts.force_pick or false, function(sel)
+      _direct_prime(adapter_name, sel)
+      apply(nil)
+      _direct_apply_pending(chat)
+    end)
   end
   apply(nil)
 end
@@ -1122,14 +1327,19 @@ return {
             -- Broker-fronted direct claude-agent-acp variant. Same wrapper as
             -- `dvsc_core_broker`, but pinned to `ACP_BROKER_AGENT_NAME=claude`
             -- so the session is unconditionally routed to the broker's
-            -- claude-agent-acp registration rather than dvsc-core-acp. No
-            -- per-launch picker because claude-agent-acp has no
-            -- harness/model/effort knobs the broker can pass through; if the
+            -- claude-agent-acp registration rather than dvsc-core-acp. If the
             -- claude-agent-acp registration is also the broker's configured
             -- default, this adapter is observationally identical to letting
             -- the broker pick — the explicit name selection just makes the
             -- routing intent legible regardless of which agent currently
-            -- holds the `default = true` slot. Drive via `<leader>aC`.
+            -- holds the `default = true` slot.
+            --
+            -- Model + thinking effort are chosen via `_direct_select` when
+            -- launched through `<leader>aG`: the model is applied post-establish
+            -- as a live config option, and the thinking budget rides session/new
+            -- `_meta.claudeCode.options.maxThinkingTokens` (the send_rpc_request
+            -- patch below). `<leader>aC` is the plain quick-launch (no picker,
+            -- broker/agent default model + thinking).
             claude_broker = function()
               local stderr_log = vim.fn.expand("~/.local/state/nvim/claude-agent-acp.stderr.log")
               local attach_bin = vim.fn.expand("~/.cargo/bin/acp-broker-attach-select-tag")
@@ -1165,7 +1375,11 @@ return {
             -- the upstream `codex` adapter so capability negotiation,
             -- prompt shape, and `auth_method` defaults match the codex
             -- ACP wire protocol; the broker just transports envelopes.
-            -- Drive via `<leader>aO`.
+            -- Model + reasoning effort are chosen via `_direct_select` when
+            -- launched through `<leader>aG` and applied post-establish as live
+            -- config options (codex exposes both — cf. `gpt-5-codex[high]` via
+            -- /acp_session_options). `<leader>aO` is the plain quick-launch
+            -- (no picker, agent default model + effort).
             codex_broker = function()
               local stderr_log = vim.fn.expand("~/.local/state/nvim/codex-acp.stderr.log")
               local attach_bin = vim.fn.expand("~/.cargo/bin/acp-broker-attach-select-tag")
@@ -1340,6 +1554,27 @@ return {
           })
         end
         return ok
+      end
+
+      -- HACK: inject per-launch session metadata for the direct
+      -- claude-agent-acp path. CodeCompanion's session/new sends only
+      -- { cwd, mcpServers } (acp/init.lua), but claude-agent-acp reads its
+      -- thinking budget from `_meta.claudeCode.options.maxThinkingTokens` at
+      -- session creation (acp-agent.js) — thinking is NOT a live config option,
+      -- so it can only be set here. The acp-broker preserves client `_meta`
+      -- siblings when it stamps its own `_meta.broker.client.metadata`
+      -- (envelope.rs: stamp_broker_client_metadata_preserves_existing_meta_siblings),
+      -- so the merged object reaches the agent intact. Consumed once per launch.
+      local METHODS = require("codecompanion.acp.methods")
+      local orig_send_rpc_request = Connection.send_rpc_request
+      function Connection:send_rpc_request(method, params)
+        if method == METHODS.SESSION_NEW and _direct.pending_meta then
+          local extra = _direct.pending_meta
+          _direct.pending_meta = nil
+          params = params or {}
+          params._meta = vim.tbl_deep_extend("force", params._meta or {}, extra)
+        end
+        return orig_send_rpc_request(self, method, params)
       end
 
       -- ACP elicitation/create support. The wrapper at
