@@ -243,6 +243,34 @@ local function announce_preamble(message)
   vim.notify(message, vim.log.levels.INFO, { title = "Devmate question" })
 end
 
+-- Plan-exit elicitations (the wrapper's `buildPlanExitElicitationRequest`)
+-- carry the plan file path in `_meta["dvsc.planPath"]`. Open it in a split so
+-- the user can read — and optionally edit — the plan before answering the
+-- sign-off picker. Editable on purpose: the agent reads the plan file when it
+-- proceeds, so last-minute tweaks take effect. Best-effort — a missing or
+-- unreadable path is silently skipped (the elicitation still carries a
+-- human-readable `message`).
+local PLAN_PATH_META_KEY = "dvsc.planPath"
+
+local function open_plan_file(meta)
+  if type(meta) ~= "table" then
+    return
+  end
+  local path = meta[PLAN_PATH_META_KEY]
+  if type(path) ~= "string" or path == "" or vim.fn.filereadable(path) == 0 then
+    return
+  end
+  -- Reuse an already-open window on this file if one exists, else vsplit.
+  local bufnr = vim.fn.bufnr(path)
+  if bufnr ~= -1 then
+    local win = vim.fn.bufwinid(bufnr)
+    if win ~= -1 then
+      return vim.api.nvim_set_current_win(win)
+    end
+  end
+  vim.cmd("vsplit " .. vim.fn.fnameescape(path))
+end
+
 -- Main entry: takes the raw `elicitation/create` request and replies
 -- on the same Connection. `accept` carries the picked content;
 -- `cancel` is the wrapper-friendly word for "user dismissed"; the
@@ -266,6 +294,7 @@ function M._handle_elicitation_create(conn, msg)
   end
 
   vim.schedule(function()
+    open_plan_file(params._meta)
     announce_preamble(params.message)
     ask_schema(schema, function(content)
       if content == nil then

@@ -189,6 +189,62 @@ function M.run()
 			"wire response body")
 	end
 
+	-- ─── _handle_elicitation_create: opens the plan file from _meta ─
+	-- Plan-exit elicitations carry the plan path in `_meta["dvsc.planPath"]`;
+	-- the handler must open it (so the user can review before answering)
+	-- and still complete the normal form round-trip.
+	do
+		local tmp = vim.fn.tempname() .. ".plan.md"
+		local f = assert(io.open(tmp, "w"))
+		f:write("# plan\n")
+		f:close()
+
+		local opened = {}
+		local orig_cmd = vim.cmd
+		vim.cmd = function(c) opened[#opened + 1] = c end
+
+		local sent = {}
+		local fake_conn = {
+			send_result = function(_self, id, result)
+				sent[#sent + 1] = { id = id, result = result }
+			end,
+			send_error = function(_self, _id, _message, _code) end,
+		}
+		local restore = install_ui_stub({ "Execute" })
+		elicit._handle_elicitation_create(fake_conn, {
+			id = 9,
+			method = "elicitation/create",
+			params = {
+				mode = "form",
+				message = "Review plan",
+				_meta = { ["dvsc.planPath"] = tmp },
+				requestedSchema = {
+					properties = {
+						plan_exit_decision = { type = "string", title = "Execute plan", enum = { "Execute" } },
+					},
+					required = { "plan_exit_decision" },
+				},
+			},
+		})
+		vim.wait(200, function() return #sent > 0 end)
+		restore()
+		vim.cmd = orig_cmd
+		os.remove(tmp)
+
+		local opened_plan = false
+		for _, c in ipairs(opened) do
+			if type(c) == "string" and c:find("vsplit", 1, true) and c:find(tmp, 1, true) then
+				opened_plan = true
+			end
+		end
+		if not opened_plan then
+			error("expected plan file to be opened via vsplit; saw " .. vim.inspect(opened))
+		end
+		assertEq(sent[1] and sent[1].result,
+			{ action = "accept", content = { plan_exit_decision = "Execute" } },
+			"plan-exit wire response body")
+	end
+
 	-- ─── patch(): prepare_adapter wrap advertises elicitation cap ──
 	-- Regression guard: an earlier version wrapped
 	-- connect_and_authenticate and mutated self.adapter_modified.parameters,
