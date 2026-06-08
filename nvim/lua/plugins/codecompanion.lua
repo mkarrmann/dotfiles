@@ -268,6 +268,19 @@ local function build_client_metadata(extra)
   return vim.json.encode(md)
 end
 
+-- Keep CodeCompanion chat buffers non-modifiable at rest so prompts and
+-- edits can only flow through the per-tab input queue (lib/codecompanion-queue).
+-- CodeCompanion brackets its own streaming writes with unlock/lock, and the
+-- queue does the same for its programmatic submit; every other (manual) edit
+-- hits a read-only buffer. Call this at the points CC leaves the buffer
+-- editable at rest: after `Chat:reset`, on chat open, and after session restore.
+local function lock_chat_buf(bufnr)
+  if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+    vim.bo[bufnr].modified = false
+    vim.bo[bufnr].modifiable = false
+  end
+end
+
 local function tab_chat_open_or_toggle(opts)
   opts = opts or {}
   local existing = vim.t.codecompanion_chat_bufnr
@@ -423,6 +436,7 @@ local function _broker_open_chat_with_session(adapter, acp_session_id, cwd_overr
         chat.bufnr, conn.session_id
       )
       require("codecompanion.interactions.chat.acp.render").restore_session(chat, updates)
+      lock_chat_buf(chat.bufnr)
       require("codecompanion.utils").fire("ACPChatRestored", {
         bufnr = chat.bufnr,
         id = chat.id,
@@ -1715,6 +1729,38 @@ return {
         return orig_chat_submit(self, opts)
       end
 
+      -- Read-only chat buffer: prompts and edits go through the queue only.
+      -- CodeCompanion leaves the chat buffer modifiable at rest (after
+      -- `Chat:reset`, the last call in `ready_for_input`) so it can be typed
+      -- into directly. We re-lock it there so the buffer is non-modifiable
+      -- whenever a turn settles. Streaming writes are unaffected (the builder
+      -- unlocks before each write), and the queue unlocks around its own
+      -- programmatic submit (lib/codecompanion-queue).
+      local orig_chat_reset = Chat.reset
+      function Chat:reset()
+        orig_chat_reset(self)
+        lock_chat_buf(self.bufnr)
+      end
+
+      -- Block manual insert in the chat buffer with a useful hint instead of
+      -- the raw "E21: 'modifiable' is off". Normal-mode edits are already
+      -- blocked by the buffer being non-modifiable.
+      vim.api.nvim_create_autocmd("FileType", {
+        pattern = "codecompanion",
+        callback = function(args)
+          vim.api.nvim_create_autocmd("InsertEnter", {
+            buffer = args.buf,
+            callback = function()
+              vim.cmd.stopinsert()
+              vim.notify(
+                "CodeCompanion chat is read-only. Use the input queue (<leader>aq) to send prompts.",
+                vim.log.levels.WARN
+              )
+            end,
+          })
+        end,
+      })
+
       local has_cmp, cmp = pcall(require, "cmp")
       if has_cmp then
         local QueueSlash = {}
@@ -1850,6 +1896,9 @@ return {
             else
               _dvsc.by_chat_bufnr[bufnr] = nil
             end
+            -- Chat.new's open->render leaves the buffer modifiable; re-lock so
+            -- it can only be written through the queue (see lock_chat_buf).
+            lock_chat_buf(bufnr)
             require("lib.codecompanion-queue").on_chat_opened(bufnr)
           end)
         end,

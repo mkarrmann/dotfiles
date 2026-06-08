@@ -98,6 +98,12 @@ local function submit_to_chat(chat_bufnr, text)
   local chat = require("codecompanion").buf_get_chat(chat_bufnr)
   if not chat then return false end
 
+  -- The chat buffer is kept non-modifiable at rest (read-only enforcement in
+  -- plugins/codecompanion.lua) so it can't be hand-edited. Unlock it for this
+  -- programmatic write; chat:submit() re-locks it when the request starts and
+  -- Chat:reset re-locks it when the turn ends.
+  vim.bo[chat_bufnr].modifiable = true
+
   local lines = vim.api.nvim_buf_get_lines(chat_bufnr, 0, -1, false)
 
   local last_me_idx
