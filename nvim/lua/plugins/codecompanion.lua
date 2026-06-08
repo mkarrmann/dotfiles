@@ -840,8 +840,8 @@ end
 -- wrapper bakes into `_meta.broker.client.metadata.dvsc.llm_config` at
 -- session creation (e.g. provider-shaped `reasoning_config` for
 -- thinking effort, if not also re-exposed as a SessionConfigOption)
--- requires a session restart — `<leader>aG` (force-pick + clear) does
--- the full re-prompt, `<leader>aZ` reuses the cached selection.
+-- requires a session restart — `<leader>aG`/`<leader>aZ` (force-pick +
+-- clear) do the full re-prompt, `<leader>ag` reuses the cached selection.
 local function tab_chat_pick_option()
   local bufnr = vim.t.codecompanion_chat_bufnr
   local chat = bufnr
@@ -1016,24 +1016,6 @@ local function tab_chat_compact()
       vim.notify("CodeCompanion chat compacted.", vim.log.levels.INFO)
     end)
   end)()
-end
-
--- Restart the chat in the current tab on the same adapter, with a
--- fresh ACP session and blank chat. Equivalent to
--- `tab_chat_set_adapter(<current>, { clear = true })`.
-local function tab_chat_restart()
-  local bufnr = vim.t.codecompanion_chat_bufnr
-  local chat = bufnr
-    and vim.api.nvim_buf_is_valid(bufnr)
-    and require("codecompanion").buf_get_chat(bufnr)
-  if not chat then
-    return tab_chat_open_or_toggle()
-  end
-  local adapter_name = chat.adapter and chat.adapter.name
-  if not adapter_name then
-    return vim.notify("Cannot determine current adapter for restart.", vim.log.levels.WARN)
-  end
-  return tab_chat_set_adapter(adapter_name, { clear = true, force_pick = false })
 end
 
 return {
@@ -1958,7 +1940,7 @@ return {
       { "<leader>aC", function() tab_chat_set_adapter("claude_broker",    { clear = true }) end, desc = "Claude Chat via broker (direct, fresh)" },
       { "<leader>aO", function() tab_chat_set_adapter("codex_broker",     { clear = true }) end, desc = "Codex Chat via broker (fresh)" },
       { "<leader>ak", tab_chat_compact, desc = "CodeCompanion: compact current ACP dvsc chat" },
-      { "<leader>aZ", tab_chat_restart, desc = "CodeCompanion: restart current tab's chat" },
+      { "<leader>aZ", function() tab_chat_pick_agent_and_set({ clear = true, force_pick = true }) end, desc = "CodeCompanion: full refresh (pick agent + model + config, fresh)" },
       { "<leader>ao", tab_chat_pick_option, desc = "CodeCompanion: change live ACP session config option" },
       { "<leader>aQ", function()
           local bufnr = vim.t.codecompanion_chat_bufnr
