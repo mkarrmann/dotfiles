@@ -16,14 +16,21 @@ vim.api.nvim_create_autocmd("FileType", {
 	end,
 })
 
+local function clear_colorcolumn()
+	vim.b.virtcolumn_items = {}
+	vim.w.virtcolumn_items = {}
+	vim.opt_local.colorcolumn = ""
+	local ns = vim.api.nvim_create_namespace("virtcolumn")
+	vim.api.nvim_buf_clear_namespace(0, ns, 0, -1)
+end
+
 vim.api.nvim_create_autocmd("TermOpen", {
-	callback = function()
-		vim.b.virtcolumn_items = {}
-		vim.w.virtcolumn_items = {}
-		vim.opt_local.colorcolumn = ""
-		local ns = vim.api.nvim_create_namespace("virtcolumn")
-		vim.api.nvim_buf_clear_namespace(0, ns, 0, -1)
-	end,
+	callback = clear_colorcolumn,
+})
+
+vim.api.nvim_create_autocmd("FileType", {
+	pattern = { "codecompanion", "codecompanion_input", "codecompanion_cli" },
+	callback = clear_colorcolumn,
 })
 
 -- Force full redraw on focus gain or terminal re-entry. Needed because:
