@@ -4,96 +4,136 @@ set -euo pipefail
 # presto-local-dev: Run Presto components locally on a devserver.
 #
 # Usage:
-#   presto-local-dev coordinator        Start a local Presto coordinator
-#   presto-local-dev gateway            Start a local Presto gateway
-#   presto-local-dev all                Start both (coordinator first, then gateway)
-#   presto-local-dev stop               Stop all local Presto processes
-#   presto-local-dev status             Show status of local Presto processes
+#   presto-local-dev coordinator   Start a local Presto coordinator (native-execution mode)
+#   presto-local-dev worker        Start the native (Prestissimo) C++ worker
+#   presto-local-dev gateway       Start a local Presto gateway
+#   presto-local-dev all           Start coordinator + worker
+#   presto-local-dev stop          Stop all local Presto processes
+#   presto-local-dev status        Show status
+#
+# Design notes (why this works):
+#   * Local-dev config is generated in-repo under the gitignored etc-local/
+#     (presto-facebook-main/etc-local/). It's per-checkout, so no suffix is
+#     needed and `sl status` ignores it. The tracked etc/ is never edited; the
+#     generated config is the base etc/config.properties + local-dev overlays.
+#   * Large/churny artifacts (spill, the coordinator's var/) stay on local disk
+#     OUTSIDE the EdenFS working copy ($BUILD_ROOT/presto-local-dev{suffix}/) so
+#     they don't bloat the Eden overlay (mirrors how buck-out uses an eden redirect).
+#   * Processes are launched detached via `setsid` so they survive the launching
+#     shell/agent exiting (a plain `&` JVM gets reaped a few minutes after the
+#     wrapper exits). stop/status track the real session pid.
+#   * Devserver-specific fixes baked into the generated config:
+#       - strip thrift.client.socks-proxy=localhost:1080 (devservers connect
+#         direct via ServiceRouter; an empty override crashes Drift, and a
+#         dead :1080 hangs configerator).
+#       - load the Facebook plugins exactly like prod: via the aggregate pom
+#         presto-facebook-plugins (prod's plugin/facebook-plugins/), so every FB
+#         plugin shares ONE classloader. This makes prism work (the aggregate's
+#         runtime closure pulls presto-stats-provider -> presto-zippy, so
+#         ZGatewayService resolves; loading presto-prism-plugin in isolation
+#         excludes zippy). It also avoids the duplicate-crypto "Function already
+#         registered" crash. plugin.bundles are written as ABSOLUTE paths because
+#         the coordinator runs from $RUN_DIR (below), not the module dir.
+#       - run the coordinator from $RUN_DIR, a dir with NO etc/, so the
+#         cwd-relative etc/query-prerequisites.properties (factory=prism) is
+#         absent -> the QueryPrerequisitesManager no-ops. Otherwise every query
+#         hangs in WAITING_FOR_PREREQUISITES for up to 24h waiting on Tetris/
+#         replication infra that isn't reachable locally. (That file's path is
+#         hardcoded, with no config override; absence is the only off switch.)
+#         prism's event listener (the change under test) is still loaded via the
+#         absolute event-listener.config-files override. Requires `mvn -f`.
+#       - skip infra-dependent pieces that hang on a devserver: the configerator
+#         *connector* catalog (fires a proxy2 connection burst that saturates the
+#         netty event loop) and the XDB function-namespace manager (connects to
+#         xdb.presto over the dead socks proxy). Done via minimal catalog/ and
+#         function-namespace/ dirs.
+#       - native-execution routing so queries land on the C++ worker.
+#       - a spill path so spill_enabled=true is allowed.
+#
+# TODO / known gaps:
+#   * native_* session properties (e.g. native_spill_io_stats_key_suffix) are not
+#     recognized by the coordinator until native-sidecar session-property
+#     propagation is wired.
 #
 # Prerequisites:
-#   - Java modules must be built first (see presto-build skill)
+#   - Java modules built first (see presto-build skill): `mfi -pl presto-facebook`
 #   - x509 credentials at /var/facebook/credentials/$USER/x509/$USER.pem
-#
-# Ports (overridable via env vars; defaults work on most ODs):
-#   Coordinator HTTP: ${PRESTO_LOCAL_DEV_COORDINATOR_PORT:-8082}
-#   Gateway HTTP:     ${PRESTO_LOCAL_DEV_GATEWAY_PORT:-8081}
-#
-# The in-tree etc/config.properties files ship with port 8080, which collides with
-# system services (e.g. etserver) on some ODs. This script JVM-overrides the port
-# via -Dhttp-server.http.port and -Ddiscovery.uri so the in-tree configs stay
-# untouched.
+#   - For the worker: a built fbcode//fb_presto_cpp:main (see presto-build -n)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Detect checkout root and build root
+# --- Detect checkout root, build root, and per-checkout suffix ---
 detect_checkout() {
-    local cwd="${PWD}"
-    # Walk up to find fbsource root
-    local dir="$cwd"
+    local dir="${PWD}"
     while [[ "$dir" != "/" ]]; do
         if [[ -d "$dir/fbcode/github/presto-facebook-trunk" ]]; then
-            echo "$dir"
-            return 0
+            echo "$dir"; return 0
         fi
         dir="$(dirname "$dir")"
     done
-    # Default
     echo "/data/users/$USER/fbsource"
 }
 
 CHECKOUT_ROOT="$(detect_checkout)"
 FB_TRUNK="$CHECKOUT_ROOT/fbcode/github/presto-facebook-trunk"
+FBCODE="$CHECKOUT_ROOT/fbcode"
+BASE_ETC="$FB_TRUNK/presto-facebook-main/etc"
 
-# Determine build root and suffix based on checkout
 BUILD_ROOT="/data/users/$USER/builds"
+# Per-checkout suffix, matching ~/.localrc (checkout1 => "", others => -<name>).
+# Used for the build root and the local-disk scratch dir; NOT for etc-local,
+# which is in-repo and therefore already per-checkout.
 case "$CHECKOUT_ROOT" in
-    */fbsource2) SUFFIX="-2" ;;
-    */fbsource3) SUFFIX="-3" ;;
-    *) SUFFIX="" ;;
+    */checkout1/*) SUFFIX="" ;;
+    */checkout*/*) SUFFIX="-$(basename "$(dirname "$CHECKOUT_ROOT")")" ;;
+    */fbsource2)   SUFFIX="-2" ;;
+    */fbsource3)   SUFFIX="-3" ;;
+    *)             SUFFIX="" ;;
 esac
 FB_BUILD_ROOT="$BUILD_ROOT/presto-facebook-trunk${SUFFIX}"
 
-# x509 credentials
+# In-repo, gitignored local-dev config (per-checkout -> no suffix needed).
+# etc-local/ is already in presto-facebook-trunk/.gitignore.
+ETC_LOCAL="$FB_TRUNK/presto-facebook-main/etc-local"
+# Local-disk scratch for large/churny artifacts (spill, var/) kept OUT of EdenFS.
+SCRATCH_DIR="$BUILD_ROOT/presto-local-dev${SUFFIX}"
+# Coordinator working directory: a dir with NO etc/ so the cwd-relative
+# etc/query-prerequisites.properties (factory=prism, blocks every query) is
+# absent. See design notes. Requires absolute plugin.bundles + `mvn -f`.
+RUN_DIR="$SCRATCH_DIR/run"
+
 X509_PEM="/var/facebook/credentials/$USER/x509/$USER.pem"
 
-# Java 17 — required for the --add-opens flags in MAVEN_OPTS. The script can be
-# invoked from non-interactive contexts (cron, agent harnesses) where ~/.localrc
-# isn't sourced, so set JAVA_HOME explicitly. Matches the path in ~/.localrc.
+# Java 17 (needed for the --add-opens set); set explicitly for non-interactive use.
 if [[ -z "${JAVA_HOME:-}" ]] || [[ ! -x "${JAVA_HOME}/bin/java" ]]; then
     export JAVA_HOME=/usr/local/java-runtime/impl/17
 fi
 export PATH="$JAVA_HOME/bin:$PATH"
 
-# Ports — overridable via env vars. The in-tree etc/config.properties uses 8080
-# which can collide with system services (e.g. etserver) on some ODs, so we
-# JVM-override via -Dhttp-server.http.port / -Ddiscovery.uri (see MAVEN_OPTS
-# blocks below).
 COORDINATOR_PORT="${PRESTO_LOCAL_DEV_COORDINATOR_PORT:-8082}"
 GATEWAY_PORT="${PRESTO_LOCAL_DEV_GATEWAY_PORT:-8081}"
 
-# PID files
-PID_DIR="/tmp/presto-local-dev-$$"
 COORDINATOR_PID_FILE="/tmp/presto-local-dev-coordinator.pid"
 GATEWAY_PID_FILE="/tmp/presto-local-dev-gateway.pid"
+WORKER_PID_FILE="/tmp/presto-local-dev-worker.pid"
+COORDINATOR_LOG="/tmp/presto-local-coordinator.log"
+GATEWAY_LOG="/tmp/presto-local-gateway.log"
+WORKER_LOG="/tmp/presto-local-worker.log"
 
-# Common env vars
 export THRIFT_TLS_CL_KEY_PATH="$X509_PEM"
 export THRIFT_TLS_CL_CERT_PATH="$X509_PEM"
 
-# Common MAVEN_OPTS shared by all components
+# --- MAVEN_OPTS ---
 COMMON_MAVEN_OPTS=(
     "-Dio.netty.native.detectNativeLibraryDuplicates=false"
     "-ea"
-    "-Xmx2G"
+    "-Xmx12G"
     "-XX:+ExitOnOutOfMemoryError"
     "-Duser.timezone=America/Bahia_Banderas"
     "-Djdk.attach.allowAttachSelf=true"
     "-Dconfigerator.timeout=5s"
     "-Dws.client-proxy.local-enabled=false"
     "-Dws.client-proxy.use-environment-tier=false"
-    # Full --add-opens set from the Presto IntelliJ-on-devserver wiki. Required
-    # to silence InaccessibleObjectException on Java 17+ for any reflection
-    # outside java.lang/java.lang.reflect.
     "--add-opens=java.base/java.io=ALL-UNNAMED"
     "--add-opens=java.base/java.lang=ALL-UNNAMED"
     "--add-opens=java.base/java.lang.ref=ALL-UNNAMED"
@@ -113,13 +153,17 @@ COMMON_MAVEN_OPTS=(
     "--add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED"
 )
 
-# Out-of-tree build flags passed to Maven (not JVM)
+# Maven resolution flags. Offline (-o) uses the local m2 your `mfi` populated and
+# avoids slow/failing nexus snapshot checks.
 MAVEN_BUILD_FLAGS=(
+    "-o"
     "-Dout-of-tree-build-root=$FB_BUILD_ROOT"
     "-Dout-of-tree-build=true"
 )
+if [[ -n "$SUFFIX" ]]; then
+    MAVEN_BUILD_FLAGS+=("-Dmaven.repo.local=$BUILD_ROOT/m2-repo${SUFFIX}")
+fi
 
-# Coordinator-specific MAVEN_OPTS
 COORDINATOR_MAVEN_OPTS=(
     "${COMMON_MAVEN_OPTS[@]}"
     "-Dprism.directory-listing-timeout=3m"
@@ -135,201 +179,405 @@ COORDINATOR_MAVEN_OPTS=(
     "-Dout-of-tree-build=true"
     "-Dlicense.report.skip=true"
     "-DwithPlugins=true"
-    "-Dconfig=etc/config.properties"
-    "-Dlog.levels-file=etc/log.properties"
-    # Override the port baked into etc/config.properties (which is 8080 — taken
-    # by etserver on some ODs). Keep discovery.uri pointed at the same port so
-    # the coordinator can register itself.
+    "-Dconfig=$ETC_LOCAL/config.properties"
+    "-Dlog.levels-file=$ETC_LOCAL/log.properties"
+    "-Devent-listener.config-files=$ETC_LOCAL/event-listener.properties"
     "-Dhttp-server.http.port=$COORDINATOR_PORT"
     "-Ddiscovery.uri=http://localhost:$COORDINATOR_PORT"
-    # Disable SOCKS proxy — the in-tree config points at localhost:1080 which
-    # may not be running after an OD restart.
-    "-Dthrift.client.socks-proxy="
 )
 
-# Gateway-specific MAVEN_OPTS
-GATEWAY_MAVEN_OPTS=(
-    "${COMMON_MAVEN_OPTS[@]}"
-)
+GATEWAY_MAVEN_OPTS=("${COMMON_MAVEN_OPTS[@]}")
+
+# --- Generate the in-repo local-dev config from base etc/ + overlays ---
+prepare_local_dev_config() {
+    local pfm="$FB_TRUNK/presto-facebook-main"
+    local cat_dir="$ETC_LOCAL/catalog"
+    local fns_dir="$ETC_LOCAL/function-namespace"
+    local spill_dir="$SCRATCH_DIR/spill"
+    mkdir -p "$cat_dir" "$fns_dir" "$spill_dir" "$RUN_DIR"
+    # The coordinator runs with cwd=$RUN_DIR; ensure it has no etc/ so the
+    # cwd-relative aux managers (query-prerequisites, access-control) no-op.
+    rm -rf "$RUN_DIR/etc"
+
+    # config.properties = base etc/config.properties with:
+    #   - the multi-line plugin.bundles block removed (re-added below), and
+    #   - socks-proxy + every key we re-set in the overlay stripped.
+    # plugin.bundles is a backslash-continued multi-line value, so it is stripped
+    # with awk (a line-based grep can't span the continuation).
+    awk '
+        /^plugin\.bundles=/ { inblock=1 }
+        inblock { if ($0 !~ /\\[[:space:]]*$/) inblock=0; next }
+        { print }
+    ' "$BASE_ETC/config.properties" \
+      | grep -vE \
+          'socks-proxy|^catalog\.config-dir|^function-namespace\.config-dir|^experimental\.spiller-spill-path|^node-scheduler\.include-coordinator|^native-execution-enabled|^optimizer\.optimize-hash-generation|^regex-library|^offset-clause-enabled|^inline-sql-functions|^use-alternative-function-signatures|^fb\.announced-catalogs' \
+          > "$ETC_LOCAL/config.properties"
+
+    # Prod-faithful plugin.bundles: keep the OSS (presto-trunk) plugins as
+    # individual bundles, and load ALL Facebook plugins via the prod aggregate
+    # pom (presto-facebook-plugins) so they share one classloader exactly like
+    # prod's plugin/facebook-plugins/ -- this is what makes prism + zippy load.
+    # Paths are made ABSOLUTE (resolved against the module dir) because the
+    # coordinator runs from $RUN_DIR, where the base's module-relative paths
+    # would not resolve.
+    local oss_rel
+    oss_rel="$(grep -E 'presto-trunk/.*pom\.xml' "$BASE_ETC/config.properties" \
+        | sed -E 's/[[:space:]]*\\[[:space:]]*$//; s/^[[:space:]]+//; s/[[:space:]]+$//; s/,$//')"
+
+    local bundles="plugin.bundles=\\"
+    local b
+    while IFS= read -r b; do
+        [[ -z "$b" ]] && continue
+        bundles+=$'\n'"  $(realpath -m "$pfm/$b"),\\"
+    done <<< "$oss_rel"
+    bundles+=$'\n'"  $(realpath -m "$pfm/../presto-facebook-plugins/pom.xml")"
+
+    cat >> "$ETC_LOCAL/config.properties" <<EOF
+
+# === presto-local-dev overlay (generated; edit the script, not this file) ===
+$bundles
+
+catalog.config-dir=$cat_dir
+function-namespace.config-dir=$fns_dir
+experimental.spiller-spill-path=$spill_dir
+
+# Route all execution to the native (Prestissimo) C++ worker.
+node-scheduler.include-coordinator=false
+native-execution-enabled=true
+optimizer.optimize-hash-generation=false
+regex-library=RE2J
+offset-clause-enabled=true
+inline-sql-functions=false
+
+fb.announced-catalogs=tpch
+EOF
+
+    # Apply persistent user overrides (gitignored, never regenerated). Keys here
+    # win over the generated values, so local tweaks survive every restart while
+    # the base-derived config still refreshes from etc/config.properties.
+    local user_override="$ETC_LOCAL/config.local.properties"
+    if [[ ! -f "$user_override" ]]; then
+        cat > "$user_override" <<'LOCALEOF'
+# presto-local-dev user overrides -- gitignored, persists across regenerations.
+# Add config.properties keys here; they override the generated values. Example:
+#   query.max-memory-per-node=10GB
+LOCALEOF
+    fi
+    local ukeys
+    ukeys="$(grep -vE '^[[:space:]]*(#|$)' "$user_override" | cut -d= -f1 | sed -E 's/[[:space:]]+//g' || true)"
+    if [[ -n "$ukeys" ]]; then
+        local strip_pat
+        strip_pat="$(printf '%s\n' "$ukeys" | sed -E 's/[][(){}.^$*+?|\\]/\\&/g' | paste -sd '|' -)"
+        grep -vE "^($strip_pat)=" "$ETC_LOCAL/config.properties" > "$ETC_LOCAL/config.properties.tmp"
+        mv "$ETC_LOCAL/config.properties.tmp" "$ETC_LOCAL/config.properties"
+        {
+            echo ""
+            echo "# === user overrides (config.local.properties) ==="
+            grep -vE '^[[:space:]]*(#|$)' "$user_override"
+        } >> "$ETC_LOCAL/config.properties"
+    fi
+
+    # Minimal, infra-free catalogs. The FB connector plugins (prism/xdb/
+    # configerator/...) are on the classpath via the aggregate, but a connector
+    # is only instantiated when a catalog references it -- so only tpch + jmx
+    # start here and no infra connections are made. tpch.column-naming MUST match
+    # the native worker's tpch catalog or named-column scans fail on the worker
+    # ("Column 'regionkey' not found"); derive it from the worker's blessed config
+    # so we auto-follow it (fallback STANDARD -> use n_*/r_* column names).
+    local tpch_naming
+    tpch_naming="$(grep -E '^tpch.column-naming=' "$FBCODE/fb_presto_cpp/etc/catalog/tpch.properties" 2>/dev/null | head -1 | cut -d= -f2 || true)"
+    tpch_naming="${tpch_naming:-STANDARD}"
+    printf 'connector.name=tpch\ntpch.column-naming=%s\ntpch.splits-per-node=4\n' "$tpch_naming" > "$cat_dir/tpch.properties"
+    printf 'connector.name=jmx\n' > "$cat_dir/jmx.properties"
+
+    # Empty function-namespace dir => no XDB UDF manager (which hangs on socks).
+
+    cp -f "$BASE_ETC/log.properties" "$ETC_LOCAL/log.properties" 2>/dev/null || true
+
+    # Event listener loaded via an absolute override (cwd-independent) so the
+    # prism event listener -- the change under test -- still loads even though
+    # cwd ($RUN_DIR) has no etc/. Strip the dead socks-proxy line.
+    grep -v 'socks-proxy' "$BASE_ETC/event-listener.properties" \
+        > "$ETC_LOCAL/event-listener.properties" 2>/dev/null || true
+}
+
+# --- Generate a local worker etc dir (tracked fb_presto_cpp/etc stays untouched) ---
+prepare_worker_etc() {
+    local src="$FBCODE/fb_presto_cpp/etc"
+    local dst="$ETC_LOCAL/worker-etc"
+    local coord_env coord_version
+    coord_env="$(grep -E '^node.environment=' "$BASE_ETC/config.properties" | head -1 | cut -d= -f2)"
+    coord_env="${coord_env:-test}"
+    # The coordinator only counts a worker as ACTIVE if its announced
+    # presto.version matches the coordinator's. A mismatch leaves activeWorkers=0
+    # and queries hang in WAITING_FOR_RESOURCES (surfaced to clients as
+    # WAITING_FOR_PREREQUISITES). Read the live coordinator version; fall back to
+    # the base config value.
+    coord_version="$(curl -s --noproxy '*' --connect-timeout 2 "http://localhost:$COORDINATOR_PORT/v1/info" 2>/dev/null \
+        | python3 -c 'import json,sys;print(json.load(sys.stdin)["nodeVersion"]["version"])' 2>/dev/null || true)"
+    [[ -z "$coord_version" ]] && coord_version="$(grep -E '^presto.version=' "$BASE_ETC/config.properties" | head -1 | cut -d= -f2)"
+    coord_version="${coord_version:-testversion}"
+    rm -rf "$dst"
+    cp -r "$src" "$dst"
+    # Point the worker at our coordinator and match node.environment + presto.version.
+    if grep -qE '^discovery.uri=' "$dst/config.properties"; then
+        sed -i "s#^discovery.uri=.*#discovery.uri=http://127.0.0.1:$COORDINATOR_PORT#" "$dst/config.properties"
+    else
+        echo "discovery.uri=http://127.0.0.1:$COORDINATOR_PORT" >> "$dst/config.properties"
+    fi
+    if grep -qE '^presto.version=' "$dst/config.properties"; then
+        sed -i "s#^presto.version=.*#presto.version=$coord_version#" "$dst/config.properties"
+    else
+        echo "presto.version=$coord_version" >> "$dst/config.properties"
+    fi
+    if grep -qE '^node.environment=' "$dst/node.properties"; then
+        sed -i "s#^node.environment=.*#node.environment=$coord_env#" "$dst/node.properties"
+    else
+        echo "node.environment=$coord_env" >> "$dst/node.properties"
+    fi
+    echo "$dst"
+}
+
+# --- Detached launch helper (survives this script / the calling shell exiting) ---
+# Args: <pidfile> <logfile> <workdir> -- <command...>
+launch_detached() {
+    local pidfile="$1" logfile="$2" workdir="$3"; shift 3
+    [[ "$1" == "--" ]] && shift
+    (
+        cd "$workdir"
+        setsid "$@" >"$logfile" 2>&1 </dev/null &
+        echo $! > "$pidfile"
+    )
+}
+
+is_running() { [[ -f "$1" ]] && kill -0 "$(cat "$1" 2>/dev/null)" 2>/dev/null; }
 
 wait_for_port() {
-    local port="$1"
-    local name="$2"
-    local max_wait="${3:-120}"
-    local elapsed=0
-
+    local port="$1" name="$2" max_wait="${3:-150}" elapsed=0
     echo "  Waiting for $name on port $port..."
-    while ! curl -s --noproxy '*' --connect-timeout 1 "http://localhost:$port/v1/info" >/dev/null 2>&1 \
-       && ! curl -s --noproxy '*' --connect-timeout 1 "http://localhost:$port/v1/gateway/status" >/dev/null 2>&1; do
-        sleep 5
-        elapsed=$((elapsed + 5))
+    while ! curl -s --noproxy '*' --connect-timeout 1 "http://localhost:$port/v1/info" >/dev/null 2>&1; do
+        sleep 5; elapsed=$((elapsed + 5))
         if [[ $elapsed -ge $max_wait ]]; then
-            echo "  ERROR: $name did not start within ${max_wait}s"
+            echo "  WARN: $name not up after ${max_wait}s (still initializing? check $COORDINATOR_LOG)"
             return 1
         fi
-        echo "  Still waiting... (${elapsed}s)"
     done
     echo "  $name is up on port $port"
 }
 
-start_coordinator() {
-    if [[ -f "$COORDINATOR_PID_FILE" ]] && kill -0 "$(cat "$COORDINATOR_PID_FILE")" 2>/dev/null; then
-        echo "Coordinator already running (PID $(cat "$COORDINATOR_PID_FILE"))"
-        return 0
-    fi
-
-    echo "=== Starting Presto Coordinator ==="
-    echo "  Checkout: $CHECKOUT_ROOT"
-    echo "  Build root: $FB_BUILD_ROOT"
-    echo "  Module: presto-facebook-main"
-    echo "  Port: $COORDINATOR_PORT"
-    echo ""
-
-    local log_file="/tmp/presto-local-coordinator.log"
-
-    (
-        cd "$FB_TRUNK/presto-facebook-main"
-        MAVEN_OPTS="${COORDINATOR_MAVEN_OPTS[*]}" \
-        mvn exec:java \
-            -Dexec.mainClass=com.facebook.presto.facebook.PrestoFacebook \
-            -Dexec.classpathScope=test \
-            "${MAVEN_BUILD_FLAGS[@]}" \
-            > "$log_file" 2>&1
-    ) &
-    local pid=$!
-    echo "$pid" > "$COORDINATOR_PID_FILE"
-    echo "  Started coordinator (PID $pid, log: $log_file)"
-
-    wait_for_port "$COORDINATOR_PORT" "Coordinator"
-}
-
-start_gateway() {
-    if [[ -f "$GATEWAY_PID_FILE" ]] && kill -0 "$(cat "$GATEWAY_PID_FILE")" 2>/dev/null; then
-        echo "Gateway already running (PID $(cat "$GATEWAY_PID_FILE"))"
-        return 0
-    fi
-
-    echo "=== Starting Presto Gateway ==="
-    echo "  Checkout: $CHECKOUT_ROOT"
-    echo "  Build root: $FB_BUILD_ROOT"
-    echo "  Module: presto-gateway"
-    echo "  Port: $GATEWAY_PORT"
-    echo ""
-
-    local log_file="/tmp/presto-local-gateway.log"
-
-    (
-        cd "$FB_TRUNK/presto-gateway"
-        MAVEN_OPTS="${GATEWAY_MAVEN_OPTS[*]}" \
-        mvn exec:java \
-            -Dexec.mainClass=com.facebook.presto.gateway.LocalPrestoGateway \
-            -Dexec.classpathScope=test \
-            "${MAVEN_BUILD_FLAGS[@]}" \
-            > "$log_file" 2>&1
-    ) &
-    local pid=$!
-    echo "$pid" > "$GATEWAY_PID_FILE"
-    echo "  Started gateway (PID $pid, log: $log_file)"
-
-    wait_for_port "$GATEWAY_PORT" "Gateway"
-}
-
-stop_all() {
-    echo "=== Stopping local Presto ==="
-    for pid_file in "$COORDINATOR_PID_FILE" "$GATEWAY_PID_FILE"; do
-        if [[ -f "$pid_file" ]]; then
-            local pid
-            pid="$(cat "$pid_file")"
-            local name
-            if [[ "$pid_file" == *coordinator* ]]; then name="Coordinator"; else name="Gateway"; fi
-            if kill -0 "$pid" 2>/dev/null; then
-                echo "  Stopping $name (PID $pid)..."
-                kill "$pid" 2>/dev/null || true
-                # Also kill child Java processes
-                pkill -P "$pid" 2>/dev/null || true
-                sleep 2
-                # Force kill if still alive
-                if kill -0 "$pid" 2>/dev/null; then
-                    kill -9 "$pid" 2>/dev/null || true
-                    pkill -9 -P "$pid" 2>/dev/null || true
-                fi
-                echo "  $name stopped"
-            else
-                echo "  $name not running"
-            fi
-            rm -f "$pid_file"
+# Block until the native worker is counted as an ACTIVE worker -- the real gate
+# for running queries (a query before this hangs in WAITING_FOR_PREREQUISITES,
+# which actually means WAITING_FOR_RESOURCES). Registration lags worker start by
+# ~1 min. On timeout, print a precise reason instead of leaving a mystery hang.
+wait_for_active_worker() {
+    local max_wait="${1:-180}" elapsed=0 aw
+    echo "  Waiting for the worker to be counted ACTIVE (the gate for queries; ~1 min)..."
+    while true; do
+        aw="$(curl -s --noproxy '*' --connect-timeout 2 "http://localhost:$COORDINATOR_PORT/v1/cluster" 2>/dev/null \
+              | grep -o '"activeWorkers":[0-9]*' | cut -d: -f2 || true)"
+        aw="${aw//[^0-9]/}"; aw="${aw:-0}"
+        if [[ "$aw" -ge 1 ]]; then
+            echo "  Worker is ACTIVE (activeWorkers=$aw) -- ready for queries."
+            return 0
+        fi
+        sleep 5; elapsed=$((elapsed + 5))
+        if [[ $elapsed -ge $max_wait ]]; then
+            echo "  ERROR: worker never became ACTIVE after ${max_wait}s (activeWorkers=0)."
+            diagnose_worker_not_active
+            return 1
         fi
     done
 }
 
-show_status() {
-    echo "=== Local Presto Status ==="
-    echo ""
+# A registered node is only counted ACTIVE if its version AND environment match
+# the coordinator and it is serving. Print which invariant is violated.
+diagnose_worker_not_active() {
+    local wetc="$ETC_LOCAL/worker-etc" cv wv we wenv wport
+    cv="$(curl -s --noproxy '*' --connect-timeout 2 "http://localhost:$COORDINATOR_PORT/v1/info" 2>/dev/null | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
+    wv="$(grep -E '^presto.version=' "$wetc/config.properties" 2>/dev/null | cut -d= -f2 || true)"
+    we="$(grep -E '^node.environment=' "$BASE_ETC/config.properties" 2>/dev/null | head -1 | cut -d= -f2 || true)"
+    wenv="$(grep -E '^node.environment=' "$wetc/node.properties" 2>/dev/null | cut -d= -f2 || true)"
+    wport="$(grep -E '^http-server.http.port=' "$wetc/config.properties" 2>/dev/null | cut -d= -f2 || true)"; wport="${wport:-7777}"
+    echo "    a registered node is counted ACTIVE only if ALL of these hold:"
+    echo "      version : coordinator='$cv' worker='$wv'  -> $([[ -n "$cv" && "$cv" == "$wv" ]] && echo OK || echo MISMATCH)"
+    echo "      env     : coordinator='$we' worker='$wenv'  -> $([[ -n "$we" && "$we" == "$wenv" ]] && echo OK || echo MISMATCH)"
+    echo "      process : $(is_running "$WORKER_PID_FILE" && echo RUNNING || echo 'NOT RUNNING')"
+    echo "      serving : $(curl -s --noproxy '*' --connect-timeout 2 "http://127.0.0.1:$wport/v1/info" >/dev/null 2>&1 && echo "yes (:$wport)" || echo "no (:$wport)")"
+    echo "    worker log tail ($WORKER_LOG):"
+    tail -n 5 "$WORKER_LOG" 2>/dev/null | sed 's/^/      /' || true
+}
 
-    # Coordinator
-    if [[ -f "$COORDINATOR_PID_FILE" ]] && kill -0 "$(cat "$COORDINATOR_PID_FILE")" 2>/dev/null; then
-        local info
-        info=$(curl -s --noproxy '*' --connect-timeout 2 "http://localhost:$COORDINATOR_PORT/v1/info" 2>/dev/null || echo "unreachable")
-        echo "  Coordinator: RUNNING (PID $(cat "$COORDINATOR_PID_FILE"))"
-        echo "    http://localhost:$COORDINATOR_PORT  $info"
-        echo "    Log: /tmp/presto-local-coordinator.log"
-    else
-        echo "  Coordinator: STOPPED"
+start_coordinator() {
+    if is_running "$COORDINATOR_PID_FILE"; then
+        echo "Coordinator already running (PID $(cat "$COORDINATOR_PID_FILE"))"; return 0
     fi
-    echo ""
+    prepare_local_dev_config
+    echo "=== Starting Presto Coordinator (detached) ==="
+    echo "  Checkout:    $CHECKOUT_ROOT"
+    echo "  Build root:  $FB_BUILD_ROOT"
+    echo "  Config:      $ETC_LOCAL/config.properties"
+    echo "  Run dir:     $RUN_DIR  (no etc/ -> prism query-prerequisites disabled)"
+    echo "  Spill:       $SCRATCH_DIR/spill"
+    echo "  Port:        $COORDINATOR_PORT"
+    MAVEN_OPTS="${COORDINATOR_MAVEN_OPTS[*]}" \
+    launch_detached "$COORDINATOR_PID_FILE" "$COORDINATOR_LOG" "$RUN_DIR" -- \
+        mvn -f "$FB_TRUNK/presto-facebook-main/pom.xml" exec:java \
+            -Dexec.mainClass=com.facebook.presto.facebook.PrestoFacebook \
+            -Dexec.classpathScope=test "${MAVEN_BUILD_FLAGS[@]}"
+    echo "  Started (PID $(cat "$COORDINATOR_PID_FILE" 2>/dev/null), log: $COORDINATOR_LOG)"
+    wait_for_port "$COORDINATOR_PORT" "Coordinator" || true
+}
 
-    # Gateway
-    if [[ -f "$GATEWAY_PID_FILE" ]] && kill -0 "$(cat "$GATEWAY_PID_FILE")" 2>/dev/null; then
-        local status
-        status=$(curl -s --noproxy '*' --connect-timeout 2 "http://localhost:$GATEWAY_PORT/v1/gateway/status" 2>/dev/null || echo "unreachable")
-        echo "  Gateway: RUNNING (PID $(cat "$GATEWAY_PID_FILE"))"
-        echo "    http://localhost:$GATEWAY_PORT  $status"
-        echo "    Log: /tmp/presto-local-gateway.log"
-    else
-        echo "  Gateway: STOPPED"
+start_gateway() {
+    if is_running "$GATEWAY_PID_FILE"; then
+        echo "Gateway already running (PID $(cat "$GATEWAY_PID_FILE"))"; return 0
+    fi
+    echo "=== Starting Presto Gateway (detached) ==="
+    MAVEN_OPTS="${GATEWAY_MAVEN_OPTS[*]}" \
+    launch_detached "$GATEWAY_PID_FILE" "$GATEWAY_LOG" "$FB_TRUNK/presto-gateway" -- \
+        mvn exec:java -Dexec.mainClass=com.facebook.presto.gateway.LocalPrestoGateway \
+            -Dexec.classpathScope=test "${MAVEN_BUILD_FLAGS[@]}"
+    echo "  Started (PID $(cat "$GATEWAY_PID_FILE" 2>/dev/null), log: $GATEWAY_LOG)"
+    wait_for_port "$GATEWAY_PORT" "Gateway" || true
+}
+
+start_worker() {
+    if is_running "$WORKER_PID_FILE"; then
+        echo "Worker already running (PID $(cat "$WORKER_PID_FILE"))"; return 0
+    fi
+    local bin="${PRESTO_LOCAL_DEV_WORKER_BIN:-}"
+    if [[ -z "$bin" ]]; then
+        echo "  Resolving fb_presto_cpp:main (buck2; cached=fast, cold=slow)..."
+        bin="$(cd "$CHECKOUT_ROOT" && buck2 build fbcode//fb_presto_cpp:main --show-full-json-output 2>/dev/null \
+            | python3 -c 'import json,sys;print(json.loads(sys.stdin.read())["fbcode//fb_presto_cpp:main"])')"
+    fi
+    if [[ -z "$bin" || ! -x "$bin" ]]; then
+        echo "  ERROR: could not resolve native worker binary. Build it (presto-build -n) or set PRESTO_LOCAL_DEV_WORKER_BIN."; return 1
+    fi
+    local wetc; wetc="$(prepare_worker_etc)"
+    echo "=== Starting native (Prestissimo) worker (detached) ==="
+    echo "  Binary:   $bin"
+    echo "  Etc:      $wetc  (discovery -> :$COORDINATOR_PORT)"
+    launch_detached "$WORKER_PID_FILE" "$WORKER_LOG" "$CHECKOUT_ROOT" -- \
+        "$bin" --etc_dir="$wetc"
+    echo "  Started (PID $(cat "$WORKER_PID_FILE" 2>/dev/null), log: $WORKER_LOG)"
+    # Don't return until the worker is actually usable (or fail with a reason).
+    wait_for_active_worker
+}
+
+kill_tracked() {
+    local pidfile="$1" name="$2" pattern="$3"
+    if [[ -f "$pidfile" ]]; then
+        local pid; pid="$(cat "$pidfile" 2>/dev/null)"
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            echo "  Stopping $name (PID $pid, process group)..."
+            kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+            sleep 2
+            kill -9 -- "-$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
+        fi
+        rm -f "$pidfile"
+    fi
+    # Pattern fallback for detached/orphaned instances not tracked by the pidfile.
+    if [[ -n "$pattern" ]]; then
+        pkill -9 -f "$pattern" 2>/dev/null || true
     fi
 }
 
-# --- Main ---
+stop_all() {
+    echo "=== Stopping local Presto ==="
+    kill_tracked "$COORDINATOR_PID_FILE" "Coordinator" 'exec.mainClass=com.facebook.presto.facebook.PrestoFacebook'
+    kill_tracked "$GATEWAY_PID_FILE" "Gateway" 'exec.mainClass=com.facebook.presto.gateway.LocalPrestoGateway'
+    kill_tracked "$WORKER_PID_FILE" "Worker" 'fb_presto_cpp/__main__/main'
+    echo "  Done."
+}
+
+show_status() {
+    echo "=== Local Presto Status ==="
+    if is_running "$COORDINATOR_PID_FILE"; then
+        local info; info=$(curl -s --noproxy '*' --connect-timeout 2 "http://localhost:$COORDINATOR_PORT/v1/info" 2>/dev/null || echo "unreachable")
+        echo "  Coordinator: RUNNING (PID $(cat "$COORDINATOR_PID_FILE"))  $info"
+        local n aw
+        n=$(curl -s --noproxy '*' --connect-timeout 2 "http://localhost:$COORDINATOR_PORT/v1/node" 2>/dev/null | grep -o '"uri"' | wc -l || true)
+        aw=$(curl -s --noproxy '*' --connect-timeout 2 "http://localhost:$COORDINATOR_PORT/v1/cluster" 2>/dev/null | grep -o '"activeWorkers":[0-9]*' | cut -d: -f2 || true)
+        echo "    nodes: $n   activeWorkers: ${aw:-0} (the gate for running queries)   log: $COORDINATOR_LOG"
+    else
+        echo "  Coordinator: STOPPED"
+    fi
+    if is_running "$WORKER_PID_FILE"; then
+        echo "  Worker:      RUNNING (PID $(cat "$WORKER_PID_FILE"))  log: $WORKER_LOG"
+    else
+        echo "  Worker:      STOPPED"
+    fi
+    if is_running "$GATEWAY_PID_FILE"; then
+        echo "  Gateway:     RUNNING (PID $(cat "$GATEWAY_PID_FILE"))  log: $GATEWAY_LOG"
+    else
+        echo "  Gateway:     STOPPED"
+    fi
+}
+
+# Run SQL against the LOCAL coordinator via the REST API, following nextUri.
+# Use this instead of `/usr/local/bin/presto` -- that is Meta's gateway CLI and
+# does NOT accept --server/--catalog/--schema for a local coordinator. Catalog/
+# schema default to tpch/tiny (override via PRESTO_LOCAL_DEV_CATALOG/_SCHEMA).
+run_query() {
+    local sql="$*"
+    if [[ -z "$sql" ]]; then echo "usage: presto-local-dev query \"<SQL>\""; return 1; fi
+    PLD_PORT="$COORDINATOR_PORT" PLD_USER="$USER" \
+    PLD_CAT="${PRESTO_LOCAL_DEV_CATALOG:-tpch}" PLD_SCH="${PRESTO_LOCAL_DEV_SCHEMA:-tiny}" \
+    PLD_SQL="$sql" python3 - <<'PY'
+import json, os, sys, time, urllib.request
+port=os.environ["PLD_PORT"]; sql=os.environ["PLD_SQL"]
+hdr={"X-Presto-User":os.environ["PLD_USER"],"X-Presto-Catalog":os.environ["PLD_CAT"],"X-Presto-Schema":os.environ["PLD_SCH"]}
+def get(url, data=None):
+    return json.load(urllib.request.urlopen(urllib.request.Request(url, data, hdr), timeout=15))
+try:
+    r=get("http://localhost:%s/v1/statement"%port, sql.encode())
+except Exception as e:
+    print("ERROR submitting query (is the coordinator up?):", e); sys.exit(1)
+cols=None; rows=[]; state=None
+while True:
+    state=r.get("stats",{}).get("state")
+    if r.get("columns") and not cols: cols=[c["name"] for c in r["columns"]]
+    rows += r.get("data") or []
+    if r.get("error"):
+        e=r["error"]; print("QUERY FAILED [%s]: %s"%(e.get("errorName"), e.get("message"))); sys.exit(1)
+    nx=r.get("nextUri")
+    if not nx: break
+    time.sleep(0.3)
+    try: r=get(nx)
+    except Exception as e: print("ERROR polling results:", e); sys.exit(1)
+if cols: print("\t".join(cols))
+for row in rows: print("\t".join("NULL" if v is None else str(v) for v in row))
+print("[%s] %d row(s)"%(state, len(rows)), file=sys.stderr)
+PY
+}
 
 cmd="${1:-}"
 case "$cmd" in
-    coordinator)
-        start_coordinator
-        ;;
-    gateway)
-        start_gateway
-        ;;
-    all)
-        start_coordinator
-        echo ""
-        start_gateway
-        echo ""
-        show_status
-        ;;
-    stop)
-        stop_all
-        ;;
-    status)
-        show_status
-        ;;
+    coordinator) start_coordinator ;;
+    worker)      start_worker ;;
+    gateway)     start_gateway ;;
+    all)         start_coordinator; echo ""; start_worker || true; echo ""; show_status ;;
+    stop)        stop_all ;;
+    status)      show_status ;;
+    query)       shift; run_query "$@" ;;
     -h|--help|"")
-        echo "Usage: presto-local-dev {coordinator|gateway|all|stop|status}"
-        echo ""
-        echo "Commands:"
-        echo "  coordinator   Start a local Presto coordinator (port \$PRESTO_LOCAL_DEV_COORDINATOR_PORT, default 8082)"
-        echo "  gateway       Start a local Presto gateway (port \$PRESTO_LOCAL_DEV_GATEWAY_PORT, default 8081)"
-        echo "  all           Start both (coordinator first, then gateway)"
-        echo "  stop          Stop all local Presto processes"
-        echo "  status        Show status of local Presto processes"
-        echo ""
-        echo "Logs:"
-        echo "  /tmp/presto-local-coordinator.log"
-        echo "  /tmp/presto-local-gateway.log"
+        cat <<EOF
+Usage: presto-local-dev {coordinator|worker|gateway|all|stop|status|query}
+
+  coordinator   Start a detached local coordinator (native-execution mode, port ${COORDINATOR_PORT})
+  worker        Start the detached native (Prestissimo) C++ worker (blocks until ACTIVE)
+  gateway       Start a detached local gateway (port ${GATEWAY_PORT})
+  all           coordinator + worker
+  stop          Stop all local Presto processes
+  status        Show status (incl. nodes + activeWorkers)
+  query "<SQL>" Run SQL against the local coordinator (tpch/tiny by default)
+
+Generated local-dev config: $ETC_LOCAL  (in-repo, gitignored; tracked etc/ untouched)
+Coordinator run dir: $RUN_DIR  (no etc/ -> prism query-prerequisites disabled)
+Spill (local disk, outside Eden): $SCRATCH_DIR/spill
+Logs: $COORDINATOR_LOG / $WORKER_LOG / $GATEWAY_LOG
+EOF
         ;;
-    *)
-        echo "Unknown command: $cmd"
-        echo "Run with --help for usage"
-        exit 1
-        ;;
+    *) echo "Unknown command: $cmd"; echo "Run with --help"; exit 1 ;;
 esac
