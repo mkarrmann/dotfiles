@@ -8,6 +8,7 @@ set -euo pipefail
 #   presto-local-dev worker        Start the native (Prestissimo) C++ worker
 #   presto-local-dev gateway       Start a local Presto gateway
 #   presto-local-dev all           Start coordinator + worker
+#   presto-local-dev sidecar       Start coordinator + worker in native coordinator-sidecar mode
 #   presto-local-dev stop          Stop all local Presto processes
 #   presto-local-dev status        Show status
 #
@@ -50,15 +51,18 @@ set -euo pipefail
 #       - native-execution routing so queries land on the C++ worker.
 #       - a spill path so spill_enabled=true is allowed.
 #
-# TODO / known gaps:
-#   * native_* session properties (e.g. native_spill_io_stats_key_suffix) are not
-#     recognized by the coordinator until native-sidecar session-property
-#     propagation is wired.
+# Native coordinator-sidecar (opt-in; see SIDECAR_MODE below):
+#   * native_* session properties (e.g. native_spill_io_stats_key_suffix) are NOT
+#     recognized by a plain coordinator. Run with PRESTO_LOCAL_DEV_SIDECAR=1 (or the
+#     `sidecar` subcommand) to load the native-sidecar plugin + a sidecar worker so
+#     the coordinator fetches native session properties/functions/types from it.
 #
 # Prerequisites:
 #   - Java modules built first (see presto-build skill): `mfi -pl presto-facebook`
 #   - x509 credentials at /var/facebook/credentials/$USER/x509/$USER.pem
 #   - For the worker: a built fbcode//fb_presto_cpp:main (see presto-build -n)
+#   - For sidecar mode: the presto-native-sidecar-plugin built/installed to m2
+#     (it is in _oss_modules, so `mpi` builds it; also in presto-build's OSS_MODULES)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -112,6 +116,23 @@ export PATH="$JAVA_HOME/bin:$PATH"
 
 COORDINATOR_PORT="${PRESTO_LOCAL_DEV_COORDINATOR_PORT:-8082}"
 GATEWAY_PORT="${PRESTO_LOCAL_DEV_GATEWAY_PORT:-8081}"
+
+# --- Native coordinator-sidecar mode (opt-in) ---
+# When enabled, the coordinator loads the presto-native-sidecar-plugin and fetches
+# native session properties / functions / types from a SIDECAR worker (a C++ worker
+# announcing sidecar=true). This is what makes native_* session properties (e.g.
+# native_spill_io_stats_key_suffix) accepted by the coordinator -- without it they
+# fail with INVALID_SESSION_PROPERTY. Off by default; enable via either:
+#   * PRESTO_LOCAL_DEV_SIDECAR=1   (affects every subcommand in this invocation), or
+#   * the `sidecar` subcommand     (coordinator + sidecar worker in one go).
+# A single worker doubles as the sidecar AND the compute worker (the "cluster of
+# only sidecar workers" topology), so no extra process is needed.
+SIDECAR_MODE="${PRESTO_LOCAL_DEV_SIDECAR:-0}"
+if [[ "$SIDECAR_MODE" == "1" || "$SIDECAR_MODE" == "true" ]]; then SIDECAR_MODE=1; else SIDECAR_MODE=0; fi
+# pom of the OSS CoordinatorPlugin that registers the native session-property /
+# function-namespace / type / plan-checker / expression-optimizer factories.
+# Built by `mpi` (it is in _oss_modules) or `presto-build` (OSS_MODULES).
+SIDECAR_PLUGIN_POM="$FBCODE/github/presto-trunk/presto-native-sidecar-plugin/pom.xml"
 
 COORDINATOR_PID_FILE="/tmp/presto-local-dev-coordinator.pid"
 GATEWAY_PID_FILE="/tmp/presto-local-dev-gateway.pid"
@@ -188,6 +209,44 @@ COORDINATOR_MAVEN_OPTS=(
 
 GATEWAY_MAVEN_OPTS=("${COMMON_MAVEN_OPTS[@]}")
 
+# --- Write the native-sidecar provider files (sidecar mode only) ---
+# Each native-sidecar manager discovers instances by scanning a config dir for
+# *.properties files: the filename (sans extension) is the instance name and a
+# factory-name key inside selects the factory. The NativeSidecarPlugin (loaded as
+# a CoordinatorPlugin via plugin.bundles) registers the factories; these files
+# instantiate them. Values are the canonical ones from presto-docs'
+# native-sidecar-plugin.rst. Two placement rules:
+#   - function-namespace reads from our overridden function-namespace.config-dir
+#     ($fns_dir), so its file goes there.
+#   - the other four have no config-dir override, so they default to the
+#     cwd-relative etc/<dir>/ -- and the coordinator's cwd is $RUN_DIR. We write
+#     them under $RUN_DIR/etc/ WITHOUT creating query-prerequisites.properties or
+#     access-control.properties, so prism prerequisites stay disabled (absence is
+#     the off switch; a populated etc/ with only these subdirs is fine).
+write_sidecar_provider_files() {
+    local fns_dir="$1"
+    # function-namespace manager -> native namespace (CPP built-in functions).
+    cat > "$fns_dir/native.properties" <<'EOF'
+function-namespace-manager.name=native
+function-implementation-type=CPP
+supported-function-languages=CPP
+EOF
+    # Session-property provider: lets the coordinator learn native_* session
+    # properties from the sidecar (the whole point of sidecar mode).
+    mkdir -p "$RUN_DIR/etc/session-property-providers" \
+             "$RUN_DIR/etc/type-managers" \
+             "$RUN_DIR/etc/plan-checker-providers" \
+             "$RUN_DIR/etc/expression-manager"
+    echo "session-property-provider.name=native-worker" \
+        > "$RUN_DIR/etc/session-property-providers/native-worker.properties"
+    echo "type-manager.name=native" \
+        > "$RUN_DIR/etc/type-managers/native.properties"
+    echo "plan-checker-provider.name=native" \
+        > "$RUN_DIR/etc/plan-checker-providers/native.properties"
+    echo "expression-manager-factory.name=native" \
+        > "$RUN_DIR/etc/expression-manager/native.properties"
+}
+
 # --- Generate the in-repo local-dev config from base etc/ + overlays ---
 prepare_local_dev_config() {
     local pfm="$FB_TRUNK/presto-facebook-main"
@@ -197,7 +256,13 @@ prepare_local_dev_config() {
     mkdir -p "$cat_dir" "$fns_dir" "$spill_dir" "$RUN_DIR"
     # The coordinator runs with cwd=$RUN_DIR; ensure it has no etc/ so the
     # cwd-relative aux managers (query-prerequisites, access-control) no-op.
+    # (Sidecar mode re-creates only the specific provider subdirs below -- never
+    # query-prerequisites.properties -- so prerequisites stay disabled.)
     rm -rf "$RUN_DIR/etc"
+    # Drop any stale native function-namespace file from a prior sidecar run; it
+    # is re-created below only when sidecar mode is on. Left behind in non-sidecar
+    # mode it would try to load the native namespace and fail (NO_CPP_SIDECARS).
+    rm -f "$fns_dir/native.properties"
 
     # config.properties = base etc/config.properties with:
     #   - the multi-line plugin.bundles block removed (re-added below), and
@@ -210,7 +275,7 @@ prepare_local_dev_config() {
         { print }
     ' "$BASE_ETC/config.properties" \
       | grep -vE \
-          'socks-proxy|^catalog\.config-dir|^function-namespace\.config-dir|^experimental\.spiller-spill-path|^node-scheduler\.include-coordinator|^native-execution-enabled|^optimizer\.optimize-hash-generation|^regex-library|^offset-clause-enabled|^inline-sql-functions|^use-alternative-function-signatures|^fb\.announced-catalogs' \
+          'socks-proxy|^catalog\.config-dir|^function-namespace\.config-dir|^experimental\.spiller-spill-path|^node-scheduler\.include-coordinator|^native-execution-enabled|^optimizer\.optimize-hash-generation|^regex-library|^offset-clause-enabled|^inline-sql-functions|^use-alternative-function-signatures|^fb\.announced-catalogs|^coordinator-sidecar-enabled|^presto\.default-namespace|^exclude-invalid-worker-session-properties' \
           > "$ETC_LOCAL/config.properties"
 
     # Prod-faithful plugin.bundles: keep the OSS (presto-trunk) plugins as
@@ -231,6 +296,26 @@ prepare_local_dev_config() {
         bundles+=$'\n'"  $(realpath -m "$pfm/$b"),\\"
     done <<< "$oss_rel"
     bundles+=$'\n'"  $(realpath -m "$pfm/../presto-facebook-plugins/pom.xml")"
+    # Sidecar mode: also load the native-sidecar CoordinatorPlugin bundle. The
+    # PluginManager scans each bundle pom for both Plugin and CoordinatorPlugin
+    # service files, so this registers the native session-property/function/type/
+    # plan-checker/expression factories (instantiated by the provider files).
+    if [[ "$SIDECAR_MODE" == "1" ]]; then
+        bundles="${bundles},\\"$'\n'"  $(realpath -m "$SIDECAR_PLUGIN_POM")"
+    fi
+
+    # Sidecar mode flips inline-sql-functions on and adds the coordinator keys
+    # that turn on native session-property/function/type propagation. Built as a
+    # variable so the heredoc stays a single static block.
+    local inline_sql_functions="false"
+    local sidecar_overlay=""
+    if [[ "$SIDECAR_MODE" == "1" ]]; then
+        inline_sql_functions="true"
+        sidecar_overlay=$'\n'"# --- native coordinator-sidecar mode (PRESTO_LOCAL_DEV_SIDECAR=1) ---"
+        sidecar_overlay+=$'\n'"coordinator-sidecar-enabled=true"
+        sidecar_overlay+=$'\n'"presto.default-namespace=native.default"
+        sidecar_overlay+=$'\n'"exclude-invalid-worker-session-properties=true"
+    fi
 
     cat >> "$ETC_LOCAL/config.properties" <<EOF
 
@@ -247,7 +332,8 @@ native-execution-enabled=true
 optimizer.optimize-hash-generation=false
 regex-library=RE2J
 offset-clause-enabled=true
-inline-sql-functions=false
+inline-sql-functions=$inline_sql_functions
+$sidecar_overlay
 
 fb.announced-catalogs=tpch
 EOF
@@ -291,6 +377,11 @@ LOCALEOF
     printf 'connector.name=jmx\n' > "$cat_dir/jmx.properties"
 
     # Empty function-namespace dir => no XDB UDF manager (which hangs on socks).
+    # In sidecar mode we add the native function namespace + the other native
+    # provider files (the only thing that lands in function-namespace/ is native).
+    if [[ "$SIDECAR_MODE" == "1" ]]; then
+        write_sidecar_provider_files "$fns_dir"
+    fi
 
     cp -f "$BASE_ETC/log.properties" "$ETC_LOCAL/log.properties" 2>/dev/null || true
 
@@ -335,6 +426,20 @@ prepare_worker_etc() {
     else
         echo "node.environment=$coord_env" >> "$dst/node.properties"
     fi
+    # Sidecar mode: make this worker announce itself as a coordinator sidecar
+    # (sidecar=true over discovery) AND set the native default namespace, so the
+    # coordinator's native-sidecar plugin can fetch session properties/functions
+    # from it. The same node still does compute, so it also satisfies the
+    # activeWorkers gate -- no second process needed. Always re-strip first so a
+    # non-sidecar run after a sidecar run doesn't leave the keys behind (worker-etc
+    # is recreated from $src each call, so this is belt-and-suspenders).
+    sed -i '/^native-sidecar=/d; /^presto.default-namespace=/d' "$dst/config.properties"
+    if [[ "$SIDECAR_MODE" == "1" ]]; then
+        {
+            echo "native-sidecar=true"
+            echo "presto.default-namespace=native.default"
+        } >> "$dst/config.properties"
+    fi
     echo "$dst"
 }
 
@@ -369,6 +474,8 @@ wait_for_port() {
 # for running queries (a query before this hangs in WAITING_FOR_PREREQUISITES,
 # which actually means WAITING_FOR_RESOURCES). Registration lags worker start by
 # ~1 min. On timeout, print a precise reason instead of leaving a mystery hang.
+# In sidecar mode the same worker also announces sidecar=true, so activeWorkers>=1
+# implies a coordinator sidecar is present too.
 wait_for_active_worker() {
     local max_wait="${1:-180}" elapsed=0 aw
     echo "  Waiting for the worker to be counted ACTIVE (the gate for queries; ~1 min)..."
@@ -419,6 +526,7 @@ start_coordinator() {
     echo "  Run dir:     $RUN_DIR  (no etc/ -> prism query-prerequisites disabled)"
     echo "  Spill:       $SCRATCH_DIR/spill"
     echo "  Port:        $COORDINATOR_PORT"
+    [[ "$SIDECAR_MODE" == "1" ]] && echo "  Sidecar:     ENABLED (native coordinator-sidecar; native_* session props accepted)"
     MAVEN_OPTS="${COORDINATOR_MAVEN_OPTS[*]}" \
     launch_detached "$COORDINATOR_PID_FILE" "$COORDINATOR_LOG" "$RUN_DIR" -- \
         mvn -f "$FB_TRUNK/presto-facebook-main/pom.xml" exec:java \
@@ -458,6 +566,7 @@ start_worker() {
     echo "=== Starting native (Prestissimo) worker (detached) ==="
     echo "  Binary:   $bin"
     echo "  Etc:      $wetc  (discovery -> :$COORDINATOR_PORT)"
+    [[ "$SIDECAR_MODE" == "1" ]] && echo "  Sidecar:  this worker announces sidecar=true (doubles as coordinator sidecar + compute)"
     launch_detached "$WORKER_PID_FILE" "$WORKER_LOG" "$CHECKOUT_ROOT" -- \
         "$bin" --etc_dir="$wetc"
     echo "  Started (PID $(cat "$WORKER_PID_FILE" 2>/dev/null), log: $WORKER_LOG)"
@@ -519,15 +628,25 @@ show_status() {
 # Use this instead of `/usr/local/bin/presto` -- that is Meta's gateway CLI and
 # does NOT accept --server/--catalog/--schema for a local coordinator. Catalog/
 # schema default to tpch/tiny (override via PRESTO_LOCAL_DEV_CATALOG/_SCHEMA).
+# Extra request headers (e.g. session properties) can be passed via
+# PRESTO_LOCAL_DEV_HEADERS as "Header1: v1;Header2: v2".
 run_query() {
     local sql="$*"
     if [[ -z "$sql" ]]; then echo "usage: presto-local-dev query \"<SQL>\""; return 1; fi
     PLD_PORT="$COORDINATOR_PORT" PLD_USER="$USER" \
     PLD_CAT="${PRESTO_LOCAL_DEV_CATALOG:-tpch}" PLD_SCH="${PRESTO_LOCAL_DEV_SCHEMA:-tiny}" \
+    PLD_HEADERS="${PRESTO_LOCAL_DEV_HEADERS:-}" \
     PLD_SQL="$sql" python3 - <<'PY'
 import json, os, sys, time, urllib.request
 port=os.environ["PLD_PORT"]; sql=os.environ["PLD_SQL"]
 hdr={"X-Presto-User":os.environ["PLD_USER"],"X-Presto-Catalog":os.environ["PLD_CAT"],"X-Presto-Schema":os.environ["PLD_SCH"]}
+extra=os.environ.get("PLD_HEADERS","").strip()
+if extra:
+    for h in extra.split(";"):
+        h=h.strip()
+        if not h: continue
+        k,_,v=h.partition(":")
+        hdr[k.strip()]=v.strip()
 def get(url, data=None):
     return json.load(urllib.request.urlopen(urllib.request.Request(url, data, hdr), timeout=15))
 try:
@@ -558,20 +677,31 @@ case "$cmd" in
     worker)      start_worker ;;
     gateway)     start_gateway ;;
     all)         start_coordinator; echo ""; start_worker || true; echo ""; show_status ;;
+    sidecar)     SIDECAR_MODE=1; start_coordinator; echo ""; start_worker || true; echo ""; show_status ;;
     stop)        stop_all ;;
     status)      show_status ;;
     query)       shift; run_query "$@" ;;
     -h|--help|"")
         cat <<EOF
-Usage: presto-local-dev {coordinator|worker|gateway|all|stop|status|query}
+Usage: presto-local-dev {coordinator|worker|gateway|all|sidecar|stop|status|query}
 
   coordinator   Start a detached local coordinator (native-execution mode, port ${COORDINATOR_PORT})
   worker        Start the detached native (Prestissimo) C++ worker (blocks until ACTIVE)
   gateway       Start a detached local gateway (port ${GATEWAY_PORT})
   all           coordinator + worker
+  sidecar       coordinator + worker in native coordinator-sidecar mode
+                (same as PRESTO_LOCAL_DEV_SIDECAR=1 presto-local-dev all)
   stop          Stop all local Presto processes
   status        Show status (incl. nodes + activeWorkers)
   query "<SQL>" Run SQL against the local coordinator (tpch/tiny by default)
+
+Native coordinator-sidecar mode (opt-in): set PRESTO_LOCAL_DEV_SIDECAR=1 (or use the
+'sidecar' subcommand) to make native_* session properties (e.g.
+native_spill_io_stats_key_suffix) accepted by the coordinator. Requires the
+presto-native-sidecar-plugin built into m2 (mpi / presto-build builds it). To run a
+query with a native session property:
+  PRESTO_LOCAL_DEV_HEADERS='X-Presto-Session: native_spill_io_stats_key_suffix=foo' \\
+    presto-local-dev query "SELECT 1"
 
 Generated local-dev config: $ETC_LOCAL  (in-repo, gitignored; tracked etc/ untouched)
 Coordinator run dir: $RUN_DIR  (no etc/ -> prism query-prerequisites disabled)

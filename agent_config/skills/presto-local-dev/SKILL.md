@@ -15,6 +15,7 @@ The script **never edits the tracked `etc/`**. It generates config into an in-re
 - Java modules built first: `presto-build` (full) or `source ~/.localrc && mfi -pl presto-facebook`. The local m2 snapshots must match the checkout's `pom.xml` version, or startup fails with `Could not transfer artifact … Network is unreachable` (devservers have no direct internet; the script runs maven offline `-o`).
 - x509 credentials at `/var/facebook/credentials/$USER/x509/$USER.pem`.
 - For the worker: a built `fbcode//fb_presto_cpp:main` (see `presto-build -n`). Cached = seconds; cold = long.
+- For **native sidecar mode** (`sidecar` / `PRESTO_LOCAL_DEV_SIDECAR=1`): the `presto-native-sidecar-plugin` must be built into the local m2. It is in `_oss_modules` (so `source ~/.localrc && mpi` builds it) and in `presto-build`'s `OSS_MODULES` (so `presto-build` builds it).
 
 **Related skills:** `presto-build` (build), `presto-gateway-deploy` (deploy gateway), `presto-e2e-test` (remote E2E).
 
@@ -26,6 +27,7 @@ The script **never edits the tracked `etc/`**. It generates config into an in-re
 | Start native worker (C++) | `presto-local-dev worker` |
 | Start gateway (Java) | `presto-local-dev gateway` |
 | Start coordinator + worker | `presto-local-dev all` |
+| Start coordinator + worker in **native sidecar mode** | `presto-local-dev sidecar` |
 | Stop everything | `presto-local-dev stop` |
 | Status (nodes + activeWorkers) | `presto-local-dev status` |
 | Run a query against the local coordinator | `presto-local-dev query "<SQL>"` |
@@ -100,6 +102,46 @@ offset-clause-enabled=true
 inline-sql-functions=false
 ```
 (First line stops the coordinator acting as a worker; the rest are the Prestissimo-mode planner settings from `NativeQueryRunnerUtils.getNativeWorkerSystemProperties()`.) With `include-coordinator=false`, **0 workers** until you start the worker.
+
+## Native coordinator-sidecar mode (opt-in)
+
+By default the coordinator does **not** understand native (C++) session properties — e.g. `SET SESSION native_spill_io_stats_key_suffix=…` fails with `INVALID_SESSION_PROPERTY: Unknown session property`. Those properties are defined in the C++ worker, and the coordinator only learns them from a **sidecar**: a worker that announces `sidecar=true`, which the coordinator queries (`/v1/properties/session`, `/v1/functions`) via the `presto-native-sidecar-plugin`.
+
+**When to use it:** any time you're testing native-only session properties, functions, or types end-to-end (the spill-IoStats feature being the motivating case). For plain native-execution query testing you don't need it — leave it off.
+
+**How to enable:**
+```bash
+presto-local-dev sidecar                          # coordinator + sidecar worker
+# or, equivalently, for individual subcommands:
+PRESTO_LOCAL_DEV_SIDECAR=1 presto-local-dev all
+PRESTO_LOCAL_DEV_SIDECAR=1 presto-local-dev coordinator   # then worker, same env
+```
+The flag must be set for **both** the coordinator and worker starts (the `sidecar` subcommand does both in one go). A **single worker doubles as the sidecar and the compute worker** (the "cluster of only sidecar workers" topology), so no second process is needed — `activeWorkers ≥ 1` still gates queries.
+
+**Running a query with a native session property:**
+```bash
+PRESTO_LOCAL_DEV_HEADERS='X-Presto-Session: native_spill_io_stats_key_suffix=foo' \
+  presto-local-dev query "SELECT count(*) FROM nation"
+```
+(`PRESTO_LOCAL_DEV_HEADERS` is a `;`-separated list of extra HTTP headers passed to `/v1/statement`.)
+
+**What the script changes in sidecar mode** (all generated, nothing tracked is touched):
+- Adds the `presto-native-sidecar-plugin` pom to `plugin.bundles`. It registers as a `CoordinatorPlugin` (the PluginManager scans each bundle for both `Plugin` and `CoordinatorPlugin` service files), exposing the native session-property / function-namespace / type / plan-checker / expression-optimizer factories.
+- Adds coordinator keys to the overlay: `coordinator-sidecar-enabled=true`, `presto.default-namespace=native.default`, `exclude-invalid-worker-session-properties=true`, and flips `inline-sql-functions=true` (it is `false` in the default overlay).
+- Writes the five provider files (canonical values from `presto-docs/.../native-sidecar-plugin.rst`). The factories are only instantiated when these exist:
+
+  | File | Contents | Where |
+  |------|----------|-------|
+  | `function-namespace/native.properties` | `function-namespace-manager.name=native`, `function-implementation-type=CPP`, `supported-function-languages=CPP` | `etc-local/function-namespace/` (our `function-namespace.config-dir`) |
+  | `session-property-providers/native-worker.properties` | `session-property-provider.name=native-worker` | `$RUN_DIR/etc/` (cwd-relative default) |
+  | `type-managers/native.properties` | `type-manager.name=native` | `$RUN_DIR/etc/` |
+  | `plan-checker-providers/native.properties` | `plan-checker-provider.name=native` | `$RUN_DIR/etc/` |
+  | `expression-manager/native.properties` | `expression-manager-factory.name=native` | `$RUN_DIR/etc/` |
+
+  The four `$RUN_DIR/etc/` files coexist with the "run-dir has no `etc/`" prism trick because the script creates **only those provider subdirs** under `$RUN_DIR/etc/` — never `query-prerequisites.properties` or `access-control.properties`, so those managers still no-op (absence is the off switch).
+- Launches the worker with `native-sidecar=true` and `presto.default-namespace=native.default` in its `worker-etc/config.properties`.
+
+**Caveat for the spill-IoStats feature specifically:** sidecar mode makes `native_spill_io_stats_key_suffix` *accepted*, but the feature keys off warehouse/WS-FileSystem IoStats; local-disk spill to `/tmp` may not emit those keys, so the stat columns can still be empty locally. Sidecar mode unblocks the *property*, not necessarily the *signal*.
 
 ## Devserver gotchas (baked into the generated config / script)
 
@@ -186,4 +228,5 @@ Logs include full Maven output + app stderr. Grep for `ERROR` or class names.
 | Worker doesn't register | Check `worker-etc/config.properties` `discovery.uri` = coordinator port, and `node.environment` matches the coordinator. |
 | `Address already in use` :8082/:8081 | `presto-local-dev stop`, or `lsof -i :8082` then kill. |
 | `etc-local/` shows in `sl status` | It shouldn't — it's in `presto-facebook-trunk/.gitignore`. If it appears, confirm you're under that trunk and the ignore is intact. |
+| `INVALID_SESSION_PROPERTY: Unknown session property native_*` | The coordinator has no native sidecar. Start in sidecar mode (`presto-local-dev sidecar` or `PRESTO_LOCAL_DEV_SIDECAR=1`) — see [Native coordinator-sidecar mode](#native-coordinator-sidecar-mode-opt-in). |
 | `Sidecar monitoring port is NOT set. TW_PORT_sidecar_monitoring` | Benign devserver warning — ignore. |

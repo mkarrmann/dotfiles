@@ -72,7 +72,7 @@ OSS_OPTS=(
 # OSS modules needed by presto-facebook-trunk. Transitive deps (e.g. presto-matching,
 # presto-function-namespace-managers, presto-hive) are resolved automatically by -am.
 # Keep in sync with _p_modules in ~/.localrc.
-OSS_MODULES="presto-analyzer,presto-base-jdbc,presto-benchmark,presto-benchmark-driver,presto-benchmark-runner,presto-bytecode,presto-cache,presto-client,presto-common,presto-expressions,presto-geospatial-toolkit,presto-jdbc,presto-jmx,presto-main,presto-main-base,presto-main-tests,presto-memory,presto-memory-context,presto-native-execution,presto-orc,presto-parquet,presto-parser,presto-plugin-toolkit,presto-proxy,presto-rcfile,presto-resource-group-managers,presto-spi,presto-spark-base,presto-spark-classloader-interface,presto-spark-common,presto-spark-launcher,presto-testng-services,presto-testing-docker,presto-tests,presto-thrift-api,presto-thrift-connector,presto-thrift-testing-server,presto-tpcds,presto-tpch,presto-verifier"
+OSS_MODULES="presto-analyzer,presto-base-jdbc,presto-benchmark,presto-benchmark-driver,presto-benchmark-runner,presto-bytecode,presto-cache,presto-client,presto-common,presto-expressions,presto-geospatial-toolkit,presto-jdbc,presto-jmx,presto-main,presto-main-base,presto-main-tests,presto-memory,presto-memory-context,presto-native-execution,presto-native-sidecar-plugin,presto-orc,presto-parquet,presto-parser,presto-plugin-toolkit,presto-proxy,presto-rcfile,presto-resource-group-managers,presto-spi,presto-spark-base,presto-spark-classloader-interface,presto-spark-common,presto-spark-launcher,presto-testng-services,presto-testing-docker,presto-tests,presto-thrift-api,presto-thrift-connector,presto-thrift-testing-server,presto-tpcds,presto-tpch,presto-verifier"
 
 FB_OPTS=(
     "${COMMON_OPTS[@]}"
