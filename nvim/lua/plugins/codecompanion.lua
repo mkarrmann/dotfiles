@@ -954,52 +954,73 @@ local function tab_chat_pick_option()
   end)
 end
 
--- Compact the current ACP dvsc chat via the wrapper's `dm-core/compact`
--- extension method, then prune the local transcript so the visible chat
--- better matches the agent's compacted server-side context.
+-- Animated "Compacting…" indicator pinned to the end of the chat buffer.
+-- Returns a stop() that cancels the timer and clears the extmark. Used by both
+-- compaction paths so the in-progress state is visible regardless of adapter.
+local function start_compaction_spinner(bufnr)
+  local ns = vim.api.nvim_create_namespace("codecompanion_compaction_spinner")
+  local frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+  local timer = vim.uv.new_timer()
+  local frame = 0
+  local stopped = false
+  timer:start(0, 80, function()
+    vim.schedule(function()
+      -- Guard against an in-flight tick repainting after stop() cleared us.
+      if stopped or not vim.api.nvim_buf_is_valid(bufnr) then
+        return
+      end
+      pcall(vim.api.nvim_buf_clear_namespace, bufnr, ns, 0, -1)
+      local last = vim.api.nvim_buf_line_count(bufnr) - 1
+      pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, last, 0, {
+        virt_text = { { frames[frame + 1] .. " Compacting context…", "Comment" } },
+        virt_text_pos = "eol",
+      })
+      frame = (frame + 1) % #frames
+    end)
+  end)
+  return function()
+    stopped = true
+    pcall(function() timer:stop() end)
+    pcall(function() timer:close() end)
+    if vim.api.nvim_buf_is_valid(bufnr) then
+      pcall(vim.api.nvim_buf_clear_namespace, bufnr, ns, 0, -1)
+    end
+  end
+end
+
+-- True if the chat's live ACP session advertises a slash command named
+-- `compact` (e.g. claude-agent-acp forwards Claude Code's `/compact`). This is
+-- how we detect compaction support for non-dvsc agents.
+local function acp_session_has_compact(chat)
+  local conn = chat and chat.acp_connection
+  if not conn or not conn.session_id then
+    return false
+  end
+  local commands = require("codecompanion.interactions.chat.acp.commands")
+    .get_commands_for_session(conn.session_id)
+  for _, c in ipairs(commands) do
+    if c.name == "compact" then
+      return true
+    end
+  end
+  return false
+end
+
+-- dvsc compaction via the wrapper's `dm-core/compact` ext RPC.
 --
--- Why local pruning is required:
--- - ACP adapters are stateful; future prompts send only unsent user messages,
---   so the compact RPC itself is safe.
--- - But CodeCompanion otherwise keeps showing the full pre-compact transcript,
---   which drifts from the agent's retained context.
--- - We cannot rebuild a faithful compact summary locally because the ACP
---   ext-method returns only `{ compacted = bool }`, not the summary text.
---   Instead we keep durable context messages (system/rules/file/editor
---   context) plus a visible marker that the conversation was compacted.
-local function tab_chat_compact()
-  local bufnr = vim.t.codecompanion_chat_bufnr
-  local chat = bufnr
-    and vim.api.nvim_buf_is_valid(bufnr)
-    and require("codecompanion").buf_get_chat(bufnr)
-  if not chat then
-    return vim.notify("No CodeCompanion chat in this tab.", vim.log.levels.WARN)
-  end
-  if not chat.adapter or chat.adapter.type ~= "acp" or not chat.acp_connection then
-    return vim.notify("Current chat has no live ACP connection.", vim.log.levels.WARN)
-  end
-  if chat.current_request then
-    return vim.notify("Wait for the current request to finish before compacting.", vim.log.levels.WARN)
-  end
-
-  local adapter_name = chat.adapter.name
-  if adapter_name ~= "dvsc_core" and adapter_name ~= "dvsc_core_broker" then
-    return vim.notify(
-      string.format("Compact is only wired for dvsc ACP chats; current adapter is `%s`.", adapter_name),
-      vim.log.levels.WARN
-    )
-  end
-
+-- The RPC returns only `{ compacted = bool }` — never the summary text — so we
+-- cannot show the model's actual post-compaction context. We therefore KEEP the
+-- full local transcript (for the human's reference) and append a boundary
+-- marker recording where the model's memory was condensed. Retaining history is
+-- safe: `form_messages` (adapters/acp/helpers.lua) only re-sends user messages
+-- with `not _meta.sent`, so old turns are never re-sent to the agent.
+local function dvsc_compact(chat)
   local async_utils = require("codecompanion.utils.async")
   local cc_config = require("codecompanion.config")
   local parser = require("codecompanion.interactions.chat.parser")
   local tags = require("codecompanion.interactions.shared.tags")
 
-  local keep_tags = {
-    [tags.EDITOR_CONTEXT] = true,
-    [tags.RULES] = true,
-    [tags.FILE] = true,
-  }
+  local stop_spinner = start_compaction_spinner(chat.bufnr)
 
   async_utils.sync(function()
     local resp = chat.acp_connection:send_rpc_request("dm-core/compact", {
@@ -1008,26 +1029,17 @@ local function tab_chat_compact()
     })
 
     vim.schedule(function()
+      stop_spinner()
       if not resp or not resp.compacted then
         return vim.notify("ACP compact was not performed.", vim.log.levels.WARN)
       end
 
-      local preserved = {}
-      for _, msg in ipairs(chat.messages or {}) do
-        if msg.role == cc_config.constants.SYSTEM_ROLE then
-          preserved[#preserved + 1] = msg
-        elseif msg.role == cc_config.constants.USER_ROLE then
-          local tag = msg._meta and msg._meta.tag
-          if tag and keep_tags[tag] then
-            preserved[#preserved + 1] = msg
-          end
-        end
-      end
-
-      chat.messages = preserved
+      -- Keep the full transcript; just record where compaction happened.
       chat:add_message({
         role = cc_config.constants.LLM_ROLE,
-        content = "[dm-core] Conversation compacted on the agent. Earlier transcript hidden locally; continue from here.",
+        content = "───────── context compacted ─────────\n"
+          .. "The transcript above is retained for your reference, but is no "
+          .. "longer in the model's context.",
       }, {
         _meta = { tag = tags.COMPACT_SUMMARY },
       })
@@ -1044,10 +1056,76 @@ local function tab_chat_compact()
       chat._last_role = cc_config.constants.LLM_ROLE
       chat:ready_for_input()
       chat:checkpoint()
+      lock_chat_buf(chat.bufnr)
 
       vim.notify("CodeCompanion chat compacted.", vim.log.levels.INFO)
     end)
   end)()
+end
+
+-- Compaction for any ACP agent that advertises a `compact` slash command
+-- (claude_code / claude_broker, and codex if it exposes it). We submit
+-- `\compact` through the normal pipeline; ACPHandler:transform_acp_commands
+-- rewrites `\compact` → `/compact` on the wire, the agent runs compaction and
+-- streams its own "Compacting…/Compacting completed." messages — which serve as
+-- the in-history reference. History is never cleared on this path.
+local function agent_command_compact(chat)
+  local trigger = require("codecompanion.triggers").mappings.acp_slash_commands
+  local stop_spinner = start_compaction_spinner(chat.bufnr)
+
+  -- Stop the spinner once this compaction request completes.
+  local grp = vim.api.nvim_create_augroup("cc_compact_" .. chat.bufnr, { clear = true })
+  vim.api.nvim_create_autocmd("User", {
+    group = grp,
+    pattern = "CodeCompanionRequestFinished",
+    callback = function(args)
+      if args.data and args.data.bufnr == chat.bufnr then
+        stop_spinner()
+        pcall(vim.api.nvim_del_augroup_by_id, grp)
+      end
+    end,
+  })
+
+  chat:add_buf_message({
+    role = require("codecompanion.config").constants.USER_ROLE,
+    content = trigger .. "compact",
+  })
+  chat:submit()
+end
+
+-- Compact the current tab's chat for any agent that supports it.
+--   * dvsc (dvsc_core / dvsc_core_broker) → `dm-core/compact` ext RPC.
+--   * any other agent advertising a `compact` slash command → `/compact`.
+-- The full transcript is always retained; the model's compacted context is
+-- never returned to the client (the wrapper drops compaction_delta and the dvsc
+-- RPC returns only a bool), so the local view intentionally holds more than the
+-- model's actual context.
+local function tab_chat_compact()
+  local bufnr = vim.t.codecompanion_chat_bufnr
+  local chat = bufnr
+    and vim.api.nvim_buf_is_valid(bufnr)
+    and require("codecompanion").buf_get_chat(bufnr)
+  if not chat then
+    return vim.notify("No CodeCompanion chat in this tab.", vim.log.levels.WARN)
+  end
+  if not chat.adapter or chat.adapter.type ~= "acp" or not chat.acp_connection then
+    return vim.notify("Current chat has no live ACP connection.", vim.log.levels.WARN)
+  end
+  if chat.current_request then
+    return vim.notify("Wait for the current request to finish before compacting.", vim.log.levels.WARN)
+  end
+
+  local adapter_name = chat.adapter.name
+  if adapter_name == "dvsc_core" or adapter_name == "dvsc_core_broker" then
+    return dvsc_compact(chat)
+  end
+  if acp_session_has_compact(chat) then
+    return agent_command_compact(chat)
+  end
+  return vim.notify(
+    string.format("Adapter `%s` does not support compaction.", adapter_name),
+    vim.log.levels.WARN
+  )
 end
 
 return {
@@ -1802,8 +1880,77 @@ return {
         end
 
         cmp.register_source("codecompanion_queue_slash", QueueSlash)
+
+        -- ACP agent slash commands (\-triggered, e.g. \compact) for the queue
+        -- input. The stock cmp source (providers/completion/cmp/acp_commands.lua)
+        -- keys off the chat buffer, but our input is a separate
+        -- `codecompanion_input` buffer that isn't session-linked, so we resolve
+        -- the tab's chat session and build items from its advertised commands.
+        -- On submit, ACPHandler:transform_acp_commands rewrites `\cmd` → `/cmd`
+        -- on the wire, so completion only inserts text (no execution).
+        local acp_trigger = require("codecompanion.triggers").mappings.acp_slash_commands
+        local QueueAcp = {}
+        QueueAcp.new = function() return setmetatable({}, { __index = QueueAcp }) end
+        function QueueAcp:is_available()
+          return vim.bo.filetype == "codecompanion_input"
+            and require("codecompanion.config").interactions.chat.slash_commands.opts.acp.enabled
+        end
+        function QueueAcp:get_trigger_characters() return { acp_trigger } end
+        function QueueAcp:get_keyword_pattern()
+          return vim.fn.escape(acp_trigger, [[\]]) .. [[\%(\w\|-\)\+]]
+        end
+        function QueueAcp:complete(params, callback)
+          local chat_bufnr = require("lib.codecompanion-queue").chat_bufnr()
+          local chat = chat_bufnr and require("codecompanion").buf_get_chat(chat_bufnr)
+          local conn = chat and chat.acp_connection
+          if not conn or not conn.session_id then
+            return callback({ items = {}, isIncomplete = false })
+          end
+          local commands = require("codecompanion.interactions.chat.acp.commands")
+            .get_commands_for_session(conn.session_id)
+          local kind = cmp.lsp.CompletionItemKind.Function
+          local items = vim.iter(commands):map(function(cmd)
+            local detail = cmd.description or ""
+            if cmd.input and cmd.input ~= vim.NIL and type(cmd.input) == "table" and cmd.input.hint then
+              detail = detail .. " " .. cmd.input.hint
+            end
+            return {
+              label = acp_trigger .. cmd.name,
+              detail = detail,
+              command = cmd,
+              kind = kind,
+              context = { bufnr = params.context.bufnr, cursor = params.context.cursor },
+            }
+          end):totable()
+          callback({ items = items, isIncomplete = true })
+        end
+        function QueueAcp:execute(item, callback)
+          -- Insert "\<cmd>" (plus a trailing space if it takes args), replacing
+          -- the partially typed trigger token. Idempotent: strips any existing
+          -- "\cmd" token at the cursor first, so it is correct whether or not
+          -- cmp already inserted the label. No auto-submit.
+          local text = acp_trigger .. item.command.name
+          if
+            item.command.input
+            and item.command.input ~= vim.NIL
+            and type(item.command.input) == "table"
+            and item.command.input.hint
+          then
+            text = text .. " "
+          end
+          local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+          local line = vim.api.nvim_get_current_line()
+          local before = line:sub(1, col):gsub(vim.pesc(acp_trigger) .. "[-%w]*$", "")
+          local after = line:sub(col + 1)
+          vim.api.nvim_set_current_line(before .. text .. after)
+          vim.api.nvim_win_set_cursor(0, { row, #before + #text })
+          callback(item)
+        end
+        cmp.register_source("codecompanion_queue_acp", QueueAcp)
+
         local sources = vim.deepcopy(cmp.get_config().sources or {})
         table.insert(sources, { name = "codecompanion_queue_slash" })
+        table.insert(sources, { name = "codecompanion_queue_acp" })
         cmp.setup({ sources = sources })
       end
 
@@ -1884,7 +2031,7 @@ return {
 
       vim.api.nvim_create_user_command("CodeCompanionCompact", function()
         tab_chat_compact()
-      end, { desc = "Compact the current CodeCompanion ACP dvsc chat" })
+      end, { desc = "Compact the current CodeCompanion chat (any compaction-capable ACP agent)" })
 
       vim.api.nvim_create_autocmd("VimLeavePre", {
         callback = function()
@@ -1971,7 +2118,7 @@ return {
       { "<leader>aG", function() tab_chat_pick_agent_and_set({ clear = true, force_pick = true }) end, desc = "Pick agent (dvsc / direct Claude / direct Codex), fresh" },
       { "<leader>aC", function() tab_chat_set_adapter("claude_broker",    { clear = true }) end, desc = "Claude Chat via broker (direct, fresh)" },
       { "<leader>aO", function() tab_chat_set_adapter("codex_broker",     { clear = true }) end, desc = "Codex Chat via broker (fresh)" },
-      { "<leader>ak", tab_chat_compact, desc = "CodeCompanion: compact current ACP dvsc chat" },
+      { "<leader>ak", tab_chat_compact, desc = "CodeCompanion: compact current chat (dvsc RPC or agent /compact)" },
       { "<leader>aZ", function() tab_chat_full_refresh() end, desc = "CodeCompanion: full refresh (close + reopen, pick agent + model + config)" },
       { "<leader>ao", tab_chat_pick_option, desc = "CodeCompanion: change live ACP session config option" },
       { "<leader>aQ", function()
