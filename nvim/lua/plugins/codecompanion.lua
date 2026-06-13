@@ -1609,6 +1609,37 @@ return {
         return orig_ensure_connection(self)
       end
 
+      -- HACK: when the agent process dies, Connection:handle_process_exit nils
+      -- session_id; the next turn silently mints a fresh session/new while the
+      -- chat buffer keeps showing the old transcript — so you keep talking to
+      -- what looks like the same agent, but it has none of the prior context.
+      -- Surface the swap (toast + inline banner). The last established id is
+      -- remembered on the long-lived connection object and is NOT cleared on
+      -- exit, so we can detect replacement. Intentional resume (/join, broker
+      -- fork) uses a fresh connection, so `previous` is nil there and no warning
+      -- fires. Remove once upstream notifies on session replacement.
+      local orig_ensure_session = ACPHandler.ensure_session
+      function ACPHandler:ensure_session()
+        local conn = self.chat.acp_connection
+        local previous = conn and conn._cc_established_session_id
+        local ok = orig_ensure_session(self)
+        if ok and conn and conn.session_id then
+          if previous and conn.session_id ~= previous then
+            local warning = ("Previous agent session ended; a new session (%s) was started. "):format(conn.session_id)
+              .. "This agent does NOT have the earlier conversation context shown above."
+            require("codecompanion.utils").notify(warning, vim.log.levels.WARN)
+            pcall(function()
+              self.chat:add_buf_message({
+                role = require("codecompanion.config").constants.LLM_ROLE,
+                content = "\n> [!WARNING] Session reset\n> " .. warning .. "\n",
+              }, { type = self.chat.MESSAGE_TYPES.SYSTEM_MESSAGE })
+            end)
+          end
+          conn._cc_established_session_id = conn.session_id
+        end
+        return ok
+      end
+
       -- HACK: Connection:_establish_session gates session/load on the agent
       -- advertising loadSession capability. The broker handles session/load
       -- directly for known sessions (the agent is never consulted), so the
