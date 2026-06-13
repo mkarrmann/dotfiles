@@ -247,6 +247,37 @@ EOF
         > "$RUN_DIR/etc/expression-manager/native.properties"
 }
 
+# --- Overlay a gitignored user-override file onto a generated config.properties ---
+# This is the general "just edit a config key directly" mechanism: any key set in
+# the override file wins over the generated value (the key is stripped from the
+# target, then the override is appended). The override file is never regenerated,
+# so local tweaks persist across restarts while the rest of the config still
+# refreshes from its base. A commented template is created on first use. Used for
+# both the coordinator and the worker -- no per-key env var is ever needed.
+apply_local_overrides() {
+    local target="$1" override="$2" label="$3" example="$4"
+    if [[ ! -f "$override" ]]; then
+        cat > "$override" <<LOCALEOF
+# presto-local-dev $label config overrides -- gitignored, persists across
+# regenerations. Add config.properties keys here; they override the generated
+# values. Example:
+#   $example
+LOCALEOF
+    fi
+    local ukeys
+    ukeys="$(grep -vE '^[[:space:]]*(#|$)' "$override" | cut -d= -f1 | sed -E 's/[[:space:]]+//g' || true)"
+    [[ -z "$ukeys" ]] && return 0
+    local strip_pat
+    strip_pat="$(printf '%s\n' "$ukeys" | sed -E 's/[][(){}.^$*+?|\\]/\\&/g' | paste -sd '|' -)"
+    grep -vE "^($strip_pat)=" "$target" > "$target.tmp"
+    mv "$target.tmp" "$target"
+    {
+        echo ""
+        echo "# === user overrides ($(basename "$override")) ==="
+        grep -vE '^[[:space:]]*(#|$)' "$override"
+    } >> "$target"
+}
+
 # --- Generate the in-repo local-dev config from base etc/ + overlays ---
 prepare_local_dev_config() {
     local pfm="$FB_TRUNK/presto-facebook-main"
@@ -338,30 +369,12 @@ $sidecar_overlay
 fb.announced-catalogs=tpch
 EOF
 
-    # Apply persistent user overrides (gitignored, never regenerated). Keys here
-    # win over the generated values, so local tweaks survive every restart while
-    # the base-derived config still refreshes from etc/config.properties.
-    local user_override="$ETC_LOCAL/config.local.properties"
-    if [[ ! -f "$user_override" ]]; then
-        cat > "$user_override" <<'LOCALEOF'
-# presto-local-dev user overrides -- gitignored, persists across regenerations.
-# Add config.properties keys here; they override the generated values. Example:
-#   query.max-memory-per-node=10GB
-LOCALEOF
-    fi
-    local ukeys
-    ukeys="$(grep -vE '^[[:space:]]*(#|$)' "$user_override" | cut -d= -f1 | sed -E 's/[[:space:]]+//g' || true)"
-    if [[ -n "$ukeys" ]]; then
-        local strip_pat
-        strip_pat="$(printf '%s\n' "$ukeys" | sed -E 's/[][(){}.^$*+?|\\]/\\&/g' | paste -sd '|' -)"
-        grep -vE "^($strip_pat)=" "$ETC_LOCAL/config.properties" > "$ETC_LOCAL/config.properties.tmp"
-        mv "$ETC_LOCAL/config.properties.tmp" "$ETC_LOCAL/config.properties"
-        {
-            echo ""
-            echo "# === user overrides (config.local.properties) ==="
-            grep -vE '^[[:space:]]*(#|$)' "$user_override"
-        } >> "$ETC_LOCAL/config.properties"
-    fi
+    # Apply persistent user overrides (gitignored, never regenerated): any
+    # config.properties key set here wins over the generated value, so local
+    # tweaks survive every restart while the base-derived config still refreshes.
+    apply_local_overrides "$ETC_LOCAL/config.properties" \
+        "$ETC_LOCAL/config.local.properties" "coordinator" \
+        "query.max-memory-per-node=10GB"
 
     # Minimal, infra-free catalogs. The FB connector plugins (prism/xdb/
     # configerator/...) are on the classpath via the aggregate, but a connector
@@ -440,6 +453,15 @@ prepare_worker_etc() {
             echo "presto.default-namespace=native.default"
         } >> "$dst/config.properties"
     fi
+    # Apply persistent worker overrides (gitignored, never regenerated): any
+    # worker config.properties key set here wins. This is how you point spill at
+    # Warm Storage (so spill emits wsReadBytes/wsWriteBytes IoStats) -- add
+    #   experimental.spiller-spill-path=ws://ws.dw.<cluster>/namespace/<ns>/<you>/spill
+    # to worker-config.local.properties. Leave it unset to keep the copied
+    # default (/tmp -> local disk, no ws* IoStats).
+    apply_local_overrides "$dst/config.properties" \
+        "$ETC_LOCAL/worker-config.local.properties" "worker" \
+        "experimental.spiller-spill-path=ws://ws.dw.<cluster>/namespace/<ns>/<you>/spill"
     echo "$dst"
 }
 
@@ -702,6 +724,18 @@ presto-native-sidecar-plugin built into m2 (mpi / presto-build builds it). To ru
 query with a native session property:
   PRESTO_LOCAL_DEV_HEADERS='X-Presto-Session: native_spill_io_stats_key_suffix=foo' \\
     presto-local-dev query "SELECT 1"
+
+Warm Storage spill (to exercise spill IoStats end-to-end): point the worker's spill
+path at a writable ws:// location (default /tmp = local disk emits no ws* IoStats).
+Add to $ETC_LOCAL/worker-config.local.properties (gitignored, persists):
+  experimental.spiller-spill-path=ws://ws.dw.<cluster>/namespace/<ns>/<you>/spill
+Then force spill with low memory + spill_enabled, e.g.:
+  PRESTO_LOCAL_DEV_HEADERS='X-Presto-Session: spill_enabled=true' \\
+    presto-local-dev query "SELECT l_orderkey, count(*) FROM lineitem GROUP BY 1"
+
+Config overrides: edit any coordinator key in $ETC_LOCAL/config.local.properties
+or any worker key in $ETC_LOCAL/worker-config.local.properties; both win over the
+generated config and persist across restarts.
 
 Generated local-dev config: $ETC_LOCAL  (in-repo, gitignored; tracked etc/ untouched)
 Coordinator run dir: $RUN_DIR  (no etc/ -> prism query-prerequisites disabled)

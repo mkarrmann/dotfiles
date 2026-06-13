@@ -50,7 +50,7 @@ What it generates from base `etc/config.properties` + overlays:
 
 **Coordinator runs from a run-dir with no `etc/`.** cwd = `$BUILD_ROOT/presto-local-dev{suffix}/run`. This is deliberate: `etc/query-prerequisites.properties` (factory=prism) is loaded from the **cwd-relative** `etc/` with no config override, and prism prerequisites block every query for 24h waiting on Tetris/replication infra that isn't reachable locally. Running from a dir without that file makes the manager no-op. (`mvn -f` + absolute `plugin.bundles` make this work despite cwd ≠ module dir.)
 
-**Persistent local tweaks: `etc-local/config.local.properties`.** The base-derived `config.properties` is regenerated every `coordinator` start (so it stays in sync with the tracked `etc/config.properties`), but any keys you put in `config.local.properties` (gitignored, auto-created, never overwritten) are merged in last and **win** — so your edits survive restarts without drifting from base. Put overrides there, not in the generated `config.properties`.
+**Persistent local tweaks: `etc-local/config.local.properties`.** The base-derived `config.properties` is regenerated every `coordinator` start (so it stays in sync with the tracked `etc/config.properties`), but any keys you put in `config.local.properties` (gitignored, auto-created, never overwritten) are merged in last and **win** — so your edits survive restarts without drifting from base. Put overrides there, not in the generated `config.properties`. The worker has the identical mechanism in `etc-local/worker-config.local.properties` (its `worker-etc/` is recreated every `worker` start, so direct edits there are lost — use the overlay). No per-key env vars: any config key is just a line in the matching overlay.
 
 **Spill (and the coordinator's `var/`, logs) stay OUT of EdenFS.** This is an Eden checkout; large/churny dirs would bloat the overlay. Spill + run-dir go to local disk under `$BUILD_ROOT/presto-local-dev{suffix}/` (mirrors how `buck-out` uses an `eden redirect`); logs go to `/tmp`. Only the small static config lives in-repo.
 
@@ -141,7 +141,31 @@ PRESTO_LOCAL_DEV_HEADERS='X-Presto-Session: native_spill_io_stats_key_suffix=foo
   The four `$RUN_DIR/etc/` files coexist with the "run-dir has no `etc/`" prism trick because the script creates **only those provider subdirs** under `$RUN_DIR/etc/` — never `query-prerequisites.properties` or `access-control.properties`, so those managers still no-op (absence is the off switch).
 - Launches the worker with `native-sidecar=true` and `presto.default-namespace=native.default` in its `worker-etc/config.properties`.
 
-**Caveat for the spill-IoStats feature specifically:** sidecar mode makes `native_spill_io_stats_key_suffix` *accepted*, but the feature keys off warehouse/WS-FileSystem IoStats; local-disk spill to `/tmp` may not emit those keys, so the stat columns can still be empty locally. Sidecar mode unblocks the *property*, not necessarily the *signal*.
+**Caveat for the spill-IoStats feature specifically:** sidecar mode makes `native_spill_io_stats_key_suffix` *accepted*, but the feature keys off warehouse/WS-FileSystem IoStats; local-disk spill to `/tmp` may not emit those keys, so the stat columns can still be empty locally. Sidecar mode unblocks the *property*, not necessarily the *signal*. To get the signal, spill to Warm Storage — see below.
+
+## Spilling to Warm Storage (to exercise spill IoStats)
+
+The spill-IoStats keys (`wsReadBytes` / `wsWriteBytes`) are emitted **only by the velox Warm Storage FileSystem** — never by local disk. velox picks the spill FileSystem purely from the spill path prefix: `/tmp…` → `LocalFileSystem` (no `ws*` IoStats); `ws://…` → `WarmStorageFileSystem` (`fb_velox/warm_storage/WSFile`), which writes `wsWriteBytes.<REGION>` / `wsReadBytes.<REGION>` into the `SpillStats::ioStats` object that `Operator::recordSpillStats()` reads. So **local-disk spill can never produce the signal** — you must point the worker's spill path at Warm Storage.
+
+The WS velox FileSystem is already registered at worker startup (`FacebookPrestoBase::registerWarmStorageFilesystem`, from `storage_oncall_name`/`storage_user_name`/`storage_service_name` — all `presto` in the worker etc). Enabling WS spill is just a config change.
+
+**How:** point the worker's spill path at a `ws://` location the worker's identity can write to. This is just a worker config key, so set it in the gitignored `etc-local/worker-config.local.properties` overlay (any key there overrides the generated worker config and persists across restarts):
+```
+# etc-local/worker-config.local.properties
+experimental.spiller-spill-path=ws://ws.dw.<cluster>/namespace/<ns>/<you>/spill
+```
+Leave it unset to keep the default `/tmp` (local disk). A bad/inaccessible `ws://` path does **not** crash the worker at startup — it fails when a query actually spills.
+
+**You also have to force a spill** (the worker etc has `system-memory-gb=200`, `query.max-memory-per-node=200GB`, so nothing spills by default). Enable spill and apply memory pressure via session properties, e.g.:
+```bash
+PRESTO_LOCAL_DEV_HEADERS='X-Presto-Session: spill_enabled=true' \
+  presto-local-dev query "SELECT l_orderkey, count(*) FROM lineitem GROUP BY 1"
+```
+(use a `tpch`/`sf*` schema large enough to exceed the per-node limit you set; you may also lower `query.max-memory-per-node` via `config.local.properties` and per-operator native spill session props).
+
+**What to look for:** in the operator runtime stats, spill keys are region-scoped — `wsWriteBytes.<REGION>` (e.g. `wsWriteBytes.ATN`, `wsWriteBytes.UNKNOWN`). With `native_spill_io_stats_key_suffix=.spill` set, your stack appends the suffix → `wsWriteBytes.ATN.spill`, which is what prism's `PrismOperatorStatisticsEvent` surfaces as the spill columns. That suffixed-vs-bare distinction is the whole point of the stack.
+
+**Access caveat (the real blocker):** the `ws://` namespace must be writable by the configured identity from this devserver. The only in-repo WS test path (`ws://ws.dw.atn5dw2/namespace/testing/presto/…`) lives in a **DISABLED** test ("until we maintain a test directory on ws cluster"), so a stable writable test namespace isn't guaranteed. Private/warehouse paths may also need a token via `ws.token-path`. If WS write access can't be obtained on the devserver, the velox unit-test path (a fake/local FileSystem that emits IoStats in-process) is the fallback for verifying the suffix mechanism.
 
 ## Devserver gotchas (baked into the generated config / script)
 
