@@ -133,6 +133,13 @@ build_java_module() {
 }
 
 build_java_full() {
+    # When this file is sourced (e.g. by presto-deploy), the arg-parsing
+    # defaults below the sourced-guard never run, so ALL_OSS/SKIP_OSS may be
+    # empty. An empty `if $ALL_OSS` evaluates the empty command (exit 0) and
+    # wrongly takes the "ALL modules" branch, which builds presto-docs and
+    # fails without a Sphinx venv. Default them defensively at point of use.
+    ALL_OSS="${ALL_OSS:-false}"
+    SKIP_OSS="${SKIP_OSS:-false}"
     if ! $SKIP_OSS; then
         local oss_pl_flags=(-pl "$OSS_MODULES" -am)
         if $ALL_OSS; then
