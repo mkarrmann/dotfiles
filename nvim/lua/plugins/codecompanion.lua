@@ -486,7 +486,7 @@ local function _broker_fork_saved_session(adapter, source_bsid)
   return resp.broker_session_id, resp.cwd
 end
 
--- Top-level entry point used by `<leader>br` / `<leader>bf`. `action`
+-- Top-level entry point used by `<leader>aBr` / `<leader>aBf`. `action`
 -- is `"resume"` or `"fork"`. The default adapter is `dvsc_core_broker`
 -- because most broker-captured sessions are dvsc/claude (both use the
 -- claude_code wire shape, so dvsc_core_broker resumes either cleanly).
@@ -2159,15 +2159,16 @@ return {
             and require("codecompanion").buf_get_chat(bufnr)
           if chat then chat:close() end
         end, desc = "CodeCompanion: close current tab's chat" },
-      -- ACP broker resume/fork by bsid. The `<leader>ab*` namespace (b
+      -- ACP broker resume/fork by bsid. The `<leader>aB*` namespace (B
       -- for "broker") avoids collision with `<leader>ar`/`<leader>af`,
-      -- which are owned by claude-agent-manager (Claude Code resume/fork).
+      -- which are owned by claude-agent-manager (Claude Code resume/fork),
+      -- and leaves lowercase `<leader>ab` free (e.g. for "add buffer").
       -- Defaults to the `dvsc_core_broker` adapter — broker routes by bsid,
       -- not by adapter, so this works for any claude-code-shaped session
       -- (dvsc/claude/devmate). Use codex_broker by editing
       -- `broker_resume_or_fork` for codex sessions.
-      { "<leader>abr", function() broker_resume_or_fork("resume") end, desc = "ACP broker: resume saved session by bsid" },
-      { "<leader>abf", function() broker_resume_or_fork("fork")   end, desc = "ACP broker: fork saved session by bsid" },
+      { "<leader>aBr", function() broker_resume_or_fork("resume") end, desc = "ACP broker: resume saved session by bsid" },
+      { "<leader>aBf", function() broker_resume_or_fork("fork")   end, desc = "ACP broker: fork saved session by bsid" },
     },
   },
 }
