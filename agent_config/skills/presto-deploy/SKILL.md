@@ -10,7 +10,7 @@ description: Use when deploying Presto to Nexus, creating fbpkg packages, buildi
 **You must NEVER deploy to production clusters.** You may only deploy to Katchin test clusters that you have personally reserved. Before every deployment, verify:
 
 1. **The cluster is a test cluster.** Test cluster names contain `test`, `verifier`, or `katchin` (e.g., `dkl1_batchtest_bgm_3`, `atn1_verifier_t6_2`). If a cluster name does not clearly indicate it is a test cluster, **stop and ask the user to confirm**.
-2. **You have an active reservation.** Run `pt pcm test-cluster list` and confirm the target cluster shows your reservation. If it does not, **do not deploy**.
+2. **You have an active reservation.** `pt pcm test-cluster list` is blocked for Claude Code (SAP), so confirm the reservation from the user's `pt pcm test-cluster reserve` output (it prints `Reserved By` and `Expires At`). Note: PCM-reserved batch clusters do **not** appear in the older `pt reservation list` — its absence there is not evidence it's unreserved. `pt pcm deploy` itself also gates on your reservation.
 3. **The TW config path is the test config.** When using `tw update`, always use the Katchin test config at `tupperware/config/presto/testing/katchin.tw` -- never `tupperware/config/presto/presto.tw` or any other production config.
 
 If there is any ambiguity about whether a cluster is a test cluster, **do not deploy**. Ask the user.
@@ -31,40 +31,61 @@ Handles the full Nexus deploy, fbpkg packaging, and cluster deployment pipeline.
 - `presto-build` -- Local builds, unit tests, and checkstyle
 - `presto-e2e-test` -- End-to-end testing against remote clusters (correctness verification, performance regression)
 
-## SAP Policy — fbpkg Tag Still Blocked
+## SAP Policy — what Claude Code can and cannot run
 
-All Presto test/verifier TW specs now have an `allowAgents` policy (D99740807) granting Claude Code `MUTATE` and `CONTROL` permissions. This means Claude Code can run `tw update`, `tw task-control apply-task-ops`, and `tw restart` directly on test/verifier tiers. **`fbpkg tag` is still blocked** (separate fbpkg SAP policy).
+All Presto test/verifier TW specs have an `allowAgents` policy (D99740807) granting Claude Code `MUTATE`/`CONTROL` on the **Tupperware** API (`tw` commands) for test/verifier tiers. **But the `pt pcm` family and `fbpkg tag` are blocked** by a separate SAP policy on `CPPlatformApiServer.executeAction` / fbpkg.
 
-**What Claude Code CAN do:** `pt pcm deploy`, `tw update`, `tw task-control apply-task-ops`, `tw restart`, `fbpkg build`, `fbpkg fetch`, `fbpkg info`, `fbpkg versions`, `presto --smc`, `mvn deploy`.
+**What Claude Code CAN do:** `tw update`, `tw task-control apply-task-ops`, `tw restart`, `tw job status`, `tw log`, `fbpkg build`, `fbpkg fetch`, `fbpkg info`, `fbpkg versions`, `presto --smc`, `mvn deploy`, and the `fb_presto_cpp/scripts/build.sh` hybrid merge (the merge's `fbpkg build` succeeds; only its trailing `fbpkg tag` is blocked).
+
+**What the USER must run (blocked for Claude Code — `CPPlatformApiServer.executeAction` SAP block):** ALL `pt pcm ...` commands, including `pt pcm test-cluster list/reserve/release`, **`pt pcm deploy`**, and `pt pcm cancel`. Hand the user the exact command to run via `!` and have them paste the output. *(Verified 2026-06-12: `pt pcm deploy` fails for the agent with `[Service Authorization Platform] ... blocked method 'CPPlatformApiServer.executeAction'`.)*
 
 **What the user MUST do via `presto-deploy-finish`:**
-- `fbpkg tag` -- tag the hybrid package (only needed for hybrid builds)
+- `fbpkg tag` -- tag the hybrid package (only needed when you deploy by `v<version>` tag rather than by hash; deploying by `-pv <hash>` needs no tag)
+
+**Deploy without `pt pcm` (fully agent-runnable alternative):** the `tw update` + `apply-task-ops` fast path below works for Claude Code on test/verifier tiers. It needs the package resolvable by the TW config (tag `v<version>`), so it pairs with a user-run `fbpkg tag`. When in doubt, the simplest division of labor is: agent builds the (hybrid) fbpkg → user runs `pt pcm deploy -pv <hash>` → agent runs `presto-deploy-finish accelerate` and verifies with `presto --smc`.
 
 ## CRITICAL: Prefer Existing fbpkgs Over Building from Source
 
 **Always check for existing fbpkg versions before building from source.** Building a hybrid package from source takes 3+ hours (C++ opt compilation alone is ~3 hours). In most cases, a suitable package already exists.
 
-**Decision tree:**
+**FIRST decide: is the target cluster Prestissimo (C++ workers) or all-Java?** This determines the package type, and getting it wrong crash-loops the cluster (see "CRITICAL: Match the package to the cluster type" below). Batch (`*_batch*`, `*_bgm_*`) and verifier clusters are almost always **Prestissimo**.
 
-1. **No code changes to test?** Use `pt pcm deploy -pv <version>` with an existing release version. This deploys in minutes.
-2. **Java-only changes?** Build Java, reuse existing C++ fbpkg. Use `presto-deploy` (Java only, no `-n`).
-3. **C++ changes?** Must build C++. Use `presto-deploy -n`. This is the only case that requires a full ~3-hour build.
+**Decision tree for a Prestissimo cluster (the common case):**
+
+1. **No code changes to test?** Use `pt pcm deploy -pv <version>` with an existing **hybrid** version (e.g. resolve `cpp-prod`). Deploys in minutes.
+2. **Java-only (coordinator) change?** You STILL need a hybrid. Build Java, then **merge it with an existing C++ fbpkg** (`presto.presto_cpp`) into a hybrid and deploy the hybrid. Use `presto-deploy -J <java_hash> -n` (or `presto-deploy -n`). **Do NOT deploy a Java-only package to a Prestissimo cluster — it has no C++ `presto_server` binary, so every worker crash-loops and the cluster goes down.**
+3. **C++ change?** Build C++ + merge hybrid. Use `presto-deploy -n` (full ~3-hour build only if the opt C++ cache is cold).
+
+**Decision tree for an all-Java cluster** (Java workers, no Prestissimo): deploy the **Java-only** `presto.presto` package — `presto-deploy` without `-n`. A hybrid is unnecessary here.
+
+### CRITICAL: Match the package to the cluster type
+
+`pt pcm deploy -pv <version>` (and the `tw update`/`PRESTO_VERSION` paths) set the `presto.presto` package version for **both the coordinator and the workers**. The package at that version must contain the binary each role needs:
+
+| Cluster type | Worker binary needed | Package you must deploy | Deploying the wrong one |
+|---|---|---|---|
+| **Prestissimo** (C++ workers) | C++ `presto_server` | **Hybrid** `presto.presto` (Java coord + C++ worker, ~5–7 GB) | Java-only package → workers find no C++ binary → **crash-loop, cluster down** |
+| **All-Java** | Java | **Java-only** `presto.presto` (~3.5 GB) | Hybrid works but is wasteful |
+
+A coordinator-only Java change on a Prestissimo cluster is the trap: it feels "Java-only", but you must still ship a hybrid so the C++ workers keep a valid binary. Build your Java fbpkg, then merge it with a recent `presto.presto_cpp` (the C++ workers are unchanged) — see "Hybrid merge" and "Getting an opt hybrid for deployment" below.
 
 ### Finding Existing Packages
 
-The `presto.presto` fbpkg has two variants: **Java-only** (~3.5 GB) and **hybrid** (~5-7 GB, containing both Java coordinator and C++ `presto_server` binary). Only hybrids work for Prestissimo clusters.
+The `presto.presto` fbpkg has two variants: **Java-only** (~3.5 GB) and **hybrid** (~5-7 GB, containing both Java coordinator and C++ `presto_server` binary). **Only hybrids work for Prestissimo clusters.**
 
-**How `pt pcm deploy -pv` works for Prestissimo clusters:**
+**How `pt pcm deploy -pv` resolves the version for Prestissimo clusters:**
 
-For Prestissimo (native) clusters, the TW config (`batch_test.tw`) ignores the `-pv` version for worker packages and instead resolves the C++ hybrid from the `cpp-prod` tag (`presto.presto:cpp-prod`). The `-pv` version only affects the Java coordinator. This means **for config-toggle A/B tests (same binary, different config), just use `pt pcm deploy -pv <any_release_version>`** -- the C++ worker binary comes from `cpp-prod` regardless.
+`-pv <version>` (or `<hash>`) sets the `presto.presto` package version for **both** the Java coordinator AND the C++ workers. The `cpp-prod` tag is only the *fallback* when no version is specified (resolution order: `PRESTO_VERSION` env → `TW_PUSHED_VERSION` → `cpp-prod` tag — see "How Prestissimo Worker Version Is Resolved" below). So if you pass `-pv <something>`, that `<something>` **must point at a hybrid** — a Java-only package or hash will crash the workers.
+
+> ⚠️ Historical note: an earlier version of this skill claimed `-pv` only affected the coordinator and workers always came from `cpp-prod`. That is **wrong** — verified on 2026-06-12 when `pt pcm deploy -pv <java_only_hash>` crash-looped all 50 workers on a `*_batchtest_bgm_*` cluster.
 
 ```bash
-# Check what cpp-prod currently points to
-fbpkg info presto.presto:cpp-prod
-
-# Deploy to a Prestissimo test cluster -- workers get cpp-prod automatically
-pt pcm deploy -c <cluster> -pv 0.297-edge11 -r "<reason>" -f -ni -dt 0
+# Resolve a known-good hybrid (cpp-prod) and deploy it
+fbpkg info presto.presto:cpp-prod          # e.g. -> presto.presto:5928 (a hybrid)
+pt pcm deploy -c <cluster> -pv <hybrid_version_or_hash> -r "<reason>" -f -ni -dt 0
 ```
+
+For config-toggle A/B tests (same binary, different config) you still deploy a **hybrid** version for both arms — the binary is identical, only the config differs.
 
 **When you need a specific C++ binary** (e.g., testing C++ code changes, or explicitly needing an opt build), you must build a hybrid from source or find an existing hybrid ephemeral:
 
@@ -99,17 +120,17 @@ Run `presto-deploy`, then paste the `presto-deploy-finish` command for the user 
 
 **Step-by-step:**
 
-1. **Verify** the cluster is a test cluster with an active reservation:
-   ```bash
-   pt pcm test-cluster list | grep <cluster>
-   ```
+1. **Verify** the cluster is a test cluster with an active reservation (from the user's reserve output — `pt pcm test-cluster list` is SAP-blocked for the agent). Confirm whether it's **Prestissimo or all-Java** and pick the package type accordingly (see "CRITICAL: Match the package to the cluster type").
 
-2. **Run `presto-deploy -c`** (builds, packages, deploys):
+2. **Build the right package** (note: the `-c` deploy step inside `presto-deploy` runs `pt pcm deploy`, which is **blocked for the agent** — so build without `-c`, then hand the user the `pt pcm deploy` command):
    ```bash
-   presto-deploy -c <cluster> -r "<reason>"           # Java-only
-   presto-deploy -n -c <cluster> -r "<reason>"         # Hybrid (Java + C++ opt)
-   presto-deploy -J <hash> -c <cluster> -r "<reason>"  # Existing Java fbpkg
+   # Prestissimo cluster (hybrid REQUIRED — even for coordinator-only Java changes):
+   presto-deploy -n                       # build Java + C++ + merge hybrid
+   presto-deploy -J <java_hash> -n        # merge existing Java fbpkg with C++ into a hybrid
+   # All-Java cluster only:
+   presto-deploy                          # Java-only package
    ```
+   Then give the user: `pt pcm deploy -c <cluster> -pv <hybrid_or_java_hash> -r "<reason>" -f -ni -dt 0`
 
 3. **Accelerate the rollout** -- the `presto-deploy` script now runs `presto-deploy-finish accelerate` automatically after deployment. For hybrid builds, paste the `presto-deploy-finish tag` command for the user to run (`fbpkg tag` is still blocked).
 
@@ -536,7 +557,7 @@ Note: batch clusters require `--oncall <oncall_name>` (e.g., `--oncall presto_re
 If the cluster is still restarting, this will fail with connection refused. Check task status with:
 
 ```bash
-tw.real job show tsp_<region>/presto/<cluster_name>.worker
+tw.real job status tsp_<region>/presto/<cluster_name>.worker
 ```
 
 ### Fast path: `tw update` + `apply-task-ops`
@@ -584,9 +605,11 @@ presto-deploy-finish restart <cluster>
 | `fbpkg build` refuses to run (dirty repo) | `fbpkg build` rejects untracked files. Move `etc-local/` dirs out of repo before building, restore after. |
 | C++ fbpkg hash empty | Check `fbpkg build fbcode//fb_presto_cpp:<target>` output directly |
 | Cluster shows old version after deploy | Run `presto-deploy-finish accelerate <cluster>` |
-| `presto --smc` connection refused | Cluster may still be restarting; check `tw.real job show tsp_<region>/presto/<cluster>.worker` |
+| `presto --smc` connection refused | Cluster may still be restarting; check `tw.real job status tsp_<region>/presto/<cluster>.worker` |
 | Deploy seems stuck / rolling slowly | Run `presto-deploy-finish accelerate <cluster>` |
 | `pt pcm deploy` stuck in QUEUED | A previous deploy request may be blocking. Cancel it with `pt pcm cancel --request_id <id>` (request ID is in the deploy output) |
 | `fbpkg tag` blocked by AI agent policy | The `presto-deploy` script handles this -- it prints a `presto-deploy-finish tag` command for the user |
 | Workers crash after `pt pcm deploy -l -pv` | Version mismatch: `-pv` overrides the binary but not the CONFIG_BLOB. Never combine `-l` with `-pv`. Run `presto-deploy-finish restart <cluster>` |
-| Workers crash-looping, need restart | Run `presto-deploy-finish restart <cluster>` |
+| **Workers crash-loop after deploying to a Prestissimo cluster, cluster shows 0 nodes via `presto --smc`** | You deployed a **Java-only** package to a C++-worker cluster — workers have no `presto_server` binary. `restart` alone won't help (the spec still points at the bad package). Fix: build a **hybrid** (merge your Java fbpkg with a recent `presto.presto_cpp` via `fb_presto_cpp/scripts/build.sh -c <cpp_hash> -p <java_hash>`) and redeploy `-pv <hybrid_hash>`. This restores valid workers and lands the coordinator change in one deploy. |
+| Workers crash-looping, need restart (binary/config OK) | Run `presto-deploy-finish restart <cluster>` |
+| Confirm a worker's crash reason | `tw.real log tsp_<region>/presto/<cluster>.worker/0 -n 80` (region = first cluster token with trailing digits stripped, e.g. `atn6_...` → `tsp_atn`) |
