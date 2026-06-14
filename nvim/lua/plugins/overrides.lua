@@ -185,6 +185,23 @@ return {
 			notifier = {
 				timeout = 10000,
 			},
+			-- Widen the `vim.ui.select` popup so long option labels (e.g. the
+			-- full-sentence choices in CodeCompanion elicitation prompts) aren't
+			-- clipped. Overrides the built-in `select` layout preset (width 0.5,
+			-- max_width 100) for every vim.ui.select caller.
+			-- Snacks resolves per-source overrides from `picker.sources.<source>`
+			-- (picker/config/init.lua get(): `global.sources[opts.source]`), NOT
+			-- `picker.select` — placing it there is a silent no-op.
+			picker = {
+				sources = {
+					select = {
+						layout = {
+							preset = "select",
+							layout = { width = 0.7, min_width = 80, max_width = 140 },
+						},
+					},
+				},
+			},
 		},
 	},
 	{
