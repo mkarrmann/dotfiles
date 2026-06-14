@@ -76,7 +76,7 @@ local function role_headers(chat)
 end
 
 local function build_label(sec)
-  local chunks = { { os.date("%H:%M:%S", sec.time), "Comment" } }
+  local chunks = { { "  " .. os.date("%H:%M:%S", sec.time), "Comment" } }
   if sec.kind == "llm" and sec.duration_ns then
     local hl = (sec.status == "error" and "DiagnosticError")
       or (sec.status == "cancelled" and "DiagnosticWarn")
@@ -120,7 +120,7 @@ function M.reapply(bufnr)
     if hi >= 1 and hi <= #headers and sec.time then
       pcall(vim.api.nvim_buf_set_extmark, bufnr, NS, headers[hi], 0, {
         virt_text = build_label(sec),
-        virt_text_pos = "right_align",
+        virt_text_pos = "eol",
         priority = 200,
         hl_mode = "combine",
       })
