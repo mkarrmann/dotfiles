@@ -2152,6 +2152,11 @@ return {
       require("lib.codecompanion-stats")
       require("lib.codecompanion-diff").setup()
       require("lib.codecompanion-chatinfo").setup()
+      -- Reap the ACP connection (broker agent + MCP fleet) on ANY chat close
+      -- -- :tabclose/window-close/:bd, not just <C-c> or nvim exit. See
+      -- lib/codecompanion-reap for the rationale (the chat buffer is hidden,
+      -- not unloaded, on :tabclose, so the agent would otherwise leak).
+      require("lib.codecompanion-reap").setup()
 
       local ns = vim.api.nvim_create_namespace("codecompanion_inline_indicator")
       local spinner_frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
