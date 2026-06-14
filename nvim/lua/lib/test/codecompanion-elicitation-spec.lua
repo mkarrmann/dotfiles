@@ -77,6 +77,47 @@ function M.run()
 		assertEq(out, { api = "REST" }, "single-select picks string from enum")
 	end
 
+	-- ─── ask_schema: free-form escape hatch on a string enum ────────
+	-- Picking the custom sentinel drops to a text input; the typed value
+	-- becomes the answer even though it isn't one of the enum members.
+	do
+		local restore = install_ui_stub({ elicit._internal.custom_one_label, "my own answer" })
+		local out
+		elicit._internal.ask_schema({
+			properties = {
+				api = { type = "string", title = "Which API?", enum = { "REST", "GraphQL" } },
+			},
+			required = { "api" },
+		}, function(c) out = c end)
+		restore()
+		assertEq(out, { api = "my own answer" }, "custom sentinel drops to free-form input")
+	end
+
+	-- ─── ask_schema: free-form custom value appended to a multi-select ─
+	-- Sequence: pick "rust" → add custom "zig" → pick "[done]".
+	do
+		local restore = install_ui_stub({
+			"rust",
+			elicit._internal.custom_many_label,
+			"zig",
+			"[done — submit selections]",
+		})
+		local out
+		elicit._internal.ask_schema({
+			properties = {
+				langs = {
+					type = "array",
+					title = "Languages",
+					items = { type = "string", enum = { "rust", "ts", "python" } },
+				},
+			},
+			required = { "langs" },
+		}, function(c) out = c end)
+		restore()
+		assertEq(out, { langs = { "rust", "zig" } },
+			"multi-select appends custom values after enum picks")
+	end
+
 	-- ─── ask_schema: cancellation ───────────────────────────────────
 	do
 		local restore = install_ui_stub({ nil })
