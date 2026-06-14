@@ -84,7 +84,13 @@ local SSL_HOP_NS = vim.api.nvim_create_namespace("hg_ssl_hop")
 vim.api.nvim_set_hl(0, "HgSslCurrentLine", { default = true, link = "Visual" })
 vim.api.nvim_set_hl(0, "HgSslHopLabel", { default = true, link = "DiagnosticOk" })
 
-local HOP_CHARS = "fjdksla;ghqweruiop"
+-- Single-key labels reserved for "special" commits (the current commit and
+-- bookmark commits). These chars are NEVER used as the first character of a
+-- two-char label, so a single keypress after the trigger is unambiguous.
+local HOP_SPECIAL_CHARS = "jkl;asdg"
+-- Building blocks for the two-char labels used by every other commit. Kept
+-- disjoint from HOP_SPECIAL_CHARS so single-key hops can never be ambiguous.
+local HOP_CHARS = "hqwertyuiopzxcvbnm"
 local HOP_LABELS = {}
 for i = 1, #HOP_CHARS do
   for j = 1, #HOP_CHARS do
@@ -99,8 +105,8 @@ local SSL_STATE = {
   blocked = false,
   ---@type boolean controls how current status is displayed and what actions are available
   merge_conflict = false,
-  ---@type string[] hop labels currently bound as buffer-local keymaps
-  hop_labels_set = {},
+  ---@type table<string, integer> hop label -> target line (1-indexed)
+  hop_map = {},
 }
 
 ---@type table<integer, Hg.diff_session>
@@ -744,55 +750,109 @@ local function filter_hidden_bookmarks(lines)
   return result
 end
 
----Builds an ordered list of commit line numbers with the current commit first.
+---Assigns hop labels and draws them as virtual text. "Special" commits -- the
+---current commit and bookmark commits -- get single-key labels; every other
+---commit gets a two-char label. Labels are inert decorations: no keymaps are
+---bound. The jump itself is performed transiently by `ssl_start_hop`.
+---@param bufnr number
 ---@param lines string[]
----@return number[] ordered_lines
-local function ssl_hop_ordered_lines(lines)
+local function ssl_place_hop_labels(bufnr, lines)
+  vim.api.nvim_buf_clear_namespace(bufnr, SSL_HOP_NS, 0, -1)
+  SSL_STATE.hop_map = {}
+
   local current_line
-  local other_lines = {}
+  local bookmark_lines = {}
+  local normal_lines = {}
   for i, line in ipairs(lines) do
     local commit = ssl_utils.parse_diff_line(line)
     if commit then
       if commit.is_current then
         current_line = i
+      elseif commit.is_bookmark then
+        bookmark_lines[#bookmark_lines + 1] = i
       else
-        other_lines[#other_lines + 1] = i
+        normal_lines[#normal_lines + 1] = i
       end
     end
   end
-  local ordered = {}
-  if current_line then
-    ordered[#ordered + 1] = current_line
-  end
-  for _, ln in ipairs(other_lines) do
-    ordered[#ordered + 1] = ln
-  end
-  return ordered
-end
 
----@param bufnr number
----@param lines string[]
-local function ssl_place_hop_labels(bufnr, lines)
-  vim.api.nvim_buf_clear_namespace(bufnr, SSL_HOP_NS, 0, -1)
-  for _, label in ipairs(SSL_STATE.hop_labels_set) do
-    pcall(vim.api.nvim_buf_del_keymap, bufnr, "n", label)
+  -- special commits, current first then bookmarks, each get a single-key label
+  local special_lines = {}
+  if current_line then
+    special_lines[#special_lines + 1] = current_line
   end
-  SSL_STATE.hop_labels_set = {}
-  for label_idx, line_nr in ipairs(ssl_hop_ordered_lines(lines)) do
-    local label = HOP_LABELS[label_idx]
-    if not label then
-      break
-    end
+  for _, ln in ipairs(bookmark_lines) do
+    special_lines[#special_lines + 1] = ln
+  end
+
+  local function place(line_nr, label)
     vim.api.nvim_buf_set_extmark(bufnr, SSL_HOP_NS, line_nr - 1, 0, {
       virt_text = { { " [" .. label .. "]", "HgSslHopLabel" } },
       virt_text_pos = "eol",
     })
-    local target_line = line_nr
-    vim.keymap.set("n", label, function()
-      vim.api.nvim_win_set_cursor(0, { target_line, 0 })
-    end, { buffer = bufnr, desc = "Hop to labeled commit" })
-    SSL_STATE.hop_labels_set[#SSL_STATE.hop_labels_set + 1] = label
+    SSL_STATE.hop_map[label] = line_nr
   end
+
+  for idx, line_nr in ipairs(special_lines) do
+    local label = HOP_SPECIAL_CHARS:sub(idx, idx)
+    if label == "" then
+      -- ran out of single-key labels; demote to a two-char label
+      normal_lines[#normal_lines + 1] = line_nr
+    else
+      place(line_nr, label)
+    end
+  end
+
+  for idx, line_nr in ipairs(normal_lines) do
+    local label = HOP_LABELS[idx]
+    if not label then
+      break
+    end
+    place(line_nr, label)
+  end
+end
+
+---Transient hop triggered by the `f` key. Reads the label under the cursor's
+---intent and jumps to its commit. Single-key (special) labels resolve in one
+---keypress; all others read a second character. Nothing stays bound afterward,
+---so no buffer keys are shadowed outside of this call.
+local function ssl_start_hop()
+  local hop_map = SSL_STATE.hop_map or {}
+  if vim.tbl_isempty(hop_map) then
+    return
+  end
+
+  local ok, c1 = pcall(vim.fn.getcharstr)
+  if not ok or c1 == "" or c1 == "\27" then
+    return
+  end
+
+  local target = hop_map[c1]
+  if target == nil then
+    -- not a single-key label; it must be the first char of a two-char label
+    local has_prefix = false
+    for label in pairs(hop_map) do
+      if #label == 2 and label:sub(1, 1) == c1 then
+        has_prefix = true
+        break
+      end
+    end
+    if not has_prefix then
+      vim.notify("No hop label '" .. c1 .. "'", vim.log.levels.WARN)
+      return
+    end
+    local ok2, c2 = pcall(vim.fn.getcharstr)
+    if not ok2 or c2 == "" or c2 == "\27" then
+      return
+    end
+    target = hop_map[c1 .. c2]
+    if target == nil then
+      vim.notify("No hop label '" .. c1 .. c2 .. "'", vim.log.levels.WARN)
+      return
+    end
+  end
+
+  vim.api.nvim_win_set_cursor(0, { target, 0 })
 end
 
 local function ssl_highlight_current_line(bufnr, lines)
@@ -1640,10 +1700,11 @@ local function HgSsl(opts)
       "HG SSL Buffer",
       "===================================================",
       "Navigate to next/prev commit with j/k",
-      "type the 2-char label shown at end of line to hop to that commit",
+      "press f then a label to hop; special commits (current + bookmarks) hop with a single key",
       "",
       "Keymaps:",
       "<cr>  select available commands for selected commit",
+      "f     hop to a labeled commit",
       "r     refresh buffer",
       "c/C   select current commit",
       "?     show this help",
@@ -1666,6 +1727,13 @@ local function HgSsl(opts)
   vim.keymap.set("n", CONFIG.ssl.keys.refresh, function()
     ssl_utils.refresh_buffer(SSL_STATE.bufnr)
   end, { buffer = true })
+
+  vim.keymap.set(
+    "n",
+    "f",
+    ssl_start_hop,
+    { buffer = true, nowait = true, desc = "Hop to commit" }
+  )
 
   local nowait_opt = { buffer = true, nowait = true }
   vim.keymap.set(
