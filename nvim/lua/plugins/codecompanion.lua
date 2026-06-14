@@ -1563,23 +1563,138 @@ return {
     config = function(_, opts)
       require("codecompanion").setup(opts)
 
-      -- HACK: CodeCompanion parses JSON-looking ACP tool titles like
-      -- `skill {"path":...}` as colon-delimited labels, producing
-      -- `Other: skill {"path"`. Prefer structured rawInput paths for
-      -- unknown dvsc-core tools instead of parsing the title string.
+      -- Full, untruncated single-line tool-call header.
+      --
+      -- Upstream's acp/formatters.tool_message caps the label at MAX_TITLE=60
+      -- (formatters.lua) and shortens cwd-relative paths, so commands and paths
+      -- get cut (e.g. "Execute: Running cd ~/checkout2/fbsource 2>/dev/null …").
+      -- We reimplement the label to show the complete command / absolute path on
+      -- one line. It stays single-line so CodeCompanion's in-place streaming
+      -- update (handler.update_buf_line, which replaces exactly one line) keeps
+      -- working. The tool *output* is shown separately, collapsibly, via
+      -- lib.codecompanion-tool-output (see the process_tool_call wrap below).
+      --
+      -- Still handles the dvsc-core "other" tools whose JSON-ish titles
+      -- (`skill {"path":...}`) upstream mis-parses into `Other: skill {"path"`.
       local acp_formatters = require("codecompanion.interactions.chat.acp.formatters")
       local orig_tool_message = acp_formatters.tool_message
-      function acp_formatters.tool_message(tool_call, adapter)
-        if type(tool_call) == "table" and tool_call.kind == "other" then
-          local raw = tool_call.rawInput
-          local path = type(raw) == "table" and raw.path
-          if type(path) == "string" and path ~= "" then
-            local tool = (tool_call.title or ""):match("^(%S+)") or "Tool"
-            return tool:gsub("^%l", string.upper) .. ": " .. vim.fn.fnamemodify(path, ":t")
+
+      local function format_kind(kind)
+        if not kind or kind == "" then return "Tool" end
+        local s = tostring(kind):gsub("_", " ")
+        return s:sub(1, 1):upper() .. s:sub(2)
+      end
+
+      local function full_tool_header(tool_call)
+        local kind = format_kind(tool_call.kind)
+        local target
+
+        -- Prefer concrete file targets (full, absolute — not cwd-relative).
+        local loc = tool_call.locations and tool_call.locations[1]
+        if loc and type(loc.path) == "string" and loc.path ~= "" then
+          target = loc.path
+        elseif type(tool_call.content) == "table" then
+          for _, c in ipairs(tool_call.content) do
+            if c and c.type == "diff" and type(c.path) == "string" and c.path ~= "" then
+              target = c.path
+              break
+            end
           end
         end
 
+        -- dvsc-core "other" tools: pull the structured rawInput.path and the
+        -- leading verb from the title rather than parsing the JSON-ish title.
+        if not target and tool_call.kind == "other" then
+          local raw = tool_call.rawInput
+          local path = type(raw) == "table" and raw.path
+          if type(path) == "string" and path ~= "" then
+            kind = ((tool_call.title or ""):match("^(%S+)") or "Tool"):gsub("^%l", string.upper)
+            target = path
+          end
+        end
+
+        -- Fallback: the full title, collapsed to one line, untruncated.
+        if not target then
+          local title = tool_call.title or "Tool call"
+          title = title:gsub("\r?\n", " "):gsub("%s+", " ")
+          title = title:match("^%s*(.-)%s*$") or title
+          title = title:gsub("^`(.+)`$", "%1")
+          target = (title ~= "" and title) or "Tool call"
+        end
+
+        local s = (kind .. ": " .. target):gsub("`", ""):gsub("\r?\n", " ")
+        return s
+      end
+
+      function acp_formatters.tool_message(tool_call, adapter)
+        if type(tool_call) ~= "table" then
+          return orig_tool_message(tool_call, adapter)
+        end
+        local ok, s = pcall(full_tool_header, tool_call)
+        if ok and type(s) == "string" and s ~= "" then
+          return s
+        end
         return orig_tool_message(tool_call, adapter)
+      end
+
+      -- Collapsible full tool *output*, rendered as virtual lines beneath the
+      -- header line (see lib.codecompanion-tool-output for the rationale). We
+      -- wrap ACPHandler:process_tool_call: let upstream render/stream the
+      -- single-line header as usual, then on completion attach the full output
+      -- as a collapsed virt_lines block on the header's line. `merge_tool_call`
+      -- is re-implemented from handler.lua (module-local there) so we can read
+      -- the merged status/content before upstream clears self.tools[id].
+      local tool_output = require("lib.codecompanion-tool-output")
+      local ACPHandler = require("codecompanion.interactions.chat.acp.handler")
+
+      local function merge_tool_call(existing, incoming)
+        local out = vim.deepcopy(existing or {})
+        for k, v in pairs(incoming or {}) do
+          if v ~= vim.NIL then out[k] = v end
+        end
+        return out
+      end
+
+      local function raw_tool_output(tc)
+        local parts = {}
+        if type(tc.content) == "table" then
+          for _, c in ipairs(tc.content) do
+            if c and c.type == "content" and type(c.content) == "table" then
+              local b = c.content
+              if b.type == "text" and type(b.text) == "string" then
+                parts[#parts + 1] = b.text
+              elseif b.type == "resource" and b.resource and type(b.resource.text) == "string" then
+                parts[#parts + 1] = b.resource.text
+              elseif b.type == "resource_link" and type(b.uri) == "string" then
+                parts[#parts + 1] = "[resource: " .. b.uri .. "]"
+              end
+            end
+          end
+        end
+        return table.concat(parts, "\n")
+      end
+
+      local orig_process_tool_call = ACPHandler.process_tool_call
+      function ACPHandler:process_tool_call(tool_call)
+        local id = type(tool_call) == "table" and tool_call.toolCallId or nil
+        -- Capture state before upstream may clear it on completion.
+        local before = id and self.ui_state[id] or nil
+        local merged = id and merge_tool_call(self.tools[id], tool_call) or nil
+
+        orig_process_tool_call(self, tool_call)
+
+        if not (id and merged and merged.status == "completed") then
+          return
+        end
+        local st = self.ui_state[id] or before
+        local line = st and st.line_number
+        if not line then
+          return
+        end
+        local text = raw_tool_output(merged)
+        if text ~= "" then
+          pcall(tool_output.set, self.chat.bufnr, line, text)
+        end
       end
 
       -- HACK: Ctrl+C during a streaming response can wipe the chat buffer before
@@ -1913,6 +2028,16 @@ return {
               )
             end,
           })
+
+          -- `za` expands/collapses the tool-call output under the cursor;
+          -- falls through to the native fold toggle when not on a tool line.
+          vim.keymap.set("n", "za", function()
+            local line = vim.api.nvim_win_get_cursor(0)[1]
+            local handled = require("lib.codecompanion-tool-output").toggle(args.buf, line)
+            if not handled then
+              pcall(vim.cmd, "normal! za")
+            end
+          end, { buffer = args.buf, silent = true, desc = "Toggle tool output / fold" })
         end,
       })
 
@@ -2152,6 +2277,7 @@ return {
             pcall(vim.api.nvim_tabpage_del_var, tab, "codecompanion_chat_bufnr")
           end
           _dvsc.by_chat_bufnr[bufnr] = nil
+          pcall(function() require("lib.codecompanion-tool-output").clear(bufnr) end)
           vim.schedule(function()
             require("lib.codecompanion-queue").on_chat_closed(bufnr)
           end)
