@@ -53,6 +53,32 @@ local function prompt_for(name, prop)
   return prop.title or name
 end
 
+-- Sentinel labels for the free-form escape hatch (problem (a)). ACP/MCP
+-- elicitation enums are *closed* sets, so a value the user types is, strictly,
+-- outside the schema's `enum`. We rely on the dvsc-core-acp wrapper forwarding
+-- the response `content` verbatim into dm-core's `ask_user_question` result —
+-- where answers are free text — so the agent reads the typed string as the
+-- answer just like a picked option.
+-- HACK: if a future wrapper strict-validates `content` against `enum` before
+-- forwarding, the typed value would be rejected. The spec-pure fix is
+-- server-side (emit the field as a plain `string`, or add an explicit
+-- "Other (specify)" affordance to the schema).
+-- Verified (D106593967, acp-wrapper/src/elicitation.ts → elicitationResponseToDecision):
+-- the wrapper passes response `content[key]` through `stringifyContent` into
+-- `ToolCallDecision.answers` with NO enum validation, so an out-of-enum typed
+-- value round-trips verbatim into dm-core's `ask_user_question` result today.
+-- Re-vet if that function starts validating against the requested schema.
+local CUSTOM_ONE_LABEL = "✎ Other (type a custom response)…"
+local CUSTOM_MANY_LABEL = "✎ add a custom value…"
+local DONE_LABEL = "[done — submit selections]"
+local CANCEL_LABEL = "[cancel]"
+
+local function ask_input(prompt, callback)
+  vim.ui.input({ prompt = prompt .. ": " }, function(value)
+    callback(value)
+  end)
+end
+
 -- Wraps vim.ui.select with the cancellable convention: callback(nil)
 -- on Esc/cancel, callback(value) on selection.
 local function pick_one(prompt, choices, callback)
@@ -64,17 +90,43 @@ local function pick_one(prompt, choices, callback)
   end)
 end
 
--- Multi-select via a re-entrant picker. Each iteration shows the
--- remaining choices plus a `[done]` sentinel; selecting `[done]`
--- finalises with the accumulated picks. Selecting `[cancel]` aborts.
--- Tracks selections by index to keep duplicate labels safe.
+-- Like pick_one, but appends a free-form escape hatch so the user is never
+-- boxed into the enum. Picking the sentinel drops to a text input.
+local function pick_one_or_input(prompt, choices, callback)
+  local entries = vim.list_extend({}, choices)
+  entries[#entries + 1] = CUSTOM_ONE_LABEL
+  vim.ui.select(entries, { prompt = prompt }, function(choice)
+    if choice == nil then
+      return callback(nil)
+    elseif choice == CUSTOM_ONE_LABEL then
+      return ask_input(prompt, callback)
+    end
+    callback(choice)
+  end)
+end
+
+-- Multi-select via a re-entrant picker. Each iteration shows the remaining
+-- choices plus `[done]` / `[cancel]` sentinels and a free-form "add custom
+-- value" entry; selecting `[done]` finalises with the accumulated picks
+-- (enum selections in choice order, then any custom values in entry order).
+-- Tracks enum selections by index to keep duplicate labels safe.
 local function pick_many(prompt, choices, callback)
-  if #choices == 0 then
-    return callback({})
-  end
   local picked_idx = {}
+  local custom = {}
+  local function collect()
+    local out = {}
+    for i = 1, #choices do
+      if picked_idx[i] then
+        out[#out + 1] = choices[i]
+      end
+    end
+    for _, v in ipairs(custom) do
+      out[#out + 1] = v
+    end
+    return out
+  end
   local function step()
-    local entries = { "[done — submit selections]", "[cancel]" }
+    local entries = { DONE_LABEL, CANCEL_LABEL, CUSTOM_MANY_LABEL }
     local index_map = {}
     for i, label in ipairs(choices) do
       if not picked_idx[i] then
@@ -82,31 +134,23 @@ local function pick_many(prompt, choices, callback)
         index_map[#entries] = i
       end
     end
-    -- All choices picked; auto-finish.
-    if #entries == 2 then
-      local out = {}
-      for i in pairs(picked_idx) do
-        out[#out + 1] = choices[i]
-      end
-      return callback(out)
-    end
-    local current = {}
-    for i in pairs(picked_idx) do
-      current[#current + 1] = choices[i]
-    end
+    local current = collect()
     local hint = #current == 0 and "(none yet)"
       or string.format("(picked: %s)", table.concat(current, ", "))
     vim.ui.select(entries, { prompt = prompt .. " " .. hint }, function(entry, idx)
       if entry == nil then
         return callback(nil) -- Esc on the picker itself
-      elseif entry == "[done — submit selections]" then
-        local out = {}
-        for i in pairs(picked_idx) do
-          out[#out + 1] = choices[i]
-        end
-        return callback(out)
-      elseif entry == "[cancel]" then
+      elseif entry == DONE_LABEL then
+        return callback(collect())
+      elseif entry == CANCEL_LABEL then
         return callback(nil)
+      elseif entry == CUSTOM_MANY_LABEL then
+        return ask_input(prompt, function(value)
+          if value ~= nil and value ~= "" then
+            custom[#custom + 1] = value
+          end
+          step()
+        end)
       else
         local choice_idx = index_map[idx]
         if choice_idx then
@@ -119,19 +163,13 @@ local function pick_many(prompt, choices, callback)
   step()
 end
 
-local function ask_input(prompt, callback)
-  vim.ui.input({ prompt = prompt .. ": " }, function(value)
-    callback(value)
-  end)
-end
-
 -- Drives a single property's picker/input and yields the answer (or
 -- nil on cancel) via callback(value).
 --
 -- Coverage matches the wrapper's `buildElicitationRequest`
 -- (acp-wrapper/src/elicitation.ts):
---   string + enum     → single-select picker
---   array + items.enum → multi-select picker (re-entrant vim.ui.select)
+--   string + enum     → single-select picker + free-form escape hatch
+--   array + items.enum → multi-select picker + free-form "add custom value"
 --   string (free)     → text input
 --   boolean           → yes/no picker
 --   number / integer  → text input, parsed
@@ -141,7 +179,7 @@ local function ask_property(name, prop, callback)
   local ptype = prop.type
   if ptype == "string" then
     if type(prop.enum) == "table" and #prop.enum > 0 then
-      return pick_one(prompt, prop.enum, callback)
+      return pick_one_or_input(prompt, prop.enum, callback)
     end
     return ask_input(prompt, callback)
   elseif ptype == "array" then
@@ -271,6 +309,30 @@ local function open_plan_file(meta)
   vim.cmd("vsplit " .. vim.fn.fnameescape(path))
 end
 
+-- Switch focus to the tab that owns the chat behind `conn` before any picker
+-- or split opens (problem (c)): elicitation UI must land in the agent's tab,
+-- not wherever the cursor happens to be when the request arrives. Relies on
+-- the per-tab ownership stamp set by the `CodeCompanionChatOpened` autocmd
+-- (`vim.t.codecompanion_chat_bufnr` in plugins/codecompanion.lua). The handler's
+-- `self` *is* the chat's `acp_connection`, so identity match is reliable.
+-- Best-effort: stays put if no owning tab is found (e.g. the chat is hidden).
+local function focus_owning_tab(conn)
+  local ok_cc, cc = pcall(require, "codecompanion")
+  if not ok_cc or type(cc.buf_get_chat) ~= "function" then
+    return
+  end
+  for _, tab in ipairs(vim.api.nvim_list_tabpages()) do
+    local ok, bufnr = pcall(vim.api.nvim_tabpage_get_var, tab, "codecompanion_chat_bufnr")
+    if ok and type(bufnr) == "number" and vim.api.nvim_buf_is_valid(bufnr) then
+      local chat = cc.buf_get_chat(bufnr)
+      if chat and chat.acp_connection == conn then
+        pcall(vim.api.nvim_set_current_tabpage, tab)
+        return
+      end
+    end
+  end
+end
+
 -- Main entry: takes the raw `elicitation/create` request and replies
 -- on the same Connection. `accept` carries the picked content;
 -- `cancel` is the wrapper-friendly word for "user dismissed"; the
@@ -294,6 +356,7 @@ function M._handle_elicitation_create(conn, msg)
   end
 
   vim.schedule(function()
+    focus_owning_tab(conn)
     open_plan_file(params._meta)
     announce_preamble(params.message)
     ask_schema(schema, function(content)
@@ -383,6 +446,8 @@ M._internal = {
   ask_property = ask_property,
   ask_schema = ask_schema,
   prompt_for = prompt_for,
+  custom_one_label = CUSTOM_ONE_LABEL,
+  custom_many_label = CUSTOM_MANY_LABEL,
 }
 
 return M
