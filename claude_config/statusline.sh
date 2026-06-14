@@ -95,7 +95,11 @@ echo -e "${BLUE}📁 ${DIR_NAME}${RESET} | ${GREEN}🤖 ${MODEL_ID}${RESET} | ${
 # Run statusline extensions (each receives the JSON input via stdin)
 STATUSLINE_EXT_DIR="$HOME/.claude/statusline.d"
 if [ -d "$STATUSLINE_EXT_DIR" ]; then
+  shopt -s nullglob
   for ext in "$STATUSLINE_EXT_DIR"/*.sh; do
     [ -f "$ext" ] && printf '%s\n' "$input" | bash "$ext"
   done
+  shopt -u nullglob
 fi
+
+exit 0
