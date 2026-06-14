@@ -87,13 +87,23 @@ BUILD_ROOT="/data/users/$USER/builds"
 # Per-checkout suffix, matching ~/.localrc (checkout1 => "", others => -<name>).
 # Used for the build root and the local-disk scratch dir; NOT for etc-local,
 # which is in-repo and therefore already per-checkout.
+# IDX is the 1-based checkout index (checkout1 => 1, checkout4 => 4, ...). It is
+# the single knob that makes concurrent checkouts collision-free: it derives both
+# the build/runtime SUFFIX and a per-checkout PORT OFFSET, so build isolation and
+# runtime isolation (ports/pidfiles/logs) never drift apart. checkout1 keeps
+# SUFFIX="" and OFFSET=0 so its paths/ports stay byte-identical to before.
 case "$CHECKOUT_ROOT" in
-    */checkout1/*) SUFFIX="" ;;
-    */checkout*/*) SUFFIX="-$(basename "$(dirname "$CHECKOUT_ROOT")")" ;;
-    */fbsource2)   SUFFIX="-2" ;;
-    */fbsource3)   SUFFIX="-3" ;;
-    *)             SUFFIX="" ;;
+    */checkout1/*) SUFFIX=""; IDX=1 ;;
+    */checkout*/*)
+        _co_name="$(basename "$(dirname "$CHECKOUT_ROOT")")"   # e.g. checkout4
+        SUFFIX="-$_co_name"; IDX="${_co_name#checkout}" ;;
+    */fbsource2)   SUFFIX="-2"; IDX=2 ;;
+    */fbsource3)   SUFFIX="-3"; IDX=3 ;;
+    *)             SUFFIX=""; IDX=1 ;;
 esac
+[[ "$IDX" =~ ^[0-9]+$ ]] || IDX=1
+# Each checkout gets a 10-port block: checkout1 => +0, checkout2 => +10, ...
+PORT_OFFSET=$(( (IDX - 1) * 10 ))
 FB_BUILD_ROOT="$BUILD_ROOT/presto-facebook-trunk${SUFFIX}"
 
 # In-repo, gitignored local-dev config (per-checkout -> no suffix needed).
@@ -114,8 +124,17 @@ if [[ -z "${JAVA_HOME:-}" ]] || [[ ! -x "${JAVA_HOME}/bin/java" ]]; then
 fi
 export PATH="$JAVA_HOME/bin:$PATH"
 
-COORDINATOR_PORT="${PRESTO_LOCAL_DEV_COORDINATOR_PORT:-8082}"
-GATEWAY_PORT="${PRESTO_LOCAL_DEV_GATEWAY_PORT:-8081}"
+# Ports default to a per-checkout block (base + PORT_OFFSET) so concurrent
+# checkouts never collide; checkout1 keeps the historical 8082/8081/7777. The
+# worker's discovery.uri is derived from COORDINATOR_PORT (see prepare_worker_etc),
+# so the worker auto-wires to its own checkout's coordinator. Explicit env vars
+# still win for one-off overrides.
+COORDINATOR_PORT="${PRESTO_LOCAL_DEV_COORDINATOR_PORT:-$(( 8082 + PORT_OFFSET ))}"
+GATEWAY_PORT="${PRESTO_LOCAL_DEV_GATEWAY_PORT:-$(( 8081 + PORT_OFFSET ))}"
+WORKER_PORT="${PRESTO_LOCAL_DEV_WORKER_PORT:-$(( 7777 + PORT_OFFSET ))}"
+# The native worker's fb303 (thrift monitoring) port also defaults to a fixed
+# value (10101) in the binary, so concurrent workers would collide on it too.
+WORKER_FB303_PORT="${PRESTO_LOCAL_DEV_WORKER_FB303_PORT:-$(( 10101 + PORT_OFFSET ))}"
 
 # --- Native coordinator-sidecar mode (opt-in) ---
 # When enabled, the coordinator loads the presto-native-sidecar-plugin and fetches
@@ -134,12 +153,25 @@ if [[ "$SIDECAR_MODE" == "1" || "$SIDECAR_MODE" == "true" ]]; then SIDECAR_MODE=
 # Built by `mpi` (it is in _oss_modules) or `presto-build` (OSS_MODULES).
 SIDECAR_PLUGIN_POM="$FBCODE/github/presto-trunk/presto-native-sidecar-plugin/pom.xml"
 
-COORDINATOR_PID_FILE="/tmp/presto-local-dev-coordinator.pid"
-GATEWAY_PID_FILE="/tmp/presto-local-dev-gateway.pid"
-WORKER_PID_FILE="/tmp/presto-local-dev-worker.pid"
-COORDINATOR_LOG="/tmp/presto-local-coordinator.log"
-GATEWAY_LOG="/tmp/presto-local-gateway.log"
-WORKER_LOG="/tmp/presto-local-worker.log"
+# Pidfiles + logs are SUFFIX-namespaced so each checkout tracks only its own
+# processes (checkout1's stay unsuffixed -> byte-identical to before).
+COORDINATOR_PID_FILE="/tmp/presto-local-dev-coordinator${SUFFIX}.pid"
+GATEWAY_PID_FILE="/tmp/presto-local-dev-gateway${SUFFIX}.pid"
+WORKER_PID_FILE="/tmp/presto-local-dev-worker${SUFFIX}.pid"
+COORDINATOR_LOG="/tmp/presto-local-coordinator${SUFFIX}.log"
+GATEWAY_LOG="/tmp/presto-local-gateway${SUFFIX}.log"
+WORKER_LOG="/tmp/presto-local-worker${SUFFIX}.log"
+
+# pkill fallback patterns for orphans not tracked by a pidfile. Each is scoped to
+# THIS checkout so a `stop` here can never kill another checkout's process:
+#   - coordinator/gateway: the per-checkout build root appears in argv (passed via
+#     MAVEN_BUILD_FLAGS' -Dout-of-tree-build-root). It is always followed by
+#     another -D flag, so the trailing space anchors it -- preventing checkout1's
+#     root (a prefix of "<root>-checkout4") from matching checkout4's command line.
+#   - worker: the per-checkout --etc_dir path is a unique discriminator.
+COORDINATOR_PATTERN="PrestoFacebook.*out-of-tree-build-root=${FB_BUILD_ROOT}[[:space:]]"
+GATEWAY_PATTERN="LocalPrestoGateway.*out-of-tree-build-root=${FB_BUILD_ROOT}[[:space:]]"
+WORKER_PATTERN="--etc_dir=${ETC_LOCAL}/worker-etc"
 
 export THRIFT_TLS_CL_KEY_PATH="$X509_PEM"
 export THRIFT_TLS_CL_CERT_PATH="$X509_PEM"
@@ -429,6 +461,13 @@ prepare_worker_etc() {
     else
         echo "discovery.uri=http://127.0.0.1:$COORDINATOR_PORT" >> "$dst/config.properties"
     fi
+    # Per-checkout worker HTTP port so concurrent checkouts' workers don't both
+    # bind the same port (the copied default is shared across checkouts).
+    if grep -qE '^http-server.http.port=' "$dst/config.properties"; then
+        sed -i "s#^http-server.http.port=.*#http-server.http.port=$WORKER_PORT#" "$dst/config.properties"
+    else
+        echo "http-server.http.port=$WORKER_PORT" >> "$dst/config.properties"
+    fi
     if grep -qE '^presto.version=' "$dst/config.properties"; then
         sed -i "s#^presto.version=.*#presto.version=$coord_version#" "$dst/config.properties"
     else
@@ -479,6 +518,29 @@ launch_detached() {
 
 is_running() { [[ -f "$1" ]] && kill -0 "$(cat "$1" 2>/dev/null)" 2>/dev/null; }
 
+# True if anything is already LISTENing on $1.
+port_listening() {
+    local port="$1"
+    ss -ltnH 2>/dev/null | awk '{print $4}' | grep -qE ":${port}\$"
+}
+
+# Fail fast (before any expensive build/launch) if the resolved port is taken by
+# a process this checkout does not track -- the orphan-squatting-a-port case that
+# otherwise surfaces as a mysterious mid-startup abort. Callers only reach this
+# after the is_running pidfile check, so a port held by our own live process is
+# already handled; anything else here is foreign.
+ensure_port_free() {
+    local port="$1" name="$2"
+    if port_listening "$port"; then
+        echo "  ERROR: port $port (for $name) is already in use." >&2
+        echo "         Likely an orphaned process from another run or checkout." >&2
+        echo "         Inspect:  ss -ltnp | grep ':$port'" >&2
+        echo "         Then 'presto-local-dev stop' (this checkout) or kill the owner," >&2
+        echo "         or override the port via PRESTO_LOCAL_DEV_${name^^}_PORT." >&2
+        return 1
+    fi
+}
+
 wait_for_port() {
     local port="$1" name="$2" max_wait="${3:-150}" elapsed=0
     echo "  Waiting for $name on port $port..."
@@ -526,7 +588,7 @@ diagnose_worker_not_active() {
     wv="$(grep -E '^presto.version=' "$wetc/config.properties" 2>/dev/null | cut -d= -f2 || true)"
     we="$(grep -E '^node.environment=' "$BASE_ETC/config.properties" 2>/dev/null | head -1 | cut -d= -f2 || true)"
     wenv="$(grep -E '^node.environment=' "$wetc/node.properties" 2>/dev/null | cut -d= -f2 || true)"
-    wport="$(grep -E '^http-server.http.port=' "$wetc/config.properties" 2>/dev/null | cut -d= -f2 || true)"; wport="${wport:-7777}"
+    wport="$(grep -E '^http-server.http.port=' "$wetc/config.properties" 2>/dev/null | cut -d= -f2 || true)"; wport="${wport:-$WORKER_PORT}"
     echo "    a registered node is counted ACTIVE only if ALL of these hold:"
     echo "      version : coordinator='$cv' worker='$wv'  -> $([[ -n "$cv" && "$cv" == "$wv" ]] && echo OK || echo MISMATCH)"
     echo "      env     : coordinator='$we' worker='$wenv'  -> $([[ -n "$we" && "$we" == "$wenv" ]] && echo OK || echo MISMATCH)"
@@ -540,6 +602,7 @@ start_coordinator() {
     if is_running "$COORDINATOR_PID_FILE"; then
         echo "Coordinator already running (PID $(cat "$COORDINATOR_PID_FILE"))"; return 0
     fi
+    ensure_port_free "$COORDINATOR_PORT" "coordinator" || return 1
     prepare_local_dev_config
     echo "=== Starting Presto Coordinator (detached) ==="
     echo "  Checkout:    $CHECKOUT_ROOT"
@@ -562,6 +625,7 @@ start_gateway() {
     if is_running "$GATEWAY_PID_FILE"; then
         echo "Gateway already running (PID $(cat "$GATEWAY_PID_FILE"))"; return 0
     fi
+    ensure_port_free "$GATEWAY_PORT" "gateway" || return 1
     echo "=== Starting Presto Gateway (detached) ==="
     MAVEN_OPTS="${GATEWAY_MAVEN_OPTS[*]}" \
     launch_detached "$GATEWAY_PID_FILE" "$GATEWAY_LOG" "$FB_TRUNK/presto-gateway" -- \
@@ -575,6 +639,7 @@ start_worker() {
     if is_running "$WORKER_PID_FILE"; then
         echo "Worker already running (PID $(cat "$WORKER_PID_FILE"))"; return 0
     fi
+    ensure_port_free "$WORKER_PORT" "worker" || return 1
     local bin="${PRESTO_LOCAL_DEV_WORKER_BIN:-}"
     if [[ -z "$bin" ]]; then
         echo "  Resolving fb_presto_cpp:main (buck2; cached=fast, cold=slow)..."
@@ -590,7 +655,7 @@ start_worker() {
     echo "  Etc:      $wetc  (discovery -> :$COORDINATOR_PORT)"
     [[ "$SIDECAR_MODE" == "1" ]] && echo "  Sidecar:  this worker announces sidecar=true (doubles as coordinator sidecar + compute)"
     launch_detached "$WORKER_PID_FILE" "$WORKER_LOG" "$CHECKOUT_ROOT" -- \
-        "$bin" --etc_dir="$wetc"
+        "$bin" --etc_dir="$wetc" --presto_worker_fb303_port="$WORKER_FB303_PORT"
     echo "  Started (PID $(cat "$WORKER_PID_FILE" 2>/dev/null), log: $WORKER_LOG)"
     # Don't return until the worker is actually usable (or fail with a reason).
     wait_for_active_worker
@@ -616,33 +681,36 @@ kill_tracked() {
 
 stop_all() {
     echo "=== Stopping local Presto ==="
-    kill_tracked "$COORDINATOR_PID_FILE" "Coordinator" 'exec.mainClass=com.facebook.presto.facebook.PrestoFacebook'
-    kill_tracked "$GATEWAY_PID_FILE" "Gateway" 'exec.mainClass=com.facebook.presto.gateway.LocalPrestoGateway'
-    kill_tracked "$WORKER_PID_FILE" "Worker" 'fb_presto_cpp/__main__/main'
+    kill_tracked "$COORDINATOR_PID_FILE" "Coordinator" "$COORDINATOR_PATTERN"
+    kill_tracked "$GATEWAY_PID_FILE" "Gateway" "$GATEWAY_PATTERN"
+    kill_tracked "$WORKER_PID_FILE" "Worker" "$WORKER_PATTERN"
     echo "  Done."
 }
 
 show_status() {
     echo "=== Local Presto Status ==="
+    echo "  Checkout: $CHECKOUT_ROOT  (index $IDX, suffix '${SUFFIX:-<none>}', port offset +$PORT_OFFSET)"
+    echo "  Ports:    coordinator=$COORDINATOR_PORT  worker=$WORKER_PORT  gateway=$GATEWAY_PORT"
     if is_running "$COORDINATOR_PID_FILE"; then
         local info; info=$(curl -s --noproxy '*' --connect-timeout 2 "http://localhost:$COORDINATOR_PORT/v1/info" 2>/dev/null || echo "unreachable")
-        echo "  Coordinator: RUNNING (PID $(cat "$COORDINATOR_PID_FILE"))  $info"
+        echo "  Coordinator: RUNNING (PID $(cat "$COORDINATOR_PID_FILE"), :$COORDINATOR_PORT)  $info"
         local n aw
         n=$(curl -s --noproxy '*' --connect-timeout 2 "http://localhost:$COORDINATOR_PORT/v1/node" 2>/dev/null | grep -o '"uri"' | wc -l || true)
         aw=$(curl -s --noproxy '*' --connect-timeout 2 "http://localhost:$COORDINATOR_PORT/v1/cluster" 2>/dev/null | grep -o '"activeWorkers":[0-9]*' | cut -d: -f2 || true)
-        echo "    nodes: $n   activeWorkers: ${aw:-0} (the gate for running queries)   log: $COORDINATOR_LOG"
+        echo "    nodes: $n   activeWorkers: ${aw:-0} (the gate for running queries)"
+        echo "    pid: $COORDINATOR_PID_FILE   log: $COORDINATOR_LOG"
     else
-        echo "  Coordinator: STOPPED"
+        echo "  Coordinator: STOPPED (would use :$COORDINATOR_PORT)"
     fi
     if is_running "$WORKER_PID_FILE"; then
-        echo "  Worker:      RUNNING (PID $(cat "$WORKER_PID_FILE"))  log: $WORKER_LOG"
+        echo "  Worker:      RUNNING (PID $(cat "$WORKER_PID_FILE"), :$WORKER_PORT)  pid: $WORKER_PID_FILE  log: $WORKER_LOG"
     else
-        echo "  Worker:      STOPPED"
+        echo "  Worker:      STOPPED (would use :$WORKER_PORT)"
     fi
     if is_running "$GATEWAY_PID_FILE"; then
-        echo "  Gateway:     RUNNING (PID $(cat "$GATEWAY_PID_FILE"))  log: $GATEWAY_LOG"
+        echo "  Gateway:     RUNNING (PID $(cat "$GATEWAY_PID_FILE"), :$GATEWAY_PORT)  pid: $GATEWAY_PID_FILE  log: $GATEWAY_LOG"
     else
-        echo "  Gateway:     STOPPED"
+        echo "  Gateway:     STOPPED (would use :$GATEWAY_PORT)"
     fi
 }
 
@@ -714,8 +782,15 @@ Usage: presto-local-dev {coordinator|worker|gateway|all|sidecar|stop|status|quer
   sidecar       coordinator + worker in native coordinator-sidecar mode
                 (same as PRESTO_LOCAL_DEV_SIDECAR=1 presto-local-dev all)
   stop          Stop all local Presto processes
-  status        Show status (incl. nodes + activeWorkers)
+  status        Show status (incl. checkout, ports, nodes + activeWorkers)
   query "<SQL>" Run SQL against the local coordinator (tpch/tiny by default)
+
+Concurrent checkouts: ports/pidfiles/logs are derived from the checkout index, so
+multiple checkouts run side by side with NO config. This is checkout '${SUFFIX:-checkout1}'
+(index $IDX): coordinator=$COORDINATOR_PORT worker=$WORKER_PORT gateway=$GATEWAY_PORT
+(checkout1 keeps the historical 8082/7777/8081). Override any port via
+PRESTO_LOCAL_DEV_{COORDINATOR,WORKER,GATEWAY}_PORT. 'stop'/'status' only ever touch
+this checkout's processes.
 
 Native coordinator-sidecar mode (opt-in): set PRESTO_LOCAL_DEV_SIDECAR=1 (or use the
 'sidecar' subcommand) to make native_* session properties (e.g.

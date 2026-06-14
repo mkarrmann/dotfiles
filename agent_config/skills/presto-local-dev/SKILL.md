@@ -32,7 +32,9 @@ The script **never edits the tracked `etc/`**. It generates config into an in-re
 | Status (nodes + activeWorkers) | `presto-local-dev status` |
 | Run a query against the local coordinator | `presto-local-dev query "<SQL>"` |
 
-Ports are env-overridable: `PRESTO_LOCAL_DEV_COORDINATOR_PORT` (default 8082), `PRESTO_LOCAL_DEV_GATEWAY_PORT` (default 8081). The script JVM-overrides `-Dhttp-server.http.port`/`-Ddiscovery.uri` so the in-tree config (port 8080) is untouched — needed on ODs where port 8080 is taken.
+Ports are env-overridable: `PRESTO_LOCAL_DEV_COORDINATOR_PORT`, `PRESTO_LOCAL_DEV_GATEWAY_PORT`, `PRESTO_LOCAL_DEV_WORKER_PORT` (and `PRESTO_LOCAL_DEV_WORKER_FB303_PORT`). The script JVM-overrides `-Dhttp-server.http.port`/`-Ddiscovery.uri` so the in-tree config (port 8080) is untouched — needed on ODs where port 8080 is taken.
+
+**Concurrent checkouts work with zero config.** Ports, pidfiles, and logs are all derived from the checkout index (`checkout1`→1, `checkout4`→4, …) the script already computes for build isolation. Each checkout gets a 10-port block at `base + (index-1)*10`: coordinator `8082`, gateway `8081`, worker `7777`, worker-fb303 `10101` for checkout1, then `+10` per checkout (checkout4 → `8112`/`8111`/`7807`/`10131`). checkout1 keeps the historical ports byte-for-byte. Because pidfiles/logs are suffixed (`-checkoutN`) and the `pkill` orphan-fallback patterns are scoped to the per-checkout build root / `--etc_dir`, `stop` and `status` only ever touch their own checkout's processes. `status` prints the resolved checkout, index, and ports. Before launching, `start` fails fast (with a clear message) if the resolved port is already held by a foreign process — the orphan-squatting-a-port case.
 
 The worker binary can be overridden with `PRESTO_LOCAL_DEV_WORKER_BIN` to skip the `buck2 build` resolve.
 
@@ -250,7 +252,7 @@ Logs include full Maven output + app stderr. Grep for `ERROR` or class names.
 | Queries run on the coordinator (no worker activity) | Missing `node-scheduler.include-coordinator=false` / `native-execution-enabled=true`. |
 | `Native execution not supported for …` | Plan uses an operator the C++ worker lacks. Rewrite, or re-enable `node-scheduler.include-coordinator=true` for Java fallback. |
 | Worker doesn't register | Check `worker-etc/config.properties` `discovery.uri` = coordinator port, and `node.environment` matches the coordinator. |
-| `Address already in use` :8082/:8081 | `presto-local-dev stop`, or `lsof -i :8082` then kill. |
+| `start` aborts with "port … already in use" | A foreign/orphaned process holds this checkout's port. `presto-local-dev stop` (this checkout), inspect with `ss -ltnp \| grep ':<port>'` and kill the owner, or override via `PRESTO_LOCAL_DEV_*_PORT`. Each checkout uses a distinct port block, so this is usually a leftover from a prior run. |
 | `etc-local/` shows in `sl status` | It shouldn't — it's in `presto-facebook-trunk/.gitignore`. If it appears, confirm you're under that trunk and the ignore is intact. |
 | `INVALID_SESSION_PROPERTY: Unknown session property native_*` | The coordinator has no native sidecar. Start in sidecar mode (`presto-local-dev sidecar` or `PRESTO_LOCAL_DEV_SIDECAR=1`) — see [Native coordinator-sidecar mode](#native-coordinator-sidecar-mode-opt-in). |
 | `Sidecar monitoring port is NOT set. TW_PORT_sidecar_monitoring` | Benign devserver warning — ignore. |
