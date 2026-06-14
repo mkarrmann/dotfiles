@@ -80,7 +80,7 @@ find_fbsource_root() {
     d="$(dirname "$d")"
   done
   # Fall back to common locations in priority order.
-  for c in "$HOME/fbsource" "$HOME/checkout1/fbsource" "$HOME/checkout2/fbsource" "$HOME/checkout3/fbsource"; do
+  for c in "$HOME/fbsource" "$HOME/checkout1/fbsource" "$HOME/checkout2/fbsource" "$HOME/checkout3/fbsource" "$HOME/checkout4/fbsource"; do
     if [[ -d "$c/fbcode/fb_sapphire_cpp/scripts" ]]; then
       echo "$c"; return 0
     fi
