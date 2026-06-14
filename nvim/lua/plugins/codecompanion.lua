@@ -435,6 +435,9 @@ local function _broker_open_chat_with_session(adapter, acp_session_id, cwd_overr
       require("codecompanion.interactions.chat.acp.commands").link_buffer_to_session(
         chat.bufnr, conn.session_id
       )
+      pcall(function()
+        require("lib.codecompanion-chatinfo").pin(chat.bufnr, conn.session_id)
+      end)
       require("codecompanion.interactions.chat.acp.render").restore_session(chat, updates)
       lock_chat_buf(chat.bufnr)
       require("codecompanion.utils").fire("ACPChatRestored", {
@@ -791,7 +794,15 @@ local function tab_chat_set_adapter(adapter_name, opts)
       pcall(function() chat.acp_connection:disconnect() end)
     end
     chat.acp_session_id = nil
-    if opts.clear then chat:clear() end
+    -- The current session is being torn down; unpin so the winbar re-pins
+    -- to the new adapter's session on first establish.
+    pcall(function() require("lib.codecompanion-chatinfo").reset(bufnr) end)
+    if opts.clear then
+      chat:clear()
+      -- Transcript wiped: drop section timestamps so stale times don't
+      -- bottom-align onto the now-empty chat.
+      pcall(function() require("lib.codecompanion-timing").reset(bufnr) end)
+    end
     _prime_adapter_state(bufnr, adapter_name, sel or {})
     chat:change_adapter(adapter_name)
   end
@@ -1595,6 +1606,21 @@ return {
         end
       end
 
+      -- Re-apply per-message timestamp labels after CC repaints headers.
+      -- render_headers runs after every full buffer render (compaction,
+      -- session restore) and after each new role header during streaming;
+      -- a full render deletes all extmarks, so our timing namespace must be
+      -- rebuilt here. lib.codecompanion-timing.reapply re-derives header
+      -- lines from the buffer, so it is correct regardless of how the
+      -- transcript was rebuilt. See that module's header for the mapping.
+      local orig_render_headers = UI.render_headers
+      function UI:render_headers()
+        orig_render_headers(self)
+        pcall(function()
+          require("lib.codecompanion-timing").reapply(self.chat_bufnr)
+        end)
+      end
+
       -- HACK: ACPHandler:ensure_connection doesn't pass Chat.acp_session_id to
       -- Connection.new, so /join (session loading) has no effect. Patch it through.
       local ACPHandler = require("codecompanion.interactions.chat.acp.handler")
@@ -1636,6 +1662,12 @@ return {
             end)
           end
           conn._cc_established_session_id = conn.session_id
+          -- Pin the first session id established for this chat so the
+          -- winbar shows a stable handle even after involuntary reminting
+          -- (first-write-wins; reset on close / adapter-swap-with-clear).
+          pcall(function()
+            require("lib.codecompanion-chatinfo").pin(self.chat.bufnr, conn.session_id)
+          end)
         end
         return ok
       end
@@ -1994,6 +2026,7 @@ return {
       -- exists and are dropped.
       require("lib.codecompanion-stats")
       require("lib.codecompanion-diff").setup()
+      require("lib.codecompanion-chatinfo").setup()
 
       local ns = vim.api.nvim_create_namespace("codecompanion_inline_indicator")
       local spinner_frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }

@@ -95,6 +95,16 @@ local function build_segments(state)
       acp_usage = stats.get(acp_session_id)
     end
   end
+  -- Prefer the pinned session id for display so the status bar matches the
+  -- stable winbar handle and doesn't flicker on disconnect/remint. Usage is
+  -- still keyed by the live id above.
+  local display_session_id = acp_session_id
+  do
+    local ok_ci, ci = pcall(require, "lib.codecompanion-chatinfo")
+    if ok_ci then
+      display_session_id = ci.get(state.chat_bufnr) or acp_session_id
+    end
+  end
 
   if state.queued then
     left[#left + 1] = { " Queued ", "DiagnosticWarn" }
@@ -115,8 +125,8 @@ local function build_segments(state)
     left[#left + 1] = { "turn " .. meta.cycles, "Number" }
   end
 
-  if acp_session_id then
-    right[#right + 1] = { acp_session_id, "Constant" }
+  if display_session_id then
+    right[#right + 1] = { display_session_id, "Constant" }
   end
   if meta.mode and meta.mode.name then
     right[#right + 1] = { meta.mode.name, "String" }
