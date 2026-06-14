@@ -173,7 +173,6 @@ link_one "$DOTFILES_DIR/claude_config/statusline.sh" "$HOME/.claude/statusline.s
 mkdir -p "$HOME/.claude/agent-manager/bin" "$HOME/.claude/statusline.d"
 sync_link_dir "$DOTFILES_DIR/claude_config/agent-manager" "$HOME/.claude/agent-manager/bin" "*.sh"
 sync_link_dir "$DOTFILES_DIR/claude_config/agent-manager" "$HOME/.claude/agent-manager/bin" "*.py"
-link_one "$DOTFILES_DIR/claude_config/agent-manager/statusline-ext.sh" "$HOME/.claude/statusline.d/agent-manager.sh"
 # Obsidian vault config (source of truth for AGENTS.md location)
 link_one "$DOTFILES_DIR/claude_config/obsidian-vault.conf" "$HOME/.claude/obsidian-vault.conf"
 # Hooks
