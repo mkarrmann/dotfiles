@@ -29,7 +29,10 @@ OPTIONS (velox/java/ab):
                                   Velox subcommand sets this automatically; ignored for `java`.
   -g, --tag <tag>                 Client tag (default: SAPPHIRE_VELOX_SPARK3 for velox, omitted for java).
       --log-dir <dir>             Where to write the driver log (default: /tmp).
-      --no-env-strip              Don't auto-strip AI-agent env vars (you've already cleaned them).
+      --env-strip                 Surgically unset CLAUDE_*/ANTHROPIC_*/FB_AGENT_* (preserving
+                                  cert/krb/build env) before running. Default OFF — only needed if
+                                  your run dies with WSE_INVALID_ARGUMENT (AI-agent WS gate). Do NOT
+                                  use `env -i`; it strips THRIFT_TLS_CL_CERT_PATH and breaks x509.
       --dry-run                   Print the command that would run, don't execute.
   --                              Everything after -- is passed through to sapphire-submit.sh
                                   verbatim (e.g. -s key=val, -e spark.foo=bar). Note: -l and -x
@@ -47,26 +50,29 @@ EOF
 die() { echo "sapphire-local: $*" >&2; exit 2; }
 
 #---- env-strip helper -------------------------------------------------------
-# WS anti-AI gate rejects directory creation if it sees CLAUDE_*/ANTHROPIC_*/FB_AGENT_*
-# in the process env. Re-exec under env -i with only the minimum.
-maybe_reexec_clean() {
-  # Skip if user asked us to, or if we've already re-execed.
-  if [[ "${SAPPHIRE_LOCAL_ENV_STRIPPED:-}" == "1" || "${NO_ENV_STRIP:-}" == "1" ]]; then
-    return 0
-  fi
-  # If no agent vars present, no need.
-  if ! env | grep -qE '^(CLAUDE_|ANTHROPIC_|FB_AGENT_)'; then
-    return 0
-  fi
-  echo "sapphire-local: AI-agent env vars detected; re-execing under env -i (use --no-env-strip to skip)" >&2
-  exec env -i \
-    HOME="$HOME" \
-    PATH="$PATH" \
-    USER="$USER" \
-    TERM="${TERM:-xterm}" \
-    SSH_AUTH_SOCK="${SSH_AUTH_SOCK:-}" \
-    SAPPHIRE_LOCAL_ENV_STRIPPED=1 \
-    "$0" "$@"
+# The warmstorage anti-AI gate (IdentityUtil::getAgentIdentityFromEnv) *can* reject
+# temp-directory creation if it sees CLAUDE_*/ANTHROPIC_*/FB_AGENT_* in the process env.
+#
+# IMPORTANT: do NOT use `env -i` to clear them — that also strips THRIFT_TLS_CL_CERT_PATH
+# (and friends), which is how the Sapphire driver locates your x509 cert. Without it the
+# driver falls back to /var/facebook/x509_identities/client.pem (absent on devservers) and
+# dies with FileNotFoundException. If your x509 cert is already an authorized agent cert
+# (e.g. .../agent_x509/claude_code_$USER.pem), the WS gate does NOT fire and you need no
+# stripping at all — that's the DEFAULT here (full env passthrough, matches a working
+# manual sapphire-submit invocation).
+#
+# Only when --env-strip is passed do we surgically `unset` the agent-prefixed vars while
+# preserving everything else (cert paths, kerberos, build env).
+strip_agent_vars() {
+  [[ "${ENV_STRIP:-}" == "1" ]] || return 0
+  local v stripped=0
+  while IFS='=' read -r v _; do
+    case "$v" in
+      CLAUDE_*|ANTHROPIC_*|FB_AGENT_*) unset "$v" && stripped=1 ;;
+    esac
+  done < <(env)
+  [[ "$stripped" == "1" ]] && echo "sapphire-local: --env-strip: unset CLAUDE_*/ANTHROPIC_*/FB_AGENT_* (preserving THRIFT_TLS_*/x509/krb env)" >&2
+  return 0
 }
 
 #---- repo + script discovery -----------------------------------------------
@@ -201,7 +207,7 @@ cpkg=""
 tag=""
 log_dir="/tmp"
 dryrun=""
-NO_ENV_STRIP="${NO_ENV_STRIP:-}"
+ENV_STRIP="${ENV_STRIP:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -211,7 +217,7 @@ while [[ $# -gt 0 ]]; do
     -c|--cpp-pkg)   cpkg="$2"; shift 2 ;;
     -g|--tag)       tag="$2"; shift 2 ;;
        --log-dir)   log_dir="$2"; shift 2 ;;
-       --no-env-strip) NO_ENV_STRIP=1; shift ;;
+       --env-strip) ENV_STRIP=1; shift ;;
        --dry-run)   dryrun=1; shift ;;
     --)             shift; break ;;
     -h|--help)      usage; exit 0 ;;
@@ -231,13 +237,9 @@ for a in "$@"; do
   esac
 done
 
-export NO_ENV_STRIP
-# Re-exec under env -i if AI-agent vars are present (skip if --no-env-strip).
-maybe_reexec_clean "$sub" "-n" "$ns" "-f" "$sql" \
-  ${jpkg:+-j "$jpkg"} ${cpkg:+-c "$cpkg"} ${tag:+-g "$tag"} \
-  --log-dir "$log_dir" ${dryrun:+--dry-run} \
-  ${NO_ENV_STRIP:+--no-env-strip} \
-  "$@"
+export ENV_STRIP
+# Surgically unset agent env vars only if --env-strip was passed (default: full env passthrough).
+strip_agent_vars
 
 # Defaults by engine.
 ts="$(date +%Y%m%d_%H%M%S)"

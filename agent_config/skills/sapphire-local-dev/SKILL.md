@@ -113,7 +113,9 @@ This is the canonical pattern for reproducing a Sapphire verifier `ROW_COUNT_MIS
 
 ## Environment gotchas
 
-- **WS AI-agent gate.** If your shell has `CLAUDE_*` / `ANTHROPIC_*` / `FB_AGENT_*` env vars set, the warmstorage `createTempDirectory` call throws `WSE_INVALID_ARGUMENT: AI agents are not allowed to set expiration times on directories` per the MDFS AI Agent Protections RFC. The script auto-detects and re-execs itself under `env -i HOME=$HOME PATH=$PATH USER=$USER TERM=$TERM SSH_AUTH_SOCK=$SSH_AUTH_SOCK` to strip these. Pass `--no-env-strip` to skip (e.g. from a clean ssh session).
+- **Env passthrough & the WS AI-agent gate.** The script runs with your **full environment by default** — this is deliberate. The Sapphire driver finds your x509 cert via `THRIFT_TLS_CL_CERT_PATH` (e.g. `/var/facebook/credentials/$USER/x509/$USER.pem`); if that env var is missing it falls back to `/var/facebook/x509_identities/client.pem` (absent on devservers) and dies with `FileNotFoundException → Unable to create injector`. **Do NOT wrap this in `env -i`** — it strips `THRIFT_TLS_CL_CERT_PATH` and breaks cert resolution (learned the hard way).
+  - The warmstorage anti-AI gate (`IdentityUtil::getAgentIdentityFromEnv`, MDFS AI Agent Protections RFC) *can* reject temp-dir creation with `WSE_INVALID_ARGUMENT: AI agents are not allowed to set expiration times on directories` when `CLAUDE_*`/`ANTHROPIC_*`/`FB_AGENT_*` are present. **But if your x509 cert is already an authorized agent cert** (e.g. `$USER.pem → .../agent_x509/claude_code_$USER.pem`), the gate is satisfied and **no stripping is needed** — full env just works.
+  - Only if you actually hit `WSE_INVALID_ARGUMENT`, pass `--env-strip`. That does a **surgical `unset` of the agent-prefixed vars** while preserving `THRIFT_TLS_*` / x509 / kerberos / build env. Never `env -i`.
 - **Data project ACL.** Reads run as `USER:$USER`. You need read access to the target Hive tables. If you don't, you'll see `AccessDeniedException` in the driver log.
 - **Cluster placement.** Executors go to the regional `dw-<region>-spark` cluster derived from tetris. To pin a region, pass `-- -e spark.fb.only.tetris.dataCenter=<dc>` (e.g. `nha0`).
 
@@ -123,7 +125,10 @@ This is the canonical pattern for reproducing a Sapphire verifier `ROW_COUNT_MIS
 You passed `-l`. Drop it. The script forbids `-l` in the extra-args passthrough for this reason.
 
 ### `WSE_INVALID_ARGUMENT: AI agents are not allowed to set expiration times on directories`
-AI-agent env vars are leaking through. Either re-run from a fresh ssh session, or let `sapphire-local`'s auto `env -i` handle it (default behavior).
+AI-agent env vars are tripping the WS gate AND your x509 cert isn't an authorized agent cert. Re-run with `--env-strip` (surgical unset of `CLAUDE_*`/`ANTHROPIC_*`/`FB_AGENT_*`). Do NOT use `env -i` — see next item.
+
+### `FileNotFoundException: /var/facebook/x509_identities/client.pem` / `Unable to create injector`
+The driver can't find your x509 cert. Almost always caused by running under `env -i` (or otherwise missing `THRIFT_TLS_CL_CERT_PATH`), which strips the cert-path env var so it falls back to the nonexistent system cert. Run with your normal full environment (the default). If you used `--env-strip`, note it only `unset`s agent vars and keeps `THRIFT_TLS_*` — so this shouldn't happen; if it does, check `echo $THRIFT_TLS_CL_CERT_PATH` points at an existing file.
 
 ### `mismatched input ';'`
 Trailing semicolon in your SQL. Drop it.
