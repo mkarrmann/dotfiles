@@ -1,0 +1,106 @@
+#!/bin/bash
+set -euo pipefail
+
+# presto-native-test: run a Prestissimo *native query-runner* test locally.
+#
+# These TestNG tests (in presto-facebook-native-execution, e.g.
+# TestPrestoNativeFunctionsOnSidecarPlugin) start a Java coordinator that spawns
+# the real C++ presto_server worker as a child process. So a run needs:
+#   - the native worker binary  (PRESTO_SERVER)
+#   - a data directory          (DATA_DIR)
+# and it must run under JDK 17.
+#
+# This script encodes the correct workflow so humans and agents don't rediscover
+# it the hard way. It sources presto-build, which (a) pins JDK 17 — the system
+# default java is JDK 8 and non-interactive shells don't source ~/.localrc — and
+# (b) provides FB_OPTS / BUILD_ROOT / checkout-aware paths.
+#
+# IMPORTANT: do NOT pass PRESTO_SERVER/DATA_DIR as environment variables. The
+# module pom hardcodes them as surefire systemPropertyVariables (CI paths), and
+# the test throws if the env var and system property disagree. We override them
+# as -D user properties instead.
+#
+# Note: none of the old -Dmaven.test.skip / -Dair.check.skip-all workarounds are
+# needed — those failures only happen on JDK 8. Under JDK 17 the build is clean.
+
+usage() {
+    cat <<'EOF'
+Usage: presto-native-test <TestClass[#method]> [options]
+
+  <TestClass[#method]>   TestNG class (optionally #method) in
+                         presto-facebook-native-execution to run.
+
+Options:
+  --no-build         Reuse the last build: skip the buck2 C++ build and the
+                     Maven install of the test module + deps.
+  --worker-count N   Set WORKER_COUNT for the test (default: the test's own).
+  --data-dir DIR     Override DATA_DIR (default: $BUILD_ROOT/velox_data<suffix>).
+  -h                 Help.
+
+Examples:
+  presto-native-test TestPrestoNativeFunctionsOnSidecarPlugin
+  presto-native-test TestPrestoNativeFunctionsOnSidecarPlugin#testTimeFunctions
+  presto-native-test TestPrestoNativeFunctionsOnSidecarPlugin --no-build
+EOF
+    exit "${1:-0}"
+}
+
+[[ $# -eq 0 || "${1:-}" == "-h" ]] && usage 0
+TEST="$1"; shift
+
+NO_BUILD=false
+WORKER_COUNT=""
+DATA_DIR_OVERRIDE=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-build) NO_BUILD=true; shift;;
+        --worker-count) WORKER_COUNT="$2"; shift 2;;
+        --data-dir) DATA_DIR_OVERRIDE="$2"; shift 2;;
+        -h) usage 0;;
+        *) echo "Error: unknown option '$1'" >&2; usage 1;;
+    esac
+done
+
+# Sourcing presto-build pins JDK 17 (fails fast if absent) and exports FB_OPTS,
+# BUILD_ROOT, _CHECKOUT_SUFFIX, DEV_HOME. Must be sourced from bash (this is).
+# shellcheck source=/dev/null
+source "$(dirname "$(readlink -f "$0")")/presto-build"
+
+MODULE="presto-facebook-native-execution"
+FB_DIR="$DEV_HOME/presto-facebook-trunk"
+cd "$FB_DIR"
+
+CPP_TARGET="fbcode//fb_presto_cpp:main"
+
+if ! $NO_BUILD; then
+    echo "==> Building C++ native worker ($CPP_TARGET)..."
+    buck2 build "$CPP_TARGET"
+    echo "==> Installing $MODULE + deps (JDK 17, no extra flags needed)..."
+    mvn install -pl "$MODULE" -am -DskipTests "${FB_OPTS[@]}"
+fi
+
+# Resolve the absolute path of the freshly built worker binary.
+BIN="$(buck2 build --show-full-output "$CPP_TARGET" | awk '{print $NF}')"
+if [[ ! -x "$BIN" ]]; then
+    echo "ERROR: native worker binary not found/executable at '$BIN'." >&2
+    echo "       Run without --no-build to build it." >&2
+    exit 1
+fi
+
+DATA_DIR="${DATA_DIR_OVERRIDE:-${DATA_DIR:-${BUILD_ROOT}/velox_data${_CHECKOUT_SUFFIX}}}"
+mkdir -p "$DATA_DIR"
+
+echo "==> Running $TEST"
+echo "    PRESTO_SERVER=$BIN"
+echo "    DATA_DIR=$DATA_DIR"
+[[ -n "$WORKER_COUNT" ]] && echo "    WORKER_COUNT=$WORKER_COUNT"
+
+# No -am here: deps are installed, so only the target module's test runs (and we
+# avoid compiling/running tests in upstream modules).
+mvn test -pl "$MODULE" -Dtest="$TEST" \
+    -DPRESTO_SERVER="$BIN" \
+    -DDATA_DIR="$DATA_DIR" \
+    ${WORKER_COUNT:+-DWORKER_COUNT="$WORKER_COUNT"} \
+    -Dsurefire.failIfNoSpecifiedTests=false \
+    -Dsurefire.useManifestOnlyJar=false \
+    "${FB_OPTS[@]}"

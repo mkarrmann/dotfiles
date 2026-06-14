@@ -11,6 +11,18 @@ Local development build tool for Presto Java and C++ codebases.
 
 **Prerequisites:** JDK 17, Maven, `buck2` (for C++ builds)
 
+> ### ⚠️ CRITICAL: JDK 17 vs the default JDK 8
+> The build requires **JDK 17**, but the *system default* `java` is **JDK 8**. The `presto-build` script (and `presto-deploy`, which sources it) **now auto-pin JDK 17** — so if you use the scripts, this is handled for you. Override the path with `PRESTO_JDK17=...` if your JDK 17 lives elsewhere; the script fails fast if no JDK 17 is found.
+>
+> You only need to set it **manually** when bypassing the scripts with raw `mvn`/`buck2`/`fbpkg` in a **non-interactive shell** (Claude Code's Bash tool, scripts, cron, CI) — those do NOT source `~/.localrc`, so they fall back to JDK 8:
+> ```bash
+> export JAVA_HOME=/usr/local/java-runtime/impl/17 && export PATH=$JAVA_HOME/bin:$PATH
+> java -version   # must report 17.x
+> ```
+> Interactive terminals are fine — `~/.localrc` exports JDK 17 and the `mfi`/`mpi`/`gf` aliases rely on it.
+>
+> Why it's sneaky: the poms don't pin `maven.compiler.release`, so JDK 8 does **not** fail fast with "release 17 unsupported" — it compiles against the JDK 8 class library and only blows up later on a Java 11+ API, surfacing as **confusing "cannot find symbol" errors in seemingly unrelated modules** (e.g. `OptionalInt.isEmpty()` in `presto-impulse`). Don't chase those as real code bugs — check `java -version` first. (The "jdk8" comment on line 10 of `~/.localrc` is stale; the path is `impl/17`.)
+
 **Key script:** `~/.claude/skills/presto-build/presto-build`
 
 **Shell functions** (from `~/.localrc`): `gf`/`gp` navigate to presto-facebook-trunk/presto-trunk. `mfci`, `mfi`, `mpci` run Maven with correct flags and `-T 48` threads. `mfcc` runs checkstyle. All functions trigger eden prefetch first. The functions auto-detect which workspace you're in (`~/checkout1/fbsource` is primary; `~/checkout2/fbsource` and `~/checkout3/fbsource` are non-primary) and isolate the out-of-tree build root and Maven local repo accordingly (non-primary workspaces use `${BUILD_ROOT}/m2-repo-checkout2` or `${BUILD_ROOT}/m2-repo-checkout3` instead of `~/.m2/repository`). Override with `-pl <module>` to target a different module (Maven uses the last `-pl`). **These functions are not available in Claude Code's Bash tool.** When using them, you MUST `cd` to the correct directory first because the functions do not navigate for you:
@@ -177,6 +189,7 @@ Build output goes to `$BUILD_ROOT` (`/data/users/$USER/builds` by default).
 | Problem | Fix |
 |---------|-----|
 | Build fails on checkstyle | `presto-build -C` to skip, or `gf && mfcc` to run checkstyle only |
+| "cannot find symbol" on Java 11+ APIs (e.g. `OptionalInt.isEmpty()`) in unrelated modules like `presto-impulse` | You're on JDK 8. Non-interactive shells don't source `~/.localrc`. Run `export JAVA_HOME=/usr/local/java-runtime/impl/17 && export PATH=$JAVA_HOME/bin:$PATH`, verify `java -version` → 17. See the CRITICAL callout in Overview. |
 | Surefire "Could not find or load main class ForkedBooter" or "VM terminated without properly saying goodbye" when running targeted tests in OSS trunk | Add `-Dsurefire.useManifestOnlyJar=false`. Caused by the `:` in the out-of-tree-build symlink target (`com.facebook.presto:<artifact>`). See Tests section. |
 | Pre-existing trunk compile error (unrelated test file) | Add `-Dmaven.test.skip=true` to skip test compilation, or skip the failing module with `-pl '!<module>'` |
 | Eden mount slow/stale | `eden prefetch 'fbcode/github/presto-*-trunk/**'` |

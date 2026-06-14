@@ -49,6 +49,29 @@ if [[ -n "$_CHECKOUT_SUFFIX" ]]; then
     _MAVEN_REPO_LOCAL_OPT=("-Dmaven.repo.local=${BUILD_ROOT}/m2-repo${_CHECKOUT_SUFFIX}")
 fi
 
+# === JDK 17 (required) ===
+# The system default `java` is JDK 8. Non-interactive shells (Claude Code's Bash
+# tool, scripts, cron, CI) do NOT source ~/.localrc, so without this they would
+# silently build with JDK 8. The poms don't pin maven.compiler.release, so JDK 8
+# doesn't fail fast — it compiles against the JDK 8 class library and only blows
+# up later on a Java 11+ API (e.g. OptionalInt.isEmpty() in presto-impulse),
+# surfacing as confusing "cannot find symbol" errors in unrelated modules.
+# Pin JDK 17 here unless the caller already provided one. Override the path with
+# PRESTO_JDK17 if your JDK 17 lives elsewhere.
+_jdk17_ok() { [[ -x "$1/bin/java" ]] && "$1/bin/java" -version 2>&1 | grep -q '"17'; }
+if [[ -n "${JAVA_HOME:-}" ]] && _jdk17_ok "$JAVA_HOME"; then
+    :  # caller already on JDK 17
+elif _jdk17_ok "${PRESTO_JDK17:-/usr/local/java-runtime/impl/17}"; then
+    JAVA_HOME="${PRESTO_JDK17:-/usr/local/java-runtime/impl/17}"
+else
+    echo "ERROR: JDK 17 is required but was not found." >&2
+    echo "       Set JAVA_HOME (or PRESTO_JDK17) to a JDK 17 install. Current java:" >&2
+    java -version >&2 2>&1 || true
+    exit 1
+fi
+export JAVA_HOME
+export PATH="$JAVA_HOME/bin:$PATH"
+
 # === Maven flags ===
 COMMON_OPTS=(
     -Dmaven.gitcommitid.skip=true
