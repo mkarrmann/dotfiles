@@ -2,9 +2,13 @@
 # sapphire-local: Run Sapphire (Presto-on-Spark) Java or Velox with the driver on this devvm.
 #
 # Wraps sapphire-submit.sh with the working "default-mode" recipe (no -l, no -x),
-# auto-strips AI-agent env vars (the WS anti-AI gate trips on CLAUDE_*/ANTHROPIC_*/FB_AGENT_*),
+# runs with the FULL environment by default (do NOT env -i — it strips THRIFT_TLS_CL_CERT_PATH
+# and breaks x509; --env-strip surgically unsets only agent vars if the WS gate ever fires),
 # names the log deterministically, and provides an `extract` subcommand that pulls the
-# "Rows: N\n[value]" result block out of the driver log.
+# "Rows: N\n[...]" result block (all rows) and query ids out of the driver log.
+#
+# Runs are READ-ONLY (SELECT) and safe to run concurrently — use a distinct --log-dir per
+# concurrent run so logs don't collide (handy for determinism / nondeterminism checks).
 #
 # See ~/.claude/skills/sapphire-local-dev/SKILL.md for the full story.
 
@@ -17,8 +21,8 @@ Usage: sapphire-local <subcommand> [options] [-- <extra sapphire-submit args>]
 SUBCOMMANDS:
   velox -n <ns> -f <sql>          Run query under Sapphire Velox (Prestissimo).
   java  -n <ns> -f <sql>          Run query under Sapphire Java.
-  ab    -n <ns> -f <sql>          Run BOTH Java and Velox, then diff results.
-  extract <log>                   Print "Rows: N\n[value]" and the PoS query id from a log.
+  ab    -n <ns> -f <sql>          Run BOTH Java and Velox, then diff/print results.
+  extract <log>                   Print the full "Rows: N" result block + query ids from a log.
   help                            Show this message.
 
 OPTIONS (velox/java/ab):
@@ -44,6 +48,14 @@ EXAMPLES:
   sapphire-local ab    -n instagram -f /tmp/mmc_count.sql
   sapphire-local velox -n ad_delivery -f /tmp/q.sql -- -s spill_enabled=true -e spark.driver.memory=20g
   sapphire-local extract /tmp/sapphire_local_velox_20260613_211135.log
+
+  # Test a locally-built Velox (fbpkg build -E presto.presto_on_spark_cpp --yes), not the deployed one:
+  sapphire-local velox -n instagram -f /tmp/q.sql -c <cpp_fbpkg_hash>
+  # Test a locally-built Sapphire Java package:
+  sapphire-local java  -n instagram -f /tmp/q.sql -j <java_fbpkg_hash>
+
+  # Concurrent runs (e.g. determinism check) — give each a distinct log dir:
+  sapphire-local velox -n instagram -f /tmp/q.sql --log-dir /tmp/run2
 EOF
 }
 
@@ -97,21 +109,26 @@ find_fbsource_root() {
 #---- result extraction ------------------------------------------------------
 # Sapphire prints results to the driver log as:
 #   Rows: N
-#   [val1\tval2\t...]
-# (one bracketed line per row). Find the LAST such block — earlier "Rows:" hits
-# can be unrelated planner stats.
+#   [val1, val2, ...]   (one bracketed line per row)
+# Print the LAST such block in full (the "Rows: N" line + all N row lines) — earlier
+# "Rows:" hits can be unrelated planner stats, and N can be >1 (per-branch/funnel queries).
+rows_block() {
+  local log="$1" ln nrows
+  ln="$(grep -an '^Rows: [0-9]\+$' "$log" 2>/dev/null | tail -1 | cut -d: -f1)"
+  if [[ -z "$ln" ]]; then
+    echo "(no 'Rows: N' result block found — query may have produced no result set, e.g. CTAS)"
+    return 0
+  fi
+  nrows="$(sed -n "${ln}p" "$log" | grep -oE '[0-9]+')"
+  [[ -n "$nrows" ]] || nrows=1
+  sed -n "${ln},$((ln + nrows))p" "$log"
+}
+
 extract_result() {
   local log="$1"
   [[ -f "$log" ]] || die "log not found: $log"
   echo "===== Result ====="
-  # Find the last line matching "^Rows: N$"; print it + the next line.
-  local last_rows_line
-  last_rows_line="$(grep -an '^Rows: [0-9]\+$' "$log" | tail -1 | cut -d: -f1)"
-  if [[ -n "$last_rows_line" ]]; then
-    sed -n "${last_rows_line},$((last_rows_line + 1))p" "$log"
-  else
-    echo "(no 'Rows: N' result block found — query may have produced no result set, e.g. CTAS)"
-  fi
+  rows_block "$log"
   echo
   echo "===== Presto-on-Spark query id (zero-counter) ====="
   grep -aoE '[0-9]{8}_[0-9]{6}_00000_[a-z0-9]+' "$log" | sort -u | head -5
@@ -279,15 +296,17 @@ case "$sub" in
     echo "Java  log: $log_java  (EXIT=$rc_java)"
     echo "Velox log: $log_velox (EXIT=$rc_velox)"
     echo
-    # Extract numeric counts (single-column scalar case) and diff if possible.
-    java_val="$(grep -aA1 '^Rows: 1$' "$log_java"  2>/dev/null | tail -1 | grep -oE '\[-?[0-9]+\]' | tr -d '[]' || true)"
-    velox_val="$(grep -aA1 '^Rows: 1$' "$log_velox" 2>/dev/null | tail -1 | grep -oE '\[-?[0-9]+\]' | tr -d '[]' || true)"
+    # Always print both engines' full result blocks (handles multi-row / multi-column).
+    echo "--- Java result ---";  rows_block "$log_java"
+    echo "--- Velox result ---"; rows_block "$log_velox"
+    echo
+    # If both are a single scalar, also compute the diff for convenience.
+    java_val="$(grep -aA1 '^Rows: 1$' "$log_java"  2>/dev/null | tail -1 | grep -oE '^\[-?[0-9]+\]$' | tr -d '[]' || true)"
+    velox_val="$(grep -aA1 '^Rows: 1$' "$log_velox" 2>/dev/null | tail -1 | grep -oE '^\[-?[0-9]+\]$' | tr -d '[]' || true)"
     if [[ -n "$java_val" && -n "$velox_val" ]]; then
-      echo "Java  result: $java_val"
-      echo "Velox result: $velox_val"
       echo "DIFF (Java - Velox): $((java_val - velox_val))"
     else
-      echo "Could not extract single-scalar result from both logs; inspect with 'sapphire-local extract <log>'."
+      echo "(multi-column/multi-row result — compare the rows above; no single-scalar diff)"
     fi
     # Overall exit = nonzero if either leg failed.
     [[ "$rc_java" -eq 0 && "$rc_velox" -eq 0 ]]

@@ -82,9 +82,18 @@ Rows: 1
 [90737]
 ```
 
-For a `SELECT count(*)` the value `[90737]` is the count. For multi-column / multi-row results the brackets contain a tab-separated row. `sapphire-local extract <log>` greps for this block.
+For a `SELECT count(*)` the value `[90737]` is the count. Multi-row / multi-column results print one bracketed, **comma-separated** line per row under `Rows: N`, e.g.:
 
-The Presto-on-Spark execution **query id** (zero-counter, `YYYYMMDD_HHMMSS_00000_xxxxx`) is also extracted — useful for Scuba lookups in `presto_on_spark_runtime`.
+```
+Rows: 3
+[b1_feed, 35180]
+[b2_carousel_photo, 51789]
+[b3_carousel_video, 3855]
+```
+
+`sapphire-local extract <log>` prints the **entire** last `Rows: N` block (all N rows) plus the query ids — so multi-row decomposition queries (per-branch counts, predicate funnels) are read directly from the run output.
+
+The Presto-on-Spark execution **query id** (zero-counter, `YYYYMMDD_HHMMSS_00000_xxxxx`) is also extracted — useful for Scuba lookups in `presto_on_spark_runtime`. The high-counter id is the prod EXPLAIN (citable in Wand / diff test plans).
 
 ## Java vs Velox A/B
 
@@ -104,7 +113,44 @@ qid: 20260614_051144_00000_xkr7d
 DIFF: Java - Velox = +16167
 ```
 
-This is the canonical pattern for reproducing a Sapphire verifier `ROW_COUNT_MISMATCH` locally.
+This is the canonical pattern for reproducing a Sapphire verifier `ROW_COUNT_MISMATCH` locally. (The `ab` summary prints both engines' full result blocks; it only computes a numeric `DIFF` when both are a single scalar — for multi-column rows, compare the printed rows.)
+
+## What it touches (safety)
+
+These runs are **read-only and do not write to production**:
+- **Read** the source Hive tables (you need read access; runs as `USER:$USER`).
+- **EXPLAIN** on a prod Presto coordinator (`presto.prod_explain.coordinator.https`) — planning only, no execution, same as the Presto UI's EXPLAIN.
+- **Write TTL'd scratch** to your own warmstorage temp dirs (`ws://…/spark/<uuid>`, auto-expiring) — query-execution spill/broadcast, not any prod table.
+- Driver runs locally on your devvm; executors on the regional `dw-<region>-spark` cluster.
+
+The only thing that writes a table is if **your SQL** is a `CTAS`/DML — a plain `SELECT` never does. Worst-case failure is a wasted run, not data loss.
+
+## Concurrency & determinism
+
+Because runs are read-only, **multiple runs can execute concurrently** (different jobs on the shared Spark cluster, unique per-run temp dirs). This is useful for **determinism checks** — run the same query 2–3× (or concurrently) to see if a result is stable. Caveats:
+- Give each concurrent run a **distinct `--log-dir`** (the auto log name is second-granularity; two same-engine runs started in the same second would clobber each other's log).
+- `/tmp/cosco_service_helper.log` is a **fixed path** both drivers redirect log4j to → it gets interleaved across concurrent runs. Only matters when debugging a *failed* run; the per-run stdout log (where results land) is separate and safe.
+- Two ~15 GB driver JVMs + local Cosco services on one devvm is usually fine; if one fails on resource/port contention it fails cleanly — just rerun.
+
+## Testing local code changes (vs the deployed packages)
+
+By default this runs **deployed/released** packages — `-j stable_fb34` resolves to the stable `presto.spark` build and `-c prestissimo-deployed` is a **moving tag pointing at the currently-deployed prod Prestissimo** (it can lag Velox trunk). So a repro here is against *prod*, and a bug seen here might already be fixed on trunk but not deployed.
+
+To test your **own build** instead:
+- **C++ / Velox** (e.g. to check if trunk fixes a Velox bug): `cd fbcode && fbpkg build -E presto.presto_on_spark_cpp --yes` → pass the hash: `sapphire-local velox -n <ns> -f <q> -c <hash>`.
+- **Java** (`presto-trunk` / `presto-facebook-trunk` changes): build a `presto.spark` fbpkg (see `presto-build` / `sapphire-e2e-test`), then `sapphire-local java -n <ns> -f <q> -j <hash>` (or `ab -j <hash>`). The Java build can't run from a Claude session — have the user run it.
+
+Comparing deployed vs your build is how you decide "file a new Velox bug" vs "an existing fix just needs deploying."
+
+## Debugging Java-vs-Velox row-count mismatches (methodology)
+
+This skill's main use is reproducing/root-causing verifier mismatches. The bisection that worked:
+1. **Decompose `UNION ALL` branches** into per-branch `count(*)` (tag each branch, `GROUP BY`) → which branch/source table carries the gap. (A matching branch exonerates its shared logic — regex, `NOT IN`, struct access.)
+2. **Predicate funnel** — cumulative `count_if(p1 AND … AND pk)` columns → the first column where Java≠Velox names the culprit predicate. `count_if` is the **projection** path.
+3. **Projection vs filter** — compare `count_if(<pred>)` against `count(*) … WHERE <pred>` over the same scan in one run. A gap here = a **filter-path** bug (filter pushdown / adaptive filtering), which `count_if` bypasses. This is a high-yield check — Velox filter-path bugs won't show up in projection.
+4. **Determinism** — run the divergent query 2× (or concurrently). **Different counts on identical data ⇒ a Velox race/instability**, not a logic difference. (Seen: a filter-path count that varied run-to-run.)
+5. **Isolate `NOT IN`** — compare `NOT IN` vs `NOT EXISTS` and check probe/set NULL counts; equal ⇒ not a NULL-aware-anti-join issue.
+6. **Pin the data** — `c0_scan` (raw partition `count(*)`) stable across runs/engines confirms it's an engine bug, not source drift. Watch for `inc_archive`-style tables that may drift.
 
 ## Query file gotchas
 
