@@ -56,12 +56,22 @@ if ! SCRIPT="$(resolve_dist)"; then
   exit 1
 fi
 
-NODE="$(find "$HOME/.cache/dotslash" -name node -type f 2>/dev/null | head -1)"
-if [[ -z "$NODE" ]] || ! "$NODE" --version &>/dev/null; then
-  NODE="$(command -v node)"
-fi
+NODE=""
+for candidate in \
+  "${DVSC_ACP_NODE:-}" \
+  "$HOME/.local/share/node/bin/node" \
+  "$(find "$HOME/.cache/dotslash" -name node -type f 2>/dev/null | head -1)" \
+  "$(command -v node 2>/dev/null || true)"; do
+  [[ -n "$candidate" && -x "$candidate" ]] || continue
+  major="$("$candidate" -e 'process.stdout.write(String(process.versions.node.split(".")[0]))' 2>/dev/null || echo 0)"
+  if [[ "$major" =~ ^[0-9]+$ ]] && (( major >= 18 )); then
+    NODE="$candidate"
+    break
+  fi
+done
 if [[ -z "$NODE" ]]; then
-  echo "no node binary found (checked ~/.cache/dotslash and PATH)" >&2
+  echo "no Node 18+ binary found. Checked: \$DVSC_ACP_NODE, ~/.local/share/node/bin/node, ~/.cache/dotslash, PATH." >&2
+  echo "Install one with: cp ~/fbsource/xplat/third-party/node/bin/node-linux-x64 ~/.local/share/node/bin/node" >&2
   exit 1
 fi
 
