@@ -442,9 +442,9 @@ However, in sequential A/B on the **same cluster**, shadow tables from the contr
 | Wall time as metric | Confounded by queuing, scheduling, run ordering | Use `total_split_cpu_time_ms`; wall time is unreliable in sequential A/B |
 | Single run, small effect | 5-10% natural variance masks small effects | Run each condition twice, or increase query count |
 | Custom `--target-client-tags` not in stats | Tags may not appear in `client_tags` | Use the goshadow run ID (printed at completion) to filter query stats |
-| `tw update` on test/verifier tiers | No longer blocked — D99740807 grants Claude Code `MUTATE` and `CONTROL` permissions. Use `tw update` directly, or `pt pcm deploy -l` (**without `-pv`**) with local TW config |
+| `tw update` on test/verifier tiers | No longer blocked — D99740807 grants Claude Code `MUTATE` and `CONTROL` permissions. Use `tw update` directly, or `pt pcm deploy -l -pv <version>` with local TW config |
 | Not verifying the config took effect | Change may not have propagated | After deploying, spot-check a query or inspect worker config before running the full suite |
-| Config-only A/B (not session property) | Requires redeployment between arms; adds time for cluster restart | Use post-construction override in `batch_native.cinc` + `pt pcm deploy -l` (**without `-pv`**); see `presto-deploy` "Modifying Cluster Config for Testing". Never combine `-l` with `-pv` — causes version mismatch that crashes workers |
+| Config-only A/B (not session property) | Requires redeployment between arms; adds time for cluster restart | Use post-construction override in `batch_native.cinc` + `pt pcm deploy -l -pv <version>`; see `presto-deploy` "Modifying Cluster Config for Testing". `-pv` is required and safe with `-l` (CLI syncs `PRESTO_VERSION` from it). Note: `batch_native.cinc` is `tw_strict` — don't `import os` there; read env via `utils.get_env(...)` |
 | Uncontrolled variables in A/B | Experiment measures wrong thing | Before running, explicitly list EVERY dimension that differs between arms. Confirm only the intended variable changes. Config toggles often have cascading side effects |
 | Small-sample significance | False confidence from noise | A statistically significant result on 50 queries may vanish at 500. With 200 concurrent queries, per-query variance is 20-50%. Need 500+ queries to detect 5% effects, 2000+ for 2% effects. Always run the largest feasible test before drawing conclusions |
 | CTAS collision in parallel A/B | Shadow tables collide between simultaneous arms | `--batch-mode` only cleans within one goshadow run, not between two parallel runs. Filter CTAS in analysis (`query NOT LIKE '%CREATE TABLE%'`), or accept CTAS queries are invalid in parallel A/B |
@@ -745,5 +745,5 @@ timeout -k <kill_grace> <duration> <command>
 | Verifier: no control cluster | Specify `--control <cluster>` explicitly |
 | `presto --smc` connection refused | Cluster may still be restarting; check `tw.real job show tsp_<region>/presto/<cluster>.worker` |
 | BEEST namespace errors | Namespace auto-resolves from cluster region; specify `--namespace` explicitly if auto-resolution fails |
-| `tw job update` blocked by AI agent policy | Use `pt pcm deploy -l` (**without `-pv`**). See `presto-deploy` "Claude Code Deployment" for the fast deploy pattern |
+| `tw job update` blocked by AI agent policy | Use `pt pcm deploy -l -pv <version>`. See `presto-deploy` "Claude Code Deployment" for the fast deploy pattern |
 | `tw` command blocked by bpfjailer | Use `tw.real` instead — the wrapper is blocked but the actual binary is not |

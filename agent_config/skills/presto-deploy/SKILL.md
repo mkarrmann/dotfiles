@@ -153,10 +153,12 @@ presto-deploy-finish accelerate <cluster>
 
 ### Deploy with local TW config changes
 
+`-l` is a boolean `--use-local-config` flag — it does **not** take a value. `-pv` is always **required** by the click parser (regardless of `-l`); you cannot omit it. The CLI **overwrites `PRESTO_VERSION` in `os.environ` from the `-pv` value** before evaluating the TW spec (see `deploy.py:_get_maven_version` + the `os.environ[version_env_var] = maven_version` block following it, added in D99880356 on 2026-04-07), so setting `PRESTO_VERSION=...` in your shell is moot and `-l` + `-pv` are safe to combine — the env var stays in sync with the binary by construction.
+
 Use the `-L` flag on `presto-deploy` to deploy with local TW config:
 
 ```bash
-# Build + deploy with local config (version from PRESTO_VERSION or cpp-prod tag)
+# Build + deploy with local config (-L forwards the maven version to pt pcm deploy -pv)
 presto-deploy -n -L -c <cluster> -r "<reason>"
 
 # Deploy existing fbpkg with local config
@@ -165,15 +167,13 @@ presto-deploy -J <hash> -L -c <cluster> -r "<reason>"
 
 Or manually via `pt pcm deploy`:
 ```bash
-pt pcm deploy -c <cluster> -l -r "<reason>" -f -ni -dt 0
+pt pcm deploy -c <cluster> -pv <maven_version> -l -r "<reason>" -f -ni -dt 0
 ```
 
 Then accelerate the rollout:
 ```bash
 presto-deploy-finish accelerate <cluster>
 ```
-
-**CRITICAL: Never combine `-l` with `-pv`.** The `-l` flag embeds a Presto version in the CONFIG_BLOB. Adding `-pv` creates a version mismatch that crashes workers and leaves the cluster unrecoverable without `tw restart`.
 
 ### Stuck or failed deploys
 
@@ -478,7 +478,7 @@ For Java clusters, the equivalent file is `include/tupperware_configs/warehouse/
 
 The `-l` / `--use-local-config` flag deploys the **entire TW config from your local working copy** (the `tupperware/` directory in the current fbsource checkout). Any uncommitted changes to `.tw` or `.cinc` files take effect. Without `-l`, the tool uses a daily-published config snapshot (`tupperware_fbcode_config_snapshot:daily`), so local changes won't be picked up.
 
-**CRITICAL: Do not combine `-l` with `-pv`.** The local spec compiles a CONFIG_BLOB that embeds a Presto version. If `-pv` specifies a different version, the CONFIG_BLOB will be compiled for one version while the binary is another. This mismatch crashes workers on startup and leaves the cluster unrecoverable without manual `tw restart`. When using `-l`, omit `-pv` entirely -- the local spec controls the version.
+**`-l` and `-pv` are safe to combine -- and `-pv` is required.** The click parser marks `-pv` as required even with `-l`, so you cannot omit it. Since `D99880356` (2026-04-07) the CLI sets `os.environ["PRESTO_VERSION"]` from the `-pv` value *before* the local spec is evaluated, so the spec's `get_maven_version_from_env()` resolves the same version and the CONFIG_BLOB compiles for the same version as the deployed binary -- they stay in sync by construction. (Historically `-l` + `-pv` was banned over a CONFIG_BLOB/binary mismatch fear; that mismatch is now impossible. Verified 2026-06-14: `-l -pv <hybrid>` deployed cleanly with all 101 nodes on the matching version.)
 
 #### How Prestissimo Worker Version Is Resolved
 
@@ -497,8 +497,7 @@ native_presto_version = (
 3. `cpp-prod` tag — falls back to `presto.presto:cpp-prod` fbpkg tag lookup
 
 The final worker package is `presto.presto` with tag `v{version_string}`. To deploy a custom hybrid:
-1. Build and tag the hybrid: `fbpkg tag presto.presto:<hash> v<version_string>`
-2. Deploy: `PRESTO_VERSION=<version_string> pt pcm deploy -c <cluster> -l -r "..." -f -ni -dt 0`
+1. Deploy: `pt pcm deploy -c <cluster> -pv <version_string_or_hash> -l -r "..." -f -ni -dt 0` -- the CLI syncs `PRESTO_VERSION` from `-pv`, so the spec resolves the same version. Deploying by hash needs no prior `fbpkg tag`.
 
 Reference files: `include/utils.cinc` (`get_maven_version_from_env()`), `include/constants.cinc` (`FBPKG_CPP_PROD_TAG = "cpp-prod"`).
 
@@ -506,8 +505,8 @@ Reference files: `include/utils.cinc` (`get_maven_version_from_env()`), `include
 
 1. **Modify the TW config file** using one of the approaches above.
 2. **Validate:** `tw.real validate <checkout>/fbcode/tupperware/config/presto/testing/<your_tw_file>.tw` (use the `.tw` file that manages your cluster -- see "Which TW Config File Manages Your Cluster?" above). If you modified a `.cinc` file, validate the `.tw` file that imports it. Replace `<checkout>` with the current fbsource checkout root (e.g., `~/checkout1/fbsource`, `~/checkout2/fbsource`, or `~/checkout3/fbsource`).
-3. **Deploy with local config:** `pt pcm deploy -c <cluster> -l -r "<reason>" -f -ni -dt 0`
-   - **Do NOT pass `-pv`** -- see "CRITICAL: Never use `-pv` with `-l`" above.
+3. **Deploy with local config:** `pt pcm deploy -c <cluster> -pv <version_or_hash> -l -r "<reason>" -f -ni -dt 0`
+   - `-pv` is required (and safe with `-l`) -- see "How `pt pcm deploy -l` Works" above.
 4. **Ask the user to accelerate:** `presto-deploy-finish accelerate <cluster>`
 5. **Verify the change took effect** (see below).
 6. **Always revert the config change when done.**
@@ -609,7 +608,6 @@ presto-deploy-finish restart <cluster>
 | Deploy seems stuck / rolling slowly | Run `presto-deploy-finish accelerate <cluster>` |
 | `pt pcm deploy` stuck in QUEUED | A previous deploy request may be blocking. Cancel it with `pt pcm cancel --request_id <id>` (request ID is in the deploy output) |
 | `fbpkg tag` blocked by AI agent policy | The `presto-deploy` script handles this -- it prints a `presto-deploy-finish tag` command for the user |
-| Workers crash after `pt pcm deploy -l -pv` | Version mismatch: `-pv` overrides the binary but not the CONFIG_BLOB. Never combine `-l` with `-pv`. Run `presto-deploy-finish restart <cluster>` |
 | **Workers crash-loop after deploying to a Prestissimo cluster, cluster shows 0 nodes via `presto --smc`** | You deployed a **Java-only** package to a C++-worker cluster — workers have no `presto_server` binary. `restart` alone won't help (the spec still points at the bad package). Fix: build a **hybrid** (merge your Java fbpkg with a recent `presto.presto_cpp` via `fb_presto_cpp/scripts/build.sh -c <cpp_hash> -p <java_hash>`) and redeploy `-pv <hybrid_hash>`. This restores valid workers and lands the coordinator change in one deploy. |
 | Workers crash-looping, need restart (binary/config OK) | Run `presto-deploy-finish restart <cluster>` |
 | Confirm a worker's crash reason | `tw.real log tsp_<region>/presto/<cluster>.worker/0 -n 80` (region = first cluster token with trailing digits stripped, e.g. `atn6_...` → `tsp_atn`) |
