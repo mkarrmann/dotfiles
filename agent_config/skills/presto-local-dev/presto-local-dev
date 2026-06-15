@@ -135,6 +135,12 @@ WORKER_PORT="${PRESTO_LOCAL_DEV_WORKER_PORT:-$(( 7777 + PORT_OFFSET ))}"
 # The native worker's fb303 (thrift monitoring) port also defaults to a fixed
 # value (10101) in the binary, so concurrent workers would collide on it too.
 WORKER_FB303_PORT="${PRESTO_LOCAL_DEV_WORKER_FB303_PORT:-$(( 10101 + PORT_OFFSET ))}"
+# The coordinator's Drift (thrift) server port (base etc: thrift.server.port=7779)
+# is a single fixed value in the tracked config, NOT per-checkout -- so two
+# checkouts' coordinators would both try to bind 7779 and the second crashes with
+# a Netty BindException at startup. Offset it like the rest so concurrent
+# checkouts' coordinators never collide (checkout1 keeps the historical 7779).
+THRIFT_SERVER_PORT="${PRESTO_LOCAL_DEV_THRIFT_PORT:-$(( 7779 + PORT_OFFSET ))}"
 
 # --- Native coordinator-sidecar mode (opt-in) ---
 # When enabled, the coordinator loads the presto-native-sidecar-plugin and fetches
@@ -338,7 +344,7 @@ prepare_local_dev_config() {
         { print }
     ' "$BASE_ETC/config.properties" \
       | grep -vE \
-          'socks-proxy|^catalog\.config-dir|^function-namespace\.config-dir|^experimental\.spiller-spill-path|^node-scheduler\.include-coordinator|^native-execution-enabled|^optimizer\.optimize-hash-generation|^regex-library|^offset-clause-enabled|^inline-sql-functions|^use-alternative-function-signatures|^fb\.announced-catalogs|^coordinator-sidecar-enabled|^presto\.default-namespace|^exclude-invalid-worker-session-properties' \
+          'socks-proxy|^catalog\.config-dir|^function-namespace\.config-dir|^experimental\.spiller-spill-path|^node-scheduler\.include-coordinator|^native-execution-enabled|^optimizer\.optimize-hash-generation|^regex-library|^offset-clause-enabled|^inline-sql-functions|^use-alternative-function-signatures|^fb\.announced-catalogs|^coordinator-sidecar-enabled|^presto\.default-namespace|^exclude-invalid-worker-session-properties|^thrift\.server\.port' \
           > "$ETC_LOCAL/config.properties"
 
     # Prod-faithful plugin.bundles: keep the OSS (presto-trunk) plugins as
@@ -398,7 +404,10 @@ offset-clause-enabled=true
 inline-sql-functions=$inline_sql_functions
 $sidecar_overlay
 
-fb.announced-catalogs=tpch
+# Per-checkout Drift (thrift) server port so concurrent coordinators don't collide.
+thrift.server.port=$THRIFT_SERVER_PORT
+
+fb.announced-catalogs=tpch,prism
 EOF
 
     # Apply persistent user overrides (gitignored, never regenerated): any
@@ -420,6 +429,39 @@ EOF
     tpch_naming="${tpch_naming:-STANDARD}"
     printf 'connector.name=tpch\ntpch.column-naming=%s\ntpch.splits-per-node=4\n' "$tpch_naming" > "$cat_dir/tpch.properties"
     printf 'connector.name=jmx\n' > "$cat_dir/jmx.properties"
+
+    # Prism connector -- ENABLED BY DEFAULT. Almost all FB Presto local dev needs
+    # prism, so it ships out of the box (no human/agent setup). Properties mirror
+    # PrismQueryRunner's DEVSERVER prod-connected setup: socks-free (devservers
+    # reach prism/WarmStorage directly via ServiceRouter), prism extended
+    # metastore + metalake on, WS io-driver on for read+write. Region is
+    # overridable via PRESTO_LOCAL_DEV_PRISM_REGION (default atn3, matching
+    # PrismQueryRunner). To disable prism, set PRESTO_LOCAL_DEV_NO_PRISM=1.
+    if [[ "${PRESTO_LOCAL_DEV_NO_PRISM:-0}" != "1" ]]; then
+        local prism_region="${PRESTO_LOCAL_DEV_PRISM_REGION:-atn3}"
+        cat > "$cat_dir/prism.properties" <<EOF
+connector.name=prism
+namespace.allowed-fb-regions=*
+namespace.metastore-region-override=$prism_region
+prism-metastore.prism-extended-hive-metastore-enabled=true
+prism-metastore.thrift.client.max-frame-size=128MB
+prism.metalake-enabled=true
+prism.justknobs-enabled=false
+prism.recursive-dir-walker-enabled=false
+ws.open-file-by-descriptor-enabled=true
+ws.client-proxy.dedicated-tier=ws.freeproxy.vll.client_proxy
+ws.client-proxy.use-environment-tier=false
+ws.client-proxy.default-tier-enabled=false
+ws.use-ws-io-driver=true
+ws.use-ws-io-driver-v2=true
+ws.use-ws-io-driver-read=true
+ws.use-ws-io-driver-write=true
+ws.ws-io-driver-bypass-local-proxy=true
+ws.use-v3-phase2=true
+hive.time-zone=America/Bahia_Banderas
+fb.test-only.check-prism-type-whitelist=false
+EOF
+    fi
 
     # Empty function-namespace dir => no XDB UDF manager (which hangs on socks).
     # In sidecar mode we add the native function namespace + the other native
@@ -603,6 +645,7 @@ start_coordinator() {
         echo "Coordinator already running (PID $(cat "$COORDINATOR_PID_FILE"))"; return 0
     fi
     ensure_port_free "$COORDINATOR_PORT" "coordinator" || return 1
+    ensure_port_free "$THRIFT_SERVER_PORT" "thrift" || return 1
     prepare_local_dev_config
     echo "=== Starting Presto Coordinator (detached) ==="
     echo "  Checkout:    $CHECKOUT_ROOT"
@@ -610,7 +653,7 @@ start_coordinator() {
     echo "  Config:      $ETC_LOCAL/config.properties"
     echo "  Run dir:     $RUN_DIR  (no etc/ -> prism query-prerequisites disabled)"
     echo "  Spill:       $SCRATCH_DIR/spill"
-    echo "  Port:        $COORDINATOR_PORT"
+    echo "  Port:        $COORDINATOR_PORT  (thrift :$THRIFT_SERVER_PORT)"
     [[ "$SIDECAR_MODE" == "1" ]] && echo "  Sidecar:     ENABLED (native coordinator-sidecar; native_* session props accepted)"
     MAVEN_OPTS="${COORDINATOR_MAVEN_OPTS[*]}" \
     launch_detached "$COORDINATOR_PID_FILE" "$COORDINATOR_LOG" "$RUN_DIR" -- \
@@ -690,7 +733,7 @@ stop_all() {
 show_status() {
     echo "=== Local Presto Status ==="
     echo "  Checkout: $CHECKOUT_ROOT  (index $IDX, suffix '${SUFFIX:-<none>}', port offset +$PORT_OFFSET)"
-    echo "  Ports:    coordinator=$COORDINATOR_PORT  worker=$WORKER_PORT  gateway=$GATEWAY_PORT"
+    echo "  Ports:    coordinator=$COORDINATOR_PORT  worker=$WORKER_PORT  gateway=$GATEWAY_PORT  thrift=$THRIFT_SERVER_PORT"
     if is_running "$COORDINATOR_PID_FILE"; then
         local info; info=$(curl -s --noproxy '*' --connect-timeout 2 "http://localhost:$COORDINATOR_PORT/v1/info" 2>/dev/null || echo "unreachable")
         echo "  Coordinator: RUNNING (PID $(cat "$COORDINATOR_PID_FILE"), :$COORDINATOR_PORT)  $info"

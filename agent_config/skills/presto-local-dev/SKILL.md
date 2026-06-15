@@ -28,13 +28,14 @@ The script **never edits the tracked `etc/`**. It generates config into an in-re
 | Start gateway (Java) | `presto-local-dev gateway` |
 | Start coordinator + worker | `presto-local-dev all` |
 | Start coordinator + worker in **native sidecar mode** | `presto-local-dev sidecar` |
+| **Java-only change (no C++ worker needed)** | set `node-scheduler.include-coordinator=true` + `native-execution-enabled=false` in `etc-local/config.local.properties`, then `presto-local-dev coordinator` (see [Java-only changes](#java-only-changes-run-the-coordinator-as-an-in-process-java-worker-no-c-worker)) |
 | Stop everything | `presto-local-dev stop` |
 | Status (nodes + activeWorkers) | `presto-local-dev status` |
 | Run a query against the local coordinator | `presto-local-dev query "<SQL>"` |
 
-Ports are env-overridable: `PRESTO_LOCAL_DEV_COORDINATOR_PORT`, `PRESTO_LOCAL_DEV_GATEWAY_PORT`, `PRESTO_LOCAL_DEV_WORKER_PORT` (and `PRESTO_LOCAL_DEV_WORKER_FB303_PORT`). The script JVM-overrides `-Dhttp-server.http.port`/`-Ddiscovery.uri` so the in-tree config (port 8080) is untouched — needed on ODs where port 8080 is taken.
+Ports are env-overridable: `PRESTO_LOCAL_DEV_COORDINATOR_PORT`, `PRESTO_LOCAL_DEV_GATEWAY_PORT`, `PRESTO_LOCAL_DEV_WORKER_PORT` (and `PRESTO_LOCAL_DEV_WORKER_FB303_PORT`, `PRESTO_LOCAL_DEV_THRIFT_PORT`). The script JVM-overrides `-Dhttp-server.http.port`/`-Ddiscovery.uri` so the in-tree config (port 8080) is untouched — needed on ODs where port 8080 is taken.
 
-**Concurrent checkouts work with zero config.** Ports, pidfiles, and logs are all derived from the checkout index (`checkout1`→1, `checkout4`→4, …) the script already computes for build isolation. Each checkout gets a 10-port block at `base + (index-1)*10`: coordinator `8082`, gateway `8081`, worker `7777`, worker-fb303 `10101` for checkout1, then `+10` per checkout (checkout4 → `8112`/`8111`/`7807`/`10131`). checkout1 keeps the historical ports byte-for-byte. Because pidfiles/logs are suffixed (`-checkoutN`) and the `pkill` orphan-fallback patterns are scoped to the per-checkout build root / `--etc_dir`, `stop` and `status` only ever touch their own checkout's processes. `status` prints the resolved checkout, index, and ports. Before launching, `start` fails fast (with a clear message) if the resolved port is already held by a foreign process — the orphan-squatting-a-port case.
+**Concurrent checkouts work with zero config.** Ports, pidfiles, and logs are all derived from the checkout index (`checkout1`→1, `checkout4`→4, …) the script already computes for build isolation. Each checkout gets a 10-port block at `base + (index-1)*10`: coordinator `8082`, gateway `8081`, worker `7777`, worker-fb303 `10101`, **coordinator thrift `7779`** for checkout1, then `+10` per checkout (checkout4 → `8112`/`8111`/`7807`/`10131`/`7809`). checkout1 keeps the historical ports byte-for-byte. The coordinator's Drift (thrift) server port (`thrift.server.port`) is a single fixed value `7779` in the tracked `etc/config.properties` (not per-checkout), so the script strips it and re-emits the offset value in the generated overlay — otherwise two checkouts' coordinators both bind `7779` and the second crashes at startup with a Netty `BindException` (the thrift bind happens *after* the HTTP server is up, so the coordinator can look momentarily "up" before it dies). Override with `PRESTO_LOCAL_DEV_THRIFT_PORT` if needed. Because pidfiles/logs are suffixed (`-checkoutN`) and the `pkill` orphan-fallback patterns are scoped to the per-checkout build root / `--etc_dir`, `stop` and `status` only ever touch their own checkout's processes. `status` prints the resolved checkout, index, and ports. Before launching, `start` fails fast (with a clear message) if the resolved port is already held by a foreign process — the orphan-squatting-a-port case.
 
 The worker binary can be overridden with `PRESTO_LOCAL_DEV_WORKER_BIN` to skip the `buck2 build` resolve.
 
@@ -44,7 +45,7 @@ On each `coordinator` start the script regenerates config into **`presto-faceboo
 
 What it generates from base `etc/config.properties` + overlays:
 - `config.properties` — base, with `plugin.bundles` (multi-line) and the overlaid keys stripped, then the overlay appended. `plugin.bundles` paths are written **absolute** (the coordinator runs from the run-dir, not the module dir).
-- `catalog/{tpch,jmx}.properties` — minimal, infra-free catalogs. tpch's `tpch.column-naming` is **derived from the native worker's tpch catalog** (`fb_presto_cpp/etc/catalog/tpch.properties`, fallback `STANDARD`) so the two always agree — a mismatch makes named-column scans fail on the worker (see Common Issues). Other catalog files you drop in here persist (only `tpch`/`jmx` are managed).
+- `catalog/{tpch,jmx,prism}.properties` — tpch + jmx (infra-free) **and prism, enabled by default** (see [Prism enabled by default](#prism-enabled-by-default)). tpch's `tpch.column-naming` is **derived from the native worker's tpch catalog** (`fb_presto_cpp/etc/catalog/tpch.properties`, fallback `STANDARD`) so the two always agree — a mismatch makes named-column scans fail on the worker (see Common Issues). Other catalog files you drop in here persist (only `tpch`/`jmx`/`prism` are managed).
 - `function-namespace/` — empty (disables the XDB UDF manager).
 - `log.properties` — copied from base.
 - `event-listener.properties` — base minus the dead socks-proxy. Loaded via the absolute `-Devent-listener.config-files` override so prism's event listener (a common change under test) loads even though the run-dir has no `etc/`.
@@ -67,6 +68,18 @@ Why this matters:
 - **No duplicate-crypto crash.** `FacebookCryptoPlugin` is provided once (single ServiceLoader scan in the shared classloader) instead of twice when `presto-facebook-functions` and `presto-crypto-functions` were separate isolated bundles (→ `Function already registered`).
 
 Verify the closure: `cd presto-facebook-plugins && mvn dependency:tree -o … -Dincludes=com.facebook.presto:presto-zippy` should show `presto-stats-provider → presto-zippy:runtime`.
+
+## Prism enabled by default
+
+**Prism is wired up out of the box — no human or agent setup required.** Because almost all FB Presto local dev needs prism (it's the primary warehouse connector), `coordinator` start generates `etc-local/catalog/prism.properties` and adds `prism` to `fb.announced-catalogs` automatically. After `presto-local-dev coordinator` you can immediately `SHOW SCHEMAS FROM prism`, read prod tables, etc. — nothing else to configure.
+
+The generated catalog mirrors `PrismQueryRunner`'s **DEVSERVER** (prod-connected) property set, which is the proven "works from a devvm" config: **socks-free** (devservers reach prism metastore + Warm Storage directly via ServiceRouter — the LAPTOP-only socks-proxy lines in the tracked `etc/catalog/prism.properties` are deliberately omitted), prism extended-metastore + metalake on, and the WS io-driver on for **read and write**. Key knobs: `namespace.metastore-region-override` (default `atn3`, matching PrismQueryRunner), `prism-metastore.prism-extended-hive-metastore-enabled=true`, `prism.metalake-enabled=true`, `ws.client-proxy.dedicated-tier=ws.freeproxy.vll.client_proxy`, `ws.use-ws-io-driver-write=true`.
+
+Overrides (no need to edit the script):
+- `PRESTO_LOCAL_DEV_PRISM_REGION=<region>` — change the metastore region (e.g. to match your devvm/region).
+- `PRESTO_LOCAL_DEV_NO_PRISM=1` — skip prism catalog generation (rare; prism is the default precisely so you never have to think about it).
+
+Don't recreate the laptop socks-proxy config locally — it hangs on the dead `:1080` proxy on a devserver.
 
 ## Architecture
 
@@ -104,6 +117,21 @@ offset-clause-enabled=true
 inline-sql-functions=false
 ```
 (First line stops the coordinator acting as a worker; the rest are the Prestissimo-mode planner settings from `NativeQueryRunnerUtils.getNativeWorkerSystemProperties()`.) With `include-coordinator=false`, **0 workers** until you start the worker.
+
+## Java-only changes: run the coordinator as an in-process Java worker (NO C++ worker)
+
+**Decide this BEFORE the first `coordinator` start.** The default overlay is wired for native (C++) testing (`node-scheduler.include-coordinator=false` + `native-execution-enabled=true`), so the coordinator boots with **0 active workers** and **no query can run** until you start the Prestissimo worker. If your change is **Java-only** — a coordinator-side connector/metadata change (e.g. Prism `PrismLocationService` / `PrismObfuscationService` / `register_job_output_table` / `write_cluster`), an optimizer rule, a session property, etc. — you do **NOT** need the C++ worker, and you should run the coordinator as its own Java worker instead. Otherwise you burn a full prod-connected startup only to find `activeWorkers: 0` and no way to run a query.
+
+Put these in the gitignored `etc-local/config.local.properties` (it wins over the generated overlay and persists across restarts), **then** start the coordinator:
+
+```
+node-scheduler.include-coordinator=true
+native-execution-enabled=false
+```
+
+Now `presto-local-dev coordinator` alone gives `activeWorkers >= 1` (the coordinator schedules on itself) and exercises the **Java** execution path (e.g. Java `HivePageSink` → Warm Storage) — which is exactly the path a Java connector change touches. No `worker`/`all`, no `fb_presto_cpp` build.
+
+Use the native C++ worker (the default, via `worker`/`all`) only when the change is in C++/velox, or you specifically need Prestissimo execution/native session properties.
 
 ## Native coordinator-sidecar mode (opt-in)
 
@@ -256,3 +284,5 @@ Logs include full Maven output + app stderr. Grep for `ERROR` or class names.
 | `etc-local/` shows in `sl status` | It shouldn't — it's in `presto-facebook-trunk/.gitignore`. If it appears, confirm you're under that trunk and the ignore is intact. |
 | `INVALID_SESSION_PROPERTY: Unknown session property native_*` | The coordinator has no native sidecar. Start in sidecar mode (`presto-local-dev sidecar` or `PRESTO_LOCAL_DEV_SIDECAR=1`) — see [Native coordinator-sidecar mode](#native-coordinator-sidecar-mode-opt-in). |
 | `Sidecar monitoring port is NOT set. TW_PORT_sidecar_monitoring` | Benign devserver warning — ignore. |
+| Coordinator boots but `activeWorkers: 0` and no query runs (Java-only change) | The default overlay is native-mode (`include-coordinator=false`). For a Java-only change, set `node-scheduler.include-coordinator=true` + `native-execution-enabled=false` in `etc-local/config.local.properties` **before** starting — see [Java-only changes](#java-only-changes-run-the-coordinator-as-an-in-process-java-worker-no-c-worker). Don't start the C++ worker. |
+| Drift `BindException: Address already in use` on coordinator start with another checkout running | Base `thrift.server.port=7779` is not per-checkout. Set a distinct `thrift.server.port` (e.g. `7789`) in this checkout's `etc-local/config.local.properties`. |
