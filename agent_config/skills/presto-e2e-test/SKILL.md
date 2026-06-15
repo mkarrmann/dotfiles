@@ -209,11 +209,13 @@ Common predicates by test type:
 
 | Testing | Predicate | Why |
 |---------|-----------|-----|
-| Network/exchange overhead | `total_bytes > 10*1024^3 AND stage_count > 3` | Network-heavy workloads amplify exchange protocol overhead |
+| Network/exchange overhead | `total_bytes > CAST(10 AS BIGINT)*1024*1024*1024 AND stage_count > 3` | Network-heavy workloads amplify exchange protocol overhead |
 | CPU optimization | `total_split_cpu_time_ms > 300000 AND total_bytes / NULLIF(total_split_cpu_time_ms, 0) < 1000000` | Compute-bound queries show CPU improvements clearly |
-| Memory optimization | `peak_total_memory_bytes > 100*1024^3 OR spilled_bytes > 0` | Memory-intensive queries stress the changes |
-| File format change | `total_bytes > 50*1024^3 AND total_split_cpu_time_ms / NULLIF(total_bytes, 0) * 1024 < 10` | I/O-bound queries isolate storage layer impact |
-| Join strategy | `stage_count >= 3 AND peak_total_memory_bytes > 50*1024^3` | Multi-stage, memory-intensive patterns indicate joins |
+| Memory optimization | `peak_total_memory_bytes > CAST(100 AS BIGINT)*1024*1024*1024 OR spilled_bytes > 0` | Memory-intensive queries stress the changes |
+| File format change | `total_bytes > CAST(50 AS BIGINT)*1024*1024*1024 AND total_split_cpu_time_ms / NULLIF(total_bytes, 0) * 1024 < 10` | I/O-bound queries isolate storage layer impact |
+| Join strategy | `stage_count >= 3 AND peak_total_memory_bytes > CAST(50 AS BIGINT)*1024*1024*1024` | Multi-stage, memory-intensive patterns indicate joins |
+
+> **Presto byte-literal gotcha:** write byte thresholds as a BIGINT literal (e.g. `10737418240` for 10 GiB) or `CAST(N AS BIGINT)*1024*1024*1024`. Plain `N*1024*1024*1024` **overflows INT32** for N≥2 (error: `integer multiplication overflow`), and `^` is **bitwise XOR** in Presto, *not* exponentiation — so `1024^3` silently computes the wrong value.
 
 **goshadow** replays specific queries or traffic windows. For performance A/B, prefer `pt shadow perfrun` unless you need to replay specific query IDs from a paste.
 
@@ -225,7 +227,7 @@ Common predicates by test type:
 | Spot-check query | `presto-test cli -c <cluster> -e "SELECT ..."` |
 | Verifier (default) | `presto-test verifier -c <cluster>` |
 | Verifier (explicit control) | `presto-test verifier -c <cluster> --control <ctl> --suite <suite>` |
-| Acquire Super User | `dips_superuser_cli acquire --oncall presto_release_internal --reason "<description>"` |
+| Acquire Super User | `di_super_user_tools get_temp_global_super_user_privilge --catalog hive --identity-name <user> --identity-type username --exp-days 1 --privilege SELECT --reason "<description>"` |
 | goshadow (paste) | `presto-test goshadow -c <cluster> -p <paste_id>` |
 | goshadow (logs) | `presto-test goshadow -c <cluster> --mode logs --env <src> --start "..." --end "..."` |
 | goshadow (live) | `presto-test goshadow -c <cluster> --mode live --env <src>` |
@@ -292,7 +294,7 @@ Results at: search "presto verifier results" on internal tools.
 
 ## goshadow (Query Replay)
 
-**Super User permissions:** goshadow replays production queries that may access sensitive data. Before running goshadow, ensure the user has active Super User permissions. Always prompt the user to acquire permissions before launching goshadow, providing the exact command: `dips_superuser_cli acquire --oncall presto_release_internal --reason "<description>"`
+**Super User permissions:** goshadow replays production queries that may access sensitive data. Before running goshadow, ensure the user has active Super User permissions. Always prompt the user to acquire permissions before launching goshadow, providing the exact command: `di_super_user_tools get_temp_global_super_user_privilge --catalog hive --identity-name <user> --identity-type username --exp-days 1 --privilege SELECT --reason "<description>"`
 
 Replays real production queries against a test cluster.
 
@@ -409,11 +411,11 @@ The queries you test determine the signal you get. Choose query sets based on wh
 | Profile | Filter | Test these for |
 |---------|--------|----------------|
 | **CPU-heavy** | `total_split_cpu_time_ms > 300000 AND total_bytes / NULLIF(total_split_cpu_time_ms, 0) < 1000000` | CPU optimizations, vectorization, SIMD |
-| **Memory-heavy** | `peak_total_memory_bytes > 100 * 1024^3 OR spilled_bytes > 0` | Memory optimizations, join/agg strategies, spilling |
-| **I/O-heavy** | `total_bytes > 30 * 1024^3 AND total_split_cpu_time_ms / NULLIF(total_bytes, 0) * 1024 < 5` | File format changes, predicate pushdown, column pruning |
+| **Memory-heavy** | `peak_total_memory_bytes > CAST(100 AS BIGINT)*1024*1024*1024 OR spilled_bytes > 0` | Memory optimizations, join/agg strategies, spilling |
+| **I/O-heavy** | `total_bytes > CAST(30 AS BIGINT)*1024*1024*1024 AND total_split_cpu_time_ms / NULLIF(total_bytes, 0) * 1024 < 5` | File format changes, predicate pushdown, column pruning |
 | **Shuffle-heavy** | `stage_count > 3 AND total_split_wall_time_ms / NULLIF(total_split_cpu_time_ms, 0) > 2.0` | Exchange protocol changes, network optimizations, compression |
-| **Join-heavy** | `stage_count >= 3 AND peak_total_memory_bytes > 50 * 1024^3` | Join strategy changes, hash table optimizations |
-| **Aggregation-heavy** | `total_rows > 0 AND CAST(output_rows AS DOUBLE) / total_rows < 0.01 AND peak_total_memory_bytes > 50 * 1024^3` | Aggregation algorithms, group-by strategies |
+| **Join-heavy** | `stage_count >= 3 AND peak_total_memory_bytes > CAST(50 AS BIGINT)*1024*1024*1024` | Join strategy changes, hash table optimizations |
+| **Aggregation-heavy** | `total_rows > 0 AND CAST(output_rows AS DOUBLE) / total_rows < 0.01 AND peak_total_memory_bytes > CAST(50 AS BIGINT)*1024*1024*1024` | Aggregation algorithms, group-by strategies |
 
 ### Multi-Suite Exploration Strategy
 
@@ -448,7 +450,7 @@ However, in sequential A/B on the **same cluster**, shadow tables from the contr
 | Uncontrolled variables in A/B | Experiment measures wrong thing | Before running, explicitly list EVERY dimension that differs between arms. Confirm only the intended variable changes. Config toggles often have cascading side effects |
 | Small-sample significance | False confidence from noise | A statistically significant result on 50 queries may vanish at 500. With 200 concurrent queries, per-query variance is 20-50%. Need 500+ queries to detect 5% effects, 2000+ for 2% effects. Always run the largest feasible test before drawing conclusions |
 | CTAS collision in parallel A/B | Shadow tables collide between simultaneous arms | `--batch-mode` only cleans within one goshadow run, not between two parallel runs. Filter CTAS in analysis (`query NOT LIKE '%CREATE TABLE%'`), or accept CTAS queries are invalid in parallel A/B |
-| Missing super user permissions | ~10% of queries fail with PERMISSION_DENIED, reducing matched sample | Acquire super user BEFORE launching goshadow: `dips_superuser_cli acquire --oncall presto_release_internal --reason "<description>"` |
+| Missing super user permissions | ~10% of queries fail with PERMISSION_DENIED, reducing matched sample | Acquire super user BEFORE launching goshadow: `di_super_user_tools get_temp_global_super_user_privilge --catalog hive --identity-name <user> --identity-type username --exp-days 1 --privilege SELECT --reason "<description>"` |
 | Cluster reservation expiration | Cluster scales down mid-test, invalidating results | Note expiration time before starting. Extend reservation to cover full test duration plus 1-hour buffer. Check with `pt pcm test-cluster list` |
 | Not sanity-checking the toggle | Full test runs with broken toggle, wasting hours | Run 5-10 queries with each arm first. Check for unexpected failures, verify CPU/E2E ratios are reasonable, confirm no exchange errors in experiment arm |
 
