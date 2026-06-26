@@ -417,6 +417,18 @@ EOF
         "$ETC_LOCAL/config.local.properties" "coordinator" \
         "query.max-memory-per-node=10GB"
 
+    # Optional cluster-environment override (coordinator side). The worker picks up
+    # the same value via coord_env (prepare_worker_etc), so coordinator and worker
+    # stay in the same discovery environment. Needed for GTR-derived Warm Storage
+    # spill, which resolves the region from node.environment.
+    if [[ -n "${PRESTO_LOCAL_DEV_ENV:-}" ]]; then
+        if grep -qE '^node.environment=' "$ETC_LOCAL/config.properties"; then
+            sed -i "s#^node.environment=.*#node.environment=$PRESTO_LOCAL_DEV_ENV#" "$ETC_LOCAL/config.properties"
+        else
+            echo "node.environment=$PRESTO_LOCAL_DEV_ENV" >> "$ETC_LOCAL/config.properties"
+        fi
+    fi
+
     # Minimal, infra-free catalogs. The FB connector plugins (prism/xdb/
     # configerator/...) are on the classpath via the aggregate, but a connector
     # is only instantiated when a catalog references it -- so only tpch + jmx
@@ -477,6 +489,14 @@ EOF
     # cwd ($RUN_DIR) has no etc/. Strip the dead socks-proxy line.
     grep -v 'socks-proxy' "$BASE_ETC/event-listener.properties" \
         > "$ETC_LOCAL/event-listener.properties" 2>/dev/null || true
+    # Warm Storage spill column extraction: tell the prism event listener which
+    # spill suffix Velox appended to the IoStats keys (must match the query's
+    # native_spill_io_stats_key_suffix) so wsWriteBytes.<region><suffix> is folded
+    # into the spilledBytesRead/Written columns instead of being dropped.
+    if [[ -n "${PRESTO_LOCAL_DEV_SPILL_SUFFIX:-}" ]]; then
+        echo "prism.event-listener.spill-io-stats-key-suffix=$PRESTO_LOCAL_DEV_SPILL_SUFFIX" \
+            >> "$ETC_LOCAL/event-listener.properties"
+    fi
 }
 
 # --- Generate a local worker etc dir (tracked fb_presto_cpp/etc stays untouched) ---
@@ -484,7 +504,12 @@ prepare_worker_etc() {
     local src="$FBCODE/fb_presto_cpp/etc"
     local dst="$ETC_LOCAL/worker-etc"
     local coord_env coord_version
-    coord_env="$(grep -E '^node.environment=' "$BASE_ETC/config.properties" | head -1 | cut -d= -f2)"
+    # PRESTO_LOCAL_DEV_ENV overrides the cluster environment (default: the base
+    # config's, normally 'test'). The worker MUST share the coordinator's env or
+    # the embedded discovery server won't surface it as an active worker. A real
+    # datacenter env (e.g. ftw6) is required for GTR-derived Warm Storage spill,
+    # since FacebookPrestoUtils derives the region from node.environment.
+    coord_env="${PRESTO_LOCAL_DEV_ENV:-$(grep -E '^node.environment=' "$BASE_ETC/config.properties" | head -1 | cut -d= -f2)}"
     coord_env="${coord_env:-test}"
     # The coordinator only counts a worker as ACTIVE if its announced
     # presto.version matches the coordinator's. A mismatch leaves activeWorkers=0
@@ -533,6 +558,14 @@ prepare_worker_etc() {
             echo "native-sidecar=true"
             echo "presto.default-namespace=native.default"
         } >> "$dst/config.properties"
+    fi
+    # Warm Storage spill via GTR (PRESTO_LOCAL_DEV_WS_SPILL=1): drop the explicit
+    # spill path so the Prestissimo worker derives a ws:// spill dir from Global
+    # Tetris (FacebookPrestoUtils::getVeloxSpillBaseDirectory), exactly like prod.
+    # Requires a real datacenter env (PRESTO_LOCAL_DEV_ENV) so GTR resolves a region.
+    # A worker-config.local.properties override (below) still wins if set.
+    if [[ "${PRESTO_LOCAL_DEV_WS_SPILL:-0}" == "1" ]]; then
+        sed -i '/^experimental.spiller-spill-path=/d' "$dst/config.properties"
     fi
     # Apply persistent worker overrides (gitignored, never regenerated): any
     # worker config.properties key set here wins. This is how you point spill at
