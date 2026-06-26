@@ -158,33 +158,38 @@ run = 'move-node-to-workspace 1'
 
 [[on-window-detected]]
 if.app-id = 'com.mitchellh.ghostty'
-if.window-title-regex-substring = '^FTW: main1'
+if.window-title-regex-substring = '^CCO: checkout1'
 run = 'move-node-to-workspace 2'
 
 [[on-window-detected]]
 if.app-id = 'com.mitchellh.ghostty'
-if.window-title-regex-substring = '^FTW: fbsource1'
+if.window-title-regex-substring = '^FTW: checkout1'
 run = 'move-node-to-workspace 3'
 
 [[on-window-detected]]
 if.app-id = 'com.mitchellh.ghostty'
-if.window-title-regex-substring = '^FTW: fbsource2'
+if.window-title-regex-substring = '^CCO: checkout2'
 run = 'move-node-to-workspace 4'
 
 [[on-window-detected]]
 if.app-id = 'com.mitchellh.ghostty'
-if.window-title-regex-substring = '^CCO: main1'
+if.window-title-regex-substring = '^FTW: checkout2'
 run = 'move-node-to-workspace 5'
 
 [[on-window-detected]]
 if.app-id = 'com.mitchellh.ghostty'
-if.window-title-regex-substring = '^CCO: fbsource1'
+if.window-title-regex-substring = '^CCO: checkout3'
 run = 'move-node-to-workspace 6'
 
 [[on-window-detected]]
 if.app-id = 'com.mitchellh.ghostty'
-if.window-title-regex-substring = '^CCO: fbsource2'
+if.window-title-regex-substring = '^FTW: checkout3'
 run = 'move-node-to-workspace 7'
+
+[[on-window-detected]]
+if.app-id = 'com.mitchellh.ghostty'
+if.window-title-regex-substring = '^CCO: checkout4'
+run = 'move-node-to-workspace 8'
 
 # ── Auto-accordion: move new windows into the RHS accordion ──────────
 # Uses a helper script that checks workspace, title, and lock file

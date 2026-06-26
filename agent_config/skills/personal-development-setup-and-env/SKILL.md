@@ -127,17 +127,26 @@ The headless server has no terminal, so OSC 52 (the normal clipboard mechanism) 
 
 ### Session naming
 
-Sessions are named like `FTW-main1`, `FTW-fbsource1`, `CCO-main1`. Ports are deterministic: `cksum(name) % 1000 + 7000`.
+Sessions are named like `FTW-checkout1`, `FTW-main1`, `CCO-checkout1`. Ports are deterministic: `cksum(name) % 1000 + 7000`.
 
 ### Workspace layout
 
+CCO and FTW checkouts are interleaved (CCO on even slots, FTW on odd). FTW
+has checkouts 1–3; CCO has checkouts 1–4. Each numbered workspace also holds
+a remote vscode window and a Chrome window.
+
 | Workspace | Content |
 |-----------|---------|
+| 1 | Local macOS |
 | T | Tunnel windows (one per devvm) |
-| 2 | FTW: main1 |
-| 3 | FTW: fbsource1 + vscode |
-| 4 | FTW: fbsource2 + vscode |
-| 5-7 | CCO equivalents |
+| 2 | CCO: checkout1 |
+| 3 | FTW: checkout1 |
+| 4 | CCO: checkout2 |
+| 5 | FTW: checkout2 |
+| 6 | CCO: checkout3 |
+| 7 | FTW: checkout3 |
+| 8 | CCO: checkout4 |
+| Z | Sweep/overflow (stray windows) |
 
 ### Workspace management scripts
 
