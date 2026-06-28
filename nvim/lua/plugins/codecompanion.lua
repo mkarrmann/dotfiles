@@ -94,7 +94,7 @@ local DVSC_MODES = { "native", "claude", "codex", "metacode" }
 -- failure mode.
 local DVSC_MODELS = {
   -- Anthropic
-  { id = "claude-opus-4.8-long",   provider = "anthropic", adaptive = true  },
+  { id = "claude-opus-4.8",        provider = "anthropic", adaptive = true  },
   { id = "claude-opus-4.7-long",   provider = "anthropic", adaptive = true  },
   { id = "claude-opus-4.6",        provider = "anthropic", adaptive = true  },
   { id = "claude-opus-4.6-long",   provider = "anthropic", adaptive = true  },
