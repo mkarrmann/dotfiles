@@ -1654,6 +1654,7 @@ local function HgSsl(opts)
       end
       return true
     end), desc = "Working changes" },
+    { "<CR>c", ssl_action("changes"), desc = "Commit selected files (new commit)" },
     { "<CR>x", ssl_action("hide"), desc = "Hide commit" },
     { "<CR>b", ssl_action("rebase"), desc = "Rebase onto..." },
     { "<CR>p", ssl_action("arc_pull"), desc = "Arc pull" },
@@ -1762,18 +1763,10 @@ local function HgSsl(opts)
 
 end
 
-local function HgCommit()
-  log_to_scuba({
-    module = "hg",
-    command = "HgCommit",
-  })
-
-  local has_changes = hg_utils.can_commit()
-  if has_changes == false then
-    vim.notify("No changes to commit", vim.log.levels.ERROR)
-    return
-  end
-
+---Open a commit-message editor in a new tab and commit when the window closes.
+---@param paths string[]? specific files to commit (nil = all pending changes)
+---@param on_done fun()? called after a successful commit
+local function commit_with_message(paths, on_done)
   local commit_filepath = vim.fn.tempname() .. ".commit"
 
   -- populate temp file with commit template
@@ -1808,6 +1801,11 @@ local function HgCommit()
         cleanup()
       else
         local cmd = { "hg", "commit", "--logfile", commit_filepath }
+        if paths and #paths > 0 then
+          -- include explicitly named untracked/missing files in the commit
+          table.insert(cmd, "--addremove")
+          vim.list_extend(cmd, paths)
+        end
         vim.system(cmd, { text = true }, function(commit_obj)
           if commit_obj.code ~= 0 then
             local msg = "Commit failed"
@@ -1820,6 +1818,9 @@ local function HgCommit()
           else
             vim.schedule(function()
               vim.notify("Changes committed", vim.log.levels.INFO)
+              if on_done then
+                on_done()
+              end
             end)
           end
           cleanup()
@@ -1827,6 +1828,21 @@ local function HgCommit()
       end
     end,
   })
+end
+
+local function HgCommit()
+  log_to_scuba({
+    module = "hg",
+    command = "HgCommit",
+  })
+
+  local has_changes = hg_utils.can_commit()
+  if has_changes == false then
+    vim.notify("No changes to commit", vim.log.levels.ERROR)
+    return
+  end
+
+  commit_with_message(nil)
 end
 
 local function HgAmend()
@@ -2439,6 +2455,7 @@ HgChanges = function()
   vim.wo[win].winbar = "%#Comment# <Space>%* toggle"
     .. "  %#Comment#A%* all"
     .. "  %#Comment#a%* amend"
+    .. "  %#Comment#c%* commit"
     .. "  %#Comment#d%* diff"
     .. "  %#Comment#X%* discard"
     .. "  %#Comment#q%* close"
@@ -2599,6 +2616,27 @@ HgChanges = function()
       end)
     end)
   end, { buffer = buf, desc = "Amend selected files" })
+
+  vim.keymap.set("n", "c", function()
+    local paths = get_action_paths()
+    if #paths == 0 then
+      vim.notify("No files selected", vim.log.levels.WARN)
+      return
+    end
+    -- close the picker; the commit message editor opens in its own tab
+    if help_win and vim.api.nvim_win_is_valid(help_win) then
+      vim.api.nvim_win_close(help_win, true)
+      help_win = nil
+    end
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_close(win, true)
+    end
+    commit_with_message(paths, function()
+      if SSL_STATE.bufnr and vim.api.nvim_buf_is_valid(SSL_STATE.bufnr) then
+        ssl_utils.refresh_buffer(SSL_STATE.bufnr)
+      end
+    end)
+  end, { buffer = buf, desc = "Commit selected files (new commit)" })
 
   vim.keymap.set("n", "X", function()
     local entries = get_action_entries()
@@ -2793,6 +2831,7 @@ HgChanges = function()
     " V+Space  toggle range selection",
     " A        toggle all",
     " a        amend selected into current commit",
+    " c        commit selected into a new commit on top",
     " d        diff split selected files",
     " X        discard selected changes",
     " q        close",
