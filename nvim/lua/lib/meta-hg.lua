@@ -2582,7 +2582,8 @@ HgChanges = function()
       vim.notify("No files selected", vim.log.levels.WARN)
       return
     end
-    local cmd = vim.list_extend({ "hg", "amend" }, paths)
+    -- --addremove so explicitly named untracked/missing files are included
+    local cmd = vim.list_extend({ "hg", "amend", "--addremove" }, paths)
     vim.notify("Amending " .. #paths .. " file(s)...", vim.log.levels.INFO)
     vim.system(cmd, { text = true }, function(result)
       vim.schedule(function()
@@ -3148,7 +3149,7 @@ local function setup_hg_signcolumn()
   vim.keymap.set({ "x", "n" }, "[H", function()
     local hunks = cache[vim.api.nvim_get_current_buf()]
     -- last hunk is never displayed
-    if not hunks or #hunks > 0 then
+    if not hunks or #hunks < 1 then
       return
     end
 
