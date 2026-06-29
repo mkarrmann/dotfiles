@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# agent-market plugin sync — keeps Claude/Codex/Devmate/Metacode in step with
+# a single canonical plugin.list. See README at bottom for usage.
+set -uo pipefail
+
+CANON="${AGENT_CONFIG_DIR:-$HOME/dotfiles/agent_config}/plugins.list"
+AGENTS=(claude codex devmate metacode)
+
+usage() {
+  cat >&2 <<EOF
+usage: $(basename "$0") <save|apply|diff>
+  save   snapshot Claude's currently installed plugins into $CANON
+  apply  install everything in $CANON into all agents (idempotent)
+  diff   show which plugins differ between $CANON and each agent
+EOF
+  exit 2
+}
+
+[ $# -eq 1 ] || usage
+
+installed_for() {
+  local agent="$1"
+  if [ "$agent" = claude ]; then
+    jq -r '.plugins | keys[]' ~/.claude/plugins/installed_plugins.json 2>/dev/null \
+      | sed 's/@.*$//' | sort -u
+  else
+    agent-market list --agent "$agent" 2>/dev/null \
+      | awk '$1=="plugin"{print $2}' | sort -u
+  fi
+}
+
+EXCLUDE_REGEX='^(plugin-hygiene|meta-powertools|10x-data-scientist|analytics-agent|para-workspace|calendar|review-analysis|gdrive-mount|cdm-dw|experimentation|genaimvp|datamate|pixelcloud|brain|debrief)$'
+
+canon_list() { grep -Ev '^\s*(#|$)' "$CANON" | sort -u; }
+
+case "$1" in
+  save)
+    installed_for claude | grep -Ev "$EXCLUDE_REGEX" > "$CANON.tmp"
+    mv "$CANON.tmp" "$CANON"
+    echo "saved $(wc -l < "$CANON") plugins to $CANON"
+    ;;
+  apply)
+    want=$(canon_list)
+    for a in "${AGENTS[@]}"; do
+      echo "== $a =="
+      have=$(installed_for "$a" || true)
+      missing=$(comm -23 <(echo "$want") <(echo "$have"))
+      if [ -z "$missing" ]; then echo "  up to date"; continue; fi
+      while read -r p; do
+        [ -n "$p" ] || continue
+        echo "  + $p"
+        agent-market plugin "$p" install --force --agent "$a" --quiet || \
+          echo "    (failed — $p may not be available for $a)"
+      done <<< "$missing"
+    done
+    ;;
+  diff)
+    want=$(canon_list)
+    for a in "${AGENTS[@]}"; do
+      have=$(installed_for "$a" | grep -Ev "$EXCLUDE_REGEX" || true)
+      missing=$(comm -23 <(echo "$want") <(echo "$have"))
+      extra=$(comm -13 <(echo "$want") <(echo "$have"))
+      echo "== $a =="
+      [ -n "$missing" ] && echo "  missing: $(echo "$missing" | tr '\n' ' ')"
+      [ -n "$extra"   ] && echo "  extra:   $(echo "$extra"   | tr '\n' ' ')"
+      [ -z "$missing$extra" ] && echo "  in sync"
+    done
+    ;;
+  *) usage ;;
+esac
