@@ -1,5 +1,10 @@
 # Global Development Preferences
 
+## Workspace Layout
+
+- My fbsource checkouts live in paired workspaces: each `~/checkoutN/` holds both `fbsource/` and `configerator/` side by side (`~/checkout1/{fbsource,configerator}`, `~/checkout2/{fbsource,configerator}`, etc.). The `configerator` checkout is always the **sibling** of the `fbsource` checkout you are currently working in.
+- When you need the configerator checkout (or any sibling repo) for the workspace you're in, derive it from the current fbsource path — e.g. working in `~/checkout2/fbsource` → configerator is `~/checkout2/configerator`. NEVER hardcode a specific `~/checkoutN`, and never assume a bare `~/configerator` or `~/fbsource`.
+
 ## Workflow Constraints
 
 - DO NOT create PRs, diffs, or commits unless I explicitly ask.
