@@ -5,11 +5,18 @@ description: Comprehensive guide for working with Configerator - Meta's configur
 
 # Configerator Skill
 
+## Checkout Location
+
+**The configerator checkout is the sibling of your current fbsource checkout.** Workspaces are paired: each `~/checkoutN/` holds both `fbsource/` and `configerator/`. If you're working in `~/checkoutN/fbsource`, configerator is at `~/checkoutN/configerator`. Always operate on the configerator dir paired with the current workspace — never hardcode a specific `~/checkoutN` or assume `~/configerator`.
+
+All `~/configerator/...` paths below are placeholders; substitute the configerator checkout paired with your current workspace (e.g. `~/checkout2/configerator`).
+
 ## Quick Start
 
 ```bash
 # Build configs (compile source to materialized)
-cd ~/configerator
+# cd into the configerator checkout paired with your current workspace
+cd ~/checkoutN/configerator   # e.g. ~/checkout2/configerator
 conf build
 
 # Submit a diff for review (never use jf submit for configerator diffs)
@@ -59,7 +66,7 @@ Configerator is Meta's tool for controlling application behaviors through dynami
 ## Repository Structure
 
 ```
-~/configerator/
+~/checkoutN/configerator/      # paired with your current fbsource checkout
 ├── source/                    # Source configs (Python/Thrift files you write)
 ├── materialized_configs/      # Compiled JSON configs (auto-generated)
 └── raw_configs/              # Raw configs (non-compiled, direct JSON)
@@ -199,7 +206,8 @@ I0627 23:37:43.418582 2360427 configeratorc.cpp:57] Attempting to getConfig 'boo
 # 0. Locate the REAL config to change. Runtime knobs — thresholds, feature flags
 #    (GFlags), rollout percentages, and other service tunables — are configerator
 #    changes: they live as .cconf / .cinc / OVERRIDE.cconf under the configerator repo
-#    (~/configerator/source), NOT as ad-hoc JSON or a stand-in file elsewhere in the
+#    (the configerator checkout paired with your workspace, e.g. ~/checkout2/configerator/source),
+#    NOT as ad-hoc JSON or a stand-in file elsewhere in the
 #    repo. Find and edit the REAL config there; never invent a placeholder config in
 #    its place. To locate it, use indexed code search (never grep/find in big repos):
 #       cbgs "<config_or_knob_name>"              # BigGrep substring search in configerator
