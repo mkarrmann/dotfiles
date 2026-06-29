@@ -10,10 +10,23 @@ set -uo pipefail
 
 CFG="${AGENT_CONFIG_DIR:-$HOME/dotfiles/agent_config}"
 DROPS_FILE="$CFG/drop-plugins.list"
+PLUGINS_FILE="$CFG/plugins.list"
+STAMP="$HOME/.cache/agent_config/bootstrap-plugins.stamp"
 AGENTS=(claude codex devmate metacode)
 
 if ! command -v agent-market >/dev/null 2>&1; then
   echo "agent-market not on PATH — skipping plugin bootstrap" >&2
+  exit 0
+fi
+
+# Fast path: nothing in the canon has changed since last run. Each agent-market
+# call costs ~100-500ms and many will fail forever (tagged no-codex / no-metacode);
+# stamping cuts repeat runs from ~60s to instant. Force a re-run by deleting
+# the stamp, or by editing either canon file.
+if [ "${BOOTSTRAP_PLUGINS_FORCE:-0}" != "1" ] && [ -f "$STAMP" ] \
+   && [ "$STAMP" -nt "$DROPS_FILE" ] && [ "$STAMP" -nt "$PLUGINS_FILE" ]; then
+  echo "bootstrap-plugins: canon unchanged since $(date -r "$STAMP" '+%Y-%m-%d %H:%M') — skipping"
+  echo "  (re-run with BOOTSTRAP_PLUGINS_FORCE=1 or rm $STAMP)"
   exit 0
 fi
 
@@ -34,3 +47,6 @@ done
 
 echo "== installing plugins from plugins.list =="
 "$CFG/sync" apply
+
+mkdir -p "$(dirname "$STAMP")"
+touch "$STAMP"
