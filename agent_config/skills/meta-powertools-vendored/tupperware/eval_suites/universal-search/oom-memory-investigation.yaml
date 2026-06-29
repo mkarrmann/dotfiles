@@ -1,0 +1,32 @@
+id: oom-memory-investigation
+suite: universal-search
+project: tupperware-evals
+name: "OOM / Memory Investigation"
+category: core
+question: |
+  What commands and approach would you use to: Task 0 of tsp_global/tupperware/universal_search.prod keeps getting OOM-killed. What are its memory limits, and is the host running out of memory?
+expected_behavior: |
+  Agent should check task resource limits, query netcons_ooms and tupperware_crashes for OOM signals.
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  semantic_checks:
+    - question: "Checks task resource limits from spec?"
+      weight: 3
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"
+    - question: "Queries netcons_ooms for OOM events?"
+      weight: 3
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"
+    - question: "Cross-references task allocation with host resources?"
+      weight: 1
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"

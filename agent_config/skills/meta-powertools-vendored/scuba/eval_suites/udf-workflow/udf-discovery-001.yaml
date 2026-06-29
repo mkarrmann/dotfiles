@@ -1,0 +1,44 @@
+id: udf-discovery-001
+suite: udf-workflow
+project: scuba-evals
+description: Tests meta scuba.udf list with search for targeted UDF discovery (from TP-10)
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "An engineer wants to find aggregate functions for approximate counting."
+question: "Show me what aggregate functions are available in Scuba, specifically any UDAFs for approximate counting."
+
+mock_data: |
+  meta scuba.udf list --search=approx,count,distinct response:
+    results:
+      - name: APPROX_COUNT_DISTINCT_HLL
+        kind: UDAF
+        description: "Approximate count distinct using HyperLogLog"
+        signatures:
+          - "APPROX_COUNT_DISTINCT_HLL(column)"
+          - "APPROX_COUNT_DISTINCT_HLL(column, precision)"
+          - "precision: integer 4-16, default 12"
+      - name: COUNT_IF
+        kind: UDAF
+        description: "Count rows matching a condition"
+        signatures:
+          - "COUNT_IF(condition)"
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: calls_udf_list
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.udf list with --search"
+    arguments:
+      command: "meta scuba.udf list"
+  - id: presents_results
+    description: "Agent presents UDF details to user"
+    check: "Response includes UDF names and descriptions, showing APPROX_COUNT_DISTINCT_HLL and/or COUNT_IF"
+
+quality_factors:
+  - id: presents_results_structured
+    description: "Presents UDF details including name, kind, description, and signatures"
+    weight: 1.0

@@ -1,0 +1,39 @@
+id: gdocs-table-002
+name: Insert table with data
+category: tables
+prompt: 'Add a table to https://docs.google.com/document/d/1abc123/edit with columns Name, Role, Start Date and these rows:
+  Alice/Engineer/Jan 2026, Bob/PM/Feb 2026'
+description: Tests inserting a table with headers and data
+expected_behavior: Agent uses insert-table-data or equivalent to create populated table
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Team Roster
+  Insert-table-data result: Table with 3 columns and 3 rows (1 header + 2 data) inserted.
+    Header: Name | Role | Start Date
+    Row 1: Alice | Engineer | Jan 2026
+    Row 2: Bob | PM | Feb 2026
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent insert a table with the correct headers and data rows?
+    weight: 3
+    rubric:
+      5: Agent inserted a table with Name/Role/Start Date headers and both data rows
+      3: Agent inserted a table but some data was missing
+      1: Agent did not insert a table with data
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

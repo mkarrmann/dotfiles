@@ -1,0 +1,26 @@
+id: service-wide-capacity
+suite: analytical
+project: tupperware-evals
+name: "Q11: Service Wide Capacity"
+category: analytical
+question: |
+  What commands and approach would you use to: How much total capacity is my service tsp_global/tupperware/universal_search using across all its jobs and reservations? Break down by region and show utilization percentage.
+expected_behavior: |
+  Agent should use Universal Search with appropriate filters, multi-step traversals, and client-side aggregation.
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  semantic_checks:
+    - question: "Agent used the correct Universal Search query pattern for this analytical question?"
+      weight: 3
+      rubric:
+        5: "Correct query pattern with appropriate filters"
+        3: "Partially correct approach"
+        1: "Wrong approach or failed to query"
+    - question: "Agent produced a useful analytical result (counts, percentages, comparisons)?"
+      weight: 2
+      rubric:
+        5: "Complete analytical result with data"
+        3: "Partial result"
+        1: "No useful result"

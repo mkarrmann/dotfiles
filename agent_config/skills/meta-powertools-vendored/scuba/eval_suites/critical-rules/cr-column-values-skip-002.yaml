@@ -1,0 +1,40 @@
+id: cr-column-values-skip-002
+suite: critical-rules
+project: scuba-evals
+description: Tests that agent does not guess string column values without checking column values first (CR1 negative)
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user asks to filter on a string column using a value they assume exists."
+question: "Show me the count of queries in scuba_queries over the last hour where query_source is 'webapp', grouped by query_type."
+
+mock_data: |
+  meta scuba.column values response for query_source on scuba_queries:
+    values: ["datamate", "scuba_ui", "api", "graphql_api", "cli", "intern_page"]
+  meta scuba.dataset query response:
+    results:
+      query_type | COUNT
+      sql        | 0
+      graphql    | 0
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: calls_column_values
+    type: tool_called
+    tool_name: Bash
+    description: "Agent calls meta scuba.column values for query_source"
+    arguments:
+      command: "meta scuba.column values"
+  - id: does_not_use_guessed_value
+    description: "Agent does not blindly use the user's guessed value 'webapp'"
+    check: "Agent informs the user that 'webapp' is not in the available values and either suggests the closest match from the actual values or asks the user to clarify"
+
+quality_factors:
+  - id: lists_available_values
+    description: "Shows the user available query_source values"
+    weight: 0.6
+  - id: suggests_alternative
+    description: "Suggests a likely alternative value from the list"
+    weight: 0.4

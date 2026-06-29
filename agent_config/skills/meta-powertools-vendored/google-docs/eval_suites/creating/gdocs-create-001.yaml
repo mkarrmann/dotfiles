@@ -1,0 +1,36 @@
+id: gdocs-create-001
+name: Create empty doc with title
+category: creating
+prompt: Create a new Google Doc called 'Meeting Notes - March 2026'
+description: Tests basic document creation with a title
+expected_behavior: Agent creates doc with correct title and returns link
+eval_target: response
+mock_data: |
+  Create result:
+    Document ID: 1newdoc789
+    Title: Meeting Notes - March 2026
+    URL: https://docs.google.com/document/d/1newdoc789/edit
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent create a Google Doc with the title 'Meeting Notes - March 2026'?
+    weight: 3
+    rubric:
+      5: Agent created the doc and returned a link to it
+      3: Agent created a doc but title was slightly different or link missing
+      1: Agent did not create a document
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

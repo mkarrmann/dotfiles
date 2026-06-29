@@ -1,0 +1,32 @@
+id: allocation-failures-pending
+suite: universal-search
+project: tupperware-evals
+name: "Allocation Failures / Pending Tasks"
+category: core
+question: |
+  What commands and approach would you use to: My job tsp_global/tupperware/universal_search.prod has tasks stuck in PENDING. Why can't they get allocated? Is the reservation in deficit?
+expected_behavior: |
+  Agent should check reservation deficit status, query tw_allocator_v2_allocation_failures, use tw allocation explain.
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  semantic_checks:
+    - question: "Checks reservation deficit status?"
+      weight: 3
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"
+    - question: "Queries allocation failures Scuba table?"
+      weight: 3
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"
+    - question: "Uses tw allocation explain correctly?"
+      weight: 1
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"

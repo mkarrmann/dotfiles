@@ -1,0 +1,39 @@
+id: wiki-routing-004
+name: Handle non-existent wiki page gracefully
+category: routing
+prompt: Get the content of the wiki page at Nonexistent_Team/Fake_Page_That_Does_Not_Exist.
+description: Tests that the agent handles a non-existent wiki page gracefully
+expected_behavior: Agent attempts to fetch the page and clearly communicates that it does not exist or is empty
+eval_target: response
+mock_data: |
+  Wiki path: Nonexistent_Team/Fake_Page_That_Does_Not_Exist
+  GraphQL response: null (page not found)
+  Error: Wiki page not found at path "Nonexistent_Team/Fake_Page_That_Does_Not_Exist"
+fail_on_unmocked_command: true
+intercept_patterns:
+- graphql_wiki_content
+- 'jf graphql'
+- WikiUtil
+- 'phps '
+intercept_mcp_tools:
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent: []
+  semantic_checks:
+  - question: Did the agent communicate clearly that the wiki page does not exist or could not be found?
+    weight: 3
+    rubric:
+      5: Agent clearly stated the page was not found and suggested possible next steps (check the path, search for similar pages)
+      3: Agent indicated the page was missing but did not offer suggestions
+      1: Agent claimed to have found content or did not address the missing page
+  - question: Did the agent use graphql_wiki_content to attempt fetching the page before reporting the error?
+    weight: 2
+    rubric:
+      5: Agent used scripts/graphql_wiki_content first and then reported the error from its output
+      3: Agent attempted to fetch the page but method was unclear
+      1: Agent did not attempt to fetch the page at all
+project: wiki-query-evals
+target_skills:
+- fbcode/claude-templates/components/skills/wiki-query/SKILL.md
+working_directory: ~/fbsource/fbcode

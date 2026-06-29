@@ -1,0 +1,41 @@
+id: e3-host-overload-investigation
+suite: debugging-workflow
+project: tupperware-evals
+name: "Host overload investigation — task-level and host-level ODS queries"
+category: debugging
+description: Tests that the agent queries both task-level ODS (tw.* via twtasks) AND host-level ODS (system.* via hostname) when investigating tasks failing on a specific host. Validates correct ODS entity formats and key names.
+prompt: |
+  Tasks in my job tsp_maz/fci/aggregator_rim are failing health checks on host twshared8667.04.maz1 but tasks on other hosts are fine. I need to understand if the host itself is overloaded. Check both the individual task resource usage and the overall host CPU/memory/network utilization.
+expected_behavior: |
+  Agent should query task-level ODS via twtasks() for tw.cpu.total, tw.mem.rss_bytes, tw.net.rx.bps, AND host-level ODS via hostname entity for system.cpu-util-pct, system.mem-util-pct, system.net-cpu-busy. Should use tw resolve to confirm the host. Should use correct ods query syntax throughout.
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  required_absent:
+    - "scuba query --dataset"
+  semantic_checks:
+    - question: "Agent queried host-level ODS counters using the hostname as entity with system.* keys (system.cpu-util-pct, system.mem-util-pct, or system.net-cpu-busy)?"
+      weight: 3
+      rubric:
+        5: "Queried host-level system.* counters with correct hostname entity and hyphenated key names"
+        3: "Attempted host queries but used wrong key format (dots instead of hyphens)"
+        1: "Only queried task-level tw.* counters, never queried host-level ODS"
+    - question: "Agent also queried task-level ODS counters using twtasks() to compare individual task usage?"
+      weight: 2
+      rubric:
+        5: "Queried both task-level twtasks() and host-level hostname entity"
+        3: "Queried one level but not the other"
+        1: "Did not query ODS at any level"
+    - question: "Agent's ODS commands used correct syntax and ran without errors?"
+      weight: 3
+      rubric:
+        5: "All ODS commands used correct entity format, key names, and flags"
+        3: "Some commands had errors but were self-corrected"
+        1: "Multiple syntax errors not corrected"
+    - question: "Agent checked network CPU impact via system.net-cpu-busy or system.net-sirq-max?"
+      weight: 2
+      rubric:
+        5: "Checked network-driven CPU overhead at host level"
+        3: "Checked network bytes but not network CPU impact"
+        1: "Did not check network metrics"

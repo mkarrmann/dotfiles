@@ -1,0 +1,25 @@
+id: ms-json-extraction-graphql-004
+suite: method-selection
+project: scuba-evals
+description: Tests that agent prefers derived_cols_json with GET_JSON_OBJECT for JSON extraction
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "An analyst needs to extract a field from a JSON column."
+question: "I need to extract the 'metric' field from the action_metadata JSON column in core_viz_session_actions. What's the best approach — structured mode with --derived-cols or SQL mode? Show me how."
+
+critical_requirements:
+  - id: recommends_derived_cols
+    description: "Agent recommends using derived_cols_json with GET_JSON_OBJECT"
+    check: "Response recommends using --derived-cols with GET_JSON_OBJECT for JSON field extraction"
+  - id: mentions_string_type
+    description: "Agent mentions the correct type for JSON extraction derived columns"
+    check: "Response mentions using type String for GET_JSON_OBJECT derived columns"
+
+quality_factors:
+  - id: mentions_dollar_prefix
+    description: "Mentions the $.fieldname path syntax for GET_JSON_OBJECT"
+    weight: 0.5
+  - id: mentions_reference_doc
+    description: "References json-field-extraction.md or references/derived-columns.md"
+    weight: 0.5

@@ -1,0 +1,50 @@
+id: cr-column-validation-001
+suite: critical-rules
+project: scuba-evals
+description: Tests that agent validates column names via dataset info with columns param (CR3)
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user requests a query using column names that may or may not exist."
+question: "Show me the average cpu_time and total_time_ms from scuba_queries over the last hour, grouped by query_source."
+
+mock_data: |
+  meta scuba.dataset info response for column validation on scuba_queries:
+    column_search_results:
+      searched_columns: ["cpu_time", "total_time_ms", "query_source"]
+      found_columns: ["cpu_time", "total_time_ms", "query_source"]
+      not_found_columns: []
+  meta scuba.dataset query response:
+    results:
+      query_source | AVG(cpu_time) | AVG(total_time_ms)
+      datamate     | 125000        | 450000
+      scuba_ui     | 98000         | 320000
+      api          | 67000         | 210000
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: calls_dataset_info
+    type: tool_called
+    tool_name: Bash
+    description: "Agent calls meta scuba.dataset info to validate column names"
+    arguments:
+      command: "meta scuba.dataset info"
+  - id: calls_query
+    type: tool_called
+    tool_name: Bash
+    description: "Agent executes the query after validation"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: presents_results
+    description: "Agent presents results in a clear format"
+    check: "Response includes results showing query_source with AVG cpu_time and total_time_ms values"
+  - id: validates_before_querying
+    description: "Agent validates columns BEFORE executing the main query"
+    check: "In the tool call sequence, meta scuba.dataset info is called BEFORE meta scuba.dataset query"
+
+quality_factors:
+  - id: format_awareness
+    description: "Notes the %M format on cpu_time and considers conversion"
+    weight: 1.0

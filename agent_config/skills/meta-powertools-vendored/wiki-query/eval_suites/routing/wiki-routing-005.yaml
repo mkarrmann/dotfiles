@@ -1,0 +1,53 @@
+id: wiki-routing-005
+name: Show WikiUtil help and usage options
+category: routing
+prompt: What commands are available with WikiUtil? Show me the help output.
+description: Tests that the agent knows how to show WikiUtil help and lists available commands
+expected_behavior: Agent runs phps WikiUtil -h or lists the available WikiUtil commands from skill knowledge
+eval_target: response
+mock_data: |
+  WikiUtil -h output:
+    Usage: phps WikiUtil [OPTIONS] [WIKI_PATH]
+
+    Options:
+      -l <path>                List subpages of a wiki page
+      -a <unixname>            List pages created by a user
+      --list-empty-pages <path>   List empty subpages
+      --list-deleted-wikis <path> List deleted subpages
+      -wcs <path>              Count words in subpages
+      -h                       Show this help message
+
+    Examples:
+      phps WikiUtil -l "Team/Docs"
+      phps WikiUtil -a johndoe
+      phps WikiUtil -wcs "Team/Docs"
+fail_on_unmocked_command: true
+intercept_patterns:
+- graphql_wiki_content
+- 'jf graphql'
+- WikiUtil
+- 'phps '
+intercept_mcp_tools:
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent list the available WikiUtil commands including -l, -a, --list-empty-pages, --list-deleted-wikis, and -wcs?
+    weight: 3
+    rubric:
+      5: Agent listed all major WikiUtil options with descriptions for -l, -a, --list-empty-pages, --list-deleted-wikis, and -wcs
+      3: Agent listed some commands but missed important ones
+      1: Agent did not list any WikiUtil commands
+  - question: Did the agent mention that WikiUtil requires the www repository environment and phps?
+    weight: 2
+    rubric:
+      5: Agent mentioned that phps runs Hack ScriptController classes and requires the www repository
+      3: Agent mentioned phps but not the www requirement
+      1: Agent did not mention the runtime requirements
+project: wiki-query-evals
+target_skills:
+- fbcode/claude-templates/components/skills/wiki-query/SKILL.md
+working_directory: ~/fbsource/fbcode

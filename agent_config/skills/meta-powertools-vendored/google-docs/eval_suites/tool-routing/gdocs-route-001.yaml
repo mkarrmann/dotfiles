@@ -1,0 +1,43 @@
+id: gdocs-route-001
+name: Prefer CLI over Python
+category: tool-routing
+prompt: Read https://docs.google.com/document/d/1abc123/edit
+description: Tests that agent prefers meta google.docs CLI over google_api.py
+expected_behavior: Agent uses meta google.docs CLI, not google_api.py
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Test Document
+  Content: <h1>Test</h1><p>This is a test document.</p>
+  meta google.docs CLI: available and working
+  google_api.py: also available
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent use the meta google.docs CLI (preferred) rather than google_api.py or MCP tool?
+    weight: 3
+    rubric:
+      5: Agent used meta google.docs CLI as the primary tool
+      3: Agent used google_api.py which is acceptable but not preferred
+      1: Agent did not attempt to read the document
+  - question: Did the agent return the document content?
+    weight: 2
+    rubric:
+      5: Agent returned the document content successfully
+      3: Agent returned partial content
+      1: Agent did not return content
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

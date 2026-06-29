@@ -1,0 +1,32 @@
+id: host-level-investigation
+suite: universal-search
+project: tupperware-evals
+name: "Host-Level Investigation"
+category: core
+question: |
+  What commands and approach would you use to: Multiple tasks on host twshared52910.02.pnb6 seem to be having issues. Is the host healthy? What other tasks are running on it?
+expected_behavior: |
+  Agent should use Tasks by Server association, Server lookup, and Scuba netcons_alarms.
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  semantic_checks:
+    - question: "Uses Server association traversal (from:4, assocObjectType:5)?"
+      weight: 3
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"
+    - question: "Queries netcons_alarms or fleet_health for host status?"
+      weight: 3
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"
+    - question: "Lists tasks on the host?"
+      weight: 1
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"

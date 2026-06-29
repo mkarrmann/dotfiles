@@ -1,0 +1,11 @@
+load("@fbcode_macros//build_defs:native_rules.bzl", "buck_filegroup")
+
+oncall("ods")
+
+buck_filegroup(
+    name = "skill-resources",
+    srcs = glob([
+        "**/*.md",
+    ]),
+    visibility = ["PUBLIC"],
+)

@@ -1,0 +1,37 @@
+id: gdocs-comment-003
+name: Reply to a comment
+category: comments
+prompt: Reply to the first comment on https://docs.google.com/document/d/1abc123/edit with 'I'll add the data by EOD Friday.'
+description: Tests replying to an existing comment
+expected_behavior: Agent finds comment ID and uses comments reply
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Comments:
+    - id: cmt001, author: Alice, content: "Can we add more details here?"
+    - id: cmt002, author: Bob, content: "Need to update the timeline"
+  Reply result: Reply added to comment cmt001 successfully.
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent reply to the first comment with the specified text?
+    weight: 3
+    rubric:
+      5: Agent listed comments, identified the first one, and replied with the correct text
+      3: Agent replied but may have targeted the wrong comment
+      1: Agent did not reply to any comment
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

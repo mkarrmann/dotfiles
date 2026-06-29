@@ -1,0 +1,32 @@
+id: stuck-update-progress
+suite: universal-search
+project: tupperware-evals
+name: "Stuck Update / Rolling Restart Progress"
+category: core
+question: |
+  What commands and approach would you use to: The rolling update for tsp_global/tupperware/universal_search.prod seems slow. How far along is it? Which tasks have been updated and which are still on the old version?
+expected_behavior: |
+  Agent should check task states for mixed RUNNING/STAGING, compare package versions across tasks.
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  semantic_checks:
+    - question: "Identifies mixed task states indicating partial update?"
+      weight: 3
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"
+    - question: "Compares package versions across tasks?"
+      weight: 3
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"
+    - question: "Uses tupperware_task_events for state transitions?"
+      weight: 1
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"

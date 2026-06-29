@@ -1,0 +1,37 @@
+id: gdocs-edit-004
+name: Find and replace
+category: editing
+prompt: In https://docs.google.com/document/d/1abc123/edit, replace all occurrences of 'TBD' with 'To be confirmed by March
+  20'.
+description: Tests find-replace functionality and reporting replacement count
+expected_behavior: Agent uses find-replace or bulk-find-replace and reports count
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Launch Checklist
+  Content contains "TBD" in 4 locations.
+  Find-replace result: 4 replacements made (TBD -> To be confirmed by March 20)
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent replace all occurrences of 'TBD' and report the number of replacements?
+    weight: 3
+    rubric:
+      5: Agent replaced TBD with the new text and reported approximately 4 replacements
+      3: Agent performed the replacement but did not report the count
+      1: Agent did not perform the replacement
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

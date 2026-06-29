@@ -1,0 +1,38 @@
+id: gdocs-fmt-001
+name: Bold and italic text
+category: formatting
+prompt: In https://docs.google.com/document/d/1abc123/edit, make the first paragraph bold and the second paragraph italic.
+description: Tests applying bold and italic formatting
+expected_behavior: Agent applies formatting via format_text or round-trip ghtml edit
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Status Update
+  Content:
+    Paragraph 1 (index 1-45): "The project is on track for delivery."
+    Paragraph 2 (index 46-90): "We need additional resources for testing."
+  Format result: Bold applied to paragraph 1, italic applied to paragraph 2.
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent apply bold to the first paragraph and italic to the second?
+    weight: 3
+    rubric:
+      5: Agent applied both formatting changes and confirmed success
+      3: Agent applied one formatting change but not both
+      1: Agent did not apply formatting
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

@@ -1,0 +1,39 @@
+id: gdocs-comment-002
+name: Add comment to heading
+category: comments
+prompt: Add a comment 'Needs data to back this up' on the heading 'Impact Analysis' in https://docs.google.com/document/d/1abc123/edit
+description: Tests adding a comment anchored to a specific heading
+expected_behavior: Agent uses heading IDs or structure to attach comment to the correct location
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Project Proposal
+  Structure:
+    - Heading: "Overview" (anchor: h.ov123)
+    - Heading: "Impact Analysis" (anchor: h.ia456)
+    - Heading: "Timeline" (anchor: h.tl789)
+  Comment added successfully to heading "Impact Analysis".
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent add the comment to or near the 'Impact Analysis' heading?
+    weight: 3
+    rubric:
+      5: Agent added the comment targeting the Impact Analysis heading
+      3: Agent added the comment but anchoring was unclear
+      1: Agent did not add a comment
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

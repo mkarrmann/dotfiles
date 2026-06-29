@@ -1,0 +1,157 @@
+# Evaluation Criteria for metamate-research Skill
+# Focus: INVOCATION — does the description trigger the skill correctly?
+# Key constraint: The sandbox lacks phps/fork context, so we measure
+# *intent to invoke* (mentions metamate, attempts phps) not execution success.
+
+skill_name: metamate-research
+project: metamate-research-evals
+skill_type: tool
+default_working_directory: ~/fbsource/fbcode
+
+test_cases:
+  # === POSITIVE CASES (should trigger metamate-research) ===
+
+  - id: TC-001
+    name: "Look up unfamiliar Meta-internal concept"
+    category: invocation
+    prompt: "I keep seeing references to the Haste framework but I have no idea what it is or how it works at Meta. Can you look it up for me?"
+    description: "Tests skill activation for an unfamiliar Meta-internal concept — clear-cut trigger"
+    expected_behavior: "Skill activates and attempts to query Metamate"
+    eval_target: response
+    target_skills:
+      - "claude-templates/components/skills/metamate-research/SKILL.md"
+    quality_criteria:
+      required_present:
+        - "metamate"
+      required_absent:
+        - "I don't know what Haste is"
+        - "I cannot help"
+      semantic_checks:
+        - question: "Did the model attempt to invoke Metamate or at least identify it as the right tool for this Meta-internal lookup? The sandbox may lack phps, so acknowledging Metamate is the correct approach counts."
+          weight: 5
+          rubric:
+            5: "Attempted to invoke metamate-research skill or run phps MetamateSingleTurnScript"
+            4: "Identified Metamate as the right tool and suggested using it, even if execution failed or was unavailable"
+            3: "Mentioned Metamate but primarily answered from training data"
+            2: "Did not mention Metamate, answered from training data with a disclaimer"
+            1: "Answered purely from training data without mentioning Metamate"
+      artifact_checks: []
+
+  - id: TC-002
+    name: "Meta-internal acronym lookup"
+    category: invocation
+    prompt: "What does DERP stand for at Meta and how does it work?"
+    description: "Tests skill activation for an obscure Meta-internal acronym — clear-cut trigger"
+    expected_behavior: "Skill activates and attempts to query Metamate for DERP"
+    eval_target: response
+    target_skills:
+      - "claude-templates/components/skills/metamate-research/SKILL.md"
+    quality_criteria:
+      required_present:
+        - "metamate"
+      required_absent: []
+      semantic_checks:
+        - question: "Did the model attempt to use Metamate or at least identify it as the right tool for looking up what DERP means at Meta? The sandbox may lack phps, so acknowledging Metamate is the correct approach counts."
+          weight: 5
+          rubric:
+            5: "Attempted to invoke metamate-research skill or run phps MetamateSingleTurnScript"
+            4: "Identified Metamate as the right tool and suggested using it, even if execution failed or was unavailable"
+            3: "Mentioned Metamate but primarily speculated from training data"
+            2: "Did not mention Metamate, speculated about the acronym"
+            1: "Gave a generic or made-up answer without mentioning Metamate"
+      artifact_checks: []
+
+  - id: TC-003
+    name: "Meta-internal policy question"
+    category: invocation
+    prompt: "What's Meta's policy on using open source libraries in production code? Are there approval requirements?"
+    description: "Tests skill activation for a Meta-internal policy question — clear trigger"
+    expected_behavior: "Skill activates and attempts to query Metamate for OSS policy"
+    eval_target: response
+    target_skills:
+      - "claude-templates/components/skills/metamate-research/SKILL.md"
+    quality_criteria:
+      required_present: []
+      required_absent: []
+      semantic_checks:
+        - question: "Did the model attempt to use Metamate or at least identify it as the right tool for researching Meta's OSS policy? The sandbox may lack phps, so acknowledging Metamate is the correct approach counts."
+          weight: 4
+          rubric:
+            5: "Attempted to invoke metamate-research skill or run phps MetamateSingleTurnScript"
+            4: "Identified Metamate as the right tool and suggested using it, even if execution failed or was unavailable"
+            3: "Mentioned Metamate but primarily offered speculative guidance"
+            2: "Did not mention Metamate, gave general advice about OSS policies"
+            1: "Gave generic non-Meta-specific advice"
+      artifact_checks: []
+
+  - id: TC-004
+    name: "Debug Meta-internal framework error"
+    category: invocation
+    prompt: "I'm getting an EntPrivacyDeniedException when trying to write to UserSettings in my GraphQL mutation. Reads work fine but writes fail. What could cause this?"
+    description: "Tests skill activation for debugging — ambiguous trigger, code search is also valid"
+    expected_behavior: "Skill activates to research Ent privacy, possibly alongside code search"
+    eval_target: response
+    target_skills:
+      - "claude-templates/components/skills/metamate-research/SKILL.md"
+    quality_criteria:
+      required_present: []
+      required_absent: []
+      semantic_checks:
+        - question: "Did the model attempt to use Metamate or at least identify it as useful for understanding EntPrivacyDeniedException? Code search alongside Metamate is also acceptable. The sandbox may lack phps, so acknowledging Metamate counts."
+          weight: 3
+          rubric:
+            5: "Attempted Metamate as primary approach for understanding the exception"
+            4: "Attempted both Metamate and code search, or identified Metamate as the right tool even if unavailable"
+            3: "Mentioned Metamate but primarily used code search or training data"
+            2: "Only used code search or training data without considering Metamate"
+            1: "Answered purely from training data without attempting any lookup"
+      artifact_checks: []
+
+  # === NEGATIVE CASES (should NOT trigger metamate-research) ===
+
+  - id: TC-005
+    name: "Code search request — should not trigger metamate"
+    category: invocation
+    prompt: "Find all files in fbcode that import GK and show me how Gatekeeper is used in Python."
+    description: "Tests that code search requests do NOT trigger metamate-research"
+    expected_behavior: "Uses code search (grep, biggrep, search_files), NOT Metamate"
+    eval_target: response
+    target_skills: []
+    quality_criteria:
+      required_present: []
+      required_absent:
+        - "MetamateSingleTurnScript"
+      semantic_checks:
+        - question: "Did the model correctly use code search tools (grep, biggrep, search_files) instead of Metamate for this code search request?"
+          weight: 4
+          rubric:
+            5: "Used code search tools directly, did not invoke or mention Metamate"
+            4: "Primarily used code search, briefly mentioned Metamate as optional"
+            3: "Used both code search and Metamate"
+            2: "Used Metamate instead of code search"
+            1: "Used Metamate as primary approach for finding code"
+      artifact_checks: []
+
+  - id: TC-006
+    name: "General programming question — should not trigger metamate"
+    category: invocation
+    prompt: "How do I write a Python decorator that retries a function 3 times on failure?"
+    description: "Tests that general programming questions do NOT trigger metamate-research"
+    expected_behavior: "Answers directly from knowledge, does not invoke Metamate"
+    eval_target: response
+    target_skills: []
+    quality_criteria:
+      required_present: []
+      required_absent:
+        - "metamate"
+        - "MetamateSingleTurnScript"
+      semantic_checks:
+        - question: "Did the model answer this general Python question directly without invoking Metamate?"
+          weight: 4
+          rubric:
+            5: "Answered directly with a Python decorator implementation"
+            4: "Answered directly, may have mentioned Meta-specific retry utilities"
+            3: "Answered but unnecessarily consulted Metamate"
+            2: "Tried to use Metamate for a general Python question"
+            1: "Deferred entirely to Metamate for a basic programming question"
+      artifact_checks: []

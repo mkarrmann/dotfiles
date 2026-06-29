@@ -1,0 +1,40 @@
+id: gdocs-fmt-003
+name: Create bullet list
+category: formatting
+prompt: Convert the three lines under 'Action Items' into a bullet list in https://docs.google.com/document/d/1abc123/edit
+description: Tests converting plain text lines into a bullet list
+expected_behavior: Agent creates bullet list from existing text
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Meeting Notes
+  Content:
+    <h2>Action Items</h2>
+    "Review the design doc" (index 30-52)
+    "Schedule follow-up meeting" (index 53-80)
+    "Update the project tracker" (index 81-108)
+  Format result: 3 items converted to bullet list.
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent convert the three lines into a bullet list?
+    weight: 3
+    rubric:
+      5: Agent converted all 3 lines under Action Items into a bullet list
+      3: Agent created a bullet list but not all items were included
+      1: Agent did not create a bullet list
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

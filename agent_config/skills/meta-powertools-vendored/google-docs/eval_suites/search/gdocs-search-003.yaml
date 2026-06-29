@@ -1,0 +1,34 @@
+id: gdocs-search-003
+name: Search with date filter
+category: search
+prompt: Find Google Docs about 'launch plan' created in the last week
+description: Tests searching for docs with a time range filter
+expected_behavior: Agent applies time range filter in search
+eval_target: response
+mock_data: |
+  Search results for "launch plan" (last week):
+    - title: "v2.0 Launch Plan", author: Dave, created: 2026-03-10, url: https://docs.google.com/document/d/1launch001/edit
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent search for docs about 'launch plan' with a date filter for the last week?
+    weight: 3
+    rubric:
+      5: Agent searched with both keyword and date range filter, returning recent results
+      3: Agent searched by keyword but date filtering was unclear
+      1: Agent did not search for documents
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

@@ -1,0 +1,41 @@
+id: gdocs-fmt-002
+name: Apply headings
+category: formatting
+prompt: In https://docs.google.com/document/d/1abc123/edit, change 'Introduction' to Heading 1 and 'Background' to Heading
+  2.
+description: Tests applying heading styles to existing text
+expected_behavior: Agent applies heading styles using format commands or round-trip
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Research Paper
+  Content:
+    "Introduction" (plain text, index 1-14)
+    "This paper explores..." (index 15-45)
+    "Background" (plain text, index 46-57)
+    "Previous work includes..." (index 58-90)
+  Format result: "Introduction" set to HEADING_1, "Background" set to HEADING_2.
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent change 'Introduction' to Heading 1 and 'Background' to Heading 2?
+    weight: 3
+    rubric:
+      5: Agent applied both heading styles correctly
+      3: Agent applied one heading style but not both
+      1: Agent did not apply heading styles
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

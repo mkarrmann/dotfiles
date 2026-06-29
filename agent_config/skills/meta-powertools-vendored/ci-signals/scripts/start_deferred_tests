@@ -1,0 +1,146 @@
+#!/bin/bash
+# Start deferred CI tests for a Phabricator diff
+# Usage: start_deferred_tests <diff_number> [--request-id <id>]
+#
+# When a diff is in unpublished draft mode, CI tests may be deferred (not started).
+# This script detects that state and triggers the tests via GraphQL mutation.
+#
+# ⚠️  CAPACITY & FAIRNESS WARNING:
+# This script directly triggers CI tests via GraphQL mutation, bypassing the
+# platform's deferred testing controls. It is intended for MANUAL, INTERACTIVE
+# use on individual diffs only. Do NOT call this script in automated loops,
+# cron jobs, or polling scripts that monitor multiple diffs — doing so defeats
+# the CI platform's capacity and fairness mechanisms. For automated workflows,
+# use `jf submit --draft --publish-when-ready` which goes through the proper
+# submission flow.
+#
+# Options:
+#   --request-id <id>  Skip detection query and use this submit_queue_request ID directly
+
+set -e
+
+DIFF_NUM=""
+SQ_REQUEST_ID_ARG=""
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --request-id)
+      SQ_REQUEST_ID_ARG="$2"
+      shift 2
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      exit 1
+      ;;
+    *)
+      DIFF_NUM="$1"
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$DIFF_NUM" ]; then
+  echo "Usage: $0 <diff_number> [--request-id <submit_queue_request_id>]" >&2
+  echo "" >&2
+  echo "Examples:" >&2
+  echo "  $0 D85794504                          # Detect deferred state and start tests" >&2
+  echo "  $0 D85794504 --request-id 123456789    # Skip detection, use known request ID" >&2
+  echo "" >&2
+  echo "Detects if CI tests are deferred on a draft diff and starts them." >&2
+  exit 1
+fi
+
+# Remove 'D' prefix if provided
+DIFF_NUM="${DIFF_NUM#D}"
+
+# If request ID was provided, skip the detection query
+if [ -n "$SQ_REQUEST_ID_ARG" ]; then
+  SQ_REQUEST_ID="$SQ_REQUEST_ID_ARG"
+  echo "Using provided submit queue request ID: $SQ_REQUEST_ID" >&2
+else
+  echo "Checking deferred testing state for D${DIFF_NUM}..." >&2
+
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+  # Use shared check_ci_state helper for consistent CI state detection
+  CI_STATE_JSON=$("$SCRIPT_DIR/check_ci_state" "D${DIFF_NUM}" 2>/dev/null) || {
+    echo "Error: Failed to query CI state for D${DIFF_NUM}." >&2
+    exit 1
+  }
+
+  # Extract fields from shared helper output
+  DRAFT_SIGNAL_STATE=$(echo "$CI_STATE_JSON" | jq -r '.draft_ci_state // empty')
+  PUBLISHED_SIGNAL_STATE=$(echo "$CI_STATE_JSON" | jq -r '.published_ci_state // empty')
+
+  # Check if either state indicates deferred
+  IS_DEFERRED=false
+  if [ "$DRAFT_SIGNAL_STATE" = "TEST_DEFERRED" ] || [ "$PUBLISHED_SIGNAL_STATE" = "TEST_DEFERRED" ]; then
+    IS_DEFERRED=true
+  fi
+
+  if [ "$IS_DEFERRED" = false ]; then
+    echo "Tests are NOT deferred for D${DIFF_NUM}." >&2
+    if [ -n "$DRAFT_SIGNAL_STATE" ]; then
+      echo "Draft version signal state: $DRAFT_SIGNAL_STATE" >&2
+    fi
+    if [ -n "$PUBLISHED_SIGNAL_STATE" ]; then
+      echo "Published version signal state: $PUBLISHED_SIGNAL_STATE" >&2
+    fi
+    echo "No action needed - CI tests should already be running or completed." >&2
+    exit 0
+  fi
+
+  # Extract submit_queue_request ID and explanation from shared helper output
+  SQ_REQUEST_ID=$(echo "$CI_STATE_JSON" | jq -r '.submit_queue_request_id // empty')
+  EXPLANATION=$(echo "$CI_STATE_JSON" | jq -r '.deferred_explanation // "No explanation provided"')
+
+  echo "" >&2
+  echo "Tests are DEFERRED for D${DIFF_NUM}." >&2
+  echo "Reason: $EXPLANATION" >&2
+fi
+
+if [ -z "$SQ_REQUEST_ID" ]; then
+  echo "" >&2
+  echo "Error: Could not find submit queue request ID for D${DIFF_NUM}." >&2
+  echo "The diff may not have a submit queue request associated with it." >&2
+  echo "Try starting tests manually from Phabricator: https://www.internalfb.com/diff/D${DIFF_NUM}" >&2
+  exit 1
+fi
+
+echo "Starting tests..." >&2
+
+# Call the mutation to start deferred tests
+RESULT=$(jf graphql --query 'mutation ($input: XFBSubmitQueueStartTestInput!) {
+  xfb_submit_queue_start_test(data: $input) {
+    submit_queue_request {
+      id
+      phabricator_version {
+        signal_overall_status {
+          core_ci_signals_state
+        }
+      }
+    }
+  }
+}' --variables "{\"input\": {\"request_fbid\": \"${SQ_REQUEST_ID}\", \"trigger_source\": \"SIGNALVIEW_START_BUTTON\"}}")
+
+# Check if mutation succeeded
+SUCCESS=$(echo "$RESULT" | jq -r '.xfb_submit_queue_start_test.submit_queue_request.id // "null"')
+
+if [ "$SUCCESS" != "null" ]; then
+  echo "" >&2
+  echo "Tests started successfully for D${DIFF_NUM}!" >&2
+  echo "CI signals should begin appearing shortly." >&2
+  echo "" >&2
+  echo "You can check signal status with:" >&2
+  echo "  scripts/query_ci_signals D${DIFF_NUM} --summary-only" >&2
+  exit 0
+else
+  echo "" >&2
+  echo "Error: Failed to start tests for D${DIFF_NUM}." >&2
+  echo "GraphQL response:" >&2
+  echo "$RESULT" | jq '.' >&2
+  echo "" >&2
+  echo "Try starting tests manually from Phabricator: https://www.internalfb.com/diff/D${DIFF_NUM}" >&2
+  exit 1
+fi

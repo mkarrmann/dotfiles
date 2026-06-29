@@ -1,0 +1,58 @@
+load("@fbcode_macros//build_defs:python_binary.bzl", "python_binary")
+load("@fbcode_macros//build_defs:python_library.bzl", "python_library")
+load("@fbcode_macros//build_defs:python_unittest.bzl", "python_unittest")
+load("@fbsource//tools/build_defs/testinfra:network_access_utils.bzl", "network_access_utils")
+
+oncall("claude_templates_cli")
+
+# Library target for reuse in tests and other modules
+python_library(
+    name = "parse_scuba_url_lib",
+    srcs = ["parse_scuba_url.py"],
+    typing = True,
+    deps = [],
+)
+
+# Binary target for command-line usage
+python_binary(
+    name = "parse_scuba_url",
+    srcs = ["parse_scuba_url.py"],
+    main_function = ".parse_scuba_url.main",
+    typing = True,
+    deps = [],
+)
+
+# Library target for URL generation
+python_library(
+    name = "generate_scuba_url_lib",
+    srcs = ["generate_scuba_url.py"],
+    typing = True,
+    deps = [],
+)
+
+# Binary target for URL generation
+python_binary(
+    name = "generate_scuba_url",
+    srcs = ["generate_scuba_url.py"],
+    main_function = ".generate_scuba_url.main",
+    typing = True,
+    deps = [],
+)
+
+# Package init
+python_library(
+    name = "__init__",
+    srcs = ["__init__.py"],
+)
+
+# Test target
+python_unittest(
+    name = "test",
+    srcs = glob(["tests/*.py"]),
+    network_access = network_access_utils.none(),
+    typing = True,
+    deps = [
+        ":generate_scuba_url_lib",
+        ":parse_scuba_url_lib",
+    ],
+)

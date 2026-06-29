@@ -1,0 +1,76 @@
+id: udf-end-to-end-003
+suite: udf-workflow
+project: scuba-evals
+description: Tests full discover-learn-validate-execute UDF workflow (from TP-13)
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user wants to count conditional queries per hour and needs to find the right function."
+question: "I want to count how many SQL-type queries vs non-SQL queries hit scuba_queries per hour over the last 24 hours."
+
+mock_data: |
+  meta scuba.udf list --search=count,conditional,if response:
+    results:
+      - name: COUNT_IF
+        kind: UDAF
+        description: "Count rows matching a condition"
+        signatures:
+          - "COUNT_IF(condition)"
+      - name: SUM
+        kind: UDAF
+        description: "Sum of values"
+        signatures:
+          - "SUM(column)"
+          - "SUM(column, weight_column)"
+  meta scuba.udf usage --udfs=COUNT_IF response:
+    results:
+      - dataset: "scuba_queries"
+        derived_column_sql: "SUM(IF(query_type = 'sql', 1, 0))"
+        derived_column_type: "Aggregated"
+        query_count: 89
+  meta scuba.column validate response for SUM(IF(query_type = 'sql', 1, 0)):
+    success: true
+    valid: true
+    error: null
+  meta scuba.column values response for query_type on scuba_queries:
+    values: ["sql", "graphql", "presto_sql", "drilldown", "time_series", "samples"]
+  meta scuba.dataset query response:
+    results:
+      time                | sql_count | non_sql_count
+      2025-01-07 00:00:00 | 1234      | 5678
+      2025-01-07 01:00:00 | 1456      | 6234
+      2025-01-07 02:00:00 | 1100      | 4890
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: calls_validate
+    type: tool_called
+    tool_name: Bash
+    description: "Agent calls meta scuba.column validate before executing"
+    arguments:
+      command: "meta scuba.column validate"
+  - id: calls_query
+    type: tool_called
+    tool_name: Bash
+    description: "Agent executes the final query"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: validates_before_executing
+    description: "Agent validates the derived column BEFORE executing the query"
+    check: "In the tool call sequence, meta scuba.column validate is called BEFORE meta scuba.dataset query"
+
+quality_factors:
+  - id: calls_udf_list
+    description: "Calls meta scuba.udf list to discover the right function before using it"
+    weight: 0.2
+  - id: checks_column_values
+    description: "Calls meta scuba.column values for query_type before building the condition (CR1)"
+    weight: 0.3
+  - id: uses_time_series
+    description: "Uses time_series view with hourly time_bucket for the final query"
+    weight: 0.3
+  - id: fetches_usage_examples
+    description: "Uses meta scuba.udf usage to learn real-world patterns"
+    weight: 0.2

@@ -1,0 +1,49 @@
+id: gdocs-read-004
+name: Read doc in markdown format
+category: reading
+prompt: Show me the contents of https://docs.google.com/document/d/1abc123/edit in markdown format.
+description: Tests that the agent uses --markdown flag when explicitly requested
+expected_behavior: Agent uses meta google.docs get with --markdown flag
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Project Status
+  Content (markdown output):
+    # Project Status
+    ## Overview
+    The project is **on track** for Q2 delivery.
+    ## Key Links
+    - [Dashboard](https://fburl.com/dashboard)
+    - [Task Board](https://fburl.com/tasks)
+    ## Risks
+    None identified at this time.
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent return the document content in a readable markdown format?
+    weight: 3
+    rubric:
+      5: Agent returned content with markdown formatting (headings, bold, links)
+      3: Agent returned content but formatting was unclear
+      1: Agent did not return document content
+  - question: Did the agent use the --markdown flag?
+    weight: 2
+    rubric:
+      5: Agent used meta google.docs get with --markdown flag
+      3: Agent read the doc in another format and converted
+      1: Agent did not attempt markdown output
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

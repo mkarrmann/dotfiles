@@ -1,0 +1,16 @@
+load("@fbcode_macros//build_defs:export_files.bzl", "export_file")
+load("@fbcode_macros//build_defs:native_rules.bzl", "buck_filegroup")
+
+oncall("confucius")
+
+export_file(
+    name = "SKILL.md",
+    src = "SKILL.md",
+    visibility = ["PUBLIC"],
+)
+
+buck_filegroup(
+    name = "skill_resources",
+    srcs = glob(["**/*"]),
+    visibility = ["PUBLIC"],
+)

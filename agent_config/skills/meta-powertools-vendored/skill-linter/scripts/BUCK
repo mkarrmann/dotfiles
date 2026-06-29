@@ -1,0 +1,41 @@
+load("@fbcode_macros//build_defs:python_binary.bzl", "python_binary")
+load("@fbcode_macros//build_defs:python_library.bzl", "python_library")
+load("@fbcode_macros//build_defs:python_unittest.bzl", "python_unittest")
+
+oncall("revenue_imoc")
+
+python_library(
+    name = "find_duplicates_lib",
+    srcs = ["find_duplicates.py"],
+    base_module = "",
+    typing = True,
+    visibility = [
+        "//confucius/analects/claude_templates/...",
+    ],
+    deps = [],
+)
+
+python_binary(
+    name = "find_duplicates",
+    main_module = "find_duplicates",
+    deps = [":find_duplicates_lib"],
+)
+
+python_library(
+    name = "__init__",
+    srcs = ["__init__.py"],
+)
+
+python_library(
+    name = "tests_init",
+    srcs = ["tests/__init__.py"],
+)
+
+python_unittest(
+    name = "test_find_duplicates",
+    srcs = ["tests/test_find_duplicates.py"],
+    typing = True,
+    deps = [
+        ":find_duplicates_lib",
+    ],
+)

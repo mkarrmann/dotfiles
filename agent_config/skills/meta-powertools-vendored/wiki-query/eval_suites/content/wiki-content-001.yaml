@@ -1,0 +1,59 @@
+id: wiki-content-001
+name: Get PAGELET wiki page content (markdown)
+category: content
+prompt: Get me the content of the wiki page at Wiki_Engineering/Code_Review_Best_Practices.
+description: Tests that the agent fetches wiki content using the GraphQL script and returns markdown content
+expected_behavior: Agent uses scripts/graphql_wiki_content to fetch the wiki page and returns markdown content
+eval_target: response
+mock_data: |
+  Wiki path: Wiki_Engineering/Code_Review_Best_Practices
+  Editor type: PAGELET (markdown)
+  Content (markdown):
+    # Code Review Best Practices
+
+    ## Overview
+    Code reviews are essential for maintaining code quality and sharing knowledge across the team.
+
+    ## Key Principles
+    1. **Review promptly** - Aim to review within 24 hours
+    2. **Be constructive** - Focus on the code, not the person
+    3. **Check for correctness** - Verify logic and edge cases
+
+    ## Checklist
+    - [ ] Does the code compile and pass tests?
+    - [ ] Are there adequate test cases?
+    - [ ] Is the code readable and well-documented?
+
+    ## Resources
+    - [Style Guide](/wiki/Engineering_Style_Guide)
+    - [Testing Guidelines](/wiki/Testing_Guidelines)
+fail_on_unmocked_command: true
+intercept_patterns:
+- graphql_wiki_content
+- 'jf graphql'
+- WikiUtil
+- 'phps '
+intercept_mcp_tools:
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent return the wiki page content including headings, principles, and checklist items?
+    weight: 3
+    rubric:
+      5: Agent returned the full wiki content with headings (Code Review Best Practices, Key Principles) and checklist items
+      3: Agent returned partial content or missed some sections
+      1: Agent did not return any wiki content
+  - question: Did the agent use the graphql_wiki_content script to fetch the content?
+    weight: 2
+    rubric:
+      5: Agent used scripts/graphql_wiki_content with the correct wiki path
+      3: Agent used an alternative method that still produced results
+      1: Agent did not attempt to fetch wiki content
+project: wiki-query-evals
+target_skills:
+- fbcode/claude-templates/components/skills/wiki-query/SKILL.md
+working_directory: ~/fbsource/fbcode

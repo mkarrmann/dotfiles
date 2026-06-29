@@ -1,0 +1,60 @@
+id: wiki-content-003
+name: Get wiki content from internalfb.com URL
+category: content
+prompt: Can you get the content of this wiki page? https://www.internalfb.com/wiki/Data_Platform/Query_Guide/Presto_Tips
+description: Tests that the agent parses an internalfb.com URL to extract the wiki path and then fetches content
+expected_behavior: Agent extracts the path Data_Platform/Query_Guide/Presto_Tips from the URL and uses graphql_wiki_content to fetch it
+eval_target: response
+mock_data: |
+  Wiki path: Data_Platform/Query_Guide/Presto_Tips
+  Editor type: PAGELET (markdown)
+  Content (markdown):
+    # Presto Tips
+
+    ## Performance Optimization
+    - Use LIMIT when exploring data
+    - Avoid SELECT * on large tables
+    - Prefer partitioned columns in WHERE clauses
+
+    ## Common Patterns
+    ```sql
+    SELECT ds, COUNT(*) as cnt
+    FROM my_table
+    WHERE ds = '2026-03-14'
+    GROUP BY ds
+    ```
+
+    ## Gotchas
+    - DATE columns are strings in format 'YYYY-MM-DD'
+    - Use TRY_CAST for safe type conversions
+    - CROSS JOIN UNNEST for array columns
+fail_on_unmocked_command: true
+intercept_patterns:
+- graphql_wiki_content
+- 'jf graphql'
+- WikiUtil
+- 'phps '
+intercept_mcp_tools:
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent correctly extract the wiki path from the URL and return the page content?
+    weight: 3
+    rubric:
+      5: Agent extracted path Data_Platform/Query_Guide/Presto_Tips from the URL and returned content with Presto tips, SQL examples, and gotchas
+      3: Agent returned some content but may have had issues with URL parsing
+      1: Agent did not extract the path or return content
+  - question: Did the agent use graphql_wiki_content with the extracted path rather than curl?
+    weight: 2
+    rubric:
+      5: Agent used scripts/graphql_wiki_content with the correctly extracted path
+      3: Agent fetched the content but used a different method
+      1: Agent used curl to fetch the HTML page directly
+project: wiki-query-evals
+target_skills:
+- fbcode/claude-templates/components/skills/wiki-query/SKILL.md
+working_directory: ~/fbsource/fbcode

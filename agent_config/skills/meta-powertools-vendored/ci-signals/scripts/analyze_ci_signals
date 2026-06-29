@@ -1,0 +1,668 @@
+#!/bin/bash
+# Analyze CI signals with pattern detection and reproduce commands
+# Usage: analyze_ci_signals <diff_number> [--types TYPE1,TYPE2,...] [--triage]
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DIFF_NUM=""
+FILTER_TYPES=""
+TRIAGE_MODE=false
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --types)
+      FILTER_TYPES="$2"
+      shift 2
+      ;;
+    --triage)
+      TRIAGE_MODE=true
+      shift
+      ;;
+    -*)
+      echo "Unknown option: $1"
+      exit 1
+      ;;
+    *)
+      DIFF_NUM="$1"
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$DIFF_NUM" ]; then
+  echo "Usage: $0 <diff_number> [--types TYPE1,TYPE2,...] [--triage]"
+  echo ""
+  echo "Examples:"
+  echo "  $0 D85794504                                    # Analyze all signal types"
+  echo "  $0 D85794504 --types STATIC_ANALYSIS,TEST       # Analyze only specific types"
+  echo "  $0 D85794504 --triage                           # Quick triage: FAILED signals only"
+  echo ""
+  echo "Options:"
+  echo "  --types TYPE1,TYPE2  Comma-separated list of types to analyze"
+  echo "  --triage             Quick triage mode: show only FAILED signals with details"
+  echo ""
+  echo "Analyzes CI signals with pattern detection and actionable reproduce commands"
+  exit 1
+fi
+
+# Remove 'D' prefix if provided
+DIFF_NUM="${DIFF_NUM#D}"
+
+echo "=== Analyzing CI Signals for D${DIFF_NUM} ==="
+echo ""
+
+# Get overall CI state and signal counts (fast, single + alias query)
+echo "Checking CI state..."
+CI_STATE_JSON=$("$SCRIPT_DIR/check_ci_state" "D${DIFF_NUM}" 2>/dev/null) || CI_STATE_JSON=""
+
+CI_COMPLETE=false
+if [ -n "$CI_STATE_JSON" ]; then
+  CI_STATE=$(echo "$CI_STATE_JSON" | jq -r '.ci_state // "UNKNOWN"')
+  # Extract signal counts with safe integer defaults
+  SC_TOTAL=$(echo "$CI_STATE_JSON" | jq -r '.signal_counts.total // 0')
+  SC_FAILED=$(echo "$CI_STATE_JSON" | jq -r '.signal_counts.failed // 0')
+  SC_WARNING=$(echo "$CI_STATE_JSON" | jq -r '.signal_counts.warning // 0')
+  SC_PASSED=$(echo "$CI_STATE_JSON" | jq -r '.signal_counts.passed // 0')
+  SC_PENDING=$(echo "$CI_STATE_JSON" | jq -r '.signal_counts.pending // 0')
+  SC_INFO=$(echo "$CI_STATE_JSON" | jq -r '.signal_counts.info // 0')
+  # Guard against non-integer values from malformed JSON
+  [[ "$SC_TOTAL" =~ ^[0-9]+$ ]] || SC_TOTAL=0
+  [[ "$SC_FAILED" =~ ^[0-9]+$ ]] || SC_FAILED=0
+  [[ "$SC_WARNING" =~ ^[0-9]+$ ]] || SC_WARNING=0
+  [[ "$SC_PASSED" =~ ^[0-9]+$ ]] || SC_PASSED=0
+  [[ "$SC_PENDING" =~ ^[0-9]+$ ]] || SC_PENDING=0
+  [[ "$SC_INFO" =~ ^[0-9]+$ ]] || SC_INFO=0
+
+  echo "CI State: $CI_STATE"
+  echo "Signals:  $SC_TOTAL total | $SC_PASSED passed | $SC_FAILED failed | $SC_WARNING warning | $SC_PENDING pending | $SC_INFO info"
+
+  # Compute verdict: GREEN, RED, or PENDING
+  # Determine if CI is complete based on ci_state
+  case "$CI_STATE" in
+    *FINISHED*|*PASSED*|*ALL_CLEAR*|*COMPLETED*)
+      CI_COMPLETE=true
+      ;;
+  esac
+
+  if [ "$SC_FAILED" -gt 0 ]; then
+    VERDICT="RED"
+  elif [ "$CI_COMPLETE" = true ]; then
+    VERDICT="GREEN"
+  else
+    VERDICT="PENDING"
+  fi
+  echo "Verdict:  $VERDICT"
+
+  case "$CI_STATE" in
+    TEST_DEFERRED)
+      echo ""
+      echo "CI tests are DEFERRED for D${DIFF_NUM}."
+      echo "This diff is in unpublished draft mode and CI has not been started."
+      echo "Attempting to trigger deferred tests..."
+      echo ""
+      # Trigger deferred tests via start_deferred_tests
+      SQ_REQUEST_ID=$(echo "$CI_STATE_JSON" | jq -r '.submit_queue_request_id // ""')
+      START_ARGS=("D${DIFF_NUM}")
+      if [ -n "$SQ_REQUEST_ID" ] && [ "$SQ_REQUEST_ID" != "null" ]; then
+        START_ARGS+=("--request-id" "$SQ_REQUEST_ID")
+      fi
+      "$SCRIPT_DIR/start_deferred_tests" "${START_ARGS[@]}" 2>&1 || true
+      echo ""
+      echo "Re-run this analysis shortly to see CI results."
+      exit 0
+      ;;
+  esac
+
+  if [ "$CI_COMPLETE" = false ] && [ "$CI_STATE" != "null" ] && [ "$CI_STATE" != "UNKNOWN" ]; then
+    echo ""
+    echo "NOTE: CI is not yet complete (state: $CI_STATE)."
+    if [ "$SC_PENDING" -gt 0 ]; then
+      echo "  $SC_PENDING signal(s) are still pending/running."
+    fi
+    echo "  Results below show only completed signals. Re-run later for final results."
+    echo "  TIP: Use 'scripts/check_ci_state D${DIFF_NUM}' for faster polling (<5s)."
+  elif [ "$CI_COMPLETE" = true ] && [ "$SC_FAILED" -eq 0 ] && [ "$SC_WARNING" -eq 0 ]; then
+    echo ""
+    echo "All $SC_TOTAL signal(s) passed. No failures or warnings."
+    exit 0
+  fi
+
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+fi
+
+# Resolve version ID once and reuse for all subsequent queries
+DIFF_PROPS=$(jf diff-properties "D${DIFF_NUM}" 2>/dev/null) || true
+LATEST_VERSION=$(echo "$DIFF_PROPS" | jq -r '.latest_phabricator_version.number // "0"')
+DRAFT_VERSION=$(echo "$DIFF_PROPS" | jq -r '.latest_draft_phabricator_version.number // "0"')
+if [ "$DRAFT_VERSION" != "null" ] && [ "$DRAFT_VERSION" != "0" ] && [ "$DRAFT_VERSION" -gt "$LATEST_VERSION" ] 2>/dev/null; then
+  VERSION_ID=$(echo "$DIFF_PROPS" | jq -r '.latest_draft_phabricator_version.id')
+else
+  VERSION_ID=$(echo "$DIFF_PROPS" | jq -r '.latest_phabricator_version.id')
+fi
+
+# Get FAILED + WARNING summary
+echo "Fetching failure details..."
+SUMMARY=$("$SCRIPT_DIR/query_ci_signals" "D${DIFF_NUM}" --summary-only --version-id "$VERSION_ID") || QUERY_EXIT=$?
+if [ "${QUERY_EXIT:-0}" -eq 2 ]; then
+  # Deferred state already handled above, but just in case
+  echo ""
+  echo "=== CI Tests were DEFERRED for D${DIFF_NUM} ==="
+  echo ""
+  echo "An auto-start was attempted. Re-run this analysis shortly to see results."
+  exit 0
+elif [ "${QUERY_EXIT:-0}" -ne 0 ]; then
+  echo "Error: Failed to fetch CI signals for D${DIFF_NUM}" >&2
+  exit 1
+fi
+
+# Parse summary statistics
+TOTAL=$(echo "$SUMMARY" | jq -r '.signalview_signals.signals.count // 0')
+[[ -z "$TOTAL" ]] && TOTAL=0 || [[ "$TOTAL" =~ ^[0-9]+$ ]] || TOTAL=0
+echo "FAILED + WARNING Signals: $TOTAL"
+echo ""
+
+if [ "$TOTAL" -eq 0 ]; then
+  if [ "$CI_COMPLETE" = true ]; then
+    echo "No failures or warnings found. All CI signals passed."
+  else
+    echo "No failures or warnings found so far."
+    echo "CI may still be running — check back later for complete results."
+  fi
+  exit 0
+fi
+
+# Count by type with status breakdown
+echo "By Type (FAILED / WARNING):"
+echo "$SUMMARY" | jq -r '
+  .signalview_signals.signals.nodes |
+  group_by(.slp_functional_type) |
+  map({
+    type: .[0].slp_functional_type,
+    total: length,
+    failed: [.[] | select(.status == "FAILED")] | length,
+    warning: [.[] | select(.status == "WARNING")] | length
+  }) |
+  sort_by(.type) |
+  .[] |
+  "  \(.type): \(.total) (\(.failed) FAILED, \(.warning) WARNING)"
+'
+
+# Count by status (totals)
+echo ""
+echo "Status Totals:"
+echo "$SUMMARY" | jq -r '
+  [.signalview_signals.signals.nodes[] | .status] |
+  group_by(.) |
+  map({status: .[0], count: length}) |
+  .[] |
+  "  \(.status): \(.count)"
+'
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+# Triage mode: show only FAILED signals with actionable details
+if [ "$TRIAGE_MODE" = true ]; then
+  FAILED_COUNT=$(echo "$SUMMARY" | jq '[.signalview_signals.signals.nodes[] | select(.status == "FAILED")] | length // 0')
+
+  if [ "$FAILED_COUNT" -eq 0 ]; then
+    echo "✓ No FAILED signals - only warnings present"
+    echo ""
+    echo "To see all signals including warnings, run without --triage:"
+    echo "  scripts/analyze_ci_signals D${DIFF_NUM}"
+    exit 0
+  fi
+
+  echo "=== TRIAGE MODE: $FAILED_COUNT FAILED Signal(s) ==="
+  echo ""
+
+  # Get all FAILED signals with details
+  FAILED_DATA=$("$SCRIPT_DIR/query_ci_signals" "D${DIFF_NUM}" --version-id "$VERSION_ID")
+
+  echo "$FAILED_DATA" | jq -r '
+    def dbg_desc: if .debugger_json_string then (try (.debugger_json_string | fromjson | (.land_issue.description // .extended_signal_details.generic_signal_extended_details.target_rev_event_details[0].verifiable_warning.message.content // .extended_signal_details.generic_signal_extended_details.target_rev_event_details[0].verifiable_failed.message.content // .message // null) | if (. != null and . != "") then . else null end) catch null) else null end;
+    def detail: .debugger_slp_signal.expensive_signal_details.detail;
+    .signalview_signals.signals.nodes[] |
+    select(.status == "FAILED") |
+    "[\(.slp_functional_type)] \(.name)",
+    "  Status: \(.status)",
+    (if detail.relevant_execution_test_run_result.detail_short then
+      "  Detail: \(detail.relevant_execution_test_run_result.detail_short | .[0:300])"
+    elif detail.description then
+      "  Detail: \(detail.description | split("\n")[0] | .[0:300])"
+    elif (detail.events // [])[0].raw_message then
+      "  Detail: \(detail.events[0].raw_message | split("\n")[0] | .[0:300])"
+    elif (detail.results // [])[0].test_result_message_markdown then
+      "  Detail: \(detail.results[0].test_result_message_markdown | split("\n")[0] | .[0:300])"
+    elif (detail.inline_events // [])[0].message then
+      "  Detail: \(detail.inline_events[0].message | split("\n")[0] | .[0:300])"
+    elif detail.recommended_user_action_message then
+      "  Detail: \(detail.recommended_user_action_message | split("\n")[0] | .[0:300])"
+    elif (detail.log_suggestions // [])[0].suggestion then
+      "  Detail: \(detail.log_suggestions[0].title // ""): \(detail.log_suggestions[0].suggestion // "" | split("\n")[0] | .[0:300])"
+    elif detail.shown_automated_review_and_summary.summary then
+      "  Detail: \(detail.shown_automated_review_and_summary.summary | split("\n")[0] | .[0:300])"
+    elif detail.status_text then
+      "  Detail: Status \(detail.status_text)"
+    elif dbg_desc then
+      "  Detail: \(dbg_desc | split("\n")[0] | .[0:300])"
+    else
+      "  Detail: (no detail — check signal box on Phabricator)"
+    end),
+    (if detail.relevant_execution_test_run_result.local_repro_run_cmd then
+      "  Reproduce: \(detail.relevant_execution_test_run_result.local_repro_run_cmd)"
+    elif detail.repro_command then
+      "  Reproduce: \(detail.repro_command)"
+    else
+      empty
+    end),
+    (if (.external_uris // [] | map(select(.type == "TESTX_DIAGNOSTICS")) | length) > 0 then
+      "  Artifacts: Available (use fetch_test_details to download)"
+    elif (.external_uris // [] | map(select(.type == "SANDCASTLE_INSTANCE")) | length) > 0 then
+      (.external_uris[] | select(.type == "SANDCASTLE_INSTANCE") | "  Sandcastle: \(.uri)")
+    else
+      empty
+    end),
+    ""
+  '
+
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+  echo "Triage complete for D${DIFF_NUM}"
+  echo ""
+  echo "Next steps:"
+  echo "  • Fetch test artifacts: scripts/fetch_test_details D${DIFF_NUM} --status FAILED"
+  echo "  • Full analysis:        scripts/analyze_ci_signals D${DIFF_NUM}"
+  exit 0
+fi
+
+# Determine which types to analyze
+if [ -n "$FILTER_TYPES" ]; then
+  IFS=',' read -ra TYPES_ARRAY <<< "$FILTER_TYPES"
+else
+  # Auto-select types based on count (prioritize actionable ones)
+  TYPES_ARRAY=()
+
+  # Auto-detect all signal types present in the summary
+  # NOTE: summary is limited to first 100 FAILED+WARNING signals; rare types may be missed for very large diffs
+  while IFS= read -r SIGNAL_TYPE; do
+    TYPES_ARRAY+=("$SIGNAL_TYPE")
+  done < <(echo "$SUMMARY" | jq -r '[.signalview_signals.signals.nodes[].slp_functional_type | select(. != null)] | unique | .[]')
+fi
+
+# Analyze each type
+for TYPE in "${TYPES_ARRAY[@]}"; do
+  echo "=== $TYPE Signals ==="
+  echo ""
+
+  # REVIEW_INSIGHTS uses a dedicated query for message content, but also fetch
+  # the main query data for inline_signals (file-level AI reviewer feedback)
+  if [ "$TYPE" = "REVIEW_INSIGHTS" ]; then
+    DATA=$("$SCRIPT_DIR/query_ci_signals" "D${DIFF_NUM}" --types "$TYPE" --version-id "$VERSION_ID" 2>/dev/null) || DATA=""
+    COUNT=$(echo "$SUMMARY" | jq '[.signalview_signals.signals.nodes[] | select(.slp_functional_type == "REVIEW_INSIGHTS")] | length')
+  else
+    # Get signals for this type
+    DATA=$("$SCRIPT_DIR/query_ci_signals" "D${DIFF_NUM}" --types "$TYPE" --version-id "$VERSION_ID")
+    COUNT=$(echo "$DATA" | jq '.signalview_signals.signals.count')
+  fi
+
+  echo "Count: $COUNT"
+  echo ""
+
+  case "$TYPE" in
+    STATIC_ANALYSIS)
+      # Show lint issue summary
+      echo "Affected Files:"
+      echo "$DATA" | jq -r '
+        [.signalview_signals.signals.nodes[] |
+         .debugger_slp_signal.expensive_signal_details.detail.lint_issues[]? |
+         .path] |
+        unique |
+        .[] |
+        "  - \(.)"
+      ' | head -20
+
+      TOTAL_FILES=$(echo "$DATA" | jq '[.signalview_signals.signals.nodes[] | .debugger_slp_signal.expensive_signal_details.detail.lint_issues[]? | .path] | unique | length')
+      if [ "$TOTAL_FILES" -gt 20 ]; then
+        echo "  ... and $((TOTAL_FILES - 20)) more files"
+      fi
+
+      echo ""
+      echo "Total Lint Issues: $(echo "$DATA" | jq '[.signalview_signals.signals.nodes[] | .debugger_slp_signal.expensive_signal_details.detail.lint_issues[]?] | length')"
+
+      # Show actual lint messages with severity, rule, and content (sorted by severity)
+      echo ""
+      echo "Lint Details:"
+      LINT_COUNT=$(echo "$DATA" | jq '[.signalview_signals.signals.nodes[] | .debugger_slp_signal.expensive_signal_details.detail.lint_issues[]?] | length')
+      LINT_LIMIT=15
+      echo "$DATA" | jq -r --argjson limit "$LINT_LIMIT" '
+        [.signalview_signals.signals.nodes[] |
+         .debugger_slp_signal.expensive_signal_details.detail.lint_issues[]?] |
+        sort_by(if .severity == "ERROR" then 0 elif .severity == "WARNING" then 1 else 2 end) |
+        limit($limit; .[]) |
+        "  [LINT] [\(.severity // "UNKNOWN")] \(.path // "?"):\(.line // "?")",
+        "    Rule: \(.name // "unknown") (\(.code // "no-code"))",
+        "    Message: \(.description // "No message" | split("\n")[0] | .[0:200])",
+        ""
+      '
+      if [ "$LINT_COUNT" -gt "$LINT_LIMIT" ]; then
+        echo "  ... and $((LINT_COUNT - LINT_LIMIT)) more lint issues (use query_ci_signals --types STATIC_ANALYSIS for full list)"
+      fi
+
+      # Show non-lint STATIC_ANALYSIS signals (e.g., CISignalBoxBuildDetail for android-lint, flow-check)
+      NON_LINT=$(echo "$DATA" | jq '[.signalview_signals.signals.nodes[] |
+        select(.status == "FAILED" or .status == "WARNING") |
+        select((.debugger_slp_signal.expensive_signal_details.detail.lint_issues // []) | length == 0)] | length' 2>/dev/null || echo 0)
+      if [ "$NON_LINT" -gt 0 ]; then
+        echo ""
+        echo "Non-lint Signals:"
+        echo "$DATA" | jq -r '
+          def detail: .debugger_slp_signal.expensive_signal_details.detail;
+          .signalview_signals.signals.nodes[] |
+          select(.status == "FAILED" or .status == "WARNING") |
+          select((detail.lint_issues // []) | length == 0) |
+          "  [\(.status)] \(.name)",
+          (if detail.description then
+            "    \(detail.description | split("\n")[0] | .[0:300])"
+          elif (detail.events // [])[0].raw_message then
+            "    \(detail.events[0].raw_message | split("\n")[0] | .[0:300])"
+          elif detail.recommended_user_action_message then
+            "    \(detail.recommended_user_action_message | split("\n")[0] | .[0:300])"
+          elif detail.status_text then
+            "    Status: \(detail.status_text)"
+          elif .debugger_json_string then
+            (try (.debugger_json_string | fromjson | (.land_issue.description // .extended_signal_details.generic_signal_extended_details.target_rev_event_details[0].verifiable_warning.message.content // .extended_signal_details.generic_signal_extended_details.target_rev_event_details[0].verifiable_failed.message.content // .message // null) | if (. != null and . != "") then "    \(split("\n")[0] | .[0:300])" else "    (no detail available)" end) catch "    (no detail available)")
+          else
+            "    (no detail available)"
+          end),
+          ((.external_uris // [])[] | select(.type == "SANDCASTLE_INSTANCE") |
+            "    Sandcastle: \(.uri)"),
+          ""
+        ' 2>/dev/null | head -30
+      fi
+      ;;
+
+    TEST)
+      # Show failing/warning tests with details and reproduce commands
+      FAIL_WARN_COUNT=$(echo "$DATA" | jq '[.signalview_signals.signals.nodes[] | select(.status == "FAILED" or .status == "WARNING")] | length')
+      TEST_LIMIT=15
+      echo "Failing Tests:"
+      echo "$DATA" | jq -r --argjson limit "$TEST_LIMIT" '
+        [.signalview_signals.signals.nodes[] |
+         select(.status == "FAILED" or .status == "WARNING")] |
+        limit($limit; .[]) |
+        "  [TEST] [\(.status)] \(.name)",
+        (if .error_insights_info.cluster.id then
+          "    Cluster: \(.error_insights_info.cluster.id) (known error pattern — may be flaky)"
+        else empty end),
+        (if .debugger_slp_signal.expensive_signal_details.detail.relevant_execution_test_run_result then
+          "    Error: \(.debugger_slp_signal.expensive_signal_details.detail.relevant_execution_test_run_result.detail_short // "no detail" | .[0:300])",
+          (if .debugger_slp_signal.expensive_signal_details.detail.relevant_execution_test_run_result.local_repro_run_cmd then
+            "    Reproduce: \(.debugger_slp_signal.expensive_signal_details.detail.relevant_execution_test_run_result.local_repro_run_cmd)"
+          else empty end)
+        elif .debugger_slp_signal.expensive_signal_details.detail.description then
+          "    Error: \(.debugger_slp_signal.expensive_signal_details.detail.description | split("\n")[0] | .[0:300])"
+        elif (.debugger_slp_signal.expensive_signal_details.detail.events // [])[0].raw_message then
+          "    Error: \(.debugger_slp_signal.expensive_signal_details.detail.events[0].raw_message | split("\n")[0] | .[0:300])"
+        elif .debugger_json_string then
+          (try ("    Error: " + (.debugger_json_string | fromjson | (.land_issue.description // .extended_signal_details.generic_signal_extended_details.target_rev_event_details[0].verifiable_warning.message.content // .extended_signal_details.generic_signal_extended_details.target_rev_event_details[0].verifiable_failed.message.content // .message // "(no detail)") | split("\n")[0] | .[0:300]))
+          catch "    Error: (no detail available)")
+        else
+          "    Error: (no detail available)"
+        end),
+        ""
+      '
+      if [ "$FAIL_WARN_COUNT" -gt "$TEST_LIMIT" ]; then
+        echo "  ... and $((FAIL_WARN_COUNT - TEST_LIMIT)) more (use query_ci_signals --types TEST for full list)"
+      fi
+      ;;
+
+    BUILD_RULE)
+      # Show build rule failures with descriptions and reproduce commands
+      BR_COUNT=$(echo "$DATA" | jq '[.signalview_signals.signals.nodes[] | select(.status == "FAILED" or .status == "WARNING")] | length')
+      BR_LIMIT=10
+      echo "Build Rule Failures:"
+      echo "$DATA" | jq -r --argjson limit "$BR_LIMIT" '
+        [.signalview_signals.signals.nodes[] |
+         select(.status == "FAILED" or .status == "WARNING")] |
+        limit($limit; .[]) |
+        "  [BUILD] [\(.status)] \(.name)",
+        (if .debugger_slp_signal.expensive_signal_details.detail.description then
+          "    Error: \(.debugger_slp_signal.expensive_signal_details.detail.description | split("\n")[0] | .[0:300])"
+        elif (.debugger_slp_signal.expensive_signal_details.detail.events // [])[0].raw_message then
+          "    Error: \(.debugger_slp_signal.expensive_signal_details.detail.events[0].raw_message | split("\n")[0] | .[0:300])"
+        elif .debugger_json_string then
+          (try ("    Error: " + (.debugger_json_string | fromjson | (.land_issue.description // .extended_signal_details.generic_signal_extended_details.target_rev_event_details[0].verifiable_warning.message.content // .extended_signal_details.generic_signal_extended_details.target_rev_event_details[0].verifiable_failed.message.content // .message // "(no detail)") | split("\n")[0] | .[0:300]))
+          catch "    Error: (no detail available)")
+        else
+          "    Error: (no detail available)"
+        end),
+        (if .debugger_slp_signal.expensive_signal_details.detail.repro_command then
+          "    Reproduce: \(.debugger_slp_signal.expensive_signal_details.detail.repro_command)"
+        else empty end),
+        ""
+      '
+      if [ "$BR_COUNT" -gt "$BR_LIMIT" ]; then
+        echo "  ... and $((BR_COUNT - BR_LIMIT)) more (use query_ci_signals --types BUILD_RULE for full list)"
+      fi
+      ;;
+
+    JOB)
+      # Show workflow status breakdown
+      echo "Workflow Status:"
+      echo "$DATA" | jq -r '
+        .signalview_signals.signals.nodes[] |
+        "  [\(.status)] \(.name)"
+      '
+
+      echo ""
+      echo "Detailed Status Breakdown:"
+      echo "$DATA" | jq -r '
+        [.signalview_signals.signals.nodes[] |
+         .debugger_slp_signal.expensive_signal_details.detail.workflow.detailed_status // "UNKNOWN"] |
+        group_by(.) |
+        map({status: .[0], count: length}) |
+        .[] |
+        "  \(.status): \(.count)"
+      '
+
+      # Show error logs from insights if available
+      LOG_INSIGHTS=$(echo "$DATA" | jq '[.signalview_signals.signals.nodes[] | .debugger_slp_signal.expensive_signal_details.detail.workflow.insights[]? | select(.__typename == "CIWorkflowLogInsight")] | length')
+      if [ "$LOG_INSIGHTS" -gt 0 ]; then
+        echo ""
+        echo "Error Logs (first 200 chars from each workflow):"
+        echo "$DATA" | jq -r '
+          .signalview_signals.signals.nodes[] |
+          select(.debugger_slp_signal.expensive_signal_details.detail.workflow.insights[]?.__typename == "CIWorkflowLogInsight") |
+          "[\(.name)]:",
+          (.debugger_slp_signal.expensive_signal_details.detail.workflow.insights[] |
+           select(.__typename == "CIWorkflowLogInsight") |
+           .log | .[0:200]),
+          ""
+        '
+      fi
+
+      # Show reproduce commands if available
+      REPRO_CMDS=$(echo "$DATA" | jq '[.signalview_signals.signals.nodes[] | .debugger_slp_signal.expensive_signal_details.detail.repro_command] | unique | map(select(. != null)) | length')
+      if [ "$REPRO_CMDS" -gt 0 ]; then
+        echo ""
+        echo "Reproduce Commands:"
+        echo "$DATA" | jq -r '
+          [.signalview_signals.signals.nodes[] |
+           .debugger_slp_signal.expensive_signal_details.detail.repro_command] |
+          unique |
+          .[] |
+          select(. != null) |
+          "  \(.)"
+        '
+      fi
+
+      # Show details for signals without workflow data (e.g., CISignalBoxBuildDetail)
+      NON_WORKFLOW=$(echo "$DATA" | jq '[.signalview_signals.signals.nodes[] |
+        select(.status == "FAILED" or .status == "WARNING") |
+        select(.debugger_slp_signal.expensive_signal_details.detail.workflow == null)] | length' 2>/dev/null || echo 0)
+      if [ "$NON_WORKFLOW" -gt 0 ]; then
+        echo ""
+        echo "Non-workflow Signals:"
+        echo "$DATA" | jq -r '
+          def dbg_msg: if .debugger_json_string then (try (.debugger_json_string | fromjson | (.land_issue.description // .extended_signal_details.generic_signal_extended_details.target_rev_event_details[0].verifiable_warning.message.content // .extended_signal_details.generic_signal_extended_details.target_rev_event_details[0].verifiable_failed.message.content // .message // null) | if (. != null and . != "") then . else null end) catch null) else null end;
+          def detail: .debugger_slp_signal.expensive_signal_details.detail;
+          .signalview_signals.signals.nodes[] |
+          select(.status == "FAILED" or .status == "WARNING") |
+          select(detail.workflow == null) |
+          "  [\(.status)] \(.name)",
+          (if detail.recommended_user_action_message then
+            "    \(detail.recommended_user_action_message | split("\n")[0] | .[0:300])"
+          elif (detail.log_suggestions // []) | length > 0 then
+            (detail.log_suggestions[:3][] | "    \(.title // ""): \(.suggestion // "" | split("\n")[0] | .[0:300])")
+          elif detail.status_text then
+            "    Status: \(detail.status_text)"
+          elif dbg_msg then
+            (dbg_msg | split("\n") | map(select(. != "")) | .[0:3] | .[] | "    \(.[0:300])")
+          else empty end),
+          (if detail.repro_command then
+            "    Reproduce: \(detail.repro_command)"
+          else empty end),
+          ((.external_uris // [])[] | select(.type == "SANDCASTLE_INSTANCE") |
+            "    Sandcastle: \(.uri)"),
+          ""
+        ' 2>/dev/null | head -50
+      fi
+      ;;
+
+    REVIEW_INSIGHTS)
+      # Fetch and display actual CRA/Confucius feedback content
+      RI_OUTPUT=$("$SCRIPT_DIR/query_review_insights" "D${DIFF_NUM}" 2>/dev/null) || true
+
+      if [ -n "$RI_OUTPUT" ]; then
+        echo "$RI_OUTPUT" | python3 -c "
+import sys, json
+
+raw = sys.stdin.read()
+decoder = json.JSONDecoder()
+pos = 0
+while pos < len(raw):
+    raw_stripped = raw[pos:].lstrip()
+    if not raw_stripped:
+        break
+    pos = len(raw) - len(raw_stripped)
+    try:
+        d, end = decoder.raw_decode(raw, pos)
+        pos = end
+        if pos >= len(raw):
+            break
+    except json.JSONDecodeError:
+        break
+    status = d.get('status', '')
+    if status in ('WARNING', 'FAILED'):
+        print(f'  [{status}] {d.get(\"name\", \"unknown\")}')
+        msg = d.get('message', 'No message')
+        lines = msg[:2000].split('\n')
+        for line in lines:
+            print(f'    {line}')
+        if len(msg) > 2000:
+            print('    ...(truncated)')
+        print()
+" || echo "  (Could not parse review insights — check query_review_insights output)"
+      else
+        echo "  (No review insights details available)"
+      fi
+
+      # Show inline signals from AI diff reviewers (file-level feedback)
+      if [ -n "$DATA" ] && echo "$DATA" | jq -e '.signalview_signals' >/dev/null 2>&1; then
+        INLINE_COUNT=$(echo "$DATA" | jq '[.signalview_signals.signals.nodes[] | .debugger_slp_signal.expensive_signal_details.detail.inline_signals[]?] | length')
+        if [ "$INLINE_COUNT" -gt 0 ]; then
+          echo ""
+          echo "Inline Review Feedback:"
+          echo "$DATA" | jq -r '
+            [.signalview_signals.signals.nodes[] |
+             .debugger_slp_signal.expensive_signal_details.detail.inline_signals[]?] |
+            .[] |
+            "  [\(.severity // "INFO")] \(.file_path // "?"):\(.line_number // "?")",
+            "    \(.title // ""): \(.message // "no message" | split("\n")[0] | .[0:300])",
+            ""
+          ' 2>/dev/null | head -30
+        fi
+
+        # Show automated review summaries (AI Test Quality Check, etc.)
+        echo "$DATA" | jq -r '
+          .signalview_signals.signals.nodes[] |
+          select(.status == "FAILED" or .status == "WARNING") |
+          select(.debugger_slp_signal.expensive_signal_details.detail.shown_automated_review_and_summary != null) |
+          .debugger_slp_signal.expensive_signal_details.detail.shown_automated_review_and_summary |
+          select(.summary != null or .review != null) |
+          "",
+          "  Review: \(.review.name // "unknown") — \(.summary // "no summary")",
+          (if .review.feedback_direction_markdown then
+            (.review.feedback_direction_markdown | split("\n") | map(select(. != "")) | .[0:10] | .[] | "    \(.[0:300])")
+          else empty end),
+          ""
+        ' 2>/dev/null
+      fi
+      ;;
+
+    *)
+      # Generic fallback for unrecognized signal types
+      DEFAULT_COUNT=$(echo "$DATA" | jq '[.signalview_signals.signals.nodes[] | select(.status == "FAILED" or .status == "WARNING")] | length')
+      DEFAULT_LIMIT=10
+      echo "$DATA" | jq -r --argjson limit "$DEFAULT_LIMIT" '
+        def dbg_desc: if .debugger_json_string then (try (.debugger_json_string | fromjson | (.land_issue.description // .extended_signal_details.generic_signal_extended_details.target_rev_event_details[0].verifiable_warning.message.content // .extended_signal_details.generic_signal_extended_details.target_rev_event_details[0].verifiable_failed.message.content // .message // null) | if (. != null and . != "") then . else null end) catch null) else null end;
+        def has_sc_uris: ((.external_uris // []) | map(select(.type == "SANDCASTLE_INSTANCE" or .type == "SANDCASTLE_WORKFLOW")) | length) > 0;
+        def detail: .debugger_slp_signal.expensive_signal_details.detail;
+        [.signalview_signals.signals.nodes[] |
+         select(.status == "FAILED" or .status == "WARNING")] |
+        limit($limit; .[]) |
+        "  [\(.status)] \(.name)",
+        (if detail.description then
+          "    \(detail.description | split("\n")[0] | .[0:300])"
+        elif detail.relevant_execution_test_run_result.detail_short then
+          "    \(detail.relevant_execution_test_run_result.detail_short | .[0:300])"
+        elif (detail.events // [])[0].raw_message then
+          (detail.events[0].raw_message |
+           split("\n") | map(select(. != "")) | .[0:5] | .[] | "    \(.[0:300])")
+        elif (detail.results // [])[0].test_result_message_markdown then
+          (detail.results[] | "    [\(.severity // "?")] \(.signal_display_title // ""): \(.test_result_message_markdown // "" | split("\n")[0] | .[0:300])")
+        elif (detail.inline_events // [])[0].message then
+          (detail.inline_events[] | "    [\(.severity // "?")] \(.primary_filepath // ""):\(.primary_line_number // ""): \(.message // "" | split("\n")[0] | .[0:300])")
+        elif detail.recommended_user_action_message then
+          "    \(detail.recommended_user_action_message | split("\n")[0] | .[0:300])"
+        elif (detail.log_suggestions // [])[0].suggestion then
+          (detail.log_suggestions[:3][] | "    \(.title // ""): \(.suggestion // "" | split("\n")[0] | .[0:300])")
+        elif detail.shown_automated_review_and_summary.summary then
+          "    \(detail.shown_automated_review_and_summary.summary | split("\n") | map(select(. != "")) | .[0:5] | .[] | .[0:300])"
+        elif (detail.asset_phabricator_semantic_type_mutation_record // []) | length > 0 then
+          (detail.asset_phabricator_semantic_type_mutation_record[:5][] | "    [\(.mutation_type // "?")] \(.file_path // "?") (\(.asset_class // "?"))")
+        elif detail.status_text then
+          "    Status: \(detail.status_text)"
+        elif detail.configerator_canary_id then
+          "    Canary: \(detail.configerator_canary_id) (holding: \(detail.is_holding_signal // false))"
+        elif dbg_desc then
+          (dbg_desc | split("\n") | map(select(. != "")) | .[0:5] | .[] | "    \(.[0:300])")
+        elif has_sc_uris then
+          ((.external_uris // [])[] | select(.type == "SANDCASTLE_INSTANCE" or .type == "SANDCASTLE_WORKFLOW") |
+            "    Sandcastle: \(.uri)")
+        else
+          "    (no detail — check signal box on Phabricator)"
+        end),
+        ""
+      '
+      if [ "$DEFAULT_COUNT" -gt "$DEFAULT_LIMIT" ]; then
+        echo "  ... and $((DEFAULT_COUNT - DEFAULT_LIMIT)) more"
+      fi
+      ;;
+  esac
+
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+done
+
+echo "Analysis complete for D${DIFF_NUM}"
+echo ""
+echo "To get full details for a specific type, run:"
+echo "  scripts/query_ci_signals D${DIFF_NUM} --types <TYPE>"

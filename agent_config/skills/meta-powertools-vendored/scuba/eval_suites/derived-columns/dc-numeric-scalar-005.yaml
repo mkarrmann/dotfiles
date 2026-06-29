@@ -1,0 +1,45 @@
+id: dc-numeric-scalar-005
+suite: derived-columns
+project: scuba-evals
+description: Tests numeric derived column with type Numeric for scalar arithmetic
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "An engineer wants to compute a ratio between two numeric columns."
+question: "From scuba_queries in the last hour, compute the ratio of cpu_time to total_time_ms as a percentage for each query, and show the average ratio grouped by query_source."
+
+mock_data: |
+  meta scuba.dataset query response:
+    results:
+      query_source | AVG(cpu_ratio_pct)
+      datamate     | 45.2
+      scuba_ui     | 38.7
+      api          | 27.1
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: uses_query
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.dataset query"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: computes_ratio
+    description: "Agent computes a per-row ratio of cpu_time to total_time_ms using either --derived-cols or --sql mode"
+    check: "Response uses either --derived-cols with a Numeric type derived column computing (cpu_time / total_time_ms) * 100, OR --sql mode with an equivalent SQL expression like AVG(cpu_time / total_time_ms * 100). Both approaches are acceptable."
+  - id: presents_results
+    description: "Agent presents ratio results grouped by query_source"
+    check: "Response shows average ratio values grouped by query_source"
+
+quality_factors:
+  - id: correct_formula
+    description: "Uses correct formula like (cpu_time / total_time_ms) * 100 or equivalent"
+    weight: 0.5
+  - id: aggregates_correctly
+    description: "Uses metric AVG to aggregate the per-row ratio across groups"
+    weight: 0.3
+  - id: uses_numeric_type_if_derived
+    description: "If using --derived-cols, uses type Numeric for the per-row scalar formula"
+    weight: 0.2

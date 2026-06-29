@@ -1,0 +1,9 @@
+load("@fbcode_macros//build_defs:native_rules.bzl", "buck_filegroup")
+
+oncall("tupperware")
+
+buck_filegroup(
+    name = "skill_resources",
+    srcs = glob(["**/*"]),
+    visibility = ["PUBLIC"],
+)

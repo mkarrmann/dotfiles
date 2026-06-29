@@ -1,0 +1,34 @@
+id: gdocs-perm-002
+name: Share with user
+category: permissions
+prompt: Share https://docs.google.com/document/d/1abc123/edit with johndoe@meta.com as an editor.
+description: Tests sharing a doc with a specific user
+expected_behavior: Agent uses permissions share with correct email and role
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Share result: Permission added for johndoe@meta.com as writer.
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent share the doc with johndoe@meta.com as a writer/editor?
+    weight: 3
+    rubric:
+      5: Agent shared the doc with the correct email and writer role
+      3: Agent shared the doc but role was unclear
+      1: Agent did not share the document
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

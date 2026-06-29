@@ -1,0 +1,47 @@
+id: cr-column-values-001
+suite: critical-rules
+project: scuba-evals
+description: Tests that agent calls column values before filtering on a string column (CR1)
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A data analyst wants to see query counts filtered by query type."
+question: "Show me the count of queries in scuba_queries over the last hour, filtered to SQL-type queries, grouped by query_source."
+
+mock_data: |
+  meta scuba.column values response for query_type on scuba_queries:
+    values: ["sql", "graphql", "presto_sql", "drilldown", "time_series", "samples"]
+  meta scuba.dataset query response:
+    results:
+      query_source | COUNT
+      datamate     | 2847
+      scuba_ui     | 1523
+      api          | 891
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: calls_column_values
+    type: tool_called
+    tool_name: Bash
+    description: "Agent calls meta scuba.column values for query_type"
+    arguments:
+      command: "meta scuba.column values"
+  - id: calls_query
+    type: tool_called
+    tool_name: Bash
+    description: "Agent executes the query"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: presents_results
+    description: "Agent presents query results to user"
+    check: "Response includes results showing query_source and counts in a readable format"
+  - id: checks_values_before_querying
+    description: "Agent checks column values BEFORE executing the query"
+    check: "In the tool call sequence, meta scuba.column values is called BEFORE meta scuba.dataset query"
+
+quality_factors:
+  - id: explains_filter
+    description: "Explains what filter was applied and how it was determined from column values"
+    weight: 1.0

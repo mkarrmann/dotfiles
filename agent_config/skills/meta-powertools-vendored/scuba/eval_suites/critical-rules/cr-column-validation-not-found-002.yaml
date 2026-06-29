@@ -1,0 +1,48 @@
+id: cr-column-validation-not-found-002
+suite: critical-rules
+project: scuba-evals
+description: Tests that agent handles not_found_columns gracefully (CR3 negative case)
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user provides column names that partially don't exist in the dataset."
+question: "Show me the average response_time and error_rate from scuba_queries over the last hour, grouped by query_source."
+
+mock_data: |
+  meta scuba.dataset info response for column validation on scuba_queries:
+    column_search_results:
+      searched_columns: ["response_time", "error_rate", "query_source"]
+      found_columns: ["query_source"]
+      not_found_columns: ["response_time", "error_rate"]
+    columns:
+      - column_name: cpu_time
+        column_type: INTEGER
+        description: "CPU time consumed"
+      - column_name: total_time_ms
+        column_type: INTEGER
+        description: "Total query time in ms"
+      - column_name: query_source
+        column_type: STRING
+        description: "Source of the query"
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: calls_dataset_info
+    type: tool_called
+    tool_name: Bash
+    description: "Agent validates column names using meta scuba.dataset info"
+    arguments:
+      command: "meta scuba.dataset info"
+  - id: handles_not_found
+    description: "Agent informs user about non-existent columns and suggests alternatives"
+    check: "Agent tells the user that response_time and error_rate were not found in the dataset and suggests similar columns like cpu_time or total_time_ms"
+
+quality_factors:
+  - id: suggests_alternatives
+    description: "Suggests specific alternative columns from the dataset"
+    weight: 0.6
+  - id: does_not_proceed_blindly
+    description: "Does not attempt to run a query with the invalid column names"
+    weight: 0.4

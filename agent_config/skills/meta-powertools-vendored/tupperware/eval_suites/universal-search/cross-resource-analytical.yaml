@@ -1,0 +1,32 @@
+id: cross-resource-analytical
+suite: universal-search
+project: tupperware-evals
+name: "Cross-Resource Analytical Query"
+category: core
+question: |
+  What commands and approach would you use to: Find all jobs owned by oncall team tupperware_platform_core that are deployed on reservations in the twshared pool. How many total tasks do they have?
+expected_behavior: |
+  Agent should use jsonPathFilter on ownership field, multi-step traversal, client-side aggregation.
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  semantic_checks:
+    - question: "Uses jsonPathFilter for ownership filtering?"
+      weight: 3
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"
+    - question: "Performs multi-hop traversal (jobs→tasks)?"
+      weight: 3
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"
+    - question: "Aggregates task counts client-side?"
+      weight: 1
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"

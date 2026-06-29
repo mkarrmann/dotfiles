@@ -1,0 +1,30 @@
+id: wiki-routing-003
+name: Explains why GraphQL is preferred over curl
+category: routing
+prompt: I usually use curl to fetch wiki pages. Is there a better way to get wiki content?
+description: Tests that the agent explains the advantages of GraphQL over curl for wiki content
+expected_behavior: Agent recommends graphql_wiki_content and explains why it is preferred over curl
+eval_target: response
+fail_on_unmocked_command: true
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent recommend using the graphql_wiki_content script instead of curl?
+    weight: 3
+    rubric:
+      5: Agent recommended scripts/graphql_wiki_content and provided usage example
+      3: Agent mentioned GraphQL but was vague about the specific script
+      1: Agent did not recommend an alternative to curl
+  - question: Did the agent explain the advantages of GraphQL over curl (clean content, structured response, reliability, efficiency)?
+    weight: 2
+    rubric:
+      5: Agent mentioned at least 2 advantages such as clean markdown output, structured JSON, reliability, or efficiency
+      3: Agent mentioned one advantage but was not comprehensive
+      1: Agent did not explain any advantages
+project: wiki-query-evals
+target_skills:
+- fbcode/claude-templates/components/skills/wiki-query/SKILL.md
+working_directory: ~/fbsource/fbcode

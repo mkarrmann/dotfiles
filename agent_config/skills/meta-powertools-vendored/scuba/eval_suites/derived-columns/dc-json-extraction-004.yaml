@@ -1,0 +1,51 @@
+id: dc-json-extraction-004
+suite: derived-columns
+project: scuba-evals
+description: Tests GET_JSON_OBJECT with $.prefix, type String, and NULL filter (from TP-8)
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "An analyst needs to extract a field from a JSON column and aggregate by it."
+question: "From core_viz_session_actions in the last hour, extract the \"metric\" field from the action_metadata JSON column for actions containing \"scuba_tools\" and count queries per metric type, grouped by the extracted value."
+
+mock_data: |
+  meta scuba.column values response for action on core_viz_session_actions:
+    values: ["scuba_tools_execute_query", "scuba_tools_column_values", "scuba_tools_dataset_info", "drilldown_click", "filter_add"]
+  meta scuba.dataset query response with --derived-cols:
+    results:
+      extracted_metric  | COUNT
+      execute_query     | 1234
+      column_values     | 567
+      dataset_info      | 345
+      find_dataset      | 123
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: uses_query
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.dataset query with --derived-cols"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: uses_derived_cols
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses --derived-cols for JSON extraction"
+    arguments:
+      command: "--derived-cols"
+  - id: filters_to_scuba_tools
+    description: "Agent filters to actions containing scuba_tools"
+    check: "Response includes a constraint or filter for action values containing scuba_tools"
+
+quality_factors:
+  - id: filters_null
+    description: "Adds IS NOT NULL filter for non-matching rows"
+    weight: 0.3
+  - id: correct_json_syntax
+    description: "Uses GET_JSON_OBJECT with correct $.prefix syntax and String type"
+    weight: 0.4
+  - id: groups_by_extracted
+    description: "Groups by the extracted metric value"
+    weight: 0.3

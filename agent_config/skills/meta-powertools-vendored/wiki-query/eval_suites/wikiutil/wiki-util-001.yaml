@@ -1,0 +1,48 @@
+id: wiki-util-001
+name: List subpages of a wiki page
+category: wikiutil
+prompt: List all subpages under the wiki page Workplace_Eng/Architecture.
+description: Tests that the agent uses WikiUtil -l to list subpages
+expected_behavior: Agent uses phps WikiUtil -l to list subpages under the given path
+eval_target: response
+mock_data: |
+  Wiki path: Workplace_Eng/Architecture
+  WikiUtil -l output:
+    Listing subpages of Workplace_Eng/Architecture ...
+    - Workplace_Eng/Architecture - editor type: Easy Edit Mode 2.0
+    - Workplace_Eng/Architecture/Backend_Services - editor type: Easy Edit Mode 2.0
+    - Workplace_Eng/Architecture/Frontend_Components - editor type: Easy Edit Mode 2.0
+    - Workplace_Eng/Architecture/Data_Models - editor type: Redirect
+    - Workplace_Eng/Architecture/API_Design - editor type: Easy Edit Mode 2.0
+    - Workplace_Eng/Architecture/Testing_Strategy - editor type: LEXICAL
+    Done.
+fail_on_unmocked_command: true
+intercept_patterns:
+- graphql_wiki_content
+- 'jf graphql'
+- WikiUtil
+- 'phps '
+intercept_mcp_tools:
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent return a list of subpages under Workplace_Eng/Architecture?
+    weight: 3
+    rubric:
+      5: Agent returned a list of subpages including Backend_Services, Frontend_Components, Data_Models, API_Design, and Testing_Strategy
+      3: Agent returned some subpages but missed entries
+      1: Agent did not return any subpage listing
+  - question: Did the agent use phps WikiUtil -l to list the subpages?
+    weight: 2
+    rubric:
+      5: Agent used phps WikiUtil -l "Workplace_Eng/Architecture"
+      3: Agent used an alternative method to discover subpages
+      1: Agent did not attempt to list subpages
+project: wiki-query-evals
+target_skills:
+- fbcode/claude-templates/components/skills/wiki-query/SKILL.md
+working_directory: ~/fbsource/fbcode

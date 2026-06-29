@@ -1,0 +1,45 @@
+id: gdocs-read-002
+name: Read specific tab
+category: reading
+prompt: Read the 'Budget' tab from the doc https://docs.google.com/document/d/1abc123/edit
+description: Tests that the agent reads a specific tab using --tab-id
+expected_behavior: Agent uses meta google.docs get with --tab-id flag to read the Budget tab
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Project Plan
+  Tabs:
+    - tab_id: t.0 (title: Overview)
+      content: <h1>Overview</h1><p>This is the overview tab.</p>
+    - tab_id: t.abc (title: Budget)
+      content: <h1>Budget</h1><p>Total budget: $500,000</p><p>Engineering: $300,000</p><p>Marketing: $200,000</p>
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent retrieve the Budget tab content showing budget figures?
+    weight: 3
+    rubric:
+      5: Agent returned Budget tab content with budget figures
+      3: Agent returned some content but unclear if it was the Budget tab
+      1: Agent did not retrieve tab-specific content
+  - question: Did the agent use --tab-id or equivalent to target the specific tab?
+    weight: 2
+    rubric:
+      5: Agent listed tabs to find the ID, then used --tab-id to read the Budget tab
+      3: Agent read the doc and identified Budget content without explicitly using --tab-id
+      1: Agent did not attempt to read a specific tab
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

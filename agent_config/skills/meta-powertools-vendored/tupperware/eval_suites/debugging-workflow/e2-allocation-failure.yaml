@@ -1,0 +1,36 @@
+id: e2-allocation-failure
+suite: debugging-workflow
+project: tupperware-evals
+name: Allocation failure — correct Scuba columns and allocation CLI
+category: debugging
+description: Tests allocation failure investigation. Validates correct tw_allocator_v2_allocation_failures columns (failures JSON, not failure_reason) and correct tupperware_scheduler_feature_rollout columns (featureDiff/domain, not feature_name/region).
+question: |
+  I need to query tw_allocator_v2_allocation_failures in Scuba to understand why allocation is failing. What column contains the failure details — is it failure_reason or something else? Also, what are the correct column names for tupperware_scheduler_feature_rollout — is it feature_name/region or something else? Show me the exact commands.
+expected_behavior: |
+  Agent should: use tw allocation explain and rbcli for allocation debugging;
+  query tw_allocator_v2_allocation_failures using failures JSON column (not non-existent failure_reason);
+  query tupperware_scheduler_feature_rollout using featureDiff and domain columns (not feature_name and region);
+  discover ft303 columns via meta scuba.dataset info.
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  semantic_checks:
+    - question: Agent used tw allocation explain correctly (not tw allocation show/list/info)?
+      weight: 3
+      rubric:
+        5: Used tw allocation explain correctly
+        3: Tried wrong subcommand but self-corrected
+        1: Used nonexistent tw allocation subcommands
+    - question: Agent queried allocation failures using the failures JSON column (not non-existent failure_reason)?
+      weight: 3
+      rubric:
+        5: Used failures column or discovered columns via meta scuba.dataset info
+        3: Initially tried failure_reason but self-corrected
+        1: Used failure_reason without correcting
+    - question: Agent used rbcli search for allotment state inspection?
+      weight: 2
+      rubric:
+        5: Used rbcli search with correct --target and --match flags
+        3: Used rbcli but with wrong flags
+        1: Did not use rbcli at all

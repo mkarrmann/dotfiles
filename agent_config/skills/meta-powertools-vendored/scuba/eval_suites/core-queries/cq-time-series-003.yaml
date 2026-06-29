@@ -1,0 +1,42 @@
+id: cq-time-series-003
+suite: core-queries
+project: scuba-evals
+description: Tests time series query with time_bucket and percentile metric
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "An engineer wants to track P95 latency over time."
+question: "Show me the P95 cpu_time from scuba_queries as a time series over the last 7 days with hourly buckets."
+
+mock_data: |
+  meta scuba.dataset query response for time series:
+    scuba_url: "https://www.internalfb.com/intern/scuba/query/?dataset=scuba_queries&pool=uber&view=time_series&drillstate=N4IgxgDgFghgTg..."
+    results:
+      time                    | P95(cpu_time)
+      2025-01-08 00:00:00     | 450000
+      2025-01-08 01:00:00     | 425000
+      2025-01-08 02:00:00     | 380000
+      2025-01-08 03:00:00     | 510000
+      2025-01-08 04:00:00     | 390000
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: uses_query
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.dataset query for time series"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: correct_metric_and_column
+    description: "Agent uses P95 metric with cpu_time column"
+    check: "Response shows P95 cpu_time time series data with hourly data points"
+  - id: correct_time_params
+    description: "Agent sets appropriate time range and bucket"
+    check: "Response shows data spanning multiple days with hourly granularity"
+
+quality_factors:
+  - id: presents_trend
+    description: "Presents the time series data showing the trend"
+    weight: 1.0

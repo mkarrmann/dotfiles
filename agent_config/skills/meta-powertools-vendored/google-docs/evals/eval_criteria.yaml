@@ -1,0 +1,627 @@
+project: google-docs
+default_working_directory: ~/fbsource/fbcode
+
+test_cases:
+  # ===== INVOCATION (3 test cases) =====
+
+  - id: TC-001
+    name: "Natural language invocation — doc creation request"
+    category: invocation
+    prompt: "I need to write up our team's quarterly planning in a Google Doc. Can you create one called 'Measurement Foundations Q2 Planning' with sections for Goals, Key Results, Risks, and Timeline?"
+    description: "Tests whether the skill triggers from a natural language request about creating a Google Doc, without using /google-docs syntax."
+    expected_behavior: "The skill should activate and use the meta google.docs CLI to create a new Google Doc with the requested title and sections. It should use ghtml or markdown content for the sections."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/google-docs/SKILL.md"
+    quality_criteria:
+      required_present: []
+      required_absent: ["I don't have access to Google Docs"]
+      semantic_checks:
+        - question: "Did the google-docs skill activate and attempt to create the document using the meta google.docs CLI?"
+          weight: 3
+          rubric:
+            5: "Skill activated, used meta google.docs create with title and content containing all 4 sections"
+            4: "Skill activated, used meta google.docs create but missing 1 section or minor issue"
+            3: "Skill partially activated — recognized intent but used wrong tool or incomplete command"
+            2: "Skill not invoked — gave instructions instead of executing"
+            1: "No Google Docs functionality attempted"
+        - question: "Did the response use the correct meta google.docs CLI syntax for document creation?"
+          weight: 2
+          rubric:
+            5: "Used meta google.docs create with --from or --content flag and proper ghtml/markdown content"
+            4: "Used meta google.docs create with correct syntax but suboptimal content format"
+            3: "Attempted meta google.docs create but with syntax errors"
+            2: "Used a different tool entirely"
+            1: "No CLI command attempted"
+        - question: "Were all four requested sections (Goals, Key Results, Risks, Timeline) included?"
+          weight: 1
+          rubric:
+            5: "All 4 sections present as headings with placeholder content"
+            4: "All 4 sections present as headings"
+            3: "3 of 4 sections present"
+            2: "1-2 sections present"
+            1: "No sections included"
+      artifact_checks: []
+
+  - id: TC-002
+    name: "Invocation — read document via URL"
+    category: invocation
+    prompt: "/google-docs Read this document and tell me what the main action items are: https://docs.google.com/document/d/1a2b3c4d5e6f/edit"
+    description: "Tests that the skill uses meta google.docs get with the correct URL and ghtml format when given a document URL."
+    expected_behavior: "The skill should use meta google.docs get with the doc URL/ID in ghtml format (default), handle the URL correctly, and avoid using --text flag."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/google-docs/SKILL.md"
+    quality_criteria:
+      required_present: []
+      required_absent: ["I don't have access to Google Docs"]
+      semantic_checks:
+        - question: "Did the skill use meta google.docs get to read the document?"
+          weight: 3
+          rubric:
+            5: "Used meta google.docs get with the doc URL/ID in ghtml format (default)"
+            4: "Used meta google.docs get but specified a non-default format"
+            3: "Used meta google.docs get but with suboptimal flags"
+            2: "Did not use meta google.docs get — tried a different approach"
+            1: "No attempt to read the document"
+        - question: "Did the skill correctly handle the URL (extract doc ID or pass URL directly)?"
+          weight: 2
+          rubric:
+            5: "Passed the full URL or correctly extracted doc ID 1a2b3c4d5e6f to meta google.docs get"
+            4: "Handled URL with minor issues"
+            3: "Attempted to parse URL but made errors"
+            2: "Asked user for doc ID despite URL being provided"
+            1: "Could not process the URL"
+        - question: "Did the skill avoid using --text flag (which discards formatting and comments)?"
+          weight: 2
+          rubric:
+            5: "Used default ghtml format — no --text flag"
+            4: "Used --markdown (lossy but acceptable)"
+            3: "Used --raw-json (verbose but preserves data)"
+            2: "Used --text (discards formatting)"
+            1: "Did not attempt to read"
+      artifact_checks: []
+
+  - id: TC-003
+    name: "Negative invocation — unrelated spreadsheet request"
+    category: invocation
+    prompt: "Can you help me create a pivot table in my Google Sheet to analyze the Q2 revenue data by region? The sheet is at https://docs.google.com/spreadsheets/d/1xyz789/edit"
+    description: "Tests that the google-docs skill does NOT activate for a Google Sheets request. The skill should recognize this is a Sheets task, not a Docs task."
+    expected_behavior: "The skill should NOT activate. The response should either use meta google.sheets CLI or explain that this is a Sheets task, not redirect to Google Docs functionality."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/google-docs/SKILL.md"
+    quality_criteria:
+      required_present: []
+      required_absent: ["meta google.docs create", "meta google.docs get", "meta google.docs.insert", "meta google.docs structure"]
+      semantic_checks:
+        - question: "Did the skill correctly NOT activate for a Google Sheets request?"
+          weight: 3
+          rubric:
+            5: "Did not use meta google.docs commands — correctly identified this as a Sheets task and used meta google.sheets or appropriate tool"
+            4: "Did not use meta google.docs commands — recognized it's not a Docs task"
+            3: "Briefly mentioned meta google.docs but correctly pivoted to Sheets"
+            2: "Attempted to use meta google.docs on a spreadsheet URL"
+            1: "Fully activated meta google.docs for a Sheets task"
+        - question: "Did the response acknowledge the Google Sheets context appropriately?"
+          weight: 2
+          rubric:
+            5: "Recognized the spreadsheet URL and used meta google.sheets CLI or appropriate Sheets tool"
+            4: "Recognized it as Sheets but gave general advice"
+            3: "Partially recognized the distinction"
+            2: "Confused Docs and Sheets"
+            1: "Treated the spreadsheet as a document"
+      artifact_checks: []
+
+  # ===== RESILIENCE (1 test case) =====
+
+  - id: TC-011
+    name: "Resilience — graceful error recovery from meta google.docs get failure"
+    category: resilience
+    prompt: "/google-docs Read the document at https://docs.google.com/document/d/1NONEXISTENT999/edit and add a summary section at the top"
+    description: "Tests graceful error handling when meta google.docs get fails (e.g., document doesn't exist or access denied). The skill should report the issue clearly and suggest next steps rather than crashing or hallucinating content."
+    expected_behavior: "The skill should attempt meta google.docs get, receive an error (not found or permission denied), report it clearly to the user, and suggest checking the URL or permissions. It should NOT fabricate document content or silently proceed."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/google-docs/SKILL.md"
+    quality_criteria:
+      required_present: []
+      required_absent: ["here is the summary of the document", "the document contains the following"]
+      semantic_checks:
+        - question: "Did the skill handle the meta google.docs get failure gracefully without crashing or hallucinating?"
+          weight: 3
+          rubric:
+            5: "Attempted meta google.docs get, caught the failure, reported it clearly with the specific message, and suggested checking URL or permissions"
+            4: "Caught the failure and reported it, but without specific suggestions"
+            3: "Reported a generic issue without the actual meta google.docs output"
+            2: "Ignored the failure and tried to proceed"
+            1: "Fabricated document content or crashed"
+        - question: "Did the skill avoid proceeding with the edit after the read failure?"
+          weight: 3
+          rubric:
+            5: "Stopped after the failure, did not attempt to add a summary to a document that couldn't be read"
+            4: "Stopped but offered to retry"
+            3: "Attempted the edit anyway with placeholder content"
+            2: "Proceeded as if the read succeeded"
+            1: "Applied edits to non-existent content"
+        - question: "Did the skill suggest actionable next steps?"
+          weight: 2
+          rubric:
+            5: "Suggested checking URL validity, verifying permissions, or trying a different doc ID"
+            4: "Suggested one actionable step"
+            3: "Gave vague advice"
+            2: "No suggestions"
+            1: "Misleading suggestions"
+      artifact_checks: []
+
+  # ===== PERMISSIONS & SHARING (1 test case) =====
+
+  - id: TC-012
+    name: "Permissions — share doc with multiple users at different access levels"
+    category: permissions
+    prompt: "/google-docs Share the document at https://docs.google.com/document/d/1shareDoc42/edit with alice@meta.com as an editor, bob@meta.com as a commenter, and charlie@meta.com as a viewer. Then list all current permissions to confirm."
+    description: "Tests the skill's ability to share a document with multiple users at different permission levels and verify the result."
+    expected_behavior: "The skill should use meta google.docs.share grant for each user with the correct role (writer for editor, commenter for commenter, reader for viewer), then use meta google.docs.share list to confirm."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/google-docs/SKILL.md"
+    quality_criteria:
+      required_present: []
+      required_absent: ["I cannot share documents"]
+      semantic_checks:
+        - question: "Did the skill correctly map the requested access levels to meta google.docs permission roles?"
+          weight: 3
+          rubric:
+            5: "Used writer for editor, commenter for commenter, reader for viewer — all 3 correct"
+            4: "2 of 3 role mappings correct"
+            3: "1 of 3 role mappings correct"
+            2: "Used incorrect roles for all users"
+            1: "Did not attempt sharing"
+        - question: "Did the skill share with all 3 users using separate meta google.docs.share grant calls?"
+          weight: 3
+          rubric:
+            5: "Three separate meta google.docs.share grant commands, one per user with correct email and role"
+            4: "Shared with all 3 users but combined them incorrectly"
+            3: "Shared with 2 of 3 users"
+            2: "Shared with 1 user only"
+            1: "No sharing attempted"
+        - question: "Did the skill verify permissions with meta google.docs.share list after sharing?"
+          weight: 2
+          rubric:
+            5: "Ran meta google.docs.share list after all shares and reported the current permission state"
+            4: "Ran permissions list but didn't summarize the result"
+            3: "Claimed to verify without running permissions list"
+            2: "Did not verify"
+            1: "No verification attempted"
+      artifact_checks: []
+
+  # ===== FORMATTING (1 test case) =====
+
+  - id: TC-013
+    name: "Formatting — create doc with multiple formatted elements"
+    category: formatting
+    prompt: "/google-docs Create a new Google Doc called 'Q2 Performance Report' using ghtml with the following elements: 1) An H1 heading 'Q2 Performance Report' 2) A horizontal rule 3) A 3-column table with headers 'Metric', 'Target', 'Actual' and 3 data rows 4) A bulleted list with items: 'Revenue growth', 'User retention', 'Cost reduction' 5) Bold the word 'Target' in the table header"
+    description: "Tests the skill's ability to create a document containing multiple formatting elements: headings, horizontal rules, tables with bold headers, and bulleted lists — all via ghtml."
+    expected_behavior: "The skill should use meta google.docs create with a ghtml file containing all requested elements. The ghtml should include <h1>, <hr>, <table> with <b>Target</b>, and <ul>/<li> tags."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/google-docs/SKILL.md"
+    quality_criteria:
+      required_present: []
+      required_absent: []
+      semantic_checks:
+        - question: "Were all 5 formatting elements included in the created document (heading, horizontal rule, table, bulleted list, bold)?"
+          weight: 3
+          rubric:
+            5: "All 5 elements present: H1 heading, horizontal rule, 3-column table with data rows, bulleted list with 3 items, bold on 'Target'"
+            4: "4 of 5 elements present"
+            3: "3 of 5 elements present"
+            2: "1-2 elements present"
+            1: "No formatted elements created"
+        - question: "Did the skill use ghtml format for the document content?"
+          weight: 3
+          rubric:
+            5: "Used ghtml with proper HTML tags (<h1>, <hr>, <table>, <ul>, <b>) — created the doc with meta google.docs create then applied ghtml via meta google.docs apply --from=<file> or replace --file=<file>"
+            4: "Used ghtml inline via meta google.docs apply or replace with --html=<inline> or similar"
+            3: "Used markdown instead of ghtml (lossy but functional)"
+            2: "Used plain text content"
+            1: "No document created"
+        - question: "Was the table correctly structured with 3 columns (Metric, Target, Actual) and bold header?"
+          weight: 2
+          rubric:
+            5: "3 columns (Metric, Target, Actual) with <b>Target</b> in header, plus data rows"
+            4: "Correct structure but minor formatting issues"
+            3: "Correct columns but missing bold or wrong row count"
+            2: "Incorrect column structure"
+            1: "No table created"
+      artifact_checks: []
+
+  # ===== EFFICIENCY (3 test cases) =====
+
+  - id: TC-004
+    name: "Efficiency — create doc with table using minimal tool calls"
+    category: efficiency
+    prompt: "/google-docs Create a new Google Doc called 'Decision Log' with a table containing columns: Date, Decision, Owner, Status. Include 2 example rows. Do this efficiently — minimal tool calls."
+    description: "Tests whether the skill creates a document with structured content efficiently — using meta google.docs create followed by apply/replace with ghtml content in as few tool calls as possible."
+    expected_behavior: "The skill should prepare ghtml content with the table, then use meta google.docs create (for the title) followed by meta google.docs apply --from=<file> or replace --file=<file> to insert the ghtml. This should require 2-3 tool calls total (write ghtml file, create doc, apply/replace ghtml)."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/google-docs/SKILL.md"
+    quality_criteria:
+      required_present: []
+      required_absent: []
+      semantic_checks:
+        - question: "Did the skill create the document efficiently with minimal tool calls?"
+          weight: 3
+          rubric:
+            5: "Created doc in 2-3 tool calls (write ghtml, meta google.docs create, apply/replace) — no redundant operations"
+            4: "Created doc in 4 tool calls with minor redundancy"
+            3: "Created doc but with 5+ tool calls or unnecessary steps"
+            2: "Multiple redundant operations"
+            1: "Did not create the document"
+        - question: "Did the skill use ghtml or markdown for the table content (not plain text)?"
+          weight: 2
+          rubric:
+            5: "Used ghtml with proper <table> tags via meta google.docs apply --from=<file> or replace --file=<file> after create"
+            4: "Used markdown table format"
+            3: "Used plain text but with some structure"
+            2: "Used unformatted plain text"
+            1: "No content provided"
+        - question: "Did the table include all four requested columns (Date, Decision, Owner, Status) with example rows?"
+          weight: 2
+          rubric:
+            5: "All 4 columns present with 2 example data rows"
+            4: "All 4 columns present with at least 1 example row"
+            3: "3 columns present or no example rows"
+            2: "1-2 columns present"
+            1: "No table created"
+      artifact_checks: []
+
+  - id: TC-005
+    name: "Efficiency — create doc from markdown content"
+    category: efficiency
+    prompt: "/google-docs Create a Google Doc called 'Sprint Retrospective' from this markdown content:\n\n# Sprint Retrospective\n\n## What went well\n- Shipped feature X on time\n- Good test coverage\n\n## What to improve\n- Deploy process too manual\n- Need better monitoring\n\n## Action items\n| Owner | Action | Due |\n|-------|--------|-----|\n| Alice | Automate deploy | March 28 |\n| Bob | Add dashboards | March 25 |"
+    description: "Tests that the skill efficiently creates a document from markdown content using meta google.docs create --markdown --body=<content>, preserving the markdown structure."
+    expected_behavior: "The skill should use meta google.docs create --title=<name> --markdown --body=\"$(cat file.md)\" (or pass the markdown via --body directly). This is more efficient than converting to ghtml manually."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/google-docs/SKILL.md"
+    quality_criteria:
+      required_present: []
+      required_absent: []
+      semantic_checks:
+        - question: "Did the skill create the document using meta google.docs create with the provided content?"
+          weight: 3
+          rubric:
+            5: "Used meta google.docs create --markdown with --body=\"$(cat file.md)\" (or equivalent --body containing the markdown)"
+            4: "Used meta google.docs create with content but converted format unnecessarily"
+            3: "Created the doc but without preserving the markdown structure"
+            2: "Did not use meta google.docs create"
+            1: "No document creation attempted"
+        - question: "Was the content preserved with proper structure (headings, lists, table)?"
+          weight: 3
+          rubric:
+            5: "All sections, bullet lists, and table preserved in the created document"
+            4: "Most content preserved with minor formatting issues"
+            3: "Headings and text preserved but table lost"
+            2: "Only partial content preserved"
+            1: "Content not included in the document"
+        - question: "Was the workflow efficient (minimal tool calls)?"
+          weight: 2
+          rubric:
+            5: "1-2 tool calls total (single meta google.docs create --markdown --body=, optional verify)"
+            4: "4 tool calls with minor redundancy"
+            3: "5+ tool calls but completed the task"
+            2: "Excessive tool calls"
+            1: "Did not complete the task"
+      artifact_checks: []
+
+  - id: TC-014
+    name: "Efficiency — targeted value change via find-replace"
+    category: efficiency
+    prompt: "/google-docs In the doc at https://docs.google.com/document/d/1bigDoc50/edit, change the Q3 budget from $2.5M to $3.1M. Use the most efficient approach — this is a simple value change, not a rewrite."
+    description: "Tests whether the skill chooses an efficient approach for a simple value change — meta google.docs replace-all is ideal for this, rather than a full ghtml round-trip read-edit-apply cycle."
+    expected_behavior: "The skill should use meta google.docs replace-all to change '$2.5M' to '$3.1M' — this is the most efficient approach for a targeted text substitution. A full ghtml round-trip (get → edit → apply) works but is less efficient."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/google-docs/SKILL.md"
+    quality_criteria:
+      required_present: []
+      required_absent: []
+      semantic_checks:
+        - question: "Did the skill choose an efficient approach for the value change (find-replace preferred over full round-trip)?"
+          weight: 3
+          rubric:
+            5: "Used or attempted meta google.docs replace-all with '$2.5M' and '$3.1M' — most efficient for a targeted substitution"
+            4: "Used ghtml round-trip (get → edit → apply) — correct but heavier than needed"
+            3: "Used an approach that would work but with unnecessary steps"
+            2: "Used an approach that would rewrite the entire document"
+            1: "Did not attempt any edit approach"
+        - question: "Did the skill use the correct replacement values ($2.5M → $3.1M)?"
+          weight: 3
+          rubric:
+            5: "Exact values '$2.5M' → '$3.1M' used in the command"
+            4: "Correct values but with minor formatting differences (e.g., spaces)"
+            3: "One of the two values was incorrect"
+            2: "Both values were incorrect"
+            1: "No replacement values specified"
+        - question: "Was the overall tool call count minimal for this task?"
+          weight: 2
+          rubric:
+            5: "1-2 tool calls total (just the find-replace, optionally a verification read)"
+            4: "3 tool calls with minor redundancy"
+            3: "4-5 tool calls"
+            2: "Excessive tool calls for a simple substitution"
+            1: "No tool calls made"
+      artifact_checks: []
+
+  # ===== BEST PRACTICES (2 test cases) =====
+
+  - id: TC-006
+    name: "Best practices — ghtml format preference and round-trip editing"
+    category: best_practices
+    prompt: "I need to update the formatting of my design doc at https://docs.google.com/document/d/1xyz789/edit. Change all section headers to use consistent H2 formatting and make the 'Risks' section text red."
+    description: "Tests whether the skill follows best practices: uses ghtml format (not --text) and performs the round-trip edit workflow (get → edit → apply)."
+    expected_behavior: "The skill should use meta google.docs get (ghtml default), edit the HTML to fix headers and apply red color, then use meta google.docs apply."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/google-docs/SKILL.md"
+    quality_criteria:
+      required_present: []
+      required_absent: []
+      semantic_checks:
+        - question: "Did the skill attempt or describe the ghtml round-trip workflow (get → edit → apply) instead of meta google.docs replace?"
+          weight: 3
+          rubric:
+            5: "Attempted meta google.docs get and used or described the correct round-trip workflow (get → edit ghtml → apply)"
+            4: "Attempted meta google.docs get and described the round-trip approach with minor deviations"
+            3: "Used meta google.docs get but then used format subcommands instead of apply"
+            2: "Used meta google.docs replace instead of the round-trip workflow"
+            1: "Did not attempt or describe any editing workflow"
+        - question: "Did the skill describe or apply the red color formatting correctly in ghtml?"
+          weight: 2
+          rubric:
+            5: "Used or described style='color: red' or similar inline CSS in ghtml for the Risks section"
+            4: "Described color formatting approach but could not apply due to doc access"
+            3: "Attempted color formatting with issues"
+            2: "Ignored the color formatting request"
+            1: "No formatting changes described or made"
+      artifact_checks: []
+
+  - id: TC-007
+    name: "Best practices — comments reading and reply workflow"
+    category: best_practices
+    prompt: "Read the Google Doc at https://docs.google.com/document/d/1doc456/edit, check what comments are on it, and then add a reply to the first unresolved comment saying 'Acknowledged, will address in the next revision.'"
+    description: "Tests best practices for reading comments via ghtml (preferred over comments list) and the proper comment reply workflow using meta google.docs.comment reply."
+    expected_behavior: "The skill should attempt meta google.docs get (ghtml) to read inline comments, then use meta google.docs.comment reply (not comments add) with the correct comment ID and message. If the doc is not accessible, the skill should still demonstrate the correct approach."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/google-docs/SKILL.md"
+    quality_criteria:
+      required_present: []
+      required_absent: []
+      semantic_checks:
+        - question: "Did the skill attempt meta google.docs get (ghtml) as the primary method for reading comments?"
+          weight: 3
+          rubric:
+            5: "Used or attempted meta google.docs get first to read inline comments in ghtml format"
+            4: "Used meta google.docs get and also comments list for IDs"
+            3: "Used only comments list without attempting meta google.docs get"
+            2: "Read the doc but in non-ghtml format that loses comments"
+            1: "Did not attempt to read comments at all"
+        - question: "Did the skill use /tmp/gmux-* for temp files as specified in the skill?"
+          weight: 1
+          rubric:
+            5: "Saved or planned to save output to /tmp/gmux-1doc456.html following the naming convention"
+            4: "Used /tmp/gmux-* path but with different naming"
+            3: "Used /tmp/ but not the gmux prefix"
+            2: "Used a different temp directory"
+            1: "No temp file usage mentioned"
+        - question: "Did the skill use or attempt meta google.docs.comment reply (not comments add) with the specified message?"
+          weight: 3
+          rubric:
+            5: "Used or attempted meta google.docs.comment reply with the exact message text"
+            4: "Used comments reply correctly but paraphrased the message"
+            3: "Described the correct comments reply approach but could not execute due to doc access error"
+            2: "Used comments add instead of comments reply (creates unanchored comment)"
+            1: "Did not attempt or describe the reply workflow"
+      artifact_checks: []
+
+  # ===== BUSINESS IMPACT (2 test cases) =====
+
+  - id: TC-008
+    name: "Business impact — end-to-end meeting notes with sharing"
+    category: business_impact
+    prompt: "/google-docs Create a meeting notes doc called 'Measurement Foundations Weekly Sync — 2026-03-19' with sections for Attendees, Agenda, Discussion Notes, Action Items (as a table with Owner, Action, Due Date, Status columns), and Next Steps. Share it with user1@meta.com and user2@meta.com as editors. Put it in folder 1FolderABC."
+    description: "Tests the full business value of the skill: creating a structured document, inserting formatted content including a table, sharing with specific people, and organizing in a folder — all in a single workflow."
+    expected_behavior: "The skill should create the doc with all sections and a formatted table, share with both users as writers, and place in the specified folder. This should save 10+ minutes of manual work."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/google-docs/SKILL.md"
+    quality_criteria:
+      required_present: []
+      required_absent: []
+      semantic_checks:
+        - question: "Did the skill create a complete document with all requested sections and the action items table?"
+          weight: 3
+          rubric:
+            5: "Created doc with all 5 sections, table has all 4 columns (Owner, Action, Due Date, Status), proper heading hierarchy"
+            4: "All sections and table present with minor formatting issues"
+            3: "Most sections present but table missing or incomplete"
+            2: "Partial content — missing multiple sections"
+            1: "Document not created or severely incomplete"
+        - question: "Did the skill share the document with both users and attempt to place it in the folder?"
+          weight: 3
+          rubric:
+            5: "Shared with both users as writer role and attempted folder placement (folder may fail with test ID)"
+            4: "Shared with both users as writer role but did not attempt folder placement"
+            3: "Shared with 1 user or used wrong role for both"
+            2: "Did not share the document"
+            1: "No sharing attempted"
+        - question: "How much time does this workflow save compared to doing it manually?"
+          weight: 2
+          rubric:
+            5: "Complete doc creation, formatting, sharing, and folder placement in one workflow — saves 15+ minutes"
+            4: "Most steps automated — saves 10-15 minutes"
+            3: "Some manual follow-up needed — saves 5-10 minutes"
+            2: "Significant manual work still required"
+            1: "Workflow did not complete or required more effort than manual"
+      artifact_checks: []
+
+  - id: TC-016
+    name: "Business impact — create templated doc and copy it"
+    category: business_impact
+    prompt: "/google-docs Create a Google Doc called 'Weekly Action Items Template' with a table (columns: Owner, Action Item, Due Date, Status) and 3 example rows. Then use meta google.docs copy to create a copy called 'Action Items — Week of March 17, 2026'."
+    description: "Tests the skill's ability to create a structured template document and then copy it — a common business workflow for recurring meeting notes and action tracking."
+    expected_behavior: "The skill should: (1) create the template doc with meta google.docs create using ghtml with a formatted table, (2) copy it with meta google.docs copy to create the dated version."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/google-docs/SKILL.md"
+    quality_criteria:
+      required_present: []
+      required_absent: []
+      semantic_checks:
+        - question: "Did the skill create the template document with a properly formatted action items table?"
+          weight: 3
+          rubric:
+            5: "Created doc with meta google.docs create, table has all 4 columns (Owner, Action Item, Due Date, Status) with example rows in ghtml"
+            4: "Created doc with table but minor formatting or column issues"
+            3: "Created doc but table was plain text or missing columns"
+            2: "Created doc without a table"
+            1: "No document created"
+        - question: "Did the skill copy the template to create the dated version?"
+          weight: 3
+          rubric:
+            5: "Used meta google.docs copy with the correct source doc ID and new title 'Action Items — Week of March 17, 2026'"
+            4: "Copied the doc but with minor title or naming issues"
+            3: "Created a second doc from scratch instead of copying (functional but inefficient)"
+            2: "Did not create a second document"
+            1: "No copy or second document attempted"
+        - question: "Did the workflow demonstrate business value (template + instantiation pattern)?"
+          weight: 2
+          rubric:
+            5: "Complete template creation and copy in one workflow — reusable pattern that saves time"
+            4: "Both docs created but workflow could be more streamlined"
+            3: "Only one document created"
+            2: "Partial workflow with significant manual follow-up needed"
+            1: "Workflow did not produce usable output"
+      artifact_checks: []
+
+  # ===== TASK COMPLETION (3 test cases) =====
+
+  - id: TC-009
+    name: "Task completion — create structured glossary document with ghtml table"
+    category: task_completion
+    prompt: "/google-docs Create a new Google Doc called 'Appendix A: Glossary' with a table defining these terms: CAS (Cost Attribution System), UMAPI (Unified Measurement API), RIM (Resource Isolation Manager). Use ghtml format with proper table formatting — bold headers, two columns (Term, Definition)."
+    description: "Tests creation of a structured document with a formatted table using ghtml. Verifies the skill can produce well-formatted content with proper HTML table structure."
+    expected_behavior: "The skill should create a new doc using meta google.docs create with ghtml content that includes a properly formatted table with bold headers (Term, Definition) and all 3 glossary entries."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/google-docs/SKILL.md"
+    quality_criteria:
+      required_present: []
+      required_absent: []
+      semantic_checks:
+        - question: "Did the skill create a new document using meta google.docs create with ghtml content?"
+          weight: 3
+          rubric:
+            5: "Used meta google.docs create followed by apply --from=<ghtml-file> or replace --file=<ghtml-file> to insert the ghtml content"
+            4: "Used meta google.docs create with --markdown --body=<content> (lossy for ghtml but functional)"
+            3: "Used meta google.docs create but with plain text content"
+            2: "Did not create a document"
+            1: "No meta google.docs create attempted"
+        - question: "Did the glossary table include all 3 terms (CAS, UMAPI, RIM) with accurate definitions?"
+          weight: 3
+          rubric:
+            5: "Table with 3 rows, each term has an accurate, clear definition, and uses bold headers"
+            4: "All 3 terms present with definitions, minor formatting issues"
+            3: "2 of 3 terms defined or definitions are vague"
+            2: "1 term defined or table not properly formatted"
+            1: "No glossary table created"
+        - question: "Was the ghtml well-structured with proper table tags?"
+          weight: 2
+          rubric:
+            5: "Used <table>, <tr>, <td> tags with <b> for headers — valid ghtml"
+            4: "Used table tags but minor formatting issues"
+            3: "Used a table but not in ghtml format (e.g., markdown table)"
+            2: "Content was unformatted plain text"
+            1: "No structured content produced"
+      artifact_checks: []
+
+  - id: TC-010
+    name: "Task completion — edge case with malformed URL and doc not found"
+    category: task_completion
+    prompt: "/google-docs Read and summarize the document at https://docs.google.com/document/d//edit"
+    description: "Tests graceful handling of a malformed Google Docs URL with an empty document ID. The skill should detect the problem and report it clearly rather than making a failing API call."
+    expected_behavior: "The skill should detect that the URL contains an empty document ID (the path segment between /d/ and /edit is empty) and report a clear message, asking the user to provide a valid document URL or ID."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/google-docs/SKILL.md"
+    quality_criteria:
+      required_present: []
+      required_absent: ["here is the summary of the document", "the document contains the following"]
+      semantic_checks:
+        - question: "Did the skill detect the malformed URL and report clearly rather than attempting to read with an empty ID?"
+          weight: 3
+          rubric:
+            5: "Detected the empty/missing document ID before making any API call, explained the issue clearly, and asked for a valid URL or doc ID"
+            4: "Attempted the API call, got a failure, and clearly explained the URL is malformed"
+            3: "Got a failure and reported it but did not explain why (malformed URL)"
+            2: "Got a failure and gave a generic message"
+            1: "Hallucinated document content or claimed success"
+        - question: "Did the skill provide helpful guidance on the correct URL format?"
+          weight: 2
+          rubric:
+            5: "Showed the correct URL format (https://docs.google.com/document/d/DOC_ID/edit) and explained the doc ID was missing"
+            4: "Mentioned the URL format issue"
+            3: "Asked for a new URL without explaining what was wrong"
+            2: "Gave vague guidance"
+            1: "No guidance provided"
+        - question: "Did the skill avoid fabricating or hallucinating document content?"
+          weight: 3
+          rubric:
+            5: "Did not produce any fabricated document content — only reported the URL issue"
+            4: "Correctly identified the issue, no fabrication"
+            3: "Reported issue but added speculative content"
+            2: "Mixed reporting with some fabricated content"
+            1: "Fabricated document content despite the invalid URL"
+      artifact_checks: []
+
+  - id: TC-015
+    name: "Multi-tab — create doc and add a new tab with content"
+    category: task_completion
+    prompt: "/google-docs Create a new Google Doc called 'Project Plan'. Then add a new tab called 'Technical Design' and write a brief architecture overview in it with headings for 'System Components', 'Data Flow', and 'Dependencies'."
+    description: "Tests the skill's ability to work with Google Docs tabs — creating a document, adding a tab, and writing structured content to it."
+    expected_behavior: "The skill should: (1) create the doc with meta google.docs create, (2) add a tab with meta google.docs.tab add --title 'Technical Design', (3) write content to the new tab using meta google.docs get --tab-id or content insert commands with --tab-id."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/google-docs/SKILL.md"
+    quality_criteria:
+      required_present: []
+      required_absent: []
+      semantic_checks:
+        - question: "Did the skill create the document and add a new tab?"
+          weight: 3
+          rubric:
+            5: "Used meta google.docs create for the doc, then meta google.docs.tab add (or add-tab) to add the 'Technical Design' tab"
+            4: "Created the doc and attempted to add a tab with minor syntax issues"
+            3: "Created the doc but did not add a separate tab"
+            2: "Did not create the document"
+            1: "No meta google.docs commands attempted"
+        - question: "Did the skill write content to the new tab with the requested headings?"
+          weight: 3
+          rubric:
+            5: "Wrote content to the Technical Design tab with all 3 headings (System Components, Data Flow, Dependencies)"
+            4: "Wrote content with 2 of 3 headings or to the main tab instead of the new tab"
+            3: "Wrote some content but missing most headings"
+            2: "Did not write content to any tab"
+            1: "No content writing attempted"
+        - question: "Did the skill use the correct tab-related commands (meta google.docs.tab list, meta google.docs.tab add, --tab-id flag)?"
+          weight: 2
+          rubric:
+            5: "Used meta google.docs.tab add for tab creation and --tab-id for targeting content to the new tab"
+            4: "Used correct tab commands with minor issues"
+            3: "Attempted tab commands but with incorrect syntax"
+            2: "Did not use any tab-specific commands"
+            1: "No tab awareness shown"
+      artifact_checks: []

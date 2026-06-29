@@ -1,0 +1,8 @@
+load("@fbcode_macros//build_defs:python_library.bzl", "python_library")
+
+oncall("ads_abtest_agent")
+
+python_library(
+    name = "eval_criteria",
+    srcs = glob(["*.yaml"]),
+)

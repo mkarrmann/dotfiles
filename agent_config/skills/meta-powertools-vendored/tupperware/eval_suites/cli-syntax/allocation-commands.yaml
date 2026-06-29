@@ -1,0 +1,31 @@
+id: allocation-commands
+suite: cli-syntax
+project: tupperware-evals
+name: Correct tw allocation subcommands — avoid nonexistent commands
+category: cli-syntax
+description: |
+  Original struggle: Agent tried ~15 wrong tw commands (~75s wasted) including
+  tw allocation show, tw allocation list, tw job info, tw job get.
+question: |
+  A Tupperware job is failing to allocate with MACHINE_REUSE_NOT_ALLOWED. What tw CLI commands should I use to debug this? List the exact commands in order.
+expected_behavior: |
+  Agent should use tw allocation explain (not tw allocation show/list), tw resolve, tw job print,
+  rbcli search. Should NOT use nonexistent commands like tw allocation show, tw allocation list,
+  tw job info, tw job get, tw job status.
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  semantic_checks:
+    - question: Agent used tw allocation explain as the primary allocation diagnostic command?
+      weight: 3
+      rubric:
+        5: Used tw allocation explain correctly
+        3: Eventually found tw allocation explain after trying wrong commands
+        1: Never used tw allocation explain
+    - question: Agent used only documented tw subcommands (resolve, job print, allocation explain, rbcli)?
+      weight: 3
+      rubric:
+        5: All tw commands were valid documented subcommands
+        3: Tried 1-2 wrong commands but mostly correct
+        1: Tried multiple nonexistent commands

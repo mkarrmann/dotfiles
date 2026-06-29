@@ -1,0 +1,114 @@
+# Evaluation Criteria for diff-search Skill
+# Focus: INVOCATION — does the trimmed description still trigger correctly?
+# Generated: 2026-03-13
+
+skill_name: diff-search
+project: diff-search
+default_working_directory: ~/fbsource/fbcode
+
+test_cases:
+  - id: TC-001
+    name: "Find my recent open diffs"
+    category: invocation
+    prompt: "Find all diffs I authored in the last 7 days that are still open"
+    description: "Tests skill activation from a natural language diff search request"
+    expected_behavior: "Skill activates and constructs a jf graphql PowerSearch query"
+    eval_target: response
+    target_skills:
+      - "claude-templates/components/skills/diff-search/SKILL.md"
+    intercept_patterns:
+      - "jf graphql"
+    quality_criteria:
+      required_present:
+        - "phabricator_diff_custom_search_query"
+      required_absent:
+        - "I cannot"
+        - "I don't know how"
+      semantic_checks:
+        - question: "Did the diff-search skill activate and attempt a PowerSearch query via jf graphql?"
+          weight: 5
+          rubric:
+            5: "Skill activated, constructed a jf graphql PowerSearch query with appropriate filters"
+            4: "Skill activated, attempted jf graphql with minor filter issues"
+            3: "Skill activated but used an inefficient approach"
+            2: "Did not activate skill but discussed diff searching"
+            1: "Did not activate, suggested manual Phabricator search"
+      artifact_checks: []
+
+  - id: TC-002
+    name: "Search diffs by another author"
+    category: invocation
+    prompt: "Show me all diffs authored by johndoe in the last 30 days"
+    description: "Tests skill activation for searching diffs by a specific author"
+    expected_behavior: "Skill activates, looks up FBID, then queries PowerSearch"
+    eval_target: response
+    target_skills:
+      - "claude-templates/components/skills/diff-search/SKILL.md"
+    intercept_patterns:
+      - "jf graphql"
+    quality_criteria:
+      required_present: []
+      required_absent:
+        - "I cannot"
+      semantic_checks:
+        - question: "Did the diff-search skill activate and show intent to search for diffs by the specified author, regardless of whether the username resolved successfully?"
+          weight: 5
+          rubric:
+            5: "Skill activated, attempted FBID lookup and/or queried PowerSearch with author filter"
+            4: "Skill activated, attempted author-based search with minor issues"
+            3: "Skill activated but failed on username lookup — still shows correct intent"
+            2: "Did not activate skill but discussed how to find diffs"
+            1: "Did not activate, no attempt to search diffs"
+      artifact_checks: []
+
+  - id: TC-003
+    name: "Search diffs by file path"
+    category: invocation
+    prompt: "Find diffs that modified files under fbcode/infra/config/ in the last 2 weeks"
+    description: "Tests skill activation for file-path-based diff search"
+    expected_behavior: "Skill activates and uses DIFF_AFFECTED_FILES filter in PowerSearch"
+    eval_target: response
+    target_skills:
+      - "claude-templates/components/skills/diff-search/SKILL.md"
+    intercept_patterns:
+      - "jf graphql"
+    quality_criteria:
+      required_present: []
+      required_absent:
+        - "I cannot"
+      semantic_checks:
+        - question: "Did the diff-search skill activate and attempt to search diffs by file path?"
+          weight: 5
+          rubric:
+            5: "Skill activated, used DIFF_AFFECTED_FILES or equivalent in PowerSearch query"
+            4: "Skill activated, attempted file-based search with minor issues"
+            3: "Skill activated but used a different search approach"
+            2: "Did not activate skill but discussed file-based diff search"
+            1: "Did not activate, no attempt to search diffs"
+      artifact_checks: []
+
+  - id: TC-004
+    name: "Search diffs by reviewer and status"
+    category: invocation
+    prompt: "What diffs are waiting for my review right now?"
+    description: "Tests skill activation for reviewer-based diff search"
+    expected_behavior: "Skill activates and queries for diffs where user is reviewer with open status"
+    eval_target: response
+    target_skills:
+      - "claude-templates/components/skills/diff-search/SKILL.md"
+    intercept_patterns:
+      - "jf graphql"
+    quality_criteria:
+      required_present: []
+      required_absent:
+        - "I cannot"
+      semantic_checks:
+        - question: "Did the diff-search skill activate and attempt to find diffs awaiting review?"
+          weight: 5
+          rubric:
+            5: "Skill activated, queried for diffs with user as reviewer and open status"
+            4: "Skill activated, attempted reviewer-based search with minor issues"
+            3: "Skill activated but used an indirect approach"
+            2: "Did not activate skill but discussed how to find review queue"
+            1: "Did not activate, suggested checking Phabricator UI"
+      artifact_checks: []

@@ -1,0 +1,71 @@
+id: cli-hybrid-003
+suite: cli-queries
+project: scuba-evals
+description: Tests hybrid workflow using GraphQL for discovery and CLI for HAVING (from TP-3)
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "An engineer doesn't know the dataset name and needs to discover it, then run a query with HAVING."
+question: "I'm looking for error rates in web requests. Which error types occurred more than 500 times in the past day?"
+
+mock_data: |
+  meta scuba.dataset search response for "error rates in web requests":
+    success: true
+    dataset: "asset://scuba.dataset/web_request_errors"
+    error: null
+  meta scuba.dataset info response for web_request_errors:
+    success: true
+    dataset_info:
+      dataset_name: web_request_errors
+      description: "Web request error tracking"
+      columns:
+        - column_name: error_type
+          column_type: STRING
+          description: "Type of error"
+        - column_name: endpoint
+          column_type: STRING
+          description: "API endpoint"
+        - column_name: status_code
+          column_type: INTEGER
+          description: "HTTP status code"
+        - column_name: request_time
+          column_type: INTEGER
+          format: "%M"
+          description: "Request time in ms"
+  meta scuba.dataset query --sql HAVING query response:
+    error_type        | cnt
+    timeout           | 2341
+    connection_reset  | 1876
+    rate_limited      | 987
+    auth_failure      | 654
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: uses_graphql_discovery
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses dataset search for discovery"
+    arguments:
+      command: "meta scuba.dataset search"
+  - id: uses_cli_for_having
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.dataset query --sql for the HAVING clause"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: includes_time_filter
+    description: "CLI query includes time filter for past day"
+    check: "Response includes a query with a 24-hour time filter"
+
+quality_factors:
+  - id: strips_dataset_prefix
+    description: "Strips asset://scuba.dataset/ prefix from found dataset name"
+    weight: 0.3
+  - id: summarizes_schema
+    description: "Describes the dataset schema to the user before querying"
+    weight: 0.3
+  - id: presents_results
+    description: "Presents filtered error types with counts"
+    weight: 0.4

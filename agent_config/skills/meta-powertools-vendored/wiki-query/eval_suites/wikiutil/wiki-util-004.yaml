@@ -1,0 +1,46 @@
+id: wiki-util-004
+name: Word count for wiki subpages
+category: wikiutil
+prompt: Get the word count for all subpages under Mobile_Team/Android_Guide.
+description: Tests that the agent uses WikiUtil -wcs to count words in subpages
+expected_behavior: Agent uses phps WikiUtil -wcs to get word counts for subpages
+eval_target: response
+mock_data: |
+  WikiUtil -wcs Mobile_Team/Android_Guide output:
+    Word counts for subpages of Mobile_Team/Android_Guide:
+    - Mobile_Team/Android_Guide: 450 words
+    - Mobile_Team/Android_Guide/Build_System: 1200 words
+    - Mobile_Team/Android_Guide/Testing: 890 words
+    - Mobile_Team/Android_Guide/Performance: 2100 words
+    - Mobile_Team/Android_Guide/Release_Process: 670 words
+    Total: 5310 words across 5 pages
+fail_on_unmocked_command: true
+intercept_patterns:
+- graphql_wiki_content
+- 'jf graphql'
+- WikiUtil
+- 'phps '
+intercept_mcp_tools:
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent return word counts for the subpages under Mobile_Team/Android_Guide?
+    weight: 3
+    rubric:
+      5: Agent returned word counts for all subpages, showing Performance as the largest page
+      3: Agent returned some word counts but missed pages or totals
+      1: Agent did not return any word count information
+  - question: Did the agent use phps WikiUtil -wcs?
+    weight: 2
+    rubric:
+      5: Agent used phps WikiUtil -wcs "Mobile_Team/Android_Guide"
+      3: Agent used an alternative method to count words
+      1: Agent did not attempt to count words
+project: wiki-query-evals
+target_skills:
+- fbcode/claude-templates/components/skills/wiki-query/SKILL.md
+working_directory: ~/fbsource/fbcode

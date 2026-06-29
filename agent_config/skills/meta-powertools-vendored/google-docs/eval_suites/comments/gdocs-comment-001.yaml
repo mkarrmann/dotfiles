@@ -1,0 +1,38 @@
+id: gdocs-comment-001
+name: List comments
+category: comments
+prompt: Show me all comments on https://docs.google.com/document/d/1abc123/edit
+description: Tests listing comments from a document
+expected_behavior: Agent returns comment list with authors, content, and resolved status
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Design Doc
+  Comments:
+    - id: cmt001, author: Alice (alice@meta.com), content: "Can we add error handling here?", resolved: false
+    - id: cmt002, author: Bob (bob@meta.com), content: "LGTM on the API design", resolved: true
+    - id: cmt003, author: Carol (carol@meta.com), content: "What about rate limiting?", resolved: false
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent return the list of comments with authors, content, and resolved status?
+    weight: 3
+    rubric:
+      5: Agent listed all 3 comments with authors, content text, and resolved/open status
+      3: Agent listed comments but missing some details like resolved status
+      1: Agent did not list comments
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

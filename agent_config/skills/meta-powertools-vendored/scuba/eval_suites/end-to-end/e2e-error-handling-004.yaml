@@ -1,0 +1,40 @@
+id: e2e-error-handling-004
+suite: end-to-end
+project: scuba-evals
+description: Tests graceful handling of dataset does not exist error
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user provides a dataset name that doesn't exist."
+question: "Show me the count of queries in my_nonexistent_dataset over the last hour, grouped by status."
+
+mock_data: |
+  meta scuba.dataset info response for my_nonexistent_dataset:
+    error: "Dataset does not exist: my_nonexistent_dataset"
+  meta scuba.dataset query response:
+    error: "Dataset does not exist: my_nonexistent_dataset"
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: attempts_dataset_operation
+    type: tool_called
+    tool_name: Bash
+    description: "Agent attempts meta scuba.dataset info or meta scuba.dataset query which returns the dataset-not-found error"
+    arguments:
+      command: "meta scuba"
+  - id: handles_error_gracefully
+    description: "Agent handles the error gracefully and informs the user"
+    check: "Response informs the user that the dataset my_nonexistent_dataset does not exist, does not crash or produce confusing output"
+  - id: suggests_recovery
+    description: "Agent suggests how to find the correct dataset"
+    check: "Response suggests using meta scuba.dataset search to search for the right dataset or asks the user to verify the dataset name"
+
+quality_factors:
+  - id: offers_to_search
+    description: "Offers to run meta scuba.dataset search with a relevant search query"
+    weight: 0.6
+  - id: clear_error_message
+    description: "Presents the error clearly without technical jargon"
+    weight: 0.4

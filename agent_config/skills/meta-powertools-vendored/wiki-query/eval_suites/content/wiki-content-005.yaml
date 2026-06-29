@@ -1,0 +1,57 @@
+id: wiki-content-005
+name: Pipe wiki content to pastry
+category: content
+prompt: Get the content of the wiki page ML_Infra/Training_Best_Practices and save it to pastry so I can share the link.
+description: Tests that the agent fetches wiki content and pipes it to pastry for sharing
+expected_behavior: Agent uses scripts/graphql_wiki_content and pipes output to pastry, returning a pastry link
+eval_target: response
+mock_data: |
+  Wiki path: ML_Infra/Training_Best_Practices
+  Editor type: PAGELET (markdown)
+  Content (markdown):
+    # Training Best Practices
+
+    ## Data Preparation
+    - Always shuffle your training data
+    - Use stratified sampling for imbalanced datasets
+    - Validate data quality before training
+
+    ## Hyperparameters
+    - Start with default learning rates
+    - Use learning rate warmup for large models
+    - Monitor gradient norms
+
+  Pastry output:
+    URL: https://pastry.meta.com/P123456789
+    Expires: 2026-03-21
+fail_on_unmocked_command: true
+intercept_patterns:
+- graphql_wiki_content
+- 'jf graphql'
+- WikiUtil
+- 'phps '
+- pastry
+intercept_mcp_tools:
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent fetch the wiki content and pipe it to pastry, returning a shareable link?
+    weight: 3
+    rubric:
+      5: Agent fetched wiki content and piped to pastry, returning a pastry URL
+      3: Agent fetched the content but did not successfully pipe to pastry
+      1: Agent did not attempt to fetch wiki content or use pastry
+  - question: Did the agent use graphql_wiki_content as the source for the pastry content?
+    weight: 2
+    rubric:
+      5: Agent piped scripts/graphql_wiki_content output directly to pastry
+      3: Agent fetched content first, then separately uploaded to pastry
+      1: Agent did not use the graphql_wiki_content script
+project: wiki-query-evals
+target_skills:
+- fbcode/claude-templates/components/skills/wiki-query/SKILL.md
+working_directory: ~/fbsource/fbcode

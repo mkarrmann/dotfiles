@@ -1,0 +1,37 @@
+id: gdocs-route-002
+name: Check meta google.docs installation
+category: tool-routing
+prompt: Create a doc called 'Test'
+description: Tests that agent checks for meta google.docs CLI and installs if missing
+expected_behavior: Agent attempts meta google.docs first, falls back to devfeature install when not found
+eval_target: response
+mock_data: |
+  meta: command not found (first attempt)
+  devfeature install meta --persist: Installation successful
+  meta google.docs create "Test": Document created
+    Document ID: 1test001
+    URL: https://docs.google.com/document/d/1test001/edit
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent handle the missing meta google.docs CLI by installing it via devfeature?
+    weight: 3
+    rubric:
+      5: Agent detected meta google.docs was missing, installed via devfeature, then created the doc
+      3: Agent installed meta google.docs but the creation step was unclear
+      1: Agent did not handle the missing CLI
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

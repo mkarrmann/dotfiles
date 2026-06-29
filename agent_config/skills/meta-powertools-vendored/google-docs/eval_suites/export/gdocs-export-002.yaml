@@ -1,0 +1,35 @@
+id: gdocs-export-002
+name: Export to DOCX
+category: export
+prompt: Download https://docs.google.com/document/d/1abc123/edit as a Word document.
+description: Tests exporting a document to DOCX format
+expected_behavior: Agent uses export with --format docx
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Design Spec
+  Export result: Document exported as DOCX format (182 KB).
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent export the document in DOCX/Word format?
+    weight: 3
+    rubric:
+      5: Agent exported the document in DOCX format
+      3: Agent exported but in a different format
+      1: Agent did not export the document
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

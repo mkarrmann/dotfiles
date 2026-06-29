@@ -1,0 +1,38 @@
+id: gdocs-edge-003
+name: Copy document
+category: edge-cases
+prompt: Make a copy of https://docs.google.com/document/d/1abc123/edit with the title 'Backup - Q2 Planning'
+description: Tests copying a document with a new title
+expected_behavior: Agent uses copy command with title
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Q2 Planning
+  Copy result:
+    New document ID: 1copy456
+    Title: Backup - Q2 Planning
+    URL: https://docs.google.com/document/d/1copy456/edit
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent copy the document with the title 'Backup - Q2 Planning' and return the new link?
+    weight: 3
+    rubric:
+      5: Agent copied the doc with the correct title and returned the new document link
+      3: Agent copied the doc but title or link was missing
+      1: Agent did not copy the document
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

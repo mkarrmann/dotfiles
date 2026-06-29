@@ -1,0 +1,46 @@
+id: cr-format-microseconds-002
+suite: critical-rules
+project: scuba-evals
+description: Tests that agent handles microsecond format (%U) correctly (CR2 variant)
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user queries a column that stores durations in microseconds."
+question: "What's the average proxy_total_time in scuba_queries over the last hour, grouped by query_source? Show results in a human-readable format."
+
+mock_data: |
+  meta scuba.dataset info response for proxy_total_time on scuba_queries:
+    columns:
+      - column_name: proxy_total_time
+        column_type: INTEGER
+        format: "%U"
+        description: "Total proxy time"
+        aggregable: true
+  meta scuba.dataset query response:
+    results:
+      query_source | AVG(proxy_total_time)
+      datamate     | 5000000
+      scuba_ui     | 2500000
+      api          | 1200000
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: calls_dataset_info
+    type: tool_called
+    tool_name: Bash
+    description: "Agent checks column format via meta scuba.dataset info"
+    arguments:
+      command: "meta scuba.dataset info"
+  - id: converts_microseconds
+    description: "Agent converts the raw values using the %U format (microseconds to seconds)"
+    check: "Agent divides the raw values by 1,000,000 when presenting results, showing values like 5.0 seconds for datamate, not dividing by only 1,000"
+
+quality_factors:
+  - id: distinguishes_from_milliseconds
+    description: "Correctly identifies %U as microseconds (not milliseconds)"
+    weight: 0.6
+  - id: presents_readable_format
+    description: "Presents results in clear human-readable form with units"
+    weight: 0.4

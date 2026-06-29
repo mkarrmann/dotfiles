@@ -1,0 +1,42 @@
+id: dc-conditional-agg-002
+suite: derived-columns
+project: scuba-evals
+description: Tests conditional aggregation with SUM(IF(...)) and type Aggregated (from TP-9)
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "An analyst wants to count queries above and below a threshold in a single query."
+question: "From scuba_queries in the last hour, count how many queries had cpu_time above 1000 vs at or below 1000, grouped by query_source."
+
+mock_data: |
+  meta scuba.dataset query response:
+    results:
+      query_source | above_1000 | at_or_below_1000
+      datamate     | 1234       | 5678
+      scuba_ui     | 891        | 3456
+      api          | 234        | 2100
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: uses_query
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.dataset query"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: uses_conditional_aggregation
+    description: "Agent uses conditional aggregation to bucket queries by cpu_time threshold"
+    check: "Response uses either --derived-cols with SUM(IF(...)) / COUNT_IF expressions and type Aggregated, OR --sql mode with equivalent CASE/SUM(IF)/COUNT_IF expressions. Both approaches are acceptable as long as the query produces separate counts for above and at-or-below 1000."
+  - id: produces_both_buckets
+    description: "Agent produces both above-threshold and at-or-below-threshold counts"
+    check: "Response shows two separate count columns (above 1000 and at or below 1000) grouped by query_source"
+
+quality_factors:
+  - id: two_columns
+    description: "Produces both above-threshold and at-or-below-threshold columns in a single query"
+    weight: 0.5
+  - id: correct_conditional_syntax
+    description: "Uses correct conditional aggregation syntax (SUM(IF(...)) or COUNT_IF with Aggregated type)"
+    weight: 0.5

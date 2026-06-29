@@ -1,0 +1,45 @@
+load("@fbcode_macros//build_defs:export_files.bzl", "export_file")
+load("@fbcode_macros//build_defs:native_rules.bzl", "buck_filegroup")
+load("//msl/judge/testcase:skilleval_test.bzl", "skilleval_test")
+
+oncall("obx_skills_experimental")
+
+buck_filegroup(
+    name = "skill_resources",
+    srcs = glob(
+        ["**/*"],
+        exclude = ["test_*.py"],
+    ),
+    visibility = ["PUBLIC"],
+)
+
+export_file(
+    name = "SKILL.md",
+    src = "SKILL.md",
+)
+
+skilleval_test(
+    name = "test_scuba_evals",
+    srcs = ["test_scuba_evals.py"],
+    ci_srcs = [
+        "fbcode/claude-templates/components/skills/scuba/SKILL.md",
+        "fbcode/claude-templates/components/skills/scuba/references/**",
+    ],
+    resources = {
+        ":SKILL.md": "SKILL.md",
+        "references/derived-columns.md": "references/derived-columns.md",
+        "references/json-field-extraction.md": "references/json-field-extraction.md",
+        "references/sql-advanced.md": "references/sql-advanced.md",
+    },
+    deps = [
+        "//claude-templates/components/skills/scuba/eval_suites/cli-queries:eval_criteria",
+        "//claude-templates/components/skills/scuba/eval_suites/core-queries:eval_criteria",
+        "//claude-templates/components/skills/scuba/eval_suites/critical-rules:eval_criteria",
+        "//claude-templates/components/skills/scuba/eval_suites/derived-columns:eval_criteria",
+        "//claude-templates/components/skills/scuba/eval_suites/end-to-end:eval_criteria",
+        "//claude-templates/components/skills/scuba/eval_suites/live:eval_criteria",
+        "//claude-templates/components/skills/scuba/eval_suites/method-selection:eval_criteria",
+        "//claude-templates/components/skills/scuba/eval_suites/time-and-comparison:eval_criteria",
+        "//claude-templates/components/skills/scuba/eval_suites/udf-workflow:eval_criteria",
+    ],
+)

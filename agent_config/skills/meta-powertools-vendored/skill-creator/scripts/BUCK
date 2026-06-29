@@ -1,0 +1,33 @@
+# @lint-ignore FBCODETARGETSFILES Please migrate this to a BUCK file!
+# (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+
+load("@fbcode_macros//build_defs:python_binary.bzl", "python_binary")
+load("@fbcode_macros//build_defs:python_library.bzl", "python_library")
+
+oncall("claude_templates_cli")
+
+python_library(
+    name = "quick_validate",
+    srcs = ["quick_validate.py"],
+    base_module = "",
+    deps = [
+        "fbsource//third-party/pypi/pyyaml:pyyaml",
+    ],
+)
+
+python_library(
+    name = "package_skill_lib",
+    srcs = ["package_skill.py"],
+    base_module = "",
+    deps = [
+        ":quick_validate",
+    ],
+)
+
+python_binary(
+    name = "package_skill",
+    main_function = "package_skill.main",
+    deps = [
+        ":package_skill_lib",
+    ],
+)

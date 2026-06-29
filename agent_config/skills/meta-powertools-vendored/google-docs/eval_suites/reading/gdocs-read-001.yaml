@@ -1,0 +1,55 @@
+id: gdocs-read-001
+name: Read doc content (ghtml default)
+category: reading
+prompt: Read the Google Doc at https://docs.google.com/document/d/1abc123/edit and show me its contents.
+description: Tests that the agent reads a doc using ghtml format by default
+expected_behavior: Agent uses meta google.docs get with ghtml format (default) and returns doc content
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Q2 Planning
+  Content (ghtml):
+    <h1>Q2 Planning</h1>
+    <h2>Goals</h2>
+    <p>Ship v2.0 of the mobile app by end of Q2.</p>
+    <h2>Timeline</h2>
+    <p>April: Design finalization</p>
+    <p>May: Implementation sprint</p>
+    <p>June: QA and launch</p>
+    <table>
+      <tr><td><b>Milestone</b></td><td><b>Date</b></td></tr>
+      <tr><td>Design complete</td><td>April 15</td></tr>
+      <tr><td>Beta release</td><td>May 30</td></tr>
+    </table>
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  - unable to
+  semantic_checks:
+  - question: Did the agent return the document content including the title 'Q2 Planning', headings, paragraphs, and table
+      data?
+    weight: 3
+    rubric:
+      5: Agent returned doc content with title, headings, and table data visible
+      3: Agent returned partial content or missed some elements
+      1: Agent did not return any document content
+  - question: Did the agent use ghtml format (the default) rather than --text?
+    weight: 2
+    rubric:
+      5: Agent used meta google.docs get without --text flag (ghtml is default)
+      3: Agent used --markdown which is acceptable but not preferred
+      1: Agent used --text which is lossy and discouraged
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

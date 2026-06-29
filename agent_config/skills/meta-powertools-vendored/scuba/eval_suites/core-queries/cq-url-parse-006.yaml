@@ -1,0 +1,47 @@
+id: cq-url-parse-006
+suite: core-queries
+project: scuba-evals
+description: Tests meta scuba.dataset read-url to extract parameters and re-execute with modifications
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user has an existing Scuba URL and wants to understand and modify the query."
+question: "Parse this Scuba URL and tell me what query it represents: https://www.internalfb.com/intern/scuba/query/?dataset=scuba_queries&pool=uber&view=table&drillstate=N4IgxgDgFghgTgSwPYBcBGADAJgSwG4AEAHgIKYBOOA1gNoBmAugL5A"
+
+mock_data: |
+  meta scuba.dataset read-url response:
+    success: true
+    parameters_json: |
+      {
+        "dataset": "scuba_queries",
+        "view": "table",
+        "metric": "COUNT",
+        "group_by": ["query_source"],
+        "hours": 3,
+        "constraints_json": "[{\"column\":\"query_type\",\"op\":\"eq\",\"values\":[\"sql\"]}]",
+        "limit": 50
+      }
+    source_url: "https://www.internalfb.com/intern/scuba/query/?dataset=scuba_queries&pool=uber&view=table&drillstate=N4IgxgDgFghgTgSwPYBcBGADAJgSwG4AEAHgIKYBOOA1gNoBmAugL5A"
+    error: null
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: calls_read_url
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.dataset read-url to extract query parameters"
+    arguments:
+      command: "meta scuba.dataset read-url"
+  - id: explains_query
+    description: "Agent explains what the query does"
+    check: "Response describes the query parameters: dataset scuba_queries, COUNT metric, grouped by query_source, filtered to sql query_type"
+
+quality_factors:
+  - id: structured_summary
+    description: "Presents parameters in a clear structured format"
+    weight: 0.5
+  - id: suggests_modifications
+    description: "Offers to re-execute or modify the query"
+    weight: 0.5

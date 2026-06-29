@@ -1,0 +1,718 @@
+# Evaluation criteria for diff-comments skill
+# Focus: Mocking comment submission on D92988128
+# Mode: THOROUGH (12 test cases, 5 dimensions)
+# Generated: 2026-03-04
+# Updated: 2026-03-31 — migrated from Python scripts to meta phabricator.diff CLI
+
+project: diff-comments
+default_working_directory: "~/fbsource"
+
+test_cases:
+
+  # ============================================================================
+  # INVOCATION (2 tests — 20%)
+  # ============================================================================
+
+  - id: TC-001
+    name: "Natural language general comment submission"
+    category: invocation
+    prompt: >
+      I want to leave a comment on diff D92988128 saying the implementation looks good
+      and the tests are comprehensive.
+    description: >
+      Tests that the diff-comments skill activates from natural language without explicit
+      /diff-comments invocation. The prompt mentions commenting on a diff, which should
+      trigger the skill and route to meta phabricator.diff comment.
+    expected_behavior: >
+      The skill should activate, identify D92988128 as the target diff, and run
+      meta phabricator.diff comment with the appropriate message. The comment should be
+      submitted successfully (mocked).
+    eval_target: tool_usage
+    target_skills:
+      - "fbcode/claude-templates/components/skills/diff-comments/SKILL.md"
+    mock_data: |
+      Environment: Phabricator diff D92988128 exists and is accessible.
+      Diff title: "Add FlowJobCreationGradingStrategy with FBLearner verification"
+      Author: hadleym
+      Status: Closed
+
+      When meta phabricator.diff comment is executed with -n D92988128 and -m argument:
+        stdout: "Comment added to D92988128."
+        exit_code: 0
+    intercept_patterns:
+      - "phabricator.diff comment "
+    quality_criteria:
+      required_present: ["phabricator.diff comment", "D92988128"]
+      required_absent: ["error", "I cannot", "inline-comment"]
+      semantic_checks:
+        - question: "Did the skill activate from natural language without explicit /diff-comments invocation?"
+          weight: 3
+          rubric:
+            5: "Activated immediately from natural language, identified diff and message, ran correct command"
+            4: "Activated correctly but asked for one minor clarification before proceeding"
+            3: "Activated but required re-prompting or explicit skill mention"
+            2: "Recognized the intent but used the wrong command or approach"
+            1: "Did not activate the diff-comments skill at all"
+        - question: "Did the skill correctly identify the diff number and route to meta phabricator.diff comment?"
+          weight: 2
+          rubric:
+            5: "Correctly parsed D92988128 and used meta phabricator.diff comment with proper arguments"
+            4: "Used the correct command but minor argument formatting issues"
+            3: "Used the correct command but needed to retry with corrected arguments"
+            2: "Used the wrong command (e.g., inline-comment instead of comment)"
+            1: "Did not invoke any diff-comments command"
+      artifact_checks: []
+
+  - id: TC-002
+    name: "Natural language inline comment submission"
+    category: invocation
+    prompt: >
+      Can you add a note on line 25 of flow_job_creation_grading_strategy.py in diff
+      D92988128 suggesting that the docstring should mention the scoring values?
+    description: >
+      Tests natural language activation with inline comment parameters. The prompt
+      mentions a specific file and line number, which should trigger
+      meta phabricator.diff inline-comment.
+    expected_behavior: >
+      The skill should activate, parse the file path and line number from the prompt,
+      and submit the inline comment via meta phabricator.diff inline-comment.
+    eval_target: tool_usage
+    target_skills:
+      - "fbcode/claude-templates/components/skills/diff-comments/SKILL.md"
+    mock_data: |
+      Environment: Phabricator diff D92988128 exists.
+      Diff files:
+        - fbcode/ai_productivity/benchmarks/ads/agent_evaluation/grading_strategy/flow_job_creation_grading_strategy.py
+        - fbcode/ai_productivity/benchmarks/ads/agent_evaluation/grading_strategy/grading_strategy_factory.py
+        - fbcode/ai_productivity/benchmarks/ads/agent_evaluation/grading_strategy/tests/test_flow_job_creation_grading_strategy.py
+        - fbcode/ai_productivity/benchmarks/ads/agent_evaluation/grading_strategy/tests/BUCK
+        - fbcode/ai_productivity/benchmarks/ads/agent_evaluation/grading_strategy/BUCK
+        - fbcode/ai_productivity/benchmarks/ads/agent_evaluation/evaluation_datasets/mlea/test_flow_job_submission.json
+        - fbcode/ai_productivity/benchmarks/BUCK
+        - fbcode/ai_productivity/benchmarks/graders/flow_job_creation_grader.py
+
+      When meta phabricator.diff inline-comment is executed with -n D92988128:
+        stdout: "Inline comment added to D92988128 on fbcode/ai_productivity/benchmarks/ads/agent_evaluation/grading_strategy/flow_job_creation_grading_strategy.py:25"
+        exit_code: 0
+    intercept_patterns:
+      - "phabricator.diff inline-comment"
+    quality_criteria:
+      required_present: ["phabricator.diff inline-comment", "D92988128", "flow_job_creation_grading_strategy.py", "25"]
+      required_absent: ["error", "I cannot", "not found"]
+      semantic_checks:
+        - question: "Did the skill correctly parse the file path and line number from the natural language prompt?"
+          weight: 3
+          rubric:
+            5: "Correctly identified both file path and line 25 from natural language, passed to inline-comment"
+            4: "Identified file and line but needed to search for the exact file path first"
+            3: "Identified the file but guessed at the exact path format"
+            2: "Got the line number but wrong file"
+            1: "Could not parse file or line from the prompt"
+        - question: "Did the skill use inline-comment rather than comment?"
+          weight: 2
+          rubric:
+            5: "Correctly chose inline-comment based on the file/line context in the prompt"
+            4: "Chose inline-comment after brief deliberation"
+            3: "Initially considered comment but corrected to inline-comment"
+            2: "Used comment instead (wrong command for inline comment)"
+            1: "Did not invoke any diff-comments command"
+      artifact_checks: []
+
+  # ============================================================================
+  # EFFICIENCY (1 test — 10%)
+  # ============================================================================
+
+  - id: TC-003
+    name: "Efficient simple comment submission"
+    category: efficiency
+    prompt: >
+      /diff-comments Add a general comment on D92988128 saying "All feedback has been addressed,
+      tests pass. Ready for re-review."
+    description: >
+      Tests that a simple general comment is submitted with minimal tool calls and token
+      usage. Should be a single meta CLI invocation with no unnecessary queries.
+    expected_behavior: >
+      The skill should directly run meta phabricator.diff comment with the message.
+      No need to query comments first, no subagents, no extra file reads. One Bash call.
+    eval_target: tool_usage
+    target_skills:
+      - "fbcode/claude-templates/components/skills/diff-comments/SKILL.md"
+    mock_data: |
+      When meta phabricator.diff comment is executed with -n D92988128 and -m containing "All feedback has been addressed":
+        stdout: "Comment added to D92988128."
+        exit_code: 0
+    intercept_patterns:
+      - "phabricator.diff comment "
+    quality_criteria:
+      required_present: ["phabricator.diff comment", "D92988128"]
+      required_absent: ["phabricator.diff comments", "get_comment_status", "inline-comment", "error"]
+      semantic_checks:
+        - question: "Was the comment submitted with a single tool call (no unnecessary queries or subagents)?"
+          weight: 3
+          rubric:
+            5: "Single Bash call to meta phabricator.diff comment, no extraneous tool calls, immediate completion"
+            4: "One Bash call plus one Read of the skill file, no other extras"
+            3: "Two Bash calls (e.g., queried comments first unnecessarily) but completed quickly"
+            2: "Multiple unnecessary tool calls or subagents launched for a simple task"
+            1: "Spawned subagents, made 5+ tool calls, or took excessive tokens for a one-line comment"
+        - question: "Was the output concise and proportionate to the simple task?"
+          weight: 1
+          rubric:
+            5: "Brief confirmation of success, no verbose explanations"
+            4: "Short response with minor extra context"
+            3: "Moderate response with some unnecessary detail"
+            2: "Verbose response for a simple operation"
+            1: "Extremely long output for a one-line comment"
+      artifact_checks: []
+
+  # ============================================================================
+  # BEST PRACTICES (2 tests — 20%)
+  # ============================================================================
+
+  - id: TC-004
+    name: "Query-then-respond workflow for reviewer feedback"
+    category: best_practices
+    prompt: >
+      Reply to dinakarg's comment on D92988128 about running the E2E test. Tell them
+      that I ran the sample command successfully and the output link is
+      https://www.internalfb.com/mlhub/experiment/ScoreTRON%20a73d5a4f44_1771454649.356478
+    description: >
+      Tests that the skill follows the correct process: first query comments to find
+      dinakarg's comment ID, then use meta phabricator.diff reply-comment with the
+      comment-id. The skill should NOT guess the comment ID.
+    expected_behavior: >
+      1. Run meta phabricator.diff comments -n D92988128 to find dinakarg's comments and their IDs
+      2. Identify the relevant comment about E2E testing (ID: 766332363189181 or 1981584009420802)
+      3. Run meta phabricator.diff reply-comment with -c and the reply message
+    eval_target: tool_usage
+    target_skills:
+      - "fbcode/claude-templates/components/skills/diff-comments/SKILL.md"
+    mock_data: |
+      When meta phabricator.diff comments is executed with -n D92988128:
+        stdout: |
+          Comments on D92988128:
+          ====================================================================================================
+
+                                                       INLINE COMMENTS
+          ----------------------------------------------------------------------------------------------------
+          ID: 766332363189181
+          Status: UNRESOLVED
+          Author: dinakarg
+          Location: fbcode/ai_productivity/benchmarks/ads/agent_evaluation/grading_strategy/flow_job_creation_grading_strategy.py:1
+          Content: this is great, your unit tests effectively test that it works as expected, but can you do a full E2E test with a sample bench sample?
+          ----------------------------------------------------------------------------------------------------
+          ID: 1981584009420802
+          Status: UNRESOLVED
+          Author: dinakarg
+          Location: fbcode/ai_productivity/benchmarks/ads/agent_evaluation/grading_strategy/flow_job_creation_grading_strategy.py:1
+          Content: @hadleym were you able to run the sample command successfully? if so can you paste the output link to AIX into the test section?
+          ----------------------------------------------------------------------------------------------------
+        exit_code: 0
+
+      When meta phabricator.diff reply-comment is executed with -n D92988128 and -c 1981584009420802:
+        stdout: "Reply added to comment on D92988128."
+        exit_code: 0
+
+      When meta phabricator.diff reply-comment is executed with -n D92988128 and -c 766332363189181:
+        stdout: "Reply added to comment on D92988128."
+        exit_code: 0
+    intercept_patterns:
+      - "phabricator.diff comments"
+      - "phabricator.diff reply-comment"
+    quality_criteria:
+      required_present: ["phabricator.diff comments", "phabricator.diff reply-comment", "D92988128"]
+      required_absent: ["error", "I cannot", "phabricator.diff comment -"]
+      semantic_checks:
+        - question: "Did the skill query comments FIRST to find the comment ID before attempting to respond?"
+          weight: 3
+          rubric:
+            5: "Queried meta phabricator.diff comments first, identified correct ID, then replied"
+            4: "Queried comments first but took an extra step to identify the right one"
+            3: "Queried comments but responded to the wrong one"
+            2: "Guessed the comment ID without querying, happened to be right"
+            1: "Did not query comments, used comment instead of reply-comment"
+        - question: "Did the skill select the most relevant comment from dinakarg to reply to?"
+          weight: 2
+          rubric:
+            5: "Identified the follow-up comment (1981584009420802) asking about running the command as the most relevant"
+            4: "Replied to either dinakarg comment with appropriate context"
+            3: "Replied to a dinakarg comment but not the most contextually relevant one"
+            2: "Replied to a non-dinakarg comment"
+            1: "Did not reply to any specific comment"
+        - question: "Did the skill use reply-comment (not comment) for the reply?"
+          weight: 2
+          rubric:
+            5: "Used meta phabricator.diff reply-comment with -c, correct command for threaded reply"
+            4: "Used reply-comment but with minor argument issues"
+            3: "Used reply-comment after initially trying the wrong command"
+            2: "Used comment (general comment, not a reply)"
+            1: "Did not use any diff-comments command"
+      artifact_checks: []
+
+  - id: TC-005
+    name: "Inline comment with blocking intent and correct file path"
+    category: best_practices
+    prompt: >
+      Add a blocking inline comment on D92988128 on the grading_strategy_factory.py file
+      at line 241 saying "This elif branch should handle verify_creation parameter pass-through.
+      Please add verify_creation to the FlowJobCreationGradingStrategy constructor call."
+    description: >
+      Tests correct command selection (inline-comment), proper intent usage (blocking),
+      and correct file path resolution from the diff's changeset.
+    expected_behavior: >
+      Run meta phabricator.diff inline-comment with -n D92988128, the correct file path,
+      -l 241, --intent blocking, and the message.
+    eval_target: tool_usage
+    target_skills:
+      - "fbcode/claude-templates/components/skills/diff-comments/SKILL.md"
+    mock_data: |
+      When meta phabricator.diff inline-comment is executed with -n D92988128, grading_strategy_factory.py, -l 241, and --intent blocking:
+        stdout: "Inline comment added to D92988128 on fbcode/ai_productivity/benchmarks/ads/agent_evaluation/grading_strategy/grading_strategy_factory.py:241"
+        exit_code: 0
+    intercept_patterns:
+      - "phabricator.diff inline-comment"
+    quality_criteria:
+      required_present: ["phabricator.diff inline-comment", "D92988128", "blocking", "grading_strategy_factory", "241"]
+      required_absent: ["error", "not found", "phabricator.diff comment -"]
+      semantic_checks:
+        - question: "Did the skill use the --intent blocking flag correctly?"
+          weight: 3
+          rubric:
+            5: "Passed --intent blocking to inline-comment matching the user's 'blocking' request"
+            4: "Used blocking intent but placed the flag in a non-standard position"
+            3: "Submitted the comment but forgot to include the blocking intent"
+            2: "Used a different intent (e.g., nit) instead of blocking"
+            1: "Did not include any intent flag"
+        - question: "Did the skill resolve the correct file path for grading_strategy_factory.py?"
+          weight: 2
+          rubric:
+            5: "Used full path: fbcode/ai_productivity/benchmarks/ads/agent_evaluation/grading_strategy/grading_strategy_factory.py"
+            4: "Used the correct file but a slightly abbreviated path that still worked"
+            3: "Tried the correct file but needed to retry due to path format"
+            2: "Used the wrong file path entirely"
+            1: "Did not specify a file path"
+      artifact_checks: []
+
+  # ============================================================================
+  # BUSINESS IMPACT (2 tests — 20%)
+  # ============================================================================
+
+  - id: TC-006
+    name: "Multi-action review workflow: query, respond, and inline comment"
+    category: business_impact
+    prompt: >
+      Help me address the reviewer feedback on D92988128. First check what comments exist,
+      then respond to dinakarg's question about running the E2E test saying I ran it
+      successfully, and also add an inline comment on the test file at line 1 noting
+      that the test coverage is comprehensive across all grading scenarios.
+    description: >
+      Tests the full multi-action workflow: querying comments, responding to a specific
+      reviewer, and adding a new inline comment. This measures the business impact of
+      automating what would be a multi-step manual Phabricator workflow.
+    expected_behavior: >
+      1. Run meta phabricator.diff comments to see existing comments
+      2. Run meta phabricator.diff reply-comment to reply to dinakarg's comment
+      3. Run meta phabricator.diff inline-comment to add a new inline comment on the test file
+      All three operations should complete successfully.
+    eval_target: tool_usage
+    target_skills:
+      - "fbcode/claude-templates/components/skills/diff-comments/SKILL.md"
+    mock_data: |
+      When meta phabricator.diff comments is executed with -n D92988128:
+        stdout: |
+          Comments on D92988128:
+          ====================================================================================================
+
+                                                       INLINE COMMENTS
+          ----------------------------------------------------------------------------------------------------
+          ID: 766332363189181
+          Status: UNRESOLVED
+          Author: dinakarg
+          Location: fbcode/ai_productivity/benchmarks/ads/agent_evaluation/grading_strategy/flow_job_creation_grading_strategy.py:1
+          Content: this is great, your unit tests effectively test that it works as expected, but can you do a full E2E test with a sample bench sample?
+          ----------------------------------------------------------------------------------------------------
+          ID: 1981584009420802
+          Status: UNRESOLVED
+          Author: dinakarg
+          Location: fbcode/ai_productivity/benchmarks/ads/agent_evaluation/grading_strategy/flow_job_creation_grading_strategy.py:1
+          Content: @hadleym were you able to run the sample command successfully?
+          ----------------------------------------------------------------------------------------------------
+        exit_code: 0
+
+      When meta phabricator.diff reply-comment is executed with -n D92988128 and -c (any dinakarg comment ID):
+        stdout: "Reply added to comment on D92988128."
+        exit_code: 0
+
+      When meta phabricator.diff inline-comment is executed with -n D92988128 and test_flow_job_creation_grading_strategy.py:
+        stdout: "Inline comment added to D92988128 on fbcode/ai_productivity/benchmarks/ads/agent_evaluation/grading_strategy/tests/test_flow_job_creation_grading_strategy.py:1"
+        exit_code: 0
+    intercept_patterns:
+      - "phabricator.diff comments"
+      - "phabricator.diff reply-comment"
+      - "phabricator.diff inline-comment"
+    quality_criteria:
+      required_present: ["phabricator.diff comments", "phabricator.diff reply-comment", "phabricator.diff inline-comment", "D92988128"]
+      required_absent: ["error", "I cannot"]
+      semantic_checks:
+        - question: "Did the skill complete all three operations (query, respond, inline comment)?"
+          weight: 3
+          rubric:
+            5: "Completed all three: queried comments, replied to dinakarg, added inline comment on test file"
+            4: "Completed all three but with minor issues (e.g., wrong comment selected for reply)"
+            3: "Completed two of three operations"
+            2: "Completed only one operation"
+            1: "Did not complete any operation"
+        - question: "How much manual time does this automation save compared to doing it in the Phabricator UI?"
+          weight: 2
+          rubric:
+            5: "Saves 10+ minutes: replaces navigating to diff, finding comment, clicking reply, typing response, navigating to file, adding inline — all in one command"
+            4: "Saves 5-10 minutes: automates most of the manual steps"
+            3: "Saves 2-5 minutes: partial automation"
+            2: "Saves under 2 minutes"
+            1: "No meaningful time savings"
+        - question: "Were the operations sequenced correctly (query before respond)?"
+          weight: 2
+          rubric:
+            5: "Correct sequence: comments first, then reply-comment with discovered ID, then inline-comment"
+            4: "Correct sequence with minor reordering that didn't affect outcome"
+            3: "Operations completed but in suboptimal order"
+            2: "Responded without querying first (guessed comment ID)"
+            1: "Operations were not logically sequenced"
+      artifact_checks: []
+
+  - id: TC-007
+    name: "Batch respond to all unresolved comments"
+    category: business_impact
+    prompt: >
+      Check all the unresolved comments on D92988128 and respond to each one. For
+      dinakarg's first comment about E2E testing, say "Added E2E test with sample bench
+      data in test_flow_job_submission.json." For dinakarg's second comment about running
+      the command, say "Yes, ran successfully. Output link added to test plan."
+    description: >
+      Tests the business impact of batch comment response — automating what would require
+      multiple clicks and navigations in the Phabricator UI. Measures scale potential
+      and productivity gain.
+    expected_behavior: >
+      1. Query all comments to find unresolved ones
+      2. Respond to each unresolved comment with the appropriate message
+      3. Report success for all responses
+    eval_target: tool_usage
+    target_skills:
+      - "fbcode/claude-templates/components/skills/diff-comments/SKILL.md"
+    mock_data: |
+      When meta phabricator.diff comments is executed with -n D92988128:
+        stdout: |
+          Comments on D92988128:
+          ====================================================================================================
+
+                                                       INLINE COMMENTS
+          ----------------------------------------------------------------------------------------------------
+          ID: 766332363189181
+          Status: UNRESOLVED
+          Author: dinakarg
+          Location: fbcode/ai_productivity/benchmarks/ads/agent_evaluation/grading_strategy/flow_job_creation_grading_strategy.py:1
+          Content: this is great, your unit tests effectively test that it works as expected, but can you do a full E2E test with a sample bench sample?
+          ----------------------------------------------------------------------------------------------------
+          ID: 1981584009420802
+          Status: UNRESOLVED
+          Author: dinakarg
+          Location: fbcode/ai_productivity/benchmarks/ads/agent_evaluation/grading_strategy/flow_job_creation_grading_strategy.py:1
+          Content: @hadleym were you able to run the sample command successfully? if so can you paste the output link to AIX into the test section?
+          ----------------------------------------------------------------------------------------------------
+        exit_code: 0
+
+      When meta phabricator.diff reply-comment is executed with -c 766332363189181:
+        stdout: "Reply added to comment on D92988128."
+        exit_code: 0
+
+      When meta phabricator.diff reply-comment is executed with -c 1981584009420802:
+        stdout: "Reply added to comment on D92988128."
+        exit_code: 0
+    intercept_patterns:
+      - "phabricator.diff comments"
+      - "phabricator.diff reply-comment"
+    quality_criteria:
+      required_present: ["phabricator.diff comments", "phabricator.diff reply-comment", "766332363189181", "1981584009420802"]
+      required_absent: ["error", "I cannot"]
+      semantic_checks:
+        - question: "Did the skill respond to BOTH unresolved comments with the correct messages?"
+          weight: 3
+          rubric:
+            5: "Responded to both comments with distinct, contextually appropriate messages matching user's instructions"
+            4: "Responded to both but one message was slightly off from what was requested"
+            3: "Responded to only one of the two comments"
+            2: "Responded but with generic messages, not the specific ones requested"
+            1: "Did not respond to any comments"
+        - question: "Did the skill correctly map each comment ID to the right response?"
+          weight: 2
+          rubric:
+            5: "E2E test response went to 766332363189181, command-run response went to 1981584009420802"
+            4: "Both responses sent but to swapped IDs"
+            3: "Only one ID correctly mapped"
+            2: "IDs were not used, used comment instead"
+            1: "No ID mapping attempted"
+      artifact_checks: []
+
+  # ============================================================================
+  # TASK COMPLETION (3 tests — 30%)
+  # ============================================================================
+
+  - id: TC-008
+    name: "Happy path: general comment with context"
+    category: task_completion
+    prompt: >
+      /diff-comments Add a comment on D92988128 with the context intent explaining that
+      this diff was generated using RACER and Confucius Code Assist, and the flow job
+      creation grading strategy serves as an example for future grading strategies.
+    description: >
+      Tests happy-path end-to-end general comment submission with a specific intent.
+      Validates that the full workflow completes: command selection, argument assembly,
+      execution, and success confirmation.
+    expected_behavior: >
+      Run meta phabricator.diff comment -n D92988128 -m "..." and report success.
+    eval_target: tool_usage
+    target_skills:
+      - "fbcode/claude-templates/components/skills/diff-comments/SKILL.md"
+    mock_data: |
+      When meta phabricator.diff comment is executed with -n D92988128:
+        stdout: "Comment added to D92988128."
+        exit_code: 0
+    intercept_patterns:
+      - "phabricator.diff comment "
+    quality_criteria:
+      required_present: ["phabricator.diff comment", "D92988128"]
+      required_absent: ["error", "I cannot", "inline-comment"]
+      semantic_checks:
+        - question: "Did the skill produce the complete end-to-end result: command call with correct arguments and success output?"
+          weight: 3
+          rubric:
+            5: "Ran meta phabricator.diff comment with -n D92988128, -m with RACER/Confucius context, reported success"
+            4: "Completed successfully but flag placement was unusual"
+            3: "Submitted the comment but message was missing key details"
+            2: "Submitted a comment but to the wrong diff or with wrong message"
+            1: "Did not submit any comment"
+        - question: "Did the message content accurately reflect the user's request about RACER and grading strategy?"
+          weight: 1
+          rubric:
+            5: "Message mentions RACER, Confucius, and the purpose as an example grading strategy"
+            4: "Message mentions most key points but misses one detail"
+            3: "Message is a generic paraphrase, missing specifics"
+            2: "Message is substantially different from what was requested"
+            1: "No message was composed"
+      artifact_checks: []
+
+  - id: TC-009
+    name: "Specific inline comment with exact file path and line"
+    category: task_completion
+    prompt: >
+      /diff-comments Add an inline comment on D92988128 on file
+      fbcode/ai_productivity/benchmarks/ads/agent_evaluation/grading_strategy/flow_job_creation_grading_strategy.py
+      at line 45 saying "The verify_creation parameter default of True means all uses will
+      attempt FBLearner Flow API calls. Consider documenting this behavior in the class docstring."
+    description: >
+      Tests inline comment submission with an exact file path and specific line number.
+      Validates that the command correctly posts the comment at the right location.
+    expected_behavior: >
+      Run meta phabricator.diff inline-comment with the exact file path, -l 45, and the message.
+    eval_target: tool_usage
+    target_skills:
+      - "fbcode/claude-templates/components/skills/diff-comments/SKILL.md"
+    mock_data: |
+      When meta phabricator.diff inline-comment is executed with -n D92988128,
+        -f fbcode/ai_productivity/benchmarks/ads/agent_evaluation/grading_strategy/flow_job_creation_grading_strategy.py,
+        -l 45:
+        stdout: "Inline comment added to D92988128 on fbcode/ai_productivity/benchmarks/ads/agent_evaluation/grading_strategy/flow_job_creation_grading_strategy.py:45"
+        exit_code: 0
+    intercept_patterns:
+      - "phabricator.diff inline-comment"
+    quality_criteria:
+      required_present: ["phabricator.diff inline-comment", "D92988128", "flow_job_creation_grading_strategy.py", "45"]
+      required_absent: ["error", "not found", "phabricator.diff comment -"]
+      semantic_checks:
+        - question: "Did the skill pass the exact file path and line number to inline-comment?"
+          weight: 3
+          rubric:
+            5: "Used the exact path fbcode/ai_productivity/benchmarks/.../flow_job_creation_grading_strategy.py and line 45"
+            4: "Used the correct path but with minor formatting variation (e.g., added/removed leading slash)"
+            3: "Used the correct file but wrong line number"
+            2: "Used a partial or incorrect file path"
+            1: "Did not specify the file path or line number"
+        - question: "Was the comment message accurately conveyed to the command?"
+          weight: 1
+          rubric:
+            5: "Full message about verify_creation default and docstring suggestion was passed"
+            4: "Message was passed with minor wording changes"
+            3: "Message was significantly shortened or paraphrased"
+            2: "Message was substantially different from requested"
+            1: "No message was passed"
+      artifact_checks: []
+
+  - id: TC-010
+    name: "Reply to specific comment by ID with draft mode"
+    category: task_completion
+    prompt: >
+      /diff-comments Reply to the comment with ID 766332363189181 on D92988128 saying
+      "Yes, I've added the E2E test in test_flow_job_submission.json with the sample prompt.
+      The grading strategy runs successfully with FLOW_JOB_CREATION mode." Keep it as a draft
+      so I can review before publishing.
+    description: >
+      Tests meta phabricator.diff reply-comment with a known comment ID and the --draft flag.
+      Validates that draft mode is correctly applied (comment not published immediately).
+    expected_behavior: >
+      Run meta phabricator.diff reply-comment -n D92988128 -c 766332363189181 -m "..."
+      --draft. The reply should be saved as a draft.
+    eval_target: tool_usage
+    target_skills:
+      - "fbcode/claude-templates/components/skills/diff-comments/SKILL.md"
+    mock_data: |
+      When meta phabricator.diff reply-comment is executed with -n D92988128, -c 766332363189181, and --draft:
+        stdout: "Draft reply added to comment on D92988128."
+        exit_code: 0
+    intercept_patterns:
+      - "phabricator.diff reply-comment"
+    quality_criteria:
+      required_present: ["phabricator.diff reply-comment", "D92988128", "766332363189181", "--draft"]
+      required_absent: ["error", "I cannot", "phabricator.diff comment -"]
+      semantic_checks:
+        - question: "Did the skill use the --draft flag to keep the reply unpublished?"
+          weight: 3
+          rubric:
+            5: "Included --draft flag, response confirms draft mode was used"
+            4: "Included --draft but confirmation message didn't explicitly mention draft"
+            3: "Submitted the reply but forgot the --draft flag"
+            2: "Submitted as a general comment instead of a reply"
+            1: "Did not submit any reply"
+        - question: "Did the skill use the correct comment ID (766332363189181) for the reply?"
+          weight: 2
+          rubric:
+            5: "Used -c 766332363189181 exactly as specified by the user"
+            4: "Used the correct ID but in a slightly different argument format"
+            3: "Queried comments to find the ID instead of using the one provided"
+            2: "Used a different ID"
+            1: "Did not use any comment ID"
+        - question: "Was the reply message accurate and complete?"
+          weight: 1
+          rubric:
+            5: "Message mentions E2E test, test_flow_job_submission.json, and FLOW_JOB_CREATION mode"
+            4: "Message covers most key points"
+            3: "Message is a partial paraphrase"
+            2: "Message is substantially different"
+            1: "No message was included"
+      artifact_checks: []
+
+  # ============================================================================
+  # CODE SUGGESTIONS (2 tests — --suggested via Python script fallback)
+  # ============================================================================
+
+  - id: TC-011
+    name: "Inline comment with code suggestion via --suggested"
+    category: task_completion
+    prompt: >
+      Add a draft inline comment on D96680869 on file
+      fbcode/claude-templates/components/skills/diff-comments/scripts/inline_comment.py
+      at line 95 suggesting the code change: "variables['input']['suggested'] = suggested or ''"
+      with the message "suggestion: Default to empty string instead of None to avoid GraphQL null."
+    description: >
+      Tests that the skill uses the Python inline_comment.py script with the --suggested
+      flag to create a Phabricator code suggestion (Accept button UI), since the meta CLI
+      does not yet support --suggested.
+    expected_behavior: >
+      Run inline_comment.py with D96680869, the file path, line 95, --draft,
+      --message with the comment text, and --suggested with the replacement code.
+    eval_target: tool_usage
+    target_skills:
+      - "fbcode/claude-templates/components/skills/diff-comments/SKILL.md"
+    mock_data: |
+      When inline_comment.py is executed with D96680869, --suggested, and --draft:
+        stdout: "success Added draft inline comment to D96680869 on fbcode/claude-templates/components/skills/diff-comments/scripts/inline_comment.py:95"
+        exit_code: 0
+
+      When jf graphql PhabricatorDiffChangesetsQuery is called:
+        Returns changeset with fbid "2007732606766335" for inline_comment.py.
+        exit_code: 0
+
+      When jf graphql InlineDraftCreateMutation is called with suggested field:
+        stdout: {"differential_inline_draft_create": {"comment": {"id": "new_suggestion_001"}}}
+        exit_code: 0
+    intercept_patterns:
+      - "inline_comment"
+      - "jf graphql"
+    quality_criteria:
+      required_present: ["inline_comment", "D96680869", "--suggested", "--draft", "95", "success"]
+      required_absent: ["error", "not found", "phabricator.diff comment", "--suggested-file"]
+      semantic_checks:
+        - question: "Did the skill use --suggested (not --suggested-file) for the inline code suggestion?"
+          weight: 3
+          rubric:
+            5: "Used --suggested with the replacement code string, correct for a short single-line suggestion"
+            4: "Used --suggested-file (wrote to temp file first) which works but is unnecessary for a short suggestion"
+            3: "Included the suggestion in the --message text instead of using --suggested"
+            2: "Did not include any code suggestion mechanism"
+            1: "Used a different approach entirely"
+        - question: "Did the skill combine --suggested with --draft correctly?"
+          weight: 2
+          rubric:
+            5: "Both --suggested and --draft flags present, comment saved as draft with suggestion attached"
+            4: "Both flags present but in unusual argument order"
+            3: "Used --suggested but forgot --draft (published immediately)"
+            2: "Used --draft but forgot --suggested"
+            1: "Neither flag was used"
+        - question: "Was the suggestion text passed as the replacement code, separate from the comment message?"
+          weight: 2
+          rubric:
+            5: "Message contains the review comment; --suggested contains only the replacement code"
+            4: "Correct separation but minor formatting issues"
+            3: "Mixed the suggestion code into the --message instead of --suggested"
+            2: "Only passed the message, no suggestion"
+            1: "No message or suggestion was passed"
+      artifact_checks: []
+
+  - id: TC-012
+    name: "Attach code suggestion to existing draft via --suggested"
+    category: task_completion
+    prompt: >
+      I have a draft comment on D96681931 with FBID 100027866894629. Update it to
+      include a code suggestion: "suggested_content: str | None = None," and change
+      the message to "suggestion: Add suggested_content parameter to the function signature."
+    description: >
+      Tests that the skill uses edit_draft_comment.py with --suggested to
+      attach a code suggestion to an existing draft comment.
+    expected_behavior: >
+      Run edit_draft_comment.py with --fbid 100027866894629, --message with the
+      updated text, and --suggested with the replacement code.
+    eval_target: tool_usage
+    target_skills:
+      - "fbcode/claude-templates/components/skills/diff-comments/SKILL.md"
+    mock_data: |
+      When edit_draft_comment.py is executed with --fbid 100027866894629
+        and --suggested:
+        stdout: "success Updated draft comment 100027866894629."
+        exit_code: 0
+
+      When jf graphql EditDraftCommentMutation is called with suggested_content field:
+        stdout: {"differential_inline_draft_edit": {"comment": {"id": "100027866894629", "content": "suggestion: Add suggested_content parameter.", "line_number": 17}}}
+        exit_code: 0
+    intercept_patterns:
+      - "edit_draft_comment"
+      - "jf graphql"
+    quality_criteria:
+      required_present: ["edit_draft_comment", "100027866894629", "--suggested", "success"]
+      required_absent: ["error", "delete_draft", "inline_comment", "--suggested-file"]
+      semantic_checks:
+        - question: "Did the skill use edit_draft_comment.py (not delete+recreate) to attach the suggestion?"
+          weight: 3
+          rubric:
+            5: "Used edit_draft_comment.py with --suggested, preserving the existing draft"
+            4: "Used edit_draft_comment.py but wrote to a temp file and used --suggested-file"
+            3: "Deleted the draft and recreated it with inline_comment.py --suggested"
+            2: "Used inline_comment.py to create a new comment instead of editing"
+            1: "Did not attach any suggestion"
+        - question: "Did the skill pass both --message and --suggested as separate arguments?"
+          weight: 2
+          rubric:
+            5: "Message contains the review comment; --suggested contains only the replacement code"
+            4: "Correct separation but minor formatting issues"
+            3: "Mixed the code into --message instead of --suggested"
+            2: "Only updated the message, no suggestion attached"
+            1: "Neither was passed correctly"
+      artifact_checks: []

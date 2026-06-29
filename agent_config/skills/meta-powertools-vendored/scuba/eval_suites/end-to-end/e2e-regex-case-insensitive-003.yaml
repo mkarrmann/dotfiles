@@ -1,0 +1,42 @@
+id: e2e-regex-case-insensitive-003
+suite: end-to-end
+project: scuba-evals
+description: Tests case-insensitive regex via regeq constraint operator
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user wants to filter using a case-insensitive regex pattern."
+question: "From scuba_queries in the last hour, count queries where query_source matches the pattern 'api' (case-insensitive, should match 'api', 'API', 'Api', etc.), grouped by query_type."
+
+mock_data: |
+  meta scuba.dataset query response with regeq constraint:
+    results:
+      query_type | COUNT
+      sql        | 891
+      graphql    | 456
+      presto_sql | 123
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: calls_query
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.dataset query for the query"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: uses_regeq
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses regeq constraint operator for case-insensitive regex"
+    arguments:
+      command: "regeq"
+  - id: presents_results
+    description: "Agent presents the count results"
+    check: "Response shows count results grouped by query_type"
+
+quality_factors:
+  - id: explains_case_insensitive
+    description: "Explains that regeq produces case-insensitive REGEXP_IMATCH"
+    weight: 1.0

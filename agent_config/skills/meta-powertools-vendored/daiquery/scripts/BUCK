@@ -1,0 +1,86 @@
+load("@fbcode_macros//build_defs:python_binary.bzl", "python_binary")
+load("@fbcode_macros//build_defs:python_library.bzl", "python_library")
+load("@fbcode_macros//build_defs:python_unittest.bzl", "python_unittest")
+load("@fbsource//tools/build_defs/testinfra:network_access_utils.bzl", "network_access_utils")
+
+oncall("ads_llm_productivity")
+
+python_library(
+    name = "fetch_query_lib",
+    srcs = ["fetch_query.py"],
+    base_module = "",
+    typing = True,
+    deps = [
+        "//daiquery/daiquerycli:daiqueryapi",
+        "//libfb/py:fburl",
+    ],
+)
+
+python_binary(
+    name = "fetch_query",
+    srcs = ["fetch_query.py"],
+    main_function = ".fetch_query.main",
+    typing = True,
+    deps = [
+        "//daiquery/daiquerycli:daiqueryapi",
+        "//libfb/py:fburl",
+    ],
+)
+
+python_library(
+    name = "search_queries_lib",
+    srcs = ["search_queries.py"],
+    typing = True,
+    deps = [
+        "//daiquery/daiquerycli:daiqueryapi",
+    ],
+)
+
+python_binary(
+    name = "search_queries",
+    srcs = ["search_queries.py"],
+    main_function = ".search_queries.main",
+    typing = True,
+    deps = [
+        "//daiquery/daiquerycli:daiqueryapi",
+    ],
+)
+
+python_binary(
+    name = "update_query",
+    srcs = ["update_query.py"],
+    main_function = ".update_query.main",
+    typing = True,
+    deps = [
+        "//daiquery:thrift-python-types",
+        "//daiquery/daiquerycli:daiqueryapi",
+    ],
+)
+
+python_binary(
+    name = "create_query",
+    srcs = ["create_query.py"],
+    main_function = ".create_query.main",
+    typing = True,
+    deps = [
+        "//daiquery:thrift-python-types",
+        "//daiquery/daiquerycli:daiqueryapi",
+        "//daiquery/daiquerycli:helpers",
+    ],
+)
+
+python_unittest(
+    name = "test_fetch_query",
+    srcs = ["tests/test_fetch_query.py"],
+    base_module = "",
+    network_access = network_access_utils.all(),
+    deps = [
+        ":fetch_query_lib",
+    ],
+)
+
+python_library(
+    name = "__init__",
+    srcs = ["tests/__init__.py"],
+    labels = ["autodeps2_generated"],
+)

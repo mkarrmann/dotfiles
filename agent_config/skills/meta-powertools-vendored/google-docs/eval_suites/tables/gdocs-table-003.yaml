@@ -1,0 +1,40 @@
+id: gdocs-table-003
+name: Update table cell
+category: tables
+prompt: In the table in https://docs.google.com/document/d/1abc123/edit, change cell (1,2) from 'TBD' to 'Confirmed' and highlight
+  it green.
+description: Tests updating a specific table cell with text and formatting
+expected_behavior: Agent updates cell text and applies background color
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Status Tracker
+  Table content:
+    Row 0: Task | Status | Owner
+    Row 1: Launch | TBD | Alice
+    Row 2: Testing | Done | Bob
+  Update result: Cell (1,2) updated from "TBD" to "Confirmed" with green background.
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent update the cell text to 'Confirmed' and apply green highlighting?
+    weight: 3
+    rubric:
+      5: Agent updated the cell text and applied green background color
+      3: Agent updated the text but did not apply the color
+      1: Agent did not update the table cell
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

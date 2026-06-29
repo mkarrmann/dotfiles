@@ -1,0 +1,45 @@
+id: dc-two-step-agg-006
+suite: derived-columns
+project: scuba-evals
+description: Tests two-step aggregation requiring HAVING which routes to SQL mode (from TP-6)
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user needs to filter on aggregated results, requiring a two-step approach."
+question: "From scuba_queries in the last day, first compute the average query count per user, then find only users above that average."
+
+mock_data: |
+  meta scuba.dataset query --sql response:
+    results:
+      userid    | cnt
+      user_1234 | 5678
+      user_5678 | 4321
+      user_9012 | 3456
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: uses_sql_mode
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.dataset query --sql for the two-step aggregation with HAVING"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: having_in_query
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses HAVING clause for aggregate filtering"
+    arguments:
+      command: "HAVING"
+  - id: includes_time_filter
+    description: "Agent includes time filter for the last day"
+    check: "Response includes a query with a 24-hour time filter"
+
+quality_factors:
+  - id: correct_logic
+    description: "The two-step logic correctly computes per-user counts then filters above average"
+    weight: 0.5
+  - id: uses_sql_flag
+    description: "Uses --sql flag for the HAVING query since structured mode does not support HAVING"
+    weight: 0.5

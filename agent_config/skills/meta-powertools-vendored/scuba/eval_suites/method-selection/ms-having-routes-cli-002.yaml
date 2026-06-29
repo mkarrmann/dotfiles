@@ -1,0 +1,25 @@
+id: ms-having-routes-cli-002
+suite: method-selection
+project: scuba-evals
+description: Tests that agent correctly identifies HAVING requires SQL mode
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "An analyst wants to filter results based on aggregate values."
+question: "I want to find query_sources in scuba_queries that had more than 1000 queries in the last hour. Write me a HAVING query — should I use structured mode or SQL mode?"
+
+critical_requirements:
+  - id: recommends_sql_for_having
+    description: "Agent recommends SQL mode for HAVING and explains structured mode limitation"
+    check: "Response recommends SQL mode (--sql) for HAVING and explains that structured mode does not support HAVING or filtering on aggregated values"
+
+quality_factors:
+  - id: provides_example_query
+    description: "Provides an example HAVING query with proper SQL syntax"
+    weight: 0.4
+  - id: mentions_alias_rule
+    description: "Mentions that column aliases should not use reserved words like 'count'"
+    weight: 0.3
+  - id: mentions_time_filter
+    description: "Mentions the mandatory time filter requirement for SQL queries"
+    weight: 0.3

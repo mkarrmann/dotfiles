@@ -1,0 +1,37 @@
+id: gdocs-perm-004
+name: Remove access
+category: permissions
+prompt: Remove johndoe@meta.com's access to https://docs.google.com/document/d/1abc123/edit
+description: Tests removing a user's access to a document
+expected_behavior: Agent uses permissions unshare to remove access
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Permissions:
+    - id: perm001, type: user, email: alice@meta.com, role: owner
+    - id: perm002, type: user, email: johndoe@meta.com, role: writer
+  Unshare result: Permission perm002 removed for johndoe@meta.com.
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent remove johndoe@meta.com's access to the document?
+    weight: 3
+    rubric:
+      5: Agent listed permissions to find the ID, then unshared johndoe's access
+      3: Agent removed access but process was unclear
+      1: Agent did not remove access
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

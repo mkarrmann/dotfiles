@@ -1,0 +1,42 @@
+id: cq-samples-view-002
+suite: core-queries
+project: scuba-evals
+description: Tests that samples view requires columns parameter
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user wants to see raw sample rows from a dataset."
+question: "Show me 10 sample rows from scuba_queries with the columns dataset, query_type, cpu_time, and query_source."
+
+mock_data: |
+  meta scuba.dataset query response for samples view:
+    scuba_url: "https://www.internalfb.com/intern/scuba/query/?dataset=scuba_queries&pool=uber&view=samples&drillstate=N4IgxgDgFghgTg..."
+    results:
+      dataset          | query_type | cpu_time | query_source
+      scuba_queries    | sql        | 12500    | datamate
+      core_viz_actions | graphql    | 8700     | scuba_ui
+      intern_requests  | sql        | 45000    | api
+      web_requests     | presto_sql | 3200     | cli
+      scuba_queries    | graphql    | 1800     | graphql_api
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: uses_query
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.dataset query for samples"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: presents_samples
+    description: "Agent presents sample rows"
+    check: "Response includes individual sample rows with column values in a readable format"
+
+quality_factors:
+  - id: sets_limit
+    description: "Sets limit to 10 as requested"
+    weight: 0.5
+  - id: presents_results
+    description: "Shows sample rows in a readable tabular format"
+    weight: 0.5

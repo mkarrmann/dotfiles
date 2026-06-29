@@ -1,0 +1,38 @@
+id: gdocs-create-002
+name: Create doc with initial content
+category: creating
+prompt: 'Create a Google Doc titled ''Project Status'' with these headings: Overview, Timeline, Risks. Add a short placeholder
+  paragraph under each.'
+description: Tests creating a doc with structured initial content
+expected_behavior: Agent creates doc with headings and placeholder content
+eval_target: response
+mock_data: |
+  Create result:
+    Document ID: 1status456
+    Title: Project Status
+    URL: https://docs.google.com/document/d/1status456/edit
+    Content applied successfully with 3 headings and placeholder paragraphs.
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent create a doc with the three headings (Overview, Timeline, Risks) and placeholder content?
+    weight: 3
+    rubric:
+      5: Agent created doc with all 3 headings and placeholder paragraphs
+      3: Agent created doc but missing some headings or placeholders
+      1: Agent did not create the document with structured content
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

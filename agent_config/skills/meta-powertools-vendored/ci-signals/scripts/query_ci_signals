@@ -1,0 +1,356 @@
+#!/bin/bash
+# Query CI signals for a Phabricator diff
+# Usage: query_ci_signals <diff_number> [limit] [--summary-only] [--types TYPE1,TYPE2,...] [--all-statuses] [--status STATUS1,STATUS2,...]
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DIFF_NUM=""
+LIMIT="100"
+SUMMARY_ONLY=false
+FILTER_TYPES=""
+ALL_STATUSES=false
+CUSTOM_STATUSES=""
+CACHED_VERSION_ID=""
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --summary-only)
+      SUMMARY_ONLY=true
+      shift
+      ;;
+    --types)
+      FILTER_TYPES="$2"
+      shift 2
+      ;;
+    --all-statuses)
+      ALL_STATUSES=true
+      shift
+      ;;
+    --status)
+      CUSTOM_STATUSES="$2"
+      shift 2
+      ;;
+    --limit)
+      LIMIT="$2"
+      shift 2
+      ;;
+    --version-id)
+      CACHED_VERSION_ID="$2"
+      shift 2
+      ;;
+    -*)
+      echo "Unknown option: $1"
+      exit 1
+      ;;
+    *)
+      if [ -z "$DIFF_NUM" ]; then
+        DIFF_NUM="$1"
+      else
+        LIMIT="$1"
+      fi
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$DIFF_NUM" ]; then
+  echo "Usage: $0 <diff_number> [--limit N] [--summary-only] [--types TYPE1,TYPE2,...] [--all-statuses] [--status STATUS1,STATUS2,...]"
+  echo ""
+  echo "Examples:"
+  echo "  $0 D85794504                              # Get first 100 FAILED+WARNING signals"
+  echo "  $0 D85794504 --limit 50                   # Get first 50 FAILED+WARNING signals"
+  echo "  $0 D85794504 --summary-only               # Get only counts by type (fast)"
+  echo "  $0 D85794504 --types TEST                 # Get only TEST signals"
+  echo "  $0 D85794504 --types STATIC_ANALYSIS      # Get only static analysis"
+  echo "  $0 D85794504 --types TEST,BUILD_RULE      # Get multiple types"
+  echo "  $0 D85794504 --all-statuses               # Get ALL signals (PASSED, FAILED, etc.)"
+  echo "  $0 D85794504 --status PASSED              # Get only PASSED signals"
+  echo "  $0 D85794504 --status FAILED,PASSED       # Get FAILED and PASSED signals"
+  echo "  $0 D85794504 --all-statuses --summary-only  # Quick count of all signals by status"
+  echo ""
+  echo "Options:"
+  echo "  --limit N            Maximum signals to fetch (default: 100)"
+  echo "  --summary-only       Return only counts by type (fast, no details)"
+  echo "  --types TYPE1,TYPE2      Comma-separated list of types to filter"
+  echo "                           Types: STATIC_ANALYSIS, TEST, BUILD_RULE, JOB, BUILD"
+  echo "  --all-statuses           Include all signal statuses (default: FAILED, WARNING only)"
+  echo "  --status STATUS1,STATUS2 Comma-separated list of statuses to filter"
+  echo "                           Statuses: PASSED, FAILED, WARNING, PENDING, INFO"
+  echo ""
+  echo "Queries CI signals for a Phabricator diff, including detailed"
+  echo "static analysis issues (lint errors, type warnings, etc.)"
+  exit 1
+fi
+
+# Remove 'D' prefix if provided
+DIFF_NUM="${DIFF_NUM#D}"
+
+# Get version ID - reuse cached value if provided, otherwise resolve
+if [ -n "$CACHED_VERSION_ID" ] && [ "$CACHED_VERSION_ID" != "null" ]; then
+  VERSION_ID="$CACHED_VERSION_ID"
+else
+  DIFF_PROPS=$(jf diff-properties "D${DIFF_NUM}" 2>/dev/null)
+  LATEST_VERSION=$(echo "$DIFF_PROPS" | jq -r '.latest_phabricator_version.number')
+  DRAFT_VERSION=$(echo "$DIFF_PROPS" | jq -r '.latest_draft_phabricator_version.number // "0"')
+
+  # Use draft version if it's newer than the latest published version
+  if [ "$DRAFT_VERSION" != "null" ] && [ "$DRAFT_VERSION" != "0" ] && [ "$DRAFT_VERSION" -gt "$LATEST_VERSION" ]; then
+    VERSION_ID=$(echo "$DIFF_PROPS" | jq -r '.latest_draft_phabricator_version.id')
+    echo "Note: Using draft version $DRAFT_VERSION (newer than published version $LATEST_VERSION)" >&2
+  else
+    VERSION_ID=$(echo "$DIFF_PROPS" | jq -r '.latest_phabricator_version.id')
+  fi
+
+  if [ "$VERSION_ID" == "null" ] || [ -z "$VERSION_ID" ]; then
+    echo "Error: Could not find version ID for D${DIFF_NUM}"
+    echo "Make sure the diff exists and you have access to it."
+    exit 1
+  fi
+fi
+
+# Check for deferred testing state using shared helper
+CI_STATE_JSON=$("$SCRIPT_DIR/check_ci_state" "D${DIFF_NUM}" 2>/dev/null) || {
+  echo "Warning: check_ci_state failed, skipping deferred check" >&2
+  CI_STATE_JSON=""
+}
+
+if [ -n "$CI_STATE_JSON" ]; then
+  CI_STATE=$(echo "$CI_STATE_JSON" | jq -r '.ci_state // empty')
+
+  if [ "$CI_STATE" = "TEST_DEFERRED" ]; then
+    echo "" >&2
+    echo "WARNING: CI tests are DEFERRED for D${DIFF_NUM}." >&2
+    echo "This diff is in unpublished draft mode and CI has not been started." >&2
+    echo "Automatically triggering deferred tests..." >&2
+    echo "" >&2
+    # Extract submit_queue_request ID from check_ci_state output
+    SQ_REQUEST_ID=$(echo "$CI_STATE_JSON" | jq -r '.submit_queue_request_id // empty')
+    # Auto-trigger the deferred tests, passing request ID to skip redundant detection query
+    START_ARGS=("D${DIFF_NUM}")
+    if [ -n "$SQ_REQUEST_ID" ]; then
+      START_ARGS+=("--request-id" "$SQ_REQUEST_ID")
+    fi
+    "$SCRIPT_DIR/start_deferred_tests" "${START_ARGS[@]}" || START_EXIT=$?
+    START_EXIT=${START_EXIT:-0}
+    if [ "$START_EXIT" -eq 0 ]; then
+      echo "" >&2
+      echo "Tests have been started. Signal data will not be available immediately." >&2
+      echo "Re-run this command shortly to see CI results." >&2
+    else
+      echo "" >&2
+      echo "Failed to auto-start deferred tests. You can try manually:" >&2
+      echo "  scripts/start_deferred_tests D${DIFF_NUM}" >&2
+    fi
+    echo "" >&2
+    # Exit with code 2 to indicate deferred state (distinguishable from error=1)
+    exit 2
+  fi
+fi
+
+# Build the signals filter clause based on --all-statuses / --status flags
+# NOTE: signals() requires the filters argument — use filters: {} for unfiltered
+# CIResultStatus enum: PASSED, FAILED, WARNING, PENDING, INFO
+if [ "$ALL_STATUSES" = true ]; then
+  SIGNALS_OPEN="signals(filters: {}, first: $LIMIT)"
+elif [ -n "$CUSTOM_STATUSES" ]; then
+  # Validate status values are known CIResultStatus enum members
+  for _status in ${CUSTOM_STATUSES//,/ }; do
+    case "$_status" in
+      PASSED|FAILED|WARNING|PENDING|INFO) ;;
+      *) echo "Error: unknown status '$_status'. Valid statuses: PASSED, FAILED, WARNING, PENDING, INFO" >&2; exit 1 ;;
+    esac
+  done
+  SIGNALS_OPEN="signals(filters: {status: [$CUSTOM_STATUSES]}, first: $LIMIT)"
+else
+  SIGNALS_OPEN="signals(filters: {status: [FAILED, WARNING]}, first: $LIMIT)"
+fi
+
+# Summary-only mode: just get counts by type
+if [ "$SUMMARY_ONLY" = true ]; then
+  jf graphql --query "query (\$version_id: ID!) {
+    signalview_signals(phabricator_version_fbid: \$version_id) {
+      $SIGNALS_OPEN {
+        count
+        nodes {
+          name
+          status
+          slp_functional_type
+        }
+      }
+    }
+  }" --variables "{\"version_id\": \"$VERSION_ID\"}"
+  exit 0
+fi
+
+# Only fetch debugger_json_string for FAILED+WARNING queries (it can be 100KB+ per signal)
+DBG_JSON_FIELD=""
+if [ "$ALL_STATUSES" != true ]; then
+  DBG_JSON_FIELD="debugger_json_string"
+fi
+
+# Query CI signals with full details
+jf graphql --query "query (\$version_id: ID!) {
+  signalview_signals(phabricator_version_fbid: \$version_id) {
+    $SIGNALS_OPEN {
+      count
+      nodes {
+        name
+        status
+        backend
+        slp_functional_type
+        $DBG_JSON_FIELD
+        debugger_slp_signal {
+          full_name
+          functional_type
+          expensive_signal_details {
+            slp_functional_type
+            detail {
+              __typename
+              ... on CISignalBoxStaticAnalysisDetail {
+                description
+                lint_issues {
+                  code
+                  name
+                  description
+                  path
+                  line
+                  severity
+                }
+              }
+              ... on CISignalBoxTestDetail {
+                test {
+                  name
+                }
+                relevant_execution_test_run_result {
+                  local_repro_run_cmd
+                  detail_short
+                  status
+                  duration
+                }
+              }
+              ... on CISignalBoxCitadelBuildRuleDetail {
+                description
+                repro_command
+              }
+              ... on CISignalBoxWorkflowRunDetail {
+                repro_command
+                workflow {
+                  name
+                  status
+                  detailed_status
+                  command
+                  insights {
+                    __typename
+                    ... on CIWorkflowLogInsight {
+                      log
+                    }
+                    ... on CIWorkflowTextInsight {
+                      insight_name
+                      explanation {
+                        text
+                      }
+                    }
+                  }
+                }
+              }
+              ... on XFBCISignalBoxAIDiffReviewerDetail {
+                inline_signals {
+                  file_path
+                  line_length
+                  line_number
+                  message
+                  severity
+                  title
+                }
+              }
+              ... on CISignalBoxSLPGenericSignalCardDetail {
+                events {
+                  title
+                  status
+                  raw_message
+                }
+              }
+              ... on CISignalBoxBuildDetail {
+                repro_command
+                recommended_user_action_message
+                status_text
+                sandcastle_uri
+                log_suggestions {
+                  title
+                  suggestion
+                  log_snippet
+                }
+              }
+              ... on CISignalBoxLegacyCardDetail {
+                results {
+                  signal_display_title
+                  severity
+                  test_result_message_markdown
+                  message_content
+                }
+              }
+              ... on XFBSignalviewPhabricatorAutomatedReviewDetail {
+                shown_automated_review_and_summary {
+                  summary
+                  review {
+                    name
+                    status_message
+                    feedback_direction_markdown
+                  }
+                }
+              }
+              ... on XFBSignalViewSLPGenericInlineDetail {
+                inline_events {
+                  message
+                  severity
+                  signal_display_title
+                  primary_filepath
+                  primary_line_number
+                }
+              }
+              ... on CISignalBoxAnnotationEnforcementDetail {
+                repo
+                asset_phabricator_semantic_type_mutation_record {
+                  file_path
+                  mutation_type
+                  asset_class
+                }
+              }
+              ... on XFBSignalviewConfigeratorCanaryDetail {
+                configerator_canary_id
+                is_holding_signal
+              }
+            }
+          }
+        }
+        error_insights_info {
+          cluster {
+            id
+          }
+        }
+        external_uris {
+          type
+          uri
+        }
+      }
+    }
+  }
+}" --variables "{\"version_id\": \"$VERSION_ID\"}" | \
+if [ -n "$FILTER_TYPES" ]; then
+  # Filter by functional type(s) - accepts comma-separated list
+  jq --arg types "$FILTER_TYPES" '
+    ($types | split(",")) as $type_list |
+    {
+      signalview_signals: {
+        signals: {
+          count: ([.signalview_signals.signals.nodes[] | select(.slp_functional_type as $t | $type_list | index($t))] | length),
+          nodes: [.signalview_signals.signals.nodes[] | select(.slp_functional_type as $t | $type_list | index($t))]
+        }
+      }
+    }
+  '
+else
+  cat
+fi

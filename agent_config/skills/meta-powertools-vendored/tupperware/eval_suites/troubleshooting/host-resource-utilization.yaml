@@ -1,0 +1,34 @@
+id: host-resource-utilization
+suite: troubleshooting
+project: tupperware-evals
+name: "Host-level ODS resource utilization query"
+category: core
+prompt: |
+  Multiple tasks on host twshared8667.04.maz1 are experiencing issues. I want to check the overall host CPU, memory, and network utilization to see if the host is overloaded. How do I query host-level system counters in ODS?
+expected_behavior: |
+  Agent should use hostname as ODS entity with system.* keys. Should provide ods query commands for system.cpu-util-pct, system.mem-util-pct, and system.net-cpu-busy.
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  required_absent:
+    - "scuba query --dataset"
+  semantic_checks:
+    - question: "Agent used the bare hostname as the ODS entity (not twtasks or tupperware.jobs) with system.* key names?"
+      weight: 3
+      rubric:
+        5: "Used hostname directly as entity with correct system.* keys (system.cpu-util-pct, system.mem-util-pct)"
+        3: "Mentioned host-level ODS but got key names wrong (dots instead of hyphens)"
+        1: "Only knew task-level entities or couldn't construct host queries"
+    - question: "Agent provided runnable ods query commands with correct syntax?"
+      weight: 3
+      rubric:
+        5: "Complete ods query commands that could be copy-pasted"
+        3: "Commands with minor syntax issues"
+        1: "No runnable commands or wrong syntax"
+    - question: "Agent mentioned ods eki for discovering available host keys?"
+      weight: 2
+      rubric:
+        5: "Suggested ods eki --entity='hostname' --key_prefix='system.' for discovery"
+        3: "Mentioned discovery but incomplete syntax"
+        1: "No key discovery suggestion"

@@ -1,0 +1,25 @@
+id: tc-sentinel-value-003
+suite: time-and-comparison
+project: scuba-evals
+description: Tests knowledge of the 3.4028235e+38 sentinel value meaning
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user sees a strange number in their comparison results and asks about it."
+question: "I ran a week-over-week comparison query and one of the rows shows a Percent value of 3.4028235e+38. What does this mean?"
+
+critical_requirements:
+  - id: explains_sentinel
+    description: "Agent correctly explains the sentinel value"
+    check: "Response explains that 3.4028235e+38 in the Percent column indicates the comparison period had zero hits, meaning this is a new item that didn't exist in the previous period"
+  - id: not_an_error
+    description: "Agent clarifies this is expected behavior, not an error"
+    check: "Response explains this is a known Scuba behavior for division by zero in comparisons, not a bug or data corruption"
+
+quality_factors:
+  - id: explains_float_max
+    description: "Explains this is related to IEEE float max value used as a sentinel"
+    weight: 0.5
+  - id: suggests_interpretation
+    description: "Suggests how to interpret this in context (the item is new)"
+    weight: 0.5

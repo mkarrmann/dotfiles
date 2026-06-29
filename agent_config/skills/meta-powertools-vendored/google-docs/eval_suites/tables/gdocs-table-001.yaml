@@ -1,0 +1,35 @@
+id: gdocs-table-001
+name: Insert empty table
+category: tables
+prompt: Add a 3x4 table at the end of https://docs.google.com/document/d/1abc123/edit
+description: Tests inserting an empty table with specified dimensions
+expected_behavior: Agent uses insert-table with correct rows/columns
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Planning Doc
+  Insert-table result: 3-column, 4-row table inserted at end of document.
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent insert a table with approximately 3 columns and 4 rows?
+    weight: 3
+    rubric:
+      5: Agent inserted a table with the correct dimensions (3x4 or 4x3)
+      3: Agent inserted a table but dimensions were different
+      1: Agent did not insert a table
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

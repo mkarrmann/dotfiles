@@ -1,0 +1,40 @@
+id: scuba-query-syntax
+suite: cli-syntax
+project: tupperware-evals
+name: Scuba CLI syntax — correct meta scuba.dataset query usage
+category: scuba
+description: |
+  Tests that the skill teaches correct Scuba CLI syntax for querying allocation failure data.
+question: |
+  I need to query the Scuba table tw_allocator_v2_allocation_failures to find why allocation is
+  failing for job tsp_ldc/unicorn/unicorn.term.posts-t10.canary.loudoun.02. What exact CLI
+  commands should I use? Show me the full commands including how to discover column names first
+  and how to filter by job handle with a time window of the last 24 hours.
+expected_behavior: |
+  Agent should recommend meta scuba.dataset query -d tw_allocator_v2_allocation_failures with
+  correct flags. Should recommend meta scuba.dataset info -d tw_allocator_v2_allocation_failures
+  first to discover columns. Should use --hours=24 or WHERE time >= NOW()-86400 for time filtering.
+  Should NOT recommend scuba query --dataset or INTERVAL syntax.
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  semantic_checks:
+    - question: Does the response include the correct CLI command meta scuba.dataset query -d tw_allocator_v2_allocation_failures?
+      weight: 3
+      rubric:
+        5: Shows the exact correct command with proper flags
+        3: Shows a partially correct command
+        1: Shows wrong CLI syntax like scuba query --dataset
+    - question: Does the response recommend running meta scuba.dataset info first to discover column names?
+      weight: 3
+      rubric:
+        5: Explicitly recommends info before querying
+        3: Mentions column discovery but not the specific command
+        1: Does not mention column discovery
+    - question: Does the response use --hours or NOW()-seconds for time filtering (not INTERVAL)?
+      weight: 2
+      rubric:
+        5: Uses --hours=24 or WHERE time >= NOW()-86400
+        3: Uses a time filter but with ambiguous syntax
+        1: Uses INTERVAL N DAY syntax

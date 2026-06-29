@@ -1,0 +1,25 @@
+id: tc-time-bucket-limit-004
+suite: time-and-comparison
+project: scuba-evals
+description: Tests knowledge of the max 500 datapoints constraint for time_bucket
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user asks for a very granular time series over a long period."
+question: "I want to see a time series of query counts in scuba_queries with 1-minute buckets over the last 30 days. Is that possible?"
+
+critical_requirements:
+  - id: identifies_limit
+    description: "Agent identifies the 500 datapoint limit"
+    check: "Response mentions the maximum 500 datapoints constraint for time series queries"
+  - id: calculates_problem
+    description: "Agent explains why the request exceeds the limit"
+    check: "Response explains that 30 days with 1-minute buckets would produce approximately 43,200 datapoints, far exceeding the 500 limit"
+
+quality_factors:
+  - id: suggests_alternative
+    description: "Suggests alternative approaches (larger time bucket or shorter time range)"
+    weight: 0.6
+  - id: provides_calculation
+    description: "Shows the calculation of how many datapoints would be generated"
+    weight: 0.4

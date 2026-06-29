@@ -1,0 +1,32 @@
+id: crash-health-investigation
+suite: universal-search
+project: tupperware-evals
+name: "Crash & Health Investigation"
+category: core
+question: |
+  What commands and approach would you use to: Are any tasks crashing or unhealthy for tsp_global/tupperware/universal_search.prod? What are the recent crash events and health check failures?
+expected_behavior: |
+  Agent should query Universal Search for task state, then Scuba tupperware_task_events and tupperware_health_check_results.
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  semantic_checks:
+    - question: "Queries Scuba tables for crash/health data?"
+      weight: 3
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"
+    - question: "Uses correct column names (discovered via meta scuba.dataset info)?"
+      weight: 3
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"
+    - question: "Routes to Task Restarts + Health Checks categories?"
+      weight: 1
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"

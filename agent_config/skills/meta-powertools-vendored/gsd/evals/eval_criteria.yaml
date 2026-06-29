@@ -1,0 +1,512 @@
+# GSD Skill Evaluation Criteria
+# Generated: 2026-03-11
+# Skill: gsd
+# Mode: thorough (~13 test cases)
+# Dimensions: invocation (2), efficiency (1), best_practices (2), business_impact (3), task_completion (5)
+
+project: gsd
+default_working_directory: ~/fbsource/fbcode
+
+test_cases:
+  # === INVOCATION (2 test cases) ===
+
+  - id: TC-001
+    name: "Natural language project management triggers GSD skill"
+    category: invocation
+    prompt: "I need to track my team's work for Q1. We have 3 engineers and need to set up a project with backend and frontend sections, then add some tasks to each section."
+    description: "Tests whether the GSD skill activates from a natural project management request without mentioning 'gsd' explicitly"
+    expected_behavior: "Should recognize this as a GSD workflow and provide commands for creating a project, sections, and tasks using the gsd CLI"
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/gsd/SKILL.md"
+    quality_criteria:
+      required_present: ["project create", "section create", "task create"]
+      required_absent: ["I cannot", "I'm not sure what tool", "I don't have access"]
+      semantic_checks:
+        - question: "Did the skill activate from natural language without the user mentioning 'gsd' or using /gsd invocation?"
+          weight: 3
+          rubric:
+            5: "Activated immediately from the natural language request, mapped to GSD commands without hesitation"
+            4: "Activated correctly but with slight hesitation or unnecessary confirmation"
+            3: "Activated but required some re-prompting or only partially mapped to GSD"
+            2: "Partially activated — recognized project management but didn't use GSD CLI"
+            1: "Did not activate at all, or suggested a different tool entirely"
+        - question: "Did the response provide a logical workflow order (project first, then sections, then tasks)?"
+          weight: 2
+          rubric:
+            5: "Perfect workflow order with clear step sequencing and IDs flowing between steps"
+            4: "Correct order with minor gaps in explaining ID dependencies"
+            3: "Mostly correct but some steps out of order"
+            2: "Disorganized workflow that would confuse execution"
+            1: "No workflow structure, just disconnected commands"
+        - question: "Are the provided GSD CLI commands syntactically correct and actionable?"
+          weight: 2
+          rubric:
+            5: "All commands are syntactically correct with proper flags and ready to copy-paste"
+            4: "Commands are correct with minor issues (e.g., missing optional flags)"
+            3: "Most commands correct but one has a syntax error"
+            2: "Multiple syntax errors or missing required flags"
+            1: "Commands are incorrect or not GSD CLI commands"
+      artifact_checks: []
+
+  - id: TC-002
+    name: "Non-GSD request should not trigger skill"
+    category: invocation
+    prompt: "Can you help me write a Python function that calculates fibonacci numbers recursively with memoization?"
+    description: "Tests that the GSD skill does not activate for unrelated programming tasks"
+    expected_behavior: "Should respond with Python code, not GSD commands. The GSD skill should not be invoked."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/gsd/SKILL.md"
+    quality_criteria:
+      required_present: ["def", "fibonacci"]
+      required_absent: ["gsd", "task create", "project create", "sprint", "status-report"]
+      semantic_checks:
+        - question: "Does the response provide a Python fibonacci implementation rather than GSD commands?"
+          weight: 3
+          rubric:
+            5: "Pure Python implementation with memoization, no mention of GSD at all"
+            4: "Python implementation provided but with brief unrelated GSD mention"
+            3: "Python implementation but GSD skill clearly leaked into the response"
+            2: "Mixed response with both Python and GSD content"
+            1: "Responded with GSD commands instead of Python code"
+        - question: "Is the GSD skill entirely absent from the response?"
+          weight: 3
+          rubric:
+            5: "Zero GSD-related content in the entire response"
+            4: "One minor incidental mention but not actionable GSD content"
+            3: "Some GSD content appears but is not the focus"
+            2: "Significant GSD content mixed in"
+            1: "GSD skill dominated the response"
+      artifact_checks: []
+
+  # === EFFICIENCY (1 test case) ===
+
+  - id: TC-003
+    name: "Simple task creation is concise and efficient"
+    category: efficiency
+    prompt: "Create a task titled 'Fix login bug' in project 620992314315401 with HIGH priority"
+    description: "Tests whether the skill provides a concise, correct command without unnecessary verbosity or redundant tool calls"
+    expected_behavior: "Should provide a single gsd task create command with the correct flags, concisely and without reading unnecessary reference files"
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/gsd/SKILL.md"
+    quality_criteria:
+      required_present: ["task create", "--title", "--project-id", "--priority", "HIGH", "620992314315401"]
+      required_absent: ["I cannot", "I don't know how", "--tags"]
+      semantic_checks:
+        - question: "Was the response concise — providing the correct command without unnecessary explanation or reading extra reference files?"
+          weight: 3
+          rubric:
+            5: "Single correct command with minimal explanation, no unnecessary tool calls"
+            4: "Correct command with brief helpful context but no waste"
+            3: "Correct command but with excessive explanation or unnecessary file reads"
+            2: "Correct command buried in verbose, unnecessary output"
+            1: "Multiple unnecessary tool calls or reads before providing the command"
+        - question: "Is the command syntactically correct and complete with all specified flags?"
+          weight: 3
+          rubric:
+            5: "Perfect syntax with --title, --project-id, --priority HIGH, ready to execute"
+            4: "Correct syntax with all required flags, minor formatting difference"
+            3: "Mostly correct but missing one flag or has a minor error"
+            2: "Multiple missing flags or significant syntax issues"
+            1: "Incorrect command or wrong tool entirely"
+        - question: "Did the response handle the alias conflict appropriately (full binary path or mention of potential conflict)?"
+          weight: 1
+          rubric:
+            5: "Used full binary path or mentioned the alias workaround"
+            4: "Mentioned potential alias issue without full path"
+            3: "Used bare 'gsd' without mentioning the alias issue"
+            2: "N/A"
+            1: "Suggested incorrect binary path"
+      artifact_checks: []
+
+  # === BEST PRACTICES (2 test cases) ===
+
+  - id: TC-004
+    name: "Uses task search over deprecated task list for filtering"
+    category: best_practices
+    prompt: "Find all open high-priority tasks owned by johndoe in GSD project 1443136847396296"
+    description: "Tests that the skill uses 'task search' (server-side Power Search) instead of deprecated 'task list' with client-side filters"
+    expected_behavior: "Should use gsd task search with --project-id, --status OPEN, --priority HIGH, and --owner johndoe flags"
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/gsd/SKILL.md"
+    quality_criteria:
+      required_present: ["task search", "--project-id", "--status", "--priority", "--owner", "1443136847396296"]
+      required_absent: ["task list --priority", "task list --status"]
+      semantic_checks:
+        - question: "Does the response use 'task search' (not deprecated 'task list' with filters) for server-side filtering?"
+          weight: 3
+          rubric:
+            5: "Uses 'task search' and explicitly mentions it's preferred over 'task list' for filtering"
+            4: "Uses 'task search' correctly without mentioning the deprecation"
+            3: "Uses 'task search' but also suggests 'task list' as an alternative"
+            2: "Uses 'task list' with filters (deprecated approach)"
+            1: "Only uses 'task list' with client-side filtering"
+        - question: "Does the command include all four required filters: project-id, status OPEN, priority HIGH, and owner johndoe?"
+          weight: 3
+          rubric:
+            5: "All four filters present with correct values"
+            4: "All four filters present with minor value differences"
+            3: "Three of four filters present"
+            2: "Only two filters present"
+            1: "One or fewer filters present"
+        - question: "Does the response suggest using jq and 2>/dev/null for output processing?"
+          weight: 1
+          rubric:
+            5: "Suggests both jq formatting and 2>/dev/null for ODS error suppression"
+            4: "Suggests jq but not 2>/dev/null"
+            3: "Mentions output processing but without specific jq example"
+            2: "No output processing suggestions"
+            1: "N/A"
+      artifact_checks: []
+
+  - id: TC-005
+    name: "Two-step tag creation process (critical gotcha)"
+    category: best_practices
+    prompt: "Create a task called 'Urgent fix' in project 620992314315401 with tags 'urgent' and 'backend' and priority UNBREAK_NOW"
+    description: "Tests the critical gotcha: --tags is NOT supported in task create, requiring a two-step process"
+    expected_behavior: "Should first create the task with gsd task create (without --tags), then add tags via gsd task update --add-tags. Should NOT attempt --tags in the create command."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/gsd/SKILL.md"
+    quality_criteria:
+      required_present: ["task create", "--add-tags", "urgent", "backend"]
+      required_absent: ["--tags urgent", "--tags backend"]
+      semantic_checks:
+        - question: "Does the response correctly use a two-step process (create first, then update with --add-tags)?"
+          weight: 3
+          rubric:
+            5: "Clear two-step process: task create without --tags, then task update with --add-tags"
+            4: "Two-step process but steps not clearly separated"
+            3: "Mentions the limitation but implementation is unclear"
+            2: "Attempts to use --tags in create (violates the gotcha)"
+            1: "Only creates the task without addressing tags at all"
+        - question: "Does the response explicitly note that --tags is not supported in task create?"
+          weight: 2
+          rubric:
+            5: "Explicitly explains the limitation and why two steps are needed"
+            4: "Shows two steps without explicit explanation of the limitation"
+            3: "Implies the limitation without stating it"
+            2: "No mention of the limitation"
+            1: "Incorrectly suggests --tags works in create"
+        - question: "Are both commands syntactically correct with UNBREAK_NOW priority?"
+          weight: 2
+          rubric:
+            5: "Both commands perfect with UNBREAK_NOW (or UBN alias) in create"
+            4: "Commands correct with minor formatting differences"
+            3: "One command has a minor syntax issue"
+            2: "Significant syntax errors in one or both commands"
+            1: "Both commands are incorrect"
+      artifact_checks: []
+
+  # === BUSINESS IMPACT (2 test cases) ===
+
+  - id: TC-006
+    name: "Full project setup workflow (end-to-end value)"
+    category: business_impact
+    prompt: "I need to set up a complete GSD project for our Q2 planning. Team ID is 1986023765263111. Create a project called 'Q2 Platform Work', add 'Backend', 'Frontend', and 'Infra' sections, then create 2 tasks in each section with appropriate priorities."
+    description: "Tests whether the skill can orchestrate a full project setup workflow, demonstrating time savings over manual web UI setup"
+    expected_behavior: "Should provide a complete, executable workflow: project create, 3x section create, 6x task create, all with correct IDs flowing between steps"
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/gsd/SKILL.md"
+    quality_criteria:
+      required_present: ["project create", "section create", "task create", "--team-id", "1986023765263111", "Q2 Platform Work", "Backend", "Frontend", "Infra"]
+      required_absent: ["I cannot", "not supported"]
+      semantic_checks:
+        - question: "Does the response provide a complete, executable workflow with correct ID dependencies between steps (project ID flows to sections, section IDs flow to tasks)?"
+          weight: 3
+          rubric:
+            5: "Complete workflow with clear ID capture and reuse between steps, ready to execute sequentially"
+            4: "Complete workflow with ID dependencies mentioned but not explicitly captured"
+            3: "Mostly complete but missing some ID plumbing between steps"
+            2: "Partial workflow with significant gaps"
+            1: "Incomplete or incorrect workflow"
+        - question: "Would this workflow save significant time compared to creating all entities manually in the GSD web UI?"
+          weight: 3
+          rubric:
+            5: "Saves 15+ minutes vs web UI — all 10 entities (1 project + 3 sections + 6 tasks) created efficiently"
+            4: "Saves 10+ minutes — most entities covered but minor manual follow-up needed"
+            3: "Saves 5+ minutes — covers the main entities but misses some"
+            2: "Minimal time savings — only covers a few entities"
+            1: "No time savings — incomplete or requires more manual work than web UI"
+        - question: "Are the task priorities varied and appropriate for a realistic project setup?"
+          weight: 1
+          rubric:
+            5: "Tasks have varied, realistic priorities (mix of HIGH, MID, LOW)"
+            4: "Tasks have priorities but not well varied"
+            3: "All tasks have the same priority"
+            2: "Priority flags missing from task create commands"
+            1: "N/A"
+      artifact_checks: []
+
+  - id: TC-007
+    name: "Sprint + status reporting workflow (multi-entity orchestration)"
+    category: business_impact
+    prompt: "Create a sprint called 'H1 Sprint 5' for team 1986023765263111 from March 17 to March 28, 2025. Then add tasks T000000001 and T000000002 to it. Finally, create a status report draft for project 620992314315401 with status ON_TRACK that summarizes what we're working on this sprint."
+    description: "Tests a multi-entity workflow spanning sprints, task assignment, and status reporting — a common weekly PM workflow"
+    expected_behavior: "Should provide sprint create, two add-to-sprint commands, and status-report create-draft with markdown content"
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/gsd/SKILL.md"
+    quality_criteria:
+      required_present: ["sprint create", "add-to-sprint", "status-report create-draft", "--team-id", "--start-date", "--target-date", "--sprint-ids", "--status", "ON_TRACK"]
+      required_absent: ["I cannot"]
+      semantic_checks:
+        - question: "Does the response cover all three workflow steps: sprint creation, task assignment, and status report creation?"
+          weight: 3
+          rubric:
+            5: "All three steps complete with correct commands and logical sequencing"
+            4: "All three steps present but minor sequencing or flag issues"
+            3: "Two of three steps complete"
+            2: "Only one step complete"
+            1: "None of the steps properly addressed"
+        - question: "Does the status report use markdown formatting and cover sprint-relevant content?"
+          weight: 2
+          rubric:
+            5: "Rich markdown with headings, lists, and sprint-specific content"
+            4: "Some markdown formatting with relevant content"
+            3: "Plain text content about the sprint"
+            2: "Generic placeholder content"
+            1: "No status report content provided"
+        - question: "Does this workflow represent meaningful automation of a recurring PM task (weekly sprint + status workflow)?"
+          weight: 2
+          rubric:
+            5: "Complete weekly PM workflow that saves 20+ minutes of manual web UI work"
+            4: "Covers most of the weekly workflow with minor gaps"
+            3: "Partially automates the workflow"
+            2: "Minimal automation value"
+            1: "No meaningful automation"
+      artifact_checks: []
+
+  # === TASK COMPLETION (3 test cases) ===
+
+  - id: TC-008
+    name: "Alias conflict troubleshooting (edge case diagnosis)"
+    category: task_completion
+    prompt: "I'm on my Mac and when I run 'gsd task list --project-id 123' it says 'git svn dcommit' instead of listing tasks. What's going on and how do I fix it?"
+    description: "Tests whether the skill correctly diagnoses the oh-my-zsh alias conflict and provides the right fix"
+    expected_behavior: "Should identify the oh-my-zsh git plugin alias conflict, suggest using /opt/facebook/bin/gsd, and optionally suggest unaliasing"
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/gsd/SKILL.md"
+    quality_criteria:
+      required_present: ["/opt/facebook/bin/gsd", "alias"]
+      required_absent: ["I cannot help", "I don't know"]
+      semantic_checks:
+        - question: "Does the response correctly identify the oh-my-zsh git plugin alias as the root cause?"
+          weight: 3
+          rubric:
+            5: "Explicitly identifies oh-my-zsh git plugin creating gsd='git svn dcommit' alias"
+            4: "Identifies alias conflict but doesn't specify oh-my-zsh git plugin"
+            3: "Identifies it's an alias issue but vague on the source"
+            2: "Partially identifies the problem"
+            1: "Does not identify the alias conflict at all"
+        - question: "Does the response provide the correct Mac binary path (/opt/facebook/bin/gsd)?"
+          weight: 3
+          rubric:
+            5: "Provides /opt/facebook/bin/gsd as the correct Mac binary path"
+            4: "Provides correct path with additional context"
+            3: "Provides a binary path but not the Mac-specific one"
+            2: "Suggests a workaround but not the binary path"
+            1: "No binary path provided"
+        - question: "Does the response suggest both immediate and permanent fixes?"
+          weight: 1
+          rubric:
+            5: "Both immediate fix (full path) and permanent fix (unalias in .zshrc)"
+            4: "One of the two fix types"
+            3: "Only one partial fix"
+            2: "Vague suggestions"
+            1: "No actionable fixes"
+      artifact_checks: []
+
+  - id: TC-009
+    name: "Milestone creation with --plannable-id gotcha"
+    category: task_completion
+    prompt: "Create a milestone called 'Q1 Launch' for project 620992314315401 with date 2025-03-31"
+    description: "Tests the critical gotcha: milestones use --plannable-id, NOT --project-id"
+    expected_behavior: "Should invoke gsd milestone create with --plannable-id (not --project-id), --name, and --date flags"
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/gsd/SKILL.md"
+    quality_criteria:
+      required_present: ["milestone create", "--plannable-id", "--name", "--date", "620992314315401", "2025-03-31"]
+      required_absent: ["--project-id"]
+      semantic_checks:
+        - question: "Does the response use --plannable-id (not --project-id) for the milestone create command?"
+          weight: 3
+          rubric:
+            5: "Uses --plannable-id and explicitly notes it's required instead of --project-id"
+            4: "Uses --plannable-id correctly without explicit explanation"
+            3: "Uses --plannable-id but also mentions --project-id as an alternative"
+            2: "Uses --project-id instead of --plannable-id"
+            1: "Doesn't use either flag or uses a completely wrong approach"
+        - question: "Is the command complete with --name 'Q1 Launch' and --date 2025-03-31?"
+          weight: 3
+          rubric:
+            5: "Complete command with all three required flags and correct values"
+            4: "Complete but minor formatting differences"
+            3: "Missing one flag"
+            2: "Missing multiple flags"
+            1: "Incorrect command entirely"
+        - question: "Is the date in YYYY-MM-DD format as required?"
+          weight: 1
+          rubric:
+            5: "Date in correct YYYY-MM-DD format (2025-03-31)"
+            4: "N/A"
+            3: "Date in a different but parseable format"
+            2: "Date in wrong format"
+            1: "No date provided"
+      artifact_checks: []
+
+  - id: TC-010
+    name: "Milestone update via separate subcommands"
+    category: task_completion
+    prompt: "Update milestone 987654321 to change the date to 2025-06-30 and rename it to 'Q2 Launch'"
+    description: "Tests whether the skill correctly uses separate milestone subcommands (rename, edit-date) since there is no single 'milestone update' command"
+    expected_behavior: "Should use gsd milestone rename and gsd milestone edit-date as two separate commands"
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/gsd/SKILL.md"
+    quality_criteria:
+      required_present: ["milestone rename", "milestone edit-date", "987654321", "Q2 Launch", "2025-06-30"]
+      required_absent: ["milestone update 987654321", "not supported", "delete"]
+      semantic_checks:
+        - question: "Does the response use separate subcommands (milestone rename + milestone edit-date) instead of a nonexistent 'milestone update' command?"
+          weight: 3
+          rubric:
+            5: "Uses both milestone rename and milestone edit-date as separate commands, explains why"
+            4: "Uses both separate commands correctly without explanation"
+            3: "Uses one correct subcommand but wraps the other incorrectly"
+            2: "Attempts a single 'milestone update' command that doesn't exist"
+            1: "Suggests deleting and recreating the milestone"
+        - question: "Does milestone rename include --name 'Q2 Launch' and the correct milestone ID?"
+          weight: 3
+          rubric:
+            5: "Perfect syntax: gsd milestone rename 987654321 --name 'Q2 Launch'"
+            4: "Correct with minor formatting differences"
+            3: "Correct command but wrong flag name"
+            2: "Significant syntax issues"
+            1: "Command is incorrect"
+        - question: "Does milestone edit-date include --date 2025-06-30 and the correct milestone ID?"
+          weight: 3
+          rubric:
+            5: "Perfect syntax: gsd milestone edit-date 987654321 --date 2025-06-30"
+            4: "Correct with minor formatting differences"
+            3: "Correct command but wrong flag name"
+            2: "Significant syntax issues"
+            1: "Command is incorrect"
+      artifact_checks: []
+
+  # === ARCHIVE / UNARCHIVE (3 test cases) ===
+
+  - id: TC-011
+    name: "Archive a project with gsd CLI"
+    category: task_completion
+    prompt: "Archive the GSD project 1203479248650092"
+    description: "Tests whether the skill uses the native gsd project archive command"
+    expected_behavior: "Should use gsd project archive 1203479248650092, not jf graphql or gsd project update --status COMPLETED"
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/gsd/SKILL.md"
+    quality_criteria:
+      required_present: ["project archive", "1203479248650092"]
+      required_absent: ["jf graphql", "update --status COMPLETED", "close_tasks_gsd_project"]
+      semantic_checks:
+        - question: "Does the response use 'gsd project archive' (not jf graphql, not project update --status COMPLETED)?"
+          weight: 3
+          rubric:
+            5: "Uses 'gsd project archive' directly with correct project ID"
+            4: "Uses 'gsd project archive' with minor syntax variation"
+            3: "Uses correct approach but also mentions alternatives unnecessarily"
+            2: "Uses 'gsd project update --status COMPLETED' instead of archive"
+            1: "Uses jf graphql or a completely wrong approach"
+        - question: "Does the response distinguish archive (is_closed) from status COMPLETED?"
+          weight: 2
+          rubric:
+            5: "Clearly explains that archive hides the project (is_closed) vs COMPLETED which only changes the progress indicator"
+            4: "Mentions the distinction briefly"
+            3: "Uses the right command but doesn't explain the distinction"
+            2: "Conflates archive with COMPLETED status"
+            1: "No awareness of the distinction"
+        - question: "Does the response mention the --close-tasks flag for optionally closing tasks?"
+          weight: 1
+          rubric:
+            5: "Mentions --close-tasks and explains it closes all tasks in the project"
+            4: "Mentions --close-tasks without explanation"
+            3: "Doesn't mention --close-tasks but provides correct base command"
+            2: "N/A"
+            1: "Incorrectly suggests tasks are always closed on archive"
+      artifact_checks: []
+
+  - id: TC-012
+    name: "Archive a theme and all its sub-projects"
+    category: business_impact
+    prompt: "Archive the GSD theme 872570932189040 in team 1555532745666639 and all its sub-projects"
+    description: "Tests the bulk archive workflow — sub-projects must be archived before the theme"
+    expected_behavior: "Should first list sub-projects via gsd theme get, then archive each project, then archive the theme. Must use gsd project archive and gsd theme archive commands."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/gsd/SKILL.md"
+    quality_criteria:
+      required_present: ["theme get", "project archive", "theme archive", "872570932189040"]
+      required_absent: ["jf graphql", "set_is_closed_tasks_gsd_plannable"]
+      semantic_checks:
+        - question: "Does the response archive sub-projects BEFORE the theme (correct order)?"
+          weight: 3
+          rubric:
+            5: "Clear workflow: get sub-projects, archive each project, then archive the theme — order is explicit"
+            4: "Correct order but not explicitly stated"
+            3: "Archives both but order is ambiguous"
+            2: "Attempts to archive theme first (wrong order)"
+            1: "Only archives theme or only archives projects, not both"
+        - question: "Does the response use native gsd CLI commands (not jf graphql)?"
+          weight: 3
+          rubric:
+            5: "Uses gsd theme get, gsd project archive, and gsd theme archive exclusively"
+            4: "Uses gsd CLI with minor syntax issues"
+            3: "Mixes gsd CLI and jf graphql"
+            2: "Primarily uses jf graphql"
+            1: "Only uses jf graphql"
+        - question: "Does the workflow handle extracting project IDs from theme get output (e.g., using jq)?"
+          weight: 2
+          rubric:
+            5: "Shows jq extraction of project IDs from theme get output and loops over them"
+            4: "Shows ID extraction but without a loop"
+            3: "Mentions needing to extract IDs but doesn't show how"
+            2: "Assumes project IDs are known without extraction"
+            1: "No mention of extracting project IDs"
+      artifact_checks: []
+
+  - id: TC-013
+    name: "Unarchive a project"
+    category: task_completion
+    prompt: "Reopen the archived GSD project 878444604811811"
+    description: "Tests whether the skill correctly uses gsd project unarchive"
+    expected_behavior: "Should use gsd project unarchive 878444604811811"
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/gsd/SKILL.md"
+    quality_criteria:
+      required_present: ["project unarchive", "878444604811811"]
+      required_absent: ["jf graphql"]
+      semantic_checks:
+        - question: "Does the response use 'gsd project unarchive' to reopen the project?"
+          weight: 3
+          rubric:
+            5: "Uses 'gsd project unarchive 878444604811811' directly"
+            4: "Correct command with minor syntax variation (e.g., --project-id flag)"
+            3: "Correct approach but with unnecessary extra steps"
+            2: "Uses jf graphql instead of the CLI command"
+            1: "Suggests creating a new project or wrong approach entirely"
+        - question: "Is the command syntactically correct and ready to execute?"
+          weight: 3
+          rubric:
+            5: "Perfect syntax, ready to copy-paste"
+            4: "Correct with minor formatting differences"
+            3: "Mostly correct but has a minor flag error"
+            2: "Significant syntax issues"
+            1: "Command is incorrect"
+      artifact_checks: []

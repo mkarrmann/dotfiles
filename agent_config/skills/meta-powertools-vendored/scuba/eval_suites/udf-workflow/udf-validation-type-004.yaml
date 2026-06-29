@@ -1,0 +1,37 @@
+id: udf-validation-type-004
+suite: udf-workflow
+project: scuba-evals
+description: Tests meta scuba.column validate with correct type for UPPER() (from TP-11)
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user wants to validate a string UDF expression."
+question: "I want to uppercase the hostname column in my scuba query results on scuba_queries. Will that work?"
+
+mock_data: |
+  meta scuba.column validate response:
+    success: true
+    valid: true
+    error: null
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: calls_validate
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.column validate"
+    arguments:
+      command: "meta scuba.column validate"
+  - id: correct_string_type
+    description: "Agent sets derived_column_type to String for UPPER()"
+    check: "Response mentions or uses type String for the UPPER() expression since UPPER returns a string value, not Numeric or Aggregated"
+
+quality_factors:
+  - id: explains_type_reasoning
+    description: "Explains why String type is appropriate (UPPER returns a string)"
+    weight: 0.5
+  - id: reports_validation_result
+    description: "Clearly reports whether the expression is valid based on the response"
+    weight: 0.5

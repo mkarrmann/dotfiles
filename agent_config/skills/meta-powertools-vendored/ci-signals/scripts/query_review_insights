@@ -1,0 +1,157 @@
+#!/bin/bash
+# Query Review Insights signals (e.g., Confucius Comments, AI Test Quality Check)
+# for a Phabricator diff. These signals are NOT part of land_tab_signals.
+# Usage: query_review_insights <diff_number> [--status STATUS] [--raw]
+
+set -e
+
+DIFF_NUM=""
+STATUS_FILTER=""
+RAW_OUTPUT=false
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --status)
+      STATUS_FILTER="$2"
+      shift 2
+      ;;
+    --raw)
+      RAW_OUTPUT=true
+      shift
+      ;;
+    -*)
+      echo "Unknown option: $1"
+      exit 1
+      ;;
+    *)
+      if [ -z "$DIFF_NUM" ]; then
+        DIFF_NUM="$1"
+      fi
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$DIFF_NUM" ]; then
+  echo "Usage: $0 <diff_number> [--status STATUS] [--raw]"
+  echo ""
+  echo "Query Review Insights signals for a Phabricator diff."
+  echo "These signals include Confucius Comments, AI Test Quality Check, etc."
+  echo ""
+  echo "Options:"
+  echo "  --status STATUS   Filter by status (WARNING, FAILED, PASSED)"
+  echo "  --raw             Output raw JSON without formatting"
+  echo ""
+  echo "Examples:"
+  echo "  $0 D92697619                    # Get all Review Insights"
+  echo "  $0 D92697619 --status WARNING   # Get only WARNING signals"
+  echo "  $0 D92697619 --raw              # Get raw JSON output"
+  exit 1
+fi
+
+# Remove 'D' prefix if provided
+DIFF_NUM="${DIFF_NUM#D}"
+
+# Get version ID - prefer draft if it exists and is newer
+DIFF_PROPS=$(jf diff-properties D${DIFF_NUM} 2>/dev/null)
+LATEST_VERSION=$(echo "$DIFF_PROPS" | jq -r '.latest_phabricator_version.number')
+DRAFT_VERSION=$(echo "$DIFF_PROPS" | jq -r '.latest_draft_phabricator_version.number // "0"')
+
+# Use draft version if it's newer than the latest published version
+if [ "$DRAFT_VERSION" != "null" ] && [ "$DRAFT_VERSION" != "0" ] && [ "$DRAFT_VERSION" -gt "$LATEST_VERSION" ]; then
+  VERSION_ID=$(echo "$DIFF_PROPS" | jq -r '.latest_draft_phabricator_version.id')
+  echo "Note: Using draft version $DRAFT_VERSION (newer than published version $LATEST_VERSION)" >&2
+else
+  VERSION_ID=$(echo "$DIFF_PROPS" | jq -r '.latest_phabricator_version.id')
+fi
+
+if [ "$VERSION_ID" == "null" ] || [ -z "$VERSION_ID" ]; then
+  echo "Error: Could not find version ID for D${DIFF_NUM}"
+  echo "Make sure the diff exists and you have access to it."
+  exit 1
+fi
+
+# Build status filter for GraphQL
+# Status must be a quoted string for JSON
+if [ -n "$STATUS_FILTER" ]; then
+  STATUS_ARRAY="[\"$STATUS_FILTER\"]"
+else
+  STATUS_ARRAY="[]"
+fi
+
+# Query signalview_signals for REVIEW_INSIGHTS
+# Note: We use debugger_json_string to get the full message content
+# because the signal_detail.detail.events field may throw exceptions
+RESULT=$(jf graphql --query 'query ($version_id: ID!, $statuses: [CIResultStatus!]!) {
+  signalview_signals(phabricator_version_fbid: $version_id) {
+    signals_by_functional_type_or_provider(statuses: $statuses) {
+      nodes {
+        group_data {
+          ... on XFBSignalviewFunctionalTypeGroupData {
+            functional_type
+          }
+        }
+        signal_count
+        signals(first: 50) {
+          nodes {
+            ... on SignalviewSignal {
+              name
+              status
+              slp_functional_type
+              debugger_json_string
+              external_uris {
+                type
+                uri
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}' --variables "{\"version_id\": \"$VERSION_ID\", \"statuses\": $STATUS_ARRAY}" 2>&1)
+
+# Check for errors
+if echo "$RESULT" | grep -q "^error"; then
+  echo "Error querying GraphQL:" >&2
+  echo "$RESULT" >&2
+  exit 1
+fi
+
+# Filter to only REVIEW_INSIGHTS and format the output
+if [ "$RAW_OUTPUT" = true ]; then
+  echo "$RESULT" | jq '.signalview_signals.signals_by_functional_type_or_provider.nodes[] | select(.group_data.functional_type == "REVIEW_INSIGHTS")'
+else
+  # Extract and format the Review Insights signals
+  echo "$RESULT" | jq -r '
+    .signalview_signals.signals_by_functional_type_or_provider.nodes[] |
+    select(.group_data.functional_type == "REVIEW_INSIGHTS") |
+    .signals.nodes[] |
+    {
+      name: .name,
+      status: .status,
+      functional_type: .slp_functional_type,
+      message: (
+        if .debugger_json_string then
+          (.debugger_json_string | fromjson |
+            # Try to extract the message from various locations.
+            # AI reviewers (Automated Code Reviewer, Devmate) emit their body under
+            # `verifiable_advice.advice.content`; Confucius warnings under
+            # `verifiable_warning.message.content`; passed checks under
+            # `verifiable_passed.message.content`; failed under `verifiable_failed.message.content`.
+            (.extended_signal_details.generic_signal_extended_details.target_rev_event_details[0].verifiable_advice.advice.content //
+             .extended_signal_details.generic_signal_extended_details.target_rev_event_details[0].verifiable_warning.message.content //
+             .extended_signal_details.generic_signal_extended_details.target_rev_event_details[0].verifiable_passed.message.content //
+             .extended_signal_details.generic_signal_extended_details.target_rev_event_details[0].verifiable_failed.message.content //
+             .land_issue.description //
+             .message //
+             "No message available"))
+        else
+          "No message available"
+        end
+      ),
+      external_uris: .external_uris
+    }
+  '
+fi

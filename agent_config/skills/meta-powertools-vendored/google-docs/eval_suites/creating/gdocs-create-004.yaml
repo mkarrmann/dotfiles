@@ -1,0 +1,38 @@
+id: gdocs-create-004
+name: Create doc from file
+category: creating
+prompt: Create a Google Doc from the file /tmp/report.md
+description: Tests creating a doc from a local markdown file
+expected_behavior: Agent uses meta google.docs create --title=... --markdown --body="$(cat /tmp/report.md)" to create the doc with the file's markdown content
+eval_target: response
+mock_data: |
+  File /tmp/report.md exists with markdown content.
+  Create result:
+    Document ID: 1fromfile001
+    Title: report
+    URL: https://docs.google.com/document/d/1fromfile001/edit
+    Content imported from /tmp/report.md successfully.
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent create the doc with the file's markdown content using --body and --markdown?
+    weight: 3
+    rubric:
+      5: Agent used meta google.docs create --title=... --markdown --body="$(cat /tmp/report.md)" and returned a link
+      3: Agent created a doc from the file but used a different valid method (e.g. create then apply/replace)
+      1: Agent did not create a doc from the file
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

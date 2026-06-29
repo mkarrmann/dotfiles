@@ -1,0 +1,42 @@
+id: e1-task-crash
+suite: debugging-workflow
+project: tupperware-evals
+name: Task crash investigation — correct Scuba column names and event values
+category: debugging
+description: Tests the 4-axis debugging workflow for a crashing job. Validates that the agent uses correct coredumper columns (tw_job, tw_stack_trace) and correct event name (TASK_EXIT_REPORT not UNEXPECTED_EXIT).
+question: |
+  I need to investigate a crashing Tupperware job tsp_cco/ar_sys_health/offline_analysis using Scuba. What Scuba tables should I query, what are the correct column names for the coredumper table, and what event_name value should I filter for in tupperware_task_events to find crash events? Show me the exact meta scuba.dataset query commands.
+expected_behavior: |
+  Agent should: follow the 4-axis debugging workflow; query coredumper with column tw_job (not job_handle);
+  query tupperware_task_events with event_name TASK_EXIT_REPORT (not UNEXPECTED_EXIT);
+  use meta scuba.dataset query (not scuba query --dataset); discover ft303 columns via meta scuba.dataset info
+  before querying (not guess Entity Type).
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  semantic_checks:
+    - question: Agent used meta scuba.dataset query or meta scuba.dataset info for Scuba queries (not scuba query --dataset or meta scuba.query)?
+      weight: 3
+      rubric:
+        5: Used correct meta scuba.dataset query/info throughout
+        3: Used wrong syntax initially but self-corrected
+        1: Used wrong Scuba CLI syntax and did not correct
+    - question: Agent used coredumper column tw_job (not job_handle) when querying the coredumper table?
+      weight: 3
+      rubric:
+        5: Used tw_job or discovered correct columns via meta scuba.dataset info
+        3: Initially used job_handle but self-corrected
+        1: Used job_handle and did not correct
+    - question: Agent used TASK_EXIT_REPORT event name (not UNEXPECTED_EXIT) when querying tupperware_task_events?
+      weight: 3
+      rubric:
+        5: Used TASK_EXIT_REPORT or discovered correct values via column values
+        3: Initially used UNEXPECTED_EXIT but self-corrected
+        1: Used UNEXPECTED_EXIT and did not correct
+    - question: Agent discovered ft303 column names via meta scuba.dataset info before querying (not guessing Entity Type)?
+      weight: 2
+      rubric:
+        5: Ran meta scuba.dataset info -d ft303 before querying
+        3: Guessed column names but they happened to be correct
+        1: Guessed wrong column names (Entity Type instead of entity_type)

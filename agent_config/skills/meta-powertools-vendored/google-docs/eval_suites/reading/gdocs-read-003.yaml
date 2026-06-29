@@ -1,0 +1,47 @@
+id: gdocs-read-003
+name: Read doc with image descriptions
+category: reading
+prompt: 'Read this doc and describe any images in it: https://docs.google.com/document/d/1img456/edit'
+description: Tests that the agent uses --describe-images flag
+expected_behavior: Agent uses meta google.docs get with --describe-images to get AI-generated image descriptions
+eval_target: response
+mock_data: |
+  Document ID: 1img456
+  Title: Design Mockups
+  Content:
+    <h1>Design Mockups</h1>
+    <p>Here are the latest mockups for the mobile app redesign.</p>
+    <img alt="[Image: Screenshot of the new home screen with a blue navigation bar and 4 tab icons]" />
+    <p>The home screen features a simplified navigation.</p>
+    <img alt="[Image: Settings page with toggle switches for notifications, dark mode, and privacy]" />
+    <p>Settings page with improved toggle layout.</p>
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent return image descriptions from the document?
+    weight: 3
+    rubric:
+      5: Agent returned content including image descriptions mentioning home screen and settings page
+      3: Agent returned content but image descriptions were incomplete
+      1: Agent did not return image descriptions
+  - question: Did the agent use the --describe-images flag?
+    weight: 2
+    rubric:
+      5: Agent used meta google.docs get with --describe-images
+      3: Agent read the doc but did not explicitly use --describe-images
+      1: Agent did not attempt to describe images
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

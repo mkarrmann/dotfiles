@@ -1,0 +1,38 @@
+id: cli-regex-case-sensitive-005
+suite: cli-queries
+project: scuba-evals
+description: Tests case-sensitive REGEXP_MATCH in CLI
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user needs case-sensitive regex matching which requires --sql or --filter-sql."
+question: "From scuba_queries in the last hour, find queries where query_source matches the case-sensitive regex pattern 'API_v[0-9]+' (must match exactly that casing). Count them grouped by query_type."
+
+mock_data: |
+  meta scuba.dataset query --sql response with REGEXP_MATCH:
+    query_type | cnt
+    sql        | 234
+    graphql    | 189
+    presto_sql | 45
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: uses_cli_or_filter_sql
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses --sql or --filter-sql with REGEXP_MATCH"
+    arguments:
+      command: "REGEXP_MATCH"
+  - id: includes_time_filter
+    description: "Query includes time filter"
+    check: "Response includes a query with a time filter for the last hour"
+
+quality_factors:
+  - id: explains_case_sensitivity
+    description: "Explains why regeq cannot be used (it's case-insensitive)"
+    weight: 0.5
+  - id: presents_results
+    description: "Shows the grouped count results"
+    weight: 0.5

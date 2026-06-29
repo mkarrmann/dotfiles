@@ -1,0 +1,43 @@
+id: cr-format-check-001
+suite: critical-rules
+project: scuba-evals
+description: Tests that agent checks column format and converts milliseconds to seconds (CR2)
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user queries average CPU time and expects human-readable results."
+question: "What's the average cpu_time in scuba_queries over the last hour, grouped by query_source?"
+
+mock_data: |
+  meta scuba.dataset info response for cpu_time on scuba_queries:
+    columns:
+      - column_name: cpu_time
+        column_type: INTEGER
+        format: "%M"
+        description: "CPU time consumed by the query"
+        aggregable: true
+  meta scuba.dataset query response:
+    results:
+      query_source | AVG(cpu_time)
+      datamate     | 337819129
+      scuba_ui     | 45200000
+      api          | 12750000
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: calls_dataset_info
+    type: tool_called
+    tool_name: Bash
+    description: "Agent checks column format via meta scuba.dataset info"
+    arguments:
+      command: "meta scuba.dataset info"
+  - id: converts_milliseconds
+    description: "Agent converts raw millisecond values"
+    check: "Response presents cpu_time values divided by 1000 or converted to seconds, not the raw integer values like 337819129"
+
+quality_factors:
+  - id: explains_conversion
+    description: "Explains that the format is milliseconds and shows the conversion"
+    weight: 1.0

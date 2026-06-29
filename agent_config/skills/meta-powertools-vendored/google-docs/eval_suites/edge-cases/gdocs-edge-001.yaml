@@ -1,0 +1,32 @@
+id: gdocs-edge-001
+name: Handle non-existent doc
+category: edge-cases
+prompt: Read the doc at https://docs.google.com/document/d/nonexistent123/edit
+description: Tests graceful handling of a non-existent document
+expected_behavior: Agent reports doc not found gracefully
+eval_target: response
+mock_data: |
+  Document ID: nonexistent123
+  Error: 404 Not Found - The document does not exist or you do not have permission to access it.
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent: []
+  semantic_checks:
+  - question: Did the agent report that the document was not found in a clear, helpful way?
+    weight: 3
+    rubric:
+      5: Agent clearly reported the doc was not found and suggested possible causes (wrong URL, permissions)
+      3: Agent reported an error but explanation was minimal
+      1: Agent did not handle the error gracefully
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

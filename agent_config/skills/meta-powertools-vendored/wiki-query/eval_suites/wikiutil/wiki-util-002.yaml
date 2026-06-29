@@ -1,0 +1,45 @@
+id: wiki-util-002
+name: List pages created by a user
+category: wikiutil
+prompt: Show me all wiki pages created by the user johndoe.
+description: Tests that the agent uses WikiUtil -a to list pages by a specific user
+expected_behavior: Agent uses phps WikiUtil -a johndoe to list all wiki pages created by the user
+eval_target: response
+mock_data: |
+  WikiUtil -a johndoe output:
+    Pages created by johndoe:
+    - Infra_Team/Deployment_Guide (created: 2025-11-10)
+    - Infra_Team/Monitoring_Setup (created: 2025-12-03)
+    - Infra_Team/Oncall_Runbook (created: 2026-01-15)
+    - Tools/Internal_CLI_Reference (created: 2026-02-20)
+    Total: 4 pages
+fail_on_unmocked_command: true
+intercept_patterns:
+- graphql_wiki_content
+- 'jf graphql'
+- WikiUtil
+- 'phps '
+intercept_mcp_tools:
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent return a list of wiki pages created by johndoe?
+    weight: 3
+    rubric:
+      5: Agent returned all 4 pages created by johndoe with their paths
+      3: Agent returned some pages but missed entries or details
+      1: Agent did not return any pages
+  - question: Did the agent use phps WikiUtil -a with the username?
+    weight: 2
+    rubric:
+      5: Agent used phps WikiUtil -a johndoe
+      3: Agent used an alternative method to find pages by user
+      1: Agent did not attempt to look up pages by user
+project: wiki-query-evals
+target_skills:
+- fbcode/claude-templates/components/skills/wiki-query/SKILL.md
+working_directory: ~/fbsource/fbcode

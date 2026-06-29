@@ -1,0 +1,43 @@
+id: udf-usage-examples-002
+suite: udf-workflow
+project: scuba-evals
+description: Tests meta scuba.udf usage for real-world usage examples (from TP-12)
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user wants to see how a specific UDF is used in practice."
+question: "Find examples of how APPROX_COUNT_DISTINCT_HLL is used in real queries."
+
+mock_data: |
+  meta scuba.udf usage --udfs=APPROX_COUNT_DISTINCT_HLL response:
+    results:
+      - dataset: "web_requests"
+        derived_column_sql: "APPROX_COUNT_DISTINCT_HLL(userid, 16)"
+        derived_column_type: "Aggregated"
+        query_count: 234
+      - dataset: "intern_page_views"
+        derived_column_sql: "APPROX_COUNT_DISTINCT_HLL(session_id, 12)"
+        derived_column_type: "Aggregated"
+        query_count: 156
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: calls_udf_usage
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.udf usage"
+    arguments:
+      command: "meta scuba.udf usage"
+  - id: presents_examples
+    description: "Agent presents the real-world usage examples"
+    check: "Response shows usage examples including the SQL expressions and datasets they're used in"
+
+quality_factors:
+  - id: explains_precision
+    description: "Explains the precision parameter values (e.g., 12 vs 16) and what they mean for accuracy vs performance"
+    weight: 0.5
+  - id: explains_patterns
+    description: "Explains the usage patterns seen in the examples (contexts, datasets, Aggregated type requirement)"
+    weight: 0.5

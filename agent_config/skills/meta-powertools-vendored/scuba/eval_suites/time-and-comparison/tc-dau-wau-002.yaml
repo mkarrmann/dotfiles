@@ -1,0 +1,40 @@
+id: tc-dau-wau-002
+suite: time-and-comparison
+project: scuba-evals
+description: Tests approxcountdistinct with time_bucket for WAU calculation
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A product analyst wants to track weekly active users over time."
+question: "Show me the weekly active users (WAU) for scuba_queries over the last 4 weeks, using userid as the user identifier."
+
+mock_data: |
+  meta scuba.dataset query response:
+    results:
+      time                | approxcountdistinct(userid)
+      2025-01-06 00:00:00 | 12345
+      2025-01-13 00:00:00 | 13456
+      2025-01-20 00:00:00 | 11890
+      2025-01-27 00:00:00 | 14200
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: calls_query
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.dataset query for WAU calculation"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: uses_approxcountdistinct
+    description: "Agent uses approxcountdistinct metric for unique user counting"
+    check: "Response shows weekly unique user counts over a 4-week period"
+  - id: correct_time_range
+    description: "Agent sets appropriate time range for 4 weeks"
+    check: "Response shows data spanning approximately 4 weeks with weekly data points"
+
+quality_factors:
+  - id: presents_trend
+    description: "Presents the WAU trend over the 4-week period"
+    weight: 1.0

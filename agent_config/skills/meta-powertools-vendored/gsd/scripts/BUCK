@@ -1,0 +1,65 @@
+load("@fbcode_macros//build_defs:python_binary.bzl", "python_binary")
+load("@fbcode_macros//build_defs:python_library.bzl", "python_library")
+
+oncall("rl_devx")
+
+python_library(
+    name = "gsd_utils",
+    srcs = ["gsd_utils.py"],
+    deps = [],
+)
+
+python_binary(
+    name = "create_gsd_team",
+    srcs = ["create_gsd_team.py"],
+    main_function = "claude-templates.components.skills.gsd.scripts.create_gsd_team.main",
+    deps = [
+        ":gsd_utils",
+    ],
+)
+
+python_binary(
+    name = "create_gsd_project",
+    srcs = ["create_gsd_project.py"],
+    main_function = "claude-templates.components.skills.gsd.scripts.create_gsd_project.main",
+    deps = [
+        ":gsd_utils",
+    ],
+)
+
+python_binary(
+    name = "create_gsd_section",
+    srcs = ["create_gsd_section.py"],
+    main_function = "claude-templates.components.skills.gsd.scripts.create_gsd_section.main",
+    deps = [
+        ":gsd_utils",
+    ],
+)
+
+python_binary(
+    name = "add_task_to_project",
+    srcs = ["add_task_to_project.py"],
+    main_function = "claude-templates.components.skills.gsd.scripts.add_task_to_project.main",
+    deps = [
+        ":gsd_utils",
+    ],
+)
+
+python_binary(
+    name = "move_task_to_project",
+    srcs = ["move_task_to_project.py"],
+    main_function = "claude-templates.components.skills.gsd.scripts.move_task_to_project.main",
+    deps = [
+        ":gsd_utils",
+    ],
+)
+
+python_binary(
+    name = "query_gsd_data",
+    srcs = [
+        "gsd_utils.py",
+        "query_gsd_data.py",
+    ],
+    main_function = "claude-templates.components.skills.gsd.scripts.query_gsd_data.main",
+    deps = [":gsd_utils"],
+)

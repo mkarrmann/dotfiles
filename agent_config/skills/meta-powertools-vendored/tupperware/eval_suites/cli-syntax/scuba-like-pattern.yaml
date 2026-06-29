@@ -1,0 +1,31 @@
+id: scuba-like-pattern
+suite: cli-syntax
+project: tupperware-evals
+name: Scuba LIKE patterns — avoid % in middle, use RLIKE or substr
+category: scuba
+description: |
+  Tests that agents avoid using % wildcards in the middle of LIKE patterns (not supported by
+  Peregrine). Should use RLIKE, REGEXP_MATCH, or the structured query substr operator instead.
+question: |
+  I need to filter Scuba table tupperware_task_events for all jobs in the tsp_global/twsvcscm/ namespace. The full job handles look like tsp_global/twsvcscm/bento_gateway_global_elastic. What is the correct way to write the filter? Show me the meta scuba.dataset query command.
+expected_behavior: |
+  Agent should filter by job namespace using LIKE 'tsp_global/twsvcscm/%' (trailing % only),
+  substr operator in structured queries, or RLIKE with regex. Should NOT use LIKE 'tsp_global%twsvcscm%'
+  (% in middle between literals).
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  semantic_checks:
+    - question: Agent avoided LIKE patterns with % between literal strings (e.g., 'tsp%twsvcscm%')?
+      weight: 3
+      rubric:
+        5: Used only trailing %, substr operator, or RLIKE throughout
+        3: Used interior % once but self-corrected after Peregrine error
+        1: Used interior % repeatedly
+    - question: Agent used correct Scuba query tool (meta scuba.dataset query, not scuba query --dataset)?
+      weight: 2
+      rubric:
+        5: Used meta scuba.dataset query correctly
+        3: Used wrong syntax once but corrected
+        1: Used wrong CLI syntax throughout

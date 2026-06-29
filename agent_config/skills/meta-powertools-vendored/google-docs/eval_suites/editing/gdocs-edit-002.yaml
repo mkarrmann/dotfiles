@@ -1,0 +1,35 @@
+id: gdocs-edit-002
+name: Insert text at end
+category: editing
+prompt: Add the paragraph 'Action items will be tracked in Tasks.' at the end of https://docs.google.com/document/d/1abc123/edit
+description: Tests inserting text at the end of a document
+expected_behavior: Agent uses insert-text or insert-markdown to append text
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Meeting Notes
+  Insert result: Text inserted successfully at end of document.
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent insert the paragraph at the end of the document?
+    weight: 3
+    rubric:
+      5: Agent inserted the text at the end and confirmed success
+      3: Agent inserted text but location was unclear
+      1: Agent did not insert text
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

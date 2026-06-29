@@ -1,0 +1,32 @@
+id: capacity-reservations
+suite: universal-search
+project: tupperware-evals
+name: "Capacity & Reservations"
+category: core
+question: |
+  What commands and approach would you use to: What capacity/reservations does tsp_global/tupperware/universal_search.prod use? How many tasks are allocated vs requested?
+expected_behavior: |
+  Agent should use Job→Reservation association traversal and inspect reservation globalStatus.
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  semantic_checks:
+    - question: "Uses Job→Reservation association (from:2, assocObjectType:1)?"
+      weight: 3
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"
+    - question: "Extracts materialized/used/buffer counts from globalStatus?"
+      weight: 3
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"
+    - question: "Reports per-region capacity?"
+      weight: 1
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"

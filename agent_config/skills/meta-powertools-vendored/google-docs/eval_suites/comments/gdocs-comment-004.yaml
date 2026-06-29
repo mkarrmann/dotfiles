@@ -1,0 +1,40 @@
+id: gdocs-comment-004
+name: Resolve all comments
+category: comments
+prompt: Resolve all comments on https://docs.google.com/document/d/1abc123/edit
+description: Tests resolving all open comments
+expected_behavior: Agent resolves each open comment
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Comments:
+    - id: cmt001, author: Alice, content: "Fix the typo", resolved: false
+    - id: cmt002, author: Bob, content: "Update the date", resolved: false
+    - id: cmt003, author: Carol, content: "LGTM", resolved: true
+  Resolve results:
+    cmt001: resolved successfully
+    cmt002: resolved successfully
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent resolve all open comments (cmt001 and cmt002)?
+    weight: 3
+    rubric:
+      5: Agent resolved both open comments and confirmed each resolution
+      3: Agent resolved some but not all open comments
+      1: Agent did not resolve any comments
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

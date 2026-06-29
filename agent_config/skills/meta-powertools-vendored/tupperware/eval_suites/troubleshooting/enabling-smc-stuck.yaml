@@ -1,0 +1,32 @@
+id: enabling-smc-stuck
+suite: troubleshooting
+project: tupperware-evals
+name: "Q22: Enabling Smc Stuck"
+category: troubleshooting
+question: |
+  What commands and approach would you use to: My job tsp_global/tupperware/universal_search.prod has been stuck in 'Enabling SMC' for over an hour. Tasks are running but not receiving traffic. What's wrong?
+expected_behavior: |
+  Agent should check smcbridge_v2_errors for ERR_UNAUTHORIZED, verify SMC tier ACL permissions.
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  semantic_checks:
+    - question: "Agent correctly routed to the right troubleshooting category and runbook?"
+      weight: 3
+      rubric:
+        5: "Correct category routing on first try"
+        3: "Eventually found the right category"
+        1: "Wrong category or no routing"
+    - question: "Agent provided actionable resolution steps?"
+      weight: 3
+      rubric:
+        5: "Clear, correct resolution with specific commands"
+        3: "Partial resolution"
+        1: "No resolution or wrong steps"
+    - question: "Agent used correct CLI and Scuba commands (no nonexistent subcommands)?"
+      weight: 2
+      rubric:
+        5: "All commands correct"
+        3: "Most commands correct"
+        1: "Multiple wrong commands"

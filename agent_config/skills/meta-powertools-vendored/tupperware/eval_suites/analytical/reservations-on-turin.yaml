@@ -1,0 +1,26 @@
+id: reservations-on-turin
+suite: analytical
+project: tupperware-evals
+name: "Q15: Reservations On Turin"
+category: analytical
+question: |
+  What commands and approach would you use to: Which reservations in the twshared pool are running on Turin (T1_TRN) machines? How many tasks on each?
+expected_behavior: |
+  Agent should use Universal Search with appropriate filters, multi-step traversals, and client-side aggregation.
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  semantic_checks:
+    - question: "Agent used the correct Universal Search query pattern for this analytical question?"
+      weight: 3
+      rubric:
+        5: "Correct query pattern with appropriate filters"
+        3: "Partially correct approach"
+        1: "Wrong approach or failed to query"
+    - question: "Agent produced a useful analytical result (counts, percentages, comparisons)?"
+      weight: 2
+      rubric:
+        5: "Complete analytical result with data"
+        3: "Partial result"
+        1: "No useful result"

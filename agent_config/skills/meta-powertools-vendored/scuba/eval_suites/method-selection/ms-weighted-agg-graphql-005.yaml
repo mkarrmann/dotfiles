@@ -1,0 +1,25 @@
+id: ms-weighted-agg-graphql-005
+suite: method-selection
+project: scuba-evals
+description: Tests that agent prefers --derived-cols for weighted aggregation
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "An engineer needs to compute a weighted sum."
+question: "I need to calculate a weighted sum of cpu_time weighted by total_time_ms in scuba_queries. What's the correct approach?"
+
+critical_requirements:
+  - id: recommends_derived_cols
+    description: "Agent recommends using --derived-cols for weighted aggregation"
+    check: "Response recommends using --derived-cols for weighted aggregation, since no JOINs or HAVING are needed"
+  - id: mentions_two_arg_syntax
+    description: "Agent describes the Scuba two-argument weighted syntax"
+    check: "Response describes using SUM(cpu_time, total_time_ms) two-argument form for weighted aggregation, not SUM(cpu_time * total_time_ms)"
+
+quality_factors:
+  - id: correct_type
+    description: "Mentions that weighted aggregations use --derived-cols with type Aggregated"
+    weight: 0.5
+  - id: validates_expression
+    description: "Validates the derived column expression before executing (e.g., calls meta scuba.column validate)"
+    weight: 0.5

@@ -1,0 +1,46 @@
+id: gdocs-edit-001
+name: Round-trip edit workflow
+category: editing
+prompt: Edit https://docs.google.com/document/d/1abc123/edit — change every occurrence of 'Q1' to 'Q2'.
+description: Tests round-trip editing or find-replace for text substitution
+expected_behavior: Agent uses round-trip (get/edit/diff/apply) or find-replace to change Q1 to Q2
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Quarterly Review
+  Content:
+    <h1>Q1 Review</h1>
+    <p>The Q1 results exceeded expectations.</p>
+    <p>Q1 revenue was $10M.</p>
+  Find-replace result: 3 replacements made (Q1 -> Q2)
+  Round-trip edit: diff shows 3 changes, apply succeeds.
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent replace all occurrences of 'Q1' with 'Q2' in the document?
+    weight: 3
+    rubric:
+      5: Agent replaced Q1 with Q2 and confirmed the changes were applied
+      3: Agent attempted the replacement but confirmation was unclear
+      1: Agent did not perform the replacement
+  - question: Did the agent use an appropriate method (find-replace or round-trip edit)?
+    weight: 1
+    rubric:
+      5: Agent used find-replace or the round-trip edit workflow
+      3: Agent used a less efficient but valid method
+      1: Agent did not attempt to edit the document
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

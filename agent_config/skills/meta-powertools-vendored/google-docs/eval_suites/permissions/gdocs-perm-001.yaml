@@ -1,0 +1,37 @@
+id: gdocs-perm-001
+name: List permissions
+category: permissions
+prompt: Who has access to https://docs.google.com/document/d/1abc123/edit?
+description: Tests listing document permissions
+expected_behavior: Agent lists users and their roles
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Permissions:
+    - id: perm001, type: user, email: alice@meta.com, role: owner
+    - id: perm002, type: user, email: bob@meta.com, role: writer
+    - id: perm003, type: user, email: carol@meta.com, role: writer
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent list all users with access and their roles (owner, writer)?
+    weight: 3
+    rubric:
+      5: Agent listed all 3 users with their email addresses and roles
+      3: Agent listed users but missing some details
+      1: Agent did not list permissions
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

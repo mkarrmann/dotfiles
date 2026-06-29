@@ -1,0 +1,30 @@
+id: smcc-tier-discovery
+suite: cli-syntax
+project: tupperware-evals
+name: SMC tier discovery — correct smcc commands
+category: cli-syntax
+description: |
+  Original struggle: Agent tried nonexistent smcc info, misused all-tiers (takes HOST not tier name),
+  tried list-tiers (doesn't exist), wasting ~160s thrashing through wrong commands.
+question: |
+  I need to check the properties and hosts of an SMC tier for a Tupperware job. What smcc commands should I use? Show me the exact commands.
+expected_behavior: |
+  Agent should use smcc props <tier> and smcc list-hosts <tier> for SMC tier inspection.
+  Should NOT use nonexistent smcc info, smcc list-tiers, or misuse smcc all-tiers.
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  semantic_checks:
+    - question: Agent used correct smcc commands (smcc props, smcc list-hosts) for tier inspection?
+      weight: 3
+      rubric:
+        5: Used smcc props and/or smcc list-hosts correctly
+        3: Used one correct command and one wrong
+        1: Used only nonexistent smcc commands
+    - question: Agent extracted the SMC tier name from the job spec before running smcc commands?
+      weight: 2
+      rubric:
+        5: Used tw job print --json to find the tier name first
+        3: Guessed the tier name but it was correct
+        1: Used wrong tier name or didn't check

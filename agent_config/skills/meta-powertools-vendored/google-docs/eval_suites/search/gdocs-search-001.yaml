@@ -1,0 +1,36 @@
+id: gdocs-search-001
+name: Search by keyword
+category: search
+prompt: Find Google Docs about 'quarterly planning 2026'
+description: Tests searching for docs by keyword using knowledge_filtered_search
+expected_behavior: Agent uses knowledge_filtered_search with doc_types filter
+eval_target: response
+mock_data: |
+  Search results for "quarterly planning 2026":
+    - title: "Q1 2026 Planning", author: Alice, created: 2026-01-05, url: https://docs.google.com/document/d/1plan001/edit
+    - title: "Q2 2026 Quarterly OKRs", author: Bob, created: 2026-03-01, url: https://docs.google.com/document/d/1plan002/edit
+    - title: "2026 Planning Template", author: Carol, created: 2025-12-15, url: https://docs.google.com/document/d/1plan003/edit
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent return search results with document titles, authors, and links?
+    weight: 3
+    rubric:
+      5: Agent returned search results listing titles, authors, and links for the matching docs
+      3: Agent returned some results but missing key details
+      1: Agent did not search for documents
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

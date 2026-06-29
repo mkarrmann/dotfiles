@@ -1,0 +1,9 @@
+load("@fbcode_macros//build_defs:native_rules.bzl", "buck_filegroup")
+
+oncall("adfinder_infra")
+
+buck_filegroup(
+    name = "skill_resources",
+    srcs = glob(["**/*.md"]),
+    visibility = ["PUBLIC"],
+)

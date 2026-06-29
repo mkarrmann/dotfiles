@@ -1,0 +1,32 @@
+id: historical-spec-comparison
+suite: universal-search
+project: tupperware-evals
+name: "Historical Spec Comparison"
+category: core
+question: |
+  What commands and approach would you use to: What changed in the job spec for tsp_global/tupperware/universal_search.prod in the last week? Compare the current spec with the previous version.
+expected_behavior: |
+  Agent should use NujSpec lookup (from:16) for historical snapshots and compare fields.
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  semantic_checks:
+    - question: "Uses NujSpec object type (16) for spec history?"
+      weight: 3
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"
+    - question: "Compares fields between spec versions?"
+      weight: 3
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"
+    - question: "Identifies meaningful changes?"
+      weight: 1
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"

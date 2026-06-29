@@ -1,0 +1,45 @@
+load("@fbcode_macros//build_defs:python_library.bzl", "python_library")
+
+oncall("devx")
+
+python_library(
+    name = "diff_comments_utils",
+    srcs = ["diff_comments_utils.py"],
+    base_module = "",
+    typing = True,
+)
+
+python_library(
+    name = "inline_comment",
+    srcs = ["inline_comment.py"],
+    base_module = "",
+    typing = True,
+    deps = [":diff_comments_utils"],
+)
+
+python_library(
+    name = "get_comment_status",
+    srcs = ["get_comment_status.py"],
+    base_module = "",
+    typing = True,
+    deps = [":diff_comments_utils"],
+)
+
+python_library(
+    name = "edit_draft_comment",
+    srcs = ["edit_draft_comment.py"],
+    base_module = "",
+    typing = True,
+    deps = [":diff_comments_utils"],
+)
+
+python_library(
+    name = "top_level_comment",
+    srcs = ["top_level_comment.py"],
+    base_module = "",
+    typing = True,
+    deps = [
+        ":diff_comments_utils",
+        ":inline_comment",
+    ],
+)

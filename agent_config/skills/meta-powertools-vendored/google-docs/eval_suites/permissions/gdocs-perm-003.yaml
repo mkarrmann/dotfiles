@@ -1,0 +1,34 @@
+id: gdocs-perm-003
+name: Share with domain
+category: permissions
+prompt: Make https://docs.google.com/document/d/1abc123/edit readable by everyone at fb.com
+description: Tests sharing a doc with an entire domain
+expected_behavior: Agent uses --type domain --domain fb.com with reader role
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Share result: Domain permission added for fb.com with reader role.
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent share the doc with the entire fb.com domain as reader?
+    weight: 3
+    rubric:
+      5: Agent used --type domain --domain fb.com with reader role
+      3: Agent shared with the domain but role was wrong
+      1: Agent did not share with the domain
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

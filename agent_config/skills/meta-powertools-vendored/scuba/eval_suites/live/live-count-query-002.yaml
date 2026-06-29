@@ -1,0 +1,28 @@
+id: live-count-query-002
+suite: live
+project: scuba-evals
+description: Tests a real COUNT query with group_by against scuba_queries
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "An engineer wants to understand query volume by source."
+question: "How many queries hit scuba_queries in the last hour, grouped by query_source? Limit to top 10."
+
+critical_requirements:
+  - id: calls_query
+    type: tool_called
+    tool_name: Bash
+    description: "Agent calls meta scuba.dataset query"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: presents_results
+    description: "Agent presents query results"
+    check: "Response includes a table or structured output showing query_source values with their corresponding counts"
+
+quality_factors:
+  - id: validates_columns
+    description: "Validates column names via meta scuba.dataset info before querying"
+    weight: 0.5
+  - id: clear_summary
+    description: "Provides a brief summary or observation about the results (e.g., which source has most queries)"
+    weight: 0.5

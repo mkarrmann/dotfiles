@@ -1,0 +1,25 @@
+id: ms-join-routes-cli-001
+suite: method-selection
+project: scuba-evals
+description: Tests that agent correctly identifies JOINs require SQL mode
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "An engineer needs to combine data from two Scuba tables."
+question: "I need to join scuba_queries with core_viz_session_actions on userid. Should I use structured mode or SQL mode? Explain why."
+
+critical_requirements:
+  - id: recommends_sql_mode
+    description: "Agent recommends SQL mode (--sql) for JOINs"
+    check: "Response states JOINs require SQL mode (--sql) and cannot be done via structured mode"
+  - id: explains_limitation
+    description: "Agent explains why structured mode can't do JOINs"
+    check: "Response explains that structured mode does not support JOINs and that JOINs are only available via --sql mode"
+
+quality_factors:
+  - id: mentions_join_syntax_rules
+    description: "Mentions critical JOIN syntax rules or references cli-advanced-sql.md"
+    weight: 0.6
+  - id: offers_example
+    description: "Provides example JOIN syntax or recommends reading the reference doc"
+    weight: 0.4

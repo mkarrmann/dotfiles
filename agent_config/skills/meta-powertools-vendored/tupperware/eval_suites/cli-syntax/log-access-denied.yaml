@@ -1,0 +1,39 @@
+id: log-access-denied
+suite: cli-syntax
+project: tupperware-evals
+name: Log access denied — find TIER ACL tupperware_log mechanism efficiently
+category: knowledge
+description: |
+  Original struggle: Agent spawned 2 parallel knowledge search subagents that made 20 overlapping
+  searches to discover the TIER ACL tupperware_log mechanism and how to request access.
+question: |
+  I'm getting 'Denied access to log file' and 'Accessor does not have permission according to the RemDataAuth Policy' when trying to read Tupperware logs. What is the root cause and how do I fix it? What specific ACL action do I need?
+expected_behavior: |
+  Agent should efficiently identify the TIER ACL tupperware_log mechanism by reading the skill's
+  runbooks (acl-permissions.md Step 3, logging-debugging.md). Should NOT require 20+ knowledge
+  searches. Should recommend bunnylol hipster TIER:<tier_name> for ACL access.
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  required_present:
+    - "tupperware_log"
+  semantic_checks:
+    - question: Agent identified the TIER ACL tupperware_log mechanism as the root cause?
+      weight: 3
+      rubric:
+        5: Correctly identified TIER ACL tupperware_log action
+        3: Mentioned ACLs but not the specific tupperware_log action
+        1: Did not identify the ACL mechanism
+    - question: Agent found the answer from skill runbooks without excessive knowledge searches (fewer than 5)?
+      weight: 3
+      rubric:
+        5: Found answer in 1-3 targeted reads, zero redundant searches
+        3: Found answer but needed 5-10 searches
+        1: Required 10+ overlapping searches
+    - question: Agent recommended the correct resolution (request tupperware_log on TIER ACL via hipster)?
+      weight: 2
+      rubric:
+        5: Recommended bunnylol hipster TIER:<tier> for tupperware_log access
+        3: Recommended ACL change but vague on specifics
+        1: Did not provide a resolution path

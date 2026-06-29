@@ -1,0 +1,55 @@
+id: wiki-routing-002
+name: Uses GraphQL script instead of curl for wiki content
+category: routing
+prompt: Fetch the content of the wiki page at Security_Team/Threat_Model_Guide. Use whatever method works best.
+description: Tests that the agent prefers the GraphQL script over curl when fetching wiki content
+expected_behavior: Agent uses scripts/graphql_wiki_content instead of curl to fetch the wiki page
+eval_target: response
+mock_data: |
+  Wiki path: Security_Team/Threat_Model_Guide
+  Editor type: PAGELET (markdown)
+  Content (markdown):
+    # Threat Model Guide
+
+    ## What is Threat Modeling?
+    Threat modeling is a structured approach to identifying security threats.
+
+    ## Process
+    1. Identify assets
+    2. Enumerate threat actors
+    3. Map attack surfaces
+    4. Prioritize mitigations
+
+    ## Templates
+    Use the STRIDE framework for systematic analysis.
+fail_on_unmocked_command: true
+intercept_patterns:
+- graphql_wiki_content
+- 'jf graphql'
+- WikiUtil
+- 'phps '
+- curl
+intercept_mcp_tools:
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent use the graphql_wiki_content script rather than curl to fetch the wiki content?
+    weight: 3
+    rubric:
+      5: Agent used scripts/graphql_wiki_content and returned the Threat Model Guide content
+      3: Agent returned content but the method used was unclear
+      1: Agent used curl to fetch the HTML page directly
+  - question: Did the agent return the wiki content including the threat modeling process steps?
+    weight: 2
+    rubric:
+      5: Agent returned content with all 4 process steps and the STRIDE mention
+      3: Agent returned partial content
+      1: Agent did not return any content
+project: wiki-query-evals
+target_skills:
+- fbcode/claude-templates/components/skills/wiki-query/SKILL.md
+working_directory: ~/fbsource/fbcode

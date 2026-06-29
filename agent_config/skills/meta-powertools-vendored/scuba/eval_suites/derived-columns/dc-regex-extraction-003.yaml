@@ -1,0 +1,43 @@
+id: dc-regex-extraction-003
+suite: derived-columns
+project: scuba-evals
+description: Tests REGEXP_EXTRACT with type String and NULL filter (from TP-7)
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user wants to extract a prefix from column values using regex."
+question: "From scuba_queries in the last hour, extract the first word from each query_source using a regex pattern and count queries per extracted prefix."
+
+mock_data: |
+  meta scuba.dataset query response:
+    results:
+      source_prefix | COUNT
+      datamate      | 2847
+      scuba         | 1523
+      api           | 891
+      graphql       | 456
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: uses_query
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.dataset query"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: uses_regexp_extract
+    description: "Agent uses REGEXP_EXTRACT to extract a prefix from column values"
+    check: "Response uses REGEXP_EXTRACT (or equivalent regex function) to extract the first word from query_source, either via --derived-cols with type String or via --sql mode with an equivalent SQL expression. Both approaches are acceptable."
+  - id: groups_and_counts
+    description: "Agent groups by the extracted prefix and counts per group"
+    check: "Response shows count results grouped by the extracted prefix values"
+
+quality_factors:
+  - id: filters_null
+    description: "Adds IS NOT NULL filter for non-matching rows"
+    weight: 0.3
+  - id: groups_by_derived
+    description: "Groups by the derived column name and counts per group"
+    weight: 0.7

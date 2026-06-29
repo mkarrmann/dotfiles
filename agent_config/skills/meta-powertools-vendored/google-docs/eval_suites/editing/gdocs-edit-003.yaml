@@ -1,0 +1,41 @@
+id: gdocs-edit-003
+name: Insert text after heading
+category: editing
+prompt: Insert 'This section covers Q2 goals.' after the heading 'Goals' in https://docs.google.com/document/d/1abc123/edit
+description: Tests inserting text after a specific heading using --after-heading
+expected_behavior: Agent uses --after-heading flag to position the insertion
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Planning Doc
+  Structure:
+    - Heading 1: "Overview" (index 1)
+    - Paragraph (index 15)
+    - Heading 2: "Goals" (index 45)
+    - Paragraph (index 60)
+    - Heading 2: "Risks" (index 80)
+  Insert result: Text inserted after heading "Goals" successfully.
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent insert text after the 'Goals' heading?
+    weight: 3
+    rubric:
+      5: Agent used --after-heading 'Goals' or found the heading index and inserted after it
+      3: Agent inserted text but positioning was approximate
+      1: Agent did not insert text after the heading
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

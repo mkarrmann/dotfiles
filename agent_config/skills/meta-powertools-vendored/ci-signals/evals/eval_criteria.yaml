@@ -1,0 +1,765 @@
+eval_mode: basic
+default_working_directory: ~/fbsource
+project: ci-signals
+target_skills:
+  - fbcode/claude-templates/components/skills/ci-signals/SKILL.md
+
+test_cases:
+  - id: TC-001
+    name: "Natural language CI triage invocation"
+    category: invocation
+    prompt: "My diff D99999999 has some failing tests and lint issues, can you check what's going on with CI?"
+    description: "Tests that the skill activates from a natural language request about CI failures without explicit /ci-signals invocation"
+    expected_behavior: "The skill should activate and use analyze_ci_signals or query_ci_signals to check the diff's CI status"
+    eval_target: response
+    target_skills:
+      - fbcode/claude-templates/components/skills/ci-signals/SKILL.md
+    mock_data: |
+      Diff: D99999999
+      CI State: TEST_FINISHED_WITH_FAILURES
+      Signal counts: total=42, passed=38, failed=3, warning=1, pending=0, info=0
+      Failed signals:
+        - name: "arc-lint"
+          type: STATIC_ANALYSIS
+          status: FAILED
+          detail: "3 lint issues found in FooBar.java: line 42 unused import, line 88 missing annotation, line 120 type mismatch"
+        - name: "FooBarTest"
+          type: TEST
+          status: FAILED
+          detail: "java.lang.AssertionError: expected true but was false at FooBarTest.testWidget(FooBarTest.java:55)"
+          repro: "buck test fbsource//fbandroid/javatests/com/instagram/foo:FooBarTest"
+        - name: "BazQuxTest"
+          type: TEST
+          status: FAILED
+          detail: "WARNING: ThreadSanitizer: data race at BazQux.cpp:123"
+          repro: "buck test fbcode//instagram/server/baz:BazQuxTest"
+      Warning signals:
+        - name: "Confucius Comment"
+          type: REVIEW_INSIGHTS
+          status: WARNING
+          detail: "Summary: Variable shadowing detected in FooBar.java"
+    intercept_patterns:
+      - "scripts/analyze_ci_signals"
+      - "scripts/query_ci_signals"
+      - "scripts/check_ci_state"
+      - "scripts/fetch_test_details"
+      - "scripts/start_deferred_tests"
+      - "scripts/query_review_insights"
+      - "meta graphql.query"
+      - "jf diff-properties"
+    quality_criteria:
+      required_present: ["FAILED", "arc-lint", "FooBarTest", "reproduce", "triage"]
+      required_absent: ["I cannot", "I don't have access", "error executing"]
+      semantic_checks:
+        - question: "Did the skill activate from natural language without explicit /ci-signals invocation?"
+          weight: 3
+          rubric:
+            5: "Skill activated immediately, recognized CI query intent, began analysis"
+            4: "Skill activated with minor delay or one confirmation step"
+            3: "Skill activated but required re-prompting or explicit invocation"
+            2: "Partial activation — recognized intent but used wrong tool"
+            1: "Did not activate — gave generic response or asked user to run commands manually"
+        - question: "Did the response identify the specific failing signals and their types?"
+          weight: 2
+          rubric:
+            5: "Listed all 3 failed signals with types (STATIC_ANALYSIS, TEST) and details"
+            4: "Listed most failures with types"
+            3: "Listed some failures but missed types or details"
+            2: "Only mentioned failure count without specifics"
+            1: "Did not identify any failing signals"
+        - question: "Did the response include actionable reproduce commands?"
+          weight: 2
+          rubric:
+            5: "Provided specific buck test commands for each failing test"
+            4: "Provided reproduce commands for most failures"
+            3: "Mentioned reproduce commands exist but didn't extract them"
+            2: "Suggested generic debugging steps"
+            1: "No reproduce commands or debugging guidance"
+      artifact_checks: []
+
+  - id: TC-002
+    name: "CI signals efficiency check"
+    category: efficiency
+    prompt: "/ci-signals D99999999 --triage"
+    description: "Tests that the skill handles a simple triage request efficiently without unnecessary tool calls. Behavioral: verifies the user's --triage flag is preserved through to the actual Bash invocation, not just discussed in prose."
+    expected_behavior: "Should invoke analyze_ci_signals with --triage flag directly (single Bash call, flag preserved), not fetch unnecessary details or run multiple queries"
+    eval_target: tool_usage
+    target_skills:
+      - fbcode/claude-templates/components/skills/ci-signals/SKILL.md
+    mock_data: |
+      Diff: D99999999
+      CI State: TEST_FINISHED_ALL_PASSED
+      Signal counts: total=50, passed=50, failed=0, warning=0, pending=0, info=0
+      No failures or warnings found.
+    intercept_patterns:
+      - "scripts/analyze_ci_signals"
+      - "scripts/query_ci_signals"
+      - "scripts/check_ci_state"
+      - "scripts/fetch_test_details"
+      - "scripts/start_deferred_tests"
+      - "scripts/query_review_insights"
+      - "meta graphql.query"
+      - "jf diff-properties"
+    quality_criteria:
+      required_present: ["passed", "signals"]
+      required_absent: ["error", "I cannot"]
+      semantic_checks:
+        - question: "Did the skill use analyze_ci_signals --triage as the primary command without unnecessary additional queries?"
+          weight: 3
+          rubric:
+            5: "Used analyze_ci_signals --triage directly, reported results concisely"
+            4: "Used the right script but added one minor extra query"
+            3: "Used the right script but also ran unnecessary fetch_test_details or review_insights"
+            2: "Used multiple scripts when one would suffice"
+            1: "Used raw GraphQL or multiple redundant queries instead of the script"
+        - question: "Was the output concise and proportionate to the result (all passed)?"
+          weight: 2
+          rubric:
+            5: "Brief confirmation that all signals passed, no verbose output"
+            4: "Slightly verbose but still focused"
+            3: "Included unnecessary details for an all-passed result"
+            2: "Very verbose, re-stated the entire skill documentation"
+            1: "Massive output for a simple all-passed result"
+        - question: "Did the response avoid loading unnecessary skill sections (polling, stack fixing, raw GraphQL)?"
+          weight: 2
+          rubric:
+            5: "Only referenced triage workflow, no mention of advanced sections"
+            4: "Briefly mentioned one advanced section but didn't execute it"
+            3: "Referenced multiple advanced sections unnecessarily"
+            2: "Attempted to use advanced workflows for a simple triage"
+            1: "Loaded and executed complex workflows for a trivial task"
+        - question: "Did the actual Bash invocation preserve the user's --triage flag (not just talk about it)?"
+          weight: 3
+          rubric:
+            5: "Invoked analyze_ci_signals with --triage flag exactly once; no other scripts called"
+            4: "Invoked analyze_ci_signals with --triage flag plus one minor extra call"
+            3: "Invoked analyze_ci_signals WITHOUT the --triage flag (full analysis when triage was requested)"
+            2: "Invoked analyze_ci_signals --triage but also fired multiple unnecessary scripts"
+            1: "Did not invoke analyze_ci_signals at all (used wrong script or only narrated)"
+      artifact_checks: []
+
+  - id: TC-003
+    name: "Best practices for CI signal analysis"
+    category: best_practices
+    prompt: "I need to understand why my diff is failing CI. The diff number is D99999999. Can you look at the signals and tell me what to fix?"
+    description: "Tests that the skill follows best practices: uses scripts over raw GraphQL, progressive disclosure, proper error classification"
+    expected_behavior: "Should use analyze_ci_signals first, classify failures by type, suggest fixes in priority order"
+    eval_target: response
+    target_skills:
+      - fbcode/claude-templates/components/skills/ci-signals/SKILL.md
+    mock_data: |
+      Diff: D99999999
+      CI State: TEST_FINISHED_WITH_FAILURES
+      Signal counts: total=60, passed=52, failed=5, warning=3, pending=0, info=0
+      Failed signals:
+        - name: "fbsource-target-determinator"
+          type: JOB
+          status: FAILED
+          detail: "CISignalBoxBuildDetail - no inline detail available"
+        - name: "arc-lint"
+          type: STATIC_ANALYSIS
+          status: FAILED
+          detail: "5 lint issues: 2 in FooBar.java (unused import, missing @Override), 3 in BazQux.kt (naming convention)"
+        - name: "FooBarTest"
+          type: TEST
+          status: FAILED
+          detail: "0 sub results - sanitize_report"
+          repro: "buck test fbsource//fbandroid/javatests/com/instagram/foo:FooBarTest"
+        - name: "IntegrationTest"
+          type: TEST
+          status: FAILED
+          detail: "java.lang.NullPointerException at IntegrationTest.java:88"
+          repro: "buck test fbsource//fbandroid/javatests/com/instagram/integration:IntegrationTest"
+        - name: "BuildRuleCheck"
+          type: BUILD_RULE
+          status: FAILED
+          detail: "Missing dependency: //third-party/java/guava:guava not in BUCK file"
+          repro: "buck build fbsource//fbandroid/java/com/instagram/foo:foo"
+      Warning signals:
+        - name: "Confucius Comment"
+          type: REVIEW_INSIGHTS
+          status: WARNING
+        - name: "AI Test Quality"
+          type: REVIEW_INSIGHTS
+          status: WARNING
+        - name: "lint-infer-www-hack"
+          type: STATIC_ANALYSIS
+          status: WARNING
+    intercept_patterns:
+      - "scripts/analyze_ci_signals"
+      - "scripts/query_ci_signals"
+      - "scripts/check_ci_state"
+      - "scripts/fetch_test_details"
+      - "scripts/start_deferred_tests"
+      - "scripts/query_review_insights"
+      - "meta graphql.query"
+      - "jf diff-properties"
+    intercept_mcp_tools:
+      - "mcp__plugin_meta_mux__get_phabricator_diff_details"
+    quality_criteria:
+      required_present: ["STATIC_ANALYSIS", "TEST", "BUILD_RULE", "JOB", "reproduce", "fix"]
+      required_absent: ["I cannot", "error executing"]
+      semantic_checks:
+        - question: "Did the skill use scripts/analyze_ci_signals as the primary entry point instead of raw GraphQL?"
+          weight: 3
+          rubric:
+            5: "Used analyze_ci_signals as first step, followed skill's recommended workflow"
+            4: "Used analyze_ci_signals with minor deviations"
+            3: "Used query_ci_signals instead but still got results"
+            2: "Used raw GraphQL for initial query"
+            1: "Didn't use any of the skill's scripts"
+        - question: "Did the skill correctly handle the JOB signal with 'no inline detail' by suggesting get_phabricator_diff_details?"
+          weight: 3
+          rubric:
+            5: "Recognized CISignalBoxBuildDetail limitation, suggested get_phabricator_diff_details with include_failing_ci_signals=true"
+            4: "Recognized the limitation, suggested alternative approach"
+            3: "Noted the JOB failure but didn't escalate to get_phabricator_diff_details"
+            2: "Dismissed the JOB failure as 'infrastructure issue'"
+            1: "Ignored the JOB failure entirely"
+        - question: "Did the skill recognize the sanitize_report test failure and suggest fetch_test_details for TSAN/ASAN logs?"
+          weight: 2
+          rubric:
+            5: "Recognized sanitize_report, suggested fetch_test_details --status FAILED --limit 5 and grep for ThreadSanitizer/AddressSanitizer"
+            4: "Recognized sanitize_report, suggested fetch_test_details"
+            3: "Noted the test failure but didn't connect to sanitizer artifacts"
+            2: "Only showed the reproduce command without addressing sanitize_report"
+            1: "Ignored the sanitize_report detail"
+        - question: "Did the response prioritize fixes appropriately (e.g., BUILD_RULE before TEST)?"
+          weight: 2
+          rubric:
+            5: "Clear priority order with rationale (e.g., fix BUILD_RULE first as it may cascade)"
+            4: "Suggested a reasonable fix order"
+            3: "Listed all fixes without priority"
+            2: "Focused on minor issues before critical ones"
+            1: "No fix recommendations"
+      artifact_checks: []
+
+  - id: TC-004
+    name: "Business impact - realistic CI triage workflow"
+    category: business_impact
+    prompt: "/ci-signals D99999999"
+    description: "Tests the full end-to-end CI analysis workflow with a realistic multi-type failure scenario"
+    expected_behavior: "Should produce comprehensive analysis covering all failure types with reproduce commands, pattern detection, and prioritized recommendations"
+    eval_target: response
+    target_skills:
+      - fbcode/claude-templates/components/skills/ci-signals/SKILL.md
+    mock_data: |
+      Diff: D99999999
+      CI State: TEST_IN_PROGRESS_WITH_FAILURES
+      Signal counts: total=80, passed=60, failed=8, warning=4, pending=8, info=0
+      Failed signals:
+        - name: "arc-lint"
+          type: STATIC_ANALYSIS
+          status: FAILED
+          detail: "12 lint issues across 4 files"
+        - name: "UnitTest1"
+          type: TEST
+          status: FAILED
+          detail: "AssertionError: expected 42 but got 0"
+          repro: "buck test fbsource//fbandroid/javatests/com/instagram/core:UnitTest1"
+        - name: "UnitTest2"
+          type: TEST
+          status: FAILED
+          detail: "TimeoutException after 300s"
+          repro: "buck test fbsource//fbandroid/javatests/com/instagram/core:UnitTest2"
+        - name: "UnitTest3"
+          type: TEST
+          status: FAILED
+          detail: "WARNING: ThreadSanitizer: data race"
+          repro: "buck test fbcode//instagram/server:UnitTest3"
+        - name: "E2ETest"
+          type: TEST
+          status: FAILED
+          detail: "0 sub results"
+          repro: "buck test fbsource//fbandroid/javatests/com/instagram/e2e:E2ETest"
+        - name: "BuildCheck1"
+          type: BUILD_RULE
+          status: FAILED
+          detail: "Target //fbandroid/java/com/instagram/newfeature:newfeature not found"
+          repro: "buck build fbsource//fbandroid/java/com/instagram/newfeature:newfeature"
+        - name: "BuildCheck2"
+          type: BUILD_RULE
+          status: FAILED
+          detail: "Target //fbandroid/java/com/instagram/newfeature:newfeature not found"
+          repro: "buck build fbsource//fbandroid/java/com/instagram/newfeature:newfeature"
+        - name: "fbsource-target-determinator"
+          type: JOB
+          status: FAILED
+          detail: "CISignalBoxBuildDetail"
+      Warning signals:
+        - name: "Confucius Comment"
+          type: REVIEW_INSIGHTS
+          status: WARNING
+        - name: "AI Test Quality"
+          type: REVIEW_INSIGHTS
+          status: WARNING
+        - name: "lint-warning-1"
+          type: STATIC_ANALYSIS
+          status: WARNING
+        - name: "lint-warning-2"
+          type: STATIC_ANALYSIS
+          status: WARNING
+      Pending: 8 signals still running
+    intercept_patterns:
+      - "scripts/analyze_ci_signals"
+      - "scripts/query_ci_signals"
+      - "scripts/check_ci_state"
+      - "scripts/fetch_test_details"
+      - "scripts/start_deferred_tests"
+      - "scripts/query_review_insights"
+      - "meta graphql.query"
+      - "jf diff-properties"
+    intercept_mcp_tools:
+      - "mcp__plugin_meta_mux__get_phabricator_diff_details"
+    quality_criteria:
+      required_present: ["FAILED", "pending", "reproduce", "BUILD_RULE", "TEST", "STATIC_ANALYSIS", "recommendation"]
+      required_absent: ["I cannot", "error executing"]
+      semantic_checks:
+        - question: "Did the skill note that CI is still in progress (8 pending signals) and advise re-checking later?"
+          weight: 3
+          rubric:
+            5: "Explicitly noted IN_PROGRESS state, mentioned 8 pending signals, suggested re-running check_ci_state later"
+            4: "Noted CI is incomplete, suggested waiting"
+            3: "Mentioned pending signals but didn't suggest follow-up"
+            2: "Briefly mentioned incompleteness"
+            1: "Treated results as final without noting pending signals"
+        - question: "Did the response identify the root cause pattern (2 BUILD_RULE failures from same missing target)?"
+          weight: 3
+          rubric:
+            5: "Identified that both BUILD_RULE failures are from the same missing target, suggested fixing once to resolve both"
+            4: "Noted the pattern but didn't explicitly consolidate"
+            3: "Listed both individually without connecting them"
+            2: "Only mentioned one BUILD_RULE failure"
+            1: "Missed BUILD_RULE failures entirely"
+        - question: "Did the skill provide a comprehensive summary with breakdown by type and prioritized fix order?"
+          weight: 2
+          rubric:
+            5: "Clear summary table with counts by type, prioritized recommendations starting with BUILD_RULE root cause"
+            4: "Good summary with fix order"
+            3: "Summary present but no clear prioritization"
+            2: "Partial summary missing some signal types"
+            1: "No summary or organization"
+        - question: "Does this skill save significant engineering time compared to manually checking the Phabricator UI?"
+          weight: 2
+          rubric:
+            5: "Complete automation of CI triage workflow — pattern detection, deduplication, prioritization, and reproduce commands all in one call"
+            4: "Saves most of the manual work but requires some follow-up"
+            3: "Moderate time savings — equivalent to a quick UI scan"
+            2: "Minimal time savings — mostly repeats what the UI shows"
+            1: "No time savings — user still needs to do manual investigation"
+      artifact_checks: []
+
+  - id: TC-005
+    name: "Polling workflow with pending signals"
+    category: best_practices
+    prompt: "I submitted D99999999 and need to know when CI is done. Can you monitor it and tell me when it finishes?"
+    description: "Tests that the skill uses check_ci_state for polling, advises on sleep intervals, handles TEST_DEFERRED state, and correctly interprets pending vs zero-failure states. Behavioral: verifies the polling tool is actually invoked (check_ci_state, not analyze_ci_signals which is overkill for polling)."
+    expected_behavior: "Should invoke check_ci_state (the prescribed <5s polling tool), NOT analyze_ci_signals (heavier full-analysis tool). Should suggest sleep intervals (60-120s), recognize pending signals mean CI is incomplete, and load the polling_workflow reference."
+    eval_target: tool_usage
+    target_skills:
+      - fbcode/claude-templates/components/skills/ci-signals/SKILL.md
+    mock_data: |
+      Diff: D99999999
+      CI State: TEST_IN_PROGRESS_WITH_NO_FAILURES
+      Signal counts: total=35, passed=20, failed=0, warning=0, pending=15, info=0
+      No failures or warnings found yet. 15 signals still pending.
+    intercept_patterns:
+      - "scripts/analyze_ci_signals"
+      - "scripts/query_ci_signals"
+      - "scripts/check_ci_state"
+      - "scripts/fetch_test_details"
+      - "scripts/start_deferred_tests"
+      - "scripts/query_review_insights"
+      - "meta graphql.query"
+      - "jf diff-properties"
+    quality_criteria:
+      required_present: ["pending", "check_ci_state", "wait"]
+      required_absent: ["all passed", "CI is green", "no failures"]
+      semantic_checks:
+        - question: "Did the skill use check_ci_state (not analyze_ci_signals) as the primary polling command?"
+          weight: 3
+          rubric:
+            5: "Used check_ci_state as the fast polling command, explained it's the best tool for monitoring"
+            4: "Used check_ci_state but also ran analyze_ci_signals unnecessarily"
+            3: "Used analyze_ci_signals instead of check_ci_state for polling"
+            2: "Used raw GraphQL for polling"
+            1: "Didn't attempt any CI state check"
+        - question: "Did the skill correctly identify that 0 failures with 15 pending signals does NOT mean CI passed?"
+          weight: 3
+          rubric:
+            5: "Explicitly warned that 0 failures is misleading — 15 signals are still pending, CI is not complete"
+            4: "Noted CI is in progress and not yet conclusive"
+            3: "Mentioned pending signals but was ambiguous about pass/fail status"
+            2: "Implied things look good because no failures so far"
+            1: "Declared CI passed because there are 0 failures"
+        - question: "Did the skill suggest appropriate sleep intervals and a polling approach?"
+          weight: 2
+          rubric:
+            5: "Suggested 60-120s sleep intervals, offered to re-check, or loaded the polling_workflow reference for a full automated pattern"
+            4: "Suggested a reasonable wait time and offered to re-check"
+            3: "Suggested waiting but with no specific interval"
+            2: "Offered to check again immediately without waiting"
+            1: "No follow-up plan for monitoring CI progress"
+        - question: "Did the actual Bash invocation use check_ci_state (the lightweight polling tool) and NOT analyze_ci_signals (which is overkill for monitoring)?"
+          weight: 3
+          rubric:
+            5: "Invoked check_ci_state exactly; did not invoke analyze_ci_signals"
+            4: "Invoked check_ci_state primarily; one minor extra call"
+            3: "Invoked check_ci_state plus an unnecessary analyze_ci_signals call (right tool but wasted a heavy call)"
+            2: "Invoked analyze_ci_signals instead of check_ci_state for polling"
+            1: "Did not invoke any CI state script (only narrated, used raw GraphQL, or wrong script entirely)"
+      artifact_checks: []
+
+  - id: TC-006
+    name: "Deferred test triggering for draft diff"
+    category: best_practices
+    prompt: "I just created draft diff D99999999 but tests haven't started running. How do I get CI going?"
+    description: "Tests that the skill recognizes TEST_DEFERRED state and suggests start_deferred_tests or publishing the diff"
+    expected_behavior: "Should recognize TEST_DEFERRED means the diff is an unpublished draft with deferred CI, and suggest using start_deferred_tests or publishing the diff"
+    eval_target: response
+    target_skills:
+      - fbcode/claude-templates/components/skills/ci-signals/SKILL.md
+    mock_data: |
+      Diff: D99999999
+      CI State: TEST_DEFERRED
+      Signal counts: total=0, passed=0, failed=0, warning=0, pending=0, info=0
+      Tests have not started. Diff is in unpublished draft mode with deferred CI.
+    intercept_patterns:
+      - "scripts/analyze_ci_signals"
+      - "scripts/query_ci_signals"
+      - "scripts/check_ci_state"
+      - "scripts/fetch_test_details"
+      - "scripts/start_deferred_tests"
+      - "scripts/query_review_insights"
+      - "meta graphql.query"
+      - "jf diff-properties"
+    quality_criteria:
+      required_present: ["deferred", "draft"]
+      required_absent: ["all passed", "no failures found"]
+      semantic_checks:
+        - question: "Did the skill recognize TEST_DEFERRED state and explain that tests haven't started because the diff is a draft?"
+          weight: 3
+          rubric:
+            5: "Correctly identified TEST_DEFERRED, explained tests are deferred for unpublished draft diffs, and loaded the deferred_tests reference"
+            4: "Correctly identified TEST_DEFERRED and explained the draft connection"
+            3: "Noted CI hasn't started but didn't explain the deferred/draft relationship"
+            2: "Assumed infrastructure issue rather than deferred state"
+            1: "Ignored the TEST_DEFERRED state entirely"
+        - question: "Did the skill suggest start_deferred_tests to trigger CI?"
+          weight: 3
+          rubric:
+            5: "Suggested scripts/start_deferred_tests D99999999 as the primary action, noted it's for manual interactive use only"
+            4: "Suggested start_deferred_tests as an option"
+            3: "Suggested publishing the diff as the only way to trigger CI"
+            2: "Suggested re-submitting or waiting"
+            1: "No actionable suggestion for triggering CI"
+      artifact_checks: []
+
+  - id: TC-007
+    name: "Large diff with 50+ signals"
+    category: best_practices
+    prompt: "/ci-signals D99999999 — this diff has a ton of CI signals, please help me make sense of it all"
+    description: "Tests that the skill follows the large diff workflow: summary first, ask user which types to investigate, then type-filtered analysis"
+    expected_behavior: "Should get summary first with --summary-only, present breakdown by type, and either ask user which types to investigate or use --types filter for focused analysis"
+    eval_target: response
+    target_skills:
+      - fbcode/claude-templates/components/skills/ci-signals/SKILL.md
+    mock_data: |
+      Diff: D99999999
+      CI State: TEST_FINISHED_WITH_FAILURES
+      Signal counts: total=712, passed=0, failed=680, warning=32, pending=0, info=0
+      Summary:
+        BUILD_RULE: 650 failed
+        STATIC_ANALYSIS: 18 failed, 32 warning
+        TEST: 12 failed
+      Top failing pattern: 650 BUILD_RULE failures all reference missing target "//fbandroid/java/com/instagram/newfeature:newfeature"
+      Failed signals (sample):
+        - name: "BUILD_CHECK_001" through "BUILD_CHECK_650"
+          type: BUILD_RULE
+          status: FAILED
+          detail: "Target //fbandroid/java/com/instagram/newfeature:newfeature not found"
+        - name: "arc-lint"
+          type: STATIC_ANALYSIS
+          status: FAILED
+          detail: "18 lint issues across 6 files"
+        - name: "UnitTest1" through "UnitTest12"
+          type: TEST
+          status: FAILED
+          detail: "Various test failures"
+    intercept_patterns:
+      - "scripts/analyze_ci_signals"
+      - "scripts/query_ci_signals"
+      - "scripts/check_ci_state"
+      - "scripts/fetch_test_details"
+      - "scripts/start_deferred_tests"
+      - "scripts/query_review_insights"
+      - "meta graphql.query"
+      - "jf diff-properties"
+    quality_criteria:
+      required_present: ["BUILD_RULE", "650", "summary", "type"]
+      required_absent: ["I cannot", "error executing"]
+      semantic_checks:
+        - question: "Did the skill use a summary-first approach rather than dumping all 712 signals?"
+          weight: 3
+          rubric:
+            5: "Used --summary-only or presented a breakdown by type first, then offered type-filtered deep-dive — following the large_diffs reference pattern"
+            4: "Presented summary breakdown before details"
+            3: "Showed some structure but still dumped too many signals"
+            2: "Listed signals without summarization"
+            1: "Attempted to show all 712 signals at once"
+        - question: "Did the skill identify the root cause pattern (650 BUILD_RULE failures from same missing target)?"
+          weight: 3
+          rubric:
+            5: "Identified that 650 failures share the same root cause (missing target), recommended fixing once to resolve all"
+            4: "Noted the BUILD_RULE dominance and suggested it's a single root cause"
+            3: "Mentioned BUILD_RULE count but didn't consolidate as a single root cause"
+            2: "Listed BUILD_RULE as a category without pattern detection"
+            1: "Didn't surface the BUILD_RULE pattern"
+        - question: "Did the skill use --types filter or suggest filtered analysis for the remaining signal types?"
+          weight: 2
+          rubric:
+            5: "Used --types STATIC_ANALYSIS,TEST (or similar) to focus on non-BUILD_RULE signals after identifying the root cause"
+            4: "Suggested type-filtered analysis as a next step"
+            3: "Analyzed all types together without filtering"
+            2: "Only looked at one signal type"
+            1: "No type-aware analysis"
+      artifact_checks: []
+
+  - id: TC-008
+    name: "Stack fixing — bottom-up methodology"
+    category: best_practices
+    prompt: "I have a stack of 3 diffs (D99999997, D99999998, D99999999) and they all have CI failures. How should I approach fixing them?"
+    description: "Tests that the skill recommends bottom-up stack fixing methodology, explains version dynamics, and loads the stack_fixing reference"
+    expected_behavior: "Should recommend fixing the bottom diff first, explain that fixes cascade upward, mention version dynamics for bumped diffs, and reference the stack_fixing guide"
+    eval_target: response
+    target_skills:
+      - fbcode/claude-templates/components/skills/ci-signals/SKILL.md
+    mock_data: |
+      Stack (bottom to top): D99999997 → D99999998 → D99999999
+      D99999997 (bottom):
+        CI State: TEST_FINISHED_WITH_FAILURES
+        Signal counts: total=30, passed=25, failed=4, warning=1, pending=0
+        Failed: arc-lint (3 issues), BucketTest (NullPointerException), CoreUtilTest (assertion), BuildCheck (missing dep)
+      D99999998 (middle):
+        CI State: TEST_FINISHED_WITH_FAILURES
+        Signal counts: total=28, passed=24, failed=3, warning=1, pending=0
+        Failed: arc-lint (2 issues), WidgetTest (timeout), same BuildCheck as D99999997
+      D99999999 (top):
+        CI State: TEST_FINISHED_WITH_FAILURES
+        Signal counts: total=32, passed=27, failed=4, warning=1, pending=0
+        Failed: arc-lint (4 issues), FeatureTest (crash), WidgetTest (timeout), same BuildCheck
+    intercept_patterns:
+      - "scripts/analyze_ci_signals"
+      - "scripts/query_ci_signals"
+      - "scripts/check_ci_state"
+      - "scripts/fetch_test_details"
+      - "scripts/start_deferred_tests"
+      - "scripts/query_review_insights"
+      - "meta graphql.query"
+      - "jf diff-properties"
+    quality_criteria:
+      required_present: ["bottom", "stack", "fix"]
+      required_absent: ["I cannot", "fix all at once"]
+      semantic_checks:
+        - question: "Did the skill recommend fixing the bottom diff (D99999997) first?"
+          weight: 3
+          rubric:
+            5: "Explicitly recommended bottom-up approach: fix D99999997 first, explained that fixes cascade upward through the stack on rebase"
+            4: "Recommended starting at the bottom with some explanation"
+            3: "Suggested an order but not clearly bottom-up"
+            2: "Suggested fixing all diffs simultaneously"
+            1: "Suggested starting from the top or random order"
+        - question: "Did the skill explain version dynamics — that bumped diffs get new versions but their previous version CI is already available?"
+          weight: 3
+          rubric:
+            5: "Explained that after fixing a lower diff, upper diffs get bumped versions, and you should check the previous version's CI (already completed) rather than waiting for new CI"
+            4: "Mentioned version bumping and previous version CI"
+            3: "Mentioned that resubmitting affects the stack but didn't explain previous version CI"
+            2: "Suggested waiting for all CI to re-run"
+            1: "Didn't address version dynamics at all"
+        - question: "Did the skill identify that the BuildCheck failure appears across multiple diffs (likely cascading from bottom)?"
+          weight: 2
+          rubric:
+            5: "Identified the shared BuildCheck failure as likely cascading from the bottom diff, recommended fixing it once at D99999997"
+            4: "Noted the shared failure across diffs"
+            3: "Listed failures per diff without cross-referencing"
+            2: "Only looked at one diff's failures"
+            1: "Didn't survey the full stack"
+      artifact_checks: []
+
+  - id: TC-009
+    name: "Previous version CI querying"
+    category: best_practices
+    prompt: "I just resubmitted D99999999 and the new version shows 0 failures but CI is still running. The previous version had 3 failures. Did my fix work?"
+    description: "Tests that the skill knows to check previous version CI for comparison and doesn't assume 0 failures on a running version means success"
+    expected_behavior: "Should warn that 0 failures on IN_PROGRESS CI is not conclusive, suggest checking previous version's completed CI for comparison, and explain how to query previous versions"
+    eval_target: response
+    target_skills:
+      - fbcode/claude-templates/components/skills/ci-signals/SKILL.md
+    mock_data: |
+      Diff: D99999999
+      Current version (V3):
+        CI State: TEST_IN_PROGRESS_WITH_NO_FAILURES
+        Signal counts: total=40, passed=12, failed=0, warning=0, pending=28, info=0
+      Previous version (V2):
+        CI State: TEST_FINISHED_WITH_FAILURES
+        Signal counts: total=40, passed=37, failed=3, warning=0, pending=0, info=0
+        Failed signals:
+          - name: "CoreTest" type: TEST detail: "AssertionError at CoreTest.java:42"
+          - name: "UtilTest" type: TEST detail: "NullPointerException at UtilHelper.java:88"
+          - name: "arc-lint" type: STATIC_ANALYSIS detail: "2 lint issues"
+      Version history: V1 (id=111), V2 (id=222), V3 (id=333, current)
+    intercept_patterns:
+      - "scripts/analyze_ci_signals"
+      - "scripts/query_ci_signals"
+      - "scripts/check_ci_state"
+      - "scripts/fetch_test_details"
+      - "scripts/start_deferred_tests"
+      - "scripts/query_review_insights"
+      - "meta graphql.query"
+      - "jf diff-properties"
+    quality_criteria:
+      required_present: ["pending", "previous", "version"]
+      required_absent: ["fix worked", "all passing"]
+      semantic_checks:
+        - question: "Did the skill warn that 0 failures with 28 pending signals is NOT conclusive?"
+          weight: 3
+          rubric:
+            5: "Explicitly stated that 0 failures with 28 pending signals means tests haven't run yet, not that they passed — loaded the polling or previous_versions reference"
+            4: "Warned about pending signals making the result inconclusive"
+            3: "Mentioned pending signals but was ambiguous"
+            2: "Implied the fix likely worked based on current results"
+            1: "Declared the fix worked because there are 0 failures"
+        - question: "Did the skill explain how to query the previous version's CI for comparison?"
+          weight: 3
+          rubric:
+            5: "Explained using author_relevant_phabricator_versions to list versions, then querying signalview_signals with the previous version ID — or referenced the previous_versions guide"
+            4: "Suggested checking previous version CI with some detail on how"
+            3: "Mentioned previous version exists but didn't explain how to query it"
+            2: "Only focused on the current version"
+            1: "Didn't mention previous versions at all"
+        - question: "Did the skill suggest waiting for current CI to complete before drawing conclusions?"
+          weight: 2
+          rubric:
+            5: "Recommended waiting for V3 CI to complete, suggested using check_ci_state to monitor, and said to compare results against V2 failures once done"
+            4: "Suggested waiting and re-checking"
+            3: "Mentioned waiting but no specific plan"
+            2: "Suggested immediate action based on incomplete data"
+            1: "No follow-up recommendation"
+      artifact_checks: []
+
+  - id: TC-010
+    name: "Review insights — Confucius and AI Test Quality"
+    category: best_practices
+    prompt: "D99999999 has some review insight warnings. Can you check what Confucius and the AI Test Quality check say about my diff?"
+    description: "Tests that the skill uses query_review_insights to fetch review insights and presents Confucius Comments and AI Test Quality results"
+    expected_behavior: "Should use scripts/query_review_insights to get review insights, present Confucius Comments with summary/recommendation/risk level, and show AI Test Quality findings"
+    eval_target: response
+    target_skills:
+      - fbcode/claude-templates/components/skills/ci-signals/SKILL.md
+    mock_data: |
+      Diff: D99999999
+      CI State: TEST_FINISHED_ALL_PASSED
+      Signal counts: total=25, passed=25, failed=0, warning=2, pending=0, info=0
+      Warning signals:
+        - name: "Confucius Comment"
+          type: REVIEW_INSIGHTS
+          status: WARNING
+          detail: "**Summary:** The diff removes error handling in the payment flow, which could cause silent failures.\n\n**Recommendation:** Reject - The removed try-catch block handles a known race condition in the checkout service.\n\n**Risk Level:** High - Could cause data loss in production.\n\n**Affected Files:** PaymentProcessor.java:142-158"
+        - name: "AI Test Quality"
+          type: REVIEW_INSIGHTS
+          status: WARNING
+          detail: "Test coverage for changed files dropped from 85% to 62%. Missing tests for: PaymentProcessor.processRefund(), PaymentValidator.checkLimits()"
+    intercept_patterns:
+      - "scripts/analyze_ci_signals"
+      - "scripts/query_ci_signals"
+      - "scripts/check_ci_state"
+      - "scripts/fetch_test_details"
+      - "scripts/start_deferred_tests"
+      - "scripts/query_review_insights"
+      - "meta graphql.query"
+      - "jf diff-properties"
+    quality_criteria:
+      required_present: ["Confucius", "review", "insight"]
+      required_absent: ["I cannot", "error executing"]
+      semantic_checks:
+        - question: "Did the skill use scripts/query_review_insights to fetch review insight details?"
+          weight: 3
+          rubric:
+            5: "Used scripts/query_review_insights D99999999 as the primary command for fetching review insights, loaded the review_insights reference"
+            4: "Used query_review_insights to get insights"
+            3: "Used analyze_ci_signals which showed warnings but didn't drill into review insights specifically"
+            2: "Used raw GraphQL to query review insights"
+            1: "Didn't attempt to fetch review insight details"
+        - question: "Did the skill clearly present the Confucius Comment findings including risk level and recommendation?"
+          weight: 3
+          rubric:
+            5: "Presented the Confucius Comment with summary, recommendation (Reject), risk level (High), and affected files — highlighted the actionable warning about removed error handling"
+            4: "Presented most Confucius findings with recommendation"
+            3: "Showed the Confucius Comment but missed key details like risk level"
+            2: "Only mentioned that a Confucius Comment exists"
+            1: "Ignored the Confucius Comment"
+        - question: "Did the skill present the AI Test Quality findings and suggest action?"
+          weight: 2
+          rubric:
+            5: "Presented test coverage drop (85% → 62%), listed missing test coverage areas, and suggested adding tests"
+            4: "Presented test quality findings with some suggestions"
+            3: "Mentioned test quality warning but without specific details"
+            2: "Only noted a warning exists"
+            1: "Ignored the AI Test Quality warning"
+      artifact_checks: []
+
+  - id: TC-011
+    name: "Raw GraphQL fallback — truncated detail_short"
+    category: best_practices
+    prompt: "I'm looking at the CI failures on D99999999 but the error messages seem truncated. The test output just cuts off mid-traceback. How can I get the full error?"
+    description: "Tests that the skill knows about detail vs detail_short distinction and suggests raw GraphQL with the detail field for untruncated output"
+    expected_behavior: "Should explain that detail_short truncates at ~2KB, suggest using raw GraphQL with the detail field, or fetch_test_details for TSAN/ASAN artifacts"
+    eval_target: response
+    target_skills:
+      - fbcode/claude-templates/components/skills/ci-signals/SKILL.md
+    mock_data: |
+      Diff: D99999999
+      CI State: TEST_FINISHED_WITH_FAILURES
+      Signal counts: total=20, passed=18, failed=2, warning=0, pending=0, info=0
+      Failed signals:
+        - name: "IntegrationTest"
+          type: TEST
+          status: FAILED
+          detail_short: "java.lang.RuntimeException: Failed to initialize component\n  at com.instagram.foo.FooComponent.init(FooComponent.java:42)\n  at com.instagram.foo.FooModule.setup(FooModule.java:88)\n  at com.instagram.foo.FooService.start(FooService.java:120)\n  ... (output truncated at 2KB, full traceback not shown)"
+          repro: "buck test fbsource//fbandroid/javatests/com/instagram/foo:IntegrationTest"
+        - name: "EndToEndTest"
+          type: TEST
+          status: FAILED
+          detail_short: "TIMEOUT after 300s — test did not complete\n  Last output: Starting test setup...\n  Connecting to test backend...\n  ... (output truncated)"
+          repro: "buck test fbsource//fbandroid/javatests/com/instagram/e2e:EndToEndTest"
+    intercept_patterns:
+      - "scripts/analyze_ci_signals"
+      - "scripts/query_ci_signals"
+      - "scripts/check_ci_state"
+      - "scripts/fetch_test_details"
+      - "scripts/start_deferred_tests"
+      - "scripts/query_review_insights"
+      - "meta graphql.query"
+      - "jf diff-properties"
+    quality_criteria:
+      required_present: ["truncat", "detail", "GraphQL"]
+      required_absent: ["I cannot"]
+      semantic_checks:
+        - question: "Did the skill explain the detail_short vs detail distinction and why output is truncated?"
+          weight: 3
+          rubric:
+            5: "Explained that analyze_ci_signals and MCP use detail_short which truncates at ~2KB, and that the full untruncated output is available via the detail field in direct GraphQL — loaded the raw_graphql reference"
+            4: "Explained truncation and suggested direct GraphQL"
+            3: "Noted truncation but didn't explain the detail/detail_short distinction"
+            2: "Suggested re-running the test locally as the only option"
+            1: "Didn't address the truncation concern"
+        - question: "Did the skill provide a concrete way to get full error output (raw GraphQL query or fetch_test_details)?"
+          weight: 3
+          rubric:
+            5: "Provided the raw GraphQL query pattern with CISignalBoxTestDetail and the detail field, or suggested fetch_test_details for downloading full test artifacts"
+            4: "Provided one concrete method to get full output"
+            3: "Suggested using GraphQL but without specific query structure"
+            2: "Only suggested reproduce commands"
+            1: "No concrete solution for getting full output"
+      artifact_checks: []

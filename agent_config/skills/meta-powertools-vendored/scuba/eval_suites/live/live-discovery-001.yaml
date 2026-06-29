@@ -1,0 +1,31 @@
+id: live-discovery-001
+suite: live
+project: scuba-evals
+description: Tests real dataset discovery and schema inspection for scuba_queries
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "An engineer wants to explore what data is available in the scuba_queries dataset."
+question: "What columns are available in the scuba_queries dataset? Show me the column names, types, and any format info."
+
+critical_requirements:
+  - id: calls_dataset_info
+    type: tool_called
+    tool_name: Bash
+    description: "Agent calls meta scuba.dataset info to inspect the schema"
+    arguments:
+      command: "meta scuba.dataset info"
+  - id: presents_columns
+    description: "Agent presents column information"
+    check: "Response includes a structured list or table of column names with their types. Must include at least cpu_time and query_source."
+
+quality_factors:
+  - id: shows_format_info
+    description: "Includes format metadata (e.g., %M for milliseconds) for time-related columns"
+    weight: 0.4
+  - id: organized_presentation
+    description: "Columns are presented in an organized format (table, grouped by type, etc.) rather than a raw dump"
+    weight: 0.3
+  - id: notes_column_count
+    description: "Mentions the total number of columns available in the dataset"
+    weight: 0.3

@@ -1,0 +1,35 @@
+id: gdocs-search-002
+name: Search by author
+category: search
+prompt: Find Google Docs created by janedoe
+description: Tests searching for docs filtered by author
+expected_behavior: Agent filters search results by author
+eval_target: response
+mock_data: |
+  Search results for author janedoe:
+    - title: "Sprint Retro Notes", author: janedoe, created: 2026-03-10, url: https://docs.google.com/document/d/1retro001/edit
+    - title: "Team Onboarding Guide", author: janedoe, created: 2026-02-20, url: https://docs.google.com/document/d/1onboard001/edit
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent search for and return docs by janedoe?
+    weight: 3
+    rubric:
+      5: Agent searched with author filter and returned docs by janedoe
+      3: Agent returned results but author filtering was unclear
+      1: Agent did not search for documents
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

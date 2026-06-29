@@ -1,0 +1,523 @@
+# Scuba Skill Evaluation Criteria
+# Generated: 2026-03-19
+# Updated: 2026-03-19 — calibrated to skill's actual behavior and real dataset schemas
+# Mode: THOROUGH (16 test cases, 5 dimensions)
+
+default_working_directory: ~/fbsource/fbcode
+project: scuba
+
+test_cases:
+
+  # ============================================================
+  # INVOCATION (3 tests — 19%)
+  # ============================================================
+
+  - id: TC-001
+    name: "Natural language invocation — dataset discovery and query"
+    category: invocation
+    prompt: "I want to understand error rates and latency for our service router over the past day. Can you find the right dataset and show me the top error types?"
+    description: "Tests whether the scuba skill triggers from natural language about log/metric analysis without mentioning scuba or the skill name. Should use find_dataset, then dataset_info, then execute_query."
+    expected_behavior: "Skill should activate, use find_dataset to discover the relevant dataset, explore its columns via dataset_info, then execute a grouped query on error types."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/scuba/SKILL.md"
+    quality_criteria:
+      required_present: ["dataset", "error"]
+      required_absent: ["I cannot", "I don't have access", "not available"]
+      semantic_checks:
+        - question: "Did the skill activate from natural language without the user mentioning scuba or using /scuba?"
+          weight: 3
+          rubric:
+            5: "Activated immediately, recognized this as a Scuba workflow, used find_dataset or dataset_info"
+            4: "Activated and used Scuba tools but skipped dataset discovery (guessed the dataset name)"
+            3: "Activated but required user to confirm Scuba usage before proceeding"
+            2: "Partially recognized intent but suggested a different tool (daiquery, Hive, etc.)"
+            1: "Did not activate — gave a generic response or asked what tool to use"
+        - question: "Did the skill follow a multi-step workflow (discovery → exploration → query)?"
+          weight: 2
+          rubric:
+            5: "Followed find_dataset -> dataset_info -> execute_query workflow"
+            4: "Used find_dataset and execute_query but skipped dataset_info"
+            3: "Skipped find_dataset, went directly to execute_query with a guessed dataset name"
+            2: "Used only one API call without a multi-step workflow"
+            1: "Did not use Scuba APIs at all"
+
+  - id: TC-002
+    name: "Explicit invocation — time series latency query"
+    category: invocation
+    prompt: "/scuba Show me the p95 CPU time trend for scuba_queries over the last week, broken down hourly"
+    description: "Tests whether the skill constructs a correct time_series query with percentile metrics when explicitly invoked."
+    expected_behavior: "Skill should construct a time_series execute_query call with metric p95, columns cpu_time, appropriate time_bucket and start_time."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/scuba/SKILL.md"
+    mock_data:
+      scuba_queries:
+        columns: ["cpu_time", "query_type", "table", "source"]
+        sample_rows:
+          - { cpu_time: 15000, query_type: "sql", table: "scuba_queries", source: "graphql" }
+          - { cpu_time: 8500, query_type: "metadata", table: "events", source: "cli" }
+    quality_criteria:
+      required_present: ["p95", "cpu_time"]
+      required_absent: ["I cannot", "not supported"]
+      semantic_checks:
+        - question: "Did the skill construct a time_series query with p95 metric and cpu_time column?"
+          weight: 3
+          rubric:
+            5: "Used view: time_series, metric: p95, columns including cpu_time, with time_bucket and start_time"
+            4: "Correct view and metric but minor time parameter imprecision"
+            3: "Used execute_query with p95 metric for cpu_time, even if view was not explicitly time_series"
+            2: "Used table view instead of time_series, or wrong metric type"
+            1: "Did not construct a Scuba query at all"
+
+  - id: TC-003
+    name: "Negative invocation — unrelated prompt should NOT trigger"
+    category: invocation
+    prompt: "Can you help me write a Python function that parses CSV files and computes rolling averages?"
+    description: "Tests that the scuba skill does NOT trigger on a request that is purely about writing code with no data/log/metric investigation aspect."
+    expected_behavior: "The skill should NOT activate. The response should be about Python code, not about Scuba queries."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/scuba/SKILL.md"
+    quality_criteria:
+      required_present: ["python", "csv"]
+      required_absent: []
+      semantic_checks:
+        - question: "Did the skill correctly NOT activate for this unrelated request?"
+          weight: 3
+          rubric:
+            5: "No Scuba tools invoked, response is purely about Python CSV parsing"
+            4: "No Scuba tools invoked but briefly mentioned Scuba as an alternative"
+            3: "Mentioned Scuba but did not invoke any tools"
+            2: "Invoked a Scuba tool despite the request being about Python code"
+            1: "Fully activated Scuba workflow for an unrelated coding request"
+        - question: "Was the response helpful for the actual request (Python CSV parsing)?"
+          weight: 2
+          rubric:
+            5: "Provided correct, working Python code for CSV parsing with rolling averages"
+            4: "Provided mostly correct code with minor issues"
+            3: "Partial code or incomplete solution"
+            2: "Response was confused between Scuba and Python"
+            1: "No useful response"
+
+  # ============================================================
+  # EFFICIENCY (4 tests — 25%)
+  # ============================================================
+
+  - id: TC-004
+    name: "Efficiency — filtered aggregation with known dataset"
+    category: efficiency
+    prompt: "/scuba Show me the count of events in scuba_queries grouped by table for the last 3 hours, filtered to only SQL query types"
+    description: "Tests efficient tool usage when dataset and group_by column are both specified. The skill should call column_values for query_type (Rule 1), then execute_query with constraints_json. A dataset_info call to verify columns is acceptable per Rule 3."
+    expected_behavior: "Should call column_values for query_type (Rule 1), then execute_query with constraints_json. An optional dataset_info to verify 'table' column exists (Rule 3) is acceptable. Total: 2-3 Scuba API calls."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/scuba/SKILL.md"
+    quality_criteria:
+      required_present: ["count", "table", "sql"]
+      required_absent: []
+      semantic_checks:
+        - question: "Did the skill complete the task with a reasonable number of tool calls (2-3 Scuba API calls)?"
+          weight: 3
+          rubric:
+            5: "2-3 Scuba API calls total: column_values + execute_query, optionally dataset_info for column validation"
+            4: "3-4 calls with one extra exploratory call that was still useful"
+            3: "4-5 calls with some redundancy but all contributed to the result"
+            2: "5+ calls with clear redundancy (repeated queries, retries due to wrong column names)"
+            1: "Many unnecessary calls or failed to complete the task"
+        - question: "Did the skill use constraints_json correctly with the exact value from column_values?"
+          weight: 2
+          rubric:
+            5: "Used the exact value returned by column_values (e.g., 'sql') in constraints_json with correct op (eq)"
+            4: "Correct constraint structure but minor formatting issue"
+            3: "Used constraints_json but guessed the value instead of using column_values result"
+            2: "Used filter_sql instead of constraints_json for a simple equality filter"
+            1: "No filtering applied or wrong constraint format"
+
+  - id: TC-005
+    name: "Efficiency — URL parse and re-execute"
+    category: efficiency
+    prompt: "/scuba Parse this Scuba URL and re-run the query: https://www.internalfb.com/intern/scuba/query/?dataset=scuba_queries&drillstate=eyJjb2wiOiJkYXRhc2V0IiwibWV0cmljIjoiQ09VTlQifQ%3D%3D"
+    description: "Tests efficient URL parsing and re-execution. Should use parse_url then execute_query. 2-3 calls is efficient."
+    expected_behavior: "Should call parse_url to extract parameters_json, then execute_query with those parameters. 2-3 total calls."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/scuba/SKILL.md"
+    mock_data:
+      parse_url_result:
+        dataset: "scuba_queries"
+        metric: "COUNT"
+        group_by: ["dataset"]
+    quality_criteria:
+      required_present: ["scuba_queries"]
+      required_absent: []
+      semantic_checks:
+        - question: "Did the skill parse the URL and produce query results in 2-3 Scuba API calls?"
+          weight: 3
+          rubric:
+            5: "Parsed URL via parse_url and re-executed via execute_query with correct results in 2-3 calls"
+            4: "Parsed and re-executed but with one extra exploratory call (3-4 total)"
+            3: "Parsed the URL and attempted to re-execute, even if parameter mapping had minor issues"
+            2: "Parsed the URL but could not produce results"
+            1: "Could not parse the URL or gave up"
+
+  - id: TC-015
+    name: "Efficiency — command construction without execution"
+    category: efficiency
+    prompt: "/scuba Build me the GraphQL command to query scuba_queries for COUNT grouped by table, filtered to query_type=sql, for the last 24 hours. Don't execute it, just show me the command."
+    description: "Tests that the skill can construct commands without executing them. Should show the jf graphql command with execute: false or simply present the command string without running it."
+    expected_behavior: "Should construct the jf graphql command with correct parameters and present it without executing. No query results should appear in the response."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/scuba/SKILL.md"
+    quality_criteria:
+      required_present: ["jf graphql", "scuba_queries", "COUNT"]
+      required_absent: ["rows returned"]
+      semantic_checks:
+        - question: "Did the skill return the constructed command without executing it?"
+          weight: 3
+          rubric:
+            5: "Returned the full jf graphql command string with correct parameters, did NOT execute it"
+            4: "Returned the command but also mentioned it could be executed"
+            3: "Returned the command but also executed it unnecessarily"
+            2: "Executed the command despite user asking not to"
+            1: "Did not construct a command at all"
+        - question: "Was the constructed command syntactically correct?"
+          weight: 2
+          rubric:
+            5: "Command includes: dataset scuba_queries, metric COUNT, group_by table, constraints_json for query_type=sql, hours 24"
+            4: "Command correct but missing one parameter"
+            3: "Command has the right structure but wrong parameter values"
+            2: "Command has significant syntax errors"
+            1: "Not a valid jf graphql command"
+
+  - id: TC-016
+    name: "Efficiency — simple count query with known dataset"
+    category: efficiency
+    prompt: "/scuba Show me the count of events in scuba_queries grouped by query_type for the last 1 hour"
+    description: "Tests efficiency for the simplest possible query — no filters, known dataset, known column. Should produce results with minimal calls (1-2 Scuba API calls)."
+    expected_behavior: "Should call execute_query with dataset scuba_queries, metric COUNT, group_by [query_type], hours 1. Optionally one dataset_info call. Total: 1-2 calls."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/scuba/SKILL.md"
+    quality_criteria:
+      required_present: ["query_type", "count"]
+      required_absent: []
+      semantic_checks:
+        - question: "Did the skill complete the simple query with minimal tool calls (1-2 Scuba API calls)?"
+          weight: 3
+          rubric:
+            5: "1-2 jf graphql calls: execute_query directly, optionally one dataset_info"
+            4: "2-3 calls with one extra exploratory call"
+            3: "3-4 calls with some redundancy"
+            2: "5+ calls for a simple query"
+            1: "Failed to complete or took many unnecessary calls"
+        - question: "Did the skill present clear, formatted results?"
+          weight: 2
+          rubric:
+            5: "Results shown in a clear table or list with query_type and count values"
+            4: "Results shown but formatting could be improved"
+            3: "Results partially shown or hard to read"
+            2: "Raw JSON output without interpretation"
+            1: "No results presented"
+
+  # ============================================================
+  # BEST PRACTICES (4 tests — 25%)
+  # ============================================================
+
+  - id: TC-006
+    name: "Best practices — Critical Rule 1 compliance (column_values before filtering)"
+    category: best_practices
+    prompt: "/scuba Query scuba_queries for the average cpu_time grouped by source, filtered to source = 'graphql', for the last 6 hours"
+    description: "Tests adherence to Critical Rule 1: check column_values before filtering on string columns. Should call column_values for source to get exact filter value before execute_query."
+    expected_behavior: "Should call column_values for source (Rule 1) to get exact filter value, then execute_query with constraints_json using that value."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/scuba/SKILL.md"
+    mock_data:
+      scuba_queries:
+        columns: ["cpu_time", "source", "query_type", "table"]
+        column_values_source: ["graphql", "cli", "metadata", "api"]
+    quality_criteria:
+      required_present: ["source", "cpu_time"]
+      required_absent: []
+      semantic_checks:
+        - question: "Did the skill check column_values for source before using it as a filter value?"
+          weight: 3
+          rubric:
+            5: "Called column_values for source, used exact returned value in constraints_json"
+            4: "Called column_values but used a slightly different value than returned"
+            3: "Called dataset_info or column_values for any column before filtering, showing awareness of validation"
+            2: "Guessed the filter value without checking column_values"
+            1: "No awareness of Critical Rule 1"
+
+  - id: TC-007
+    name: "Best practices — choosing CLI for JOIN queries"
+    category: best_practices
+    prompt: "/scuba Build me the scuba CLI command for a JOIN query between scuba_queries and scuba_tables on the table column. Don't execute it, just show me the command."
+    description: "Tests whether the skill correctly identifies that JOINs require CLI (scuba -e) since GraphQL does not support JOINs."
+    expected_behavior: "Should construct a scuba -e (CLI) command with JOIN syntax, not use GraphQL execute_query."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/scuba/SKILL.md"
+    mock_data:
+      scuba_queries:
+        columns: ["table", "dataset", "query_type", "source"]
+    quality_criteria:
+      required_present: ["join"]
+      required_absent: []
+      semantic_checks:
+        - question: "Did the skill construct a CLI (scuba -e) command for the JOIN query?"
+          weight: 3
+          rubric:
+            5: "Constructed scuba -e command with JOIN syntax"
+            4: "Used CLI for JOIN but minor syntax issue"
+            3: "Recognized that JOIN needs CLI and attempted scuba -e, even with significant syntax errors"
+            2: "Attempted JOIN via GraphQL execute_query"
+            1: "Did not attempt the JOIN at all"
+
+  - id: TC-013
+    name: "Best practices — natural language to constraints_json with multiple operators"
+    category: best_practices
+    prompt: "/scuba Query scuba_queries for the count of events over the last 4 hours, but filter to only rows where query_type equals 'sql' AND source does not equal 'metadata' AND table contains the substring 'scuba'"
+    description: "Tests whether the skill correctly translates multiple natural language filter conditions into constraints_json with different operators: eq for equals, neq for not-equals, substr for substring. Should use column_values (Rule 1) before constructing constraints."
+    expected_behavior: "Should check column_values for query_type, source, and table (Rule 1), then build constraints_json with three entries using ops eq, neq, and substr respectively, then execute_query."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/scuba/SKILL.md"
+    quality_criteria:
+      required_present: ["query_type"]
+      required_absent: []
+      semantic_checks:
+        - question: "Did the skill apply all three filter conditions and produce correct results?"
+          weight: 3
+          rubric:
+            5: "All three filters applied (query_type=sql, source!=metadata, table contains scuba) and results returned"
+            4: "All three filters attempted, results returned, minor issue with one filter"
+            3: "Two of three filters applied correctly"
+            2: "Only one filter applied"
+            1: "No filtering applied or wrong approach entirely"
+        - question: "Did the skill produce a result with the correct dataset and time range?"
+          weight: 2
+          rubric:
+            5: "Queried scuba_queries for the last 4 hours and presented count results"
+            4: "Correct dataset but minor time range issue"
+            3: "Correct dataset but results not clearly presented"
+            2: "Wrong dataset or fundamentally wrong query"
+            1: "No results produced"
+
+  - id: TC-014
+    name: "Best practices — format conversion awareness (Critical Rule 2)"
+    category: best_practices
+    prompt: "/scuba Query scuba_queries for the average cpu_time grouped by query_type for the last 2 hours. Make sure to tell me what unit the values are in and convert them to human-readable form."
+    description: "Tests explicit Critical Rule 2 compliance: the skill must check the column format via dataset_info and convert raw values to human-readable units when presenting results."
+    expected_behavior: "Should call dataset_info to discover cpu_time format, then execute_query for AVG cpu_time by query_type, then present results with appropriate unit conversion applied."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/scuba/SKILL.md"
+    quality_criteria:
+      required_present: ["cpu_time", "format"]
+      required_absent: ["traceback"]
+      semantic_checks:
+        - question: "Did the skill check the cpu_time column format via dataset_info before presenting results?"
+          weight: 3
+          rubric:
+            5: "Called dataset_info, identified the format code in columns_csv, stated the unit, and converted values in presentation"
+            4: "Checked format and converted but minor explanation gap"
+            3: "Mentioned format checking but did not verify via dataset_info"
+            2: "Presented raw values and guessed the unit"
+            1: "No format awareness — presented raw numbers without any unit context"
+        - question: "Were the converted values presented with correct units?"
+          weight: 2
+          rubric:
+            5: "Values correctly converted with unit label (e.g., milliseconds → seconds for %M)"
+            4: "Conversion applied but rounding imprecision"
+            3: "Correct conversion direction but wrong divisor"
+            2: "No conversion applied despite identifying the format"
+            1: "Wrong conversion or completely incorrect math"
+
+  # ============================================================
+  # BUSINESS IMPACT (1 test — 6%)
+  # ============================================================
+
+  - id: TC-008
+    name: "Business impact — end-to-end latency investigation with derived columns"
+    category: business_impact
+    prompt: "/scuba I'm investigating CPU time patterns in scuba_queries. I need to: (1) check p95 cpu_time trend over the last 48 hours broken down hourly by query_type, (2) compute a derived column showing the ratio of sql queries to total queries as a percentage, and (3) give me a shareable URL for the final query so I can share with the team"
+    description: "Tests a realistic multi-step investigation using the known-accessible scuba_queries dataset. Exercises time series analysis, derived column creation with validation (Rule 4), and URL generation."
+    expected_behavior: "Should use dataset_info to check columns/format, execute_query (time_series p95 by query_type), validate_derived_column for the ratio expression, execute_query with derived_cols_json and include_url: true."
+    eval_target: all
+    target_skills:
+      - "fbcode/claude-templates/components/skills/scuba/SKILL.md"
+    quality_criteria:
+      required_present: ["p95", "cpu_time"]
+      required_absent: []
+      semantic_checks:
+        - question: "How much manual investigation time does this skill automate?"
+          weight: 3
+          rubric:
+            5: "Replaces 20+ minutes of manual work: schema exploration, query building, derived column trial-and-error, URL generation — all done in one conversation"
+            4: "Replaces 10-20 minutes, most steps automated but one required manual follow-up"
+            3: "Replaces 5-10 minutes, core query was automated but derived column or URL needed manual work"
+            2: "Saves a few minutes at most"
+            1: "No meaningful time savings"
+        - question: "Did the skill validate the derived column expression before executing (Critical Rule 4)?"
+          weight: 3
+          rubric:
+            5: "Called validate_derived_column with the ratio expression and correct type (Aggregated), confirmed valid, then used in execute_query"
+            4: "Validated but did not call get_supported_udfs first to confirm function availability"
+            3: "Skipped validation, went directly to execute_query with derived_cols_json"
+            2: "Used derived_cols_json but with wrong type or invalid expression"
+            1: "Did not attempt derived columns at all"
+        - question: "Did the skill generate a shareable URL only when explicitly requested (best practice 6)?"
+          weight: 2
+          rubric:
+            5: "Used include_url: true ONLY for the final query where user asked for it, not for intermediate queries"
+            4: "Generated URL for the final query but also for an intermediate query"
+            3: "Generated URL but forgot to include scuba_url in the output fields"
+            2: "Generated URLs for all queries regardless of whether user asked"
+            1: "Did not generate a URL despite user explicitly requesting one"
+
+  # ============================================================
+  # TASK COMPLETION (4 tests — 25%)
+  # ============================================================
+
+  - id: TC-009
+    name: "Task completion — regex filtering with approximate distinct count"
+    category: task_completion
+    prompt: "/scuba In the scuba_queries dataset, I want to see the approximate number of distinct sources per query_type for queries where the table column matches the regex pattern '.*scuba.*' (case-insensitive) over the last 24 hours."
+    description: "Tests end-to-end completion of a complex query using real scuba_queries columns: regeq constraint for case-insensitive regex on 'table', and approxcountdistinct metric or APPROX_COUNT_DISTINCT_HLL derived column for distinct sources."
+    expected_behavior: "Should: (1) validate columns via dataset_info, (2) use regeq constraint for case-insensitive regex on table, (3) use metric approxcountdistinct with columns [source] or a derived column with APPROX_COUNT_DISTINCT_HLL, (4) group_by query_type, (5) execute and present results."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/scuba/SKILL.md"
+    quality_criteria:
+      required_present: ["distinct", "regex", "query_type"]
+      required_absent: []
+      semantic_checks:
+        - question: "Did the skill use regeq constraint for case-insensitive regex matching?"
+          weight: 3
+          rubric:
+            5: "Used constraints_json with op: regeq for case-insensitive matching on the table column"
+            4: "Used regeq but with minor regex pattern issue"
+            3: "Used filter_sql with REGEXP_IMATCH — correct semantics but not the recommended approach"
+            2: "Used REGEXP_MATCH (case-sensitive) despite request for case-insensitive"
+            1: "No regex filtering applied"
+        - question: "Did the skill correctly implement approximate distinct counting?"
+          weight: 3
+          rubric:
+            5: "Used metric approxcountdistinct with columns [source], or derived column with APPROX_COUNT_DISTINCT_HLL type Aggregated"
+            4: "Correct distinct count setup but skipped validation"
+            3: "Used a simpler COUNT approach that doesn't give distinct counts"
+            2: "Attempted but wrong metric or expression type"
+            1: "Did not implement distinct count at all"
+        - question: "Did the skill complete the full task end-to-end with results?"
+          weight: 2
+          rubric:
+            5: "All steps completed: column validation, regex filter, distinct count, results presented and interpreted"
+            4: "Query executed with results but skipped one preparatory step"
+            3: "Query executed but results were not interpreted clearly"
+            2: "Query built but not executed, or execution failed"
+            1: "Task not completed"
+
+  - id: TC-010
+    name: "Task completion — edge case with malformed URL and error recovery"
+    category: task_completion
+    prompt: "/scuba Load this Scuba URL, tell me what query it represents, and re-run it with an additional filter for the last 12 hours: https://www.internalfb.com/intern/scuba/query/?dataset=nonexistent_dataset_xyz_12345&drillstate=INVALID_BASE64_DATA"
+    description: "Tests graceful error handling when parse_url encounters a malformed URL with a nonexistent dataset and invalid drillstate encoding."
+    expected_behavior: "Should attempt parse_url, handle the error response gracefully, inform the user about the invalid URL/dataset, and suggest alternatives."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/scuba/SKILL.md"
+    quality_criteria:
+      required_present: ["invalid", "URL"]
+      required_absent: ["traceback", "unhandled exception"]
+      semantic_checks:
+        - question: "Did the skill handle the parse_url error gracefully without crashing?"
+          weight: 3
+          rubric:
+            5: "Called parse_url, detected the error, clearly explained what went wrong, and suggested concrete next steps"
+            4: "Handled error gracefully and explained the issue but did not suggest next steps"
+            3: "Detected the error but gave a generic error message"
+            2: "Reported raw error output without interpretation"
+            1: "Crashed, showed traceback, or silently ignored the error"
+        - question: "Did the skill offer constructive recovery paths?"
+          weight: 2
+          rubric:
+            5: "Offered multiple recovery options: verify URL, use find_dataset, manually specify parameters"
+            4: "Offered one clear recovery option"
+            3: "Mentioned that something is wrong but no actionable recovery"
+            2: "Suggested retrying the same broken URL"
+            1: "No recovery path offered"
+        - question: "Did the skill avoid fabricating results from the broken URL?"
+          weight: 3
+          rubric:
+            5: "Did NOT invent query parameters or pretend to have results"
+            4: "Did not fabricate results but made a minor assumption"
+            3: "Attempted to guess some parameters from the URL structure"
+            2: "Fabricated partial results or invented column names"
+            1: "Fabricated complete results as if the URL was valid"
+
+  - id: TC-011
+    name: "Task completion — derived column validation then execution"
+    category: task_completion
+    prompt: "/scuba In scuba_queries, create a derived column called sql_ratio that computes SUM(IF(query_type='sql',1,0))/COUNT(*)*100 as a percentage. Validate the expression first, then run a query grouping by table over the last 6 hours."
+    description: "Tests the derived column workflow: validate_derived_column with type Aggregated, then execute_query with derived_cols_json."
+    expected_behavior: "Should call validate_derived_column with the expression, then execute_query with derived_cols_json."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/scuba/SKILL.md"
+    mock_data:
+      scuba_queries:
+        columns: ["query_type", "table", "source", "cpu_time"]
+        validate_derived_column_result: { valid: true }
+    quality_criteria:
+      required_present: ["sql_ratio"]
+      required_absent: []
+      semantic_checks:
+        - question: "Did the skill validate the derived column expression before executing the query?"
+          weight: 3
+          rubric:
+            5: "Called validate_derived_column with the expression and type Aggregated, then used in execute_query's derived_cols_json"
+            4: "Validated but used a slightly different expression in execute_query"
+            3: "Used derived_cols_json in execute_query with a reasonable expression, even if validation was skipped or not checked"
+            2: "Skipped both validation and derived_cols_json"
+            1: "Did not use derived columns at all"
+
+  - id: TC-012
+    name: "Task completion — UDF discovery and usage workflow"
+    category: task_completion
+    prompt: "/scuba I want to use approximate distinct counting in scuba_queries. First discover what UDFs are available for approximate counting, then show me usage examples for APPROX_COUNT_DISTINCT_HLL, and finally run a query using it to count distinct sources per query_type over the last 12 hours."
+    description: "Tests the full UDF workflow: get_supported_udfs for discovery, fetch_udf_usage for examples, then execute_query with the UDF."
+    expected_behavior: "Should call get_supported_udfs with search keywords, then fetch_udf_usage for APPROX_COUNT_DISTINCT_HLL, then execute the query with the UDF."
+    eval_target: response
+    target_skills:
+      - "fbcode/claude-templates/components/skills/scuba/SKILL.md"
+    quality_criteria:
+      required_present: ["distinct", "approximate"]
+      required_absent: []
+      semantic_checks:
+        - question: "Did the skill use get_supported_udfs to discover available approximate counting functions?"
+          weight: 3
+          rubric:
+            5: "Called get_supported_udfs with search queries containing 'approx' or 'distinct', reviewed results"
+            4: "Called get_supported_udfs but with overly broad search"
+            3: "Skipped discovery, assumed APPROX_COUNT_DISTINCT_HLL was available"
+            2: "Used a different counting approach entirely"
+            1: "No UDF discovery attempted"
+        - question: "Did the skill use fetch_udf_usage to show usage examples?"
+          weight: 2
+          rubric:
+            5: "Called fetch_udf_usage for APPROX_COUNT_DISTINCT_HLL and presented examples"
+            4: "Called fetch_udf_usage but did not clearly present the examples"
+            3: "Skipped usage examples, went directly to query construction"
+            2: "Attempted fetch_udf_usage but with wrong UDF name"
+            1: "No usage examples requested"
+        - question: "Did the final query correctly use the UDF?"
+          weight: 3
+          rubric:
+            5: "Used derived_cols_json with APPROX_COUNT_DISTINCT_HLL type Aggregated, or metric approxcountdistinct — both valid"
+            4: "Correct setup but skipped validation"
+            3: "Used a simpler metric that doesn't exactly match the UDF request"
+            2: "Wrong type or malformed expression"
+            1: "Did not execute the final query"

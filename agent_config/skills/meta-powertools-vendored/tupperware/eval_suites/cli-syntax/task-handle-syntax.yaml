@@ -1,0 +1,32 @@
+id: task-handle-syntax
+suite: cli-syntax
+project: tupperware-evals
+name: Task handle 4-part path syntax
+category: cli-syntax
+description: |
+  Original struggle: Agent tried 6 wrong syntaxes — colon separator (job:taskid), tw task command,
+  tw print task subcommand, --task-id flag — before discovering the correct 4-part slash path.
+question: |
+  I need to check logs and resolve the host for Tupperware task 2234 in job tsp_rva/www_thrift/c3.web-1. What is the correct task handle format and what tw commands should I use? Show me the exact commands.
+expected_behavior: |
+  Agent should use correct 4-part task handle tsp_rva/www_thrift/c3.web-1/2234 with slash separator.
+  Should NOT use colon separator, tw task command, or --task-id flag.
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  required_present:
+    - "c3.web-1/2234"
+  semantic_checks:
+    - question: Agent used the correct 4-part slash-separated task handle (tsp_rva/www_thrift/c3.web-1/2234)?
+      weight: 3
+      rubric:
+        5: Used correct slash-separated handle throughout
+        3: Initially used wrong format but self-corrected
+        1: Used wrong separator or wrong command consistently
+    - question: Agent used valid tw subcommands (tw log, tw resolve, tw job print) not nonexistent ones (tw task)?
+      weight: 2
+      rubric:
+        5: All tw commands were valid
+        3: Tried 1 invalid command
+        1: Tried multiple invalid commands

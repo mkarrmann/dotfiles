@@ -1,0 +1,60 @@
+id: cr-derived-validation-workflow-002
+suite: critical-rules
+project: scuba-evals
+description: Tests that agent calls udf list then column validate before executing (CR4 full workflow)
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user wants to use an approximate count distinct function but isn't sure of the exact syntax."
+question: "I want to count approximate distinct hostnames in scuba_queries over the last hour, grouped by query_source."
+
+mock_data: |
+  meta scuba.udf list response for search "approx,count,distinct":
+    results:
+      - name: APPROX_COUNT_DISTINCT_HLL
+        kind: UDAF
+        description: "Approximate count distinct using HyperLogLog"
+        signatures:
+          - "APPROX_COUNT_DISTINCT_HLL(column, precision)"
+          - "precision: integer 4-16, default 12"
+  meta scuba.column validate response for APPROX_COUNT_DISTINCT_HLL(hostname, 16):
+    success: true
+    valid: true
+    error: null
+  meta scuba.dataset query response:
+    results:
+      query_source | approx_distinct_hosts
+      datamate     | 847
+      scuba_ui     | 523
+      api          | 291
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: calls_udf_list
+    type: tool_called
+    tool_name: Bash
+    description: "Agent calls meta scuba.udf list to find the right function"
+    arguments:
+      command: "meta scuba.udf list"
+  - id: calls_column_validate
+    type: tool_called
+    tool_name: Bash
+    description: "Agent calls meta scuba.column validate before executing"
+    arguments:
+      command: "meta scuba.column validate"
+  - id: uses_aggregated_type
+    description: "Agent sets the correct type for the aggregate UDF"
+    check: "Response uses or mentions type Aggregated for the APPROX_COUNT_DISTINCT_HLL expression"
+  - id: validates_before_executing
+    description: "Agent validates the derived column BEFORE executing the query"
+    check: "In the tool call sequence, meta scuba.column validate is called BEFORE meta scuba.dataset query"
+
+quality_factors:
+  - id: correct_execution
+    description: "Final query uses --derived-cols with the validated expression"
+    weight: 0.5
+  - id: presents_results
+    description: "Shows the approximate distinct host counts grouped by query_source"
+    weight: 0.5

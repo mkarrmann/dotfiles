@@ -1,0 +1,41 @@
+id: gdocs-read-005
+name: Read doc from URL with anchor suffix
+category: reading
+prompt: Read the doc at https://docs.google.com/document/d/1abc123/edit#heading=h.abc123
+description: Tests that the agent extracts doc ID correctly despite URL fragments
+expected_behavior: Agent extracts doc ID 1abc123 from URL with anchor and reads successfully
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Technical Spec
+  Content:
+    <h1>Technical Spec</h1>
+    <h2 id="h.abc123">Architecture</h2>
+    <p>The system uses a microservices architecture with 3 core services.</p>
+    <h2>Data Model</h2>
+    <p>PostgreSQL with read replicas.</p>
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - not found
+  - invalid
+  semantic_checks:
+  - question: 'Did the agent successfully read the document despite the URL having a #heading=h.abc123 fragment?'
+    weight: 3
+    rubric:
+      5: Agent read the document successfully, returning content about Technical Spec
+      3: Agent read the doc but had issues with the URL fragment
+      1: Agent failed to read the document due to the URL fragment
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

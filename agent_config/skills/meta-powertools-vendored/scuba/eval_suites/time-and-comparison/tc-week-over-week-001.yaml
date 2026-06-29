@@ -1,0 +1,40 @@
+id: tc-week-over-week-001
+suite: time-and-comparison
+project: scuba-evals
+description: Tests compare parameter for week-over-week analysis with output columns
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A product manager wants to compare this week's error rates to last week."
+question: "Show me the error message counts in scuba_queries over the last 24 hours compared to the same period 7 days ago. I want to see which errors are increasing."
+
+mock_data: |
+  meta scuba.dataset query response with --compare:
+    results:
+      error_message     | Hits  | Hits (Comparison) | Hits (Percent) | Hits (Delta)
+      timeout           | 1234  | 987               | 25.0           | 247
+      connection_reset  | 567   | 890               | -36.3          | -323
+      rate_limited      | 345   | 0                 | 3.4028235e+38  | 345
+      auth_failure      | 123   | 145               | -15.2          | -22
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: calls_query
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.dataset query for comparison"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: explains_output_columns
+    description: "Agent explains the comparison output columns"
+    check: "Response explains or presents the Hits, Hits (Comparison), Hits (Percent), and Hits (Delta) columns"
+
+quality_factors:
+  - id: identifies_trends
+    description: "Identifies which errors are increasing vs decreasing"
+    weight: 0.5
+  - id: explains_sentinel
+    description: "Explains that 3.4028235e+38 means the item is new (zero in comparison period)"
+    weight: 0.5

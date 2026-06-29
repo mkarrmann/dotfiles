@@ -1,0 +1,36 @@
+id: gdocs-fmt-004
+name: Insert link
+category: formatting
+prompt: In https://docs.google.com/document/d/1abc123/edit, make the word 'dashboard' link to https://fburl.com/dashboard123
+description: Tests applying a hyperlink to existing text
+expected_behavior: Agent applies link formatting to the word 'dashboard'
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Project Status
+  Content contains the word "dashboard" at index 55-64.
+  Format result: Link applied to "dashboard" pointing to https://fburl.com/dashboard123.
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent apply a hyperlink to the word 'dashboard' pointing to the specified URL?
+    weight: 3
+    rubric:
+      5: Agent applied the link to 'dashboard' with the correct URL
+      3: Agent attempted to add a link but target or URL was unclear
+      1: Agent did not apply a link
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

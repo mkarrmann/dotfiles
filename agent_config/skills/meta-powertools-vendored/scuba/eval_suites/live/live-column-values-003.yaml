@@ -1,0 +1,37 @@
+id: live-column-values-003
+suite: live
+project: scuba-evals
+description: Tests real column values lookup and filtered query with CR1 compliance
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "An engineer wants to filter queries by type but isn't sure what values exist."
+question: "What query types exist in scuba_queries? Then show me the count of queries for the most common query_type over the last hour, grouped by query_source."
+
+critical_requirements:
+  - id: calls_column_values
+    type: tool_called
+    tool_name: Bash
+    description: "Agent checks column values before filtering (CR1)"
+    arguments:
+      command: "meta scuba.column values"
+  - id: calls_query
+    type: tool_called
+    tool_name: Bash
+    description: "Agent executes a filtered query"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: presents_values
+    description: "Agent shows the available query_type values"
+    check: "Response lists the actual query_type values discovered from column values before running the query"
+
+quality_factors:
+  - id: uses_real_value
+    description: "Filters using an actual value from column values, not a guessed value"
+    weight: 0.5
+  - id: explains_choice
+    description: "Explains why it chose the particular query_type to filter on (e.g., most common)"
+    weight: 0.3
+  - id: presents_results
+    description: "Presents filtered query results clearly"
+    weight: 0.2

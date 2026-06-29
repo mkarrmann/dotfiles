@@ -1,0 +1,80 @@
+id: cli-having-002
+suite: cli-queries
+project: scuba-evals
+description: Tests HAVING clause with time filter and non-reserved alias via CLI (from TP-2)
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "An analyst wants to find query sources with high volume, which requires filtering on aggregate results."
+question: "Which query_sources in scuba_queries had more than 1000 queries in the last hour?"
+
+mock_data: |
+  meta scuba.udf list response:
+    results:
+      - name: COUNT
+        kind: UDAF
+        description: "Count the number of rows"
+      - name: SUM
+        kind: UDAF
+        description: "Sum of values"
+      - name: AVG
+        kind: UDAF
+        description: "Average of values"
+      - name: MIN
+        kind: UDAF
+        description: "Minimum value"
+      - name: MAX
+        kind: UDAF
+        description: "Maximum value"
+      - name: P50
+        kind: UDAF
+        description: "50th percentile"
+      - name: P95
+        kind: UDAF
+        description: "95th percentile"
+      - name: P99
+        kind: UDAF
+        description: "99th percentile"
+  meta scuba.dataset query --sql HAVING query response:
+    query_source | cnt
+    datamate     | 5234
+    scuba_ui     | 3891
+    api          | 2456
+    graphql_api  | 1287
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: uses_cli
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.dataset query --sql for the HAVING query"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: having_clause
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses HAVING clause"
+    arguments:
+      command: "HAVING"
+  - id: calls_udf_list
+    type: tool_called
+    tool_name: Bash
+    description: "Agent calls meta scuba.udf list to discover available functions"
+    arguments:
+      command: "meta scuba.udf list"
+  - id: includes_time_filter
+    description: "Agent includes mandatory time filter"
+    check: "Response includes a query with a time filter for the last hour"
+  - id: non_reserved_alias
+    description: "Agent does not use 'count' as column alias"
+    check: "The query aliases the COUNT column as cnt, total, num_rows, or similar — not as 'count' which is a reserved word"
+
+quality_factors:
+  - id: shows_functions_first
+    description: "Runs meta scuba.udf list before the HAVING query as requested"
+    weight: 0.4
+  - id: presents_results
+    description: "Presents the filtered results clearly"
+    weight: 0.3

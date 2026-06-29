@@ -1,0 +1,671 @@
+#!/usr/bin/env python3
+"""buckmem — Monitor and manage buck2 daemon memory usage.
+
+Shows all buck2 daemon processes grouped by project, with memory usage
+for the daemon and all its child processes. Supports selective killing.
+Works on both Linux and macOS.
+
+Usage:
+    buckmem              # Show all buck2 daemons with memory usage
+    buckmem --sort mem   # Sort by memory (default)
+    buckmem --sort age   # Sort by process age
+    buckmem --kill       # Interactive: choose which daemon to kill
+    buckmem --kill-top   # Kill the daemon using the most memory
+    buckmem --kill-all   # Kill all buck2 daemons
+    buckmem --watch      # Refresh every 5 seconds
+    buckmem --watch 2    # Refresh every 2 seconds
+"""
+
+import argparse
+import os
+import platform
+import re
+import signal
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+
+IS_MACOS = platform.system() == "Darwin"
+IS_LINUX = platform.system() == "Linux"
+
+
+@dataclass
+class ProcessInfo:
+    pid: int
+    rss_kb: int
+    swap_kb: int
+    cpu_pct: float
+    threads: int
+    name: str
+    cmdline: str
+
+
+@dataclass
+class BuckDaemon:
+    pid: int
+    project_path: str
+    isolation_dir: str
+    daemon_id: str
+    rss_kb: int = 0
+    swap_kb: int = 0
+    cpu_pct: float = 0.0
+    threads: int = 0
+    children: list = field(default_factory=list)
+    start_time: float = 0.0
+    last_command: str = ""
+
+    @property
+    def total_rss_kb(self) -> int:
+        return self.rss_kb + sum(c.rss_kb for c in self.children)
+
+    @property
+    def total_swap_kb(self) -> int:
+        return self.swap_kb + sum(c.swap_kb for c in self.children)
+
+    @property
+    def total_threads(self) -> int:
+        return self.threads + sum(c.threads for c in self.children)
+
+    @property
+    def age_seconds(self) -> float:
+        if self.start_time <= 0:
+            return 0
+        return time.time() - self.start_time
+
+
+# ─── Formatting helpers ───────────────────────────────────────────────
+
+
+def format_bytes(kb: int) -> str:
+    if kb >= 1_048_576:
+        return f"{kb / 1_048_576:.1f} GB"
+    if kb >= 1024:
+        return f"{kb / 1024:.0f} MB"
+    return f"{kb} KB"
+
+
+def format_duration(seconds: float) -> str:
+    if seconds <= 0:
+        return "unknown"
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    if seconds < 3600:
+        return f"{seconds / 60:.0f}m"
+    if seconds < 86400:
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        return f"{h}h{m}m"
+    d = int(seconds // 86400)
+    h = int((seconds % 86400) // 3600)
+    return f"{d}d{h}h"
+
+
+# ─── Cross-platform process info ──────────────────────────────────────
+
+
+def _run(cmd: list, **kwargs) -> str:
+    try:
+        return subprocess.check_output(
+            cmd, stderr=subprocess.DEVNULL, text=True, **kwargs
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return ""
+
+
+def get_cmdline(pid: int) -> str:
+    if IS_LINUX:
+        try:
+            with open(f"/proc/{pid}/cmdline") as f:
+                return f.read().replace("\0", " ").strip()
+        except (FileNotFoundError, PermissionError, ProcessLookupError):
+            return ""
+    # macOS: ps -p <pid> -o command= gives the full command line
+    return _run(["ps", "-p", str(pid), "-ww", "-o", "command="])
+
+
+def get_cwd(pid: int) -> str:
+    if IS_LINUX:
+        try:
+            return os.readlink(f"/proc/{pid}/cwd")
+        except (FileNotFoundError, PermissionError, ProcessLookupError, OSError):
+            return ""
+    # macOS: use lsof to find the cwd
+    out = _run(["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"])
+    for line in out.splitlines():
+        if line.startswith("n"):
+            return line[1:]
+    return ""
+
+
+def get_process_info(pid: int) -> dict:
+    """Get rss_kb, swap_kb, threads, cpu_pct, start_time for a PID."""
+    if IS_LINUX:
+        return _get_process_info_linux(pid)
+    return _get_process_info_macos(pid)
+
+
+def _get_process_info_linux(pid: int) -> dict:
+    info = {"rss_kb": 0, "swap_kb": 0, "threads": 0, "cpu_pct": 0.0, "start_time": 0.0}
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    info["rss_kb"] = int(line.split()[1])
+                elif line.startswith("VmSwap:"):
+                    info["swap_kb"] = int(line.split()[1])
+                elif line.startswith("Threads:"):
+                    info["threads"] = int(line.split()[1])
+    except (FileNotFoundError, PermissionError, ProcessLookupError):
+        return info
+
+    # CPU %
+    out = _run(["ps", "-p", str(pid), "-o", "%cpu="])
+    if out:
+        try:
+            info["cpu_pct"] = float(out)
+        except ValueError:
+            pass
+
+    # Start time
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            parts = f.read().split(")")[-1].split()
+            starttime_ticks = int(parts[19])
+            clk_tck = os.sysconf("SC_CLK_TCK")
+        with open("/proc/uptime") as f:
+            uptime = float(f.read().split()[0])
+        info["start_time"] = time.time() - uptime + starttime_ticks / clk_tck
+    except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError):
+        pass
+
+    return info
+
+
+def _get_process_info_macos(pid: int) -> dict:
+    info = {"rss_kb": 0, "swap_kb": 0, "threads": 0, "cpu_pct": 0.0, "start_time": 0.0}
+
+    # ps gives us rss (in KB), %cpu, and elapsed time in one call
+    # -M gives threads on macOS (one line per thread), but we use a simpler approach
+    out = _run(["ps", "-p", str(pid), "-o", "rss=,%cpu=,lstart="])
+    if not out:
+        return info
+
+    # Parse: rss and cpu are at the start, lstart is the rest
+    # Output looks like: "  9873720  13.8 Thu Mar 27 11:47:23 2025"
+    parts = out.split(None, 2)
+    if len(parts) >= 2:
+        try:
+            info["rss_kb"] = int(parts[0])
+        except ValueError:
+            pass
+        try:
+            info["cpu_pct"] = float(parts[1])
+        except ValueError:
+            pass
+
+    # Parse lstart for start_time
+    if len(parts) >= 3:
+        try:
+            import email.utils
+            # lstart format: "Thu Mar 27 11:47:23 2025"
+            st = time.strptime(parts[2].strip(), "%c")
+            info["start_time"] = time.mktime(st)
+        except (ValueError, OverflowError):
+            # Try alternate format
+            try:
+                st = time.strptime(parts[2].strip(), "%a %b %d %H:%M:%S %Y")
+                info["start_time"] = time.mktime(st)
+            except (ValueError, OverflowError):
+                pass
+
+    # Thread count via ps -M (one line per thread)
+    thread_out = _run(["ps", "-M", "-p", str(pid)])
+    if thread_out:
+        # First line is header, rest are threads
+        lines = thread_out.strip().splitlines()
+        info["threads"] = max(len(lines) - 1, 1)
+
+    # Swap: macOS doesn't expose per-process swap easily via ps.
+    # We can approximate from vm_stat or just report 0.
+    # For a useful approximation, check memory_pressure or footprint.
+    footprint_out = _run(["footprint", "-j", str(pid)])
+    if footprint_out:
+        try:
+            import json
+            fp_data = json.loads(footprint_out)
+            # footprint reports in bytes
+            for entry in fp_data:
+                if "swapped" in entry:
+                    info["swap_kb"] = entry["swapped"] // 1024
+                    break
+        except (json.JSONDecodeError, KeyError, TypeError):
+            pass
+
+    return info
+
+
+def get_children(pid: int) -> list:
+    """Get all descendant PIDs recursively."""
+    children = []
+    try:
+        out = subprocess.check_output(
+            ["pgrep", "-P", str(pid)],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        for line in out.splitlines():
+            child_pid = int(line.strip())
+            children.append(child_pid)
+            children.extend(get_children(child_pid))
+    except (subprocess.CalledProcessError, ValueError):
+        pass
+    return children
+
+
+def get_system_memory() -> tuple:
+    """Returns (total_kb, available_kb)."""
+    if IS_LINUX:
+        return _get_system_memory_linux()
+    return _get_system_memory_macos()
+
+
+def _get_system_memory_linux() -> tuple:
+    total = available = 0
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    total = int(line.split()[1])
+                elif line.startswith("MemAvailable:"):
+                    available = int(line.split()[1])
+    except FileNotFoundError:
+        pass
+    return total, available
+
+
+def _get_system_memory_macos() -> tuple:
+    total = 0
+    available = 0
+
+    # Total memory via sysctl
+    out = _run(["sysctl", "-n", "hw.memsize"])
+    if out:
+        try:
+            total = int(out) // 1024  # bytes to KB
+        except ValueError:
+            pass
+
+    # Available memory from vm_stat
+    vm_out = _run(["vm_stat"])
+    if vm_out:
+        page_size = 16384  # default on Apple Silicon
+        ps_match = re.search(r"page size of (\d+) bytes", vm_out)
+        if ps_match:
+            page_size = int(ps_match.group(1))
+
+        free_pages = 0
+        inactive_pages = 0
+        speculative_pages = 0
+        for line in vm_out.splitlines():
+            if "Pages free:" in line:
+                m = re.search(r"(\d+)", line.split(":")[1])
+                if m:
+                    free_pages = int(m.group(1))
+            elif "Pages inactive:" in line:
+                m = re.search(r"(\d+)", line.split(":")[1])
+                if m:
+                    inactive_pages = int(m.group(1))
+            elif "Pages speculative:" in line:
+                m = re.search(r"(\d+)", line.split(":")[1])
+                if m:
+                    speculative_pages = int(m.group(1))
+
+        available = (free_pages + inactive_pages + speculative_pages) * page_size // 1024
+
+    # Fallback: use memory_pressure for a quick app-memory-available number
+    if available == 0:
+        mp_out = _run(["memory_pressure"])
+        if mp_out:
+            m = re.search(r"System-wide memory free percentage:\s+(\d+)%", mp_out)
+            if m and total:
+                available = total * int(m.group(1)) // 100
+
+    return total, available
+
+
+# ─── Last command ─────────────────────────────────────────────────────
+
+
+def get_last_command(project_path: str) -> str:
+    """Get the last buck2 command that ran in this project."""
+    try:
+        out = subprocess.check_output(
+            ["buck2", "log", "what-cmd"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            cwd=project_path,
+            timeout=5,
+        ).strip()
+        # Output format: "# cd /path\n/path/to/buck2 build //target"
+        # or just "/path/to/buck2 build //target"
+        for line in out.splitlines():
+            if line.startswith("#"):
+                continue
+            # Strip the buck2 binary path, keep the subcommand + targets
+            # e.g. "/path/tools/buck2-versions/stable-users build //foo:bar"
+            parts = line.split()
+            if len(parts) >= 2:
+                # Find the subcommand (build, test, run, etc.)
+                for i, part in enumerate(parts):
+                    if part in ("build", "test", "run", "install", "query",
+                                "cquery", "uquery", "targets", "audit", "bxl"):
+                        return " ".join(parts[i:])
+                # Fallback: return everything after the binary
+                return " ".join(parts[1:])
+        return out
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+            FileNotFoundError, OSError):
+        return ""
+
+
+# ─── Daemon discovery ─────────────────────────────────────────────────
+
+
+def extract_project_path(pid: int, cmdline: str) -> str:
+    """Extract the project root from cwd or cmdline heuristics."""
+    cwd = get_cwd(pid)
+    # cwd is typically <project>/buck-out/<isolation>/...
+    match = re.match(r"(.+?)/buck-out/", cwd)
+    if match:
+        return match.group(1)
+
+    # Fallback: look for state-dir in child forkserver processes
+    for child_pid in get_children(pid):
+        child_cmd = get_cmdline(child_pid)
+        state_match = re.search(r"--state-dir\s+(\S+)", child_cmd)
+        if state_match:
+            m = re.match(r"(.+?)/buck-out/", state_match.group(1))
+            if m:
+                return m.group(1)
+
+    return cwd or "unknown"
+
+
+def extract_daemon_info(cmdline: str) -> tuple:
+    """Extract isolation-dir and daemon-id from cmdline."""
+    iso = "default"
+    daemon_id = ""
+    iso_match = re.search(r"--isolation-dir\s+(\S+)", cmdline)
+    if iso_match:
+        iso = iso_match.group(1)
+    id_match = re.search(r"--daemon-id\s+(\S+)", cmdline)
+    if id_match:
+        daemon_id = id_match.group(1)
+    return iso, daemon_id
+
+
+def classify_child(cmdline: str) -> str:
+    """Derive a short name for a child process."""
+    if "forkserver" in cmdline:
+        return "forkserver"
+    if "re_worker" in cmdline:
+        return "re_worker"
+    if "materializer" in cmdline:
+        return "materializer"
+    return "worker"
+
+
+def discover_daemons() -> list:
+    """Find all buck2 daemon processes and their children."""
+    daemons = []
+
+    try:
+        out = subprocess.check_output(
+            ["pgrep", "-f", "buck2-daemon"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except subprocess.CalledProcessError:
+        return daemons
+
+    for line in out.splitlines():
+        pid = int(line.strip())
+        cmdline = get_cmdline(pid)
+        if "buck2-daemon" not in cmdline:
+            continue
+
+        project = extract_project_path(pid, cmdline)
+        iso, daemon_id = extract_daemon_info(cmdline)
+        pinfo = get_process_info(pid)
+
+        last_cmd = get_last_command(project)
+
+        daemon = BuckDaemon(
+            pid=pid,
+            project_path=project,
+            isolation_dir=iso,
+            daemon_id=daemon_id,
+            rss_kb=pinfo["rss_kb"],
+            swap_kb=pinfo["swap_kb"],
+            cpu_pct=pinfo["cpu_pct"],
+            threads=pinfo["threads"],
+            start_time=pinfo["start_time"],
+            last_command=last_cmd,
+        )
+
+        for child_pid in get_children(pid):
+            child_cmdline = get_cmdline(child_pid)
+            child_pinfo = get_process_info(child_pid)
+            daemon.children.append(
+                ProcessInfo(
+                    pid=child_pid,
+                    rss_kb=child_pinfo["rss_kb"],
+                    swap_kb=child_pinfo["swap_kb"],
+                    cpu_pct=child_pinfo["cpu_pct"],
+                    threads=child_pinfo["threads"],
+                    name=classify_child(child_cmdline),
+                    cmdline=child_cmdline[:120],
+                )
+            )
+
+        daemons.append(daemon)
+
+    return daemons
+
+
+# ─── Display ──────────────────────────────────────────────────────────
+
+
+def print_report(daemons: list, sort_by: str = "mem"):
+    total_mem, avail_mem = get_system_memory()
+    used_mem = total_mem - avail_mem
+
+    if sort_by == "age":
+        daemons.sort(key=lambda d: d.age_seconds, reverse=True)
+    else:
+        daemons.sort(key=lambda d: d.total_rss_kb, reverse=True)
+
+    print()
+    print(f"{'═' * 78}")
+    print(f"  BUCK2 DAEMON MEMORY MONITOR"
+          f"  ({'macOS' if IS_MACOS else 'Linux'})")
+    print(f"  System: {format_bytes(used_mem)} used / {format_bytes(total_mem)} total"
+          f"  ({format_bytes(avail_mem)} available)")
+    total_buck = sum(d.total_rss_kb for d in daemons)
+    if total_mem:
+        print(f"  Buck2:  {format_bytes(total_buck)} total across {len(daemons)} daemon(s)"
+              f"  ({total_buck * 100 / total_mem:.1f}% of system memory)")
+    else:
+        print(f"  Buck2:  {format_bytes(total_buck)} total across {len(daemons)} daemon(s)")
+    print(f"{'═' * 78}")
+
+    if not daemons:
+        print("\n  No buck2 daemons running.\n")
+        return
+
+    for i, d in enumerate(daemons):
+        project_short = d.project_path.replace("/data/users/", "~").replace(
+            os.path.expanduser("~"), "~"
+        )
+
+        pct = f"{d.total_rss_kb * 100 / total_mem:.1f}%" if total_mem else ""
+
+        print(f"\n  [{i + 1}] {project_short}")
+        print(f"      PID: {d.pid}  |  Isolation: {d.isolation_dir}"
+              f"  |  Age: {format_duration(d.age_seconds)}")
+        print(f"      Memory:  RSS {format_bytes(d.total_rss_kb)} ({pct})"
+              f"  |  Swap {format_bytes(d.total_swap_kb)}")
+        print(f"      CPU: {d.cpu_pct:.1f}%  |  Threads: {d.total_threads}"
+              f"  |  Children: {len(d.children)}")
+        if d.last_command:
+            print(f"      Last:  {d.last_command}")
+
+        print(f"      ├── daemon       {format_bytes(d.rss_kb):>10}"
+              f"  {d.threads} threads")
+        for c in sorted(d.children, key=lambda x: x.rss_kb, reverse=True):
+            print(f"      ├── {c.name:<13}{format_bytes(c.rss_kb):>10}"
+                  f"  pid={c.pid}")
+
+    print(f"\n{'═' * 78}\n")
+
+
+# ─── Kill logic ───────────────────────────────────────────────────────
+
+
+def kill_daemon(daemon: BuckDaemon):
+    """Kill a buck2 daemon and all its children."""
+    print(f"  Killing daemon {daemon.pid} ({daemon.project_path})...")
+
+    for child in reversed(daemon.children):
+        try:
+            os.kill(child.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    try:
+        os.kill(daemon.pid, signal.SIGTERM)
+        for _ in range(20):
+            time.sleep(0.2)
+            try:
+                os.kill(daemon.pid, 0)
+            except ProcessLookupError:
+                print(f"  ✓ Daemon {daemon.pid} terminated gracefully.")
+                return
+        os.kill(daemon.pid, signal.SIGKILL)
+        print(f"  ✓ Daemon {daemon.pid} force-killed.")
+    except ProcessLookupError:
+        print(f"  ✓ Daemon {daemon.pid} already dead.")
+    except PermissionError:
+        print(f"  ✗ Permission denied killing {daemon.pid}. Try: sudo buckmem --kill-top")
+
+
+def interactive_kill(daemons: list):
+    """Let user choose which daemon to kill."""
+    if not daemons:
+        print("  No buck2 daemons running.")
+        return
+
+    print("\n  Enter number to kill (or 'q' to quit, 'a' to kill all):")
+    choice = input("  > ").strip().lower()
+
+    if choice == "q":
+        return
+    if choice == "a":
+        for d in daemons:
+            kill_daemon(d)
+        return
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(daemons):
+            kill_daemon(daemons[idx])
+        else:
+            print(f"  Invalid choice: {choice}")
+    except ValueError:
+        print(f"  Invalid choice: {choice}")
+
+
+# ─── Main ─────────────────────────────────────────────────────────────
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Monitor and manage buck2 daemon memory usage.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument(
+        "--sort", choices=["mem", "age"], default="mem",
+        help="Sort daemons by memory usage (default) or age",
+    )
+    parser.add_argument(
+        "--kill", action="store_true",
+        help="Interactive mode: choose which daemon to kill",
+    )
+    parser.add_argument(
+        "--kill-top", action="store_true",
+        help="Kill the daemon using the most memory",
+    )
+    parser.add_argument(
+        "--kill-all", action="store_true",
+        help="Kill all buck2 daemons",
+    )
+    parser.add_argument(
+        "--watch", nargs="?", const=5, type=int, metavar="SECONDS",
+        help="Refresh every N seconds (default: 5)",
+    )
+    parser.add_argument(
+        "--json", action="store_true",
+        help="Output as JSON",
+    )
+
+    args = parser.parse_args()
+
+    if args.watch:
+        try:
+            while True:
+                os.system("clear")
+                daemons = discover_daemons()
+                print_report(daemons, args.sort)
+                print(f"  Refreshing every {args.watch}s... (Ctrl+C to stop)")
+                time.sleep(args.watch)
+        except KeyboardInterrupt:
+            print("\n")
+            return
+
+    daemons = discover_daemons()
+
+    if args.json:
+        import json
+
+        data = []
+        for d in daemons:
+            data.append({
+                "pid": d.pid,
+                "project": d.project_path,
+                "isolation_dir": d.isolation_dir,
+                "daemon_id": d.daemon_id,
+                "rss_mb": round(d.total_rss_kb / 1024),
+                "swap_mb": round(d.total_swap_kb / 1024),
+                "threads": d.total_threads,
+                "children": len(d.children),
+                "age_seconds": round(d.age_seconds),
+                "last_command": d.last_command,
+            })
+        print(json.dumps(data, indent=2))
+        return
+
+    print_report(daemons, args.sort)
+
+    if args.kill_all:
+        for d in daemons:
+            kill_daemon(d)
+    elif args.kill_top and daemons:
+        top = max(daemons, key=lambda d: d.total_rss_kb)
+        kill_daemon(top)
+    elif args.kill:
+        interactive_kill(daemons)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,155 @@
+#!/bin/bash
+# Check CI state for a Phabricator diff
+# Usage: check_ci_state <diff_number>
+#
+# Returns JSON with: core_ci_signals_state (preferring draft), submit_queue_request_id,
+# deferred explanation, and signal counts by status.
+#
+# The "pending" count is queried directly from signalview using the PENDING status filter.
+# When pending > 0, there are signals that haven't completed yet (waiting to start or running).
+# When pending == 0 but ci_state still indicates in-progress, signal jobs haven't been
+# registered in signalview yet.
+#
+# Exit codes:
+#   0 - Success, JSON output on stdout
+#   1 - Error (missing args, query failure)
+#
+# Output format (JSON on stdout, messages on stderr):
+# {
+#   "ci_state": "TEST_FINISHED_WITH_FAILURES",
+#   "draft_ci_state": "TEST_FINISHED_WITH_FAILURES",
+#   "published_ci_state": null,
+#   "submit_queue_request_id": "123456",
+#   "deferred_explanation": null,
+#   "signal_counts": {
+#     "total": 50,
+#     "failed": 2,
+#     "warning": 3,
+#     "passed": 40,
+#     "pending": 3,
+#     "info": 2
+#   }
+# }
+
+set -e
+
+DIFF_NUM=""
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -*)
+      echo "Unknown option: $1" >&2
+      exit 1
+      ;;
+    *)
+      DIFF_NUM="$1"
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$DIFF_NUM" ]; then
+  echo "Usage: $0 <diff_number>" >&2
+  echo "" >&2
+  echo "Examples:" >&2
+  echo "  $0 D85794504    # Check CI state and signal counts" >&2
+  echo "" >&2
+  echo "Returns JSON with core_ci_signals_state, submit_queue_request_id," >&2
+  echo "deferred explanation, and signal counts. Prefers draft version state." >&2
+  exit 1
+fi
+
+# Remove 'D' prefix if provided
+DIFF_NUM="${DIFF_NUM#D}"
+
+# Single query to get CI state, submit queue request ID, deferred settings, AND version IDs
+# NOTE: phabricator_diff_query does NOT support GraphQL variables — diff number must be inline
+RAW=$(jf graphql --query "query {
+  phabricator_diff_query(query_params: {numbers: [\"D${DIFF_NUM}\"]}) {
+    results {
+      nodes {
+        latest_publishable_draft_phabricator_version {
+          id
+          submit_queue_request {
+            id
+            testing_deferred_settings {
+              explanation
+            }
+          }
+          signal_overall_status {
+            core_ci_signals_state
+          }
+        }
+        latest_phabricator_version {
+          id
+        }
+        signal_overall_status {
+          core_ci_signals_state
+        }
+      }
+    }
+  }
+}" 2>/dev/null)
+
+if [ -z "$RAW" ]; then
+  echo "Error: GraphQL query failed for D${DIFF_NUM}" >&2
+  exit 1
+fi
+
+# Extract version ID (prefer draft, fall back to published)
+DRAFT_VERSION_ID=$(echo "$RAW" | jq -r '.phabricator_diff_query[0].results.nodes[0].latest_publishable_draft_phabricator_version.id // empty')
+PUBLISHED_VERSION_ID=$(echo "$RAW" | jq -r '.phabricator_diff_query[0].results.nodes[0].latest_phabricator_version.id // empty')
+VERSION_ID="${DRAFT_VERSION_ID:-$PUBLISHED_VERSION_ID}"
+
+# Query signal counts by status using GraphQL aliases
+# CIResultStatus enum: PASSED, FAILED, WARNING, PENDING, INFO
+# NOTE: signals() requires the filters argument — use filters: {} for unfiltered
+SIGNAL_COUNTS='{"total":0,"failed":0,"warning":0,"passed":0,"pending":0,"info":0}'
+if [ -n "$VERSION_ID" ]; then
+  # shellcheck disable=SC2016
+  COUNTS_RAW=$(jf graphql --query 'query ($version_id: ID!) {
+    signalview_signals(phabricator_version_fbid: $version_id) {
+      all: signals(filters: {}) { count }
+      failed: signals(filters: {status: [FAILED]}) { count }
+      warning: signals(filters: {status: [WARNING]}) { count }
+      passed: signals(filters: {status: [PASSED]}) { count }
+      pending: signals(filters: {status: [PENDING]}) { count }
+      info: signals(filters: {status: [INFO]}) { count }
+    }
+  }' --variables "{\"version_id\": \"$VERSION_ID\"}" 2>/dev/null) || COUNTS_RAW=""
+
+  if [ -n "$COUNTS_RAW" ] && echo "$COUNTS_RAW" | jq -e '.signalview_signals.all.count' >/dev/null 2>&1; then
+    SIGNAL_COUNTS=$(echo "$COUNTS_RAW" | jq '{
+      total: (.signalview_signals.all.count // 0),
+      failed: (.signalview_signals.failed.count // 0),
+      warning: (.signalview_signals.warning.count // 0),
+      passed: (.signalview_signals.passed.count // 0),
+      pending: (.signalview_signals.pending.count // 0),
+      info: (.signalview_signals.info.count // 0)
+    }' 2>/dev/null) || SIGNAL_COUNTS='{"total":0,"failed":0,"warning":0,"passed":0,"pending":0,"info":0}'
+  else
+    echo "Warning: signal counts query failed — counts may be inaccurate" >&2
+  fi
+else
+  echo "Warning: no version ID found — cannot query signal counts" >&2
+fi
+
+# Extract all fields and compute effective state in a single jq pass
+echo "$RAW" | jq --argjson signal_counts "$SIGNAL_COUNTS" '{
+  draft_ci_state: (.phabricator_diff_query[0].results.nodes[0].latest_publishable_draft_phabricator_version.signal_overall_status.core_ci_signals_state // null),
+  published_ci_state: (.phabricator_diff_query[0].results.nodes[0].signal_overall_status.core_ci_signals_state // null),
+  submit_queue_request_id: (.phabricator_diff_query[0].results.nodes[0].latest_publishable_draft_phabricator_version.submit_queue_request.id // null),
+  deferred_explanation: (.phabricator_diff_query[0].results.nodes[0].latest_publishable_draft_phabricator_version.submit_queue_request.testing_deferred_settings.explanation // null)
+} | . + {
+  ci_state: (if .draft_ci_state != null then .draft_ci_state elif .published_ci_state != null then .published_ci_state else null end),
+  signal_counts: $signal_counts
+} | . + {
+  is_complete: (.ci_state != null and (.ci_state | test("FINISHED|PASSED|ALL_CLEAR|COMPLETED"))),
+  verdict: (
+    if $signal_counts.failed > 0 then "RED"
+    elif (.ci_state != null and (.ci_state | test("FINISHED|PASSED|ALL_CLEAR|COMPLETED"))) then "GREEN"
+    else "PENDING"
+    end
+  )
+}'

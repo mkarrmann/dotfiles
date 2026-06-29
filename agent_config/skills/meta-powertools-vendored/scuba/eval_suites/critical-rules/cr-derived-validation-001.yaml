@@ -1,0 +1,37 @@
+id: cr-derived-validation-001
+suite: critical-rules
+project: scuba-evals
+description: Tests that agent calls column validate before executing a derived column query (CR4)
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user asks to validate a derived column expression."
+question: "I want to use UPPER(hostname) as a derived column on scuba_queries. Is that valid?"
+
+mock_data: |
+  meta scuba.column validate response:
+    success: true
+    valid: true
+    error: null
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: calls_validate_derived
+    type: tool_called
+    tool_name: Bash
+    description: "Agent calls meta scuba.column validate"
+    arguments:
+      command: "meta scuba.column validate"
+  - id: correct_type
+    description: "Agent sets derived_column_type to String since UPPER returns a string"
+    check: "Response mentions or indicates that the type is String (not Numeric or Aggregated) for the UPPER() expression"
+
+quality_factors:
+  - id: reports_validity
+    description: "Clearly reports whether the expression is valid"
+    weight: 0.5
+  - id: explains_type_choice
+    description: "Explains why String type was chosen for UPPER()"
+    weight: 0.5

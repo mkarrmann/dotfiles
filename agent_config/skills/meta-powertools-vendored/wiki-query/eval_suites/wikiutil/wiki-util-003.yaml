@@ -1,0 +1,44 @@
+id: wiki-util-003
+name: List empty subpages
+category: wikiutil
+prompt: Find all empty wiki subpages under Platform_Team/Documentation.
+description: Tests that the agent uses WikiUtil --list-empty-pages to find empty subpages
+expected_behavior: Agent uses phps WikiUtil --list-empty-pages to find empty subpages under the path
+eval_target: response
+mock_data: |
+  WikiUtil --list-empty-pages Platform_Team/Documentation output:
+    Empty subpages of Platform_Team/Documentation:
+    - Platform_Team/Documentation/Migration_Guide (created: 2025-09-01, last edited: 2025-09-01)
+    - Platform_Team/Documentation/FAQ (created: 2025-10-15, last edited: 2025-10-15)
+    - Platform_Team/Documentation/Troubleshooting/Known_Issues (created: 2026-01-05, last edited: 2026-01-05)
+    Total: 3 empty pages
+fail_on_unmocked_command: true
+intercept_patterns:
+- graphql_wiki_content
+- 'jf graphql'
+- WikiUtil
+- 'phps '
+intercept_mcp_tools:
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent return a list of empty subpages under Platform_Team/Documentation?
+    weight: 3
+    rubric:
+      5: Agent returned all 3 empty subpages with their paths
+      3: Agent returned some empty pages but missed entries
+      1: Agent did not return any empty page listing
+  - question: Did the agent use phps WikiUtil --list-empty-pages?
+    weight: 2
+    rubric:
+      5: Agent used phps WikiUtil --list-empty-pages "Platform_Team/Documentation"
+      3: Agent used an alternative method to find empty pages
+      1: Agent did not attempt to find empty pages
+project: wiki-query-evals
+target_skills:
+- fbcode/claude-templates/components/skills/wiki-query/SKILL.md
+working_directory: ~/fbsource/fbcode

@@ -1,0 +1,34 @@
+id: gdocs-edge-002
+name: Warn about --text format being lossy
+category: edge-cases
+prompt: Read https://docs.google.com/document/d/1abc123/edit in plain text format.
+description: Tests that agent warns about --text discarding formatting
+expected_behavior: Agent warns that --text is lossy and suggests ghtml or markdown
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Formatted Doc
+  Content (ghtml): Contains bold, italic, hyperlinks, comments, and a table.
+  Content (text): Plain text with all formatting stripped.
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent: []
+  semantic_checks:
+  - question: Did the agent warn that plain text format discards formatting, or suggest ghtml/markdown as alternatives?
+    weight: 3
+    rubric:
+      5: Agent warned about --text being lossy and suggested ghtml or markdown, or read the doc and noted formatting loss
+      3: Agent read in text format without warning but delivered the content
+      1: Agent failed to read the document
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

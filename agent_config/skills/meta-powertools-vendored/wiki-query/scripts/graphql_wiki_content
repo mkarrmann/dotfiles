@@ -1,0 +1,41 @@
+#!/bin/bash
+# Get wiki page content (markdown for PAGELET, plain text for LEXICAL)
+# Usage: graphql_wiki_content <wiki_path>
+#   wiki_path: Path to wiki page (e.g., "Main_Page/Sub_Page")
+#
+# Examples:
+#   graphql_wiki_content "GraphQL"
+#   graphql_wiki_content "Meta_Account_Access_Eng_Wiki/RL_Account_Access/Development_Guide/Backend_APIs/GraphQL/Making_GraphQL_Requests"
+
+set -e
+
+WIKI_PATH="$1"
+
+if [ -z "$WIKI_PATH" ]; then
+    echo "Usage: $0 <wiki_path>"
+    echo "  wiki_path: Path to wiki page"
+    echo ""
+    echo "Examples:"
+    echo "  $0 \"GraphQL\""
+    echo "  $0 \"Main_Page/Sub_Page\""
+    exit 1
+fi
+
+jf graphql --query "query {
+  intern_wiki_title(title: \"$WIKI_PATH\") {
+    page {
+      content_renderer_type
+      latest_revision {
+        content_body
+        content_plain_text
+      }
+    }
+  }
+}" | jq -r '
+  .intern_wiki_title.page as $page |
+  if $page.content_renderer_type == "PAGELET" then
+    $page.latest_revision.content_body
+  else
+    $page.latest_revision.content_plain_text
+  end
+'

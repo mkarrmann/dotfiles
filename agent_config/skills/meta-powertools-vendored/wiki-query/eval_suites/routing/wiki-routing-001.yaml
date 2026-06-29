@@ -1,0 +1,30 @@
+id: wiki-routing-001
+name: Parse internalfb.com wiki URL to extract path
+category: routing
+prompt: What is the wiki path for this URL? https://www.internalfb.com/wiki/Reliability_Eng/SRE_Handbook/Incident_Response
+description: Tests that the agent correctly extracts the wiki path from an internalfb.com URL
+expected_behavior: Agent extracts the path Reliability_Eng/SRE_Handbook/Incident_Response by removing the URL prefix
+eval_target: response
+fail_on_unmocked_command: true
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent correctly extract the wiki path as Reliability_Eng/SRE_Handbook/Incident_Response?
+    weight: 3
+    rubric:
+      5: Agent clearly stated the path is Reliability_Eng/SRE_Handbook/Incident_Response and explained the extraction
+      3: Agent extracted the correct path but without explanation of the process
+      1: Agent did not extract the path or extracted it incorrectly
+  - question: Did the agent explain that the path is obtained by removing the https://www.internalfb.com/wiki/ prefix?
+    weight: 2
+    rubric:
+      5: Agent explained the URL-to-path conversion by removing the prefix and any trailing slash
+      3: Agent mentioned the prefix but was vague about the conversion
+      1: Agent did not explain the conversion process
+project: wiki-query-evals
+target_skills:
+- fbcode/claude-templates/components/skills/wiki-query/SKILL.md
+working_directory: ~/fbsource/fbcode

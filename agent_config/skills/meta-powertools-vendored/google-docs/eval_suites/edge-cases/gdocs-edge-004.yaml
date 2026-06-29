@@ -1,0 +1,40 @@
+id: gdocs-edge-004
+name: Revision history
+category: edge-cases
+prompt: Show me the revision history of https://docs.google.com/document/d/1abc123/edit
+description: Tests listing document revision history
+expected_behavior: Agent uses revisions command and lists revision dates/authors
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Design Doc
+  Revisions:
+    - id: rev001, date: 2026-03-01 09:00, author: Alice, size: 2.1 KB
+    - id: rev002, date: 2026-03-05 14:30, author: Bob, size: 3.5 KB
+    - id: rev003, date: 2026-03-08 11:15, author: Alice, size: 4.2 KB
+    - id: rev004, date: 2026-03-10 16:00, author: Carol, size: 5.0 KB
+    - id: rev005, date: 2026-03-12 10:45, author: Alice, size: 5.8 KB
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent list the revision history with dates and authors?
+    weight: 3
+    rubric:
+      5: Agent listed revisions with dates, authors, and revision IDs
+      3: Agent listed some revisions but details were incomplete
+      1: Agent did not list revision history
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

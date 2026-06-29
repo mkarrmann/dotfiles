@@ -1,0 +1,512 @@
+#!/bin/bash
+# Fetch detailed test output from CI signals
+# Usage: fetch_test_details <diff_number> [options]
+#
+# Options:
+#   --test <pattern>  Filter to tests matching pattern
+#   --status <STATUS> Filter by status: FAILED or WARNING (default: all, FAILED first)
+#   --limit <N>       Only fetch first N tests (useful for quick debugging)
+#   --json            Output structured JSON instead of human-readable text
+#   --brief           Show artifact listing only, no previews
+#
+# Exit codes:
+#   0 - Success (artifacts downloaded)
+#   1 - No artifacts found or all expired
+#   2 - Bad arguments or missing dependencies
+
+set -e
+set -o pipefail
+shopt -s nullglob
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DIFF_NUM=""
+TEST_FILTER=""
+STATUS_FILTER=""  # Filter by status: FAILED, WARNING, or empty for all
+LIMIT=0  # 0 means no limit
+JSON_MODE=false
+BRIEF_MODE=false
+PREVIEW_LINES=30
+LARGE_FILE_THRESHOLD=51200  # 50KB
+VERY_LARGE_THRESHOLD=1048576  # 1MB
+
+# Locate TestX CLI - search multiple possible locations
+find_testx() {
+  # Try to find fbcode root from current directory
+  local fbcode_from_pwd=""
+  local current_dir="$PWD"
+  while [ "$current_dir" != "/" ]; do
+    if [ -d "$current_dir/tae/testx/scripts" ]; then
+      fbcode_from_pwd="$current_dir/tae/testx/scripts/testx"
+      break
+    fi
+    # Check if we're in an fbcode subdirectory
+    if [ "$(basename "$current_dir")" = "fbcode" ] && [ -d "$current_dir/tae/testx/scripts" ]; then
+      fbcode_from_pwd="$current_dir/tae/testx/scripts/testx"
+      break
+    fi
+    current_dir="$(dirname "$current_dir")"
+  done
+
+  local candidates=(
+    "$fbcode_from_pwd"
+    "$HOME/fbsource/fbcode/tae/testx/scripts/testx"
+    "/data/users/$USER/fbsource/fbcode/tae/testx/scripts/testx"
+    "$(command -v testx 2>/dev/null || echo "")"
+  )
+
+  for candidate in "${candidates[@]}"; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Human-readable file size
+human_size() {
+  local bytes=$1
+  if [ "$bytes" -ge 1048576 ]; then
+    echo "$(awk "BEGIN {printf \"%.1f\", $bytes/1048576}") MB"
+  elif [ "$bytes" -ge 1024 ]; then
+    echo "$(awk "BEGIN {printf \"%.1f\", $bytes/1024}") KB"
+  else
+    echo "$bytes B"
+  fi
+}
+
+# Check if file is text
+is_text_file() {
+  local filepath="$1"
+  file --brief --mime-type "$filepath" 2>/dev/null | grep -q "^text/"
+}
+
+# Log to stderr
+log() {
+  echo "$@" >&2
+}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --test)
+      if [ -z "$2" ] || [[ "$2" == -* ]]; then
+        echo "Error: --test requires a value" >&2
+        exit 2
+      fi
+      TEST_FILTER="$2"
+      shift 2
+      ;;
+    --status)
+      if [ -z "$2" ] || [[ "$2" == -* ]]; then
+        echo "Error: --status requires a value (FAILED or WARNING)" >&2
+        exit 2
+      fi
+      if [[ "$2" != "FAILED" && "$2" != "WARNING" ]]; then
+        echo "Error: --status must be FAILED or WARNING" >&2
+        exit 2
+      fi
+      STATUS_FILTER="$2"
+      shift 2
+      ;;
+    --limit)
+      if [ -z "$2" ] || [[ "$2" == -* ]]; then
+        echo "Error: --limit requires a number" >&2
+        exit 2
+      fi
+      if ! [[ "$2" =~ ^[0-9]+$ ]]; then
+        echo "Error: --limit requires a positive integer" >&2
+        exit 2
+      fi
+      LIMIT="$2"
+      shift 2
+      ;;
+    --json)
+      JSON_MODE=true
+      shift
+      ;;
+    --brief)
+      BRIEF_MODE=true
+      shift
+      ;;
+    -h|--help)
+      cat <<EOF
+Usage: $0 <diff_number> [options]
+
+Fetches detailed test output (stdout, stderr, logs, sanitizer reports) for failing CI tests.
+
+Options:
+  --test <pattern>  Filter to tests matching pattern
+  --status <STATUS> Filter by status: FAILED or WARNING (default: all, sorted FAILED first)
+  --limit <N>       Only fetch first N tests (useful for quick debugging with many failures)
+  --json            Output structured JSON instead of human-readable text
+  --brief           Show artifact listing only, no previews
+
+Examples:
+  $0 D90078683                    # Fetch all failing test details (FAILED first)
+  $0 D90078683 --status FAILED    # Only fetch FAILED tests (skip WARNINGs)
+  $0 D90078683 --test rocksdb     # Filter to tests matching 'rocksdb'
+  $0 D90078683 --limit 5          # Only fetch first 5 tests (quick debugging)
+  $0 D90078683 --json             # Output as JSON for programmatic use
+  $0 D90078683 --brief            # Quick listing without previews
+
+Exit codes:
+  0 - Success (artifacts downloaded)
+  1 - No artifacts found or all expired
+  2 - Bad arguments or missing dependencies
+
+Note: For diffs with many test failures (50+), use --limit to fetch a subset first.
+      Fetching all artifacts can take several minutes.
+      Tests are sorted by status (FAILED before WARNING) to prioritize critical failures.
+EOF
+      exit 0
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      echo "Use --help for usage information" >&2
+      exit 2
+      ;;
+    *)
+      DIFF_NUM="$1"
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$DIFF_NUM" ]; then
+  echo "Error: diff number is required" >&2
+  echo "Use --help for usage information" >&2
+  exit 2
+fi
+
+# Validate dependencies
+if ! command -v jq &> /dev/null; then
+  echo "Error: jq is required but not installed." >&2
+  echo "Install with: sudo dnf install jq" >&2
+  exit 2
+fi
+
+TESTX=$(find_testx) || {
+  echo "Error: TestX CLI not found." >&2
+  echo "Searched locations:" >&2
+  echo "  - Walking up from pwd to find fbcode/tae/testx/scripts/testx" >&2
+  echo "  - ~/fbsource/fbcode/tae/testx/scripts/testx" >&2
+  echo "  - /data/users/\$USER/fbsource/fbcode/tae/testx/scripts/testx" >&2
+  echo "  - /data/users/\$USER/fbsource8/fbcode/tae/testx/scripts/testx" >&2
+  echo "Make sure you're running from within an fbsource checkout." >&2
+  exit 2
+}
+
+# Cleanup old ci-debug directories (older than 7 days)
+cleanup_old_artifacts() {
+  local max_age_days=7
+  local now
+  now=$(date +%s)
+  local cleaned=0
+
+  for dir in /tmp/ci-debug-D*; do
+    [ -d "$dir" ] || continue
+
+    # Extract timestamp from directory name (format: ci-debug-D<num>-YYYYMMDD-HHMMSS)
+    local dirname
+    dirname=$(basename "$dir")
+    if [[ ! "$dirname" =~ -([0-9]{8})-([0-9]{6})$ ]]; then
+      continue
+    fi
+
+    local date_part="${BASH_REMATCH[1]}"
+    local time_part="${BASH_REMATCH[2]}"
+
+    # Parse YYYYMMDD HHMMSS into epoch
+    # Note: Uses GNU date (-d flag). On macOS, this silently fails (2>/dev/null).
+    # This is acceptable since cleanup is best-effort and devservers use Linux.
+    local dir_epoch
+    dir_epoch=$(date -d "${date_part:0:4}-${date_part:4:2}-${date_part:6:2} ${time_part:0:2}:${time_part:2:2}:${time_part:4:2}" +%s 2>/dev/null)
+
+    if [ -n "$dir_epoch" ]; then
+      local age_days=$(( (now - dir_epoch) / 86400 ))
+      if [ "$age_days" -ge "$max_age_days" ]; then
+        rm -rf "$dir" 2>/dev/null && cleaned=$((cleaned + 1))
+      fi
+    fi
+  done
+
+  if [ "$cleaned" -gt 0 ]; then
+    log "Cleaned up $cleaned old artifact directory(s) (>$max_age_days days old)"
+  fi
+}
+
+# Remove 'D' prefix if provided
+DIFF_NUM="${DIFF_NUM#D}"
+
+# Cleanup old artifact directories before creating new ones
+cleanup_old_artifacts
+
+# Create timestamped output directory
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+OUTPUT_DIR="/tmp/ci-debug-D${DIFF_NUM}-${TIMESTAMP}"
+mkdir -p "$OUTPUT_DIR"
+
+log "=== Fetching Test Details for D${DIFF_NUM} ==="
+log "Output directory: $OUTPUT_DIR"
+log ""
+
+# Step 1: Query CI signals
+log "Querying CI signals..."
+SIGNALS_FILE="$OUTPUT_DIR/signals.json"
+if ! "$SCRIPT_DIR/query_ci_signals" "D${DIFF_NUM}" --types TEST > "$SIGNALS_FILE" 2>&1; then
+  log "Error: Failed to query CI signals for D${DIFF_NUM}"
+  log "Check $SIGNALS_FILE for details."
+  exit 1
+fi
+
+# Step 2: Extract diagnostic IDs from TESTX_DIAGNOSTICS URIs
+# Sort by status (FAILED before WARNING) to prioritize critical failures
+log "Extracting diagnostic IDs..."
+
+# Build status filter for jq
+STATUS_JQ_FILTER=""
+if [ -n "$STATUS_FILTER" ]; then
+  STATUS_JQ_FILTER="| select(.status == \"$STATUS_FILTER\")"
+  log "Filtering to $STATUS_FILTER tests only"
+fi
+
+# Extract diagnostic IDs with status, sort by status (FAILED first), then extract just the ID
+# Note: Alphabetical sort puts FAILED before WARNING (F < W), which is the desired order.
+# If new statuses are added, this sort may need adjustment.
+DIAG_IDS=$(jq -r ".signalview_signals.signals.nodes[] $STATUS_JQ_FILTER |
+  . as \$node |
+  .external_uris[]? |
+  select(.type == \"TESTX_DIAGNOSTICS\") |
+  \"\(\$node.status)|\(.uri | capture(\".*/diagnostics/(?<id>[^/]+)/?\") | .id)\"" "$SIGNALS_FILE" 2>/dev/null | \
+  sort -u | \
+  sort -t'|' -k1,1 | \
+  cut -d'|' -f2)
+
+if [ -z "$DIAG_IDS" ]; then
+  log "No TESTX_DIAGNOSTICS found in CI signals."
+  log "This may happen if:"
+  log "  - The diff has no test failures"
+  log "  - The test runs haven't completed yet"
+  log "  - The artifacts have expired"
+  log ""
+  log "Check $SIGNALS_FILE for details."
+
+  if [ "$JSON_MODE" = true ]; then
+    jq -n \
+      --arg schema_version "1.0" \
+      --arg fetched_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --arg diff "D${DIFF_NUM}" \
+      --arg output_dir "$OUTPUT_DIR" \
+      '{schema_version: $schema_version, fetched_at: $fetched_at, diff: $diff, output_dir: $output_dir, tests: []}'
+  fi
+  exit 1
+fi
+
+# Count diagnostic IDs
+DIAG_COUNT=$(echo "$DIAG_IDS" | grep -c . || echo 0)
+log "Found $DIAG_COUNT failing test(s) with artifacts"
+
+# Apply limit if specified
+if [ "$LIMIT" -gt 0 ] && [ "$DIAG_COUNT" -gt "$LIMIT" ]; then
+  log "Limiting to first $LIMIT tests (use --limit 0 or omit to fetch all)"
+  DIAG_IDS=$(echo "$DIAG_IDS" | head -n "$LIMIT")
+  DIAG_COUNT="$LIMIT"
+fi
+
+log ""
+
+# Initialize counters for summary
+PROCESSED=0
+SUCCEEDED=0
+FAILED=0
+
+# Initialize JSON output array
+JSON_TESTS="[]"
+
+# Step 3: Fetch artifacts for each diagnostic ID
+for DIAG_ID in $DIAG_IDS; do
+  PROCESSED=$((PROCESSED + 1))
+  # Get test name from CI signals for display
+  TEST_NAME=$(jq -r --arg diag "$DIAG_ID" '.signalview_signals.signals.nodes[] |
+    select(.external_uris[]? | select(.type == "TESTX_DIAGNOSTICS") | .uri | contains($diag)) |
+    .name' "$SIGNALS_FILE" | head -1)
+
+  # Apply filter if specified
+  if [ -n "$TEST_FILTER" ] && [[ ! "$TEST_NAME" == *"$TEST_FILTER"* ]]; then
+    continue
+  fi
+
+  ARTIFACT_DIR="$OUTPUT_DIR/$DIAG_ID"
+  FETCH_STATUS="success"
+
+  # Progress indicator (suppressed in JSON mode for clean piping)
+  if [ "$JSON_MODE" = false ]; then
+    echo -ne "\rFetching test $PROCESSED/$DIAG_COUNT..." >&2
+  fi
+
+  # Fetch artifacts
+  if ! "$TESTX" --caller ci-signals artifacts get "$DIAG_ID" --output-dir "$ARTIFACT_DIR" >/dev/null 2>&1; then
+    FETCH_STATUS="failed"
+    FAILED=$((FAILED + 1))
+  else
+    SUCCEEDED=$((SUCCEEDED + 1))
+  fi
+
+  # Collect artifact information
+  ARTIFACT_LIST=()
+  JSON_ARTIFACTS="[]"
+
+  if [ -d "$ARTIFACT_DIR" ]; then
+    for artifact in "$ARTIFACT_DIR"/*; do
+      if [ -f "$artifact" ]; then
+        local_name=$(basename "$artifact")
+        local_size=$(stat -c %s "$artifact" 2>/dev/null || echo 0)
+        local_is_text=$(is_text_file "$artifact" && echo "true" || echo "false")
+        local_is_large=$( [ "$local_size" -ge "$LARGE_FILE_THRESHOLD" ] && echo "true" || echo "false" )
+
+        ARTIFACT_LIST+=("$artifact|$local_name|$local_size|$local_is_text|$local_is_large")
+
+        # Add to JSON artifacts array
+        JSON_ARTIFACTS=$(echo "$JSON_ARTIFACTS" | jq \
+          --arg name "$local_name" \
+          --arg path "$artifact" \
+          --argjson size "$local_size" \
+          --argjson is_text "$local_is_text" \
+          --argjson is_large "$local_is_large" \
+          '. + [{name: $name, path: $path, size_bytes: $size, is_text: $is_text, is_large: $is_large}]')
+      fi
+    done
+  fi
+
+  # Add test to JSON array
+  JSON_TESTS=$(echo "$JSON_TESTS" | jq \
+    --arg diag_id "$DIAG_ID" \
+    --arg test_name "$TEST_NAME" \
+    --arg status "$FETCH_STATUS" \
+    --argjson artifacts "$JSON_ARTIFACTS" \
+    '. + [{diagnostic_id: $diag_id, test_name: $test_name, status: $status, artifacts: $artifacts}]')
+
+  # Human-readable output
+  if [ "$JSON_MODE" = false ]; then
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "Test: $TEST_NAME"
+    echo "Diagnostic ID: $DIAG_ID"
+    echo ""
+
+    if [ "$FETCH_STATUS" = "failed" ]; then
+      echo "Warning: Failed to fetch artifacts (may have expired)"
+      echo ""
+      continue
+    fi
+
+    # Sort artifacts: stdout.log first, then stderr.log, then test_details.txt, then others
+    priority_order() {
+      case "$1" in
+        stdout.log) echo "1" ;;
+        stderr.log) echo "2" ;;
+        test_details.txt) echo "3" ;;
+        *) echo "9" ;;
+      esac
+    }
+
+    # Display artifact listing with sizes
+    echo "Downloaded artifacts:"
+    for entry in "${ARTIFACT_LIST[@]}"; do
+      IFS='|' read -r filepath filename filesize is_text is_large <<< "$entry"
+      size_display=$(human_size "$filesize")
+      large_marker=""
+      [ "$is_large" = "true" ] && large_marker=" <- Large"
+      printf "  %-50s %10s%s\n" "$filepath" "$size_display" "$large_marker"
+    done
+    echo ""
+
+    # Show previews unless --brief mode
+    if [ "$BRIEF_MODE" = false ]; then
+      # Sort artifacts by priority for preview
+      SORTED_ARTIFACTS=()
+      for entry in "${ARTIFACT_LIST[@]}"; do
+        IFS='|' read -r filepath filename filesize is_text is_large <<< "$entry"
+        priority=$(priority_order "$filename")
+        SORTED_ARTIFACTS+=("$priority|$entry")
+      done
+
+      mapfile -t SORTED_ARTIFACTS < <(sort <<<"${SORTED_ARTIFACTS[*]}")
+
+      for sorted_entry in "${SORTED_ARTIFACTS[@]}"; do
+        entry="${sorted_entry#*|}"
+        IFS='|' read -r filepath filename filesize is_text is_large <<< "$entry"
+
+        # Skip non-text files
+        if [ "$is_text" != "true" ]; then
+          echo "=== $filename (binary file, skipping preview) ==="
+          echo ""
+          continue
+        fi
+
+        # Skip very large files
+        if [ "$filesize" -ge "$VERY_LARGE_THRESHOLD" ]; then
+          echo "=== $filename ($(human_size "$filesize"), too large for preview) ==="
+          echo "View with: cat '$filepath' | less"
+          echo ""
+          continue
+        fi
+
+        # Check for empty files
+        if [ "$filesize" -eq 0 ]; then
+          echo "=== $filename (empty file) ==="
+          echo ""
+          continue
+        fi
+
+        echo "=== $filename (preview, $PREVIEW_LINES lines) ==="
+        head -n "$PREVIEW_LINES" "$filepath"
+
+        lines=$(wc -l < "$filepath")
+        if [ "$lines" -gt "$PREVIEW_LINES" ]; then
+          echo "... (truncated, $lines total lines)"
+        fi
+        echo ""
+      done
+    fi
+
+    echo "Tip: View full output:"
+    echo "   cat '$ARTIFACT_DIR/stdout.log' | less"
+    echo ""
+  fi
+done
+
+# Clear progress line (only if we showed progress)
+if [ "$JSON_MODE" = false ]; then
+  echo -e "\r\033[K" >&2
+fi
+
+# Final output
+if [ "$JSON_MODE" = true ]; then
+  jq -n \
+    --arg schema_version "1.0" \
+    --arg fetched_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg diff "D${DIFF_NUM}" \
+    --arg output_dir "$OUTPUT_DIR" \
+    --argjson tests "$JSON_TESTS" \
+    --argjson succeeded "$SUCCEEDED" \
+    --argjson failed "$FAILED" \
+    '{schema_version: $schema_version, fetched_at: $fetched_at, diff: $diff, output_dir: $output_dir, summary: {succeeded: $succeeded, failed: $failed}, tests: $tests}'
+else
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+  echo "Summary: $SUCCEEDED succeeded, $FAILED failed (of $DIAG_COUNT total)"
+  echo ""
+  echo "All artifacts saved to: $OUTPUT_DIR"
+  if [ "$FAILED" -gt 0 ]; then
+    echo ""
+    echo "Note: $FAILED test(s) failed to download (artifacts may have expired)."
+  fi
+fi
+
+# Exit 1 only if we got nothing useful (all downloads failed)
+if [ "$SUCCEEDED" -eq 0 ] && [ "$PROCESSED" -gt 0 ]; then
+  exit 1
+fi
+
+exit 0

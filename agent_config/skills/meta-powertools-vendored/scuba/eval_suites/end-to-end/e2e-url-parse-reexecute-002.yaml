@@ -1,0 +1,59 @@
+id: e2e-url-parse-reexecute-002
+suite: end-to-end
+project: scuba-evals
+description: Tests parsing a Scuba URL and re-executing with modifications
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user shares a Scuba URL and wants to modify and re-run the query."
+question: "Parse this Scuba URL and re-execute it but change the time range to the last 24 hours and add a filter for query_type = 'sql': https://www.internalfb.com/intern/scuba/query/?dataset=scuba_queries&pool=uber&view=table&drillstate=N4IgxgDgFghgTgSwPYBcBGADAJgSwG4A"
+
+mock_data: |
+  meta scuba.dataset read-url response:
+    parameters:
+      dataset: scuba_queries
+      view: table
+      metric: COUNT
+      group_by: ["query_source"]
+      hours: 3
+      limit: 50
+    source_url: "https://www.internalfb.com/intern/scuba/query/?dataset=scuba_queries&pool=uber&view=table&drillstate=N4IgxgDgFghgTgSwPYBcBGADAJgSwG4A"
+  meta scuba.column values response for query_type:
+    values: ["sql", "graphql", "presto_sql", "drilldown", "time_series", "samples"]
+  meta scuba.dataset query response (modified):
+    results:
+      query_source | COUNT
+      datamate     | 8921
+      scuba_ui     | 4567
+      api          | 2345
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: calls_read_url
+    type: tool_called
+    tool_name: Bash
+    description: "Agent parses the URL to extract query parameters"
+    arguments:
+      command: "meta scuba.dataset read-url"
+  - id: calls_query
+    type: tool_called
+    tool_name: Bash
+    description: "Agent re-executes with modified parameters"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: presents_results
+    description: "Agent presents modified query results"
+    check: "Response shows query results with query_source and COUNT values"
+
+quality_factors:
+  - id: checks_column_values
+    description: "Checks column values for query_type before filtering (CR1)"
+    weight: 0.4
+  - id: explains_original_query
+    description: "Explains what the original URL's query was doing"
+    weight: 0.3
+  - id: presents_modified_results
+    description: "Shows the new results and explains what changed from the original query"
+    weight: 0.3

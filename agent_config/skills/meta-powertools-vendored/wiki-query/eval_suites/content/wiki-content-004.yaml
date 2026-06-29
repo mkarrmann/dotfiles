@@ -1,0 +1,63 @@
+id: wiki-content-004
+name: Get deeply nested wiki path content
+category: content
+prompt: Read the wiki page at Meta_Account_Access_Eng_Wiki/RL_Account_Access/Development_Guide/Backend_APIs/GraphQL/Making_GraphQL_Requests.
+description: Tests that the agent handles deeply nested wiki paths correctly
+expected_behavior: Agent uses scripts/graphql_wiki_content with the full nested path and returns the content
+eval_target: response
+mock_data: |
+  Wiki path: Meta_Account_Access_Eng_Wiki/RL_Account_Access/Development_Guide/Backend_APIs/GraphQL/Making_GraphQL_Requests
+  Editor type: PAGELET (markdown)
+  Content (markdown):
+    # Making GraphQL Requests
+
+    ## Authentication
+    All GraphQL requests require a valid access token. Use the OAuth flow to obtain one.
+
+    ## Endpoint
+    POST https://graph.intern.facebook.com/graphql
+
+    ## Request Format
+    ```json
+    {
+      "query": "query { viewer { name } }",
+      "variables": {}
+    }
+    ```
+
+    ## Rate Limits
+    - 1000 requests per minute per token
+    - Batch requests count as a single request
+
+    ## Error Handling
+    Check the "errors" field in the response for any issues.
+fail_on_unmocked_command: true
+intercept_patterns:
+- graphql_wiki_content
+- 'jf graphql'
+- WikiUtil
+- 'phps '
+intercept_mcp_tools:
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent return the GraphQL documentation content including endpoint, request format, and rate limits?
+    weight: 3
+    rubric:
+      5: Agent returned full content including authentication, endpoint, request format, rate limits, and error handling sections
+      3: Agent returned partial content with some sections missing
+      1: Agent did not return any content
+  - question: Did the agent pass the full nested path correctly to graphql_wiki_content?
+    weight: 2
+    rubric:
+      5: Agent used scripts/graphql_wiki_content with the complete nested path
+      3: Agent used the script but may have truncated or modified the path
+      1: Agent did not use the graphql_wiki_content script
+project: wiki-query-evals
+target_skills:
+- fbcode/claude-templates/components/skills/wiki-query/SKILL.md
+working_directory: ~/fbsource/fbcode

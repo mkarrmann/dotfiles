@@ -1,0 +1,77 @@
+#!/bin/bash
+# Query Arctic AI code-review insights (spotlight, drift, intent, evidence,
+# category) for a Phabricator diff. These are NOT CI signals and are NOT part of
+# land_tab_signals — they come from the Arctic pipeline and are read via the
+# `meta phabricator.diff arctic` CLI.
+#
+# Spotlight = code regions an AI reviewer flagged for human attention.
+# Drift     = how far the change deviated from the author's stated intent (0-100).
+# Evidence  = evidence items and test-plan gaps.
+# The `resolution` column reflects what the author already addressed in
+# Preflight — skip findings that are already resolved.
+#
+# Usage: query_arctic_insights <diff_number> [--insight-type TYPES] [--json]
+
+set -e
+
+DIFF_NUM=""
+INSIGHT_TYPE=""
+JSON_OUTPUT=false
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --insight-type)
+      INSIGHT_TYPE="$2"
+      shift 2
+      ;;
+    --json)
+      JSON_OUTPUT=true
+      shift
+      ;;
+    -*)
+      echo "Unknown option: $1"
+      exit 1
+      ;;
+    *)
+      if [ -z "$DIFF_NUM" ]; then
+        DIFF_NUM="$1"
+      fi
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$DIFF_NUM" ]; then
+  echo "Usage: $0 <diff_number> [--insight-type TYPES] [--json]"
+  echo ""
+  echo "Query Arctic AI code-review insights for a Phabricator diff."
+  echo "Insight types: intent, drift, spotlight, evidence, category."
+  echo "The 'resolution' column reflects what the author already addressed in"
+  echo "Preflight — skip findings that are already resolved."
+  echo ""
+  echo "Options:"
+  echo "  --insight-type TYPES   Comma-separated subset (e.g. spotlight,drift)"
+  echo "  --json                 Output raw JSON instead of a table"
+  echo ""
+  echo "Examples:"
+  echo "  $0 D12345                          # All Arctic insights (table)"
+  echo "  $0 D12345 --insight-type spotlight # Only spotlight findings"
+  echo "  $0 D12345 --json                   # Raw JSON for scripting"
+  exit 1
+fi
+
+# Normalize to a D-prefixed number for the meta CLI.
+DIFF_NUM="D${DIFF_NUM#D}"
+
+ARGS=(phabricator.diff arctic --number="$DIFF_NUM")
+if [ -n "$INSIGHT_TYPE" ]; then
+  ARGS+=(--insight-type="$INSIGHT_TYPE")
+fi
+if [ "$JSON_OUTPUT" = true ]; then
+  ARGS+=(--output=json)
+fi
+
+# The command exits 0 with an empty-state message when Arctic has not run for
+# the diff, so no special-casing is needed here.
+meta "${ARGS[@]}"

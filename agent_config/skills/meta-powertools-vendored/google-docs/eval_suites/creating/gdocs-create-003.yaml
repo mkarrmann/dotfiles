@@ -1,0 +1,37 @@
+id: gdocs-create-003
+name: Create doc in specific folder
+category: creating
+prompt: Create a Google Doc called 'Budget 2026' in the folder with ID 1folder789.
+description: Tests creating a doc in a specific Google Drive folder
+expected_behavior: Agent uses --folder flag or folder_id parameter
+eval_target: response
+mock_data: |
+  Create result:
+    Document ID: 1budget001
+    Title: Budget 2026
+    Folder: 1folder789
+    URL: https://docs.google.com/document/d/1budget001/edit
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent create a doc in the specified folder using --folder or equivalent?
+    weight: 3
+    rubric:
+      5: Agent created the doc in folder 1folder789 and returned a link
+      3: Agent created the doc but unclear if it was placed in the correct folder
+      1: Agent did not use the folder parameter
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

@@ -1,0 +1,44 @@
+id: wiki-util-005
+name: List deleted wiki subpages
+category: wikiutil
+prompt: Show me any deleted wiki subpages under Legacy_Services/Deprecated_APIs.
+description: Tests that the agent uses WikiUtil --list-deleted-wikis to find deleted subpages
+expected_behavior: Agent uses phps WikiUtil --list-deleted-wikis to list deleted subpages
+eval_target: response
+mock_data: |
+  WikiUtil --list-deleted-wikis Legacy_Services/Deprecated_APIs output:
+    Deleted subpages of Legacy_Services/Deprecated_APIs:
+    - Legacy_Services/Deprecated_APIs/V1_Auth (deleted: 2025-08-20, deleted by: admin)
+    - Legacy_Services/Deprecated_APIs/V1_Users (deleted: 2025-08-20, deleted by: admin)
+    - Legacy_Services/Deprecated_APIs/Old_Webhooks (deleted: 2026-01-10, deleted by: janedoe)
+    Total: 3 deleted pages
+fail_on_unmocked_command: true
+intercept_patterns:
+- graphql_wiki_content
+- 'jf graphql'
+- WikiUtil
+- 'phps '
+intercept_mcp_tools:
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent return a list of deleted subpages under Legacy_Services/Deprecated_APIs?
+    weight: 3
+    rubric:
+      5: Agent returned all 3 deleted subpages with their paths and deletion info
+      3: Agent returned some deleted pages but missed entries or details
+      1: Agent did not return any deleted page listing
+  - question: Did the agent use phps WikiUtil --list-deleted-wikis?
+    weight: 2
+    rubric:
+      5: Agent used phps WikiUtil --list-deleted-wikis "Legacy_Services/Deprecated_APIs"
+      3: Agent used an alternative method to find deleted pages
+      1: Agent did not attempt to find deleted pages
+project: wiki-query-evals
+target_skills:
+- fbcode/claude-templates/components/skills/wiki-query/SKILL.md
+working_directory: ~/fbsource/fbcode

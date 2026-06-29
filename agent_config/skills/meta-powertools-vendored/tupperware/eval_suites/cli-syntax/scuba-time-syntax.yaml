@@ -1,0 +1,30 @@
+id: scuba-time-syntax
+suite: cli-syntax
+project: tupperware-evals
+name: Scuba time filtering — use --hours or NOW()-seconds, not INTERVAL
+category: scuba
+description: |
+  Tests that agents use correct Scuba time filtering syntax (--hours=24 or WHERE time >= NOW()-86400)
+  instead of standard SQL INTERVAL syntax which Peregrine does not support.
+question: |
+  I need to query the Scuba table ft303 to check for DR events in the ATG region over the last 6 hours. What is the correct way to specify the time window in my Scuba query? Show me the exact CLI command.
+expected_behavior: |
+  Agent should use --hours=6 for structured queries or WHERE time >= NOW()-21600 for SQL mode.
+  Should NOT use INTERVAL 6 HOUR, NOW() - INTERVAL 6 HOUR, or DATE_SUB syntax.
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  semantic_checks:
+    - question: Agent used --hours flag or NOW()-seconds arithmetic for time filtering (not INTERVAL)?
+      weight: 3
+      rubric:
+        5: Used --hours or NOW()-seconds throughout
+        3: Used wrong syntax once but self-corrected
+        1: Used INTERVAL syntax without correcting
+    - question: Agent ran meta scuba.dataset info to discover column names before querying ft303?
+      weight: 2
+      rubric:
+        5: Discovered columns before querying
+        3: Guessed columns but they were correct
+        1: Guessed wrong column names

@@ -1,0 +1,39 @@
+id: gdocs-edge-005
+name: Replace strips headings warning
+category: edge-cases
+prompt: |-
+  Replace the entire content of https://docs.google.com/document/d/1abc123/edit with this markdown: # New Title
+  ## Section 1
+  Content here
+description: Tests that agent warns about replace stripping headings or uses a workaround
+expected_behavior: Agent uses create --markdown --body=<content> or round-trip workflow (apply --from=<file>) instead of replace, OR warns about heading stripping
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Old Doc
+  meta google.docs replace warning: headings converted to bullet list items when using replace with ghtml containing h1-h6 tags.
+  meta google.docs create --markdown --body result: New doc created successfully with correct heading structure.
+    New document ID: 1newdoc789
+    URL: https://docs.google.com/document/d/1newdoc789/edit
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent: []
+  semantic_checks:
+  - question: Did the agent either warn about the heading stripping issue with replace, or use a workaround like create --markdown --body=<content> or apply --from=<file>?
+    weight: 3
+    rubric:
+      5: Agent warned about the replace heading bug and used create --markdown --body or apply/round-trip as a workaround
+      3: Agent used replace but mentioned the heading limitation
+      1: Agent used replace without any warning about heading stripping
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

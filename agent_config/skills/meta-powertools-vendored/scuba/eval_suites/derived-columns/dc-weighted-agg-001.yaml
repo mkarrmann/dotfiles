@@ -1,0 +1,51 @@
+id: dc-weighted-agg-001
+suite: derived-columns
+project: scuba-evals
+description: Tests weighted aggregation with SUM(value, weight) and type Aggregated (from TP-4)
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "An engineer needs a weighted sum where cpu_time is weighted by total_time_ms."
+question: "Calculate a weighted sum of cpu_time from scuba_queries over the last hour, weighted by total_time_ms, grouped by query_source."
+
+mock_data: |
+  meta scuba.dataset query response with --derived-cols:
+    results:
+      query_source | weighted_cpu_time
+      datamate     | 8934521000
+      scuba_ui     | 4521890000
+      api          | 1234567000
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: uses_query
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.dataset query with --derived-cols"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: uses_derived_cols
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses --derived-cols parameter"
+    arguments:
+      command: "--derived-cols"
+  - id: uses_aggregated_type
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses Aggregated type in --derived-cols"
+    arguments:
+      command: "Aggregated"
+
+quality_factors:
+  - id: uses_two_arg_weighted_syntax
+    description: "Uses Scuba's two-argument weighted SUM(cpu_time, total_time_ms) form"
+    weight: 0.4
+  - id: reads_derived_columns_doc
+    description: "Reads references/derived-columns.md before constructing the query"
+    weight: 0.3
+  - id: presents_results
+    description: "Shows weighted sum results grouped by query_source"
+    weight: 0.3

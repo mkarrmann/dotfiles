@@ -1,0 +1,53 @@
+id: wiki-content-002
+name: Get LEXICAL wiki page content (plain text)
+category: content
+prompt: Fetch the wiki content from Infra_Team/Oncall_Runbook.
+description: Tests that the agent handles LEXICAL (plain text) wiki pages correctly
+expected_behavior: Agent uses scripts/graphql_wiki_content and returns plain text content from a LEXICAL editor page
+eval_target: response
+mock_data: |
+  Wiki path: Infra_Team/Oncall_Runbook
+  Editor type: LEXICAL (plain text)
+  Content (plain text):
+    Oncall Runbook
+
+    When paged, follow these steps:
+
+    Step 1: Check the SEV dashboard for active incidents
+    Step 2: Review the alerting system for triggered alerts
+    Step 3: Identify the affected service and tier
+    Step 4: Follow the relevant mitigation playbook
+    Step 5: Escalate if not resolved within 30 minutes
+
+    Contact: oncall-infra@meta.com
+    Escalation: infra-leads@meta.com
+fail_on_unmocked_command: true
+intercept_patterns:
+- graphql_wiki_content
+- 'jf graphql'
+- WikiUtil
+- 'phps '
+intercept_mcp_tools:
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent return the oncall runbook content including the numbered steps?
+    weight: 3
+    rubric:
+      5: Agent returned the full runbook content with all 5 steps and contact information
+      3: Agent returned partial content with some steps but missing details
+      1: Agent did not return any wiki content
+  - question: Did the agent use the graphql_wiki_content script?
+    weight: 2
+    rubric:
+      5: Agent used scripts/graphql_wiki_content with path Infra_Team/Oncall_Runbook
+      3: Agent used an alternative method that produced results
+      1: Agent did not attempt to fetch the wiki page
+project: wiki-query-evals
+target_skills:
+- fbcode/claude-templates/components/skills/wiki-query/SKILL.md
+working_directory: ~/fbsource/fbcode

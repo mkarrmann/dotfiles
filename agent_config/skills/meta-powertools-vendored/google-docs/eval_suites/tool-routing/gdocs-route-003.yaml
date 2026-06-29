@@ -1,0 +1,45 @@
+id: gdocs-route-003
+name: Handle MCP as last resort
+category: tool-routing
+prompt: What comments are on https://docs.google.com/document/d/1abc123/edit?
+description: Tests that agent tries CLI/Python before falling back to MCP tool
+expected_behavior: Agent tries CLI/Python before falling back to MCP tool
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  meta google.docs.comment list: Error - authentication failed
+  google_api.py: Error - module not found
+  MCP google_docs tool: Success
+    Comments:
+      - id: cmt001, author: Alice, content: "Please review", resolved: false
+      - id: cmt002, author: Bob, content: "Approved", resolved: true
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent eventually return the comments, using whichever tool worked?
+    weight: 3
+    rubric:
+      5: Agent tried CLI first, then fell back to another tool, and returned the comments
+      3: Agent returned comments but did not try CLI first
+      1: Agent did not return comments
+  - question: Did the agent follow the tool hierarchy (CLI > Python > MCP)?
+    weight: 1
+    rubric:
+      5: Agent tried meta google.docs CLI first before falling back
+      3: Agent skipped CLI but still got results
+      1: Agent went directly to MCP without trying CLI
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode

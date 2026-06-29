@@ -1,0 +1,32 @@
+id: task-control-ops-ues
+suite: universal-search
+project: tupperware-evals
+name: "Task Control Ops & Unavailability Events"
+category: core
+question: |
+  What commands and approach would you use to: Are there any active unavailability events or pending task control operations affecting tsp_global/tupperware/universal_search.prod? Is a maintenance train running?
+expected_behavior: |
+  Agent should use TaskControlOps by Job association (from:18, assocObjectType:1).
+eval_target: response
+target_skills:
+  - fbcode/claude-templates/components/skills/tupperware/SKILL.md
+quality_criteria:
+  semantic_checks:
+    - question: "Uses TaskControlOps query (from:18)?"
+      weight: 3
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"
+    - question: "Inspects activeUnavailabilityEvents?"
+      weight: 3
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"
+    - question: "Detects maintenance trains?"
+      weight: 1
+      rubric:
+        5: "Fully satisfies the criterion"
+        3: "Partially satisfies"
+        1: "Does not satisfy"

@@ -1,0 +1,77 @@
+id: e2e-discovery-to-query-001
+suite: end-to-end
+project: scuba-evals
+description: Tests full pipeline from dataset search through column values to dataset query
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A new engineer needs to find and query a dataset they've never used before."
+question: "I need to analyze query performance in Scuba. What's the average CPU time by source over the last hour?"
+
+mock_data: |
+  meta scuba.dataset search response for "query performance":
+    dataset: "scuba_queries"
+  meta scuba.dataset info response with column validation:
+    dataset_info:
+      dataset_name: scuba_queries
+      description: "Query logs for all Scuba queries"
+      column_search_results:
+        searched_columns: ["cpu_time", "query_source"]
+        found_columns: ["cpu_time", "query_source"]
+        not_found_columns: []
+      columns:
+        - column_name: cpu_time
+          column_type: INTEGER
+          format: "%M"
+          description: "CPU time consumed"
+        - column_name: query_source
+          column_type: STRING
+          description: "Source of the query"
+  meta scuba.column values response for query_source:
+    values: ["datamate", "scuba_ui", "api", "graphql_api", "cli", "intern_page"]
+  meta scuba.dataset query response:
+    results:
+      query_source | AVG(cpu_time)
+      datamate     | 125000
+      scuba_ui     | 98000
+      api          | 67000
+      graphql_api  | 45000
+      cli          | 34000
+      intern_page  | 12000
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: calls_dataset_search
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.dataset search to discover the right dataset"
+    arguments:
+      command: "meta scuba.dataset search"
+  - id: calls_dataset_info
+    type: tool_called
+    tool_name: Bash
+    description: "Agent validates columns exist using meta scuba.dataset info"
+    arguments:
+      command: "meta scuba.dataset info"
+  - id: calls_column_values
+    type: tool_called
+    tool_name: Bash
+    description: "Agent checks column values before grouping/filtering (CR1)"
+    arguments:
+      command: "meta scuba.column values"
+  - id: calls_query
+    type: tool_called
+    tool_name: Bash
+    description: "Agent executes the final query"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: validates_before_querying
+    description: "Agent validates columns and checks values BEFORE executing the query"
+    check: "In the tool call sequence, meta scuba.dataset info and meta scuba.column values are called BEFORE meta scuba.dataset query"
+
+quality_factors:
+  - id: converts_format
+    description: "Checks format (%M) and converts cpu_time from milliseconds"
+    weight: 1.0

@@ -1,0 +1,19 @@
+load("@fbcode_macros//build_defs:native_rules.bzl", "buck_filegroup")
+
+oncall("yanowitz_oncall_for_testing")
+
+# Skill files bundled for use by the skill_linter_signal analect in Sandcastle
+buck_filegroup(
+    name = "skill_linter_files",
+    srcs = [
+        "SKILL.md",
+        "references/CODE-REVIEW.md",
+        "references/CONTENT.md",
+        "references/DUPLICATES.md",
+        "references/FRONTMATTER.md",
+        "references/RESOURCES.md",
+    ],
+    visibility = [
+        "//confucius/analects/claude_templates/...",
+    ],
+)

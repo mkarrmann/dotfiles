@@ -1,0 +1,48 @@
+id: cli-join-001
+suite: cli-queries
+project: scuba-evals
+description: Tests JOIN query with all critical rules applied via CLI (from TP-1)
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A data analyst needs to combine data from two Scuba tables to understand query performance by action type."
+question: "Join core_viz_session_actions with scuba_queries on userid. Filter core_viz_session_actions to action = 'scuba_tools_execute_query' and show the average cpu_time from scuba_queries for users who triggered execute_query actions in the last hour, grouped by query_source."
+
+mock_data: |
+  column_values response for action on core_viz_session_actions:
+    values: ["scuba_tools_execute_query", "scuba_tools_column_values", "scuba_tools_dataset_info", "scuba_tools_find_dataset", "drilldown_click", "filter_add"]
+  meta scuba.dataset query --sql response:
+    query_source | avg_cpu_time
+    datamate     | 245000
+    scuba_ui     | 189000
+    api          | 67500
+    cli          | 34200
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: uses_cli
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.dataset query --sql for the JOIN query"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: join_syntax
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses JOIN syntax"
+    arguments:
+      command: "JOIN"
+
+quality_factors:
+  - id: correct_results
+    description: "Returns results grouped by query_source with average cpu_time values matching the mock data"
+    weight: 0.5
+  - id: checks_column_values
+    type: tool_called
+    tool_name: Bash
+    description: "Calls column values for the action column before filtering"
+    arguments:
+      command: "meta scuba.column values"
+    weight: 0.5

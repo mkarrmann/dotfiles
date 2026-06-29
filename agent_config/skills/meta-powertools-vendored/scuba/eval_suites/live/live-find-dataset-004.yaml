@@ -1,0 +1,31 @@
+id: live-find-dataset-004
+suite: live
+project: scuba-evals
+description: Tests real semantic dataset search via meta scuba.dataset search
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "An engineer knows they need query performance data but doesn't know the exact dataset name."
+question: "I need to look at Scuba query performance metrics. Can you find the right dataset and tell me what it contains?"
+
+critical_requirements:
+  - id: calls_dataset_search
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.dataset search for semantic search"
+    arguments:
+      command: "meta scuba.dataset search"
+  - id: identifies_dataset
+    description: "Agent identifies scuba_queries as the relevant dataset"
+    check: "Response identifies scuba_queries (or a query-related dataset) as the result and describes what it contains"
+
+quality_factors:
+  - id: strips_prefix
+    description: "Strips the asset://scuba.dataset/ prefix when presenting the dataset name"
+    weight: 0.3
+  - id: inspects_schema
+    description: "Follows up with meta scuba.dataset info to describe the schema"
+    weight: 0.4
+  - id: suggests_next_steps
+    description: "Suggests what queries the user could run or offers to query the data"
+    weight: 0.3

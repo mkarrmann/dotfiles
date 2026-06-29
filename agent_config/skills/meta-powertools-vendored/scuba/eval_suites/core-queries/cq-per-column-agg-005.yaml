@@ -1,0 +1,37 @@
+id: cq-per-column-agg-005
+suite: core-queries
+project: scuba-evals
+description: Tests aggregate_list_json for per-column aggregations
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A user wants different aggregation types for different columns in a single query."
+question: "From scuba_queries over the last hour, show me the average cpu_time and P95 proxy_total_time, grouped by query_source."
+
+mock_data: |
+  meta scuba.dataset query response with aggregate_list_json:
+    scuba_url: "https://www.internalfb.com/intern/scuba/query/?dataset=scuba_queries&pool=uber&view=table&drillstate=N4IgxgDgFghgTg..."
+    results:
+      query_source | AVG(cpu_time) | P95(proxy_total_time)
+      datamate     | 125000        | 890000
+      scuba_ui     | 98000         | 620000
+      api          | 67000         | 410000
+
+intercept_patterns:
+  - "meta scuba"
+
+critical_requirements:
+  - id: uses_query
+    type: tool_called
+    tool_name: Bash
+    description: "Agent uses meta scuba.dataset query for the query"
+    arguments:
+      command: "meta scuba.dataset query"
+  - id: presents_results
+    description: "Agent presents results with both aggregation types"
+    check: "Response shows results with both AVG cpu_time and P95 proxy_total_time values grouped by query_source"
+
+quality_factors:
+  - id: correct_json_format
+    description: "aggregate_list_json uses correct format with column and op fields"
+    weight: 1.0

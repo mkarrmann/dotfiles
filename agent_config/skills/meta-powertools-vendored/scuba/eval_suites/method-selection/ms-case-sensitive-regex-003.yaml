@@ -1,0 +1,25 @@
+id: ms-case-sensitive-regex-003
+suite: method-selection
+project: scuba-evals
+description: Tests that agent knows regeq is case-insensitive and case-sensitive regex needs --sql or --filter-sql
+target_skills:
+  - claude-templates/components/skills/scuba/SKILL.md
+
+scenario: "A developer needs to match endpoints with case-sensitive regex patterns."
+question: "I need to filter scuba_queries where the query_source matches 'API' exactly with a case-sensitive regex. The regeq operator seems relevant - can I use it, or do I need something else?"
+
+critical_requirements:
+  - id: identifies_regeq_case_insensitive
+    description: "Agent correctly states regeq is case-insensitive"
+    check: "Response explains that regeq/regneq constraint operators produce case-insensitive regex matching (REGEXP_IMATCH), not case-sensitive"
+  - id: recommends_alternative
+    description: "Agent recommends --sql or --filter-sql for case-sensitive regex"
+    check: "Response recommends using --sql mode with REGEXP_MATCH, or --filter-sql containing REGEXP_MATCH, for case-sensitive matching"
+
+quality_factors:
+  - id: clear_distinction
+    description: "Clearly distinguishes between case-insensitive (regeq) and case-sensitive (REGEXP_MATCH) options"
+    weight: 0.6
+  - id: provides_example
+    description: "Provides a concrete example of the recommended approach"
+    weight: 0.4

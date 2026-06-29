@@ -1,0 +1,36 @@
+id: gdocs-edit-005
+name: Insert markdown content
+category: editing
+prompt: 'Add a bullet list to https://docs.google.com/document/d/1abc123/edit with items: ''Hire 2 engineers'', ''Ship v2.0'',
+  ''Run user study'''
+description: Tests inserting markdown-formatted content (bullet list)
+expected_behavior: Agent uses insert-markdown with bullet list formatting
+eval_target: response
+mock_data: |
+  Document ID: 1abc123
+  Title: Q2 Plan
+  Insert result: Markdown content inserted successfully. 3 bullet items added.
+fail_on_unmocked_command: true
+intercept_patterns:
+- 'meta google.docs '
+- 'devfeature '
+- google_api.py
+intercept_mcp_tools:
+- mcp__google_docs__google_docs
+- mcp__plugin_meta_mux__knowledge_filtered_search
+quality_criteria:
+  required_present: []
+  required_absent:
+  - I cannot
+  - I don't know
+  semantic_checks:
+  - question: Did the agent insert a bullet list with the three specified items?
+    weight: 3
+    rubric:
+      5: Agent inserted a bullet list with all 3 items using insert-markdown or equivalent
+      3: Agent inserted the items but not as a bullet list
+      1: Agent did not insert the content
+project: gdocs-evals
+target_skills:
+- fbcode/claude-templates/components/skills/google-docs/SKILL.md
+working_directory: ~/fbsource/fbcode
