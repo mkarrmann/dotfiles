@@ -5,7 +5,8 @@ vim.opt.clipboard = "unnamedplus"
 vim.opt.scrolloff = 25
 vim.opt.tabstop = 4
 vim.opt.shiftwidth = 4
-vim.opt.colorcolumn = "79,80,88,100,120"
+-- 'colorcolumn' is applied per-buffer in autocmds.lua (opt-out by filetype),
+-- not set globally. See the note there for why.
 vim.g.virtcolumn_char = "▕"
 
 vim.opt.statuscolumn = table.concat({

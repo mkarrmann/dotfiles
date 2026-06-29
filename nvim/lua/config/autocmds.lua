@@ -24,12 +24,36 @@ local function clear_colorcolumn()
 	vim.api.nvim_buf_clear_namespace(0, ns, 0, -1)
 end
 
-vim.api.nvim_create_autocmd("TermOpen", {
-	callback = clear_colorcolumn,
+-- 'colorcolumn' rulers are opt-out by filetype rather than forced globally.
+--
+-- Why: virtcolumn.nvim re-derives its bars from the window-local 'cc' on a
+-- dozen high-frequency events (WinScrolled, TextChanged*, WinEnter, ...). A
+-- global 'cc' means every newly-created window (e.g. CodeCompanion's chat,
+-- input, and status panes) inherits a non-empty local 'cc', so virtcolumn's
+-- reseed clause (`local_cc ~= ''`) re-populates and redraws the bars no matter
+-- how many times we clear them. Clearing once on FileType can't win that race.
+-- Keeping the global empty and applying 'cc' only to wanted buffers removes the
+-- source: excluded windows never receive a non-empty local 'cc', so there is
+-- nothing for virtcolumn to reseed from.
+local COLORCOLUMN = "79,80,88,100,120"
+local NO_COLORCOLUMN = {
+	codecompanion = true,
+	codecompanion_input = true,
+	codecompanion_cli = true,
+}
+
+vim.api.nvim_create_autocmd({ "FileType", "BufWinEnter" }, {
+	group = vim.api.nvim_create_augroup("apply_colorcolumn", { clear = true }),
+	callback = function()
+		if NO_COLORCOLUMN[vim.bo.filetype] or vim.bo.buftype ~= "" then
+			clear_colorcolumn()
+		else
+			vim.opt_local.colorcolumn = COLORCOLUMN
+		end
+	end,
 })
 
-vim.api.nvim_create_autocmd("FileType", {
-	pattern = { "codecompanion", "codecompanion_input", "codecompanion_cli" },
+vim.api.nvim_create_autocmd("TermOpen", {
 	callback = clear_colorcolumn,
 })
 
