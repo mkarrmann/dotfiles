@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Bring this host's plugin state in line with agent_config canon:
+#   1. Uninstall plugins from drop-plugins.list on every agent
+#   2. Delete orphan plugin caches left behind by uninstalls
+#   3. Install everything in plugins.list (via `sync apply`)
+#
+# Idempotent — safe to re-run.
+
+set -uo pipefail
+
+CFG="${AGENT_CONFIG_DIR:-$HOME/dotfiles/agent_config}"
+DROPS_FILE="$CFG/drop-plugins.list"
+AGENTS=(claude codex devmate metacode)
+
+if ! command -v agent-market >/dev/null 2>&1; then
+  echo "agent-market not on PATH — skipping plugin bootstrap" >&2
+  exit 0
+fi
+
+mapfile -t DROPS < <(grep -Ev '^\s*(#|$)' "$DROPS_FILE")
+
+echo "== uninstalling dropped plugins =="
+for a in "${AGENTS[@]}"; do
+  for p in "${DROPS[@]}"; do
+    agent-market plugin "$p" uninstall --agent "$a" --quiet 2>/dev/null
+  done
+done
+
+echo "== cleaning orphan plugin caches =="
+for p in "${DROPS[@]}"; do
+  rm -rf "$HOME/.claude/plugins/cache/agent-market/$p" \
+         "$HOME/.codex/plugins/cache/claude-templates/$p"
+done
+
+echo "== installing plugins from plugins.list =="
+"$CFG/sync" apply

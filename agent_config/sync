@@ -29,7 +29,8 @@ installed_for() {
   fi
 }
 
-EXCLUDE_REGEX='^(plugin-hygiene|meta-powertools|10x-data-scientist|analytics-agent|para-workspace|calendar|review-analysis|gdrive-mount|cdm-dw|experimentation|genaimvp|datamate|pixelcloud|brain|debrief)$'
+DROPS_FILE="${AGENT_CONFIG_DIR:-$HOME/dotfiles/agent_config}/drop-plugins.list"
+EXCLUDE_REGEX="^($(grep -Ev '^\s*(#|$)' "$DROPS_FILE" | paste -sd'|' -))$"
 
 canon_list() { grep -Ev '^\s*(#|$)' "$CANON" | sort -u; }
 

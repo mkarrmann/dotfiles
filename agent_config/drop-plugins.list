@@ -1,0 +1,20 @@
+# Plugins to keep uninstalled across all agents. agent_config/sync's
+# EXCLUDE_REGEX and agent_config/bootstrap-plugins both read this list.
+#
+# Comment lines (# ...) and blanks are ignored.
+
+plugin-hygiene
+meta-powertools
+10x-data-scientist
+analytics-agent
+para-workspace
+calendar
+review-analysis
+gdrive-mount
+cdm-dw
+experimentation
+genaimvp
+datamate
+pixelcloud
+brain
+debrief

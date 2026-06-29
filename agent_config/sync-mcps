@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""Sync MCP definitions from plugins/custom-mcps/mcps/*.json into each
+agent's native config. Idempotent — safe to re-run.
+
+Targets:
+  - Claude:   ~/.claude/settings.json            .mcpServers.<name>
+  - Codex:    ~/.codex/config.toml              [mcp_servers.<name>]
+  - Metacode: ~/.config/opencode/opencode.json   .mcp.<name>
+
+Devmate inherits from Claude via DOTSYNC_DEVSERVER — no separate config.
+
+For Codex we identify our managed blocks by name (the 7 MCPs loaded
+from plugins/custom-mcps/mcps/*.json) and strip-then-append them on
+every run. We deliberately avoid a comment marker because Codex
+re-serializes config.toml at runtime and strips comments — a marker
+would survive only until the next codex action.
+
+Usage: sync-mcps [claude|codex|metacode|all]   (default: all)
+"""
+
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+HOME = Path.home()
+CFG = Path(os.environ.get("AGENT_CONFIG_DIR", HOME / "dotfiles" / "agent_config"))
+MCP_DIR = CFG / "plugins" / "custom-mcps" / "mcps"
+VENDORED_SKILLS = CFG / "skills" / "meta-powertools-vendored"
+
+
+def load_mcps() -> dict:
+    out = {}
+    for p in sorted(MCP_DIR.glob("*.json")):
+        data = json.loads(p.read_text())
+        for name, spec in data.get("mcpServers", {}).items():
+            out[name] = spec
+    return out
+
+
+def sync_claude(mcps: dict) -> None:
+    path = HOME / ".claude" / "settings.json"
+    if not path.exists():
+        print(f"skip claude: {path} not found")
+        return
+    data = json.loads(path.read_text())
+    servers = data.setdefault("mcpServers", {})
+    for name, spec in mcps.items():
+        servers[name] = spec
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    print(f"synced {len(mcps)} MCPs into {path}")
+
+
+def sync_metacode(mcps: dict) -> None:
+    path = HOME / ".config" / "opencode" / "opencode.json"
+    if not path.exists():
+        print(f"skip metacode: {path} not found")
+        return
+    data = json.loads(path.read_text())
+    mcp_block = data.setdefault("mcp", {})
+    for name, spec in mcps.items():
+        entry = {
+            "type": "local",
+            "command": [spec["command"], *spec.get("args", [])],
+        }
+        env = spec.get("env") or {}
+        if env:
+            entry["environment"] = env
+        mcp_block[name] = entry
+
+    skills = data.setdefault("skills", {})
+    paths = skills.setdefault("paths", [])
+    vendored = str(VENDORED_SKILLS)
+    if vendored not in paths:
+        paths.append(vendored)
+
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    print(f"synced {len(mcps)} MCPs + skills.paths into {path}")
+
+
+def _toml_escape(s: str) -> str:
+    return json.dumps(s)
+
+
+def _emit_toml_block(name: str, spec: dict) -> str:
+    lines = [f"[mcp_servers.{name}]"]
+    lines.append(f"command = {_toml_escape(spec['command'])}")
+    args = spec.get("args") or []
+    if args:
+        lines.append("args = [" + ", ".join(_toml_escape(a) for a in args) + "]")
+    # Drop env entries whose values are unresolved ${VAR} refs — codex does not
+    # expand them, and the MCP process inherits the spawning shell's env anyway.
+    env = {
+        k: v
+        for k, v in (spec.get("env") or {}).items()
+        if not (isinstance(v, str) and v.startswith("${") and v.endswith("}"))
+    }
+    if env:
+        lines.append("")
+        lines.append(f"[mcp_servers.{name}.env]")
+        for k, v in env.items():
+            lines.append(f"{k} = {_toml_escape(v)}")
+    return "\n".join(lines) + "\n"
+
+
+def _strip_managed_mcp_blocks(text: str, names: set) -> str:
+    """Drop any [mcp_servers.<name>] and [mcp_servers.<name>.<sub>] tables
+    whose top-level name is in `names`. Preserves everything else verbatim,
+    including hand-managed mcp_servers blocks (e.g. meta_core) and codex's
+    own state tables (hooks.state, plugins.X, projects.Y)."""
+    out_lines = []
+    skipping = False
+    header_re = re.compile(r"^\s*\[([^\]]+)\]\s*$")
+    for line in text.splitlines(keepends=True):
+        m = header_re.match(line)
+        if m:
+            parts = m.group(1).split(".")
+            if len(parts) >= 2 and parts[0] == "mcp_servers" and parts[1] in names:
+                skipping = True
+                continue
+            skipping = False
+        if not skipping:
+            out_lines.append(line)
+    return "".join(out_lines)
+
+
+def sync_codex(mcps: dict) -> None:
+    path = HOME / ".codex" / "config.toml"
+    if not path.exists():
+        print(f"skip codex: {path} not found")
+        return
+    text = _strip_managed_mcp_blocks(path.read_text(), set(mcps))
+    text = text.rstrip() + "\n\n"
+    for name in sorted(mcps):
+        text += _emit_toml_block(name, mcps[name]) + "\n"
+    path.write_text(text)
+    print(f"synced {len(mcps)} MCPs into {path}")
+
+
+def main() -> int:
+    target = sys.argv[1] if len(sys.argv) > 1 else "all"
+    if target not in ("all", "claude", "codex", "metacode"):
+        print(f"unknown target: {target}", file=sys.stderr)
+        return 2
+    mcps = load_mcps()
+    if not mcps:
+        print(f"no MCPs found under {MCP_DIR}", file=sys.stderr)
+        return 1
+    if target in ("all", "claude"):
+        sync_claude(mcps)
+    if target in ("all", "codex"):
+        sync_codex(mcps)
+    if target in ("all", "metacode"):
+        sync_metacode(mcps)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
