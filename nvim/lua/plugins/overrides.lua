@@ -101,7 +101,7 @@ return {
 			opts.options.disabled_filetypes.statusline = opts.options.disabled_filetypes.statusline or {}
 			vim.list_extend(opts.options.disabled_filetypes.winbar, { "codecompanion_input" })
 
-			local winbar_color = { fg = "#888888", bg = "#1a1a2e" }
+			local winbar_color = { fg = "#888888", bg = require("lib.session-accent").winbar_bg() }
 			local winbar_cwd = { cwd, color = winbar_color }
 			local winbar_file = { custom_or_filename, color = winbar_color }
 			opts.winbar = { lualine_b = { winbar_cwd }, lualine_c = { winbar_file } }
@@ -115,7 +115,15 @@ return {
 				{ "location", padding = { left = 0, right = 1 } },
 			}
 			opts.sections.lualine_z = {
-				function() return _hostname end,
+				{
+					function()
+						return require("lib.session-accent").session_name() or _hostname
+					end,
+					color = function()
+						local accent = require("lib.session-accent")
+						return { fg = "#000000", bg = accent.accent(), gui = "bold" }
+					end,
+				},
 				function() return os.date("%H:%M") end,
 			}
 			opts.inactive_sections = opts.inactive_sections or {}
