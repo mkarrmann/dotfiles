@@ -180,6 +180,7 @@ sync_link_dir "$DOTFILES_DIR/claude_config/hooks" "$HOME/.claude/hooks" "*"
 # Skills (shared between Claude Code and Codex)
 mkdir -p "$HOME/.claude/skills"
 sync_link_subdirs "$DOTFILES_DIR/agent_config/skills" "$HOME/.claude/skills" "SKILL.md"
+sync_link_subdirs "$DOTFILES_DIR/agent_config/skills/meta-powertools-vendored" "$HOME/.claude/skills" "SKILL.md"
 # Ensure settings.json has the statusline command configured (preserving other settings)
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 if [[ ! -f "$CLAUDE_SETTINGS" ]]; then
@@ -384,8 +385,22 @@ fi
 link_one "$DOTFILES_DIR/agent_config/global-development-preferences.md" "$HOME/.codex/rules/global-development-preferences.md"
 # Shared skills
 sync_link_subdirs "$DOTFILES_DIR/agent_config/skills" "$HOME/.codex/skills" "SKILL.md"
+sync_link_subdirs "$DOTFILES_DIR/agent_config/skills/meta-powertools-vendored" "$HOME/.codex/skills" "SKILL.md"
 
 # default.rules is machine-specific — managed by Codex itself
+
+# Cross-agent MCP wiring: copies plugins/custom-mcps/mcps/*.json into each
+# agent's native config (Claude settings.json, Codex config.toml, Metacode
+# opencode.json). Replaces the meta-powertools bundle's MCPs that we dropped
+# to reclaim skill-description budget. See agent_config/README.md.
+"$DOTFILES_DIR/agent_config/sync-mcps" all || \
+  echo "WARNING: agent_config/sync-mcps failed" >&2
+
+# Cross-agent plugin install: uninstalls dropped plugins, cleans orphan caches,
+# installs everything in plugins.list across all agents. No-op if agent-market
+# is not on PATH (skips with a single warning).
+"$DOTFILES_DIR/agent_config/bootstrap-plugins" || \
+  echo "WARNING: agent_config/bootstrap-plugins failed" >&2
 
 # Ghostty
 mkdir -p "$HOME/.config/ghostty"
