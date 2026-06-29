@@ -514,6 +514,136 @@ local function broker_resume_or_fork(action, adapter_name)
   end)
 end
 
+-- ── Continue / resume the most recent session for the current cwd ──────────
+--
+-- The `claude --continue` / `claude --resume` analogue. Both read the
+-- broker's *local* WAL mirror directly
+-- (~/.local/share/acp-broker/sqlite-persistence/wal.db) rather than going
+-- through the broker RPC: the lookup is a single indexed sqlite query, needs
+-- no live connection or coroutine, and same-broker is the only resume the
+-- broker permits anyway (cross-broker resume is rejected — see
+-- `broker_open_chat_with_session`'s `session/load` path and the `/resume`
+-- slash command notes above), so the WAL's "only this broker's captures"
+-- limitation costs nothing here.
+--
+-- cwd matching is prefix-based: a session row whose stored `cwd` is a prefix
+-- of nvim's `getcwd()` matches, so continue works from a subdirectory of the
+-- checkout the session was started in. Rows are ranked by `started_at DESC`,
+-- so the most recent matching session wins (an exact cwd match and a parent
+-- match are both eligible; recency breaks the tie).
+local BROKER_WAL_PATH =
+  vim.fn.expand("~/.local/share/acp-broker/sqlite-persistence/wal.db")
+
+-- Adapter for a saved session. dvsc/claude/devmate all speak the claude_code
+-- wire shape and resume cleanly through `dvsc_core_broker`; only codex needs
+-- `codex_broker`. The agent *kind* is not reliably recoverable for dead
+-- sessions (the WAL keeps only `agent_id`; `agent list` names only live
+-- agents; lifecycle retains few `agent_spawned` records), so we positively
+-- identify codex from the live agent list when possible and otherwise fall
+-- back to `dvsc_core_broker`.
+local function _broker_adapter_for(agent_id)
+  if not agent_id or agent_id == "" then return "dvsc_core_broker" end
+  local cli = vim.fn.expand("~/repos/acp-broker/target/release/acp-broker-cli")
+  if vim.fn.executable(cli) == 0 then return "dvsc_core_broker" end
+  local out = vim.fn.systemlist({ cli, "agent", "list" })
+  if vim.v.shell_error ~= 0 then return "dvsc_core_broker" end
+  for _, line in ipairs(out) do
+    local id, name = line:match("^(%S+)%s+%S+%s+%S+%s+(%S+)")
+    if id == agent_id then
+      if name == "codex" then return "codex_broker" end
+      return "dvsc_core_broker"
+    end
+  end
+  return "dvsc_core_broker"
+end
+
+-- Query the WAL for sessions whose stored cwd is a prefix of `cwd`, newest
+-- first. Returns a list of { bsid, agent_id, started_at, cwd, label }.
+-- `limit` caps rows (default 1). Returns {} if sqlite/the WAL is unavailable.
+local function _broker_sessions_for_cwd(cwd, limit)
+  limit = limit or 1
+  if vim.fn.executable("sqlite3") == 0 then
+    vim.notify("acp-broker continue: sqlite3 not on PATH", vim.log.levels.ERROR)
+    return {}
+  end
+  if vim.fn.filereadable(BROKER_WAL_PATH) == 0 then
+    vim.notify("acp-broker continue: WAL not found at " .. BROKER_WAL_PATH, vim.log.levels.ERROR)
+    return {}
+  end
+  -- `?1 = cwd LIKE rows.cwd || '/%'` (subdir) OR exact equality. `||CHAR(31)||`
+  -- joins fields with an ASCII unit separator so paths/models can't collide
+  -- with the delimiter. Bind cwd via -cmd .param to avoid quoting issues.
+  local sql = table.concat({
+    "SELECT broker_session_id || CHAR(31) || agent_id || CHAR(31) || started_at",
+    "       || CHAR(31) || cwd || CHAR(31)",
+    "       || COALESCE(json_extract(metadata,'$.broker_client_metadata.dvsc.model'),'')",
+    "  FROM mirrored_sessions",
+    " WHERE cwd IS NOT NULL AND cwd != ''",
+    "   AND (:cwd = cwd OR :cwd LIKE cwd || '/%')",
+    " ORDER BY started_at DESC",
+    " LIMIT " .. tostring(limit) .. ";",
+  }, " ")
+  local out = vim.fn.systemlist({
+    "sqlite3",
+    "-cmd", ".param set :cwd " .. vim.fn.shellescape(cwd),
+    BROKER_WAL_PATH,
+    sql,
+  })
+  if vim.v.shell_error ~= 0 then
+    vim.notify("acp-broker continue: sqlite query failed:\n" .. table.concat(out, "\n"), vim.log.levels.ERROR)
+    return {}
+  end
+  local rows = {}
+  for _, line in ipairs(out) do
+    local bsid, agent_id, started_at, scwd, model = unpack(vim.split(line, "\31", { plain = true }))
+    if bsid and bsid ~= "" then
+      local when = (started_at or ""):gsub("%.%d+Z$", "Z")
+      local label = string.format("%s  %s%s",
+        when,
+        (model ~= nil and model ~= "") and (model .. "  ") or "",
+        scwd or "")
+      rows[#rows + 1] = {
+        bsid = bsid,
+        agent_id = agent_id,
+        started_at = started_at,
+        cwd = scwd,
+        model = model,
+        label = label,
+      }
+    end
+  end
+  return rows
+end
+
+-- `--continue`: open the single most-recent session for the current cwd.
+local function broker_continue_cwd()
+  local cwd = vim.fn.getcwd()
+  local rows = _broker_sessions_for_cwd(cwd, 1)
+  if vim.tbl_isempty(rows) then
+    return vim.notify("No saved broker session for " .. cwd, vim.log.levels.WARN)
+  end
+  local s = rows[1]
+  _broker_write_last_bsid(s.bsid)
+  _broker_open_chat_with_session(_broker_adapter_for(s.agent_id), s.bsid)
+end
+
+-- `--resume`: pick from recent sessions for the current cwd.
+local function broker_resume_cwd_pick()
+  local cwd = vim.fn.getcwd()
+  local rows = _broker_sessions_for_cwd(cwd, 20)
+  if vim.tbl_isempty(rows) then
+    return vim.notify("No saved broker session for " .. cwd, vim.log.levels.WARN)
+  end
+  vim.ui.select(rows, {
+    prompt = "Resume session for " .. cwd .. ":",
+    format_item = function(item) return item.label end,
+  }, function(choice)
+    if not choice then return end
+    _broker_write_last_bsid(choice.bsid)
+    _broker_open_chat_with_session(_broker_adapter_for(choice.agent_id), choice.bsid)
+  end)
+end
+
 -- Pick a dvsc selection (interactive or from cache), then invoke `cb`
 -- with `{ mode, model, effort? }`. Extracted from the original
 -- `dvsc_pick_and_launch` so the picker can drive both first-time launches
@@ -2333,6 +2463,12 @@ return {
       -- `broker_resume_or_fork` for codex sessions.
       { "<leader>aBr", function() broker_resume_or_fork("resume") end, desc = "ACP broker: resume saved session by bsid" },
       { "<leader>aBf", function() broker_resume_or_fork("fork")   end, desc = "ACP broker: fork saved session by bsid" },
+      -- cwd-scoped continue/resume (the `claude --continue` / `--resume`
+      -- analogue). `aBc` opens the single most-recent session for the current
+      -- cwd; `aBl` lists recent sessions for the cwd to pick from. Both derive
+      -- the bsid from the broker WAL by cwd prefix, so no bsid typing.
+      { "<leader>aBc", function() broker_continue_cwd()    end, desc = "ACP broker: continue most-recent session for cwd" },
+      { "<leader>aBl", function() broker_resume_cwd_pick() end, desc = "ACP broker: list/resume sessions for cwd" },
     },
   },
 }
