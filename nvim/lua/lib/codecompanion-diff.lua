@@ -112,9 +112,25 @@ local _turn_snapshot = {}
 local _turn_epoch = {}
 -- [dir] = { root=string, vcs="sl"|"git" } | false   path→repo resolution cache
 local _repo_cache = {}
+-- [chat_bufnr] = { [abspath]=true }  files referenced by this session's tool
+-- calls this turn (structured edit targets + shell command path tokens).
+-- reconcile_turn only attributes VCS-changed files present here, so concurrent
+-- sessions editing different files in one repo don't steal each other's diffs.
+local _turn_paths = {}
 
 local function path_exists(p)
 	return uv.fs_stat(p) ~= nil
+end
+
+-- Absolute, normalized path. Relative inputs resolve against `base` (a tool
+-- call's cwd when known) so shell edits like `sed -i subdir/f` attribute to the
+-- right repo even when nvim's cwd differs from the agent's working directory.
+local function to_abs(path, base)
+	if path:sub(1, 1) == "/" then
+		return vim.fn.fnamemodify(path, ":p")
+	end
+	base = (base and base ~= "") and base or (uv.cwd() or ".")
+	return vim.fn.fnamemodify(base .. "/" .. path, ":p")
 end
 
 -- Walk up from a path to the nearest VCS marker. O(depth), memoized per dir so
@@ -167,11 +183,12 @@ local function find_repo(path)
 	return nil
 end
 
-local function note_repo_for_path(chat_bufnr, path)
+local function note_repo_for_path(chat_bufnr, path, base)
 	if not chat_bufnr or type(path) ~= "string" or path == "" then
 		return
 	end
-	local repo = find_repo(vim.fn.fnamemodify(path, ":p"))
+	local abs = to_abs(path, base)
+	local repo = find_repo(abs)
 	if not repo then
 		return
 	end
@@ -181,6 +198,14 @@ local function note_repo_for_path(chat_bufnr, path)
 		_turn_repos[chat_bufnr] = set
 	end
 	set[repo.root] = repo.vcs
+	-- Attribute this path to the session so turn-end reconciliation only claims
+	-- files this session touched. Keyed to match vcs_status's f.abs.
+	local paths = _turn_paths[chat_bufnr]
+	if not paths then
+		paths = {}
+		_turn_paths[chat_bufnr] = paths
+	end
+	paths[abs] = true
 end
 
 -- Discover which repos a tool call touched, from any path-shaped field. Over-
@@ -205,16 +230,19 @@ local function collect_repos_from_tool_call(chat_bufnr, tool_call)
 		end
 	end
 	local ri = tool_call.rawInput
+	-- Resolve relative command/title path tokens against the tool call's own cwd
+	-- when it reports one, not nvim's cwd.
+	local cwd = type(ri) == "table" and type(ri.cwd) == "string" and ri.cwd ~= "" and ri.cwd or nil
 	if type(ri) == "table" then
 		for _, k in ipairs({ "file_path", "filePath", "abs_path", "absPath", "path", "filename", "cwd" }) do
 			if type(ri[k]) == "string" then
-				note_repo_for_path(chat_bufnr, ri[k])
+				note_repo_for_path(chat_bufnr, ri[k], cwd)
 			end
 		end
 		if type(ri.command) == "string" then
 			for tok in ri.command:gmatch("%S+") do
 				if tok:find("/", 1, true) then
-					note_repo_for_path(chat_bufnr, (tok:gsub("[\"'`]", "")))
+					note_repo_for_path(chat_bufnr, (tok:gsub("[\"'`]", "")), cwd)
 				end
 			end
 		end
@@ -222,7 +250,7 @@ local function collect_repos_from_tool_call(chat_bufnr, tool_call)
 	if type(tool_call.title) == "string" then
 		for tok in tool_call.title:gmatch("%S+") do
 			if tok:find("/", 1, true) then
-				note_repo_for_path(chat_bufnr, (tok:gsub("[\"'`]", "")))
+				note_repo_for_path(chat_bufnr, (tok:gsub("[\"'`]", "")), cwd)
 			end
 		end
 	end
@@ -390,12 +418,16 @@ local function reconcile_turn(chat_bufnr)
 					vim.log.levels.WARN
 				)
 			end
+			-- Only attribute files this session referenced this turn. A nil set means
+			-- the session made no path-bearing tool calls, so nothing is attributable
+			-- to it — skip rather than claim another agent's concurrent changes.
+			local scoped = _turn_paths[chat_bufnr]
 			for i, f in ipairs(files) do
 				if i > MAX_RECONCILE_FILES then
 					break
 				end
 				local after = f.removed and {} or read_disk_bounded(f.abs)
-				if after ~= nil then
+				if after ~= nil and scoped and scoped[f.abs] then
 					local function finish(before)
 						-- Drop stragglers: a newer turn started (epoch advanced) or the
 						-- chat buffer closed while this async probe was in flight.
@@ -459,6 +491,7 @@ function M.cleanup(chat_bufnr)
 	end
 	_disk_before[chat_bufnr] = nil
 	_turn_repos[chat_bufnr] = nil
+	_turn_paths[chat_bufnr] = nil
 	_turn_snapshot[chat_bufnr] = nil
 	_turn_epoch[chat_bufnr] = nil
 	mgr:cleanup(chat_bufnr)
@@ -472,6 +505,7 @@ function M.new_turn(chat_bufnr)
 	-- re-reads disk and records this turn's true before-state.
 	_disk_before[chat_bufnr] = nil
 	_turn_repos[chat_bufnr] = nil
+	_turn_paths[chat_bufnr] = nil
 	_turn_snapshot[chat_bufnr] = nil
 	_turn_epoch[chat_bufnr] = (_turn_epoch[chat_bufnr] or 0) + 1
 	-- Re-resolve repo roots each turn so a repo created/removed mid-session isn't
