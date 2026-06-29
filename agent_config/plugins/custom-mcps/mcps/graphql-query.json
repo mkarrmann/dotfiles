@@ -1,0 +1,13 @@
+{
+  "description": "GraphQL schema exploration and validation tools for Meta's GraphQL schemas (FACEBOOK, FACEBOOK_INTERNAL, INSTAGRAM, etc.). Provides field/type search, type details, and query validation.",
+  "mcpServers": {
+    "graphql_query": {
+      "type": "stdio",
+      "command": "/usr/local/bin/claude_code/bin/fast_mux",
+      "args": [
+        "/usr/local/claude-templates-cli/components/helpers/graphql-query-tools.md"
+      ],
+      "env": {}
+    }
+  }
+}

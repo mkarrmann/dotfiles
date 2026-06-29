@@ -1,0 +1,13 @@
+{
+  "description": "Google Chat MCP for interacting with Google Chat spaces. Supports: list/get spaces, list/get messages, find DM spaces, list members, send messages, create spaces, and manage sections (list, create, delete, rename, reorder sections; list section items; move items between sections).",
+  "mcpServers": {
+    "google_chat": {
+      "type": "stdio",
+      "command": "/usr/local/bin/claude_code/bin/fast_mux",
+      "args": [
+        "/usr/local/claude-templates-cli/components/helpers/gchat-tools.md"
+      ],
+      "env": {}
+    }
+  }
+}

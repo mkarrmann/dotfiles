@@ -1,0 +1,11 @@
+{
+  "description": "MCP tools for Unidash to understand dashboards, pages, and widgets (and resolve their queries)",
+  "mcpServers": {
+    "unidash": {
+      "type": "stdio",
+      "command": "/usr/local/bin/claude_code/bin/fast_mux",
+      "args": ["/usr/local/claude-templates-cli/components/helpers/unidash-tools.md"],
+      "env": {}
+    }
+  }
+}

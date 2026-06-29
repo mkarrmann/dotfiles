@@ -1,0 +1,13 @@
+{
+  "description": "Load all diffs from a user's Phabricator review dashboard filtered by status. Returns diffs where the specified user is a reviewer, useful for bulk review operations and tracking review queue.",
+  "mcpServers": {
+    "get_phabricator_review_queue": {
+      "type": "stdio",
+      "command": "/usr/local/bin/claude_code/bin/fast_mux",
+      "args": [
+        "/usr/local/claude-templates-cli/components/helpers/get-phabricator-review-queue-tools.md"
+      ],
+      "env": {}
+    }
+  }
+}

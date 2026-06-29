@@ -1,0 +1,18 @@
+{
+  "name": "custom-mcps",
+  "version": "1.0.0",
+  "description": "Curated subset of Meta MCPs (scuba, wiki, chronos, unidash, graphql-query, phabricator review queue, gchat) — replaces the meta-powertools bundle without its skill-budget cost",
+  "author": {
+    "name": "Matt Karrmann",
+    "email": "mkarrmann@meta.com"
+  },
+  "mcps": [
+    "./mcps/scuba.json",
+    "./mcps/wiki.json",
+    "./mcps/chronos.json",
+    "./mcps/unidash.json",
+    "./mcps/graphql-query.json",
+    "./mcps/get-phabricator-review-queue.json",
+    "./mcps/gchat.json"
+  ]
+}

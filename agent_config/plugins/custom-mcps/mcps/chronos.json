@@ -1,0 +1,13 @@
+{
+  "description": "Chronos job scheduling and monitoring tools for debugging pipeline failures, checking job statuses, fetching logs, and analyzing job history.",
+  "mcpServers": {
+    "chronos": {
+      "type": "stdio",
+      "command": "/usr/local/bin/claude_code/bin/fast_mux",
+      "args": [
+        "/usr/local/claude-templates-cli/components/helpers/chronos-tools.md"
+      ],
+      "env": {}
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Query Scuba datasets directly. Get table schemas and run SQL queries for data analysis and debugging.",
+  "mcpServers": {
+    "scuba": {
+      "type": "stdio",
+      "command": "bash",
+      "args": [
+        "-c",
+        "FBSOURCE=${FBSOURCE_ROOT:-$([ -d /data/sandcastle/boxes/fbsource ] && echo /data/sandcastle/boxes/fbsource || echo /data/users/$USER/fbsource)}; if [ \"${SCUBA_MCP_DEV}\" = \"1\" ]; then cd \"$FBSOURCE\" && exec buck2 run fbcode//model_context_protocol/python_servers/scuba:scuba_mcp_server; fi; BIN=$FBSOURCE/tools/devmate/python_servers_dotslash/scuba_mcp_server; if [ -f \"$BIN\" ]; then exec \"$BIN\"; else cd \"$FBSOURCE\" && exec buck2 run fbcode//model_context_protocol/python_servers/scuba:scuba_mcp_server; fi"
+      ],
+      "env": {
+        "SCUBA_MCP_DEV": "${SCUBA_MCP_DEV}"
+      }
+    }
+  }
+}

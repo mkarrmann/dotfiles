@@ -1,0 +1,13 @@
+{
+  "description": "Wiki MCP tools for reading, searching, upserting, deleting, and listing wiki pages. Enables documentation editing, navigation and content retrieval.",
+  "mcpServers": {
+    "wiki": {
+      "type": "stdio",
+      "command": "/usr/local/bin/claude_code/bin/fast_mux",
+      "args": [
+        "/usr/local/claude-templates-cli/components/helpers/wiki-tools.md"
+      ],
+      "env": {}
+    }
+  }
+}
