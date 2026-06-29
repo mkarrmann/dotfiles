@@ -1,6 +1,10 @@
 return {
 	{ "christoomey/vim-tmux-navigator", lazy = false },
 	{ "mbbill/undotree" },
+	-- Disable bufferline: it hijacks the tabline and toggles showtabline based
+	-- on listed-buffer count, hiding our custom tabpage tabline. We render tabs
+	-- ourselves via lib.claude-tab-state (options.lua sets tabline + showtabline).
+	{ "akinsho/bufferline.nvim", enabled = false },
 	{
 		"lewis6991/satellite.nvim",
 		config = function(_, opts)
