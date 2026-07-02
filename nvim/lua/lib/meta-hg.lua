@@ -1452,9 +1452,12 @@ local SSL_COMMANDS = {
   submit_stack = {
     desc = "Submit stack to phabricator",
     action = function(commit, bufnr)
-      local cmd = { "jf", "submit", "--stack" }
-      if not commit.is_current then
-        table.insert(cmd, commit.hash)
+      local cmd = { "jf", "submit" }
+      if commit.is_current then
+        table.insert(cmd, "--stack")
+      else
+        table.insert(cmd, "--rev")
+        table.insert(cmd, "::" .. commit.hash)
       end
       ssl_utils.run_cmd(cmd, bufnr, true)
     end,
@@ -1472,9 +1475,12 @@ local SSL_COMMANDS = {
   submit_draft_stack = {
     desc = "Submit stack as drafts to phabricator",
     action = function(commit, bufnr)
-      local cmd = { "jf", "submit", "--draft", "--stack" }
-      if not commit.is_current then
-        table.insert(cmd, commit.hash)
+      local cmd = { "jf", "submit", "--draft" }
+      if commit.is_current then
+        table.insert(cmd, "--stack")
+      else
+        table.insert(cmd, "--rev")
+        table.insert(cmd, "::" .. commit.hash)
       end
       ssl_utils.run_cmd(cmd, bufnr, true)
     end,
