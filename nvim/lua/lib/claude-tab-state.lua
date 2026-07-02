@@ -224,6 +224,6 @@ function M.tabline()
 	return s
 end
 
-_G._claude_tabline = M.tabline
+_G._tabline = M.tabline
 
 return M
