@@ -107,7 +107,52 @@ local SSL_STATE = {
   merge_conflict = false,
   ---@type table<string, integer> hop label -> target line (1-indexed)
   hop_map = {},
+  ---@type string? Sapling repo the panel is pinned to. Every command the panel
+  --- launches runs here, so actions never leak into nvim's (possibly unrelated)
+  --- global cwd. Pinned from the launching buffer each time the panel opens.
+  repo_root = nil,
 }
+
+--- Nearest ancestor of `path` containing a `.hg` dir, or nil. `path` may be a
+--- file or directory (absolute or relative to nvim's cwd).
+---@param path string?
+---@return string?
+local function repo_root_of(path)
+  if not path or path == "" then
+    return nil
+  end
+  return vim.fs.root(path, ".hg")
+end
+
+--- Repo root for the buffer we're acting on (its file's repo), falling back to
+--- nvim's cwd repo, then cwd itself. Sapling/jf commands must run here rather
+--- than in nvim's global cwd, which may point at an unrelated repo.
+---@param bufnr integer?
+---@return string
+local function buf_repo_root(bufnr)
+  local root = repo_root_of(vim.api.nvim_buf_get_name(bufnr or 0))
+  if root then
+    return root
+  end
+  local cwd = vim.uv.cwd() or vim.fn.getcwd()
+  return repo_root_of(cwd) or cwd
+end
+
+--- The repo root a command should target. When we act from the SSL panel (its
+--- buffer is current), use its pinned root; the panel is a virtual buffer with
+--- no file, so `buf_repo_root` can't resolve it. Otherwise resolve from the
+--- current buffer's file.
+---@return string
+local function active_repo_root()
+  if
+    SSL_STATE.bufnr
+    and vim.api.nvim_get_current_buf() == SSL_STATE.bufnr
+    and SSL_STATE.repo_root
+  then
+    return SSL_STATE.repo_root
+  end
+  return buf_repo_root()
+end
 
 ---@type table<integer, Hg.diff_session>
 local DIFF_SPLIT_SESSIONS = require("lib.diff-session").sessions
@@ -142,7 +187,8 @@ hg_utils.on_blame_exit = function(should_delete_buffer)
   end
 end
 
-hg_utils.status = function()
+---@param cwd string? repo root to run in (defaults to the active repo)
+hg_utils.status = function(cwd)
   local result = {
     modified = {},
     added = {},
@@ -152,7 +198,9 @@ hg_utils.status = function()
     not_tracked = {},
     ignored = {},
   }
-  local out = vim.system({ "hg", "status" }, { text = true }):wait()
+  local out = vim
+    .system({ "hg", "status" }, { text = true, cwd = cwd or active_repo_root() })
+    :wait()
   SSL_STATE.merge_conflict = string.find(
     out.stderr or "",
     "The repository is in an unfinished"
@@ -180,8 +228,9 @@ hg_utils.status = function()
   return result
 end
 
-hg_utils.can_commit = function()
-  local status = hg_utils.status()
+---@param cwd string? repo root to run in (defaults to the active repo)
+hg_utils.can_commit = function(cwd)
+  local status = hg_utils.status(cwd)
 
   return (#status.modified + #status.added + #status.removed) > 0
 end
@@ -190,8 +239,13 @@ end
 ---@param cmd string
 ---@param on_close ?function
 ---@param on_open ?function
-function hg_utils.run_cmd_and_exit(cmd, on_close, on_open)
-  vim.cmd("tabnew | term " .. cmd)
+---@param cwd string? directory to run the terminal command in
+function hg_utils.run_cmd_and_exit(cmd, on_close, on_open, cwd)
+  vim.cmd("tabnew")
+  if cwd and cwd ~= "" then
+    vim.cmd("lcd " .. vim.fn.fnameescape(cwd))
+  end
+  vim.cmd("term " .. cmd)
 
   if on_open then
     vim.schedule(on_open)
@@ -226,13 +280,15 @@ local function HgBlame()
   -- - [ ] check if file has been modified, if not -> proceed, if modified -> warn that lines may mismatch
   -- - [ ] check if file has been modified
   local cmd = table.concat({
-    "hg blame",
+    "hg",
+    "--cwd " .. vim.fn.shellescape(buf_repo_root()), -- run in the file's repo, not nvim's cwd
+    "blame",
     '-r "wdir()"', -- annotate changed lines
     "--user", -- include username
     "--date", -- include date
     "--phabdiff", -- include diff
     "-q", -- simple date format
-    vim.fn.expand("%"), -- path to buffer file relative to `getcwd()`
+    vim.fn.shellescape(vim.fn.expand("%:p")), -- absolute path (relative would resolve against --cwd)
   }, " ")
 
   local temp_filename = vim.fn.tempname()
@@ -314,14 +370,18 @@ local function HgPrev(opts)
     module = "hg",
     command = "HgPrev",
   })
-  vim.cmd("!hg prev " .. opts.args)
+  vim.cmd(
+    "!hg --cwd " .. vim.fn.shellescape(buf_repo_root()) .. " prev " .. opts.args
+  )
 end
 local function HgNext(opts)
   log_to_scuba({
     module = "hg",
     command = "HgNext",
   })
-  vim.cmd("!hg next " .. opts.args)
+  vim.cmd(
+    "!hg --cwd " .. vim.fn.shellescape(buf_repo_root()) .. " next " .. opts.args
+  )
 end
 local function HgMove(opts)
   log_to_scuba({
@@ -329,14 +389,26 @@ local function HgMove(opts)
     command = "HgMove",
   })
   -- TODO check if file exists already
-  vim.cmd("silent !hg move % " .. opts.args)
+  vim.cmd(
+    "silent !hg --cwd "
+      .. vim.fn.shellescape(buf_repo_root())
+      .. " move "
+      .. vim.fn.shellescape(vim.fn.expand("%:p"))
+      .. " "
+      .. opts.args
+  )
 end
 local function HgRemove()
   log_to_scuba({
     module = "hg",
     command = "HgRemove",
   })
-  vim.cmd("silent !hg remove %")
+  vim.cmd(
+    "silent !hg --cwd "
+      .. vim.fn.shellescape(buf_repo_root())
+      .. " remove "
+      .. vim.fn.shellescape(vim.fn.expand("%:p"))
+  )
   vim.api.nvim_buf_delete(0, { force = true })
 end
 local function HgResolve()
@@ -344,7 +416,12 @@ local function HgResolve()
     module = "hg",
     command = "HgResolve",
   })
-  vim.cmd("silent !hg resolve --mark %")
+  vim.cmd(
+    "silent !hg --cwd "
+      .. vim.fn.shellescape(buf_repo_root())
+      .. " resolve --mark "
+      .. vim.fn.shellescape(vim.fn.expand("%:p"))
+  )
   vim.api.nvim_buf_delete(0, { force = true })
 end
 
@@ -370,7 +447,7 @@ local function makeHgBrowse(for_current_commit, yank)
     local commit = ""
     if for_current_commit then
       local cmd = { "hg", "log", "-l", "1", "--template", "{node}" }
-      local obj = vim.system(cmd, { text = true }):wait()
+      local obj = vim.system(cmd, { text = true, cwd = repo_root }):wait()
       if obj.code ~= 0 then
         return vim.notify("Failed to get current commit", vim.log.level.ERROR)
       else
@@ -410,10 +487,12 @@ local function HgHistory(opts)
   })
   local count = tonumber(opts.args) or 50
 
-  local current_file = vim.fn.expand("%")
+  local current_file = vim.fn.shellescape(vim.fn.expand("%:p"))
   local template =
     "{date|shortdate}\t{phabdiff}\t{author|user}\t{desc|strip|firstline}"
-  local cmd = "hg log "
+  local cmd = "hg --cwd "
+    .. vim.fn.shellescape(buf_repo_root())
+    .. " log "
     .. current_file
     .. ' --template "'
     .. template
@@ -456,7 +535,12 @@ local function HgWrite()
     command = "HgWrite",
   })
   vim.cmd("write")
-  vim.cmd("silent !hg add %")
+  vim.cmd(
+    "silent !hg --cwd "
+      .. vim.fn.shellescape(buf_repo_root())
+      .. " add "
+      .. vim.fn.shellescape(vim.fn.expand("%:p"))
+  )
 end
 
 local function HgHunkRevert()
@@ -587,7 +671,10 @@ end
 ---@param bufnr number
 ---@param sl_lines string[]
 function ssl_utils.annotate_hg_status(bufnr, sl_lines)
-  vim.system({ "hg", "status" }, { text = true }, function(status_obj)
+  vim.system(
+    { "hg", "status" },
+    { text = true, cwd = SSL_STATE.repo_root },
+    function(status_obj)
     if status_obj.code ~= 0 then
       vim.notify("Failed to check hg status", vim.log.levels.ERROR)
       return
@@ -873,7 +960,10 @@ function ssl_utils.refresh_buffer(bufnr)
   SSL_STATE.blocked = true
 
   -- first quickly fill the buffer with commits without diff status
-  vim.system({ "hg", "sl" }, { text = true }, function(sl_obj)
+  vim.system(
+    { "hg", "sl" },
+    { text = true, cwd = SSL_STATE.repo_root },
+    function(sl_obj)
     if sl_obj.code ~= 0 then
       vim.notify("Failed to run hg sl", vim.log.levels.ERROR)
       SSL_STATE.blocked = false
@@ -889,7 +979,10 @@ function ssl_utils.refresh_buffer(bufnr)
     end)
 
     -- later async update content with diff statuses
-    vim.system({ "hg", "ssl" }, { text = true }, function(ssl_obj)
+    vim.system(
+      { "hg", "ssl" },
+      { text = true, cwd = SSL_STATE.repo_root },
+      function(ssl_obj)
       if ssl_obj.code ~= 0 then
         SSL_STATE.blocked = false
         vim.notify("Failed to run hg ssl", vim.log.levels.ERROR)
@@ -939,7 +1032,7 @@ function ssl_utils.run_cmd(cmd, bufnr, reload, msg)
 
   SSL_STATE.blocked = true
 
-  vim.system(cmd, { text = true }, function(obj)
+  vim.system(cmd, { text = true, cwd = SSL_STATE.repo_root }, function(obj)
     -- in case of an error we surface full output to the user
     if obj.code ~= 0 then
       local stderr = vim
@@ -1126,14 +1219,17 @@ local SSL_COMMANDS = {
         })
       end, function()
         vim.cmd("startinsert")
-      end)
+      end, SSL_STATE.repo_root)
     end,
   },
   diff_split = {
     desc = "View file diffs (side-by-side split, cycle with ]f/[f)",
     action = function(commit)
+      local repo_root = SSL_STATE.repo_root or buf_repo_root()
       local template = '{files % "{file}\\n"}'
-      local cmd = "hg log -r "
+      local cmd = "hg --cwd "
+        .. vim.fn.shellescape(repo_root)
+        .. " log -r "
         .. commit.hash
         .. " --template "
         .. vim.fn.shellescape(template)
@@ -1148,8 +1244,6 @@ local SSL_COMMANDS = {
       end
 
       local parent_rev = commit.hash .. "^"
-      local cwd = vim.uv.cwd() or vim.fn.getcwd()
-      local repo_root = vim.fs.root(cwd, ".hg") or cwd
 
       ---@type Hg.diff_file_pair[]
       local file_pairs = {}
@@ -1282,7 +1376,7 @@ local SSL_COMMANDS = {
           reload = true,
           bufnr = bufnr,
         })
-      end)
+      end, nil, SSL_STATE.repo_root)
     end,
   },
   histedit = {
@@ -1300,7 +1394,7 @@ local SSL_COMMANDS = {
           reload = true,
           bufnr = bufnr,
         })
-      end)
+      end, nil, SSL_STATE.repo_root)
     end,
   },
   split = {
@@ -1318,7 +1412,7 @@ local SSL_COMMANDS = {
           reload = true,
           bufnr = bufnr,
         })
-      end)
+      end, nil, SSL_STATE.repo_root)
     end,
   },
   checkout = {
@@ -1431,7 +1525,7 @@ local SSL_COMMANDS = {
         vim.notify("Running: " .. table.concat(cmd, " "), vim.log.levels.INFO)
         SSL_STATE.blocked = true
 
-        vim.system(cmd, { text = true }, function(obj)
+        vim.system(cmd, { text = true, cwd = SSL_STATE.repo_root }, function(obj)
           SSL_STATE.blocked = false
           -- success
           if obj.code == 0 then
@@ -1545,7 +1639,22 @@ local function HgSsl(opts)
     command = "HgSsl",
   })
 
+  -- Pin the panel to the repo of the buffer we're launching from, so every
+  -- action runs against that repo regardless of nvim's global cwd. Launching
+  -- from a file in another repo re-targets the panel. When re-invoked while the
+  -- panel itself is focused (a virtual buffer with no file), keep the current
+  -- pin rather than falling back to cwd.
+  local launch_root
+  if SSL_STATE.bufnr and vim.api.nvim_get_current_buf() == SSL_STATE.bufnr then
+    launch_root = SSL_STATE.repo_root or buf_repo_root()
+  else
+    launch_root = buf_repo_root()
+  end
+
   if SSL_STATE.bufnr and vim.api.nvim_buf_is_valid(SSL_STATE.bufnr) then
+    local retargeted = SSL_STATE.repo_root ~= launch_root
+    SSL_STATE.repo_root = launch_root
+
     local win = vim.fn.win_findbuf(SSL_STATE.bufnr)[1]
     if win then
       vim.api.nvim_set_current_win(win)
@@ -1556,8 +1665,17 @@ local function HgSsl(opts)
       vim.api.nvim_set_current_buf(SSL_STATE.bufnr)
     end
 
+    if retargeted then
+      vim.api.nvim_buf_set_name(SSL_STATE.bufnr, "hgssl [" .. launch_root .. "]")
+      vim.schedule(function()
+        ssl_utils.refresh_buffer(SSL_STATE.bufnr)
+      end)
+    end
+
     return
   end
+
+  SSL_STATE.repo_root = launch_root
 
   -- check if the buffer is already created
   if not SSL_STATE.bufnr or not vim.api.nvim_buf_is_valid(SSL_STATE.bufnr) then
@@ -1568,9 +1686,7 @@ local function HgSsl(opts)
     vim.schedule(function()
       ssl_utils.refresh_buffer(SSL_STATE.bufnr)
     end)
-    local cwd = vim.uv.cwd() or vim.fn.getcwd()
-    local repo_root = vim.fs.root(cwd, ".hg") or cwd
-    vim.api.nvim_buf_set_name(SSL_STATE.bufnr, "hgssl [" .. repo_root .. "]")
+    vim.api.nvim_buf_set_name(SSL_STATE.bufnr, "hgssl [" .. launch_root .. "]")
     vim.api.nvim_set_option_value("swapfile", false, { buf = SSL_STATE.bufnr })
     vim.api.nvim_set_option_value(
       "buftype",
@@ -1766,11 +1882,18 @@ end
 ---Open a commit-message editor in a new tab and commit when the window closes.
 ---@param paths string[]? specific files to commit (nil = all pending changes)
 ---@param on_done fun()? called after a successful commit
-local function commit_with_message(paths, on_done)
+---@param repo_root string? repo to commit in (defaults to the active repo)
+local function commit_with_message(paths, on_done, repo_root)
+  repo_root = repo_root or active_repo_root()
   local commit_filepath = vim.fn.tempname() .. ".commit"
 
   -- populate temp file with commit template
-  vim.fn.system("hg debugcommitmessage >> " .. commit_filepath)
+  vim.fn.system(
+    "hg --cwd "
+      .. vim.fn.shellescape(repo_root)
+      .. " debugcommitmessage >> "
+      .. commit_filepath
+  )
 
   vim.cmd("tabnew " .. commit_filepath)
   vim.bo.filetype = "hgcommit"
@@ -1806,7 +1929,7 @@ local function commit_with_message(paths, on_done)
           table.insert(cmd, "--addremove")
           vim.list_extend(cmd, paths)
         end
-        vim.system(cmd, { text = true }, function(commit_obj)
+        vim.system(cmd, { text = true, cwd = repo_root }, function(commit_obj)
           if commit_obj.code ~= 0 then
             local msg = "Commit failed"
             if commit_obj.stderr then
@@ -1836,13 +1959,14 @@ local function HgCommit()
     command = "HgCommit",
   })
 
-  local has_changes = hg_utils.can_commit()
+  local root = active_repo_root()
+  local has_changes = hg_utils.can_commit(root)
   if has_changes == false then
     vim.notify("No changes to commit", vim.log.levels.ERROR)
     return
   end
 
-  commit_with_message(nil)
+  commit_with_message(nil, nil, root)
 end
 
 local function HgAmend()
@@ -1851,13 +1975,14 @@ local function HgAmend()
     command = "HgAmend",
   })
 
-  local has_changes = hg_utils.can_commit()
+  local root = active_repo_root()
+  local has_changes = hg_utils.can_commit(root)
   if has_changes == false then
     vim.notify("No changes to amend", vim.log.levels.ERROR)
     return
   end
 
-  hg_utils.run_cmd_and_exit("hg amend")
+  hg_utils.run_cmd_and_exit("hg amend", nil, nil, root)
 end
 
 local function HgCommitInteractive()
@@ -1866,13 +1991,14 @@ local function HgCommitInteractive()
     command = "HgCommitInteractive",
   })
 
-  local has_changes = hg_utils.can_commit()
+  local root = active_repo_root()
+  local has_changes = hg_utils.can_commit(root)
   if has_changes == false then
     vim.notify("No changes to commit", vim.log.levels.ERROR)
     return
   end
 
-  hg_utils.run_cmd_and_exit("hg commit --interactive")
+  hg_utils.run_cmd_and_exit("hg commit --interactive", nil, nil, root)
 end
 
 local function HgAbsorb()
@@ -1881,13 +2007,14 @@ local function HgAbsorb()
     command = "HgAbsorb",
   })
 
-  local has_changes = hg_utils.can_commit()
+  local root = active_repo_root()
+  local has_changes = hg_utils.can_commit(root)
   if has_changes == false then
     vim.notify("No changes to absorb", vim.log.levels.ERROR)
     return
   end
 
-  hg_utils.run_cmd_and_exit("hg absorb")
+  hg_utils.run_cmd_and_exit("hg absorb", nil, nil, root)
 end
 
 local function HgSuggest(opts)
@@ -1910,7 +2037,8 @@ local function HgSuggest(opts)
     return
   end
 
-  local has_changes = hg_utils.can_commit()
+  local root = active_repo_root()
+  local has_changes = hg_utils.can_commit(root)
   if has_changes == false then
     vim.notify("No changes to suggest", vim.log.levels.ERROR)
     return
@@ -1923,13 +2051,13 @@ local function HgSuggest(opts)
     vim.list_extend(cmd, vim.split(args, "%s+"))
   end
 
-  hg_utils.run_cmd_and_exit(table.concat(cmd, " "))
+  hg_utils.run_cmd_and_exit(table.concat(cmd, " "), nil, nil, root)
 end
 
-local function jf_graphql(query, variables, on_success, on_error)
+local function jf_graphql(query, variables, on_success, on_error, cwd)
   vim.system(
     { "jf", "graphql", "--query", query, "--variables", vim.json.encode(variables) },
-    { text = true },
+    { text = true, cwd = cwd or active_repo_root() },
     function(obj)
       if obj.code ~= 0 then
         local msg = vim.trim(obj.stderr or "")
@@ -1957,10 +2085,10 @@ end
 ---@type table<string, string>
 local version_id_cache = {}
 
-local function get_current_diff_number(callback)
+local function get_current_diff_number(callback, cwd)
   vim.system(
     { "hg", "log", "--limit", "1", "--template", "{phabdiff}" },
-    { text = true },
+    { text = true, cwd = cwd or active_repo_root() },
     function(obj)
       if obj.code ~= 0 then
         vim.schedule(function()
@@ -1997,7 +2125,7 @@ query GetVersionID($query_params: [PhabricatorDiffQueryParams!]!) {
 }
 ]]
 
-local function get_version_id(diff_number, callback)
+local function get_version_id(diff_number, callback, cwd)
   if version_id_cache[diff_number] then
     callback(version_id_cache[diff_number])
     return
@@ -2025,7 +2153,7 @@ local function get_version_id(diff_number, callback)
     end
     version_id_cache[diff_number] = version.id
     callback(version.id)
-  end)
+  end, nil, cwd)
 end
 
 local CREATE_INLINE_DRAFT_MUTATION = [[
@@ -2064,6 +2192,7 @@ local function resolve_inline_comment_context()
       file_path = pair.file,
       diff_number = diff_number,
       is_new_file = is_new_file,
+      repo_root = session.repo_root,
     }
   end
 
@@ -2078,6 +2207,7 @@ local function resolve_inline_comment_context()
     file_path = buf_abs_path:sub(#repo_root + 2),
     diff_number = nil,
     is_new_file = true,
+    repo_root = repo_root,
   }
 end
 
@@ -2136,14 +2266,14 @@ local function HgInlineComment(opts)
             string.format("Draft comment added on D%s %s:%d", diff_number, ctx.file_path, line1),
             vim.log.levels.INFO
           )
-        end)
-      end)
+        end, nil, ctx.repo_root)
+      end, ctx.repo_root)
     end
 
     if ctx.diff_number then
       do_submit(ctx.diff_number)
     else
-      get_current_diff_number(do_submit)
+      get_current_diff_number(do_submit, ctx.repo_root)
     end
   end
 
@@ -2178,6 +2308,7 @@ local function HgPublishDrafts()
     command = "HgPublishDrafts",
   })
 
+  local root = active_repo_root()
   get_current_diff_number(function(diff_number)
     jf_graphql(PUBLISH_DRAFTS_MUTATION, {
       data = {
@@ -2193,8 +2324,8 @@ local function HgPublishDrafts()
         and result.update_phabricator_diff.phabricator_diff
       local url = diff and diff.url or ("D" .. diff_number)
       vim.notify("Draft comments published on " .. url, vim.log.levels.INFO)
-    end)
-  end)
+    end, nil, root)
+  end, root)
 end
 
 -- Refresh signs for all loaded buffers
@@ -2217,7 +2348,7 @@ end
 -- @param revision: revision specifier for hg log
 -- @param on_success: function(commit_hash, commit_display) called on success
 -- @param on_error: function(stderr) called on error (optional)
-local function get_commit_info(revision, on_success, on_error)
+local function get_commit_info(revision, on_success, on_error, cwd)
   vim.system({
     "hg",
     "log",
@@ -2227,7 +2358,7 @@ local function get_commit_info(revision, on_success, on_error)
     "1",
     "--template",
     "{node|short}\n{phabdiff} {desc|firstline}",
-  }, { text = true }, function(obj)
+  }, { text = true, cwd = cwd or active_repo_root() }, function(obj)
     if obj.code ~= 0 then
       if on_error then
         on_error(obj.stderr or "")
@@ -2290,8 +2421,12 @@ local function HgStatus()
     command = "HgStatus",
   })
 
+  -- Pin to the repo we launch from; the picker's own buffer has no file, so
+  -- later keymap actions can't re-resolve it.
+  local repo_root = active_repo_root()
+
   local function update_status(buf)
-    local out = vim.system({ "hg", "status" }):wait()
+    local out = vim.system({ "hg", "status" }, { cwd = repo_root }):wait()
     if out.code ~= 0 then
       return vim.notify(
         "Failed to run git status\n" .. out.stderr,
@@ -2354,7 +2489,7 @@ local function HgStatus()
         local line = vim.api.nvim_get_current_line()
         local path = line:match("..%s*(.*)")
 
-        local out = vim.system({ "hg", command, path }):wait()
+        local out = vim.system({ "hg", command, path }, { cwd = repo_root }):wait()
         if out.code ~= 0 then
           return vim.notify(
             'Failed to run "hg '
@@ -2391,7 +2526,12 @@ HgChanges = function()
     command = "HgChanges",
   })
 
-  local out = vim.system({ "hg", "status" }):wait()
+  -- Pin to the repo we launch from (the SSL panel's repo when invoked as an
+  -- action, else the current file's). The picker's own buffer has no file, so
+  -- its keymap actions rely on this captured root rather than nvim's cwd.
+  local repo_root = active_repo_root()
+
+  local out = vim.system({ "hg", "status" }, { cwd = repo_root }):wait()
   if out.code ~= 0 then
     vim.notify(
       "Failed to run hg status\n" .. (out.stderr or ""),
@@ -2507,7 +2647,7 @@ HgChanges = function()
   local help_win = nil
 
   local function refresh()
-    local new_out = vim.system({ "hg", "status" }):wait()
+    local new_out = vim.system({ "hg", "status" }, { cwd = repo_root }):wait()
     if new_out.code ~= 0 then
       return
     end
@@ -2602,7 +2742,7 @@ HgChanges = function()
     -- --addremove so explicitly named untracked/missing files are included
     local cmd = vim.list_extend({ "hg", "amend", "--addremove" }, paths)
     vim.notify("Amending " .. #paths .. " file(s)...", vim.log.levels.INFO)
-    vim.system(cmd, { text = true }, function(result)
+    vim.system(cmd, { text = true, cwd = repo_root }, function(result)
       vim.schedule(function()
         if result.code ~= 0 then
           vim.notify(
@@ -2635,7 +2775,7 @@ HgChanges = function()
       if SSL_STATE.bufnr and vim.api.nvim_buf_is_valid(SSL_STATE.bufnr) then
         ssl_utils.refresh_buffer(SSL_STATE.bufnr)
       end
-    end)
+    end, repo_root)
   end, { buffer = buf, desc = "Commit selected files (new commit)" })
 
   vim.keymap.set("n", "X", function()
@@ -2699,7 +2839,7 @@ HgChanges = function()
         if #tracked > 0 then
           pending = pending + 1
           local cmd = vim.list_extend({ "hg", "revert", "--no-backup" }, tracked)
-          vim.system(cmd, { text = true }, function(result)
+          vim.system(cmd, { text = true, cwd = repo_root }, function(result)
             if result.code ~= 0 then
               table.insert(errors, result.stderr or "hg revert failed")
             end
@@ -2709,8 +2849,9 @@ HgChanges = function()
 
         if #untracked > 0 then
           pending = pending + 1
+          -- untracked paths are relative to the repo root
           local cmd = vim.list_extend({ "rm", "-f" }, untracked)
-          vim.system(cmd, { text = true }, function(result)
+          vim.system(cmd, { text = true, cwd = repo_root }, function(result)
             if result.code ~= 0 then
               table.insert(errors, result.stderr or "rm failed")
             end
@@ -2737,8 +2878,8 @@ HgChanges = function()
       return
     end
 
-    local cwd = vim.uv.cwd() or vim.fn.getcwd()
-    local repo_root = vim.fs.root(cwd, ".hg") or cwd
+    -- reuse the repo_root captured at HgChanges entry (the picker buffer has no
+    -- file, so it can't be re-resolved here)
 
     local file_pairs = {}
     for _, e in ipairs(diffable) do
@@ -2989,10 +3130,13 @@ local function setup_hg_signcolumn()
       return
     end
 
+    -- hg resolves the repo from cwd, not from the file argument, so pin to the
+    -- file's own repo to keep signs correct when nvim's cwd is elsewhere.
+    local file_repo_root = repo_root_of(filepath)
     local current_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, true)
     vim.system(
       { "hg", "status", filepath },
-      { text = true },
+      { text = true, cwd = file_repo_root },
       function(status_obj)
         if status_obj.code ~= 0 then
           clear_hg_diff(bufnr)
@@ -3030,7 +3174,7 @@ local function setup_hg_signcolumn()
         vim.system(
           -- get file content from the specified revision (or parent if not configured)
           cat_cmd,
-          { text = true },
+          { text = true, cwd = file_repo_root },
           function(cat_obj)
             if cat_obj.code ~= 0 or not cat_obj.stdout then
               clear_hg_diff(bufnr)
@@ -3308,9 +3452,12 @@ local function setup_line_blame()
           "--date", -- include date
           "--phabdiff", -- include diff
           "-q", -- simple date format
-          rel_filepath,
+          filepath, -- absolute (relative would resolve against cwd, not the repo)
         }
-        vim.system(cmd, { text = true }, function(blame_obj)
+        vim.system(
+          cmd,
+          { text = true, cwd = repo_root_of(filepath) },
+          function(blame_obj)
           if blame_obj.code ~= 0 then
             return
           end
