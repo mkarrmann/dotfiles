@@ -81,6 +81,18 @@ Overrides (no need to edit the script):
 
 Don't recreate the laptop socks-proxy config locally — it hangs on the dead `:1080` proxy on a devserver.
 
+## Reading restricted tables (prism permissions impersonation)
+
+A local coordinator has no end-user authentication, so unauthenticated requests fall back to the `$_presto_anonymous_$` identity. That identity can't pass DIPS authorization for restricted warehouse tables, so reads fail with `PERMISSION_DENIED` even for tables you're personally authorized for.
+
+**By default this is already handled:** `coordinator` start writes `prism-permissions.local-dev-impersonate-user=$USER` into the generated `prism.properties`, so the authorization check runs as *you* instead of anonymous. This does **not** bypass DIPS — the access check still runs, just under your identity — so you only ever get access you already have. You don't need to do anything for the common case.
+
+Override with the `PRESTO_LOCAL_DEV_IMPERSONATE_USER` env var:
+- `PRESTO_LOCAL_DEV_IMPERSONATE_USER=<unixname>` — impersonate a different user (e.g. a service/test identity that has the access you need).
+- `PRESTO_LOCAL_DEV_IMPERSONATE_USER=''` — disable impersonation, reverting to the anonymous identity (only reads unrestricted tables).
+
+**Local-dev only:** never set this on a deployed/production coordinator.
+
 ## Architecture
 
 ```
@@ -281,6 +293,7 @@ Logs include full Maven output + app stderr. Grep for `ERROR` or class names.
 | `Native execution not supported for …` | Plan uses an operator the C++ worker lacks. Rewrite, or re-enable `node-scheduler.include-coordinator=true` for Java fallback. |
 | Worker doesn't register | Check `worker-etc/config.properties` `discovery.uri` = coordinator port, and `node.environment` matches the coordinator. |
 | `start` aborts with "port … already in use" | A foreign/orphaned process holds this checkout's port. `presto-local-dev stop` (this checkout), inspect with `ss -ltnp \| grep ':<port>'` and kill the owner, or override via `PRESTO_LOCAL_DEV_*_PORT`. Each checkout uses a distinct port block, so this is usually a leftover from a prior run. |
+| `PERMISSION_DENIED` / `Access Denied` reading a prism warehouse table | The request is running as the anonymous identity (no impersonation). By default `coordinator` sets `prism-permissions.local-dev-impersonate-user=$USER`; if you disabled it or need another identity, set `PRESTO_LOCAL_DEV_IMPERSONATE_USER=<unixname>` and restart — see [Reading restricted tables](#reading-restricted-tables-prism-permissions-impersonation). Note this only grants access you already have; it doesn't bypass DIPS. |
 | `etc-local/` shows in `sl status` | It shouldn't — it's in `presto-facebook-trunk/.gitignore`. If it appears, confirm you're under that trunk and the ignore is intact. |
 | `INVALID_SESSION_PROPERTY: Unknown session property native_*` | The coordinator has no native sidecar. Start in sidecar mode (`presto-local-dev sidecar` or `PRESTO_LOCAL_DEV_SIDECAR=1`) — see [Native coordinator-sidecar mode](#native-coordinator-sidecar-mode-opt-in). |
 | `Sidecar monitoring port is NOT set. TW_PORT_sidecar_monitoring` | Benign devserver warning — ignore. |

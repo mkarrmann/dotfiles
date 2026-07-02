@@ -473,6 +473,20 @@ ws.use-v3-phase2=true
 hive.time-zone=America/Bahia_Banderas
 fb.test-only.check-prism-type-whitelist=false
 EOF
+        # LOCAL DEV ONLY: a local coordinator has no end-user authentication, so
+        # unauthenticated requests fall back to the "$_presto_anonymous_$"
+        # identity, which cannot pass DIPS authorization for restricted warehouse
+        # tables (PERMISSION_DENIED). Set the prism permissions layer to run the
+        # authorization check as a real unixname instead -- so you can read tables
+        # YOU are authorized for. This does not bypass DIPS; the check still runs,
+        # just under your identity. Defaults to the current $USER; set
+        # PRESTO_LOCAL_DEV_IMPERSONATE_USER='' to disable (revert to anonymous).
+        # Backed by prism-permissions.local-dev-impersonate-user (Permissions.java).
+        local impersonate_user="${PRESTO_LOCAL_DEV_IMPERSONATE_USER-$USER}"
+        if [[ -n "$impersonate_user" ]]; then
+            echo "prism-permissions.local-dev-impersonate-user=$impersonate_user" \
+                >> "$cat_dir/prism.properties"
+        fi
     fi
 
     # Empty function-namespace dir => no XDB UDF manager (which hangs on socks).
@@ -688,7 +702,25 @@ start_coordinator() {
     echo "  Spill:       $SCRATCH_DIR/spill"
     echo "  Port:        $COORDINATOR_PORT  (thrift :$THRIFT_SERVER_PORT)"
     [[ "$SIDECAR_MODE" == "1" ]] && echo "  Sidecar:     ENABLED (native coordinator-sidecar; native_* session props accepted)"
+    # The coordinator dlopen's a zstrong native lib (extracted to /tmp) to
+    # decompress Nimble/Prism metadata during split generation. That lib needs
+    # libcrypto.so.1.1 / libssl.so.1.1, which are not on the default loader path
+    # -> "libcrypto.so.1.1: cannot open shared object file". We CANNOT just put
+    # the whole fbcode platform lib dir on LD_LIBRARY_PATH -- that pulls in libs
+    # that conflict with the JVM's own and silently kills the launch. Instead,
+    # build a minimal dir containing ONLY those two .1.1 libs (as symlinks) and
+    # put just that on LD_LIBRARY_PATH, so the JNI dlopen resolves them without
+    # disturbing the JVM's base linkage.
+    local _jni_libdir="$SCRATCH_DIR/jni-libs"
+    local _plat_lib="/usr/local/fbcode/platform010/lib"
+    mkdir -p "$_jni_libdir"
+    local _lib
+    for _lib in libcrypto.so.1.1 libssl.so.1.1; do
+        [[ -e "$_plat_lib/$_lib" && ! -e "$_jni_libdir/$_lib" ]] \
+            && ln -sf "$_plat_lib/$_lib" "$_jni_libdir/$_lib"
+    done
     MAVEN_OPTS="${COORDINATOR_MAVEN_OPTS[*]}" \
+    LD_LIBRARY_PATH="${_jni_libdir}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
     launch_detached "$COORDINATOR_PID_FILE" "$COORDINATOR_LOG" "$RUN_DIR" -- \
         mvn -f "$FB_TRUNK/presto-facebook-main/pom.xml" exec:java \
             -Dexec.mainClass=com.facebook.presto.facebook.PrestoFacebook \
