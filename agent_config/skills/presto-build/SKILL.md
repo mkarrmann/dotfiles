@@ -45,51 +45,81 @@ Running from the wrong directory fails with `Could not find the selected project
 
 Running commands manually will hit these issues and waste tokens debugging them.
 
+## IMPORTANT: `-n` Builds BOTH Java And C++ — It Is The WHOLE Local Cluster In One Command
+
+`presto-build -n` runs a **full Java build first, then the C++ binary** (see `build_java_*` then `build_cpp_local` in the script's main flow). A single `presto-build -n` produces everything a local **coordinator + Prestissimo worker** needs.
+
+**So for local coordinator+worker dev, the answer is exactly one command: `presto-build -n`.** Do NOT also run a plain `presto-build` for the coordinator — the Java coordinator is already built by `-n`. Issuing a second build is pure duplicated work, and running two builds at once in the same checkout actively **corrupts** the shared Maven repo / out-of-tree build roots (one build's `mvn clean` wipes `target/` dirs the other is mid-compile against → spurious "cannot find symbol" errors in unrelated modules that look like a JDK problem but are not).
+
+Rules of thumb:
+- **Need Java only** (coordinator, Java connector/optimizer change) → `presto-build` (no `-n`).
+- **Need C++ / a Prestissimo worker** (and therefore also a coordinator to talk to) → `presto-build -n`. One command. That's it.
+- **Never run two `presto-build`/`presto-deploy` at once in the same checkout.** If you genuinely need parallelism, use a *different* checkout (`~/checkout2`, `~/checkout3`) — each has isolated build state.
+
 ## IMPORTANT: When NOT to Build
 
 **Building C++ from source takes ~3 hours** (128K+ buck2 actions for an opt build). Before building, ask: **do I actually need a new binary, or can I reuse an existing one?**
 
 - **Deploying to a test cluster for testing?** → Do NOT build. Use `pt pcm deploy -pv <release_version>`. See `presto-deploy` skill.
 - **Running an A/B test toggling a config property?** → Do NOT build. Both arms use the same binary. Just deploy and toggle config.
-- **Testing Java-only code changes?** → Build Java only. Do NOT build C++. Workers already have a C++ binary from `cpp-prod`.
-- **Testing C++ code changes?** → This is the ONLY case where building C++ from source is necessary.
+- **Testing Java-only code changes?** → `presto-build` (no `-n`). Do NOT build C++. Workers already have a C++ binary from `cpp-prod`.
+- **Testing C++ code changes?** → This is the ONLY case where building C++ from source is necessary. Use `presto-build -n` — it builds the Java coordinator too, so you do NOT need a second command.
 
 **Build durations** (empirical, on devvm with RE):
 
 | Build type | Command | Duration |
 |---|---|---|
-| Java module (incremental) | `presto-build -I -l <module>` | ~5 min |
+| Java module (incremental, default) | `presto-build -l <module>` | ~5 min |
 | Java FB trunk only | `presto-build -T` | ~15 min |
 | Java full (OSS subset + FB) | `presto-build` | ~20-25 min |
-| C++ dev (local, no opt) | `presto-build -n` | ~15 min |
+| Java full + C++ dev binary (coordinator **and** worker) | `presto-build -n` | ~Java + ~15 min C++ |
 | C++ opt (fbpkg) | `presto-deploy -n` | **~3 hours** |
+
+## IMPORTANT: Builds Are Incremental By Default — Do NOT Force A Clean Rebuild
+
+`presto-build` reuses prior compilation by default (incremental). **A clean rebuild (`mvn clean`) throws away everything and recompiles from scratch — it is dramatically slower** (adds ~20 min to a Java build). Only force a clean build when incremental is genuinely broken by stale state:
+- A class/file was **renamed or deleted** and a stale `.class` lingers.
+- A **dependency version changed** (`pom.xml` version bump).
+- You see errors that clearly reference code that no longer exists.
+
+To force a clean build, pass **`-c`**. Do **not** reach for it reflexively when a build fails — read the error first; a clean rebuild rarely fixes a real compile error and just wastes 20 minutes. (`-I` still exists as a backward-compatible no-op since incremental is now the default.)
 
 ## Quick Reference
 
 | Task | Command |
 |------|---------|
-| Full build (OSS + FB) | `presto-build` |
+| Full build (OSS + FB), incremental | `presto-build` |
+| Full build, forced clean (SLOW; only if stale) | `presto-build -c` |
 | Full build, skip OSS | `presto-build -T` |
 | Module build (auto-detect) | `presto-build -l <module>` |
-| Module build, incremental | `presto-build -I -l <module>` |
 | Run tests for a module | `presto-build -t -l <module>` |
 | Skip checkstyle | `presto-build -C` |
-| C++ dev binary | `presto-build -n` |
+| C++ dev binary only (nothing Java changed) | `buck2 build fbcode//fb_presto_cpp:main` |
+| Java coordinator + C++ worker | `presto-build -n` |
 | C++ ASAN binary | `presto-build -n -m asan` |
 | Alias: FB module build | `gf && mfci -pl <module>` |
 | Alias: OSS module build | `gp && mpci -pl <module> -am` |
 | Alias: checkstyle only | `gf && mfcc` |
+
+## IMPORTANT: Build Only The Layer That Changed
+
+Before building, identify which layer your change touches, and build only that:
+- **C++ only** (`velox/`, `dwio/`, `fb_presto_cpp/`, etc.) → the Java coordinator is unaffected. If you already have a working Java build, build **just the worker**: `buck2 build fbcode//fb_presto_cpp:main`. Do NOT run `presto-build -n` (which rebuilds all of Java too) unless your Java artifacts are missing/stale.
+- **Java only** → `presto-build` (no `-n`). Do NOT build C++.
+- **Both** → `presto-build -n` (one command; see below).
+
+Checking what changed is cheap (`sl status` / the diff's file list); a needless full rebuild is not.
 
 ## Java Builds
 
 ### Module builds (fast iteration)
 
 ```bash
-# Auto-detects repo from CWD, always uses -am
+# Auto-detects repo from CWD, always uses -am. Incremental by default.
 presto-build -l <module-name>
 
-# Incremental (no clean, faster when only source changed)
-presto-build -I -l <module-name>
+# Force a clean rebuild (SLOW) only if incremental is broken by stale state
+presto-build -c -l <module-name>
 
 # Multiple modules
 presto-build -l presto-main,presto-spi
@@ -110,7 +140,7 @@ presto-build -T
 presto-build -C
 ```
 
-Full builds run `mvn clean install` on a subset of OSS trunk (only the ~40 modules needed by FB trunk, plus transitive deps via `-am`), then FB trunk with `-pl presto-facebook -am`. The module list is defined in `OSS_MODULES` in the build script and `_p_modules` in `~/.localrc`. If a build fails with an unresolved OSS artifact, add the missing module to both lists.
+Full builds run `mvn install` (incremental by default; add `-c` for `mvn clean install`) on a subset of OSS trunk (only the ~40 modules needed by FB trunk, plus transitive deps via `-am`), then FB trunk with `-pl presto-facebook -am`. The module list is defined in `OSS_MODULES` in the build script and `_p_modules` in `~/.localrc`. If a build fails with an unresolved OSS artifact, add the missing module to both lists.
 
 ### Tests
 

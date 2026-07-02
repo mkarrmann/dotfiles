@@ -206,6 +206,7 @@ ALL_OSS=false
 NATIVE=false
 CPP_MODE=""
 INCREMENTAL=false
+CLEAN=false
 RUN_TESTS=false
 SKIP_CHECKSTYLE=""
 QUIET=""
@@ -231,7 +232,14 @@ C++ BUILD (local only):
                      Available: dev, opt, asan, tsan, dbgo
 
 BUILD MODIFIERS:
-  -I                 Incremental (skip 'clean' phase)
+  -I                 (Default) Incremental build — reuses prior compilation.
+                     Kept for backward compatibility; incremental is now the
+                     default, so this is a no-op.
+  -c                 Clean build (adds 'mvn clean'). ONLY needed when incremental
+                     is actually broken (e.g. a rename left a stale class, or a
+                     dependency version changed). A clean rebuild is SLOW —
+                     do not use it as a default. If a build fails, read the error
+                     first; reach for -c only if it looks like stale state.
   -t                 Run tests (mvn test -P ci) instead of install
   -C                 Skip checkstyle (-Dair.check.skip-all)
   -q                 Quiet Maven output
@@ -239,10 +247,11 @@ BUILD MODIFIERS:
   -h                 Help
 
 EXAMPLES:
-  presto-build -l presto-main              Module build (auto-detect repo)
-  presto-build                             Full Java build (OSS + FB)
+  presto-build -l presto-main              Module build (auto-detect repo, incremental)
+  presto-build                             Full Java build (OSS + FB, incremental)
+  presto-build -n                          Java + local C++ dev binary (incremental)
+  presto-build -c                          Full Java build, forced clean (SLOW; only if stale)
   presto-build -T                          Full build, skip OSS
-  presto-build -n                          Java + local C++ dev binary
   presto-build -n -m asan                  Java + local C++ ASAN binary
   presto-build -t -l presto-main           Run tests for a module
   presto-build -C                          Full build, skip checkstyle
@@ -260,6 +269,7 @@ while [[ $# -gt 0 ]]; do
         -n) NATIVE=true; shift;;
         -m) CPP_MODE="$2"; shift 2;;
         -I) INCREMENTAL=true; shift;;
+        -c) CLEAN=true; shift;;
         -t) RUN_TESTS=true; shift;;
         -C) SKIP_CHECKSTYLE="-Dair.check.skip-all"; shift;;
         -q) QUIET="-q"; shift;;
@@ -305,7 +315,7 @@ else
 fi
 
 MVN_CLEAN=""
-$INCREMENTAL || MVN_CLEAN="clean"
+$CLEAN && MVN_CLEAN="clean"
 
 # === Ensure build dirs exist ===
 mkdir -p "${BUILD_ROOT}/presto-trunk${_CHECKOUT_SUFFIX}" "${BUILD_ROOT}/presto-facebook-trunk${_CHECKOUT_SUFFIX}"
