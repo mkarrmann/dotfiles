@@ -76,15 +76,6 @@ if [[ -f ~/.zshrc.local ]]; then
   source ~/.zshrc.local
 fi
 
-# Sync Neovim's tab-local cwd when cd-ing inside a Neovim terminal.
-chpwd() {
-  # Guard: skip in subshells (e.g. _scm_prompt walks dirs in $(...))
-  [[ $ZSH_SUBSHELL -gt 0 ]] && return
-  if [[ -n "$NVIM" ]]; then
-    command nvim --server "$NVIM" --remote-expr "execute('silent tcd '.fnameescape('$(pwd)'))" >/dev/null 2>&1 &!
-  fi
-}
-
 # Fix for dotsync2 certificate issue
 export THRIFT_TLS_CL_CERT_PATH=/var/facebook/credentials/mkarrmann/x509/mkarrmann.pem
 export THRIFT_TLS_CL_KEY_PATH=/var/facebook/credentials/mkarrmann/x509/mkarrmann.pem
