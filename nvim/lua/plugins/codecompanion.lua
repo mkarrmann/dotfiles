@@ -1424,11 +1424,84 @@ return {
               },
             },
           },
-          inline = { adapter = "claude_code" },
+          inline = { adapter = "ai_gateway" },
           cmd = { adapter = "claude_code" },
         },
 
         adapters = {
+          http = {
+            -- Claude Opus 4.8 over Meta's AI Gateway (Vertex upstream) — the
+            -- same approved path Claude Code itself uses on this devserver.
+            -- Used by the one-shot `inline` strategy, which requires an HTTP
+            -- adapter (ACP adapters are session-based and rejected by inline:
+            -- interactions/inline/init.lua "Only HTTP adapters are supported").
+            --
+            -- Auth needs no key-minting: mTLS client cert auto-rotated on disk
+            -- at /var/facebook/credentials/$USER/agent_x509/, plus a short-lived
+            -- bearer token from Claude Code's managed api-key-helper. The Vertex
+            -- rawPredict endpoint returns a standard Anthropic Messages payload,
+            -- so we extend the `anthropic` adapter and only adjust transport +
+            -- the model-in-URL / anthropic_version-in-body Vertex conventions.
+            ai_gateway = function()
+              local user = vim.env.USER or vim.fn.expand("$USER")
+              local cert = "/var/facebook/credentials/" .. user .. "/agent_x509/claude_code_" .. user .. ".pem"
+              local ca = vim.env.CURL_CA_BUNDLE or "/etc/pki/tls/certs/fb_certs.pem"
+              local host = "vertex.ai-gateway.fbinfra.net"
+              local project = vim.env.ANTHROPIC_VERTEX_PROJECT_ID or "devai-mea-egeit"
+              local region = vim.env.CLOUD_ML_REGION or "global"
+              local model = "claude-opus-4-8"
+              local url = string.format(
+                "https://%s/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:rawPredict",
+                host,
+                project,
+                region,
+                model
+              )
+              return require("codecompanion.adapters").extend("anthropic", {
+                name = "ai_gateway",
+                formatted_name = "AI Gateway (Opus 4.8)",
+                url = url,
+                env = {
+                  -- Short-lived bearer token, re-minted per request (~30m TTL).
+                  api_key = "cmd:/usr/local/bin/claude_code/api-key-helper",
+                },
+                headers = {
+                  ["content-type"] = "application/json",
+                  ["Authorization"] = "Bearer ${api_key}",
+                  ["X-Meta-AI-Gateway-Calling-Product"] = "codecompanion:nvim",
+                },
+                -- mTLS client cert + CA, and bypass the fwdproxy set in
+                -- local/config/meta.lua (the gateway is corpnet-direct).
+                raw = { "--cert", cert, "--key", cert, "--cacert", ca, "--noproxy", host },
+                schema = {
+                  model = { default = model },
+                  -- Anthropic requires max_tokens; pin it since model_choice
+                  -- can't resolve this (non-catalog) model id to a default.
+                  max_tokens = { default = 4096 },
+                },
+                handlers = {
+                  -- Vertex uses Bearer auth + an anthropic_version body field,
+                  -- not the Anthropic-direct x-api-key / anthropic-version header.
+                  setup = function(self)
+                    local base = require("codecompanion.adapters.http.anthropic").handlers.setup
+                    local ok = base(self)
+                    self.headers["x-api-key"] = nil
+                    self.headers["anthropic-version"] = nil
+                    return ok
+                  end,
+                  -- Vertex rawPredict: model is in the URL, not the body, and
+                  -- the request must carry anthropic_version.
+                  form_parameters = function(self, params, messages)
+                    local base = require("codecompanion.adapters.http.anthropic").handlers.form_parameters
+                    params = base(self, params, messages) or params
+                    params.model = nil
+                    params.anthropic_version = "vertex-2023-10-16"
+                    return params
+                  end,
+                },
+              })
+            end,
+          },
           acp = {
             claude_code = function()
               local broker_socket = vim.env.ACP_BROKER_SOCKET
