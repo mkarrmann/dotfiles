@@ -235,12 +235,88 @@ local function create_input_buf(t)
   return buf
 end
 
--- Closes the chat window when its sibling input/status window closes —
--- but only when the closing window and the chat window live in the
--- same tab. The previous implementation looked up the chat with
--- `bufwinid(chat_bufnr)`, which finds any window showing the chat
--- buffer; in a `:tab split` scenario that would close the wrong tab's
--- chat.
+-- Re-entrancy guard for teardown. `M.teardown` closes windows and the
+-- chat buffer, each of which fires events (WinClosed, ChatClosed) that
+-- route back here; the guard makes those nested calls no-ops so the
+-- single in-progress teardown owns the whole sequence.
+local tearing_down = {}
+
+-- Bring down a tab's entire CodeCompanion UI together and synchronously:
+-- the chat window+buffer, the input window+buffer, the status
+-- window+buffer, the status-line timer, the per-tab state, and the tab
+-- var. This is the single teardown path — every close entry point
+-- (chat closed, input/status window closed, tab closed) funnels here so
+-- the three panes always live and die as a unit.
+--
+-- Idempotent: safe to call repeatedly and re-entrantly. Closing the
+-- chat buffer here fires `CodeCompanionChatClosed` -> `on_chat_closed`
+-- -> `teardown` again; the guard (and the `states[t]` nil check)
+-- absorb the re-entry. Also handles the "chat buffer already deleted"
+-- case, since CodeCompanion's `Chat:close` fires `ChatClosed` and only
+-- then deletes the buffer — so by the time our scheduled handler runs
+-- the buffer (and its tab stamp) may be gone, which is why callers pass
+-- the resolved tab in explicitly.
+function M.teardown(t)
+  if not t then return end
+  local s = states[t]
+  if not s then return end
+  if tearing_down[t] then return end
+  tearing_down[t] = true
+
+  statusline.stop(s)
+
+  -- Close the chat window(s) in the owning tab. Window close doesn't
+  -- delete the chat buffer; that happens below via chat:close().
+  if s.chat_bufnr and vim.api.nvim_tabpage_is_valid(t) then
+    for _, win in ipairs(vim.api.nvim_tabpage_list_wins(t)) do
+      if vim.api.nvim_win_get_buf(win) == s.chat_bufnr then
+        pcall(vim.api.nvim_win_close, win, true)
+      end
+    end
+  end
+  if s.status_winnr and vim.api.nvim_win_is_valid(s.status_winnr) then
+    pcall(vim.api.nvim_win_close, s.status_winnr, true)
+  end
+  if s.winnr and vim.api.nvim_win_is_valid(s.winnr) then
+    pcall(vim.api.nvim_win_close, s.winnr, true)
+  end
+
+  -- Close the chat itself. Prefer chat:close() when the chat still
+  -- exists so its ACP connection is disconnected; fall back to a raw
+  -- buffer delete. When we got here *from* a ChatClosed event the chat
+  -- is already gone (buf_get_chat -> nil, buffer invalid) and both
+  -- branches are skipped.
+  if s.chat_bufnr and vim.api.nvim_buf_is_valid(s.chat_bufnr) then
+    local chat = require("codecompanion").buf_get_chat(s.chat_bufnr)
+    if chat then
+      pcall(function() chat:close() end)
+    else
+      pcall(vim.api.nvim_buf_delete, s.chat_bufnr, { force = true })
+    end
+  end
+  if s.bufnr and vim.api.nvim_buf_is_valid(s.bufnr) then
+    pcall(vim.api.nvim_buf_delete, s.bufnr, { force = true })
+  end
+  if s.status_bufnr and vim.api.nvim_buf_is_valid(s.status_bufnr) then
+    pcall(vim.api.nvim_buf_delete, s.status_bufnr, { force = true })
+  end
+
+  if vim.api.nvim_tabpage_is_valid(t) then
+    pcall(vim.api.nvim_tabpage_del_var, t, "codecompanion_chat_bufnr")
+  end
+
+  states[t] = nil
+  tearing_down[t] = nil
+end
+
+-- When a sibling input/status window closes, tear the whole UI down —
+-- the three panes are a unit (see `M.teardown`). Matching is per-tab
+-- via the stamped `winnr`/`status_winnr`, so a `:tab split` can't close
+-- the wrong tab's chat.
+--
+-- The hide path (`on_chat_hidden`) nulls these fields *before* closing
+-- its windows precisely so this handler doesn't mistake a toggle-off
+-- for a teardown.
 vim.api.nvim_create_autocmd("WinClosed", {
   group = vim.api.nvim_create_augroup("codecompanion_queue_close", { clear = true }),
   callback = function(args)
@@ -248,14 +324,8 @@ vim.api.nvim_create_autocmd("WinClosed", {
     if not closed then return end
     for t, s in pairs(states) do
       if closed == s.winnr or closed == s.status_winnr then
-        if not s.chat_bufnr then return end
-        -- Find a chat window in the same tab as `t`.
-        for _, win in ipairs(vim.api.nvim_tabpage_list_wins(t)) do
-          if vim.api.nvim_win_get_buf(win) == s.chat_bufnr then
-            pcall(vim.api.nvim_win_close, win, true)
-            return
-          end
-        end
+        M.teardown(t)
+        return
       end
     end
   end,
@@ -307,16 +377,9 @@ vim.api.nvim_create_autocmd("TabClosed", {
   callback = function()
     local valid = {}
     for _, t in ipairs(vim.api.nvim_list_tabpages()) do valid[t] = true end
-    for t, s in pairs(states) do
+    for t in pairs(states) do
       if not valid[t] then
-        statusline.stop(s)
-        if s.bufnr and vim.api.nvim_buf_is_valid(s.bufnr) then
-          pcall(vim.api.nvim_buf_delete, s.bufnr, { force = true })
-        end
-        if s.status_bufnr and vim.api.nvim_buf_is_valid(s.status_bufnr) then
-          pcall(vim.api.nvim_buf_delete, s.status_bufnr, { force = true })
-        end
-        states[t] = nil
+        M.teardown(t)
       end
     end
   end,
@@ -399,14 +462,18 @@ function M.on_chat_hidden(chat_bufnr)
   local s = states[t]
   if not s or s.chat_bufnr ~= chat_bufnr then return end
   s.fullscreen = false
-  if s.status_winnr and vim.api.nvim_win_is_valid(s.status_winnr) then
-    vim.api.nvim_win_close(s.status_winnr, true)
-  end
+  -- Null the window handles *before* closing so the WinClosed handler
+  -- sees no matching winnr/status_winnr and treats this as a toggle-off,
+  -- not a full teardown. The input/status buffers are kept for re-open.
+  local status_winnr, winnr = s.status_winnr, s.winnr
   s.status_winnr = nil
-  if s.winnr and vim.api.nvim_win_is_valid(s.winnr) then
-    vim.api.nvim_win_close(s.winnr, true)
-  end
   s.winnr = nil
+  if status_winnr and vim.api.nvim_win_is_valid(status_winnr) then
+    pcall(vim.api.nvim_win_close, status_winnr, true)
+  end
+  if winnr and vim.api.nvim_win_is_valid(winnr) then
+    pcall(vim.api.nvim_win_close, winnr, true)
+  end
   statusline.stop(s)
 end
 
@@ -440,25 +507,16 @@ function M.on_chat_done(chat_bufnr)
   end
 end
 
-function M.on_chat_closed(chat_bufnr)
-  local t = tab_for_chat(chat_bufnr)
-  if not t then return end
-  local s = states[t]
-  if not s or s.chat_bufnr ~= chat_bufnr then return end
-  statusline.stop(s)
-  if s.status_winnr and vim.api.nvim_win_is_valid(s.status_winnr) then
-    pcall(vim.api.nvim_win_close, s.status_winnr, true)
-  end
-  if s.winnr and vim.api.nvim_win_is_valid(s.winnr) then
-    pcall(vim.api.nvim_win_close, s.winnr, true)
-  end
-  if s.bufnr and vim.api.nvim_buf_is_valid(s.bufnr) then
-    pcall(vim.api.nvim_buf_delete, s.bufnr, { force = true })
-  end
-  if s.status_bufnr and vim.api.nvim_buf_is_valid(s.status_bufnr) then
-    pcall(vim.api.nvim_buf_delete, s.status_bufnr, { force = true })
-  end
-  states[t] = nil
+-- Chat closed by CodeCompanion (or by us). Route to the unified
+-- teardown. The tab is passed in explicitly by the ChatClosed handler
+-- because CodeCompanion deletes the chat buffer synchronously inside
+-- Chat:close (right after firing ChatClosed), so by the time this runs
+-- the buffer — and its `cc_tab_owner` stamp — may already be gone,
+-- making `tab_for_chat` return nil. Fall back to it only when no tab
+-- was provided (e.g. legacy callers).
+function M.on_chat_closed(chat_bufnr, tab)
+  local t = tab or tab_for_chat(chat_bufnr)
+  M.teardown(t)
 end
 
 -- Returns the input bufnr for the current tab. Used by the cmp slash source.

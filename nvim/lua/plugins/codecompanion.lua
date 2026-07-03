@@ -2408,14 +2408,15 @@ return {
           local bufnr = args.data and args.data.bufnr
           if not bufnr then return end
           local ok, tab = pcall(function() return vim.b[bufnr].cc_tab_owner end)
-          if ok and tab and vim.api.nvim_tabpage_is_valid(tab) then
-            pcall(vim.api.nvim_tabpage_del_var, tab, "codecompanion_chat_bufnr")
-          end
+          tab = (ok and tab and vim.api.nvim_tabpage_is_valid(tab)) and tab or nil
           _dvsc.by_chat_bufnr[bufnr] = nil
           pcall(function() require("lib.codecompanion-tool-output").clear(bufnr) end)
-          vim.schedule(function()
-            require("lib.codecompanion-queue").on_chat_closed(bufnr)
-          end)
+          -- Resolve the tab synchronously (above) — CodeCompanion deletes
+          -- the chat buffer synchronously right after firing this event, so
+          -- the `cc_tab_owner` stamp is gone by the next tick. Tear down now
+          -- (not scheduled) so the whole UI comes down as a unit before any
+          -- subsequent relaunch (e.g. <leader>aZ) can reopen into stale state.
+          require("lib.codecompanion-queue").on_chat_closed(bufnr, tab)
         end,
       })
 
