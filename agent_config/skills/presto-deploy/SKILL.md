@@ -263,6 +263,15 @@ When both Java and C++ fbpkgs are produced, the script delegates to `fb_presto_c
 
 A test cluster must be reserved before deploying to it.
 
+> **ALWAYS reserve for at least 24 hours -- usually much longer.** The 3-hour
+> default is a trap: e2e testing (build + deploy + rollout + control run +
+> experiment run + log inspection) reliably takes far longer than expected, and
+> losing a reservation mid-test is extremely disruptive -- the cluster reverts to
+> the daily config snapshot + stock binary, silently discarding your deployed
+> binary and local config (looks like stale logs / `desiredTaskCount=0` /
+> connection failures). When in doubt, reserve for a day or more (`-d "24 hours"`
+> or longer); you can always `release` early.
+
 **`pt pcm test-cluster`** -- the current tool:
 
 ```bash
@@ -271,8 +280,8 @@ pt pcm test-cluster list
 pt pcm test-cluster list --available-only
 pt pcm test-cluster list -r <region> -m <machine_type>
 
-# Reserve a test cluster (defaults: 3 hours, 50 workers)
-pt pcm test-cluster reserve --request-reason "<reason>"
+# Reserve a test cluster (default duration is only 3h -- override to >=24h)
+pt pcm test-cluster reserve -d "24 hours" --request-reason "<reason>"
 
 # Reserve with specific duration, worker count, region, machine type
 pt pcm test-cluster reserve -d "2 days" -w 10 -r <region> -m <machine_type> \
@@ -382,16 +391,16 @@ Before reserving, determine:
 | **Worker count** | `-w` | 10 for correctness, 100-300 for perf |
 | **Region** | `-r` | Prefer `atn`, `ftw`, `pnb`, `rcd` for BEEST; match production region for goshadow |
 | **Machine type** | `-m` | `T1_BGM` for standard batch (most common production type) |
-| **Duration** | `-d` | Correctness: 2-3h. Perf A/B: 6-8h (deploy + control run + experiment run). |
+| **Duration** | `-d` | **Minimum 24h; often more.** e2e always overruns -- losing the reservation mid-test reverts the cluster to stock and is extremely disruptive. Release early if you finish sooner. |
 | **Category** | `--category` | `"Warehouse Batch Testing"` for Prestissimo batch clusters |
 
 ```bash
-# Typical performance testing reservation
-pt pcm test-cluster reserve -w 300 -r rcd -m T1_BGM -d "8 hours" \
+# Typical performance testing reservation (reserve long -- e2e overruns)
+pt pcm test-cluster reserve -w 300 -r rcd -m T1_BGM -d "24 hours" \
     --request-reason "Performance A/B: <description>"
 
 # Typical correctness testing reservation
-pt pcm test-cluster reserve -w 10 --request-reason "BEEST correctness: <description>"
+pt pcm test-cluster reserve -w 10 -d "24 hours" --request-reason "BEEST correctness: <description>"
 ```
 
 ### Modifying Cluster Config for Testing
