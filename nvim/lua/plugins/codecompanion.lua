@@ -489,48 +489,16 @@ local function _broker_fork_saved_session(adapter, source_bsid)
   return resp.broker_session_id, resp.cwd
 end
 
--- Top-level entry point used by `<leader>aBr` / `<leader>aBf`. `action`
--- is `"resume"` or `"fork"`. The default adapter is `dvsc_core_broker`
--- because most broker-captured sessions are dvsc/claude (both use the
--- claude_code wire shape, so dvsc_core_broker resumes either cleanly).
--- For codex sessions, swap to `codex_broker` here.
-local function broker_resume_or_fork(action, adapter_name)
-  adapter_name = adapter_name or "dvsc_core_broker"
-  local prompt = (action == "fork" and "Fork bsid: ") or "Resume bsid: "
-  local default = _broker_read_last_bsid() or "bsid_"
-  vim.ui.input({ prompt = prompt, default = default }, function(bsid)
-    bsid = bsid and vim.trim(bsid)
-    if not bsid or bsid == "" or bsid == "bsid_" then return end
-    _broker_write_last_bsid(bsid)
-    local target_bsid = bsid
-    local target_cwd = nil
-    if action == "fork" then
-      local adapter = require("codecompanion.adapters").resolve(adapter_name)
-      target_bsid, target_cwd = _broker_fork_saved_session(adapter, bsid)
-      if not target_bsid then return end
-      vim.notify("forked " .. bsid .. " -> " .. target_bsid, vim.log.levels.INFO)
-    end
-    _broker_open_chat_with_session(adapter_name, target_bsid, target_cwd)
-  end)
-end
+-- `broker_resume_or_fork` (the aBr/aBf escape hatches) is defined after the I/O
+-- adapters below, since it depends on `_broker_this_broker_id`/
+-- `_broker_list_sessions` for its pre-flight broker-mismatch check.
 
--- ── Continue / resume the most recent session for the current cwd ──────────
---
--- The `claude --continue` / `claude --resume` analogue. Both read the
--- broker's *local* WAL mirror directly
--- (~/.local/share/acp-broker/sqlite-persistence/wal.db) rather than going
--- through the broker RPC: the lookup is a single indexed sqlite query, needs
--- no live connection or coroutine, and same-broker is the only resume the
--- broker permits anyway (cross-broker resume is rejected — see
--- `broker_open_chat_with_session`'s `session/load` path and the `/resume`
--- slash command notes above), so the WAL's "only this broker's captures"
--- limitation costs nothing here.
---
--- cwd matching is prefix-based: a session row whose stored `cwd` is a prefix
--- of nvim's `getcwd()` matches, so continue works from a subdirectory of the
--- checkout the session was started in. Rows are ranked by `started_at DESC`,
--- so the most recent matching session wins (an exact cwd match and a parent
--- match are both eligible; recency breaks the tie).
+-- The broker's local WAL mirror. The server-backed picker
+-- (`broker_continue`) does NOT read this for its session list — it queries the
+-- persistence-server via acp-broker-cli so it sees all brokers. The WAL is used
+-- only for (a) reading THIS broker's id (`_broker_this_broker_id`) and (b) the
+-- degraded fallback in `_broker_list_sessions` when the CLI/server is
+-- unreachable.
 local BROKER_WAL_PATH =
   vim.fn.expand("~/.local/share/acp-broker/sqlite-persistence/wal.db")
 
@@ -557,91 +525,384 @@ local function _broker_adapter_for(agent_id)
   return "dvsc_core_broker"
 end
 
--- Query the WAL for sessions whose stored cwd is a prefix of `cwd`, newest
--- first. Returns a list of { bsid, agent_id, started_at, cwd, label }.
--- `limit` caps rows (default 1). Returns {} if sqlite/the WAL is unavailable.
-local function _broker_sessions_for_cwd(cwd, limit)
-  limit = limit or 1
-  if vim.fn.executable("sqlite3") == 0 then
-    vim.notify("acp-broker continue: sqlite3 not on PATH", vim.log.levels.ERROR)
-    return {}
-  end
-  if vim.fn.filereadable(BROKER_WAL_PATH) == 0 then
-    vim.notify("acp-broker continue: WAL not found at " .. BROKER_WAL_PATH, vim.log.levels.ERROR)
-    return {}
-  end
-  -- `?1 = cwd LIKE rows.cwd || '/%'` (subdir) OR exact equality. `||CHAR(31)||`
-  -- joins fields with an ASCII unit separator so paths/models can't collide
-  -- with the delimiter. Bind cwd via -cmd .param to avoid quoting issues.
-  local sql = table.concat({
-    "SELECT broker_session_id || CHAR(31) || agent_id || CHAR(31) || started_at",
-    "       || CHAR(31) || cwd || CHAR(31)",
-    "       || COALESCE(json_extract(metadata,'$.broker_client_metadata.dvsc.model'),'')",
-    "  FROM mirrored_sessions",
-    " WHERE cwd IS NOT NULL AND cwd != ''",
-    "   AND (:cwd = cwd OR :cwd LIKE cwd || '/%')",
-    " ORDER BY started_at DESC",
-    " LIMIT " .. tostring(limit) .. ";",
-  }, " ")
-  local out = vim.fn.systemlist({
-    "sqlite3",
-    "-cmd", ".param set :cwd " .. vim.fn.shellescape(cwd),
-    BROKER_WAL_PATH,
-    sql,
-  })
-  if vim.v.shell_error ~= 0 then
-    vim.notify("acp-broker continue: sqlite query failed:\n" .. table.concat(out, "\n"), vim.log.levels.ERROR)
-    return {}
-  end
-  local rows = {}
-  for _, line in ipairs(out) do
-    local bsid, agent_id, started_at, scwd, model = unpack(vim.split(line, "\31", { plain = true }))
-    if bsid and bsid ~= "" then
-      local when = (started_at or ""):gsub("%.%d+Z$", "Z")
-      local label = string.format("%s  %s%s",
-        when,
-        (model ~= nil and model ~= "") and (model .. "  ") or "",
-        scwd or "")
-      rows[#rows + 1] = {
-        bsid = bsid,
-        agent_id = agent_id,
-        started_at = started_at,
-        cwd = scwd,
-        model = model,
-        label = label,
-      }
+-- ── I/O adapters for the server-backed continue picker ─────────────────────
+--
+-- These are the thin impure edges that feed `lib.acp-broker-sessions` (pure).
+-- Design: docs/acp-broker-continue-refactor.md §3.1-3.2.
+
+local _BROKER_CLI = vim.fn.expand("~/repos/acp-broker/target/release/acp-broker-cli")
+local _broker_sessions = require("lib.acp-broker-sessions")
+
+-- This broker's id, read once from the local WAL and cached. Used to classify
+-- rows as local vs remote. Returns nil if the WAL is unavailable (⇒ every row
+-- classifies as remote ⇒ fork, which is the safe cross-broker path).
+local _this_broker_id_cache = nil
+local _this_broker_id_read = false
+local function _broker_this_broker_id()
+  if _this_broker_id_read then return _this_broker_id_cache end
+  _this_broker_id_read = true
+  if vim.fn.executable("sqlite3") == 1 and vim.fn.filereadable(BROKER_WAL_PATH) == 1 then
+    local out = vim.fn.systemlist({
+      "sqlite3", BROKER_WAL_PATH,
+      "SELECT broker_id FROM mirrored_sessions ORDER BY started_at DESC LIMIT 1;",
+    })
+    if vim.v.shell_error == 0 and out[1] and out[1] ~= "" then
+      _this_broker_id_cache = vim.trim(out[1])
     end
   end
-  return rows
+  return _this_broker_id_cache
 end
 
--- `--continue`: open the single most-recent session for the current cwd.
-local function broker_continue_cwd()
-  local cwd = vim.fn.getcwd()
-  local rows = _broker_sessions_for_cwd(cwd, 1)
-  if vim.tbl_isempty(rows) then
-    return vim.notify("No saved broker session for " .. cwd, vim.log.levels.WARN)
+-- Live agent id set on THIS broker, via `agent list`. Cached for the duration of
+-- one picker invocation (pass a fresh call to refresh). Returns {} on failure.
+local function _broker_live_agent_ids()
+  local set = {}
+  if vim.fn.executable(_BROKER_CLI) == 0 then return set end
+  local out = vim.fn.systemlist({ _BROKER_CLI, "agent", "list" })
+  if vim.v.shell_error ~= 0 then return set end
+  for _, line in ipairs(out) do
+    local id = line:match("^(%S+)")
+    if id then set[id] = true end
   end
-  local s = rows[1]
-  _broker_write_last_bsid(s.bsid)
-  _broker_open_chat_with_session(_broker_adapter_for(s.agent_id), s.bsid)
+  return set
 end
 
--- `--resume`: pick from recent sessions for the current cwd.
-local function broker_resume_cwd_pick()
-  local cwd = vim.fn.getcwd()
-  local rows = _broker_sessions_for_cwd(cwd, 20)
-  if vim.tbl_isempty(rows) then
-    return vim.notify("No saved broker session for " .. cwd, vim.log.levels.WARN)
+-- List saved sessions across ALL brokers via the persistence-server (through the
+-- broker UDS). Returns `(rows, degraded)`: on CLI failure, falls back to the
+-- local WAL (this-broker-only) with `degraded = true`. Rows are normalized by
+-- `parse_saved_sessions` and already recency-sorted by the server.
+local function _broker_list_sessions()
+  if vim.fn.executable(_BROKER_CLI) == 1 then
+    local out = vim.fn.system({ _BROKER_CLI, "history", "query", "saved-sessions", "--json" })
+    if vim.v.shell_error == 0 and out and out ~= "" then
+      local rows = _broker_sessions.parse_saved_sessions(out)
+      if #rows > 0 then return rows, false end
+    end
   end
-  vim.ui.select(rows, {
-    prompt = "Resume session for " .. cwd .. ":",
-    format_item = function(item) return item.label end,
-  }, function(choice)
-    if not choice then return end
-    _broker_write_last_bsid(choice.bsid)
-    _broker_open_chat_with_session(_broker_adapter_for(choice.agent_id), choice.bsid)
+  -- Fallback: local WAL only.
+  local rows = {}
+  if vim.fn.executable("sqlite3") == 1 and vim.fn.filereadable(BROKER_WAL_PATH) == 1 then
+    local this = _broker_this_broker_id()
+    local out = vim.fn.systemlist({
+      "sqlite3", "-cmd", ".mode json", BROKER_WAL_PATH,
+      "SELECT broker_session_id, cwd, "
+        .. "json_extract(metadata,'$.broker_client_metadata.host') AS host, "
+        .. "json_extract(metadata,'$.broker_client_metadata.dvsc.model') AS model, "
+        .. "json_extract(metadata,'$.broker_client_metadata.dvsc.mode') AS mode "
+        .. "FROM mirrored_sessions ORDER BY started_at DESC;",
+    })
+    local ok, decoded = pcall(vim.fn.json_decode, table.concat(out, "\n"))
+    if ok and type(decoded) == "table" then
+      for _, r in ipairs(decoded) do
+        rows[#rows + 1] = {
+          bsid = r.broker_session_id,
+          broker_id = r.host or this,
+          cwd = r.cwd,
+          model = r.model,
+          mode = r.mode,
+        }
+      end
+    end
+  end
+  return rows, true
+end
+
+-- Lazily enrich a single picked row (design §3.2: per-row enrichment is too slow,
+-- so this runs only for the chosen row). Reads the session's seq-0 event via
+-- `history query load` (cross-broker safe) to get agent_id + started_at, then
+-- checks liveness against the live agent set. Returns
+-- { agent_id, started_at, live }.
+local function _broker_enrich_pick(bsid, live_ids)
+  local result = { agent_id = nil, started_at = nil, live = false }
+  if vim.fn.executable(_BROKER_CLI) == 0 then return result end
+  -- `load | head -1`: the first line is the seq-0 session/new event. SIGPIPE from
+  -- the early close is fine (we ignore shell_error here since head closing the
+  -- pipe can make the CLI exit non-zero).
+  local out = vim.fn.system(
+    string.format("%s history query load %s 2>/dev/null | head -1",
+      vim.fn.shellescape(_BROKER_CLI), vim.fn.shellescape(bsid))
+  )
+  if not out or out == "" then return result end
+  local ok, ev = pcall(vim.fn.json_decode, out)
+  if not ok or type(ev) ~= "table" then return result end
+  result.agent_id = ev.agent_id
+  result.started_at = ev.ts
+  if result.agent_id and (live_ids or {})[result.agent_id] then
+    result.live = true
+  end
+  return result
+end
+
+-- Top-level entry points for `<leader>aBr` / `<leader>aBf` (escape hatches; the
+-- everyday path is `<leader>aBc` / broker_continue). `action` is `"resume"` or
+-- `"fork"`. For `resume`, a pre-flight broker-mismatch check: cross-broker
+-- `session/load` is rejected and silently starts fresh (acp/init.lua:386), so if
+-- the bsid belongs to another broker we warn and offer to fork instead.
+local function broker_resume_or_fork(action, adapter_name)
+  adapter_name = adapter_name or "dvsc_core_broker"
+  local prompt = (action == "fork" and "Fork bsid: ") or "Resume bsid: "
+  local default = _broker_read_last_bsid() or "bsid_"
+
+  local function do_fork(bsid)
+    local adapter = require("codecompanion.adapters").resolve(adapter_name)
+    local target_bsid, target_cwd = _broker_fork_saved_session(adapter, bsid)
+    if not target_bsid then return end
+    vim.notify("forked " .. bsid .. " -> " .. target_bsid, vim.log.levels.INFO)
+    _broker_write_last_bsid(target_bsid)
+    _broker_open_chat_with_session(adapter_name, target_bsid, target_cwd)
+  end
+
+  vim.ui.input({ prompt = prompt, default = default }, function(bsid)
+    bsid = bsid and vim.trim(bsid)
+    if not bsid or bsid == "" or bsid == "bsid_" then return end
+    _broker_write_last_bsid(bsid)
+
+    if action == "fork" then
+      return do_fork(bsid)
+    end
+
+    -- action == "resume": pre-flight broker-mismatch check.
+    local this = _broker_this_broker_id()
+    local rows = _broker_list_sessions()
+    local owner
+    for _, row in ipairs(rows) do
+      if row.bsid == bsid then
+        owner = row.broker_id
+        break
+      end
+    end
+    if owner and this and owner ~= this then
+      return vim.ui.select({ "Fork instead (recommended)", "Resume anyway (will start fresh)" }, {
+        prompt = string.format("%s belongs to %s, not this broker (%s). Resume can't work.",
+          _broker_sessions.short_bsid(bsid), owner, this),
+      }, function(choice)
+        if not choice then return end
+        if choice:match("^Fork") then
+          do_fork(bsid)
+        else
+          _broker_open_chat_with_session(adapter_name, bsid, nil)
+        end
+      end)
+    end
+    _broker_open_chat_with_session(adapter_name, bsid, nil)
   end)
+end
+
+
+-- ── Smart continue: server-backed, auto-routing resume/fork ────────────────
+--
+-- Design: docs/acp-broker-continue-refactor.md §3.2-3.3. One command that lists
+-- all sessions across brokers, classifies each by (origin, liveness), and routes
+-- to resume (local+live), fork (remote), or fork-because-dead (local+dead).
+--
+-- DESIGN DEVIATION (implementation-time): the doc's `resume_or_fork` action was
+-- to attempt resume and catch -32029. That is NOT reliably implementable —
+-- codecompanion's `_establish_session` (acp/init.lua:386) swallows a failed
+-- `session/load` by falling through to `session/new`, so a doomed resume
+-- silently starts fresh and returns success (the very bug we're removing). We
+-- instead detect local+dead via the pre-flight liveness check in
+-- `_broker_enrich_pick` (agent-not-in-live-set) and fork directly. `route_for`
+-- still returns "resume_or_fork" for local+dead; `_broker_apply` treats it as a
+-- direct fork with a toast.
+
+-- Execute the routed action for an enriched picked row.
+local function _broker_apply(row, enrich)
+  local origin = _broker_sessions.classify_origin(row, _broker_this_broker_id())
+  local action = _broker_sessions.route_for({ origin = origin, live = enrich.live })
+  _broker_write_last_bsid(row.bsid)
+
+  if action == "resume" then
+    _broker_open_chat_with_session(_broker_adapter_for(enrich.agent_id), row.bsid)
+    return
+  end
+
+  -- fork (remote) or resume_or_fork→fork (local+dead): materialize a fresh
+  -- local session from the server-held history and open it.
+  local adapter = (row.model and row.model:match("codex")) and "codex_broker" or "dvsc_core_broker"
+  local why = (origin == "remote")
+    and ("forking cross-broker session from " .. (row.broker_id or "?"))
+    or "original agent has exited; forking to recover context"
+  local target_bsid, target_cwd = _broker_fork_saved_session(
+    require("codecompanion.adapters").resolve(adapter), row.bsid
+  )
+  if not target_bsid then return end
+  vim.notify(
+    string.format("%s\n%s → %s", why, _broker_sessions.short_bsid(row.bsid), _broker_sessions.short_bsid(target_bsid)),
+    vim.log.levels.INFO
+  )
+  _broker_write_last_bsid(target_bsid)
+  _broker_open_chat_with_session(adapter, target_bsid, target_cwd)
+end
+
+-- Enrich (if local) then apply. Remote rows skip enrichment (they always fork).
+local function _broker_enrich_and_apply(row, live_ids)
+  local origin = _broker_sessions.classify_origin(row, _broker_this_broker_id())
+  local enrich = { agent_id = nil, started_at = row.started_at, live = false }
+  if origin == "local" then
+    enrich = _broker_enrich_pick(row.bsid, live_ids or _broker_live_agent_ids())
+  end
+  _broker_apply(row, enrich)
+end
+
+-- Fetch a short preview for a session: full bsid, broker/agent, and the first
+-- user prompt text. Cross-broker safe (uses `history query load`). Returns a
+-- list of display lines. Best-effort; never errors.
+local function _broker_session_preview(row, enrich)
+  local lines = {
+    "bsid:    " .. (row.bsid or "?"),
+    "broker:  " .. (row.broker_id or "?"),
+    "cwd:     " .. (row.cwd or "?"),
+    "model:   " .. (row.model or "?") .. (row.effort and (" [" .. row.effort .. "]") or ""),
+  }
+  if enrich then
+    lines[#lines + 1] = "agent:   " .. (enrich.agent_id or "?") .. (enrich.live and " (live)" or " (dead)")
+    lines[#lines + 1] = "started: " .. (enrich.started_at or "?")
+  end
+  lines[#lines + 1] = ""
+  -- First user prompt: scan the load stream for the first client→agent
+  -- session/prompt event's last text block.
+  if vim.fn.executable(_BROKER_CLI) == 1 and row.bsid then
+    local out = vim.fn.system(
+      string.format("%s history query load %s 2>/dev/null | head -40",
+        vim.fn.shellescape(_BROKER_CLI), vim.fn.shellescape(row.bsid))
+    )
+    for _, l in ipairs(vim.split(out or "", "\n", { plain = true })) do
+      local ok, ev = pcall(vim.fn.json_decode, l)
+      if ok and type(ev) == "table" and ev.method == "session/prompt"
+        and ev.direction == "client_to_agent" then
+        local prompt = ev.payload and ev.payload.prompt
+        if type(prompt) == "table" then
+          local last_text
+          for _, block in ipairs(prompt) do
+            if type(block) == "table" and block.type == "text" and block.text then
+              last_text = block.text
+            end
+          end
+          if last_text then
+            lines[#lines + 1] = "── first prompt ──"
+            for _, pl in ipairs(vim.split(last_text, "\n", { plain = true })) do
+              lines[#lines + 1] = pl
+            end
+          end
+        end
+        break
+      end
+    end
+  end
+  return lines
+end
+
+-- Smart continue entry point. Server-backed list, cwd-filtered by default (toggle
+-- to all-cwd with <A-c>), rich auto-routing labels, pick-or-paste, preview + yank.
+-- Design §3.3.
+local function broker_continue()
+  local all_rows, degraded = _broker_list_sessions()
+  local this = _broker_this_broker_id()
+  local live_ids = _broker_live_agent_ids()
+  local cwd = vim.fn.getcwd()
+
+  -- Precompute origin + display label per row for the current scope.
+  local function build_items(scoped)
+    local rows = scoped and _broker_sessions.filter_by_cwd(all_rows, cwd) or all_rows
+    local items = {}
+    for _, row in ipairs(rows) do
+      local origin = _broker_sessions.classify_origin(row, this)
+      -- Liveness is lazy; at list time we only know origin. Show origin glyph;
+      -- action is "resume" for local (optimistic — refined on pick), "fork" for
+      -- remote (always correct).
+      local action = (origin == "remote") and "fork" or "resume"
+      local label = _broker_sessions.render_label(row, {
+        origin = origin, live = (origin == "local"), action = action, now = os.time(),
+      })
+      items[#items + 1] = { row = row, origin = origin, label = label }
+    end
+    return items
+  end
+
+  local scoped = true
+
+  local function open(is_scoped)
+    local items = build_items(is_scoped)
+    if vim.tbl_isempty(items) then
+      return vim.notify(
+        "No saved broker session for " .. cwd .. " (try <A-c> for all cwds, or <C-x> to paste a bsid)",
+        vim.log.levels.WARN
+      )
+    end
+    local title = degraded and "Continue [DEGRADED: this machine] " or "Continue session "
+    local scope_txt = is_scoped and cwd or "ALL cwds"
+
+    -- Route a chosen row (enrich if local, then apply).
+    local function route(row)
+      _broker_enrich_and_apply(row, live_ids)
+    end
+
+    -- Route a pasted bsid: classify from the full list; unknown ⇒ fork (safe).
+    local function route_bsid(bsid)
+      bsid = vim.trim(bsid)
+      if not _broker_sessions.is_bsid(bsid) then
+        return vim.notify("Not a valid bsid: " .. bsid, vim.log.levels.ERROR)
+      end
+      for _, row in ipairs(all_rows) do
+        if row.bsid == bsid then return route(row) end
+      end
+      route({ bsid = bsid, broker_id = nil })
+    end
+
+    vim.ui.select(items, {
+      prompt = title,
+      format_item = function(item) return item.label end,
+      snacks = {
+        source = "acp_continue",
+        title = title .. "· " .. scope_txt,
+        win = { input = { keys = {
+          ["<c-x>"] = { "paste_bsid", mode = { "i", "n" } },
+          ["<c-y>"] = { "yank_bsid", mode = { "i", "n" } },
+          ["<a-c>"] = { "toggle_cwd", mode = { "i", "n" } },
+        } } },
+        preview = function(ctx)
+          local item = ctx.item and ctx.item.item
+          if not item or not item.row then return false end
+          local lines = _broker_session_preview(item.row, nil)
+          ctx.preview:set_lines(lines)
+          ctx.preview:highlight({ ft = "markdown" })
+          return true
+        end,
+        actions = {
+          paste_bsid = function(picker)
+            local pat = picker.input.filter.pattern
+            if _broker_sessions.is_bsid(pat) then
+              picker:close()
+              vim.schedule(function() route_bsid(pat) end)
+            else
+              vim.notify("Type a full bsid_… in the filter first, then <C-x>", vim.log.levels.WARN)
+            end
+          end,
+          yank_bsid = function(picker)
+            local cur = picker:current()
+            local bsid = cur and cur.item and cur.item.row and cur.item.row.bsid
+            if bsid then
+              vim.fn.setreg("+", bsid)
+              vim.notify("Yanked " .. bsid, vim.log.levels.INFO)
+            end
+          end,
+          toggle_cwd = function(picker)
+            picker:close()
+            vim.schedule(function() open(not is_scoped) end)
+          end,
+        },
+      },
+    }, function(choice)
+      if not choice then return end
+      route(choice.row)
+    end)
+  end
+
+  if degraded then
+    vim.notify("acp-broker: persistence-server unreachable — showing THIS machine only",
+      vim.log.levels.WARN)
+  end
+  open(scoped)
 end
 
 -- Pick a dvsc selection (interactive or from cache), then invoke `cb`
@@ -2581,14 +2842,15 @@ Placement guidance (overrides the base prompt where they conflict):
       -- not by adapter, so this works for any claude-code-shaped session
       -- (dvsc/claude/devmate). Use codex_broker by editing
       -- `broker_resume_or_fork` for codex sessions.
-      { "<leader>aBr", function() broker_resume_or_fork("resume") end, desc = "ACP broker: resume saved session by bsid" },
-      { "<leader>aBf", function() broker_resume_or_fork("fork")   end, desc = "ACP broker: fork saved session by bsid" },
-      -- cwd-scoped continue/resume (the `claude --continue` / `--resume`
-      -- analogue). `aBc` opens the single most-recent session for the current
-      -- cwd; `aBl` lists recent sessions for the cwd to pick from. Both derive
-      -- the bsid from the broker WAL by cwd prefix, so no bsid typing.
-      { "<leader>aBc", function() broker_continue_cwd()    end, desc = "ACP broker: continue most-recent session for cwd" },
-      { "<leader>aBl", function() broker_resume_cwd_pick() end, desc = "ACP broker: list/resume sessions for cwd" },
+      { "<leader>aBr", function() broker_resume_or_fork("resume") end, desc = "ACP broker: resume saved session by bsid (escape hatch)" },
+      { "<leader>aBf", function() broker_resume_or_fork("fork")   end, desc = "ACP broker: fork saved session by bsid (escape hatch)" },
+      -- Smart continue (the everyday key). Server-backed cross-broker list,
+      -- cwd-scoped by default (<A-c> toggles all-cwd), auto-routes each pick to
+      -- resume (local+live) or fork (remote / local+dead). Pick from the list or
+      -- type a full bsid + <C-x>. <C-y> yanks the highlighted bsid. See
+      -- broker_continue and docs/acp-broker-continue-refactor.md.
+      { "<leader>aBc", function() broker_continue() end, desc = "ACP broker: smart continue (list/paste, auto resume/fork)" },
+      { "<leader>aBl", function() broker_continue() end, desc = "ACP broker: smart continue (alias of aBc)" },
     },
   },
 }

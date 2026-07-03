@@ -208,6 +208,16 @@ return {
 							layout = { width = 0.7, min_width = 80, max_width = 140 },
 						},
 					},
+					-- Broker "continue" picker (plugins/codecompanion.lua
+					-- broker_continue). Wider + taller than the generic select and
+					-- with a preview pane for the session's first prompt.
+					acp_continue = {
+						layout = {
+							preset = "default",
+							layout = { width = 0.9, min_width = 100, height = 0.8 },
+						},
+						preview = true,
+					},
 				},
 			},
 		},
