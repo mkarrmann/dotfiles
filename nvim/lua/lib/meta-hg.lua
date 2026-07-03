@@ -1661,7 +1661,16 @@ local function HgSsl(opts)
     local retargeted = SSL_STATE.repo_root ~= launch_root
     SSL_STATE.repo_root = launch_root
 
-    local win = vim.fn.win_findbuf(SSL_STATE.bufnr)[1]
+    -- Only reuse a window showing the panel in the *current* tabpage. Using
+    -- vim.fn.win_findbuf() here would match a window in another tab and warp us
+    -- there; we want the panel to appear in the tab we invoked from.
+    local win
+    for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+      if vim.api.nvim_win_get_buf(w) == SSL_STATE.bufnr then
+        win = w
+        break
+      end
+    end
     if win then
       vim.api.nvim_set_current_win(win)
     elseif split then
