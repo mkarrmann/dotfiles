@@ -1766,6 +1766,52 @@ return {
     config = function(_, opts)
       require("codecompanion").setup(opts)
 
+      -- Inject an extra system-role prompt into every inline invocation to
+      -- steer placement decisions. Mirrors CodeCompanion.inline
+      -- (init.lua:39-45) but adds `prompts` to Inline.new(), which
+      -- make_ext_prompts forwards alongside the built-in system prompt
+      -- (interactions/inline/init.lua:361-404). The addendum stacks on top of
+      -- the baked-in SYSTEM_PROMPT (init.lua:52-73) rather than replacing it,
+      -- since that one is a local CONSTANTS field and not reachable from
+      -- config.
+      do
+        local api = vim.api
+        local cc = require("codecompanion")
+        local ctx = require("codecompanion.utils.context")
+        local Inline = require("codecompanion.interactions.inline")
+
+        local INLINE_SYSTEM_ADDENDUM = [[
+Placement guidance (overrides the base prompt where they conflict):
+- Terse directives ("use modern bash", "make it faster", "rename X to Y")
+  are edits, not questions — pick replace/add/before/new. Default to
+  "replace" when a visual selection exists, "add" at cursor otherwise.
+- "chat" is appropriate ONLY for one of:
+  (a) a literal question about code ("what does this do?", "why does this fail?"), or
+  (b) a genuine issue, ambiguity, correctness concern, complexity, or hidden
+      gotcha that the user is plausibly overlooking and that deserves to be
+      surfaced before you produce code. In this case, briefly explain the
+      concern in chat rather than silently guessing.
+- Do NOT restate the user's prompt in code comments.
+]]
+
+        cc.inline = function(args)
+          local context = ctx.get(api.nvim_get_current_buf(), args)
+          local inline = Inline.new({
+            buffer_context = context,
+            prompts = {
+              {
+                role = "system",
+                opts = { visible = false },
+                content = INLINE_SYSTEM_ADDENDUM,
+              },
+            },
+          })
+          if inline then
+            inline:prompt(args.args)
+          end
+        end
+      end
+
       -- Full, untruncated single-line tool-call header.
       --
       -- Upstream's acp/formatters.tool_message caps the label at MAX_TITLE=60
