@@ -202,6 +202,10 @@ fbpkg build fbcode//fb_presto_cpp:presto.presto_cpp_asan     # asan
 - `fbcode/fb_presto_cpp/etc-local/`
 - `fbcode/github/presto-facebook-trunk/presto-facebook-main/etc-local/`
 
+More broadly: **ANY** uncommitted or untracked file anywhere in fbsource — including files unrelated to your change — makes `fbpkg build` fail with "Repo has uncommitted changes, refusing to run" (surfaced as an unhelpful `<unknown>` Rust backtrace + "could not extract hash"). Before packaging: `sl status`, commit your change (a scratch/`HACK:` commit is fine), and `sl shelve`/remove unrelated working-tree files.
+
+**On "which modes can be packaged":** every mode above EXCEPT `dev` has a packageable `fbpkg.builder` target (`presto.presto_cpp`, `_bolt`, `_asan`, `_tsan`, `_dbgo` in `fbcode/fb_presto_cpp/BUCK`). Only **`dev` (-O0, buck's default)** cannot be packaged — no fbpkg target exists for it, which is why `presto-build -n` (dev) is local-only. There is no "only opt can be packaged" rule: the default `presto.presto_cpp` fbpkg target just has no `mode=` set, so it inherits fbpkg's opt default. Note opt/bolt are the only cache-warm fbpkg builds (`ci.continuous`); dbgo/asan/tsan compile cold.
+
 ## Maven Flag Reference
 
 The build script uses these Maven flags (shared with `presto-deploy` via sourcing):

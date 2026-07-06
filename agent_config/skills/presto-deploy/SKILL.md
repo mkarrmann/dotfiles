@@ -46,6 +46,10 @@ All Presto test/verifier TW specs have an `allowAgents` policy (D99740807) grant
 
 ## CRITICAL: Prefer Existing fbpkgs Over Building from Source
 
+**Clean tree required for `fbpkg build`.** Before ANY `fbpkg build` (C++ or hybrid), the fbsource tree MUST be clean — `fbpkg build` refuses to run with uncommitted/untracked changes ("Repo has uncommitted changes, refusing to run") and fails with an unhelpful `<unknown>` Rust backtrace + "could not extract hash". ANY dirty file anywhere in fbsource triggers it, even files unrelated to your change. Fix: `sl status`, commit your changes (a scratch/`HACK:` commit is fine), and `sl shelve`/remove unrelated working-tree files first. The `presto-deploy` script now pre-checks this and fails fast with a clear message.
+
+**Build modes and packaging — there is NO "only opt can be packaged" rule.** `fbcode/fb_presto_cpp/BUCK` defines packageable `fbpkg.builder` targets for **opt, bolt, asan, tsan, and dbgo** (`presto.presto_cpp`, `presto.presto_cpp_bolt`, `_asan`, `_tsan`, `_dbgo`). The default `presto.presto_cpp` target has **no `mode=`** set, so it inherits fbpkg's default (opt) — that is the only reason `presto-deploy -n` produces opt. The **one** unpackageable mode is buck's **dev (-O0)**: no fbpkg target exists for it (use `presto-build -n` for local-only dev binaries). Caveat: only opt and bolt carry `fbpkg_ci_schedules = [ci.continuous]`, so only their RE caches stay warm — a `dbgo`/`asan`/`tsan` fbpkg compiles cold and can be **slower** than the cache-warm opt build despite lower optimization.
+
 **Always check for existing fbpkg versions before building from source.** Building a hybrid package from source takes 3+ hours (C++ opt compilation alone is ~3 hours). In most cases, a suitable package already exists.
 
 **FIRST decide: is the target cluster Prestissimo (C++ workers) or all-Java?** This determines the package type, and getting it wrong crash-loops the cluster (see "CRITICAL: Match the package to the cluster type" below). Batch (`*_batch*`, `*_bgm_*`) and verifier clusters are almost always **Prestissimo**.
@@ -227,7 +231,7 @@ digraph deploy {
 }
 ```
 
-When `-n` (hybrid) is specified with a Java build, the script automatically parallelizes the C++ fbpkg build (~3 hours) with the Nexus deploy + Java fbpkg packaging (~10 minutes). No manual intervention needed.
+When `-n` (hybrid) is specified with a Java build, the script builds the C++ fbpkg **fully concurrently with the entire Java pipeline** (`build_java_full` + Nexus deploy + Java fbpkg), joining only at the hybrid merge. The C++ buck2 build depends on nothing in the Java build, so there is no reason to serialize them — do NOT run the Java build to completion before starting the C++ fbpkg. If driving the steps manually, kick off `fbpkg build fbcode//fb_presto_cpp:presto.presto_cpp` in the background first, then run the Java build alongside it.
 
 ## Nexus Deployment
 
@@ -596,6 +600,41 @@ Without step 3, TW rolls out incrementally (e.g., 10% of tasks at a time with co
 
 Note: `tw update --fast` is **deprecated** under Spec 2.0. The `apply-task-ops` pattern above is its replacement.
 
+#### Batchtest clusters (`*_batchtest_bgm_*`) — `tw update` is the working path
+
+For warehouse batchtest clusters (e.g. `rcd1_batchtest_bgm_1`, `atn6_batchtest_bgm_1`),
+the spec file is `testing/batch_test.tw` (NOT `katchin.tw`), and deploying via
+`pt pcm deploy` is **unreliable** — it triggers the NUJ then dies on a post-trigger
+`PERMISSION DENIED` (ACL `cpplatform.apiserver.presto_cp`) and **the tasks never
+actually roll** (`tw job status` shows `converged:true` at the OLD revision). Use
+`tw update` directly to bypass the pcm gateway:
+
+```bash
+cd <checkout>/fbcode && \
+PRESTO_HTTPS_REQUIRED=false \
+PRESTO_VERSION=<maven-version> \
+  tw.real update tupperware/config/presto/testing/batch_test.tw \
+  "tsp_<sched>/presto/<cluster>.(coordinator|worker)"
+```
+
+Gotchas (all learned the hard way):
+- **Scheduler prefix ≠ region prefix.** The scheduler is `tsp_atn` for `atn6_...`
+  (not `tsp_atn6`), `tsp_rcd` for `rcd1_...`. If unsure, probe:
+  `tw.real resolve tsp_<guess>/presto/<cluster>.coordinator` until one returns RUNNING.
+- **`PRESTO_VERSION` = the hybrid's maven version**, not the fbpkg hash. Get it from
+  `fbpkg info presto.presto:<hash>` → the `v0.299-...` tag (strip the leading `v`).
+  `tw update` reads this env var; there is no `-pv` flag.
+- **`PRESTO_HTTPS_REQUIRED=false`** selects the plaintext arm (the D94275133 A/B
+  experiment gate, `"_batchtest_bgm_" in cluster_name` in `batch_native.cinc`);
+  omit or `=true` for the HTTPS arm.
+- **Always `--dry-run` first** — it prints the spec diff (`+/- --presto-version=...`)
+  so you can confirm the version bump before applying.
+- After `tw update`, run `presto-deploy-finish accelerate <cluster>` to force the
+  restart. The coordinator task-op may hit a harmless `PERMISSION DENIED` on the
+  `presto.coordinator.https` tier — workers still accelerate and the coordinator
+  restarts on its own. With ~300 workers, expect several minutes and a transient
+  "No services in tier" while the coordinator recycles.
+
 ### Restart without version change
 
 When you only need to restart tasks (e.g., after a config-only change):
@@ -611,6 +650,10 @@ presto-deploy-finish restart <cluster>
 | `mvn deploy` fails with auth error | Check Nexus credentials: `cat ~/.m2/settings.xml` |
 | fbpkg build fails | Ensure `mvn deploy` succeeded; check `/tmp/presto_dev_deploy.log` |
 | `fbpkg build` refuses to run (dirty repo) | `fbpkg build` rejects untracked files. Move `etc-local/` dirs out of repo before building, restore after. |
+| `fbpkg build` fails with `<unknown>` Rust backtrace + "could not extract hash", log says "Repo has uncommitted changes, refusing to run" | ANY uncommitted/untracked file in fbsource (even unrelated to your change) blocks `fbpkg build`. Run `sl status`, commit your change (scratch/`HACK:` commit is fine), and `sl shelve`/remove unrelated files. The `presto-deploy` script now pre-checks and fails fast. |
+| Java build fails compiling a broken trunk **test** source (e.g. `TestSliceDictionaryColumnWriter.java` "incompatible types") | Pre-existing broken test in trunk, unrelated to your change. `mvn install` compiles test sources even under `-DskipTests`. Use `-Dmaven.test.skip=true` (skips test compilation). `presto-deploy` now does this by default. |
+| Java build fails `maven-dependency-plugin:analyze-only` "Dependency problems found" (e.g. `presto-hdfs-core`, `presto-client`) | Side effect of skipping test compilation: test-scoped deps look "unused". A package build needs no dependency analysis. Add `-Dmdep.analyze.skip=true`. `presto-deploy` now does this by default. |
+| C++ fbpkg is opt but I wanted a cheaper build | opt/bolt/asan/tsan/dbgo all package (`-m <mode>`). But only opt/bolt are cache-warm (`ci.continuous`); dbgo/asan/tsan compile cold and are often slower. dev (-O0) has no fbpkg target — use `presto-build -n` for local-only. |
 | C++ fbpkg hash empty | Check `fbpkg build fbcode//fb_presto_cpp:<target>` output directly |
 | Cluster shows old version after deploy | Run `presto-deploy-finish accelerate <cluster>` |
 | `presto --smc` connection refused | Cluster may still be restarting; check `tw.real job status tsp_<region>/presto/<cluster>.worker` |

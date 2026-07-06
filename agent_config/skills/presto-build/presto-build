@@ -14,13 +14,21 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
 fi
 
 # === Configuration ===
-# Auto-detect FBCODE_HOME from CWD: walk up to find an fbcode/ parent.
+# Auto-detect FBCODE_HOME from CWD: walk up from CWD, matching either an
+# fbcode/ ancestor (CWD is inside fbcode) or a checkout root that contains
+# fbcode/ (CWD is the fbsource root or elsewhere above fbcode in the checkout).
 # Falls back to ~/checkout1/fbsource/fbcode if CWD is not inside an fbsource checkout.
 _detect_fbcode_home() {
     local d="$PWD"
     while [[ "$d" != "/" ]]; do
+        # CWD is inside an fbcode/ tree.
         if [[ -d "$d/github/presto-trunk" && "$(basename "$d")" == "fbcode" ]]; then
             echo "$d"
+            return
+        fi
+        # CWD is at/above a checkout root that contains fbcode/ (e.g. fbsource root).
+        if [[ -d "$d/fbcode/github/presto-trunk" ]]; then
+            echo "$d/fbcode"
             return
         fi
         d="$(dirname "$d")"

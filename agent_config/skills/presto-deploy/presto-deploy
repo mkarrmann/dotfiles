@@ -124,8 +124,17 @@ fi
 
 if $NATIVE && [ -n "$CPP_MODE" ]; then
     case "$CPP_MODE" in
+        # opt, bolt, asan, tsan, dbgo ALL have packageable fbpkg.builder targets
+        # in fbcode/fb_presto_cpp/BUCK (presto.presto_cpp[_bolt|_asan|_tsan|_dbgo]).
+        # There is NO "only opt can be packaged" restriction — the DEFAULT
+        # presto.presto_cpp target simply has no mode= set, so fbpkg's default
+        # (opt) is what you get unless you pass -m. Pick a cheaper mode if you
+        # want, but note only opt/bolt carry ci.continuous so only their RE
+        # caches stay warm; dbgo/asan/tsan compile cold and can be SLOWER.
         opt|bolt|asan|tsan|dbgo) ;;
-        dev) echo "Error: dev mode cannot be packaged; use presto-build for local C++ dev builds"; exit 1;;
+        # dev (buck default, -O0) is the ONE unpackageable mode: no fbpkg.builder
+        # target exists for it. Use presto-build -n for local-only dev binaries.
+        dev) echo "Error: dev mode has no fbpkg target; use presto-build -n for local C++ dev builds"; exit 1;;
         *) echo "Error: unknown C++ mode '$CPP_MODE'. Available: opt, bolt, asan, tsan, dbgo"; exit 1;;
     esac
 fi
@@ -152,9 +161,21 @@ for arr in OSS_OPTS FB_OPTS; do
     [ -n "$VERBOSE" ] && eval "${arr}+=(\"$VERBOSE\")"
 done
 
-# Build always uses install goal with tests skipped
+# Build always uses install goal. Skip flags explained:
+#  -Dmaven.test.skip=true : don't compile test SOURCES. A deploy/package build
+#      never needs test classes, and pre-existing broken test sources in trunk
+#      (unrelated to your change, e.g. presto-orc's TestSliceDictionaryColumnWriter)
+#      must not fail the build. NOTE -DskipTests only skips test EXECUTION, still
+#      compiles them — insufficient here.
+#  -Dair.check.skip-dependency=true : skip the airbase-bound maven-dependency-plugin
+#      analyze-only/analyze-dep-mgt goals. Airbase (parent pom) binds these with
+#      <skip>${air.check.skip-dependency}</skip> and failOnWarning=true, so the
+#      generic -Dmdep.analyze.skip is IGNORED — you MUST use the air.check.* name.
+#      With test compilation skipped, test-scoped deps look "unused" and these
+#      goals otherwise fail on modules like presto-hdfs-core / presto-client.
+#      (All airbase checks follow the -Dair.check.skip-<name> convention.)
 MVN_GOAL="install"
-MVN_TEST_FLAGS=(-DskipTests)
+MVN_TEST_FLAGS=(-Dmaven.test.skip=true -Dair.check.skip-dependency=true)
 MVN_CLEAN=""
 $INCREMENTAL || MVN_CLEAN="clean"
 
@@ -162,6 +183,18 @@ $INCREMENTAL || MVN_CLEAN="clean"
 
 build_cpp_fbpkg() {
     resolve_cpp_targets
+    # `fbpkg build` REFUSES to run against a dirty repo ("Repo has uncommitted
+    # changes, refusing to run") — it fails with an unhelpful <unknown> Rust
+    # backtrace and "could not extract hash". ANY uncommitted/untracked file
+    # anywhere in fbsource triggers it, including files unrelated to your change.
+    # Commit your changes (a scratch/HACK commit is fine) and shelve or remove
+    # unrelated working-tree files BEFORE building. Check with `sl status`.
+    if [ -n "$(sl status 2>/dev/null)" ]; then
+        echo "Error: fbpkg build requires a clean tree, but 'sl status' shows uncommitted changes:"
+        sl status
+        echo "       Commit your changes (e.g. 'sl commit') and shelve/remove unrelated files, then retry."
+        exit 1
+    fi
     echo "==> Building C++ fbpkg (mode: $CPP_MODE, target: $CPP_TARGET)..."
     local output
     output=$(fbpkg build "fbcode//fb_presto_cpp:${CPP_TARGET}")
@@ -318,27 +351,37 @@ mkdir -p "${BUILD_ROOT}/presto-trunk${_CHECKOUT_SUFFIX}" "${BUILD_ROOT}/presto-f
 # === Main ===
 eden_prefetch
 
-# Step 1: Java build (unless -J)
+# C++ fbpkg build depends on NOTHING in the Java build — the two only meet at
+# the hybrid merge (Step 4). So kick off the C++ fbpkg FIRST, concurrently with
+# the entire Java pipeline (build_java_full + mvn_deploy + package_java), rather
+# than serializing Java first. This overlaps the ~long C++ opt build with all of
+# Java instead of running them back to back.
+# The C++ build runs in a subshell; pass its hash back via a temp file.
+CPP_HASH_FILE=$(mktemp)
+trap "rm -f $CPP_HASH_FILE" EXIT
+CPP_PID=""
+
+if $NATIVE; then
+    echo "==> Starting C++ fbpkg build in background (parallel with Java pipeline)..."
+    (build_cpp_fbpkg && echo "$CPP_FBPKG_HASH" > "$CPP_HASH_FILE") &
+    CPP_PID=$!
+fi
+
+# Step 1: Java build (unless -J) — runs concurrently with the C++ build above.
 if $BUILD_JAVA; then
     build_java_full
 fi
 
-# Step 2: C++ fbpkg and Nexus deploy
-# When building both, these are independent and can run in parallel.
-# The C++ build runs in a subshell, so we use a temp file to pass back the hash.
-CPP_HASH_FILE=$(mktemp)
-trap "rm -f $CPP_HASH_FILE" EXIT
-
-if $NATIVE && $BUILD_JAVA; then
-    echo "==> Starting C++ fbpkg build and Nexus deploy in parallel..."
-    (build_cpp_fbpkg && echo "$CPP_FBPKG_HASH" > "$CPP_HASH_FILE") &
-    CPP_PID=$!
-
+# Step 2: Nexus deploy + Java fbpkg (still concurrent with the C++ build).
+if $BUILD_JAVA; then
     mvn_deploy
     package_java
+fi
 
+# Join the background C++ build before the hybrid merge.
+if [ -n "$CPP_PID" ]; then
     echo "==> Waiting for C++ fbpkg build..."
-    if ! wait $CPP_PID; then
+    if ! wait "$CPP_PID"; then
         echo "Error: C++ fbpkg build failed"
         exit 1
     fi
@@ -348,10 +391,6 @@ if $NATIVE && $BUILD_JAVA; then
         exit 1
     fi
     echo "    C++ fbpkg ready: ${CPP_TARGET}:${CPP_FBPKG_HASH}"
-elif $NATIVE; then
-    build_cpp_fbpkg
-elif $BUILD_JAVA; then
-    mvn_deploy
 fi
 
 # Step 3: Package Java fbpkg (if not already done in parallel path above)
