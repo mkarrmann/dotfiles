@@ -553,16 +553,25 @@ local function _broker_this_broker_id()
   return _this_broker_id_cache
 end
 
--- Live agent id set on THIS broker, via `agent list`. Cached for the duration of
--- one picker invocation (pass a fresh call to refresh). Returns {} on failure.
-local function _broker_live_agent_ids()
+-- Live SESSION bsid set on THIS broker, via `session list`. This is the correct
+-- liveness signal: a session is resumable via live-join only if it's in the
+-- broker's live session registry. Keying off `agent list` is WRONG for dvsc —
+-- the dvsc-core agent is a shared long-lived process that multiplexes many
+-- sessions, so it stays "alive" even after a specific session crashes, which
+-- made crashed sessions look resumable and open blank buffers. Returns {} on
+-- failure (⇒ nothing looks live ⇒ everything forks, the safe default).
+local function _broker_live_session_ids()
   local set = {}
   if vim.fn.executable(_BROKER_CLI) == 0 then return set end
-  local out = vim.fn.systemlist({ _BROKER_CLI, "agent", "list" })
+  local out = vim.fn.system({ _BROKER_CLI, "session", "list", "--json" })
   if vim.v.shell_error ~= 0 then return set end
-  for _, line in ipairs(out) do
-    local id = line:match("^(%S+)")
-    if id then set[id] = true end
+  local ok, decoded = pcall(vim.fn.json_decode, out)
+  if not ok or type(decoded) ~= "table" or type(decoded.sessions) ~= "table" then
+    return set
+  end
+  for _, s in ipairs(decoded.sessions) do
+    local sid = type(s) == "table" and s.session_id
+    if type(sid) == "string" and sid ~= "" then set[sid] = true end
   end
   return set
 end
@@ -609,11 +618,15 @@ end
 
 -- Lazily enrich a single picked row (design §3.2: per-row enrichment is too slow,
 -- so this runs only for the chosen row). Reads the session's seq-0 event via
--- `history query load` (cross-broker safe) to get agent_id + started_at, then
--- checks liveness against the live agent set. Returns
--- { agent_id, started_at, live }.
-local function _broker_enrich_pick(bsid, live_ids)
+-- `history query load` (cross-broker safe) to get agent_id + started_at.
+-- Liveness is keyed off the session's OWN bsid being in the live session
+-- registry (`live_sids`), NOT off the agent being alive — see
+-- `_broker_live_session_ids`. Returns { agent_id, started_at, live }.
+local function _broker_enrich_pick(bsid, live_sids)
   local result = { agent_id = nil, started_at = nil, live = false }
+  if (live_sids or {})[bsid] then
+    result.live = true
+  end
   if vim.fn.executable(_BROKER_CLI) == 0 then return result end
   -- `load | head -1`: the first line is the seq-0 session/new event. SIGPIPE from
   -- the early close is fine (we ignore shell_error here since head closing the
@@ -627,9 +640,6 @@ local function _broker_enrich_pick(bsid, live_ids)
   if not ok or type(ev) ~= "table" then return result end
   result.agent_id = ev.agent_id
   result.started_at = ev.ts
-  if result.agent_id and (live_ids or {})[result.agent_id] then
-    result.live = true
-  end
   return result
 end
 
@@ -735,11 +745,11 @@ local function _broker_apply(row, enrich)
 end
 
 -- Enrich (if local) then apply. Remote rows skip enrichment (they always fork).
-local function _broker_enrich_and_apply(row, live_ids)
+local function _broker_enrich_and_apply(row, live_sids)
   local origin = _broker_sessions.classify_origin(row, _broker_this_broker_id())
   local enrich = { agent_id = nil, started_at = row.started_at, live = false }
   if origin == "local" then
-    enrich = _broker_enrich_pick(row.bsid, live_ids or _broker_live_agent_ids())
+    enrich = _broker_enrich_pick(row.bsid, live_sids or _broker_live_session_ids())
   end
   _broker_apply(row, enrich)
 end
@@ -798,7 +808,7 @@ end
 local function broker_continue()
   local all_rows, degraded = _broker_list_sessions()
   local this = _broker_this_broker_id()
-  local live_ids = _broker_live_agent_ids()
+  local live_sids = _broker_live_session_ids()
   local cwd = vim.fn.getcwd()
 
   -- Precompute origin + display label per row for the current scope.
@@ -834,7 +844,7 @@ local function broker_continue()
 
     -- Route a chosen row (enrich if local, then apply).
     local function route(row)
-      _broker_enrich_and_apply(row, live_ids)
+      _broker_enrich_and_apply(row, live_sids)
     end
 
     -- Route a pasted bsid: classify from the full list; unknown ⇒ fork (safe).
