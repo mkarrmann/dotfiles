@@ -43,6 +43,38 @@ return {
 				desc = "Find Files (Myles)",
 			},
 		},
+		opts = function(_, opts)
+			local actions = require("telescope.actions")
+			opts.defaults = opts.defaults or {}
+
+			-- Never hop to another tabpage on select. LazyVim's telescope extra
+			-- overrides get_selection_window to scan windows across ALL tabpages
+			-- (nvim_list_wins) and focus the first real-file window it finds,
+			-- which teleports us out of the current tab. Restrict the search to
+			-- the current tabpage so a selection always resolves here.
+			opts.defaults.get_selection_window = function()
+				local cur = vim.api.nvim_get_current_win()
+				if vim.bo[vim.api.nvim_win_get_buf(cur)].buftype == "" then
+					return cur
+				end
+				for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+					if vim.bo[vim.api.nvim_win_get_buf(win)].buftype == "" then
+						return win
+					end
+				end
+				return 0
+			end
+
+			-- Open selections in a vertical split rather than replacing the
+			-- current window. A split never clobbers the originating window (safe
+			-- even from neo-tree/terminal panes) and keeps work in this tabpage.
+			opts.defaults.mappings = vim.tbl_deep_extend("force", opts.defaults.mappings or {}, {
+				i = { ["<CR>"] = actions.select_vertical },
+				n = { ["<CR>"] = actions.select_vertical },
+			})
+
+			return opts
+		end,
 	},
 
 	{
