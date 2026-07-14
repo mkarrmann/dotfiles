@@ -54,6 +54,7 @@ VSCODE_APP_AEROSPACE="VS Code @ Meta"
 VSCODE_APP_MACOS="VS Code @ FB"
 VSCODE_CMD="/Applications/VS Code @ FB.app/Contents/Resources/app/bin/code"
 CHROME_APP="Google Chrome"
+CHROME_INVALID_TITLE_PATTERN="^Who.s using Chrome\\?$"
 # ─────────────────────────────────────────────────────────────────────
 
 # ── Window creation ─────────────────────────────────────────────────
@@ -138,6 +139,37 @@ wait_for_new_window() {
     fi
   done
   return 1
+}
+
+find_valid_chrome_window_on_workspace() {
+  local ws="$1"
+  aerospace list-windows --workspace "$ws" --json 2>/dev/null \
+    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" \
+      '[.[] | select(
+        ."app-name" == $app and
+        ((.["window-title"] // "") | test($invalid) | not)
+      )] | first | .["window-id"] // empty'
+}
+
+sweep_invalid_chrome_windows_from_workspace() {
+  local ws="$1"
+  local invalid_ids wid
+  invalid_ids=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
+    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" \
+      '.[] | select(
+        ."app-name" == $app and
+        ((.["window-title"] // "") | test($invalid))
+      ) | .["window-id"]') || true
+
+  for wid in $invalid_ids; do
+    [[ -z "$wid" ]] && continue
+    echo "Sweeping invalid Chrome window $wid from workspace $ws to $SWEEP_WORKSPACE..."
+    if aerospace move-node-to-workspace --window-id "$wid" "$SWEEP_WORKSPACE" 2>/dev/null; then
+      if [[ ${swept+x} ]]; then
+        swept=$((swept + 1))
+      fi
+    fi
+  done
 }
 
 # Poll until every WORKSPACES entry has at least one matching window
@@ -331,10 +363,12 @@ for i in "${!WORKSPACES[@]}"; do
     chrome)
       app_name="$CHROME_APP"
 
-      # Check if Chrome already exists on this workspace
-      existing=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
-        | jq -r --arg app "$app_name" \
-          '[.[] | select(."app-name" == $app)] | first | .["window-id"] // empty') || true
+      # Profile-picker windows are Chrome windows, but they do not satisfy the
+      # workspace contract. Sweep them so we create/reuse a real profile window.
+      sweep_invalid_chrome_windows_from_workspace "$ws"
+
+      # Check if a usable Chrome window already exists on this workspace.
+      existing=$(find_valid_chrome_window_on_workspace "$ws") || true
       if [[ -n "$existing" ]]; then
         echo "[$title] Chrome already on workspace $ws"
       else
@@ -435,6 +469,13 @@ for ws in $(managed_workspaces); do
 done
 
 # ─────────────────────────────────────────────────────────────────────
+
+# Sweep invalid Chrome windows from managed workspaces. They can be restored by
+# Chrome after the per-workspace checks above, and otherwise look like valid app
+# windows to the generic stray sweep.
+for ws in $(managed_workspaces); do
+  sweep_invalid_chrome_windows_from_workspace "$ws"
+done
 
 # Sweep stray windows: move unrecognized windows off managed workspaces to Z
 for ws in $(managed_workspaces); do
