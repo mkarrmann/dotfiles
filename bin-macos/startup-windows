@@ -458,7 +458,10 @@ if [[ "$swept" -gt 0 ]]; then
 fi
 
 # Arrange layouts (tiles | accordion) on managed workspaces
-arrange-workspaces --force $(managed_workspaces)
+ARRANGE_ATTEMPTS=8 ARRANGE_RETRY_SLEEP=1 arrange-workspaces --force $(managed_workspaces) || {
+  echo "WARNING: arrange-workspaces did not converge" >&2
+  ((failures++)) || true
+}
 
 # auto-accordion always does a full rebuild for any window that appears
 # after this point, so no drain sleep is needed.

@@ -24,6 +24,8 @@ set -euo pipefail
 SIDEBAR_TITLE_PATTERN="Orchest \\["
 SIDEBAR_PERCENT=20
 MARKER_DIR="/tmp/aerospace-arrange-markers"
+ARRANGE_ATTEMPTS="${ARRANGE_ATTEMPTS:-5}"
+ARRANGE_RETRY_SLEEP="${ARRANGE_RETRY_SLEEP:-1}"
 FORCE=false
 
 while [[ $# -gt 0 ]]; do
@@ -78,9 +80,8 @@ sweep_unfocusable() {
   echo "$swept"
 }
 
-# Check whether $ws is already in the desired arrangement so we can
-# skip the flatten + rebuild (which is wasteful and briefly disrupts
-# focus/animations). Returns 0 if correct, 1 otherwise.
+# Check whether $ws is already in the desired tree shape. Returns 0 if
+# correct, 1 otherwise.
 #
 # Desired:
 #   - Mixed sidebar+accordion: root = h_tiles; sidebar windows have
@@ -88,14 +89,7 @@ sweep_unfocusable() {
 #     there are multiple sidebars); accordion windows have parent =
 #     v_accordion (a single sub-container).
 #   - Accordion-only: every window has parent = v_accordion.
-#
-# Note: this checks parent layouts, not spatial order. If someone has
-# manually shuffled accordion-container to the *left* of the sidebar
-# (so visually wrong but structurally OK), we'll false-positive skip.
-# That's an acceptable trade-off — the common case is "no manual
-# tampering" and the rebuild is destructive enough that conservative
-# skipping is better than aggressive teardown.
-layout_already_correct() {
+layout_tree_correct() {
   local ws="$1" sidebar_ids="$2" accordion_ids="$3"
 
   local id_to_parent
@@ -128,6 +122,38 @@ layout_already_correct() {
     [[ "$parent" == "v_accordion" ]] || return 1
   done
   return 0
+}
+
+# Check spatial order for the mixed layout: all sidebar windows must be left of
+# all accordion windows. This closes the gap left by parent-layout checks alone.
+layout_order_correct() {
+  local ws="$1" sidebar_ids="$2" accordion_ids="$3"
+
+  [[ -z "$sidebar_ids" || -z "$accordion_ids" ]] && return 0
+
+  local first_sidebar
+  first_sidebar=$(echo "$sidebar_ids" | head -1)
+
+  aerospace workspace "$ws" 2>/dev/null || true
+  focus_verified "$first_sidebar" || return 1
+  discover_spatial_order
+
+  local seen_accordion=false wid
+  for wid in "${_spatial[@]}"; do
+    if echo "$accordion_ids" | grep -qx "$wid"; then
+      seen_accordion=true
+    elif echo "$sidebar_ids" | grep -qx "$wid" && $seen_accordion; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+layout_already_correct() {
+  local ws="$1" sidebar_ids="$2" accordion_ids="$3"
+
+  layout_tree_correct "$ws" "$sidebar_ids" "$accordion_ids" &&
+    layout_order_correct "$ws" "$sidebar_ids" "$accordion_ids"
 }
 
 # Walk left-to-right from the currently focused window to discover
@@ -165,7 +191,7 @@ discover_spatial_order() {
   done
 }
 
-arrange_workspace() {
+arrange_workspace_once() {
   local ws="$1"
 
   local windows
@@ -222,8 +248,12 @@ arrange_workspace() {
     aerospace workspace "$ws" 2>/dev/null
     aerospace flatten-workspace-tree 2>/dev/null || true
     aerospace layout accordion vertical 2>/dev/null || true
-    echo "$fingerprint" > "$marker_file"
-    return 0
+    if layout_already_correct "$ws" "" "$accordion_ids"; then
+      echo "$fingerprint" > "$marker_file"
+      return 0
+    fi
+    echo "  [$ws] flat accordion verification failed" >&2
+    return 1
   fi
 
   # No accordion windows → leave as-is
@@ -309,7 +339,7 @@ arrange_workspace() {
   done
   if $swap_overflow; then
     echo "  [$ws] swap budget ($swap_max) exhausted — bailing without marker so next pass retries"
-    return 0
+    return 1
   fi
 
   # Final spatial discovery after sorting
@@ -353,7 +383,7 @@ arrange_workspace() {
       --format '%{window-parent-container-layout}' 2>/dev/null)
     if [[ "$parent_layout" == "h_tiles" ]]; then
       echo "  [$ws] join-with no-op'd (parent still h_tiles); bailing before accordion to avoid root corruption"
-      return 0
+      return 1
     fi
 
     # Set it to accordion
@@ -397,7 +427,7 @@ arrange_workspace() {
       if [[ "$scaffold_parent" == "h_tiles" ]]; then
         echo "  [$ws] scaffold join-with no-op'd; returning scaffold and bailing"
         aerospace move-node-to-workspace --window-id "$scaffold_wid" Z 2>/dev/null || true
-        return 0
+        return 1
       fi
 
       aerospace layout accordion 2>/dev/null || true
@@ -406,6 +436,7 @@ arrange_workspace() {
       aerospace move-node-to-workspace --window-id "$scaffold_wid" Z 2>/dev/null || true
     else
       echo "    no scaffold window on Z, skipping single-child accordion"
+      return 1
     fi
   fi
 
@@ -431,7 +462,33 @@ arrange_workspace() {
     fi
   fi
 
-  echo "$fingerprint" > "$marker_file"
+  if layout_already_correct "$ws" "$sidebar_ids" "$accordion_ids"; then
+    echo "$fingerprint" > "$marker_file"
+    return 0
+  fi
+
+  echo "  [$ws] layout verification failed" >&2
+  return 1
+}
+
+arrange_workspace() {
+  local ws="$1"
+  local attempt=1
+
+  while [[ "$attempt" -le "$ARRANGE_ATTEMPTS" ]]; do
+    if arrange_workspace_once "$ws"; then
+      return 0
+    fi
+
+    if [[ "$attempt" -lt "$ARRANGE_ATTEMPTS" ]]; then
+      echo "  [$ws] arrangement incomplete; retrying in ${ARRANGE_RETRY_SLEEP}s (${attempt}/${ARRANGE_ATTEMPTS})" >&2
+      sleep "$ARRANGE_RETRY_SLEEP"
+    fi
+    attempt=$(( attempt + 1 ))
+  done
+
+  echo "  [$ws] ERROR: arrangement did not converge after ${ARRANGE_ATTEMPTS} attempt(s)" >&2
+  return 1
 }
 
 # ── Main ──────────────────────────────────────────────────────────────
@@ -449,7 +506,14 @@ else
 fi
 
 echo "Arranging workspace layouts..."
+failures=0
 for ws in "${workspaces[@]}"; do
-  arrange_workspace "$ws"
+  if ! arrange_workspace "$ws"; then
+    failures=$(( failures + 1 ))
+  fi
 done
+if [[ "$failures" -gt 0 ]]; then
+  echo "Done with ${failures} workspace arrangement failure(s)." >&2
+  exit 1
+fi
 echo "Done."

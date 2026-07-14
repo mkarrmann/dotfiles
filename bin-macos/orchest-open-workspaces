@@ -36,6 +36,22 @@ orchest_cli() {
   (cd "$ORCHEST_DIR" && pnpm --silent --filter @orchest/cli orchest "$@")
 }
 
+launch_orchest_dev() {
+  (
+    cd "$ORCHEST_DIR"
+    ORCHEST_PROVIDER=macos-aerospace nohup pnpm dev </dev/null > /tmp/orchest.log 2>&1 &
+    disown "$!" 2>/dev/null || true
+  )
+}
+
+launch_orchest_prod() {
+  (
+    cd "$ORCHEST_DESKTOP_DIR"
+    ORCHEST_PROVIDER=macos-aerospace nohup pnpm exec electron . </dev/null > /tmp/orchest.log 2>&1 &
+    disown "$!" 2>/dev/null || true
+  )
+}
+
 failures=0
 
 # Launch Orchest if not running
@@ -49,10 +65,10 @@ if ! orchest_is_running; then
       fi
     fi
     echo "[Orchest] launching (prod)..."
-    (cd "$ORCHEST_DESKTOP_DIR" && ORCHEST_PROVIDER=macos-aerospace nohup pnpm exec electron . > /tmp/orchest.log 2>&1 &)
+    launch_orchest_prod
   else
     echo "[Orchest] launching (dev)..."
-    (cd "$ORCHEST_DIR" && ORCHEST_PROVIDER=macos-aerospace nohup pnpm dev > /tmp/orchest.log 2>&1 &)
+    launch_orchest_dev
   fi
 
   for _ in $(seq 1 40); do
