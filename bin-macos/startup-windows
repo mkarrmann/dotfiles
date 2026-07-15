@@ -52,6 +52,7 @@ SWEEP_WORKSPACE="Z"
 CHROME_APP="Google Chrome"
 CHROME_INVALID_TITLE_PATTERN="^Who.s using Chrome\\?$"
 OMNIGENT_PORT="${OMNIGENT_PORT:-6767}"
+OMNIGENT_REMOTE_PORT="${OMNIGENT_REMOTE_PORT:-16767}"
 # ─────────────────────────────────────────────────────────────────────
 
 # ── Window creation ─────────────────────────────────────────────────
@@ -155,7 +156,7 @@ tunnel_command_is_current() {
 
   echo "$cmds" \
     | grep -F -- "-r " \
-    | grep -F "$OMNIGENT_PORT:$OMNIGENT_PORT" \
+    | grep -F "$OMNIGENT_REMOTE_PORT:$OMNIGENT_PORT" \
     | grep -F "omnigent-host-ensure" >/dev/null
 }
 
@@ -189,7 +190,7 @@ close_stale_tunnel_window_if_needed() {
     return 1
   fi
 
-  echo "[$title] existing tunnel is stale for $host; recreating so reverse port $OMNIGENT_PORT is active..."
+  echo "[$title] existing tunnel is stale for $host; recreating so devvm port $OMNIGENT_REMOTE_PORT forwards to Mac port $OMNIGENT_PORT..."
   close_window_id "$wid" "stale tunnel"
   stop_tunnel_processes_for_host "$host"
 }
@@ -404,7 +405,7 @@ for i in "${!WORKSPACES[@]}"; do
       window_id=$(find_window_id_for_workspace "$app_name" "$title_match" "$ws" "$SNAPSHOT")
       if [[ -n "$window_id" ]] && close_stale_tunnel_window_if_needed "$window_id" "$title" "$cmd"; then
         SNAPSHOT=$(snapshot_windows)
-        window_id=$(find_window_id_for_workspace "$app_name" "$title_match" "$ws" "$SNAPSHOT")
+        window_id=""
       fi
 
       if [[ -n "$window_id" ]]; then

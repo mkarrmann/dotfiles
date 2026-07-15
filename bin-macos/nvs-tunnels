@@ -19,6 +19,7 @@ set -euo pipefail
 NVS_CLIP_PORT="${NVS_CLIP_PORT:-8765}"
 PERSISTENCE_PORT="${PERSISTENCE_PORT:-7847}"
 OMNIGENT_PORT="${OMNIGENT_PORT:-6767}"
+OMNIGENT_REMOTE_PORT="${OMNIGENT_REMOTE_PORT:-16767}"
 
 host="${1:?usage: nvs-tunnels HOST SESSION[:WORKDIR] ...}"
 shift
@@ -59,14 +60,17 @@ done
 # Server lifecycle is owned by systemd --user on the devvm
 # (~/dotfiles/systemd/nvs@.service, enabled per ~/.config/nvs/sessions).
 # This script's only remote job is a status preflight + keeping ET alive
-# so the tunnels stay up. Omnigent host startup is opportunistic so older
-# devvm dotfile checkouts keep working until they are synced.
+# so the tunnels stay up. Omnigent is reverse-forwarded from a non-default
+# devvm port to avoid colliding with any devvm-local Omnigent server on 6767.
+# Host startup is opportunistic so older devvm dotfile checkouts keep working
+# until they are synced.
 #
 # IMPORTANT: do NOT add single quotes anywhere inside remote_cmd. The
 # whole string is embedded as `-c "zsh -lc '${remote_cmd}'"` below;
 # any inner ' breaks the outer quoting and the remote shell silently
 # parses only the prefix.
-remote_cmd="if command -v omnigent-host-ensure >/dev/null 2>&1; then omnigent-host-ensure || true; elif [[ -x ~/dotfiles/bin/omnigent-host-ensure ]]; then ~/dotfiles/bin/omnigent-host-ensure || true; fi; nvs-status${session_names}; exec sleep infinity"
+remote_omnigent_url="http://127.0.0.1:${OMNIGENT_REMOTE_PORT}"
+remote_cmd="if command -v omnigent-host-ensure >/dev/null 2>&1; then OMNIGENT_URL=${remote_omnigent_url} omnigent-host-ensure || true; elif [[ -x ~/dotfiles/bin/omnigent-host-ensure ]]; then OMNIGENT_URL=${remote_omnigent_url} ~/dotfiles/bin/omnigent-host-ensure || true; fi; nvs-status${session_names}; exec sleep infinity"
 
 # Start clipboard listener if not already running
 nvs-clip-listen &
@@ -85,7 +89,7 @@ while true; do
   # the -t forward-tunnel spec built above.
   x2ssh -et "$host" \
     -t "$tunnel_spec" \
-    -r "$NVS_CLIP_PORT:$NVS_CLIP_PORT,$PERSISTENCE_PORT:$PERSISTENCE_PORT,$OMNIGENT_PORT:$OMNIGENT_PORT" \
+    -r "$NVS_CLIP_PORT:$NVS_CLIP_PORT,$PERSISTENCE_PORT:$PERSISTENCE_PORT,$OMNIGENT_REMOTE_PORT:$OMNIGENT_PORT" \
     -c "zsh -lc '${remote_cmd}'" &
   et_pid=$!
 
