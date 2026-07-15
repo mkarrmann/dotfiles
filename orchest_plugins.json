@@ -64,6 +64,50 @@
           }
         }
       }
+    },
+    {
+      "id": "orchest-omnigent-bridge",
+      "module": "/Users/mkarrmann/dev/orchest/packages/plugin-omnigent-bridge/dist/index.js",
+      "config": {
+        "serverUrl": "http://127.0.0.1:6767",
+        "pollIntervalMs": 15000,
+        "attribution": {
+          "byHostAndCwd": {
+            "devvm20365.cco0.facebook.com": {
+              "/home/mkarrmann/checkout1": "2",
+              "/home/mkarrmann/checkout1/fbsource": "2",
+              "/home/mkarrmann/checkout1/configerator": "2",
+              "/home/mkarrmann/checkout2": "4",
+              "/home/mkarrmann/checkout2/fbsource": "4",
+              "/home/mkarrmann/checkout2/configerator": "4",
+              "/home/mkarrmann/checkout3": "6",
+              "/home/mkarrmann/checkout3/fbsource": "6",
+              "/home/mkarrmann/checkout3/configerator": "6",
+              "/home/mkarrmann/checkout4": "8",
+              "/home/mkarrmann/checkout4/fbsource": "8",
+              "/home/mkarrmann/checkout4/configerator": "8"
+            },
+            "devvm36111.ftw0.facebook.com": {
+              "/home/mkarrmann/checkout1": "3",
+              "/home/mkarrmann/checkout1/fbsource": "3",
+              "/home/mkarrmann/checkout1/configerator": "3",
+              "/home/mkarrmann/checkout2": "5",
+              "/home/mkarrmann/checkout2/fbsource": "5",
+              "/home/mkarrmann/checkout2/configerator": "5",
+              "/home/mkarrmann/checkout3": "7",
+              "/home/mkarrmann/checkout3/fbsource": "7",
+              "/home/mkarrmann/checkout3/configerator": "7"
+            }
+          },
+          "byCwd": {
+            "/Users/mkarrmann": "1"
+          }
+        }
+      },
+      "policy": {
+        "attention": { "maxLevel": "flash" },
+        "notification": { "rateLimitPerMinute": 10 }
+      }
     }
   ]
 }
