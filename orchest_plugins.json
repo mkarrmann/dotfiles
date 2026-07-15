@@ -70,7 +70,7 @@
       "module": "/Users/mkarrmann/dev/orchest/packages/plugin-omnigent-bridge/dist/index.js",
       "config": {
         "serverUrl": "http://127.0.0.1:6767",
-        "pollIntervalMs": 15000,
+        "pollIntervalMs": 5000,
         "attribution": {
           "byHostAndCwd": {
             "devvm20365.cco0.facebook.com": {
