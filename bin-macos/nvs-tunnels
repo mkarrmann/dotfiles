@@ -59,18 +59,33 @@ done
 
 # Server lifecycle is owned by systemd --user on the devvm
 # (~/dotfiles/systemd/nvs@.service, enabled per ~/.config/nvs/sessions).
-# This script's only remote job is a status preflight + keeping ET alive
-# so the tunnels stay up. Omnigent is reverse-forwarded from a non-default
-# devvm port to avoid colliding with any devvm-local Omnigent server on 6767.
-# Host startup is opportunistic so older devvm dotfile checkouts keep working
-# until they are synced.
+# This script's remote job is a status preflight + keeping ET alive so the
+# tunnels stay up. Omnigent is reverse-forwarded from a non-default devvm port
+# to avoid colliding with any devvm-local Omnigent server on 6767.
+#
+# Omnigent devserver setup must be driven from the Mac-side tunnel command,
+# not from a manual devserver command: the devserver can only reach the Mac
+# Omnigent server while this ET reverse tunnel exists. Prefer the full helper
+# when it is present, but fall back to direct `omnigent` commands so stale
+# devserver dotfiles are repaired automatically on the next tunnel reconnect.
 #
 # IMPORTANT: do NOT add single quotes anywhere inside remote_cmd. The
 # whole string is embedded as `-c "zsh -lc '${remote_cmd}'"` below;
 # any inner ' breaks the outer quoting and the remote shell silently
 # parses only the prefix.
 remote_omnigent_url="http://127.0.0.1:${OMNIGENT_REMOTE_PORT}"
-remote_cmd="if command -v omnigent-host-ensure >/dev/null 2>&1; then OMNIGENT_URL=${remote_omnigent_url} omnigent-host-ensure || true; elif [[ -x ~/dotfiles/bin/omnigent-host-ensure ]]; then OMNIGENT_URL=${remote_omnigent_url} ~/dotfiles/bin/omnigent-host-ensure || true; fi; nvs-status${session_names}; exec sleep infinity"
+remote_cmd="OMNIGENT_URL=${remote_omnigent_url}; OMNIGENT_TUNNEL_BOOTSTRAP=v2"
+remote_cmd+="; if command -v omnigent-host-ensure >/dev/null 2>&1; then OMNIGENT_URL=\$OMNIGENT_URL omnigent-host-ensure || true"
+remote_cmd+="; elif [[ -x ~/dotfiles/bin/omnigent-host-ensure ]]; then OMNIGENT_URL=\$OMNIGENT_URL ~/dotfiles/bin/omnigent-host-ensure || true"
+remote_cmd+="; else"
+remote_cmd+=" if command -v omnigent >/dev/null 2>&1; then OMNIGENT_BIN=\$(command -v omnigent); elif [[ -x ~/bin/omnigent ]]; then OMNIGENT_BIN=~/bin/omnigent; elif [[ -x ~/dotfiles/bin/omnigent ]]; then OMNIGENT_BIN=~/dotfiles/bin/omnigent; else OMNIGENT_BIN=; fi"
+remote_cmd+="; if [[ -n \$OMNIGENT_BIN ]]; then \$OMNIGENT_BIN config set --global server=\$OMNIGENT_URL >/dev/null 2>&1 || true"
+remote_cmd+="; if command -v tmux >/dev/null 2>&1; then tmux has-session -t omnigent-host-devserver >/dev/null 2>&1 || tmux new-session -d -s omnigent-host-devserver \"exec \$OMNIGENT_BIN host --server \$OMNIGENT_URL --non-interactive\" >/dev/null 2>&1 || true"
+remote_cmd+="; elif command -v screen >/dev/null 2>&1; then screen -ls omnigent-host-devserver >/dev/null 2>&1 || screen -dmS omnigent-host-devserver \$OMNIGENT_BIN host --server \$OMNIGENT_URL --non-interactive >/dev/null 2>&1 || true"
+remote_cmd+="; else pgrep -f \"omnigent host --server \$OMNIGENT_URL --non-interactive\" >/dev/null 2>&1 || nohup \$OMNIGENT_BIN host --server \$OMNIGENT_URL --non-interactive >/dev/null 2>&1 & fi"
+remote_cmd+="; fi"
+remote_cmd+="; fi"
+remote_cmd+="; nvs-status${session_names}; exec sleep infinity"
 
 # Start clipboard listener if not already running
 nvs-clip-listen &

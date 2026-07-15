@@ -157,7 +157,7 @@ tunnel_command_is_current() {
   echo "$cmds" \
     | grep -F -- "-r " \
     | grep -F "$OMNIGENT_REMOTE_PORT:$OMNIGENT_PORT" \
-    | grep -F "omnigent-host-ensure" >/dev/null
+    | grep -F "OMNIGENT_TUNNEL_BOOTSTRAP=v2" >/dev/null
 }
 
 stop_tunnel_processes_for_host() {
