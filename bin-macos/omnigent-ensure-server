@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+OMNIGENT_PORT="${OMNIGENT_PORT:-6767}"
+OMNIGENT_URL="http://127.0.0.1:${OMNIGENT_PORT}"
+OMNIGENT_BIN="${OMNIGENT_BIN:-}"
+
+if [[ -z "$OMNIGENT_BIN" ]]; then
+  if command -v omnigent >/dev/null 2>&1; then
+    OMNIGENT_BIN="$(command -v omnigent)"
+  elif [[ -x "$HOME/dotfiles/bin/omnigent" ]]; then
+    OMNIGENT_BIN="$HOME/dotfiles/bin/omnigent"
+  else
+    echo "ERROR: omnigent not found on PATH and $HOME/dotfiles/bin/omnigent is missing" >&2
+    exit 1
+  fi
+fi
+
+if curl -sf "${OMNIGENT_URL}/health" >/dev/null 2>&1; then
+  "$OMNIGENT_BIN" config set --global "server=${OMNIGENT_URL}" >/dev/null
+  echo "[Omnigent] server already healthy at ${OMNIGENT_URL}"
+  exit 0
+fi
+
+echo "[Omnigent] starting local server..."
+"$OMNIGENT_BIN" server start
+
+for _ in $(seq 1 80); do
+  if curl -sf "${OMNIGENT_URL}/health" >/dev/null 2>&1; then
+    "$OMNIGENT_BIN" config set --global "server=${OMNIGENT_URL}" >/dev/null
+    echo "[Omnigent] server healthy at ${OMNIGENT_URL}"
+    exit 0
+  fi
+  sleep 0.5
+done
+
+status_json="$("$OMNIGENT_BIN" server status --json 2>/dev/null || true)"
+actual_url="$(printf '%s' "$status_json" | jq -r '.url // empty' 2>/dev/null || true)"
+
+if [[ -n "$actual_url" ]]; then
+  echo "ERROR: Omnigent started at ${actual_url}, not ${OMNIGENT_URL}." >&2
+  echo "Port ${OMNIGENT_PORT} must be free because devvm ET tunnels target that stable port." >&2
+else
+  echo "ERROR: Omnigent server did not become healthy at ${OMNIGENT_URL}." >&2
+fi
+exit 1

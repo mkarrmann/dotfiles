@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+OMNIGENT_PORT="${OMNIGENT_PORT:-6767}"
+OMNIGENT_URL="${OMNIGENT_URL:-http://127.0.0.1:${OMNIGENT_PORT}}"
+OMNIGENT_BIN="${OMNIGENT_BIN:-}"
+
+state_dir="$HOME/.omnigent"
+target_id="$(printf '%s' "$OMNIGENT_URL" | cksum | awk '{print $1}')"
+session_name="omnigent-host-${target_id}"
+
+mkdir -p "$state_dir"
+
+if [[ -z "$OMNIGENT_BIN" ]]; then
+  if command -v omnigent >/dev/null 2>&1; then
+    OMNIGENT_BIN="$(command -v omnigent)"
+  elif [[ -x "$HOME/dotfiles/bin/omnigent" ]]; then
+    OMNIGENT_BIN="$HOME/dotfiles/bin/omnigent"
+  else
+    echo "ERROR: omnigent not found on PATH and $HOME/dotfiles/bin/omnigent is missing" >&2
+    exit 1
+  fi
+fi
+
+host_online() {
+  local status
+  status="$("$OMNIGENT_BIN" host status --server "$OMNIGENT_URL" --json 2>/dev/null || true)"
+  [[ "$status" == *'"host_status": "online"'* && "$status" == *'"process": "online"'* ]]
+}
+
+"$OMNIGENT_BIN" config set --global "server=${OMNIGENT_URL}" >/dev/null
+
+if host_online; then
+  echo "[Omnigent] host already online for $OMNIGENT_URL"
+  exit 0
+fi
+
+if ! curl -sf "${OMNIGENT_URL}/health" >/dev/null 2>&1; then
+  echo "WARNING: Omnigent server is not reachable at ${OMNIGENT_URL}; host daemon may retry or exit" >&2
+fi
+
+if command -v tmux >/dev/null 2>&1; then
+  if ! tmux has-session -t "$session_name" 2>/dev/null; then
+    tmux new-session -d -s "$session_name" "exec '$OMNIGENT_BIN' host --server '$OMNIGENT_URL' --non-interactive"
+  fi
+  launcher="tmux session $session_name"
+elif command -v screen >/dev/null 2>&1; then
+  if ! screen -ls "$session_name" 2>/dev/null | grep -Fq ".$session_name"; then
+    screen -dmS "$session_name" "$OMNIGENT_BIN" host --server "$OMNIGENT_URL" --non-interactive
+  fi
+  launcher="screen session $session_name"
+else
+  nohup "$OMNIGENT_BIN" host --server "$OMNIGENT_URL" --non-interactive >/dev/null 2>&1 &
+  disown "$!" 2>/dev/null || true
+  launcher="background process"
+fi
+
+for _ in $(seq 1 20); do
+  if host_online; then
+    echo "[Omnigent] host online for $OMNIGENT_URL via $launcher"
+    exit 0
+  fi
+  sleep 0.5
+done
+
+echo "WARNING: Omnigent host did not report online for $OMNIGENT_URL after starting via $launcher" >&2
+exit 1

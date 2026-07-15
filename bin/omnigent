@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="${OMNIGENT_REPO:-$HOME/repos/omnigent}"
+
+if [[ ! -d "$repo" ]]; then
+  echo "ERROR: Omnigent repo not found: $repo" >&2
+  exit 1
+fi
+
+if command -v uv >/dev/null 2>&1; then
+  uv_bin="$(command -v uv)"
+elif [[ -x "$HOME/.local/bin/uv" ]]; then
+  uv_bin="$HOME/.local/bin/uv"
+else
+  echo "ERROR: uv not found; install uv or add it to PATH" >&2
+  exit 1
+fi
+
+cd "$repo"
+exec "$uv_bin" run omnigent "$@"
