@@ -71,23 +71,28 @@ I work across **two devservers** simultaneously, both reachable from my Mac via 
 - **FTW**: `devvm36111.ftw0.facebook.com`
 - **CCO**: `devvm20365.cco0.facebook.com`
 
-Each devserver has all three workspaces (`~/checkout1`, `~/checkout2`, `~/checkout3`). Window orchestration on the Mac is via `~/dotfiles/bin-macos/startup-windows`, which uses [AeroSpace](https://github.com/nikitabobko/AeroSpace) to lay out 9 numeric workspaces:
+FTW has three checkout workspaces (`~/checkout1`, `~/checkout2`, `~/checkout3`).
+CCO has four checkout workspaces (`~/checkout1` through `~/checkout4`).
+Window orchestration on the Mac is via `~/dotfiles/bin-macos/startup-windows`,
+which uses [AeroSpace](https://github.com/nikitabobko/AeroSpace) to lay out 9
+numeric workspaces:
 
 | WS | Contents |
 |----|----------|
 | 1  | local Mac terminal + Chrome |
 | T  | per-devserver SSH tunnel windows (Ghostty) |
-| 2  | FTW general shell |
-| 3  | FTW checkout1 (Ghostty + VS Code) |
-| 4  | FTW checkout2 (Ghostty + VS Code) |
-| 5  | FTW checkout3 (Ghostty + VS Code) |
-| 6  | CCO general shell |
-| 7  | CCO checkout1 (Ghostty + VS Code) |
-| 8  | CCO checkout2 (Ghostty + VS Code) |
-| 9  | CCO checkout3 (Ghostty + VS Code) |
+| 2  | CCO checkout1 (Ghostty + Chrome) |
+| 3  | FTW checkout1 (Ghostty + Chrome) |
+| 4  | CCO checkout2 (Ghostty + Chrome) |
+| 5  | FTW checkout2 (Ghostty + Chrome) |
+| 6  | CCO checkout3 (Ghostty + Chrome) |
+| 7  | FTW checkout3 (Ghostty + Chrome) |
+| 8  | CCO checkout4 (Ghostty + Chrome) |
+| 9  | Orchest-only workspace |
 | Z  | sweep / stragglers |
 
-VS Code remote opens are via `vscode-remote://fb-remote+<devvm>/home/mkarrmann/<name>.code-workspace` — multi-root files that bundle `fbsource` and `configerator` from the same workspace dir.
+Code editing currently runs through Ghostty-backed `nvs` sessions. `startup-windows`
+no longer opens VS Code windows.
 
 ### 1.5 Neovim sessions
 
@@ -97,7 +102,7 @@ The Mac side runs `nvs-tunnels` per devserver, which:
 1. Sets up SSH port forwarding for each session's port.
 2. Invokes `nvs --server-only <session> <workdir>` on the remote — this starts the headless server with the right `cd` and a watchdog that auto-restarts it within ~5s if it dies.
 
-Post-migration sessions are named `FTW-checkout1`, `FTW-checkout2`, `FTW-checkout3`, `CCO-checkout1`, `CCO-checkout2`, `CCO-checkout3`.
+Post-migration sessions are named `FTW-checkout1`, `FTW-checkout2`, `FTW-checkout3`, `CCO-checkout1`, `CCO-checkout2`, `CCO-checkout3`, and `CCO-checkout4`.
 
 ### 1.6 Dotfiles distribution
 
@@ -110,7 +115,7 @@ Post-migration sessions are named `FTW-checkout1`, `FTW-checkout2`, `FTW-checkou
 The recent migration from `~/fbsource{,2,3}` to `~/checkout1/fbsource` + `~/checkout2/fbsource` required edits to **12 files** in personal config:
 
 1. `~/.localrc` — `_fbsource_root`, `_checkout_suffix`, `gfb`, `con`, `gf`, `gp`
-2. `~/dotfiles/bin-macos/startup-windows` — workspace table, regexes, nvs args, vscode-remote URIs
+2. `~/dotfiles/bin-macos/startup-windows` — workspace table, regexes, nvs args, Chrome windows
 3. `~/dotfiles/bin-macos/nvs-tunnels` — example comment
 4. `~/dotfiles/bin/devmate_mux` — `cd "$HOME/fbsource"`
 5. `~/dotfiles/bin/setup-checkouts` — script accepts `--primary`/`--secondary`/`--tertiary` flags (already parameterized but defaults baked in)
@@ -462,7 +467,7 @@ Mostly mechanical text edits to reference `~/<workspace>/fbsource` (or `<workspa
 
 ### 5.4 startup-windows table generation
 
-`startup-windows` currently hardcodes 4 entries per devserver (Ghostty + VS Code for each of main + scratch). Refactor to generate the table from a workspace list:
+`startup-windows` currently hardcodes Ghostty/nvs and Chrome entries for each checkout. Refactor to generate the table from a workspace list:
 
 ```bash
 # Top of script
@@ -480,7 +485,6 @@ for entry in "${DEVSERVERS[@]}"; do
     ws=$((ws_start + i))
     WORKSPACES_TABLE+=(
       "$ws|ghostty|$prefix: $name|$prefix: $name\$|~|nvs $prefix-$name"
-      "$ws|vscode|$prefix: vscode-$name|$name.*$host|vscode-remote://fb-remote+$host/home/mkarrmann/$name.code-workspace"
       "$ws|chrome|Chrome: ws$ws"
     )
   done
