@@ -21,7 +21,6 @@ done
 # Format: ws|type|title|title_match|...
 #   ghostty: ws|ghostty|title|title_match|workdir|command
 #   cmux:    ws|cmux|title|title_match
-#   vscode:  ws|vscode|title|title_match|workspace (local path or remote URI)
 #   chrome:  ws|chrome|title
 # title_match is a regex used to find existing windows in AeroSpace.
 # ws is the AeroSpace workspace to place the window in.
@@ -50,11 +49,9 @@ WORKSPACES=(
 
 SWEEP_WORKSPACE="Z"
 
-VSCODE_APP_AEROSPACE="VS Code @ Meta"
-VSCODE_APP_MACOS="VS Code @ FB"
-VSCODE_CMD="/Applications/VS Code @ FB.app/Contents/Resources/app/bin/code"
 CHROME_APP="Google Chrome"
 CHROME_INVALID_TITLE_PATTERN="^Who.s using Chrome\\?$"
+OMNIGENT_PORT="${OMNIGENT_PORT:-6767}"
 # ─────────────────────────────────────────────────────────────────────
 
 # ── Window creation ─────────────────────────────────────────────────
@@ -87,15 +84,6 @@ create_cmux_window() {
   open -a cmux
 }
 
-create_vscode_window() {
-  local workspace="$1"
-  if [[ "$workspace" == vscode-remote://* ]]; then
-    "$VSCODE_CMD" --file-uri "$workspace" -n 2>/dev/null
-  else
-    "$VSCODE_CMD" "$workspace" -n 2>/dev/null
-  fi
-}
-
 # ── Helpers ──────────────────────────────────────────────────────────
 
 managed_workspaces() {
@@ -114,8 +102,96 @@ find_window_id() {
     '[.[] | select(."app-name" == $app and (.["window-title"] | test($title; "i")))] | first | .["window-id"] // empty'
 }
 
+find_window_id_for_workspace() {
+  local app_name="$1" title_substr="$2" ws="$3" snapshot="$4"
+  local window_id
+
+  window_id=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
+    | jq -r \
+      --arg app "$app_name" \
+      --arg title "$title_substr" \
+      '[.[] | select(."app-name" == $app and (.["window-title"] | test($title; "i")))] | first | .["window-id"] // empty') || true
+  if [[ -n "$window_id" ]]; then
+    echo "$window_id"
+    return 0
+  fi
+
+  find_window_id "$app_name" "$title_substr" "$snapshot"
+}
+
 get_focused_window_id() {
   aerospace list-windows --focused --json 2>/dev/null | jq -r '.[0]["window-id"] // empty'
+}
+
+window_exists() {
+  local wid="$1"
+  aerospace list-windows --all --json 2>/dev/null \
+    | jq -e --argjson wid "$wid" \
+      '[.[] | select(.["window-id"] == $wid)] | length > 0' >/dev/null
+}
+
+close_window_id() {
+  local wid="$1" reason="$2"
+  echo "Closing ${reason} window $wid..."
+  aerospace close --window-id "$wid" 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    sleep 0.2
+    window_exists "$wid" || return 0
+  done
+
+  echo "WARNING: ${reason} window $wid did not close" >&2
+  return 1
+}
+
+tunnel_command_is_current() {
+  local host="$1"
+  local cmds
+  cmds=$(ps -axo command | grep -F "x2ssh -et $host" | grep -v grep || true)
+
+  # If the tunnel is between x2ssh attempts (Duo/reconnect), don't churn the
+  # Ghostty window. We only know it is stale when a live x2ssh command is using
+  # the old reverse-forward set.
+  [[ -z "$cmds" ]] && return 0
+
+  echo "$cmds" \
+    | grep -F -- "-r " \
+    | grep -F "$OMNIGENT_PORT:$OMNIGENT_PORT" \
+    | grep -F "omnigent-host-ensure" >/dev/null
+}
+
+stop_tunnel_processes_for_host() {
+  local host="$1"
+  local pids
+
+  pids=$(ps -axo pid,command | awk -v host="$host" '
+    index($0, "nvs-tunnels " host) ||
+    index($0, "x2ssh -et " host) ||
+    index($0, "fallback " host) ||
+    index($0, "HostName=" host) {
+      print $1
+    }
+  ') || true
+
+  [[ -z "$pids" ]] && return 0
+  echo "Stopping stale tunnel process(es) for $host: $(echo "$pids" | tr '\n' ' ')"
+  kill $pids 2>/dev/null || true
+}
+
+close_stale_tunnel_window_if_needed() {
+  local wid="$1" title="$2" cmd="$3"
+  local _nvs host _rest
+
+  [[ "$cmd" == nvs-tunnels\ * ]] || return 1
+  read -r _nvs host _rest <<< "$cmd"
+  [[ -n "$host" ]] || return 1
+
+  if tunnel_command_is_current "$host"; then
+    return 1
+  fi
+
+  echo "[$title] existing tunnel is stale for $host; recreating so reverse port $OMNIGENT_PORT is active..."
+  close_window_id "$wid" "stale tunnel"
+  stop_tunnel_processes_for_host "$host"
 }
 
 wait_for_new_window() {
@@ -151,7 +227,7 @@ find_valid_chrome_window_on_workspace() {
       )] | first | .["window-id"] // empty'
 }
 
-sweep_invalid_chrome_windows_from_workspace() {
+close_invalid_chrome_windows_on_workspace() {
   local ws="$1"
   local invalid_ids wid
   invalid_ids=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
@@ -163,24 +239,26 @@ sweep_invalid_chrome_windows_from_workspace() {
 
   for wid in $invalid_ids; do
     [[ -z "$wid" ]] && continue
-    echo "Sweeping invalid Chrome window $wid from workspace $ws to $SWEEP_WORKSPACE..."
-    if aerospace move-node-to-workspace --window-id "$wid" "$SWEEP_WORKSPACE" 2>/dev/null; then
-      if [[ ${swept+x} ]]; then
-        swept=$((swept + 1))
-      fi
+    echo "Closing invalid Chrome window $wid from workspace $ws..."
+    aerospace focus --window-id "$wid" 2>/dev/null || true
+    if [[ "$(get_focused_window_id)" == "$wid" ]]; then
+      aerospace close 2>/dev/null || true
+    else
+      echo "WARNING: could not focus invalid Chrome window $wid; moving it to $SWEEP_WORKSPACE" >&2
+      aerospace move-node-to-workspace --window-id "$wid" "$SWEEP_WORKSPACE" 2>/dev/null || true
     fi
   done
 }
 
 # Poll until every WORKSPACES entry has at least one matching window
 # present anywhere. wait_for_new_window in the main loop has a 10s
-# timeout, but remote VS Code can take 30s+ to appear and its title may
-# still be loading after the window exists. arrange-workspaces is
+# timeout, but app windows can take longer to appear and titles may still
+# be loading after the window exists. arrange-workspaces is
 # destructive (flatten + rebuild) and produces unrecoverable layouts
 # when the expected window set is incomplete — e.g. a workspace with
-# only Orchest + VS Code present hits the single-accordion-window
+# only Orchest + one app window present hits the single-accordion-window
 # scaffold branch, then a late Ghostty/Chrome arrival triggers
-# auto-accordion and the resulting `move` calls create unwanted nesting.
+# a layout rebuild and the resulting `move` calls can create unwanted nesting.
 # Returns 0 if all entries are satisfied within the timeout, 1 otherwise.
 wait_for_expected_windows() {
   local timeout="${1:-30}"
@@ -196,7 +274,6 @@ wait_for_expected_windows() {
       case "$type" in
         ghostty) IFS='|' read -r title_match _ <<< "$rest"; app_name="Ghostty" ;;
         cmux)    title_match="."; app_name="cmux" ;;
-        vscode)  IFS='|' read -r title_match _ <<< "$rest"; app_name="$VSCODE_APP_AEROSPACE" ;;
         *)       continue ;;
       esac
 
@@ -214,6 +291,65 @@ wait_for_expected_windows() {
     sleep 0.5
   done
   return 1
+}
+
+reconcile_expected_managed_windows_once() {
+  local snapshot entry ws type title rest app_name title_match window_id already
+  RECONCILE_MISSING=0
+  RECONCILE_MOVED=0
+  matched_ids=()
+  snapshot=$(snapshot_windows)
+
+  for entry in "${WORKSPACES[@]}"; do
+    IFS='|' read -r ws type title rest <<< "$entry"
+    case "$type" in
+      ghostty)
+        IFS='|' read -r title_match _ <<< "$rest"
+        app_name="Ghostty"
+        ;;
+      cmux)
+        title_match="."
+        app_name="cmux"
+        ;;
+      *) continue ;;
+    esac
+
+    window_id=$(find_window_id_for_workspace "$app_name" "$title_match" "$ws" "$snapshot")
+    if [[ -z "$window_id" ]]; then
+      RECONCILE_MISSING=$(( RECONCILE_MISSING + 1 ))
+      continue
+    fi
+    matched_ids+=("$window_id")
+
+    already=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
+      | jq -r --argjson wid "$window_id" \
+        '[.[] | select(.["window-id"] == $wid)] | first | .["window-id"] // empty') || true
+    if [[ -z "$already" ]]; then
+      echo "[$title] relocating to workspace $ws..."
+      if aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null; then
+        RECONCILE_MOVED=$(( RECONCILE_MOVED + 1 ))
+      else
+        echo "WARNING: [$title] relocate failed" >&2
+      fi
+    fi
+  done
+}
+
+reconcile_expected_managed_windows() {
+  local timeout="${1:-20}"
+  local deadline=$(($(date +%s) + timeout))
+
+  while true; do
+    reconcile_expected_managed_windows_once
+    if [[ "$RECONCILE_MISSING" -eq 0 && "$RECONCILE_MOVED" -eq 0 ]]; then
+      return 0
+    fi
+
+    if [[ $(date +%s) -ge $deadline ]]; then
+      return 1
+    fi
+    sleep 0.5
+  done
 }
 
 # ── Main ─────────────────────────────────────────────────────────────
@@ -244,22 +380,22 @@ if ! osascript -e 'application "Ghostty" is running' 2>/dev/null | grep -q 'true
   sleep 2
 fi
 
-# Ensure VS Code is running if any vscode workspaces are defined
-has_vscode=false
-for entry in "${WORKSPACES[@]}"; do
-  if [[ "$entry" == *\|vscode\|* ]]; then has_vscode=true; break; fi
-done
-if $has_vscode; then
-  if ! osascript -e "application \"${VSCODE_APP_MACOS}\" is running" 2>/dev/null | grep -q 'true'; then
-    open -a "$VSCODE_APP_MACOS"
-    sleep 3
-  fi
-fi
-
 # Snapshot all windows
 SNAPSHOT=$(snapshot_windows)
 
 failures=0
+
+# Start Omnigent's Mac-local control plane before opening devvm tunnel
+# windows. nvs-tunnels reverse-forwards this stable port so host daemons
+# on FTW/CCO can reach the Mac server as http://127.0.0.1:6767.
+omnigent-ensure-server || {
+  echo "WARNING: omnigent-ensure-server failed" >&2
+  ((failures++)) || true
+}
+omnigent-host-ensure || {
+  echo "WARNING: omnigent-host-ensure failed" >&2
+  ((failures++)) || true
+}
 
 for i in "${!WORKSPACES[@]}"; do
   IFS='|' read -r ws type title rest <<< "${WORKSPACES[$i]}"
@@ -269,7 +405,12 @@ for i in "${!WORKSPACES[@]}"; do
       IFS='|' read -r title_match workdir cmd <<< "$rest"
       app_name="Ghostty"
 
-      window_id=$(find_window_id "$app_name" "$title_match" "$SNAPSHOT")
+      window_id=$(find_window_id_for_workspace "$app_name" "$title_match" "$ws" "$SNAPSHOT")
+      if [[ -n "$window_id" ]] && close_stale_tunnel_window_if_needed "$window_id" "$title" "$cmd"; then
+        SNAPSHOT=$(snapshot_windows)
+        window_id=$(find_window_id_for_workspace "$app_name" "$title_match" "$ws" "$SNAPSHOT")
+      fi
+
       if [[ -n "$window_id" ]]; then
         echo "[$title] moving existing window to workspace $ws..."
         aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || {
@@ -302,7 +443,7 @@ for i in "${!WORKSPACES[@]}"; do
       IFS='|' read -r title_match _ <<< "$rest"
       app_name="cmux"
 
-      window_id=$(find_window_id "$app_name" "$title_match" "$SNAPSHOT")
+      window_id=$(find_window_id_for_workspace "$app_name" "$title_match" "$ws" "$SNAPSHOT")
       if [[ -n "$window_id" ]]; then
         echo "[$title] moving existing window to workspace $ws..."
         aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || {
@@ -329,43 +470,12 @@ for i in "${!WORKSPACES[@]}"; do
         SNAPSHOT=$(snapshot_windows)
       fi
       ;;
-    vscode)
-      IFS='|' read -r title_match workspace <<< "$rest"
-      app_name="$VSCODE_APP_AEROSPACE"
-
-      window_id=$(find_window_id "$app_name" "$title_match" "$SNAPSHOT")
-      if [[ -n "$window_id" ]]; then
-        echo "[$title] moving existing window to workspace $ws..."
-        aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || {
-          echo "WARNING: [$title] move failed" >&2
-          ((failures++)) || true
-        }
-      else
-        echo "[$title] creating on workspace $ws..."
-        before_snapshot="$SNAPSHOT"
-        create_vscode_window "$workspace" || {
-          echo "WARNING: [$title] creation failed, skipping" >&2
-          ((failures++)) || true
-          continue
-        }
-        window_id=$(wait_for_new_window "$app_name" "$before_snapshot") || {
-          echo "WARNING: [$title] window did not appear in time" >&2
-          ((failures++)) || true
-          continue
-        }
-        if [[ -n "$window_id" ]]; then
-          aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || true
-        fi
-        # Update snapshot for subsequent iterations
-        SNAPSHOT=$(snapshot_windows)
-      fi
-      ;;
     chrome)
       app_name="$CHROME_APP"
 
       # Profile-picker windows are Chrome windows, but they do not satisfy the
-      # workspace contract. Sweep them so we create/reuse a real profile window.
-      sweep_invalid_chrome_windows_from_workspace "$ws"
+      # workspace contract. Close them so we create/reuse a real profile window.
+      close_invalid_chrome_windows_on_workspace "$ws"
 
       # Check if a usable Chrome window already exists on this workspace.
       existing=$(find_valid_chrome_window_on_workspace "$ws") || true
@@ -413,44 +523,14 @@ fi
 
 # ── Reconciliation pass ───────────────────────────────────────────────
 # Relocate windows that appeared after their wait_for_new_window timed
-# out, and sweep unmatched Ghostty/VS Code windows from managed
+# out, and sweep unmatched Ghostty windows from managed
 # workspaces (e.g. the default Ghostty window created on launch).
 
 swept=0
-RECON_SNAPSHOT=$(snapshot_windows)
-matched_ids=()
-
-for entry in "${WORKSPACES[@]}"; do
-  IFS='|' read -r ws type title rest <<< "$entry"
-  case "$type" in
-    ghostty)
-      IFS='|' read -r title_match _ <<< "$rest"
-      app_name="Ghostty"
-      ;;
-    cmux)
-      IFS='|' read -r title_match _ <<< "$rest"
-      app_name="cmux"
-      ;;
-    vscode)
-      IFS='|' read -r title_match _ <<< "$rest"
-      app_name="$VSCODE_APP_AEROSPACE"
-      ;;
-    *) continue ;;
-  esac
-
-  window_id=$(find_window_id "$app_name" "$title_match" "$RECON_SNAPSHOT")
-  [[ -z "$window_id" ]] && continue
-  matched_ids+=("$window_id")
-
-  # Check if already on the correct workspace
-  already=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
-    | jq -r --argjson wid "$window_id" \
-      '[.[] | select(.["window-id"] == $wid)] | first | .["window-id"] // empty') || true
-  if [[ -z "$already" ]]; then
-    echo "[$title] relocating to workspace $ws..."
-    aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || true
-  fi
-done
+if ! reconcile_expected_managed_windows 20; then
+  echo "WARNING: some expected managed windows were still missing or moving after reconciliation" >&2
+  ((failures++)) || true
+fi
 
 # Sweep unmatched Ghostty windows from managed workspaces
 matched_pattern=$(printf '%s\n' "${matched_ids[@]}" | jq -R -s 'split("\n") | map(select(. != "") | tonumber)')
@@ -470,21 +550,21 @@ done
 
 # ─────────────────────────────────────────────────────────────────────
 
-# Sweep invalid Chrome windows from managed workspaces. They can be restored by
+# Close invalid Chrome windows from managed workspaces. They can be restored by
 # Chrome after the per-workspace checks above, and otherwise look like valid app
 # windows to the generic stray sweep.
 for ws in $(managed_workspaces); do
-  sweep_invalid_chrome_windows_from_workspace "$ws"
+  close_invalid_chrome_windows_on_workspace "$ws"
 done
+close_invalid_chrome_windows_on_workspace "$SWEEP_WORKSPACE"
 
 # Sweep stray windows: move unrecognized windows off managed workspaces to Z
 for ws in $(managed_workspaces); do
   stray_ids=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
-    | jq -r --arg vscode "$VSCODE_APP_AEROSPACE" --arg chrome "$CHROME_APP" \
+    | jq -r --arg chrome "$CHROME_APP" \
       '[.[] | select(
         ."app-name" != "Ghostty" and
         ."app-name" != "cmux" and
-        ."app-name" != $vscode and
         ."app-name" != $chrome and
         (.["window-title"] | test("Orchest \\[") | not)
       )] | .[]["window-id"]') || true
@@ -504,8 +584,8 @@ ARRANGE_ATTEMPTS=8 ARRANGE_RETRY_SLEEP=1 arrange-workspaces --force $(managed_wo
   ((failures++)) || true
 }
 
-# auto-accordion always does a full rebuild for any window that appears
-# after this point, so no drain sleep is needed.
+# If auto-accordion is re-enabled, it should do a full rebuild for any window
+# that appears after this point, so no drain sleep is needed here.
 
 # Focus workspace 1
 aerospace workspace 1 2>/dev/null || true

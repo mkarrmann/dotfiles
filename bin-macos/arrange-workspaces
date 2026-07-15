@@ -72,6 +72,12 @@ sweep_unfocusable() {
   aerospace workspace "$ws" 2>/dev/null || true
   for wid in $(echo "$windows_json" | jq -r '.[]["window-id"]'); do
     if ! focus_verified "$wid"; then
+      sleep 0.2
+    fi
+    if ! focus_verified "$wid"; then
+      sleep 0.5
+    fi
+    if ! focus_verified "$wid"; then
       echo "  [$ws] sweeping unfocusable window $wid → Z" >&2
       aerospace move-node-to-workspace --window-id "$wid" Z 2>/dev/null || true
       swept=$(( swept + 1 ))
