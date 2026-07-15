@@ -385,17 +385,13 @@ SNAPSHOT=$(snapshot_windows)
 
 failures=0
 
-# Start Omnigent's Mac-local control plane before opening devvm tunnel
-# windows. nvs-tunnels reverse-forwards this stable port so host daemons
-# on FTW/CCO can reach the Mac server as http://127.0.0.1:6767.
-omnigent-ensure-server || {
-  echo "WARNING: omnigent-ensure-server failed" >&2
+# Omnigent's Mac-local lifecycle is owned by launchd
+# (launchd/com.mkarrmann.omnigent-server.plist). startup-windows only
+# verifies the dependency before opening devvm tunnels that reverse-forward it.
+if ! curl -sf "http://127.0.0.1:${OMNIGENT_PORT}/health" >/dev/null 2>&1; then
+  echo "WARNING: Omnigent server is not healthy at http://127.0.0.1:${OMNIGENT_PORT}; launchd should start it" >&2
   ((failures++)) || true
-}
-omnigent-host-ensure || {
-  echo "WARNING: omnigent-host-ensure failed" >&2
-  ((failures++)) || true
-}
+fi
 
 for i in "${!WORKSPACES[@]}"; do
   IFS='|' read -r ws type title rest <<< "${WORKSPACES[$i]}"

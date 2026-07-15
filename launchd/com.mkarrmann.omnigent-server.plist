@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Authoritative launchd job for the Mac-local Omnigent server.
+
+  This intentionally owns Omnigent's Mac lifecycle outside startup-windows.
+  The wrapper is idempotent: it starts Omnigent on 127.0.0.1:6767 when absent,
+  and exits quickly when the server is already healthy. StartInterval gives
+  lightweight self-healing without coupling the server to workspace setup.
+
+  Activation is automatic via ~/dotfiles/init.sh, which copies this plist into
+  ~/Library/LaunchAgents/ and bootstraps it under gui/$UID.
+
+  Quick verify:
+    launchctl print gui/$UID/com.mkarrmann.omnigent-server | head
+    curl -sf http://127.0.0.1:6767/health
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.mkarrmann.omnigent-server</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/mkarrmann/bin/omnigent-ensure-server</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>60</integer>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/Users/mkarrmann/bin:/Users/mkarrmann/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+      <key>OMNIGENT_PORT</key>
+      <string>6767</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/mkarrmann/.local/state/omnigent-server/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mkarrmann/.local/state/omnigent-server/stderr.log</string>
+  </dict>
+</plist>

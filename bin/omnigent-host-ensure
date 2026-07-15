@@ -40,8 +40,18 @@ if ! curl -sf "${OMNIGENT_URL}/health" >/dev/null 2>&1; then
 fi
 
 if command -v tmux >/dev/null 2>&1; then
-  if ! tmux has-session -t "$session_name" 2>/dev/null; then
-    tmux new-session -d -s "$session_name" "exec '$OMNIGENT_BIN' host --server '$OMNIGENT_URL' --non-interactive"
+  tmux_bin="$(command -v tmux)"
+elif [[ -x /opt/homebrew/bin/tmux ]]; then
+  tmux_bin="/opt/homebrew/bin/tmux"
+elif [[ -x /usr/local/bin/tmux ]]; then
+  tmux_bin="/usr/local/bin/tmux"
+else
+  tmux_bin=""
+fi
+
+if [[ -n "$tmux_bin" ]]; then
+  if ! "$tmux_bin" has-session -t "$session_name" 2>/dev/null; then
+    "$tmux_bin" new-session -d -s "$session_name" "exec '$OMNIGENT_BIN' host --server '$OMNIGENT_URL' --non-interactive"
   fi
   launcher="tmux session $session_name"
 elif command -v screen >/dev/null 2>&1; then

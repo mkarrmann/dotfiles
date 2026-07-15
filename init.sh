@@ -429,9 +429,13 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   # materialized. See acp-broker docs/RUNBOOK.md §3.2.
   mkdir -p "$HOME/Library/LaunchAgents" \
            "$HOME/.local/state/acp-broker" \
-           "$HOME/.local/state/persistence-server"
+           "$HOME/.local/state/persistence-server" \
+           "$HOME/.local/state/omnigent-server" \
+           "$HOME/.local/state/omnigent-host"
   sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.persistence-server.plist"
   sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.acp-broker.plist"
+  sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-server.plist"
+  sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-host.plist"
 fi
 
 # Linux-only: systemd --user units. Linger is expected to be enabled

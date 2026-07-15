@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Authoritative launchd job for the Mac-local Omnigent host daemon.
+
+  omnigent-host-ensure starts the foreground host inside a persistent tmux or
+  screen session because a plain nohup-launched host exits on this machine.
+  The helper is idempotent and StartInterval lets launchd repair the host if it
+  exits after login.
+
+  Activation is automatic via ~/dotfiles/init.sh.
+
+  Quick verify:
+    launchctl print gui/$UID/com.mkarrmann.omnigent-host | head
+    omnigent host status --server http://127.0.0.1:6767 --json
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.mkarrmann.omnigent-host</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/mkarrmann/bin/omnigent-host-ensure</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>60</integer>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/Users/mkarrmann/bin:/Users/mkarrmann/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+      <key>OMNIGENT_PORT</key>
+      <string>6767</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/mkarrmann/.local/state/omnigent-host/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mkarrmann/.local/state/omnigent-host/stderr.log</string>
+  </dict>
+</plist>
