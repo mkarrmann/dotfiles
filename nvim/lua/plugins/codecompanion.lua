@@ -2000,6 +2000,48 @@ return {
               })
             end,
           },
+          -- Native Omnigent (REST + SSE) sessions. Unlike acp/http this is a
+          -- durable, server-owned session the editor observes -- the substrate
+          -- for later resume/attach and background wakeups (see
+          -- ~/repos/codecompanion.nvim/.codecompanion/omnigent-native-progress.md).
+          -- Extend the family's builtin "default" via the family module directly;
+          -- extending "omnigent" would recurse (the family key IS this function)
+          -- and routing "default" through the top-level extend() misfires to http.
+          omnigent = {
+            omnigent = function()
+              return require("codecompanion.adapters.omnigent").extend("default", {
+                name = "omnigent",
+                formatted_name = "Omnigent",
+                url = vim.env.OMNIGENT_URL or "http://127.0.0.1:6767",
+                defaults = {
+                  -- claude-sdk harness: streams output_text (renders in the
+                  -- buffer) and surfaces elicitations. A *-native-ui agent
+                  -- completes turns but streams no text to CodeCompanion.
+                  agent = "polly",
+                  host = "auto", -- fail-closed FQDN match to this machine
+                  workspace = "auto", -- cwd, only when the resolved host is local
+                  -- Correlation identity for external mappers (the Orchest
+                  -- omnigent-bridge). host_id + workspace already let Orchest
+                  -- attribute a session to a checkout; nvim_session is the one
+                  -- signal host+cwd can't derive (two chats in one checkout) --
+                  -- mirroring why the acp-bridge keys on byNvimSession. A future
+                  -- Orchest-minted workspace id drops in here without a reshape.
+                  -- Evaluated at session-create time to capture the launching tab.
+                  labels = function()
+                    local labels = { ["orchest.nvim_session"] = vim.env.NVS_SESSION_NAME or "ad-hoc" }
+                    local tab = vim.t.tab_name
+                    if type(tab) == "string" and tab ~= "" then
+                      labels["orchest.tab"] = tab
+                    end
+                    return labels
+                  end,
+                },
+                opts = {
+                  background_updates = false, -- flip on when M4 (wakeups) lands
+                },
+              })
+            end,
+          },
         },
 
         opts = {
@@ -2834,6 +2876,7 @@ Placement guidance (overrides the base prompt where they conflict):
       { "<leader>aG", function() tab_chat_pick_agent_and_set({ clear = true, force_pick = true }) end, desc = "Pick agent (dvsc / direct Claude / direct Codex), fresh" },
       { "<leader>aC", function() tab_chat_set_adapter("claude_broker",    { clear = true }) end, desc = "Claude Chat via broker (direct, fresh)" },
       { "<leader>aO", function() tab_chat_set_adapter("codex_broker",     { clear = true }) end, desc = "Codex Chat via broker (fresh)" },
+      { "<leader>aM", function() tab_chat_set_adapter("omnigent",         { clear = true }) end, desc = "CodeCompanion Chat (Omnigent, fresh)" },
       { "<leader>ak", tab_chat_compact, desc = "CodeCompanion: compact current chat (dvsc RPC or agent /compact)" },
       { "<leader>aZ", function() tab_chat_full_refresh() end, desc = "CodeCompanion: full refresh (close + reopen, pick agent + model + config)" },
       { "<leader>ao", tab_chat_pick_option, desc = "CodeCompanion: change live ACP session config option" },
