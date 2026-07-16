@@ -7,15 +7,24 @@ chat, now that the plugin ships the `omnigent` adapter family (see
 This is the last mile to a **working foreground chat**. It's small: an adapter
 definition + a launch keymap. Everything else is parity/polish.
 
-> **STATUS: done.** `config.adapters.omnigent` (agent `polly`, `OMNIGENT_URL`,
-> `host="auto"`, create-time `labels`) and the `<leader>aM` launcher are in
-> `nvim/lua/plugins/codecompanion.lua`. Resolved decisions below (agent = `polly`,
-> keymap = `<leader>aM`, labels = implemented). **One outstanding fix:** the
-> in-place adapter-swap in `tab_chat_set_adapter`'s `apply()` must
-> `stop_stream()` an outgoing omnigent session (it only disconnects ACP today),
-> or the SSE stream leaks when swapping away from an omnigent chat. Remaining
-> parity work (winbar pill / context-%) is tracked as "C. Lib parity" in
-> `omnigent-native-roadmap.md`.
+> **STATUS: done + all follow-ups landed (2026-07-15).** `config.adapters.omnigent`
+> (agent `polly`, `OMNIGENT_URL`, `host="auto"`, create-time `labels`) and the
+> `<leader>aM` launcher are in `nvim/lua/plugins/codecompanion.lua`. Since the
+> original plan, ALL remaining milestones shipped:
+> - The `apply()` stop_stream leak is **fixed** (outgoing omnigent session's stream
+>   is torn down symmetric to the ACP disconnect).
+> - **M3 resume UX**: `omnigent_continue()` picker on `<leader>amc` (cwd-scoped,
+>   `<A-c>` toggles all workspaces) + in-chat `/omnigent_resume` / `/omnigent_session`
+>   / `/omnigent_children`.
+> - **M4 wakeups**: `background_updates=true` — background/wakeup turns render while
+>   idle, with a non-visible-chat toast on `CodeCompanionChatOmnigentWakeup`.
+> - **Track C parity**: winbar session pill + statusline + context-% now light up
+>   for omnigent via the shared `lib/codecompanion-session.lua` resolver +
+>   `CodeCompanionOmnigentUsage` feed; doctor/reap have omnigent arms.
+>
+> See `~/repos/codecompanion.nvim/.codecompanion/omnigent-native-progress.md` for
+> the full per-milestone status and the manual GUI verification checklist (the only
+> thing left is eyeballing the buffer rendering).
 
 ## 1. Adapter definition
 
