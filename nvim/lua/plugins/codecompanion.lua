@@ -2171,7 +2171,13 @@ return {
                   end,
                 },
                 opts = {
-                  background_updates = false, -- flip on when M4 (wakeups) lands
+                  -- M4 has landed: keep the SSE stream open at attach so
+                  -- externally-triggered background turns (wakeups, another
+                  -- client) render while the chat is idle, and auto-reconnect a
+                  -- dropped stream (the observer's content-dedup makes the
+                  -- stream-first replay safe).
+                  background_updates = true,
+                  stream_heartbeat_timeout = 45000,
                 },
               })
             end,
@@ -2992,6 +2998,21 @@ Placement guidance (overrides the base prompt where they conflict):
           vim.schedule(function()
             require("lib.codecompanion-queue").on_chat_done(args.data.bufnr)
           end)
+        end,
+      })
+
+      -- Omnigent M4: a background/wakeup turn arrived on an idle chat (the agent
+      -- was driven from elsewhere). Toast it so the user notices activity in a
+      -- chat they aren't looking at. Fired by the omnigent observer.
+      vim.api.nvim_create_autocmd("User", {
+        pattern = "CodeCompanionChatOmnigentWakeup",
+        callback = function(args)
+          local bufnr = args.data and args.data.bufnr
+          local visible = bufnr and vim.fn.bufwinid(bufnr) ~= -1
+          if not visible then
+            vim.notify("Omnigent: background activity in a chat", vim.log.levels.INFO,
+              { title = "CodeCompanion" })
+          end
         end,
       })
     end,
