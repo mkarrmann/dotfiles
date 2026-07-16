@@ -937,10 +937,12 @@ end
 -- differences, both because of what omnigent exposes: the catalog is fetched
 -- live from the server (GET /v1/agents) rather than hardcoded -- there is no
 -- drift-prone entitlement list to mirror -- and the choice is the session's
--- harness, which is IMMUTABLE after create, so this is a launch-time pick only
--- (the model, by contrast, stays switchable in-chat via /model). Native-harness
--- agents (the `*-native-ui` terminal UIs) are excluded: they complete turns but
--- stream no text back to CodeCompanion.
+-- agent, which is IMMUTABLE after create, so this is a launch-time pick only.
+-- ALL live agents are offered, including the `*-native` harnesses (Claude Code =
+-- claude-native, Codex = codex-native, cursor, ...): omnigent forwards their
+-- terminal output as `external_output_text_delta`, which the server republishes on
+-- the stream as `response.output_text.delta` (server/API.md), so they render in
+-- the chat buffer just like the claude-sdk agents.
 local OMNIGENT_AGENT_CACHE_PATH = vim.fn.stdpath("data") .. "/codecompanion-omnigent-agent.json"
 
 local function _omnigent_read_agent_cache()
@@ -959,15 +961,14 @@ local function _omnigent_write_agent_cache(agent)
   f:close()
 end
 
--- Live, stream-capable agent catalog: { { name, description }, ... } or nil, err.
+-- Live agent catalog: { { name, harness, description }, ... } or nil, err.
 local function _omnigent_pickable_agents()
   local agents, err = _omnigent_client():list_agents()
   if not agents then return nil, err end
   local out = {}
   for _, a in ipairs(agents) do
-    -- `*-native*` harnesses are terminal UIs that stream nothing to CodeCompanion.
-    if a.name and not (a.harness or ""):find("native", 1, true) then
-      out[#out + 1] = { name = a.name, description = a.description }
+    if a.name then
+      out[#out + 1] = { name = a.name, harness = a.harness, description = a.description }
     end
   end
   return out
@@ -985,12 +986,13 @@ local function _omnigent_select_agent(force, cb)
     return vim.notify("omnigent: failed to list agents: " .. (err and err.message or "?"), vim.log.levels.ERROR)
   end
   if #agents == 0 then
-    return vim.notify("omnigent: no stream-capable agents available", vim.log.levels.WARN)
+    return vim.notify("omnigent: no agents available", vim.log.levels.WARN)
   end
   vim.ui.select(agents, {
     prompt = "Omnigent agent:",
     format_item = function(a)
-      return (a.description and a.description ~= "") and (a.name .. " — " .. a.description) or a.name
+      local detail = (a.description and a.description ~= "") and a.description or a.harness
+      return detail and (a.name .. "  —  " .. detail) or a.name
     end,
   }, function(choice)
     if choice == nil then return end
