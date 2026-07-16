@@ -29,6 +29,34 @@ vim.api.nvim_create_autocmd("User", {
   end,
 })
 
+-- Native omnigent usage. The omnigent handler/observer fire this with a
+-- {context_tokens, context_window, total_cost_usd} usage table (context_window
+-- back-filled from the model catalog when the SSE usage event nulls it). Map
+-- context_tokens -> used (updates each turn) and context_window -> size (sticky:
+-- a later null must not clear a size we already learned).
+vim.api.nvim_create_autocmd("User", {
+  pattern = "CodeCompanionOmnigentUsage",
+  callback = function(args)
+    local d = args.data or {}
+    local sid = d.session_id
+    local usage = d.usage
+    if not sid or type(usage) ~= "table" then
+      return
+    end
+    local cur = M._by_session[sid] or {}
+    if usage.context_tokens then
+      cur.used = usage.context_tokens
+    end
+    if usage.context_window then
+      cur.size = usage.context_window
+    end
+    if usage.total_cost_usd then
+      cur.cost = { amount = usage.total_cost_usd, currency = "USD" }
+    end
+    M._by_session[sid] = cur
+  end,
+})
+
 function M.get(session_id)
   if not session_id then return nil end
   return M._by_session[session_id]
@@ -44,7 +72,7 @@ vim.api.nvim_create_autocmd("User", {
     if not bufnr then return end
     local ok, chat = pcall(function() return require("codecompanion").buf_get_chat(bufnr) end)
     if not ok or not chat then return end
-    local sid = chat.acp_connection and chat.acp_connection.session_id
+    local sid = require("lib.codecompanion-session").session_id(chat)
     if sid then M._by_session[sid] = nil end
   end,
 })

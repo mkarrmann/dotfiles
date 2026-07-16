@@ -82,12 +82,14 @@ local function build_segments(state)
       dvsc_sel = sel_for_buf(state.chat_bufnr)
     end
   end
-  local acp_session_id = (
-    adapter_type == "acp"
-    and chat
-    and chat.acp_connection
-    and chat.acp_connection.session_id
-  ) or nil
+  -- Durable session id across families (acp OR omnigent).
+  local acp_session_id
+  do
+    local ok_sess, sesslib = pcall(require, "lib.codecompanion-session")
+    if ok_sess then
+      acp_session_id = sesslib.session_id(chat)
+    end
+  end
   local acp_usage
   if acp_session_id then
     local ok_stats, stats = pcall(require, "lib.codecompanion-stats")

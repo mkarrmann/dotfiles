@@ -78,6 +78,18 @@ local function chat_state()
   if chat.acp_connection and chat.acp_connection.session_id then
     lines[#lines + 1] = "acp.session_id=" .. chat.acp_connection.session_id
   end
+  if chat.adapter and chat.adapter.type == "omnigent" then
+    local s = chat.omnigent_session
+    lines[#lines + 1] = "omnigent.session_id=" .. tostring(chat.omnigent_session_id or (s and s.session_id) or "?")
+    if s then
+      lines[#lines + 1] = "omnigent.host_id=" .. tostring(s.host_id or "(server-local)")
+      lines[#lines + 1] = "omnigent.workspace=" .. tostring(s.workspace or "(none)")
+      lines[#lines + 1] = "omnigent.status=" .. tostring(s.status or "?")
+      lines[#lines + 1] = "omnigent.streaming=" .. tostring(s.streaming and s:streaming() or false)
+      local pending = type(s.pending_elicitations) == "table" and vim.tbl_count(s.pending_elicitations) or 0
+      lines[#lines + 1] = "omnigent.pending_elicitations=" .. tostring(pending)
+    end
+  end
   return lines
 end
 

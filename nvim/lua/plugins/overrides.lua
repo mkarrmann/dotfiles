@@ -72,7 +72,7 @@ return {
 				if not bufnr then return nil end
 				local chat = cc.buf_get_chat(bufnr)
 				if not chat then return nil end
-				return chat.acp_session_id or (chat.acp_connection and chat.acp_connection.session_id)
+				return require("lib.codecompanion-session").session_id(chat)
 			end
 
 			local function cc_context()

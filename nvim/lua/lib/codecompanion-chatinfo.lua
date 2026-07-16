@@ -93,6 +93,19 @@ function M.setup()
       if bufnr then M.reset(bufnr) end
     end,
   })
+
+  -- Omnigent chats pin on their durable session id, established (create) or
+  -- resumed (load). Mirrors how the ACP paths pin on first establish.
+  vim.api.nvim_create_autocmd("User", {
+    group = grp,
+    pattern = { "CodeCompanionOmnigentSessionReady", "CodeCompanionOmnigentChatRestored" },
+    callback = function(args)
+      local d = args.data or {}
+      if d.bufnr and d.session_id then
+        M.pin(d.bufnr, d.session_id)
+      end
+    end,
+  })
 end
 
 return M

@@ -22,19 +22,32 @@
 
 local M = {}
 
----Disconnect the ACP connection backing `chat`, if any. Idempotent: CC's
+---Disconnect/tear down the session backing `chat`, if any. Idempotent: CC's
 ---`disconnect()` is `assert(handle):kill(9)`, so guard with pcall against
----double-calls (e.g. WinClosed racing VimLeavePre).
+---double-calls (e.g. WinClosed racing VimLeavePre). Omnigent has no local agent
+---process -- only the SSE stream job -- so reaping it just stops that stream (the
+---durable server session lives on).
 ---@param chat table|nil
 local function disconnect(chat)
-  if chat and chat.adapter and chat.adapter.type == "acp" and chat.acp_connection then
+  if not (chat and chat.adapter) then
+    return
+  end
+  if chat.adapter.type == "acp" and chat.acp_connection then
     pcall(function()
       chat.acp_connection:disconnect()
+    end)
+  elseif chat.adapter.type == "omnigent" and chat.omnigent_session then
+    pcall(function()
+      chat.omnigent_session:stop_stream()
     end)
   end
 end
 
----Reap every ACP chat whose buffer is no longer displayed in any window.
+---Reap every hidden chat whose buffer is no longer displayed in any window.
+---Omnigent chats are intentionally EXEMPT here: with background_updates on, a
+---hidden omnigent chat keeps its stream so wakeups still render (and toast) while
+---you're looking elsewhere -- reaping on hide would defeat that. Omnigent streams
+---are reaped only on real buffer teardown (BufUnload/BufWipeout) and Chat:close.
 local function reap_hidden_chats()
   local ok, cc = pcall(require, "codecompanion")
   if not ok then
@@ -43,7 +56,7 @@ local function reap_hidden_chats()
   for _, entry in ipairs(cc.buf_get_chat() or {}) do
     local chat = entry.chat
     if chat and chat.bufnr and vim.api.nvim_buf_is_valid(chat.bufnr) then
-      if #vim.fn.win_findbuf(chat.bufnr) == 0 then
+      if chat.adapter and chat.adapter.type ~= "omnigent" and #vim.fn.win_findbuf(chat.bufnr) == 0 then
         disconnect(chat)
       end
     end
