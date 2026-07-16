@@ -915,6 +915,134 @@ local function broker_continue()
   open(scoped)
 end
 
+-- ── Omnigent resume ────────────────────────────────────────────────────────
+--
+-- The native-omnigent analog of `broker_continue`, but far simpler: omnigent
+-- sessions are durable and server-owned, so there is no fork/resume split and no
+-- cross-broker classification — a single REST list + `chat:resume_omnigent(id)`
+-- (which loads the snapshot + durable items and hydrates the buffer without
+-- posting) is the whole flow. The pure list helpers live in the plugin
+-- (`interactions.chat.omnigent.sessions`) and are reused here so formatting stays
+-- consistent with the in-chat `/omnigent_resume` picker.
+local function _omnigent_client()
+  return require("codecompanion.omnigent.client").new({
+    url = vim.env.OMNIGENT_URL or "http://127.0.0.1:6767",
+  })
+end
+
+-- Open a fresh chat in the current tab bound to an existing omnigent session and
+-- hydrate it. Mirrors `_broker_open_chat_with_session` but without the ACP
+-- connection-readiness poll (omnigent load is a synchronous REST round-trip).
+local function _omnigent_open_chat_with_session(session_id)
+  local existing = vim.t.codecompanion_chat_bufnr
+  if existing and vim.api.nvim_buf_is_valid(existing) then
+    vim.notify(
+      "Tab already has a CodeCompanion chat; close it before resuming another session.",
+      vim.log.levels.WARN
+    )
+    return false
+  end
+  local buffer_context = require("codecompanion.utils.context").get(vim.api.nvim_get_current_buf())
+  local chat = require("codecompanion.interactions.chat").new({
+    adapter = "omnigent",
+    omnigent_session_id = session_id,
+    buffer_context = buffer_context,
+  })
+  if not chat then
+    vim.notify("Failed to open omnigent chat", vim.log.levels.ERROR)
+    return false
+  end
+  vim.schedule(function()
+    local ok, err = chat:resume_omnigent()
+    if not ok then
+      vim.notify("omnigent resume failed: " .. (err and err.message or "?"), vim.log.levels.ERROR)
+      return
+    end
+    lock_chat_buf(chat.bufnr)
+    require("codecompanion.utils").fire("OmnigentChatRestored", {
+      bufnr = chat.bufnr,
+      id = chat.id,
+      session_id = session_id,
+    })
+  end)
+  return true
+end
+
+-- Server-backed omnigent session picker. cwd-scoped by default (<A-c> toggles to
+-- all workspaces), recency-sorted, archived filtered out.
+local function omnigent_continue()
+  local sessions_lib = require("codecompanion.interactions.chat.omnigent.sessions")
+  local client = _omnigent_client()
+  local list, err = client:list_sessions({ limit = 200 })
+  if not list then
+    return vim.notify("omnigent: failed to list sessions: " .. (err and err.message or "?"), vim.log.levels.ERROR)
+  end
+  list = sessions_lib.by_recency(sessions_lib.active(list))
+  if #list == 0 then
+    return vim.notify("omnigent: no saved sessions", vim.log.levels.INFO)
+  end
+  local cwd = vim.fn.getcwd()
+  local now = os.time()
+
+  local function build_items(scoped)
+    local rows = scoped and sessions_lib.filter_by_workspace(list, cwd) or list
+    local items = {}
+    for _, s in ipairs(rows) do
+      items[#items + 1] = { session = s, label = sessions_lib.format_summary(s, { now = now }) }
+    end
+    return items
+  end
+
+  local function open(is_scoped)
+    local items = build_items(is_scoped)
+    if vim.tbl_isempty(items) then
+      return vim.notify(
+        "omnigent: no session for " .. cwd .. " (<A-c> for all workspaces)",
+        vim.log.levels.WARN
+      )
+    end
+    local scope_txt = is_scoped and cwd or "ALL workspaces"
+    vim.ui.select(items, {
+      prompt = "Resume Omnigent session · " .. scope_txt,
+      format_item = function(item) return item.label end,
+      snacks = {
+        source = "omnigent_continue",
+        title = "Resume Omnigent · " .. scope_txt,
+        win = { input = { keys = {
+          ["<a-c>"] = { "toggle_scope", mode = { "i", "n" } },
+        } } },
+        preview = function(ctx)
+          local s = ctx.item and ctx.item.item and ctx.item.item.session
+          if not s then return false end
+          local lines = {
+            "id:        " .. (s.id or "?"),
+            "title:     " .. (s.title or "(untitled)"),
+            "agent:     " .. (s.agent_name or s.agent_id or "?"),
+            "status:    " .. (s.status or "?"),
+            "workspace: " .. (s.workspace or "(none)"),
+            "effort:    " .. (s.reasoning_effort or "?"),
+            "pending:   " .. tostring(s.pending_elicitations_count or 0),
+          }
+          ctx.preview:set_lines(lines)
+          ctx.preview:highlight({ ft = "yaml" })
+          return true
+        end,
+        actions = {
+          toggle_scope = function(picker)
+            picker:close()
+            vim.schedule(function() open(not is_scoped) end)
+          end,
+        },
+      },
+    }, function(choice)
+      if not choice then return end
+      _omnigent_open_chat_with_session(choice.session.id)
+    end)
+  end
+
+  open(true)
+end
+
 -- Pick a dvsc selection (interactive or from cache), then invoke `cb`
 -- with `{ mode, model, effort? }`. Extracted from the original
 -- `dvsc_pick_and_launch` so the picker can drive both first-time launches
@@ -1193,6 +1321,12 @@ local function tab_chat_set_adapter(adapter_name, opts)
   local function apply(sel)
     if chat.adapter and chat.adapter.type == "acp" and chat.acp_connection then
       pcall(function() chat.acp_connection:disconnect() end)
+    end
+    -- Symmetric to the ACP disconnect: an in-place swap away from an omnigent
+    -- chat must tear down the outgoing SSE subscription, or it leaks (the durable
+    -- server session lives on, but this editor's stream job would keep running).
+    if chat.adapter and chat.adapter.type == "omnigent" and chat.omnigent_session then
+      pcall(function() chat.omnigent_session:stop_stream() end)
     end
     chat.acp_session_id = nil
     -- The current session is being torn down; unpin so the winbar re-pins
@@ -1542,7 +1676,7 @@ end
 
 return {
   {
-    "olimorris/codecompanion.nvim",
+    "mkarrmann/codecompanion.nvim", -- fork: adds the native omnigent adapter (see <leader>aM)
     dependencies = {
       "nvim-lua/plenary.nvim",
       "nvim-treesitter/nvim-treesitter",
@@ -2877,6 +3011,7 @@ Placement guidance (overrides the base prompt where they conflict):
       { "<leader>aC", function() tab_chat_set_adapter("claude_broker",    { clear = true }) end, desc = "Claude Chat via broker (direct, fresh)" },
       { "<leader>aO", function() tab_chat_set_adapter("codex_broker",     { clear = true }) end, desc = "Codex Chat via broker (fresh)" },
       { "<leader>aM", function() tab_chat_set_adapter("omnigent",         { clear = true }) end, desc = "CodeCompanion Chat (Omnigent, fresh)" },
+      { "<leader>amc", function() omnigent_continue() end, desc = "Omnigent: resume durable session (cwd-scoped)" },
       { "<leader>ak", tab_chat_compact, desc = "CodeCompanion: compact current chat (dvsc RPC or agent /compact)" },
       { "<leader>aZ", function() tab_chat_full_refresh() end, desc = "CodeCompanion: full refresh (close + reopen, pick agent + model + config)" },
       { "<leader>ao", tab_chat_pick_option, desc = "CodeCompanion: change live ACP session config option" },
