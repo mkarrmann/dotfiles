@@ -930,6 +930,75 @@ local function _omnigent_client()
   })
 end
 
+-- ── Omnigent agent picker ──────────────────────────────────────────────────
+--
+-- Mirrors the dvsc/direct model pickers (`_dvsc_select` / `_direct_select`): a
+-- cached last-choice reused on the normal launch, re-prompted on force. Two
+-- differences, both because of what omnigent exposes: the catalog is fetched
+-- live from the server (GET /v1/agents) rather than hardcoded -- there is no
+-- drift-prone entitlement list to mirror -- and the choice is the session's
+-- harness, which is IMMUTABLE after create, so this is a launch-time pick only
+-- (the model, by contrast, stays switchable in-chat via /model). Native-harness
+-- agents (the `*-native-ui` terminal UIs) are excluded: they complete turns but
+-- stream no text back to CodeCompanion.
+local OMNIGENT_AGENT_CACHE_PATH = vim.fn.stdpath("data") .. "/codecompanion-omnigent-agent.json"
+
+local function _omnigent_read_agent_cache()
+  local f = io.open(OMNIGENT_AGENT_CACHE_PATH, "r")
+  if not f then return {} end
+  local body = f:read("*a")
+  f:close()
+  local ok, t = pcall(vim.fn.json_decode, body)
+  return (ok and type(t) == "table") and t or {}
+end
+
+local function _omnigent_write_agent_cache(agent)
+  local f = io.open(OMNIGENT_AGENT_CACHE_PATH, "w")
+  if not f then return end
+  f:write(vim.fn.json_encode({ agent = agent }))
+  f:close()
+end
+
+-- Live, stream-capable agent catalog: { { name, description }, ... } or nil, err.
+local function _omnigent_pickable_agents()
+  local agents, err = _omnigent_client():list_agents()
+  if not agents then return nil, err end
+  local out = {}
+  for _, a in ipairs(agents) do
+    -- `*-native*` harnesses are terminal UIs that stream nothing to CodeCompanion.
+    if a.name and not (a.harness or ""):find("native", 1, true) then
+      out[#out + 1] = { name = a.name, description = a.description }
+    end
+  end
+  return out
+end
+
+-- Pick an omnigent agent (interactive or from cache), then invoke cb(agent_name).
+-- `force=true` (the pick keymaps) always re-prompts. Mirrors `_direct_select`.
+local function _omnigent_select_agent(force, cb)
+  if not force then
+    local cached = _omnigent_read_agent_cache().agent
+    if cached then return cb(cached) end
+  end
+  local agents, err = _omnigent_pickable_agents()
+  if not agents then
+    return vim.notify("omnigent: failed to list agents: " .. (err and err.message or "?"), vim.log.levels.ERROR)
+  end
+  if #agents == 0 then
+    return vim.notify("omnigent: no stream-capable agents available", vim.log.levels.WARN)
+  end
+  vim.ui.select(agents, {
+    prompt = "Omnigent agent:",
+    format_item = function(a)
+      return (a.description and a.description ~= "") and (a.name .. " — " .. a.description) or a.name
+    end,
+  }, function(choice)
+    if choice == nil then return end
+    _omnigent_write_agent_cache(choice.name)
+    cb(choice.name)
+  end)
+end
+
 -- Open a fresh chat in the current tab bound to an existing omnigent session and
 -- hydrate it. Mirrors `_broker_open_chat_with_session` but without the ACP
 -- connection-readiness poll (omnigent load is a synchronous REST round-trip).
@@ -1216,6 +1285,7 @@ local AGENT_PATHS = {
   { label = "dvsc-core (native / claude / codex / metacode)", adapter = "dvsc_core_broker" },
   { label = "Claude (direct via claude-agent-acp)",           adapter = "claude_broker" },
   { label = "Codex (direct via codex-acp)",                   adapter = "codex_broker" },
+  { label = "Omnigent (server-owned session, pick agent)",    adapter = "omnigent" },
 }
 
 -- Prime per-adapter spawn state for adapters that read `_dvsc.pending`
@@ -1288,6 +1358,14 @@ local function tab_chat_set_adapter(adapter_name, opts)
         end, 50)
       end)
     end
+    if adapter_name == "omnigent" then
+      -- The chosen agent is cached and read back by the omnigent adapter function
+      -- at spawn (like `_dvsc.pending`, but the cache IS the source of truth since
+      -- the selection is just the agent name).
+      return _omnigent_select_agent(opts.force_pick or false, function()
+        tab_chat_open_or_toggle({ adapter = "omnigent" })
+      end)
+    end
     return tab_chat_open_or_toggle({ adapter = adapter_name })
   end
 
@@ -1351,6 +1429,9 @@ local function tab_chat_set_adapter(adapter_name, opts)
       apply(nil)
       _direct_apply_pending(chat)
     end)
+  end
+  if adapter_name == "omnigent" then
+    return _omnigent_select_agent(opts.force_pick or false, function() apply(nil) end)
   end
   apply(nil)
 end
@@ -2148,10 +2229,14 @@ return {
                 formatted_name = "Omnigent",
                 url = vim.env.OMNIGENT_URL or "http://127.0.0.1:6767",
                 defaults = {
-                  -- claude-sdk harness: streams output_text (renders in the
-                  -- buffer) and surfaces elicitations. A *-native-ui agent
-                  -- completes turns but streams no text to CodeCompanion.
-                  agent = "polly",
+                  -- Agent is chosen via the launch-time picker (<leader>aM reuses
+                  -- the remembered agent; <leader>aA / <leader>aG re-pick) and
+                  -- cached in OMNIGENT_AGENT_CACHE_PATH, read back here at spawn.
+                  -- Falls back to `polly` (a claude-sdk agent: streams output_text
+                  -- + surfaces elicitations) before any pick. The agent is the
+                  -- session harness and is immutable after create; the model stays
+                  -- switchable in-chat via /model.
+                  agent = _omnigent_read_agent_cache().agent or "polly",
                   host = "auto", -- fail-closed FQDN match to this machine
                   workspace = "auto", -- cwd, only when the resolved host is local
                   -- Correlation identity for external mappers (the Orchest
@@ -3028,10 +3113,11 @@ Placement guidance (overrides the base prompt where they conflict):
       { "<leader>aD", function() tab_chat_set_adapter("devmate",          { clear = true }) end, desc = "CodeCompanion Chat (Devmate, fresh)" },
       { "<leader>aS", function() tab_chat_set_adapter("dvsc_core",        { clear = true }) end, desc = "CodeCompanion Chat (Dvsc Core, fresh)" },
       { "<leader>ag", function() tab_chat_set_adapter("dvsc_core_broker", { clear = true, force_pick = false }) end, desc = "Dvsc Chat via broker (last config, fresh)" },
-      { "<leader>aG", function() tab_chat_pick_agent_and_set({ clear = true, force_pick = true }) end, desc = "Pick agent (dvsc / direct Claude / direct Codex), fresh" },
+      { "<leader>aG", function() tab_chat_pick_agent_and_set({ clear = true, force_pick = true }) end, desc = "Pick agent (dvsc / direct Claude / direct Codex / omnigent), fresh" },
       { "<leader>aC", function() tab_chat_set_adapter("claude_broker",    { clear = true }) end, desc = "Claude Chat via broker (direct, fresh)" },
       { "<leader>aO", function() tab_chat_set_adapter("codex_broker",     { clear = true }) end, desc = "Codex Chat via broker (fresh)" },
-      { "<leader>aM", function() tab_chat_set_adapter("omnigent",         { clear = true }) end, desc = "CodeCompanion Chat (Omnigent, fresh)" },
+      { "<leader>aM", function() tab_chat_set_adapter("omnigent",         { clear = true }) end, desc = "CodeCompanion Chat (Omnigent, remembered agent)" },
+      { "<leader>aA", function() tab_chat_set_adapter("omnigent",         { clear = true, force_pick = true }) end, desc = "CodeCompanion Chat (Omnigent, pick agent)" },
       { "<leader>amc", function() omnigent_continue() end, desc = "Omnigent: resume durable session (cwd-scoped)" },
       { "<leader>ak", tab_chat_compact, desc = "CodeCompanion: compact current chat (dvsc RPC or agent /compact)" },
       { "<leader>aZ", function() tab_chat_full_refresh() end, desc = "CodeCompanion: full refresh (close + reopen, pick agent + model + config)" },
