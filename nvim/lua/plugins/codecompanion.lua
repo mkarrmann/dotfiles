@@ -936,16 +936,23 @@ end
 -- cached last-choice reused on the normal launch, re-prompted on force. Two
 -- differences, both because of what omnigent exposes: the catalog is fetched
 -- live from the server (GET /v1/agents) rather than hardcoded -- there is no
--- drift-prone entitlement list to mirror -- and the choice is the session's
--- agent, which is IMMUTABLE after create, so this is a launch-time pick only.
--- ALL live agents are offered, including the `*-native` harnesses (Claude Code =
--- claude-native, Codex = codex-native, cursor, ...): omnigent forwards their
--- terminal output as `external_output_text_delta`, which the server republishes on
--- the stream as `response.output_text.delta` (server/API.md), so they render in
--- the chat buffer just like the claude-sdk agents.
+-- drift-prone entitlement list to mirror -- and the pick is a triple
+-- {agent, model, effort}: the agent is the session harness (IMMUTABLE after
+-- create, so launch-time only), while model + effort are the initial overrides
+-- passed at session create and stay switchable mid-session via <leader>ao.
+-- Only SDK/streaming harnesses are offered. Native harnesses (`*-native`: Claude
+-- Code = claude-native, Codex = codex-native, cursor, ...) boot a vendor TUI in a
+-- tmux terminal on the runner and send their output THERE, not to the chat stream
+-- (verified empirically: a claude-native-ui turn renders nothing in the buffer,
+-- and codex-native-ui fails to start) -- they're the wrong abstraction for a chat
+-- surface. Use a terminal-attach flow for native harnesses instead.
 local OMNIGENT_AGENT_CACHE_PATH = vim.fn.stdpath("data") .. "/codecompanion-omnigent-agent.json"
 
-local function _omnigent_read_agent_cache()
+-- The launch selection is a triple {agent, model?, effort?} (mirroring how the
+-- dvsc picker caches {mode, model, effort}). A nil model/effort means "no
+-- override" -- the agent spec's own model/effort applies. Read back by the
+-- omnigent adapter at spawn and by <leader>aM's cached-reuse path.
+local function _omnigent_read_selection()
   local f = io.open(OMNIGENT_AGENT_CACHE_PATH, "r")
   if not f then return {} end
   local body = f:read("*a")
@@ -954,39 +961,171 @@ local function _omnigent_read_agent_cache()
   return (ok and type(t) == "table") and t or {}
 end
 
-local function _omnigent_write_agent_cache(agent)
+local function _omnigent_write_selection(sel)
   local f = io.open(OMNIGENT_AGENT_CACHE_PATH, "w")
   if not f then return end
-  f:write(vim.fn.json_encode({ agent = agent }))
+  f:write(vim.fn.json_encode({ agent = sel.agent, model = sel.model, effort = sel.effort }))
   f:close()
 end
 
--- Live agent catalog: { { name, harness, description }, ... } or nil, err.
+-- A harness whose output streams into the chat buffer. SDK/subprocess harnesses
+-- (claude-sdk, codex, pi, openai-agents, ...) run the vendor model directly and
+-- emit response.output_text deltas; native harnesses (`*-native`) run a terminal
+-- TUI and don't, so they're excluded from a chat picker.
+local function _omnigent_is_chat_harness(harness)
+  return not (type(harness) == "string" and harness:match("%-native$"))
+end
+
+-- Live agent catalog, filtered to chat-capable (SDK) harnesses:
+-- { { id, name, harness, description }, ... } or nil, err.
 local function _omnigent_pickable_agents()
   local agents, err = _omnigent_client():list_agents()
   if not agents then return nil, err end
   local out = {}
   for _, a in ipairs(agents) do
-    if a.name then
-      out[#out + 1] = { name = a.name, harness = a.harness, description = a.description }
+    if a.name and _omnigent_is_chat_harness(a.harness) then
+      out[#out + 1] = { id = a.id, name = a.name, harness = a.harness, description = a.description }
     end
   end
   return out
 end
 
--- Pick an omnigent agent (interactive or from cache), then invoke cb(agent_name).
--- `force=true` (the pick keymaps) always re-prompts. Mirrors `_direct_select`.
-local function _omnigent_select_agent(force, cb)
-  if not force then
-    local cached = _omnigent_read_agent_cache().agent
-    if cached then return cb(cached) end
+-- ── Omnigent model + reasoning-effort catalog ──────────────────────────────
+--
+-- omnigent runs the REAL vendor CLIs, so a model override is the vendor's own
+-- canonical id (bare `claude-opus-4-8` / `gpt-5-4`); the server mechanically
+-- localizes it to the Databricks gateway or a vendor-direct provider
+-- (omnigent/model_override.py) and validates only charset + family (a
+-- claude-family harness demands an id containing "claude"; codex-family demands
+-- "gpt"/"codex"). There is NO models endpoint, so -- unlike the drift-prone
+-- hardcoded DVSC_MODELS mirror -- this is just a short curated preset list per
+-- family, always paired with a free-text "custom…" escape and a "default" (no
+-- override) option, so a missing/renamed id is never a dead end.
+--
+-- Reasoning-effort values are the per-provider families from
+-- omnigent/reasoning_effort.py. They deliberately differ from the DVSC
+-- EFFORT_OPTIONS_BY_KIND: claude has `max`, codex has `none`/`minimal`, and all
+-- are lowercase. Listed in omnigent's canonical display order.
+local OMNIGENT_EFFORTS = {
+  claude            = { "low", "medium", "high", "xhigh", "max" },
+  codex             = { "none", "minimal", "low", "medium", "high", "xhigh" },
+  ["openai-agents"] = { "none", "minimal", "low", "medium", "high", "xhigh" },
+  antigravity       = { "low", "medium", "high" },
+  copilot           = { "low", "medium", "high", "xhigh" },
+}
+-- Fallback for a harness whose family we don't recognise: offer every level and
+-- let the server reject an unsupported one with its own clear message.
+local OMNIGENT_EFFORT_ORDER = { "none", "minimal", "low", "medium", "high", "xhigh", "max" }
+
+-- Curated presets only; "default" + "custom…" are added by the picker. Families
+-- without a preset list (pi, cursor, multi-model harnesses, ...) fall back to
+-- custom-only, which is always valid.
+local OMNIGENT_MODELS = {
+  claude = { "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-7" },
+  codex  = { "gpt-5-4", "gpt-5-3-codex", "gpt-5-5" },
+}
+
+-- Classify a harness id into a model/effort family, mirroring the vendor-token
+-- rules in omnigent/model_override.py (model_family_mismatch).
+local function _omnigent_family_for_harness(harness)
+  if type(harness) ~= "string" then return nil end
+  local h = harness:lower()
+  if h:find("claude", 1, true) then return "claude" end
+  if h:find("codex", 1, true) then return "codex" end
+  if h:find("openai-agents", 1, true) then return "openai-agents" end
+  if h:find("antigravity", 1, true) or h:find("gemini", 1, true) or h == "agy" then return "antigravity" end
+  if h:find("copilot", 1, true) then return "copilot" end
+  return nil
+end
+
+-- Best-effort family from a model id (used mid-session, where the harness isn't
+-- on the session object but the current model usually is).
+local function _omnigent_family_for_model(model)
+  if type(model) ~= "string" then return nil end
+  local m = model:lower()
+  if m:find("claude", 1, true) then return "claude" end
+  if m:find("gpt", 1, true) or m:find("codex", 1, true) then return "codex" end
+  return nil
+end
+
+-- Model picker for a family. `include_default` adds a "no override" choice.
+-- Invokes cb(model) with a string id, or cb(nil) for the default choice; never
+-- called on cancel.
+local function _omnigent_pick_model(family, include_default, cb)
+  local items = {}
+  if include_default then
+    items[#items + 1] = { label = "default (agent's model)", is_default = true }
   end
+  for _, id in ipairs(OMNIGENT_MODELS[family] or {}) do
+    items[#items + 1] = { label = id, model = id }
+  end
+  items[#items + 1] = { label = "custom…", is_custom = true }
+  vim.ui.select(items, {
+    prompt = "Model:",
+    format_item = function(it) return it.label end,
+  }, function(choice)
+    if choice == nil then return end
+    if choice.is_default then return cb(nil) end
+    if choice.is_custom then
+      return vim.ui.input({ prompt = "Model id: " }, function(input)
+        input = input and vim.trim(input)
+        if not input or input == "" then return end
+        cb(input)
+      end)
+    end
+    cb(choice.model)
+  end)
+end
+
+-- Effort picker for a family. Same contract as _omnigent_pick_model.
+local function _omnigent_pick_effort(family, include_default, cb)
+  local values = OMNIGENT_EFFORTS[family] or OMNIGENT_EFFORT_ORDER
+  local items = {}
+  if include_default then
+    items[#items + 1] = { label = "default (agent's effort)", is_default = true }
+  end
+  for _, e in ipairs(values) do
+    items[#items + 1] = { label = e, effort = e }
+  end
+  vim.ui.select(items, {
+    prompt = "Thinking effort:",
+    format_item = function(it) return it.label end,
+  }, function(choice)
+    if choice == nil then return end
+    if choice.is_default then return cb(nil) end
+    cb(choice.effort)
+  end)
+end
+
+-- Launch-time picker: agent → model → effort, caching the triple. `force=true`
+-- (the pick keymaps) always re-prompts; otherwise a still-valid cached agent is
+-- reused verbatim (the whole remembered selection, model + effort included). The
+-- chosen model/effort are read back from the cache by the omnigent adapter at
+-- spawn (defaults.model_override / .reasoning_effort) and applied at session
+-- create. `cb` is invoked with no args once the selection is cached. Mirrors
+-- `_dvsc_select` (harness → model → effort).
+local function _omnigent_select(force, cb)
   local agents, err = _omnigent_pickable_agents()
   if not agents then
     return vim.notify("omnigent: failed to list agents: " .. (err and err.message or "?"), vim.log.levels.ERROR)
   end
   if #agents == 0 then
-    return vim.notify("omnigent: no agents available", vim.log.levels.WARN)
+    return vim.notify(
+      "omnigent: no streaming (SDK) agents available — register a claude-sdk / codex agent "
+        .. "(native-ui agents can't render in a chat)",
+      vim.log.levels.WARN
+    )
+  end
+  -- Reuse the cached choice only if its agent is still a valid chat-capable
+  -- agent: a previously-cached native agent must not silently relaunch into a
+  -- dead end.
+  if not force then
+    local cached = _omnigent_read_selection()
+    if cached.agent then
+      for _, a in ipairs(agents) do
+        if a.name == cached.agent then return cb() end
+      end
+    end
   end
   vim.ui.select(agents, {
     prompt = "Omnigent agent:",
@@ -996,8 +1135,13 @@ local function _omnigent_select_agent(force, cb)
     end,
   }, function(choice)
     if choice == nil then return end
-    _omnigent_write_agent_cache(choice.name)
-    cb(choice.name)
+    local family = _omnigent_family_for_harness(choice.harness)
+    _omnigent_pick_model(family, true, function(model)
+      _omnigent_pick_effort(family, true, function(effort)
+        _omnigent_write_selection({ agent = choice.name, model = model, effort = effort })
+        cb()
+      end)
+    end)
   end)
 end
 
@@ -1287,7 +1431,7 @@ local AGENT_PATHS = {
   { label = "dvsc-core (native / claude / codex / metacode)", adapter = "dvsc_core_broker" },
   { label = "Claude (direct via claude-agent-acp)",           adapter = "claude_broker" },
   { label = "Codex (direct via codex-acp)",                   adapter = "codex_broker" },
-  { label = "Omnigent (server-owned session, pick agent)",    adapter = "omnigent" },
+  { label = "Omnigent (server-owned session, pick agent+model+effort)", adapter = "omnigent" },
 }
 
 -- Prime per-adapter spawn state for adapters that read `_dvsc.pending`
@@ -1364,7 +1508,7 @@ local function tab_chat_set_adapter(adapter_name, opts)
       -- The chosen agent is cached and read back by the omnigent adapter function
       -- at spawn (like `_dvsc.pending`, but the cache IS the source of truth since
       -- the selection is just the agent name).
-      return _omnigent_select_agent(opts.force_pick or false, function()
+      return _omnigent_select(opts.force_pick or false, function()
         tab_chat_open_or_toggle({ adapter = "omnigent" })
       end)
     end
@@ -1433,7 +1577,7 @@ local function tab_chat_set_adapter(adapter_name, opts)
     end)
   end
   if adapter_name == "omnigent" then
-    return _omnigent_select_agent(opts.force_pick or false, function() apply(nil) end)
+    return _omnigent_select(opts.force_pick or false, function() apply(nil) end)
   end
   apply(nil)
 end
@@ -1481,6 +1625,72 @@ local function tab_chat_full_refresh()
   end)
 end
 
+-- ── Omnigent live session: change model / effort mid-session ────────────────
+--
+-- The omnigent analog of `tab_chat_pick_option`'s ACP path. omnigent makes both
+-- model and reasoning effort live-mutable via PATCH /v1/sessions/{id}
+-- (Session:set_model / Session:set_config), so -- unlike the dvsc/direct claude
+-- path, where thinking is baked at session/new and needs a full restart -- this
+-- is an in-place change, no relaunch. Concrete values only; to reset to the
+-- agent's default, relaunch via <leader>aA and pick "default".
+
+-- Resolve the model/effort family for a live omnigent chat: prefer the current
+-- model's vendor token, else the session agent's harness (looked up by id).
+local function _omnigent_session_family(session)
+  local fam = _omnigent_family_for_model(session.model_override or session.model)
+  if fam then return fam end
+  if session.agent_id then
+    local agents = _omnigent_pickable_agents()
+    if agents then
+      for _, a in ipairs(agents) do
+        if a.id == session.agent_id then
+          return _omnigent_family_for_harness(a.harness)
+        end
+      end
+    end
+  end
+  return nil
+end
+
+local function _omnigent_pick_live_option(chat)
+  local session = chat.omnigent_session
+  if not session or not session.session_id then
+    return vim.notify("Omnigent chat has no live session yet.", vim.log.levels.WARN)
+  end
+  local family = _omnigent_session_family(session)
+  local items = {
+    { label = "Model  (current: " .. tostring(session.model_override or session.model or "default") .. ")", kind = "model" },
+    { label = "Effort (current: " .. tostring(session.reasoning_effort or "default") .. ")", kind = "effort" },
+  }
+  vim.ui.select(items, {
+    prompt = "Omnigent session:",
+    format_item = function(it) return it.label end,
+  }, function(choice)
+    if choice == nil then return end
+    if choice.kind == "model" then
+      _omnigent_pick_model(family, false, function(model)
+        local ok, perr = session:set_model(model)
+        if ok then
+          pcall(function() chat:update_metadata() end)
+          vim.notify("omnigent model → " .. model, vim.log.levels.INFO)
+        else
+          vim.notify("omnigent: failed to set model: " .. (perr and perr.message or "?"), vim.log.levels.ERROR)
+        end
+      end)
+    else
+      _omnigent_pick_effort(family, false, function(effort)
+        local ok, perr = session:set_config("reasoning_effort", effort)
+        if ok then
+          pcall(function() chat:update_metadata() end)
+          vim.notify("omnigent effort → " .. effort, vim.log.levels.INFO)
+        else
+          vim.notify("omnigent: failed to set effort: " .. (perr and perr.message or "?"), vim.log.levels.ERROR)
+        end
+      end)
+    end
+  end)
+end
+
 -- Interactive picker for the current chat's live ACP session config
 -- options. Reads `chat.acp_connection:get_config_options()` — the
 -- discrete-choice settings the running agent advertises (for dvsc:
@@ -1510,6 +1720,9 @@ local function tab_chat_pick_option()
     and require("codecompanion").buf_get_chat(bufnr)
   if not chat then
     return vim.notify("No CodeCompanion chat in this tab.", vim.log.levels.WARN)
+  end
+  if chat.adapter and chat.adapter.type == "omnigent" then
+    return _omnigent_pick_live_option(chat)
   end
   if not chat.adapter or chat.adapter.type ~= "acp" or not chat.acp_connection then
     return vim.notify("Current chat has no live ACP connection.", vim.log.levels.WARN)
@@ -2226,19 +2439,25 @@ return {
           -- and routing "default" through the top-level extend() misfires to http.
           omnigent = {
             omnigent = function()
+              local sel = _omnigent_read_selection()
               return require("codecompanion.adapters.omnigent").extend("default", {
                 name = "omnigent",
                 formatted_name = "Omnigent",
                 url = vim.env.OMNIGENT_URL or "http://127.0.0.1:6767",
                 defaults = {
-                  -- Agent is chosen via the launch-time picker (<leader>aM reuses
-                  -- the remembered agent; <leader>aA / <leader>aG re-pick) and
-                  -- cached in OMNIGENT_AGENT_CACHE_PATH, read back here at spawn.
-                  -- Falls back to `polly` (a claude-sdk agent: streams output_text
-                  -- + surfaces elicitations) before any pick. The agent is the
-                  -- session harness and is immutable after create; the model stays
-                  -- switchable in-chat via /model.
-                  agent = _omnigent_read_agent_cache().agent or "polly",
+                  -- Agent + model + effort come from the launch-time picker
+                  -- (<leader>aM reuses the remembered selection; <leader>aA /
+                  -- <leader>aG re-pick), cached in OMNIGENT_AGENT_CACHE_PATH and
+                  -- read back here at spawn. Agent falls back to `polly` (a
+                  -- claude-sdk agent: streams output_text + surfaces
+                  -- elicitations) before any pick; it is the session harness and
+                  -- is immutable after create. model_override / reasoning_effort
+                  -- are nil unless picked (=> the agent spec's own defaults
+                  -- apply); Session:create forwards them at create, and both stay
+                  -- switchable mid-session via <leader>ao.
+                  agent = sel.agent or "polly",
+                  model_override = sel.model,
+                  reasoning_effort = sel.effort,
                   host = "auto", -- fail-closed FQDN match to this machine
                   workspace = "auto", -- cwd, only when the resolved host is local
                   -- Correlation identity for external mappers (the Orchest
@@ -3118,12 +3337,12 @@ Placement guidance (overrides the base prompt where they conflict):
       { "<leader>aG", function() tab_chat_pick_agent_and_set({ clear = true, force_pick = true }) end, desc = "Pick agent (dvsc / direct Claude / direct Codex / omnigent), fresh" },
       { "<leader>aC", function() tab_chat_set_adapter("claude_broker",    { clear = true }) end, desc = "Claude Chat via broker (direct, fresh)" },
       { "<leader>aO", function() tab_chat_set_adapter("codex_broker",     { clear = true }) end, desc = "Codex Chat via broker (fresh)" },
-      { "<leader>aM", function() tab_chat_set_adapter("omnigent",         { clear = true }) end, desc = "CodeCompanion Chat (Omnigent, remembered agent)" },
-      { "<leader>aA", function() tab_chat_set_adapter("omnigent",         { clear = true, force_pick = true }) end, desc = "CodeCompanion Chat (Omnigent, pick agent)" },
+      { "<leader>aM", function() tab_chat_set_adapter("omnigent",         { clear = true }) end, desc = "CodeCompanion Chat (Omnigent, remembered agent+model+effort)" },
+      { "<leader>aA", function() tab_chat_set_adapter("omnigent",         { clear = true, force_pick = true }) end, desc = "CodeCompanion Chat (Omnigent, pick agent+model+effort)" },
       { "<leader>amc", function() omnigent_continue() end, desc = "Omnigent: resume durable session (cwd-scoped)" },
       { "<leader>ak", tab_chat_compact, desc = "CodeCompanion: compact current chat (dvsc RPC or agent /compact)" },
       { "<leader>aZ", function() tab_chat_full_refresh() end, desc = "CodeCompanion: full refresh (close + reopen, pick agent + model + config)" },
-      { "<leader>ao", tab_chat_pick_option, desc = "CodeCompanion: change live ACP session config option" },
+      { "<leader>ao", tab_chat_pick_option, desc = "CodeCompanion: change live session option (ACP config, or Omnigent model/effort)" },
       { "<leader>aQ", function()
           local bufnr = vim.t.codecompanion_chat_bufnr
           local chat = bufnr
