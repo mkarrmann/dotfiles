@@ -234,7 +234,9 @@ local function collect_repos_from_tool_call(chat_bufnr, tool_call)
 	-- when it reports one, not nvim's cwd.
 	local cwd = type(ri) == "table" and type(ri.cwd) == "string" and ri.cwd ~= "" and ri.cwd or nil
 	if type(ri) == "table" then
-		for _, k in ipairs({ "file_path", "filePath", "abs_path", "absPath", "path", "filename", "cwd" }) do
+		local PATH_KEYS =
+			{ "file_path", "filePath", "abs_path", "absPath", "path", "filename", "notebook_path", "notebookPath", "cwd" }
+		for _, k in ipairs(PATH_KEYS) do
 			if type(ri[k]) == "string" then
 				note_repo_for_path(chat_bufnr, ri[k], cwd)
 			end
@@ -705,6 +707,36 @@ function M.setup()
 			if bufnr then
 				reconcile_turn(bufnr)
 			end
+		end,
+	})
+
+	-- Omnigent edits run server-side, so none of the three patches above fire (no
+	-- ACP fs/write, no HTTP insert_edit, and OmnigentHandler is its own class). But
+	-- the handler emits CodeCompanionOmnigentToolCall per committed tool call, and
+	-- its RequestStarted/Finished already drive new_turn/reconcile_turn. Routing the
+	-- tool call's paths through the same collector the ACP path uses populates
+	-- _turn_paths so turn-end VCS reconciliation attributes the edits. `arguments`
+	-- is a JSON string of the tool params (file_path / command / ...) -- i.e.
+	-- omnigent's equivalent of an ACP tool call's `rawInput`.
+	vim.api.nvim_create_autocmd("User", {
+		pattern = "CodeCompanionOmnigentToolCall",
+		group = lifecycle_group,
+		callback = function(args)
+			local data = args.data
+			local chat_bufnr = data and data.bufnr
+			local item = data and data.item
+			if not chat_bufnr or type(item) ~= "table" then
+				return
+			end
+			local raw = item.arguments
+			if type(raw) == "string" then
+				local ok, decoded = pcall(vim.json.decode, raw)
+				raw = (ok and type(decoded) == "table") and decoded or nil
+			end
+			if type(raw) ~= "table" then
+				return
+			end
+			pcall(collect_repos_from_tool_call, chat_bufnr, { rawInput = raw, title = item.name })
 		end,
 	})
 
