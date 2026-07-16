@@ -15,6 +15,7 @@ return {
 				"rust-analyzer@meta",
 				"linttool@meta",
 				"buck2@meta",
+				"ids@meta",
 				"hhvm",
 			})
 

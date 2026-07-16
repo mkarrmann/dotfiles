@@ -17,6 +17,7 @@ vim.lsp.enable({
 	"pyrefly@meta",
 	"buck2@meta",
 	"linttool@meta",
+	"ids@meta",
 })
 
 vim.api.nvim_create_autocmd("User", {
