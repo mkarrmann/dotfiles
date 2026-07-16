@@ -10,7 +10,7 @@ return {
 
 			vim.lsp.enable({
 				"cppls@meta",
-				"fb-pyright-ls@meta",
+				"pyrefly@meta",
 				"thriftlsp@meta",
 				"rust-analyzer@meta",
 				"linttool@meta",

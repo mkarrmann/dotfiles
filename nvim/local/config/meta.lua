@@ -14,8 +14,7 @@ vim.g.obsidian_vault = require("lib.agent-session").resolve_vault_root()
 
 vim.lsp.enable({
 	"cppls@meta",
-	"fb-pyright-ls@meta",
-	"pyre@meta",
+	"pyrefly@meta",
 	"buck2@meta",
 	"linttool@meta",
 })
