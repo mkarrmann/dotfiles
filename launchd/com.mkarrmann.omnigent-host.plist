@@ -35,6 +35,17 @@
       <string>/Users/mkarrmann/bin:/Users/mkarrmann/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
       <key>OMNIGENT_PORT</key>
       <string>6767</string>
+      <!-- Codex reaches Meta's AI gateway through the local x2p proxy over mTLS.
+           launchd does not inherit the interactive shell's exports (~/.zshrc), so
+           a host-spawned codex subprocess needs these explicitly or it can't
+           route (HTTP 421 "no upstream configured for this host"). Claude
+           (claude-sdk) is unaffected — it auths via api-key-helper. -->
+      <key>X2P_AGENT_PROXY_ADDRESS</key>
+      <string>localhost:10054</string>
+      <key>THRIFT_TLS_CL_CERT_PATH</key>
+      <string>/var/facebook/credentials/mkarrmann/x509/mkarrmann.pem</string>
+      <key>THRIFT_TLS_CL_KEY_PATH</key>
+      <string>/var/facebook/credentials/mkarrmann/x509/mkarrmann.pem</string>
     </dict>
 
     <key>StandardOutPath</key>
