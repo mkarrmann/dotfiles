@@ -496,6 +496,15 @@ if ! command -v nori &>/dev/null; then
         || echo "WARNING: nori install failed" >&2
 fi
 
+# Omnigent: register the dvsc-core ACP agent so it shows in the CodeCompanion
+# omnigent picker (<leader>aM / <leader>aA), alongside polly/debby. Idempotent
+# and self-skips where omnigent isn't installed; merges the acp: block of
+# ~/.omnigent/config.yaml (preserving machine-specific host:/server:) and
+# registers the dvsc builtin without restarting a running server. See
+# bin/omnigent-dvsc-ensure and omnigent_config/agents/dvsc/.
+"$DOTFILES_DIR/bin/omnigent-dvsc-ensure" \
+    || echo "WARNING: omnigent-dvsc-ensure failed (dvsc agent may not appear in the picker)" >&2
+
 if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
     KEEP_ZSHRC=yes sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
     echo "installed oh-my-zsh"

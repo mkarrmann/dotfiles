@@ -1,0 +1,19 @@
+spec_version: 1
+name: dvsc
+description: >-
+  Meta devmate (dm-core), driven over the Agent Client Protocol by the
+  dvsc-core-acp wrapper and exposed through Omnigent's generic `acp` harness.
+  Registered as a builtin so it shows up in the CodeCompanion omnigent picker
+  alongside polly/debby. The model is selectable at launch and mid-session (it
+  rides the ACP session/new `model` field → the wrapper's lowest-precedence
+  model layer); mode and reasoning effort use dvsc-core's own defaults, since
+  the generic ACP harness has no channel for them.
+
+# `acp:dvsc-core` resolves to the `dvsc-core` entry in the `acp:` block of
+# ~/.omnigent/config.yaml (added by `omnigent-dvsc-ensure`), which points at
+# ~/bin/dvsc-core-acp. The wrapper owns its own system prompt and tool loop, so
+# this spec declares no `prompt:` — dvsc-core governs behavior end to end.
+executor:
+  type: omnigent
+  config:
+    harness: acp:dvsc-core

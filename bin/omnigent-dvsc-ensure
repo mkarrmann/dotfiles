@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+# omnigent-dvsc-ensure — make Meta's dvsc-core (devmate) available as an
+# Omnigent agent, so it shows up in the CodeCompanion omnigent picker
+# (<leader>aM / <leader>aA) exactly like polly/debby.
+#
+# Idempotent and portable: safe to re-run, and safe to run on any machine after
+# `init.sh` (it self-skips where omnigent isn't installed). Wired into init.sh.
+#
+# It does two things, each a no-op when already satisfied:
+#
+#   1. Registers the `dvsc-core` command in the `acp:` block of
+#      ~/.omnigent/config.yaml (merged in place with omnigent's own pyyaml, so
+#      machine-specific host:/server: and any other acp agents are preserved).
+#      `acp:dvsc-core` is the harness id the dvsc agent spec binds to.
+#
+#   2. Pre-registers the dotfiles `dvsc` agent spec as an Omnigent builtin (a
+#      `session_id IS NULL` row in agent_store) so GET /v1/agents lists it. The
+#      managed `omnigent server start` has no `--agent` hook, so we register by
+#      briefly booting a throwaway server (a free port, the SAME chat.db) with
+#      `--agent`; it writes the builtin row + bundle, then exits. Because
+#      GET /v1/agents is a live DB query, an already-running managed server
+#      picks the new agent up on its next request — no restart, live sessions
+#      untouched. The row persists in chat.db across future restarts.
+#
+# Env overrides: OMNIGENT_BIN, OMNIGENT_REPO, DOTFILES_DIR, OMNIGENT_DATA_DIR.
+set -euo pipefail
+
+log() { printf '[dvsc-ensure] %s\n' "$*"; }
+
+DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
+OMNIGENT_BIN="${OMNIGENT_BIN:-$HOME/.local/bin/omnigent}"
+command -v "$OMNIGENT_BIN" >/dev/null 2>&1 || OMNIGENT_BIN="omnigent"
+
+# omnigent is installed as a prebuilt uv *tool* (a rebuild from the repo is
+# blocked on locked-down hosts). Use that tool's interpreter for the YAML merge:
+# it is guaranteed to have pyyaml, whereas the system python3 may not.
+_tools_dir="$(uv tool dir 2>/dev/null || echo "$HOME/.local/share/uv/tools")"
+OMNIGENT_PY="${OMNIGENT_PY:-$_tools_dir/omnigent/bin/python3}"
+
+SPEC_DIR="$DOTFILES/omnigent_config/agents/dvsc"
+DVSC_CMD="$HOME/bin/dvsc-core-acp"
+DATA_DIR="${OMNIGENT_DATA_DIR:-${OMNIGENT_CONFIG_HOME:-$HOME/.omnigent}}"
+CONFIG="$DATA_DIR/config.yaml"
+
+# Skip cleanly on machines without a usable omnigent install.
+if ! command -v "$OMNIGENT_BIN" >/dev/null 2>&1; then
+  log "omnigent not installed; skipping"
+  exit 0
+fi
+if [ ! -x "$OMNIGENT_PY" ]; then
+  log "omnigent tool python not found at $OMNIGENT_PY; skipping"
+  exit 0
+fi
+if [ ! -d "$SPEC_DIR" ]; then
+  log "agent spec missing at $SPEC_DIR; skipping"
+  exit 0
+fi
+
+# ── 1. Merge the dvsc-core acp agent into config.yaml (idempotent) ───────────
+# Uses the omnigent tool's interpreter (pyyaml present). Preserves every other
+# key and acp agent.
+"$OMNIGENT_PY" - "$CONFIG" "$DVSC_CMD" <<'PY'
+import os
+import sys
+
+import yaml
+
+path, cmd = sys.argv[1], sys.argv[2]
+cfg = {}
+if os.path.exists(path):
+    with open(path) as f:
+        cfg = yaml.safe_load(f) or {}
+
+acp = cfg.setdefault("acp", {})
+if not isinstance(acp, dict):
+    acp = {}
+    cfg["acp"] = acp
+agents = acp.setdefault("agents", [])
+if not isinstance(agents, list):
+    agents = []
+    acp["agents"] = agents
+
+entry = {"name": "dvsc-core", "command": cmd, "send_model": True}
+for i, a in enumerate(agents):
+    if isinstance(a, dict) and a.get("name") == "dvsc-core":
+        if a == entry:
+            print("[dvsc-ensure] config.yaml: dvsc-core acp entry already present")
+        else:
+            agents[i] = entry
+            print("[dvsc-ensure] config.yaml: updated dvsc-core acp entry")
+        break
+else:
+    agents.append(entry)
+    print("[dvsc-ensure] config.yaml: added dvsc-core acp entry")
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, "w") as f:
+    yaml.safe_dump(cfg, f, sort_keys=False, default_flow_style=False)
+PY
+
+# ── 2. Register the dvsc builtin agent if missing ────────────────────────────
+status_json="$("$OMNIGENT_BIN" server status --json 2>/dev/null || echo '{}')"
+managed_url="$(printf '%s' "$status_json" \
+  | python3 -c 'import sys,json;print((json.load(sys.stdin) or {}).get("url") or "")' 2>/dev/null || true)"
+
+# True iff GET <url>/v1/agents lists an agent named "dvsc".
+has_dvsc() {
+  local url="$1"
+  [ -n "$url" ] || return 1
+  curl -sf --noproxy '*' --max-time 5 "$url/v1/agents?limit=1000" 2>/dev/null \
+    | python3 -c 'import sys,json
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if any(a.get("name")=="dvsc" for a in (d.get("data") or [])) else 1)'
+}
+
+if [ -n "$managed_url" ] && has_dvsc "$managed_url"; then
+  log "dvsc agent already registered ✓ ($managed_url)"
+  exit 0
+fi
+
+log "registering dvsc builtin (zero-downtime seed on a throwaway port)…"
+db="sqlite:///$DATA_DIR/chat.db"
+art="$DATA_DIR/artifacts"
+seed_port="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
+seed_url="http://127.0.0.1:$seed_port"
+seed_log="$(mktemp -t omnigent-dvsc-seed.XXXXXX.log)"
+
+"$OMNIGENT_BIN" server \
+    --agent "$SPEC_DIR" \
+    --host 127.0.0.1 --port "$seed_port" \
+    --database-uri "$db" --artifact-location "$art" \
+    >"$seed_log" 2>&1 &
+seed_pid=$!
+
+cleanup() {
+  kill "$seed_pid" 2>/dev/null || true
+  wait "$seed_pid" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# Wait for the seed server to boot and confirm it registered dvsc.
+registered=false
+for _ in $(seq 1 60); do
+  if ! kill -0 "$seed_pid" 2>/dev/null; then
+    log "seed server exited early; log follows:"; tail -n 20 "$seed_log" >&2; exit 1
+  fi
+  if has_dvsc "$seed_url"; then registered=true; break; fi
+  sleep 1
+done
+if [ "$registered" != true ]; then
+  log "timed out waiting for seed server to register dvsc; log follows:"
+  tail -n 20 "$seed_log" >&2
+  exit 1
+fi
+log "seed server registered dvsc into chat.db"
+
+cleanup
+trap - EXIT
+
+# Verify the running managed server (if any) now sees it via its live DB query.
+if [ -n "$managed_url" ]; then
+  ok=false
+  for _ in $(seq 1 10); do
+    if has_dvsc "$managed_url"; then ok=true; break; fi
+    sleep 1
+  done
+  if [ "$ok" = true ]; then
+    log "dvsc registered ✓ (visible on running server $managed_url)"
+  else
+    log "dvsc written to chat.db but not yet visible on $managed_url — restart it with 'omnigent server stop && omnigent server start' if it doesn't appear"
+  fi
+else
+  log "dvsc registered ✓ into chat.db (no server currently running; it'll appear when omnigent starts)"
+fi
+
+# Success: drop the seed log. Failure paths above exit before here, leaving it
+# in place for debugging.
+rm -f "$seed_log"
