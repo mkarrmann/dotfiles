@@ -1020,10 +1020,22 @@ local OMNIGENT_EFFORT_ORDER = { "none", "minimal", "low", "medium", "high", "xhi
 -- Curated presets only; "default" + "custom…" are added by the picker. Families
 -- without a preset list (pi, cursor, multi-model harnesses, ...) fall back to
 -- custom-only, which is always valid.
+--
+-- Codex via omnigent runs `codex app-server`, whose per-turn model must be one of
+-- codex's routed `MODEL_ROUTES` slugs or the AI gateway answers 421 ("no upstream
+-- configured for this host"): the model→host rewrite (azure-codex ->
+-- azure-codex-<model>) only fires for routed slugs. So these MUST be the exact
+-- dotted route ids (NOT gateway-style `gpt-5-5`), and `gpt-5.4` is omitted (its
+-- deployment is retired -> 404). Verified working end-to-end: gpt-5.5.
 local OMNIGENT_MODELS = {
   claude = { "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-7" },
-  codex  = { "gpt-5-4", "gpt-5-3-codex", "gpt-5-5" },
+  codex  = { "gpt-5.5", "gpt-5.3-codex", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna" },
 }
+
+-- Per-family "default" model. Codex's app-server default per-turn model is NOT a
+-- routed slug (-> 421), so "default" for codex must resolve to a routed model
+-- rather than "no override". claude-sdk's own default is fine, so it stays nil.
+local OMNIGENT_MODEL_DEFAULT = { codex = "gpt-5.5" }
 
 -- Classify a harness id into a model/effort family, mirroring the vendor-token
 -- rules in omnigent/model_override.py (model_family_mismatch).
@@ -1054,7 +1066,11 @@ end
 local function _omnigent_pick_model(family, include_default, cb)
   local items = {}
   if include_default then
-    items[#items + 1] = { label = "default (agent's model)", is_default = true }
+    local d = OMNIGENT_MODEL_DEFAULT[family]
+    items[#items + 1] = {
+      label = d and ("default (" .. d .. ")") or "default (agent's model)",
+      is_default = true,
+    }
   end
   for _, id in ipairs(OMNIGENT_MODELS[family] or {}) do
     items[#items + 1] = { label = id, model = id }
@@ -1065,7 +1081,7 @@ local function _omnigent_pick_model(family, include_default, cb)
     format_item = function(it) return it.label end,
   }, function(choice)
     if choice == nil then return end
-    if choice.is_default then return cb(nil) end
+    if choice.is_default then return cb(OMNIGENT_MODEL_DEFAULT[family]) end
     if choice.is_custom then
       return vim.ui.input({ prompt = "Model id: " }, function(input)
         input = input and vim.trim(input)
