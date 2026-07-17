@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Single source of truth for WHERE the Omnigent server lives.
+#
+# The server runs as an always-on systemd --user unit on the HUB devserver.
+# Everyone else dials it:
+#   - HUB devserver itself   -> loopback
+#   - other Meta devservers  -> HUB over the prod network (IPv6-routable)
+#   - Mac / off-corp         -> loopback (ET forward-tunnels Mac:6767 -> HUB:6767)
+#
+# Consumed by omnigent-host-run, init.sh (environment.d) and .shell_env. To move
+# the hub, change OMNIGENT_HUB_FQDN here and ConditionHost in
+# systemd/omnigent-server.service.
+set -euo pipefail
+
+OMNIGENT_HUB_FQDN="${OMNIGENT_HUB_FQDN:-devvm20365.cco0.facebook.com}"
+port="${OMNIGENT_PORT:-6767}"
+host="$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo unknown)"
+
+if [[ "$host" == "$OMNIGENT_HUB_FQDN" ]]; then
+  echo "http://127.0.0.1:${port}"
+elif [[ "$host" == *.facebook.com || "$host" == *.tfbnw.net ]]; then
+  echo "http://${OMNIGENT_HUB_FQDN}:${port}"
+else
+  # Mac / off-corp: reach the HUB through the ET forward tunnel on loopback.
+  echo "http://127.0.0.1:${port}"
+fi

@@ -79,6 +79,16 @@ sync_launchd_plist() {
   fi
 }
 
+retire_launchd_plist() {
+  local label="$1"
+  local dst="$HOME/Library/LaunchAgents/${label}.plist"
+  launchctl bootout "gui/$UID/$label" 2>/dev/null || true
+  if [[ -f "$dst" ]]; then
+    rm -f "$dst"
+    echo "retired $label"
+  fi
+}
+
 sync_link_subdirs() {
   local src_parent="$1"
   local dst_parent="$2"
@@ -430,12 +440,14 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   mkdir -p "$HOME/Library/LaunchAgents" \
            "$HOME/.local/state/acp-broker" \
            "$HOME/.local/state/persistence-server" \
-           "$HOME/.local/state/omnigent-server" \
            "$HOME/.local/state/omnigent-host"
   sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.persistence-server.plist"
   sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.acp-broker.plist"
-  sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-server.plist"
   sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-host.plist"
+  # The Omnigent server moved to the HUB devserver (systemd omnigent-server).
+  # Retire the old Mac-local server job so it can't bind :6767 and collide with
+  # the ET forward tunnel that now exposes the HUB server on Mac localhost.
+  retire_launchd_plist "com.mkarrmann.omnigent-server"
 fi
 
 # Linux-only: systemd --user units. Linger is expected to be enabled
@@ -443,6 +455,24 @@ fi
 if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   sync_link_dir "$DOTFILES_DIR/systemd" "$HOME/.config/systemd/user" "*.service"
   systemctl --user daemon-reload 2>/dev/null || true
+
+  # Pre-create state dirs: systemd opens StandardOutput=append: BEFORE creating
+  # StateDirectory=, so a unit's very first start fails 209/STDOUT if the dir is
+  # absent. Creating them up front makes first start idempotent.
+  mkdir -p "$HOME/.local/state/omnigent-server" \
+           "$HOME/.local/state/omnigent-host" \
+           "$HOME/.local/state/omnigent-prodnet"
+
+  # Omnigent server URL for systemd --user units (nvs@ nvim -> CodeCompanion,
+  # and omnigent-host). environment.d is read by the user manager at start;
+  # resolved per host so the HUB uses loopback and other devservers dial the HUB.
+  # Takes full effect after the next relogin / `systemctl --user daemon-reexec`.
+  mkdir -p "$HOME/.config/environment.d"
+  if [[ -x "$HOME/bin/omnigent-server-url" ]]; then
+    printf 'OMNIGENT_URL=%s\n' "$("$HOME/bin/omnigent-server-url" 2>/dev/null || echo http://127.0.0.1:6767)" \
+      > "$HOME/.config/environment.d/omnigent.conf"
+  fi
+
   shopt -s nullglob
   for unit_src in "$DOTFILES_DIR"/systemd/*.service; do
     unit_name="$(basename "$unit_src")"

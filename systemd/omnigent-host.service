@@ -1,0 +1,37 @@
+# Authoritative systemd --user unit for the Omnigent execution host.
+# Symlinked into ~/.config/systemd/user/ by ~/dotfiles/init.sh (Linux block).
+#
+#   systemctl --user restart omnigent-host
+#   omnigent host status --server "$(omnigent-server-url)" --json
+#
+# Registers THIS devserver as an execution host on the Omnigent server (so
+# agents' tool calls run where the code lives). The server URL is resolved per
+# host by ~/dotfiles/bin/omnigent-server-url: loopback on the HUB, the HUB's
+# FQDN over the prod network on other devservers. Runs on every devserver; the
+# HUB also runs omnigent-server.service.
+
+[Unit]
+Description=Omnigent execution host (registers this devserver with the hub server)
+After=network.target omnigent-server.service
+Wants=omnigent-server.service
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+Environment=OMNIGENT_PORT=6767
+# Agents (codex/claude) spawned by the host need the user's x509 for mTLS to
+# Meta's AI gateway; systemd --user does not inherit the login shell's exports.
+# NOTE: codex ALSO needs an x2p proxy (X2P_AGENT_PROXY_ADDRESS) which is not set
+# in this devserver's login shell either — add it here if codex egress fails
+# (claude uses api-key-helper and is unaffected).
+Environment=THRIFT_TLS_CL_CERT_PATH=/var/facebook/credentials/%u/x509/%u.pem
+Environment=THRIFT_TLS_CL_KEY_PATH=/var/facebook/credentials/%u/x509/%u.pem
+ExecStart=%h/bin/omnigent-host-run
+Restart=always
+RestartSec=5
+StateDirectory=omnigent-host
+StandardOutput=append:%S/omnigent-host/host.log
+StandardError=append:%S/omnigent-host/host.log
+
+[Install]
+WantedBy=default.target

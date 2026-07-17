@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Foreground Omnigent execution host for systemd (Type=simple). Registers THIS
+# machine as an execution host on the Omnigent server resolved by
+# omnigent-server-url, so agents' tool calls run where the code lives.
+set -euo pipefail
+
+if command -v omnigent-server-url >/dev/null 2>&1; then
+  url="$(omnigent-server-url)"
+elif [[ -x "$HOME/bin/omnigent-server-url" ]]; then
+  url="$("$HOME/bin/omnigent-server-url")"
+else
+  url="http://127.0.0.1:${OMNIGENT_PORT:-6767}"
+fi
+
+if command -v omnigent >/dev/null 2>&1; then
+  bin="$(command -v omnigent)"
+elif [[ -x "$HOME/.local/bin/omnigent" ]]; then
+  bin="$HOME/.local/bin/omnigent"
+else
+  echo "ERROR: omnigent not found on PATH or ~/.local/bin" >&2
+  exit 1
+fi
+
+exec "$bin" host --server "$url" --non-interactive

@@ -28,6 +28,17 @@ export PATH="$HOME/ob-headless:$PATH"
 
 export OBSIDIAN_VAULT="${OBSIDIAN_VAULT:-$HOME/obsidian}"
 
+# Omnigent server URL — resolved per host (see ~/dotfiles/bin/omnigent-server-url).
+# HUB serves locally; other devservers dial the HUB over the prod network; the
+# Mac reaches it through the ET forward tunnel on loopback.
+if [[ -z "${OMNIGENT_URL:-}" ]]; then
+  if command -v omnigent-server-url >/dev/null 2>&1; then
+    export OMNIGENT_URL="$(omnigent-server-url 2>/dev/null || echo http://127.0.0.1:6767)"
+  else
+    export OMNIGENT_URL="http://127.0.0.1:6767"
+  fi
+fi
+
 # Local env (not source-controlled)
 if [[ -f ~/.shell_env.local ]]; then
   source ~/.shell_env.local
