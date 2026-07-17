@@ -188,7 +188,7 @@ if [[ ! -f "$CLAUDE_SETTINGS" ]]; then
 fi
 tmp=$(jq '
   .permissions.defaultMode = "bypassPermissions" |
-  .model = "claude-opus-4-7" |
+  .model = "claude-opus-4-8" |
   .env |= ((. // {}) + {
     "DISABLE_AUTOUPDATER": "1",
     "MCP_TIMEOUT": "120000",
