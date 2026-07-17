@@ -19,13 +19,17 @@ Wants=omnigent-server.service
 Type=simple
 Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 Environment=OMNIGENT_PORT=6767
-# Agents (codex/claude) spawned by the host need the user's x509 for mTLS to
-# Meta's AI gateway; systemd --user does not inherit the login shell's exports.
-# NOTE: codex ALSO needs an x2p proxy (X2P_AGENT_PROXY_ADDRESS) which is not set
-# in this devserver's login shell either — add it here if codex egress fails
-# (claude uses api-key-helper and is unaffected).
+# Agents spawned by the host need env that systemd --user does NOT inherit from
+# the login shell:
+#  - x509 for mTLS to Meta's AI gateway (used by codex; claude uses api-key-helper).
+#  - CODEX_MANAGED_CONFIG_PATH=/dev/null: the system codex config at
+#    /etc/codex/managed_config.toml sets model_provider=responses without
+#    defining the provider, so codex fails at startup unless it's skipped
+#    (~/.localrc does this for interactive shells). No x2p proxy is needed here:
+#    unlike the Mac, this devserver is on-corp and reaches the gateway directly.
 Environment=THRIFT_TLS_CL_CERT_PATH=/var/facebook/credentials/%u/x509/%u.pem
 Environment=THRIFT_TLS_CL_KEY_PATH=/var/facebook/credentials/%u/x509/%u.pem
+Environment=CODEX_MANAGED_CONFIG_PATH=/dev/null
 ExecStart=%h/bin/omnigent-host-run
 Restart=always
 RestartSec=5
