@@ -1025,11 +1025,32 @@ local OMNIGENT_MODELS = {
   codex  = { "gpt-5-4", "gpt-5-3-codex", "gpt-5-5" },
 }
 
+-- dvsc (the `acp:dvsc-core` agent) runs Meta's dm-core, which speaks its OWN
+-- model ids (dot-notation, e.g. `claude-opus-4.8`) — NOT omnigent's vendor ids.
+-- Reuse the curated `DVSC_MODELS` catalog (already scoped to this user's
+-- entitlement, and the single source of truth shared with the broker picker) so
+-- the omnigent picker offers exactly what dm-core can run. The picked id rides
+-- session/new `model` → the wrapper's top-level-model fallback → dm-core.
+OMNIGENT_MODELS.dvsc = (function()
+  local ids = {}
+  for _, m in ipairs(DVSC_MODELS) do ids[#ids + 1] = m.id end
+  return ids
+end)()
+
+-- dvsc via the generic ACP harness has no reasoning-effort channel (the `acp`
+-- harness is EffortFamily.NONE and omnigent forwards no effort to it), so the
+-- picker offers only "default" — effort (and mode) come from dm-core's defaults.
+OMNIGENT_EFFORTS.dvsc = {}
+
 -- Classify a harness id into a model/effort family, mirroring the vendor-token
 -- rules in omnigent/model_override.py (model_family_mismatch).
 local function _omnigent_family_for_harness(harness)
   if type(harness) ~= "string" then return nil end
   local h = harness:lower()
+  -- dvsc-core over the generic ACP harness (`acp:dvsc-core`). Checked first: its
+  -- dm-core model ids (dot-notation, e.g. claude-opus-4.8) would otherwise be
+  -- misread as the "claude" vendor family and offer the wrong catalog.
+  if h:find("dvsc", 1, true) then return "dvsc" end
   if h:find("claude", 1, true) then return "claude" end
   if h:find("codex", 1, true) then return "codex" end
   if h:find("openai-agents", 1, true) then return "openai-agents" end
@@ -1637,19 +1658,27 @@ end
 -- Resolve the model/effort family for a live omnigent chat: prefer the current
 -- model's vendor token, else the session agent's harness (looked up by id).
 local function _omnigent_session_family(session)
-  local fam = _omnigent_family_for_model(session.model_override or session.model)
-  if fam then return fam end
+  -- Resolve the agent's harness family first. For a "special" harness like
+  -- dvsc's ACP wrap it must win over the model-string guess: dm-core ids
+  -- (claude-opus-4.8) would otherwise be misread as the "claude" vendor family
+  -- and offer the wrong (omnigent vendor) catalog. For vendor harnesses the
+  -- model token is the more specific signal, so it still takes precedence.
+  local harness_fam
   if session.agent_id then
     local agents = _omnigent_pickable_agents()
     if agents then
       for _, a in ipairs(agents) do
         if a.id == session.agent_id then
-          return _omnigent_family_for_harness(a.harness)
+          harness_fam = _omnigent_family_for_harness(a.harness)
+          break
         end
       end
     end
   end
-  return nil
+  if harness_fam == "dvsc" then return harness_fam end
+  local fam = _omnigent_family_for_model(session.model_override or session.model)
+  if fam then return fam end
+  return harness_fam
 end
 
 local function _omnigent_pick_live_option(chat)
