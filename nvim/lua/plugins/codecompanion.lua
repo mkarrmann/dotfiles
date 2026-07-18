@@ -2020,6 +2020,9 @@ end
 return {
   {
     "mkarrmann/codecompanion.nvim", -- fork: adds the native omnigent adapter (see <leader>aM)
+    dir = vim.fn.isdirectory(vim.fn.expand("~/repos/codecompanion.nvim")) == 1
+        and vim.fn.expand("~/repos/codecompanion.nvim")
+      or nil,
     dependencies = {
       "nvim-lua/plenary.nvim",
       "nvim-treesitter/nvim-treesitter",
@@ -2515,7 +2518,10 @@ return {
                   -- Orchest-minted workspace id drops in here without a reshape.
                   -- Evaluated at session-create time to capture the launching tab.
                   labels = function()
-                    local labels = { ["orchest.nvim_session"] = vim.env.NVS_SESSION_NAME or "ad-hoc" }
+                    local labels = {
+                      ["omnigent.google_chat.enabled"] = "true",
+                      ["orchest.nvim_session"] = vim.env.NVS_SESSION_NAME or "ad-hoc",
+                    }
                     local tab = vim.t.tab_name
                     if type(tab) == "string" and tab ~= "" then
                       labels["orchest.tab"] = tab
