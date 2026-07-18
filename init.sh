@@ -539,9 +539,9 @@ fi
 
 # Omnigent: register the dvsc-core ACP agent so it shows in the CodeCompanion
 # omnigent picker (<leader>aM / <leader>aA), alongside polly/debby. Idempotent
-# and self-skips where omnigent isn't installed; merges the acp: block of
-# ~/.omnigent/config.yaml (preserving machine-specific host:/server:) and
-# registers the dvsc builtin without restarting a running server. See
+# and self-skips where omnigent isn't installed; reconciles the per-host server
+# URL, merges the acp: block of ~/.omnigent/config.yaml, and registers the dvsc
+# builtin without restarting a running server. See
 # bin/omnigent-dvsc-ensure and omnigent_config/agents/dvsc/.
 "$DOTFILES_DIR/bin/omnigent-dvsc-ensure" \
     || echo "WARNING: omnigent-dvsc-ensure failed (dvsc agent may not appear in the picker)" >&2

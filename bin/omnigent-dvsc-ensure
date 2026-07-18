@@ -8,9 +8,9 @@
 #
 # It does two things, each a no-op when already satisfied:
 #
-#   1. Registers the `dvsc-core` command in the `acp:` block of
-#      ~/.omnigent/config.yaml (merged in place with omnigent's own pyyaml, so
-#      machine-specific host:/server: and any other acp agents are preserved).
+#   1. Reconciles the per-host server URL and registers the `dvsc-core` command
+#      in the `acp:` block of ~/.omnigent/config.yaml (merged in place with
+#      omnigent's own pyyaml, preserving host: and any other acp agents).
 #      `acp:dvsc-core` is the harness id the dvsc agent spec binds to.
 #
 #   2. Pre-registers the dotfiles `dvsc` agent spec as an Omnigent builtin (a
@@ -22,7 +22,8 @@
 #      picks the new agent up on its next request — no restart, live sessions
 #      untouched. The row persists in chat.db across future restarts.
 #
-# Env overrides: OMNIGENT_BIN, OMNIGENT_REPO, DOTFILES_DIR, OMNIGENT_DATA_DIR.
+# Env overrides: OMNIGENT_BIN, OMNIGENT_REPO, DOTFILES_DIR,
+# OMNIGENT_DATA_DIR, OMNIGENT_SERVER_URL.
 set -euo pipefail
 
 log() { printf '[dvsc-ensure] %s\n' "$*"; }
@@ -41,6 +42,14 @@ SPEC_DIR="$DOTFILES/omnigent_config/agents/dvsc"
 DVSC_CMD="$HOME/bin/dvsc-core-acp"
 DATA_DIR="${OMNIGENT_DATA_DIR:-${OMNIGENT_CONFIG_HOME:-$HOME/.omnigent}}"
 CONFIG="$DATA_DIR/config.yaml"
+SERVER_URL="${OMNIGENT_SERVER_URL:-}"
+if [ -z "$SERVER_URL" ]; then
+  if command -v omnigent-server-url >/dev/null 2>&1; then
+    SERVER_URL="$(omnigent-server-url)"
+  elif [ -x "$DOTFILES/bin/omnigent-server-url" ]; then
+    SERVER_URL="$("$DOTFILES/bin/omnigent-server-url")"
+  fi
+fi
 
 # Skip cleanly on machines without a usable omnigent install.
 if ! command -v "$OMNIGENT_BIN" >/dev/null 2>&1; then
@@ -56,20 +65,28 @@ if [ ! -d "$SPEC_DIR" ]; then
   exit 0
 fi
 
-# ── 1. Merge the dvsc-core acp agent into config.yaml (idempotent) ───────────
+# ── 1. Reconcile config.yaml (idempotent) ───────────────────────────────────
 # Uses the omnigent tool's interpreter (pyyaml present). Preserves every other
-# key and acp agent.
-"$OMNIGENT_PY" - "$CONFIG" "$DVSC_CMD" <<'PY'
+# key and acp agent while preventing stale tunnel URLs from surviving a server
+# topology change.
+"$OMNIGENT_PY" - "$CONFIG" "$DVSC_CMD" "$SERVER_URL" <<'PY'
 import os
 import sys
 
 import yaml
 
-path, cmd = sys.argv[1], sys.argv[2]
+path, cmd, server_url = sys.argv[1], sys.argv[2], sys.argv[3]
 cfg = {}
 if os.path.exists(path):
     with open(path) as f:
         cfg = yaml.safe_load(f) or {}
+
+if server_url:
+    if cfg.get("server") == server_url:
+        print(f"[dvsc-ensure] config.yaml: server already {server_url}")
+    else:
+        cfg["server"] = server_url
+        print(f"[dvsc-ensure] config.yaml: updated server to {server_url}")
 
 acp = cfg.setdefault("acp", {})
 if not isinstance(acp, dict):
