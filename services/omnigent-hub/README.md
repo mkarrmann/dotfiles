@@ -18,6 +18,12 @@ systemd user units on Linux, and starts the ownership reconciler on candidate
 hubs. Current hub ownership is runtime state in private Persistent Storage and
 is never committed to git.
 
+The Mac is always a client: installation reconciles its Omnigent URL and ACP
+configuration but never opens or migrates `~/.omnigent/chat.db`. Only the
+active Linux hub seeds shared agent definitions into the authoritative
+database. A legacy Mac database from the former local-server deployment may
+remain on disk, but it is not part of the active topology.
+
 A cold devserver cannot mint an unattended credential for private Persistent
 Storage. The interactive `omnigent-hub` wrapper mints a short-lived delegated
 CAT for its process tree and passes it over SSH/ET when needed, which lets a

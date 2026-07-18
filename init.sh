@@ -100,6 +100,11 @@ sync_link_subdirs() {
   shopt -s nullglob
   for src in "$src_parent"/*/; do
     if [[ -n "$required_file" ]] && [[ ! -e "$src$required_file" ]]; then
+      # A directory whose children contain the marker is a skill collection,
+      # such as meta-powertools-vendored, rather than a malformed skill.
+      if compgen -G "${src}*/${required_file}" >/dev/null; then
+        continue
+      fi
       echo "skipped $src (missing $required_file)"
       continue
     fi
@@ -596,7 +601,9 @@ fi
 # omnigent picker (<leader>aM / <leader>aA), alongside polly/debby. Idempotent
 # and self-skips where omnigent isn't installed; reconciles the per-host server
 # URL, merges the acp: block of ~/.omnigent/config.yaml, and registers the dvsc
-# builtin without restarting a running server. See
+# builtin on the active Linux hub without restarting a running server. macOS,
+# the standby, and peer clients only reconcile config.yaml; they never open a
+# local chat.db. See
 # bin/omnigent-dvsc-ensure and omnigent_config/agents/dvsc/.
 "$DOTFILES_DIR/bin/omnigent-dvsc-ensure" \
     || echo "WARNING: omnigent-dvsc-ensure failed (dvsc agent may not appear in the picker)" >&2

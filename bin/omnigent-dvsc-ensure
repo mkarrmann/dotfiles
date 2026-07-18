@@ -13,14 +13,13 @@
 #      omnigent's own pyyaml, preserving host: and any other acp agents).
 #      `acp:dvsc-core` is the harness id the dvsc agent spec binds to.
 #
-#   2. Pre-registers the dotfiles `dvsc` agent spec as an Omnigent builtin (a
-#      `session_id IS NULL` row in agent_store) so GET /v1/agents lists it. The
-#      managed `omnigent server start` has no `--agent` hook, so we register by
-#      briefly booting a throwaway server (a free port, the SAME chat.db) with
-#      `--agent`; it writes the builtin row + bundle, then exits. Because
-#      GET /v1/agents is a live DB query, an already-running managed server
-#      picks the new agent up on its next request — no restart, live sessions
-#      untouched. The row persists in chat.db across future restarts.
+#   2. On the active Linux hub only, pre-registers the dotfiles `dvsc` agent
+#      spec as an Omnigent builtin (a `session_id IS NULL` row in agent_store)
+#      so GET /v1/agents lists it. The managed `omnigent server start` has no
+#      `--agent` hook, so we register by briefly booting a throwaway server (a
+#      free port, the SAME chat.db) with `--agent`; it writes the builtin row +
+#      bundle, then exits. Clients, the standby, and macOS never open a local
+#      chat.db. The active server reads the new row without a restart.
 #
 # Env overrides: OMNIGENT_BIN, OMNIGENT_REPO, DOTFILES_DIR,
 # OMNIGENT_DATA_DIR, OMNIGENT_SERVER_URL.
@@ -70,11 +69,6 @@ if [ ! -x "$OMNIGENT_PY" ]; then
   log "omnigent tool python not found at $OMNIGENT_PY; skipping"
   exit 0
 fi
-if ! $config_only && [ ! -d "$SPEC_DIR" ]; then
-  log "agent spec missing at $SPEC_DIR; skipping"
-  exit 0
-fi
-
 # ── 1. Reconcile config.yaml (idempotent) ───────────────────────────────────
 # Uses the omnigent tool's interpreter (pyyaml present). Preserves every other
 # key and acp agent while preventing stale tunnel URLs from surviving a server
@@ -130,6 +124,24 @@ if $config_only; then
   exit 0
 fi
 
+# Only the active Linux hub owns the authoritative database. In particular,
+# a Mac may retain a legacy ~/.omnigent/chat.db from the old local deployment;
+# opening it here could trigger an irrelevant migration failure. Standbys and
+# peer devservers likewise reconcile client configuration without mutating a
+# local database copy.
+if [[ "$(uname -s)" != "Linux" ]]; then
+  log "client host detected; skipping local agent-store seed"
+  exit 0
+fi
+if ! "$DOTFILES/bin/omnigent-server-url" --is-hub >/dev/null 2>&1; then
+  log "non-active hub/client detected; skipping local agent-store seed"
+  exit 0
+fi
+if [ ! -d "$SPEC_DIR" ]; then
+  log "agent spec missing at $SPEC_DIR; skipping"
+  exit 0
+fi
+
 # ── 2. Register the dvsc builtin agent if missing ────────────────────────────
 status_json="$("$OMNIGENT_BIN" server status --json 2>/dev/null || echo '{}')"
 managed_url="$(printf '%s' "$status_json" \
@@ -148,8 +160,14 @@ except Exception:
 sys.exit(0 if any(a.get("name")=="dvsc" for a in (d.get("data") or [])) else 1)'
 }
 
-if [ -n "$managed_url" ] && has_dvsc "$managed_url"; then
-  log "dvsc agent already registered ✓ ($managed_url)"
+# The HA server is systemd-managed, so `omnigent server status` does not know
+# its URL. The resolved active-hub URL is authoritative in that topology.
+live_url="$managed_url"
+if [ -z "$live_url" ]; then
+  live_url="$SERVER_URL"
+fi
+if [ -n "$live_url" ] && has_dvsc "$live_url"; then
+  log "dvsc agent already registered ✓ ($live_url)"
   exit 0
 fi
 
@@ -192,17 +210,17 @@ log "seed server registered dvsc into chat.db"
 cleanup
 trap - EXIT
 
-# Verify the running managed server (if any) now sees it via its live DB query.
-if [ -n "$managed_url" ]; then
+# Verify the running server (if any) now sees it via its live DB query.
+if [ -n "$live_url" ]; then
   ok=false
   for _ in $(seq 1 10); do
-    if has_dvsc "$managed_url"; then ok=true; break; fi
+    if has_dvsc "$live_url"; then ok=true; break; fi
     sleep 1
   done
   if [ "$ok" = true ]; then
-    log "dvsc registered ✓ (visible on running server $managed_url)"
+    log "dvsc registered ✓ (visible on running server $live_url)"
   else
-    log "dvsc written to chat.db but not yet visible on $managed_url — restart it with 'omnigent server stop && omnigent server start' if it doesn't appear"
+    log "dvsc written to chat.db but not yet visible on $live_url — restart it with 'omnigent server stop && omnigent server start' if it doesn't appear"
   fi
 else
   log "dvsc registered ✓ into chat.db (no server currently running; it'll appear when omnigent starts)"

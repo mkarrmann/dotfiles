@@ -25,12 +25,21 @@ fi
 # the stamp, or by editing either canon file.
 if [ "${BOOTSTRAP_PLUGINS_FORCE:-0}" != "1" ] && [ -f "$STAMP" ] \
    && [ "$STAMP" -nt "$DROPS_FILE" ] && [ "$STAMP" -nt "$PLUGINS_FILE" ]; then
-  echo "bootstrap-plugins: canon unchanged since $(date -r "$STAMP" '+%Y-%m-%d %H:%M') — skipping"
+  echo "bootstrap-plugins: canon unchanged — skipping"
   echo "  (re-run with BOOTSTRAP_PLUGINS_FORCE=1 or rm $STAMP)"
   exit 0
 fi
 
-mapfile -t DROPS < <(grep -Ev '^\s*(#|$)' "$DROPS_FILE")
+DROPS=()
+while IFS= read -r line || [ -n "$line" ]; do
+  # Canon entries are plugin identifiers, so surrounding whitespace is never
+  # meaningful. xargs is available on both macOS and Linux.
+  line="$(printf '%s' "$line" | xargs)"
+  case "$line" in
+    ''|'#'*) continue ;;
+    *) DROPS+=("$line") ;;
+  esac
+done < "$DROPS_FILE"
 
 echo "== uninstalling dropped plugins =="
 for a in "${AGENTS[@]}"; do
