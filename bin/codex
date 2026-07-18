@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Omnigent tags argv[0] for process ownership. Meta's launcher interprets that
+# tag as an argument, so cross the script boundary to restore a normal argv[0].
+# Omnigent also applies a Codex-specific environment scrub after its runner
+# allowlist. Restore the provisioned Meta paths at this final launcher boundary.
+export CODEX_MANAGED_CONFIG_PATH=/dev/null
+owner="${USER:-$(id -un)}"
+cert="/var/facebook/credentials/${owner}/x509/${owner}.pem"
+if [[ -r "$cert" ]]; then
+  export THRIFT_TLS_CL_CERT_PATH="${THRIFT_TLS_CL_CERT_PATH:-$cert}"
+  export THRIFT_TLS_CL_KEY_PATH="${THRIFT_TLS_CL_KEY_PATH:-$cert}"
+fi
+
+args=("$@")
+if [[ "${1:-}" == "app-server" ]]; then
+  shift
+  config_args=()
+  app_server_args=()
+  while (($#)); do
+    case "$1" in
+      -c | --config)
+        if (($# < 2)); then
+          echo "$1 requires a value" >&2
+          exit 2
+        fi
+        config_args+=("$1" "$2")
+        shift 2
+        ;;
+      -c=* | --config=*)
+        config_args+=("$1")
+        shift
+        ;;
+      *)
+        app_server_args+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  # Meta's launcher injects the provider as global config. Keep Omnigent's
+  # app-server overrides in that same scope so thread/start sees both sets.
+  args=("${config_args[@]}" app-server "${app_server_args[@]}")
+fi
+
+if [[ -x /usr/local/bin/codex ]]; then
+  exec /usr/local/bin/codex "${args[@]}"
+fi
+if [[ -x /opt/homebrew/bin/codex ]]; then
+  exec /opt/homebrew/bin/codex "${args[@]}"
+fi
+
+echo "codex launcher not found" >&2
+exit 127

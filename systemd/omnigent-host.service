@@ -30,6 +30,9 @@ Environment=OMNIGENT_PORT=6767
 Environment=THRIFT_TLS_CL_CERT_PATH=/var/facebook/credentials/%u/x509/%u.pem
 Environment=THRIFT_TLS_CL_KEY_PATH=/var/facebook/credentials/%u/x509/%u.pem
 Environment=CODEX_MANAGED_CONFIG_PATH=/dev/null
+# The host filters its environment before launching runners. Forward only the
+# non-secret paths/selectors required by Meta's Claude and Codex launchers.
+Environment=OMNIGENT_RUNNER_ENV_PASSTHROUGH=THRIFT_TLS_CL_CERT_PATH,THRIFT_TLS_CL_KEY_PATH,CODEX_MANAGED_CONFIG_PATH
 ExecStart=%h/bin/omnigent-host-run
 Restart=always
 RestartSec=5
