@@ -436,6 +436,7 @@ The manifest records:
 - creation timestamp;
 - installed Omnigent and bridge versions;
 - database checksums;
+- a zero-count credential scan for account tokens and password hashes;
 - artifact count and total bytes; and
 - whether the snapshot was online or quiesced.
 
@@ -444,6 +445,15 @@ installed target versions before any Omnigent process opens the restored
 database. This ordering matters because engine initialization may run Alembic
 migrations. A mismatch blocks restore readiness rather than silently migrating
 the only recovery copy.
+
+Before archiving, the snapshotter inspects the staged `chat.db` and refuses to
+publish it if `account_tokens` contains any invite/magic bearer secret or any
+`users.password_hash` is populated. This personal deployment uses local
+single-user auth, so either condition is unexpected and failing the backup is
+safer than silently exporting authentication material. Durable host registry
+rows and one-way host token hashes remain because sessions need them to
+reconnect; `~/.omnigent/config.yaml`, raw host tokens, x509 material, and auth
+caches are never included.
 
 The compressed archive has a sibling SHA-256 sidecar. The sidecar is copied
 only after the archive copy completes and is re-read successfully. Restore
@@ -491,7 +501,9 @@ that lifecycle machinery preemptively.
 For a planned transfer:
 
 1. Stop accepting new human input.
-2. Wait for turns to become idle or explicitly interrupt them.
+2. Query the session list and require every session to be `idle` or `failed`.
+   If any session is `running` or `waiting`, restore normal ingress and require
+   the operator to wait for or interrupt that turn before retrying.
 3. Stop the Google Chat bridge.
 4. Stop the periodic snapshot timer and wait for any active snapshot job to
    finish or cancel it before staging begins.
@@ -516,9 +528,12 @@ service-restart window that would otherwise allow the old hub to start again
 during handoff.
 
 This gives an exact recovery point for planned maintenance. A failed handoff
-is resumed using its transition ID or explicitly aborted by validating the
-source state and publishing a newer activation for the source. Never edit the
-transition record by hand or reuse its epoch.
+is resumed using its transition ID. If the transition was fenced before its
+final generation was attached, rerunning promotion stops the source service
+set again, creates and attaches that missing quiesced generation, then
+continues. It may instead be explicitly aborted by validating the source state
+and publishing a newer activation for the source. Never edit the transition
+record by hand or reuse its epoch.
 
 ## 8. Operator command
 
@@ -567,29 +582,33 @@ For planned maintenance:
 
 1. Acquire the single-operator lock and confirm there is no unrelated
    transition in progress.
-2. Quiesce input and publish a new transition epoch from CCO to FTW before
-   stopping CCO, as described in Section 7.4.
-3. Confirm CCO server, proxy, and bridge are stopped and cannot pass their
+2. Compare exact Omnigent and bridge versions on source and target before
+   disrupting the source; reject drift immediately.
+3. Stop ingress, run `quiesce-check`, and publish a new transition epoch from
+   CCO to FTW before stopping CCO, as described in Section 7.4. A failed
+   quiescence check restores source services before returning an error.
+4. Confirm CCO server, proxy, and bridge are stopped and cannot pass their
    startup gates; confirm the periodic snapshot timer is also stopped.
-4. Create and verify CCO's final quiesced generation.
-5. Restore that exact generation locally on FTW.
-6. Before opening either restored database through Omnigent, require FTW's
+5. Create and verify CCO's final quiesced generation.
+6. Explicitly stop FTW's hub service set, then restore that exact generation
+   locally on FTW.
+7. Before opening either restored database through Omnigent, require FTW's
    exact Omnigent and bridge versions to match the snapshot manifest and CCO;
    then validate checksums, SQLite integrity, schema compatibility, and
    important row counts.
-7. Write FTW's local activation marker for the transition epoch and restored
+8. Write FTW's local activation marker for the transition epoch and restored
    generation.
-8. Finalize the shared record from transition state to FTW active, retaining
+9. Finalize the shared record from transition state to FTW active, retaining
    that epoch and naming FTW's activation ID.
-9. Stop FTW's loopback client proxy, reconcile its stable loopback config, and
+10. Stop FTW's loopback client proxy, reconcile its stable loopback config, and
    start FTW server plus prodnet proxy.
-10. Reconcile CCO as standby: stop hub services, start its loopback client
+11. Reconcile CCO as standby: stop hub services, start its loopback client
     proxy to FTW, and restart `omnigent-host` only if its URL was stale.
-11. Validate the FTW API locally and through CCO's loopback proxy.
-12. Start the Google Chat bridge last.
-13. Start the periodic snapshot timer only after FTW is active and healthy.
-14. Verify existing Chat mappings before enabling inbound polling.
-15. Let an awake Mac's `omnigent-tunnel` observe the new epoch and retarget
+12. Validate the FTW API locally and through CCO's loopback proxy.
+13. Start the Google Chat bridge last.
+14. Start the periodic snapshot timer only after FTW is active and healthy.
+15. Verify existing Chat mappings before enabling inbound polling.
+16. Let an awake Mac's `omnigent-tunnel` observe the new epoch and retarget
     local port 6767; an asleep Mac converges when `startup-windows` resumes it.
 
 For unexpected failure, require an explicit `--unexpected-failure` flag. The
@@ -873,7 +892,31 @@ local. Running `init.sh` does not copy a live database from another machine;
 the first promotion restores the selected validated snapshot through the
 operator command.
 
-## 14. References
+## 14. Verification state
+
+The dotfiles implementation currently has the following local evidence:
+
+- 46 `omnigent-hub` tests cover record validation, fencing, force recovery,
+  stale-mount refresh, service ordering, stable routing, delegated-CAT
+  transport, credential exclusion, version drift, Google Chat reconciliation,
+  interrupted-transition resumption, and Mac candidate/conflict resolution;
+- an in-process two-hub integration test performs a real planned promotion,
+  verifies both restored SQLite stores and artifacts, adds FTW-era state,
+  performs a real failback, and verifies that newer state on CCO;
+- 95 Google Chat bridge tests cover mirroring, inbound idempotency, exact source
+  identity, and restart behavior;
+- Ruff, formatting, strict mypy, Shellcheck, Bash syntax checks, and
+  `systemd-analyze verify` pass for the changed surfaces; and
+- a real Persistent Storage generation with zero account credentials has been
+  checksum-validated, restored to a temporary directory, booted on an isolated
+  loopback port, and queried successfully through `/health` and `/v1/sessions`.
+
+This evidence proves the local algorithms and artifacts. It does not replace
+Phase 4: after the commit is available on FTW and the Mac, the operator must
+run `init.sh` there and perform the planned promotion/failback rehearsal before
+claiming criteria 2-6, 12, and 19-20 against the actual machines and ET path.
+
+## 15. References
 
 ### Personal deployment
 

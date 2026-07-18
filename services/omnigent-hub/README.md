@@ -35,6 +35,9 @@ omnigent-hub status
 # Validate the plan without changing ownership.
 omnigent-hub promote ftw --dry-run
 
+# Optional explicit preflight. Promotion also runs this after stopping ingress.
+omnigent-hub quiesce-check
+
 # Planned CCO -> FTW handoff and later failback.
 omnigent-hub promote ftw --yes
 omnigent-hub failback cco --yes
@@ -93,3 +96,8 @@ uv run ruff check .
 uv run ruff format --check .
 uv run mypy src tests
 ```
+
+The full suite includes an in-process two-hub promotion/failback integration
+test. The real-machine rehearsal remains explicit: install on CCO, FTW, and
+the Mac, run `omnigent-hub promote ftw --dry-run`, then follow the design's
+Phase 4 checklist.

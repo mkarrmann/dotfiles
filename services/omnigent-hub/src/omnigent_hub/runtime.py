@@ -169,7 +169,7 @@ def begin_transition(config: HubConfig, *, target_hub: str) -> ActiveHubRecord:
         state="transition",
         active_hub=None,
         activation_id=None,
-        restored_generation=current.restored_generation,
+        restored_generation=None,
         updated_at=utc_now(),
         updated_by=config.home.name,
         source_hub=config.local_fqdn,
@@ -524,6 +524,37 @@ def wait_for_health(config: HubConfig, *, timeout_seconds: float = 60) -> None:
             last_error = str(exc)
         time.sleep(0.5)
     raise HubRuntimeError(f"Omnigent did not become healthy at {url}: {last_error}")
+
+
+def assert_sessions_quiescent(config: HubConfig) -> dict[str, Any]:
+    url = f"http://127.0.0.1:{config.topology.port}/v1/sessions?limit=1000&kind=any"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(url, timeout=10) as response:
+            payload = json.load(response)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        raise HubRuntimeError(f"cannot inspect Omnigent sessions before handoff: {exc}") from exc
+    sessions = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(sessions, list):
+        raise HubRuntimeError("Omnigent session list returned an invalid payload")
+    if payload.get("has_more") is True:
+        raise HubRuntimeError("cannot prove quiescence with more than 1000 sessions")
+    busy: list[dict[str, str]] = []
+    for session in sessions:
+        if not isinstance(session, dict):
+            raise HubRuntimeError("Omnigent session list contains a non-object item")
+        session_id = session.get("id")
+        status = session.get("status")
+        if not isinstance(session_id, str) or not isinstance(status, str):
+            raise HubRuntimeError("Omnigent session list contains an item without id/status")
+        if status not in {"idle", "failed"}:
+            busy.append({"id": session_id, "status": status})
+    if busy:
+        detail = ", ".join(f"{item['id']}={item['status']}" for item in busy)
+        raise HubRuntimeError(
+            f"handoff requires idle sessions; wait for or interrupt active turns: {detail}"
+        )
+    return {"quiescent": True, "session_count": len(sessions), "busy_sessions": []}
 
 
 def reconcile_local_route(config: HubConfig, *, restart_host: bool) -> dict[str, Any]:

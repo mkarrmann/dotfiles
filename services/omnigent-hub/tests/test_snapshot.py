@@ -47,6 +47,7 @@ def test_create_validate_and_restore_snapshot(
     assert archive.is_file()
     assert archive.with_suffix(archive.suffix + ".sha256").is_file()
     assert manifest["databases"]["chat.db"]["table_counts"]["sessions"] == 3
+    assert manifest["credentials"] == {"account_tokens": 0, "password_hashes": 0}
     assert manifest["artifacts"] == {"count": 1, "total_bytes": 8}
 
     validated, temporary = validate_snapshot(hub_config, archive)
@@ -102,8 +103,31 @@ def test_bridge_source_change_blocks_restore(
         validate_snapshot(hub_config, archive)
 
 
+def test_omnigent_version_change_blocks_restore(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    manifest = create_snapshot(hub_config, record(), quiesced=False)
+    archive = Path(str(manifest["archive_path"]))
+    hub_config.omnigent_bin.write_text(
+        "#!/bin/sh\necho 'omnigent different-version'\n", encoding="utf-8"
+    )
+
+    with pytest.raises(SnapshotError, match="Omnigent version mismatch"):
+        validate_snapshot(hub_config, archive)
+
+
 def test_backup_status_is_written(hub_config: HubConfig) -> None:
     create_snapshot(hub_config, record(), quiesced=False, publish=False)
     status = json.loads(hub_config.backup_status.read_text(encoding="utf-8"))
     assert status["published"] is False
     assert status["snapshot_kind"] == "online"
+
+
+def test_snapshot_rejects_account_authentication_material(hub_config: HubConfig) -> None:
+    with sqlite3.connect(hub_config.chat_db) as db:
+        db.execute("CREATE TABLE account_tokens (id TEXT PRIMARY KEY)")
+        db.execute("INSERT INTO account_tokens (id) VALUES ('secret-token')")
+
+    with pytest.raises(SnapshotError, match="refusing to archive account authentication"):
+        create_snapshot(hub_config, record(), quiesced=False, publish=False)

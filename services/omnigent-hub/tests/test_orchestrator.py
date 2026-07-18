@@ -9,7 +9,7 @@ import pytest
 from omnigent_hub.config import HubConfig
 from omnigent_hub.models import ActiveHubRecord
 from omnigent_hub.orchestrator import HandoffError, HandoffOrchestrator, _status_warnings
-from omnigent_hub.remote import RemoteResult
+from omnigent_hub.remote import RemoteError, RemoteResult
 
 
 def active_record() -> ActiveHubRecord:
@@ -25,9 +25,27 @@ def active_record() -> ActiveHubRecord:
     )
 
 
+def interrupted_transition() -> ActiveHubRecord:
+    return ActiveHubRecord(
+        format_version=1,
+        epoch=2,
+        state="transition",
+        active_hub=None,
+        activation_id=None,
+        restored_generation=None,
+        updated_at="2026-07-18T20:01:00Z",
+        updated_by="tester",
+        source_hub="primary.example.com",
+        target_hub="standby.example.com",
+        transition_id="transition-2",
+    )
+
+
 @dataclass
 class FakeRemote:
     record: ActiveHubRecord
+    fail_quiesce: bool = False
+    mismatch_target_version: bool = False
 
     def __post_init__(self) -> None:
         self.calls: list[tuple[str, tuple[str, ...]]] = []
@@ -52,6 +70,15 @@ class FakeRemote:
         values = tuple(args)
         self.calls.append((host, values))
         command = values[0]
+        if command == "quiesce-check" and self.fail_quiesce:
+            raise RemoteError("active turn")
+        if command == "local-status":
+            omnigent = (
+                "omnigent 0.other"
+                if self.mismatch_target_version and host == "standby.example.com"
+                else "omnigent 0.test"
+            )
+            return {"versions": {"omnigent": omnigent, "bridge": "sha256:bridge"}}
         if command == "begin-transition":
             return {
                 "format_version": 1,
@@ -109,7 +136,8 @@ def test_planned_handoff_orders_fence_restore_and_tail(hub_config: HubConfig) ->
             ("begin-transition", "--target", "standby.example.com", "--yes", "--json"),
         )
     )
-    assert stop_ingress < begin_transition
+    quiesce = calls.index(("primary.example.com", ("quiesce-check", "--json")))
+    assert stop_ingress < quiesce < begin_transition
     stop_server = calls.index(("primary.example.com", ("services", "stop-server", "--json")))
     snapshot = calls.index(("primary.example.com", ("snapshot", "--quiesced", "--json")))
     assert stop_server < snapshot
@@ -134,6 +162,71 @@ def test_dry_run_does_not_issue_mutating_calls(hub_config: HubConfig) -> None:
     assert remote.calls == []
     assert result.generation == "old-generation"
     assert "stop ingress" in result.steps[0]
+
+
+def test_planned_handoff_restores_ingress_when_turn_is_active(
+    hub_config: HubConfig,
+) -> None:
+    remote = FakeRemote(active_record(), fail_quiesce=True)
+
+    with pytest.raises(HandoffError, match="active turn"):
+        HandoffOrchestrator(hub_config, remote).handoff(
+            "standby.example.com",
+            unexpected=False,
+            source_confirmed_stopped=False,
+            dry_run=False,
+        )
+
+    assert remote.calls == [
+        ("primary.example.com", ("local-status", "--json")),
+        ("standby.example.com", ("local-status", "--json")),
+        ("primary.example.com", ("services", "stop-ingress", "--json")),
+        ("primary.example.com", ("quiesce-check", "--json")),
+        ("primary.example.com", ("reconcile-services", "--json")),
+    ]
+
+
+def test_planned_handoff_rejects_version_drift_before_stopping_source(
+    hub_config: HubConfig,
+) -> None:
+    remote = FakeRemote(active_record(), mismatch_target_version=True)
+
+    with pytest.raises(HandoffError, match="omnigent version mismatch"):
+        HandoffOrchestrator(hub_config, remote).handoff(
+            "standby.example.com",
+            unexpected=False,
+            source_confirmed_stopped=False,
+            dry_run=False,
+        )
+
+    assert remote.calls == [
+        ("primary.example.com", ("local-status", "--json")),
+        ("standby.example.com", ("local-status", "--json")),
+    ]
+
+
+def test_planned_handoff_resumes_transition_missing_final_generation(
+    hub_config: HubConfig,
+) -> None:
+    remote = FakeRemote(interrupted_transition())
+
+    result = HandoffOrchestrator(hub_config, remote).handoff(
+        "standby.example.com",
+        unexpected=False,
+        source_confirmed_stopped=False,
+        dry_run=False,
+    )
+
+    assert result.generation == "generation-2"
+    stop_all = remote.calls.index(("primary.example.com", ("services", "stop-all", "--json")))
+    snapshot = remote.calls.index(("primary.example.com", ("snapshot", "--quiesced", "--json")))
+    attach = remote.calls.index(
+        (
+            "primary.example.com",
+            ("attach-generation", "--generation", "generation-2", "--json"),
+        )
+    )
+    assert stop_all < snapshot < attach
 
 
 def test_unexpected_handoff_requires_fencing_and_leaves_bridge_stopped(

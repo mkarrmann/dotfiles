@@ -16,6 +16,7 @@ from omnigent_hub.runtime import (
     HubRuntimeError,
     abort_transition,
     activate_transition,
+    assert_sessions_quiescent,
     attach_transition_generation,
     begin_transition,
     begin_unexpected_transition,
@@ -87,6 +88,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = subparsers.add_parser("local-status", help="report this machine's hub state")
     status.add_argument("--json", action="store_true")
+
+    quiesce = subparsers.add_parser(
+        "quiesce-check", help="refuse handoff while a session turn is active"
+    )
+    quiesce.add_argument("--json", action="store_true")
 
     services = subparsers.add_parser("services", help="perform a validated local service action")
     services.add_argument(
@@ -251,6 +257,8 @@ def main(argv: list[str] | None = None) -> None:
             )
         elif args.command == "local-status":
             _emit(local_status(config), args.json)
+        elif args.command == "quiesce-check":
+            _emit(assert_sessions_quiescent(config), args.json)
         elif args.command == "services":
             _emit(service_action(config, args.action), args.json)
         elif args.command == "route-ensure":
@@ -419,12 +427,18 @@ def _run_quiesced_backup(config: HubConfig) -> Mapping[str, object]:
             raise HandoffError("this host is not the current transition source")
         if record.restored_generation:
             return record.to_dict()
+        service_action(config, "stop-all")
         transition = record
     else:
         if record.active_hub != config.local_fqdn:
             raise HandoffError("quiesced backup must run on the active hub")
         target = next(host for host in config.topology.hubs if host != config.local_fqdn)
         service_action(config, "stop-ingress")
+        try:
+            assert_sessions_quiescent(config)
+        except HubRuntimeError:
+            reconcile_services(config)
+            raise
         transition = begin_transition(config, target_hub=target)
         try:
             check_gate(config)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -14,6 +15,7 @@ from omnigent_hub.models import ActiveHubRecord
 from omnigent_hub.runtime import (
     HubRuntimeError,
     activate_transition,
+    assert_sessions_quiescent,
     attach_transition_generation,
     begin_transition,
     check_gate,
@@ -192,6 +194,59 @@ def test_stop_ingress_stops_timer_before_active_snapshot(
         ["systemctl", "--user", "stop", "omnigent-snapshot.service"],
         ["systemctl", "--user", "stop", "omnigent-prodnet.service"],
     ]
+
+
+def test_quiesce_check_accepts_terminal_sessions(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_session_payload(monkeypatch, [("idle-session", "idle"), ("failed-session", "failed")])
+
+    result = assert_sessions_quiescent(hub_config)
+
+    assert result == {"quiescent": True, "session_count": 2, "busy_sessions": []}
+
+
+def test_quiesce_check_rejects_running_and_waiting_sessions(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_session_payload(
+        monkeypatch,
+        [("idle-session", "idle"), ("run-session", "running"), ("wait-session", "waiting")],
+    )
+
+    with pytest.raises(HubRuntimeError, match="run-session=running, wait-session=waiting"):
+        assert_sessions_quiescent(hub_config)
+
+
+def test_quiesce_check_fails_closed_when_session_list_is_truncated(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_session_payload(monkeypatch, [("idle-session", "idle")], has_more=True)
+
+    with pytest.raises(HubRuntimeError, match="more than 1000 sessions"):
+        assert_sessions_quiescent(hub_config)
+
+
+def install_session_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    sessions: list[tuple[str, str]],
+    *,
+    has_more: bool = False,
+) -> None:
+    payload = {
+        "data": [{"id": session_id, "status": status} for session_id, status in sessions],
+        "has_more": has_more,
+    }
+
+    class FakeOpener:
+        def open(self, url: str, timeout: int) -> io.BytesIO:
+            assert url.endswith("/v1/sessions?limit=1000&kind=any")
+            assert timeout == 10
+            return io.BytesIO(json.dumps(payload).encode())
+
+    monkeypatch.setattr(
+        "omnigent_hub.runtime.urllib.request.build_opener", lambda *handlers: FakeOpener()
+    )
 
 
 def initialize_record_for_test(config: HubConfig, active_hub: str) -> ActiveHubRecord:

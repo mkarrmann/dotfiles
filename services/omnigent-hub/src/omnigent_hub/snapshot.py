@@ -109,6 +109,45 @@ def sqlite_summary(path: Path) -> dict[str, Any]:
     return {"table_counts": table_counts, "schema_versions": schema_versions}
 
 
+def credential_summary(path: Path) -> dict[str, int]:
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
+            tables = {
+                str(row[0])
+                for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+            account_tokens = (
+                int(db.execute("SELECT COUNT(*) FROM account_tokens").fetchone()[0])
+                if "account_tokens" in tables
+                else 0
+            )
+            user_columns = (
+                {str(row[1]) for row in db.execute("PRAGMA table_info(users)").fetchall()}
+                if "users" in tables
+                else set()
+            )
+            password_hashes = (
+                int(
+                    db.execute(
+                        "SELECT COUNT(*) FROM users WHERE password_hash IS NOT NULL"
+                    ).fetchone()[0]
+                )
+                if "password_hash" in user_columns
+                else 0
+            )
+    except sqlite3.Error as exc:
+        raise SnapshotError(f"cannot inspect snapshot credentials in {path}: {exc}") from exc
+    summary = {"account_tokens": account_tokens, "password_hashes": password_hashes}
+    if account_tokens or password_hashes:
+        raise SnapshotError(
+            "refusing to archive account authentication material: "
+            f"account_tokens={account_tokens}, password_hashes={password_hashes}"
+        )
+    return summary
+
+
 def _copy_artifacts(source: Path, destination: Path) -> tuple[int, int]:
     destination.mkdir(mode=0o700, parents=True, exist_ok=True)
     if not source.exists():
@@ -151,6 +190,7 @@ def create_snapshot(
 
         sqlite_backup(config.chat_db, chat_copy)
         sqlite_backup(config.bridge_db, bridge_copy)
+        credentials = credential_summary(chat_copy)
         chat_summary = sqlite_summary(chat_copy)
         bridge_summary = sqlite_summary(bridge_copy)
         artifact_count, artifact_bytes = _copy_artifacts(config.artifacts_dir, state / "artifacts")
@@ -165,6 +205,7 @@ def create_snapshot(
             "snapshot_kind": "quiesced" if quiesced else "online",
             "omnigent_version": omnigent_version(config.omnigent_bin),
             "bridge_version": bridge_version(config.bridge_project),
+            "credentials": credentials,
             "databases": {
                 "chat.db": {
                     "sha256": sha256_file(chat_copy),
@@ -277,6 +318,7 @@ def validate_snapshot(
     *,
     require_local_versions: bool = True,
 ) -> tuple[dict[str, Any], Path]:
+    config.local_state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     sidecar = archive.with_suffix(archive.suffix + ".sha256")
     expected_archive_hash = read_sidecar(sidecar)
     actual_archive_hash = sha256_file(archive)
@@ -320,6 +362,10 @@ def validate_snapshot(
                 raise SnapshotError(f"table counts changed for {name}")
             if summary.get("schema_versions") != details.get("schema_versions"):
                 raise SnapshotError(f"schema version changed for {name}")
+        credentials = credential_summary(state / "chat.db")
+        recorded_credentials = manifest.get("credentials")
+        if recorded_credentials is not None and recorded_credentials != credentials:
+            raise SnapshotError("snapshot credential summary changed")
         return manifest, temporary
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)

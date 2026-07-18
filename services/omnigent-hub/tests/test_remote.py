@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import replace
 
 import pytest
 
 from omnigent_hub.config import HubConfig
-from omnigent_hub.remote import RemoteClient
+from omnigent_hub.remote import RemoteClient, RemoteError
 
 
 def test_mac_remote_passes_ephemeral_cat_without_exposing_it(
@@ -90,3 +91,52 @@ def test_local_remote_never_mints_cat(
     client = RemoteClient(hub_config, runner=run, system="Linux")
 
     client.json("primary.example.com", ("local-status", "--json"))
+
+
+def test_resolve_uses_reachable_candidate_and_highest_epoch(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OMNIGENT_HA_DELEGATED_CAT", "operator-secret")
+
+    def run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        del timeout
+        host = argv[2]
+        if host == "primary.example.com":
+            return subprocess.CompletedProcess(argv, 1, "", "unreachable")
+        return subprocess.CompletedProcess(argv, 0, json.dumps(active_payload(4)), "")
+
+    mac_config = replace(hub_config, local_fqdn="mac.example.com")
+    record, supplier, errors = RemoteClient(mac_config, runner=run, system="Darwin").resolve()
+
+    assert record.epoch == 4
+    assert supplier == "standby.example.com"
+    assert "primary.example.com" in errors
+
+
+def test_resolve_rejects_conflicting_same_epoch(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OMNIGENT_HA_DELEGATED_CAT", "operator-secret")
+
+    def run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        del timeout
+        host = argv[2]
+        active = "primary.example.com" if host == "primary.example.com" else "standby.example.com"
+        return subprocess.CompletedProcess(argv, 0, json.dumps(active_payload(5, active)), "")
+
+    mac_config = replace(hub_config, local_fqdn="mac.example.com")
+    with pytest.raises(RemoteError, match="conflicting active-hub records"):
+        RemoteClient(mac_config, runner=run, system="Darwin").resolve()
+
+
+def active_payload(epoch: int, active_hub: str = "standby.example.com") -> dict[str, object]:
+    return {
+        "format_version": 1,
+        "epoch": epoch,
+        "state": "active",
+        "active_hub": active_hub,
+        "activation_id": f"activation-{epoch}",
+        "restored_generation": f"generation-{epoch}",
+        "updated_at": "2026-07-18T22:00:00Z",
+        "updated_by": "tester",
+    }

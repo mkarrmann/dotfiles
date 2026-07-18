@@ -98,6 +98,8 @@ class HandoffOrchestrator:
                 raise HandoffError(f"{target} is already active")
             if dry_run:
                 return self._dry_run_result(record, source, target, unexpected)
+            if not unexpected:
+                self._preflight_versions(source, target)
             if unexpected:
                 if not source_confirmed_stopped:
                     raise HandoffError(
@@ -135,10 +137,15 @@ class HandoffOrchestrator:
                 raise HandoffError("existing transition requires unexpected recovery workflow")
             if dry_run:
                 return self._dry_run_result(record, source, target, unexpected)
+            if not unexpected:
+                self._preflight_versions(source, target)
             transition = record.to_dict()
+            if not unexpected and transition.get("restored_generation") is None:
+                transition = self._resume_planned_snapshot(source)
             generation = _required_string(transition, "restored_generation")
             archive = self._archive_path(target, generation)
 
+        self._call(target, "services", "stop-hub", "--json")
         self._call(target, "validate-snapshot", archive, "--json", timeout=300)
         self._call(target, "restore", archive, "--yes", "--json", timeout=300)
         activation = self._call(
@@ -172,6 +179,16 @@ class HandoffOrchestrator:
 
     def _planned_quiesce(self, source: str, target: str) -> dict[str, Any]:
         self._call(source, "services", "stop-ingress", "--json")
+        try:
+            self._call(source, "quiesce-check", "--json")
+        except RemoteError as exc:
+            try:
+                self._call(source, "reconcile-services", "--json")
+            except RemoteError as recovery_exc:
+                self._steps.append(
+                    f"{source}: ingress restoration failed after quiesce rejection: {recovery_exc}"
+                )
+            raise HandoffError(str(exc)) from exc
         transition = self._call(source, "begin-transition", "--target", target, "--yes", "--json")
         gate = self._remote.run(source, ("gate", "--json"), check=False)
         if gate.returncode == 0:
@@ -188,6 +205,41 @@ class HandoffOrchestrator:
             "--json",
         )
         return transition
+
+    def _resume_planned_snapshot(self, source: str) -> dict[str, Any]:
+        self._call(source, "services", "stop-all", "--json")
+        manifest = self._call(source, "snapshot", "--quiesced", "--json", timeout=300)
+        generation = _required_string(manifest, "generation_id")
+        return self._call(
+            source,
+            "attach-generation",
+            "--generation",
+            generation,
+            "--json",
+        )
+
+    def _preflight_versions(self, source: str, target: str) -> None:
+        source_status = self._call(source, "local-status", "--json")
+        target_status = self._call(target, "local-status", "--json")
+        source_versions = source_status.get("versions")
+        target_versions = target_status.get("versions")
+        if not isinstance(source_versions, dict) or not isinstance(target_versions, dict):
+            raise HandoffError("version preflight returned an invalid status payload")
+        for component in ("omnigent", "bridge"):
+            source_version = source_versions.get(component)
+            target_version = target_versions.get(component)
+            if (
+                not isinstance(source_version, str)
+                or not isinstance(target_version, str)
+                or source_version.startswith("ERROR:")
+                or target_version.startswith("ERROR:")
+                or source_version != target_version
+            ):
+                raise HandoffError(
+                    f"{component} version mismatch: source={source_version!r}, "
+                    f"target={target_version!r}"
+                )
+        self._steps.append(f"{source} and {target}: version preflight passed")
 
     def _newest_snapshot(self, host: str) -> tuple[str, str]:
         payload = self._call(host, "snapshots", "--json")
