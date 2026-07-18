@@ -1,0 +1,28 @@
+[Unit]
+Description=Omnigent Google Chat mobile bridge
+After=network-online.target omnigent-server.service omnigent-host.service
+Wants=network-online.target
+ConditionPathExists=%h/.config/omnigent-google-chat.env
+ConditionPathExists=%h/dotfiles/services/omnigent-google-chat/.venv/bin/omnigent-google-chat
+ConditionPathExists=/var/facebook/credentials/%u/x509/%u.pem
+ConditionFileIsExecutable=/usr/local/bin/meta
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dotfiles/services/omnigent-google-chat
+EnvironmentFile=%h/.config/omnigent-google-chat.env
+Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+Environment=THRIFT_TLS_CL_CERT_PATH=/var/facebook/credentials/%u/x509/%u.pem
+Environment=THRIFT_TLS_CL_KEY_PATH=/var/facebook/credentials/%u/x509/%u.pem
+ExecStartPre=/usr/bin/mkdir -p %h/.omnigent
+ExecStart=%h/dotfiles/services/omnigent-google-chat/.venv/bin/omnigent-google-chat run
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:%h/.omnigent/google-chat.log
+StandardError=append:%h/.omnigent/google-chat.log
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=full
+
+[Install]
+WantedBy=default.target

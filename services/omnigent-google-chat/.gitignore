@@ -1,0 +1,12 @@
+.coverage
+.env
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+.uv-cache/
+__pycache__/
+*.py[cod]
+dist/
+*.sqlite3
+*.sqlite3-*

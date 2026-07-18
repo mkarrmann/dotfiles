@@ -463,6 +463,17 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
            "$HOME/.local/state/omnigent-host" \
            "$HOME/.local/state/omnigent-prodnet"
 
+  # The private Google Chat bridge is installed only on Meta Linux hosts where
+  # its machine-local configuration and sanctioned Meta CLI are both present.
+  gchat_project="$DOTFILES_DIR/services/omnigent-google-chat"
+  if [[ -f "$HOME/.config/omnigent-google-chat.env" ]] \
+      && [[ -x /usr/local/bin/meta ]] \
+      && [[ -f "$gchat_project/uv.lock" ]] \
+      && command -v uv &>/dev/null; then
+    (cd "$gchat_project" && uv sync --frozen --all-groups) \
+      || echo "WARNING: omnigent-google-chat dependency sync failed" >&2
+  fi
+
   # Omnigent server URL for systemd --user units (nvs@ nvim -> CodeCompanion,
   # and omnigent-host). environment.d is read by the user manager at start;
   # resolved per host so the HUB uses loopback and other devservers dial the HUB.
