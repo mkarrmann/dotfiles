@@ -14,24 +14,34 @@ test_plugin_bootstrap() {
   local home="$TMP/plugins-home"
   local cfg="$TMP/agent-config"
   local fake_bin="$TMP/plugin-bin"
-  mkdir -p "$home" "$cfg" "$fake_bin"
+  mkdir -p "$home/.claude/plugins" "$cfg" "$fake_bin"
 
   cat > "$cfg/drop-plugins.list" <<'EOF'
-# ignored
+# Comments may contain unmatched quotes, such as agent_config/sync's docs.
 
 plugin-one
   plugin-two  
 EOF
   : > "$cfg/plugins.list"
+  printf '{"plugins":{"plugin-one@market":{}}}\n' \
+    > "$home/.claude/plugins/installed_plugins.json"
   cat > "$cfg/sync" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$TMP/sync.log"
 EOF
   cat > "$fake_bin/agent-market" <<EOF
 #!/usr/bin/env bash
+if [[ "\${1:-}" == list ]]; then
+  printf 'plugin plugin-one\nplugin retained-plugin\n'
+  exit 0
+fi
 printf '%s\n' "\$*" >> "$TMP/agent-market.log"
 EOF
-  chmod +x "$cfg/sync" "$fake_bin/agent-market"
+  cat > "$fake_bin/jq" <<'EOF'
+#!/usr/bin/env bash
+echo plugin-one@market
+EOF
+  chmod +x "$cfg/sync" "$fake_bin/agent-market" "$fake_bin/jq"
 
   if sed -n '/^[[:space:]]*mapfile[[:space:]]/p' "$ROOT/agent_config/bootstrap-plugins" \
       | sed -n '1p' | read -r _; then
@@ -41,8 +51,11 @@ EOF
   HOME="$home" PATH="$fake_bin:/usr/bin:/bin" AGENT_CONFIG_DIR="$cfg" \
     bash "$ROOT/agent_config/bootstrap-plugins" >/dev/null
 
-  [[ "$(wc -l < "$TMP/agent-market.log" | tr -d ' ')" == 8 ]] \
-    || fail "expected two uninstalls for each of four agents"
+  [[ "$(wc -l < "$TMP/agent-market.log" | tr -d ' ')" == 4 ]] \
+    || fail "expected only the installed dropped plugin to be uninstalled"
+  if sed -n '/plugin-two/p' "$TMP/agent-market.log" | sed -n '1p' | read -r _; then
+    fail "bootstrap attempted to uninstall a plugin that was not installed"
+  fi
   [[ "$(cat "$TMP/sync.log")" == apply ]] || fail "plugin sync was not applied"
 
   local before

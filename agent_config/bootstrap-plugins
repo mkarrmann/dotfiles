@@ -32,20 +32,57 @@ fi
 
 DROPS=()
 while IFS= read -r line || [ -n "$line" ]; do
-  # Canon entries are plugin identifiers, so surrounding whitespace is never
-  # meaningful. xargs is available on both macOS and Linux.
-  line="$(printf '%s' "$line" | xargs)"
+  # Trim with Bash parameter expansion. Passing comments through xargs is not
+  # safe because ordinary prose may contain unmatched quotes.
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
   case "$line" in
     ''|'#'*) continue ;;
     *) DROPS+=("$line") ;;
   esac
 done < "$DROPS_FILE"
 
+installed_for() {
+  local agent="$1"
+  if [ "$agent" = claude ]; then
+    if [ ! -f "$HOME/.claude/plugins/installed_plugins.json" ]; then
+      return 0
+    fi
+    jq -r '.plugins | keys[]' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null \
+      | sed 's/@.*$//' | sort -u
+  else
+    agent-market list --agent "$agent" 2>/dev/null \
+      | awk '$1=="plugin"{print $2}' | sort -u
+  fi
+}
+
+plugin_is_listed() {
+  local needle="$1"
+  local installed="$2"
+  local value
+  while IFS= read -r value; do
+    [ "$value" = "$needle" ] && return 0
+  done <<< "$installed"
+  return 1
+}
+
 echo "== uninstalling dropped plugins =="
 for a in "${AGENTS[@]}"; do
+  if ! installed="$(installed_for "$a")"; then
+    echo "  $a: unable to list plugins; skipping uninstall" >&2
+    continue
+  fi
+  removed=0
   for p in "${DROPS[@]}"; do
-    agent-market plugin "$p" uninstall --agent "$a" --quiet 2>/dev/null
+    plugin_is_listed "$p" "$installed" || continue
+    if agent-market plugin "$p" uninstall --agent "$a" --quiet 2>/dev/null; then
+      echo "  $a: removed $p"
+    else
+      echo "  $a: failed to remove $p" >&2
+    fi
+    removed=$((removed + 1))
   done
+  [ "$removed" -gt 0 ] || echo "  $a: no dropped plugins installed"
 done
 
 echo "== cleaning orphan plugin caches =="
