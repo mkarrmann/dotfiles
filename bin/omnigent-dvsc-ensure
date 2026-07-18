@@ -26,6 +26,16 @@
 # OMNIGENT_DATA_DIR, OMNIGENT_SERVER_URL.
 set -euo pipefail
 
+config_only=false
+if [[ "${1:-}" == "--config-only" ]]; then
+  config_only=true
+  shift
+fi
+if [[ $# -ne 0 ]]; then
+  echo "usage: omnigent-dvsc-ensure [--config-only]" >&2
+  exit 2
+fi
+
 log() { printf '[dvsc-ensure] %s\n' "$*"; }
 
 DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
@@ -60,7 +70,7 @@ if [ ! -x "$OMNIGENT_PY" ]; then
   log "omnigent tool python not found at $OMNIGENT_PY; skipping"
   exit 0
 fi
-if [ ! -d "$SPEC_DIR" ]; then
+if ! $config_only && [ ! -d "$SPEC_DIR" ]; then
   log "agent spec missing at $SPEC_DIR; skipping"
   exit 0
 fi
@@ -114,6 +124,11 @@ os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path, "w") as f:
     yaml.safe_dump(cfg, f, sort_keys=False, default_flow_style=False)
 PY
+
+if $config_only; then
+  log "configuration reconciled (--config-only)"
+  exit 0
+fi
 
 # ── 2. Register the dvsc builtin agent if missing ────────────────────────────
 status_json="$("$OMNIGENT_BIN" server status --json 2>/dev/null || echo '{}')"

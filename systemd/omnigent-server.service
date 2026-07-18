@@ -7,10 +7,10 @@
 #
 # The Omnigent server runs on ONE devserver (the HUB) and is dialed by:
 #   - other devservers, through the hub's prod-network loopback proxy
-#   - the Mac, via the ET forward tunnel Mac:6767 -> HUB:6767 (see nvs-tunnels)
-# A shared topology check gates it so init.sh can enable it on every devserver
-# while only the hub actually starts it. Move the hub in
-# ~/dotfiles/omnigent_config/topology.env and rerun init.sh on each machine.
+#   - the Mac, via omnigent-tunnel's ET forward Mac:6767 -> active HUB:6767
+# A shared epoch/lineage check gates it so init.sh can enable it on both hub
+# candidates while only the active owner starts. Ownership changes through
+# `omnigent-hub promote` and never through a topology edit.
 #
 # Runs the published uv-tool install (~/.local/bin/omnigent, prebuilt web UI) —
 # NOT the ~/repos/omnigent editable build, which can't compile its web UI here
@@ -18,13 +18,14 @@
 
 [Unit]
 Description=Omnigent server (hub; serves API + web UI, dialed by Mac and other devservers)
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-ExecCondition=%h/bin/omnigent-server-url --is-hub
 Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 EnvironmentFile=%h/dotfiles/omnigent_config/topology.env
+ExecCondition=%h/dotfiles/services/omnigent-hub/.venv/bin/omnigent-hub gate
 # Bind 127.0.0.1 (v4 loopback): serves every local consumer (Orchest,
 # CodeCompanion) and the Mac's ET forward tunnel, which connects to the remote
 # v4 loopback. NOTE: `--host ::` was rejected — uvicorn sets IPV6_V6ONLY, so a
@@ -34,6 +35,7 @@ EnvironmentFile=%h/dotfiles/omnigent_config/topology.env
 ExecStart=%h/.local/bin/omnigent server --host 127.0.0.1 --port ${OMNIGENT_PORT} --database-uri sqlite:///%h/.omnigent/chat.db --artifact-location %h/.omnigent/artifacts
 Restart=always
 RestartSec=5
+TimeoutStartSec=150
 StateDirectory=omnigent-server
 StandardOutput=append:%S/omnigent-server/server.log
 StandardError=append:%S/omnigent-server/server.log

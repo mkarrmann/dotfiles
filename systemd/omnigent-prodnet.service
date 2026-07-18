@@ -16,12 +16,13 @@ Wants=omnigent-server.service
 
 [Service]
 Type=simple
-ExecCondition=%h/bin/omnigent-server-url --is-hub
 Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 EnvironmentFile=%h/dotfiles/omnigent_config/topology.env
+ExecCondition=%h/dotfiles/services/omnigent-hub/.venv/bin/omnigent-hub gate
 ExecStart=/usr/bin/env python3 %h/bin/omnigent-prodnet-proxy
 Restart=always
 RestartSec=5
+TimeoutStartSec=150
 StateDirectory=omnigent-prodnet
 StandardOutput=append:%S/omnigent-prodnet/proxy.log
 StandardError=append:%S/omnigent-prodnet/proxy.log

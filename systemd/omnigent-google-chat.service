@@ -9,16 +9,17 @@ ConditionFileIsExecutable=/usr/local/bin/meta
 
 [Service]
 Type=simple
-ExecCondition=%h/bin/omnigent-server-url --is-hub
 WorkingDirectory=%h/dotfiles/services/omnigent-google-chat
 EnvironmentFile=%h/.config/omnigent-google-chat.env
 Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 Environment=THRIFT_TLS_CL_CERT_PATH=/var/facebook/credentials/%u/x509/%u.pem
 Environment=THRIFT_TLS_CL_KEY_PATH=/var/facebook/credentials/%u/x509/%u.pem
+ExecCondition=%h/dotfiles/services/omnigent-hub/.venv/bin/omnigent-hub gate
 ExecStartPre=/usr/bin/mkdir -p %h/.omnigent
 ExecStart=%h/dotfiles/services/omnigent-google-chat/.venv/bin/omnigent-google-chat run
 Restart=on-failure
 RestartSec=5
+TimeoutStartSec=150
 StandardOutput=append:%h/.omnigent/google-chat.log
 StandardError=append:%h/.omnigent/google-chat.log
 UMask=0077

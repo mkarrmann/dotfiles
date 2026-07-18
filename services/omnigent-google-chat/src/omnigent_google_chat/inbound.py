@@ -161,7 +161,11 @@ class InboundProcessor:
         self, message: GoogleChatMessage, session_id: str, text: str
     ) -> None:
         async def submit() -> None:
-            item_id = await self._omnigent.submit_message(session_id, text)
+            item_id = await self._omnigent.submit_message(
+                session_id,
+                text,
+                source_message_name=message.name,
+            )
             if item_id:
                 await self._store.set_inbound_state(
                     message.name,

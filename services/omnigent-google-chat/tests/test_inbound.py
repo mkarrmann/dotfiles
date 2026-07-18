@@ -35,7 +35,14 @@ class FakeOmnigent:
         self.get_error: BaseException | None = None
         self.recovery_error: BaseException | None = None
 
-    async def submit_message(self, session_id: str, text: str) -> str | None:
+    async def submit_message(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        source_message_name: str | None = None,
+    ) -> str | None:
+        assert source_message_name is not None
         self.messages.append((session_id, text))
         if self.outcomes:
             outcome = self.outcomes.pop(0)

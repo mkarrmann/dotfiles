@@ -5,8 +5,7 @@ set -euo pipefail
 # Runs in a dedicated Ghostty window (workspace T).
 #
 # Sets up:
-#   - Forward tunnels (-t) for each nvim session's RPC port, plus the Omnigent
-#     server (HUB devserver only) so the Mac reaches it on localhost:6767
+#   - Forward tunnels (-t) for each nvim session's RPC port
 #   - Reverse tunnels (-r) for clipboard relay and ACP persistence
 #   - Remote headless nvim servers via nvs --server-only
 #   - Local clipboard listener (nvs-clip-listen) for receiving yanked text
@@ -19,11 +18,6 @@ set -euo pipefail
 
 NVS_CLIP_PORT="${NVS_CLIP_PORT:-8765}"
 PERSISTENCE_PORT="${PERSISTENCE_PORT:-7847}"
-server_url_bin="${OMNIGENT_SERVER_URL_BIN:-$HOME/bin/omnigent-server-url}"
-OMNIGENT_PORT="${OMNIGENT_PORT:-$("$server_url_bin" --port)}"
-# The Omnigent server runs on this HUB devserver; forward-tunnel it to the Mac
-# only for the HUB session. Other devservers dial the HUB over the prod network.
-OMNIGENT_HUB_FQDN="${OMNIGENT_HUB_FQDN:-$("$server_url_bin" --hub)}"
 
 host="${1:?usage: nvs-tunnels HOST SESSION[:WORKDIR] ...}"
 shift
@@ -61,13 +55,6 @@ for spec in "$@"; do
   echo "  $session -> localhost:$port"
 done
 
-# HUB devserver only: forward the Omnigent server to the Mac's localhost:6767 so
-# Orchest and CodeCompanion reach it transparently (both poll 127.0.0.1:6767).
-if [[ "$host" == "$OMNIGENT_HUB_FQDN" ]]; then
-  tunnel_spec+=",${OMNIGENT_PORT}:${OMNIGENT_PORT}"
-  echo "  omnigent -> localhost:${OMNIGENT_PORT} (HUB server)"
-fi
-
 # Server lifecycle is owned by systemd --user on the devvm
 # (~/dotfiles/systemd/nvs@.service, enabled per ~/.config/nvs/sessions).
 # The Omnigent server and execution host are likewise owned by systemd
@@ -91,7 +78,7 @@ while true; do
   # ET requires reverse tunnels to be merged into a single -r flag
   # (comma-separated), not passed as multiple -r flags. Same shape as
   # the -t forward-tunnel spec built above.
-  x2ssh -et "$host" \
+  NVS_TUNNEL_BOOTSTRAP=v3 x2ssh -et "$host" \
     -t "$tunnel_spec" \
     -r "$NVS_CLIP_PORT:$NVS_CLIP_PORT,$PERSISTENCE_PORT:$PERSISTENCE_PORT" \
     -c "zsh -lc '${remote_cmd}'" &

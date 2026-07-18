@@ -450,10 +450,31 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   retire_launchd_plist "com.mkarrmann.omnigent-server"
 fi
 
+# The operator CLI runs locally on both hub devservers and on the Mac, which
+# orchestrates authenticated handoffs through x2ssh.
+"$DOTFILES_DIR/bin/omnigent-version-ensure" \
+  || echo "WARNING: failed to install the pinned Omnigent version" >&2
+hub_project="$DOTFILES_DIR/services/omnigent-hub"
+if [[ -f "$hub_project/uv.lock" ]] && command -v uv &>/dev/null; then
+  (cd "$hub_project" && uv sync --frozen --all-groups) \
+    || echo "WARNING: omnigent-hub dependency sync failed" >&2
+fi
+
 # Linux-only: systemd --user units. Linger is expected to be enabled
 # (`loginctl enable-linger`) so these survive logout and start at boot.
 if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   sync_link_dir "$DOTFILES_DIR/systemd" "$HOME/.config/systemd/user" "*.service"
+  sync_link_dir "$DOTFILES_DIR/systemd" "$HOME/.config/systemd/user" "*.timer"
+  # Hub ownership is dynamic. Only the reconcile timer starts at boot; it
+  # starts the linked hub units on the owner and stops them on the standby.
+  for unit_name in omnigent-server.service \
+      omnigent-prodnet.service \
+      omnigent-client-proxy.service \
+      omnigent-google-chat.service \
+      omnigent-snapshot.timer; do
+    rm -f "$HOME/.config/systemd/user/default.target.wants/$unit_name" \
+          "$HOME/.config/systemd/user/timers.target.wants/$unit_name"
+  done
   systemctl --user daemon-reload 2>/dev/null || true
 
   # Pre-create state dirs: systemd opens StandardOutput=append: BEFORE creating
@@ -461,7 +482,19 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   # absent. Creating them up front makes first start idempotent.
   mkdir -p "$HOME/.local/state/omnigent-server" \
            "$HOME/.local/state/omnigent-host" \
-           "$HOME/.local/state/omnigent-prodnet"
+           "$HOME/.local/state/omnigent-prodnet" \
+           "$HOME/.local/state/omnigent-client-proxy" \
+           "$HOME/.local/state/omnigent-hub"
+
+  # Candidate hubs read the authoritative record through Persistent Storage
+  # and materialize a routing cache before any client or service resolves its
+  # server URL. A fresh private mount may remain fenced until the interactive
+  # Mac tunnel or operator wrapper supplies an ephemeral delegated CAT.
+  if "$DOTFILES_DIR/bin/omnigent-server-url" --is-candidate \
+      && [[ -x "$hub_project/.venv/bin/omnigent-hub" ]]; then
+    "$hub_project/.venv/bin/omnigent-hub" cache-routing --json >/dev/null \
+      || echo "WARNING: failed to refresh the Omnigent active-hub cache" >&2
+  fi
 
   # The private Google Chat bridge runs only beside the central server. Its
   # stable personal policy is tracked; the hub check materializes a private
@@ -470,8 +503,7 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   gchat_project="$DOTFILES_DIR/services/omnigent-google-chat"
   "$DOTFILES_DIR/bin/omnigent-google-chat-ensure" \
     || echo "WARNING: omnigent-google-chat runtime config generation failed" >&2
-  if "$DOTFILES_DIR/bin/omnigent-server-url" --is-hub \
-      && [[ -f "$HOME/.config/omnigent-google-chat.env" ]] \
+  if "$DOTFILES_DIR/bin/omnigent-server-url" --is-candidate \
       && [[ -x /usr/local/bin/meta ]] \
       && [[ -f "$gchat_project/uv.lock" ]] \
       && command -v uv &>/dev/null; then
@@ -481,7 +513,9 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
 
   # Omnigent server URL for systemd --user units (nvs@ nvim -> CodeCompanion,
   # and omnigent-host). environment.d is read by the user manager at start;
-  # resolved per host so the HUB uses loopback and other devservers dial the HUB.
+  # Both hub candidates use loopback: the owner reaches the server directly and
+  # the standby reaches it through omnigent-client-proxy. Other devservers dial
+  # the active hub directly.
   # Takes full effect after the next relogin / `systemctl --user daemon-reexec`.
   mkdir -p "$HOME/.config/environment.d"
   if [[ -x "$HOME/bin/omnigent-server-url" ]]; then
@@ -495,6 +529,13 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
     # Template units (foo@.service) can't be enabled without an instance —
     # their instances are managed declaratively below from a per-host config.
     [[ "$unit_name" == *@.service ]] && continue
+    # Timer activation owns this oneshot; starting it during every dotfiles
+    # reconciliation would create an unnecessary extra archive.
+    case "$unit_name" in
+      omnigent-server.service|omnigent-prodnet.service|omnigent-client-proxy.service|omnigent-google-chat.service|omnigent-snapshot.service|omnigent-hub-reconcile.service)
+        continue
+        ;;
+    esac
     if systemctl --user enable --now "$unit_name" &>/dev/null; then
       echo "enabled $unit_name"
     else
@@ -502,6 +543,15 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
     fi
   done
   shopt -u nullglob
+
+  # The retry timer runs on both candidates. It enables the hub-only services
+  # and snapshot timer only on the active owner, and disables them elsewhere.
+  systemctl --user enable --now omnigent-hub-reconcile.timer 2>/dev/null \
+    || echo "WARNING: failed to enable omnigent-hub-reconcile.timer" >&2
+  if "$DOTFILES_DIR/bin/omnigent-server-url" --is-candidate; then
+    "$hub_project/.venv/bin/omnigent-hub" reconcile-services --json >/dev/null \
+      || echo "WARNING: initial Omnigent service reconciliation failed" >&2
+  fi
 
   # Per-session nvim daemons (nvs@SESSION.service instances).
   # ~/.config/nvs/sessions is machine-local (not source-controlled, same as

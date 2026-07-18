@@ -50,9 +50,11 @@ async def _handle(client_reader: asyncio.StreamReader, client_writer: asyncio.St
 
 
 async def _main() -> None:
-    sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    family = socket.AF_INET6 if ":" in LISTEN_HOST else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    if family == socket.AF_INET6:
+        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
     sock.bind((LISTEN_HOST, LISTEN_PORT))
     sock.listen(128)
     sock.setblocking(False)

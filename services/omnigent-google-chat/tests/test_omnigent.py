@@ -102,13 +102,24 @@ async def test_submit_message_uses_session_event_shape_and_returns_item_id() -> 
         assert request.url.path == "/v1/sessions/conv/events"
         return httpx.Response(202, json={"queued": True, "item_id": "item_1"})
 
-    item_id = await client(handler).submit_message("conv", "hello")
+    item_id = await client(handler).submit_message(
+        "conv", "hello", source_message_name="spaces/space/messages/message"
+    )
     assert item_id == "item_1"
     assert captured == {
         "type": "message",
         "data": {
             "role": "user",
-            "content": [{"type": "input_text", "text": "hello"}],
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "hello",
+                    "source": {
+                        "type": "google_chat",
+                        "message_name": "spaces/space/messages/message",
+                    },
+                }
+            ],
         },
     }
 

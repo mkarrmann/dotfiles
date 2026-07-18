@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Stable operator entry point for the dotfiles-managed Omnigent hub package.
+set -euo pipefail
+
+DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
+binary="$DOTFILES/services/omnigent-hub/.venv/bin/omnigent-hub"
+if [[ ! -x "$binary" ]]; then
+  echo "ERROR: omnigent-hub is not installed; run $DOTFILES/init.sh" >&2
+  exit 1
+fi
+
+# Operator invocations may need to mount or refresh private Persistent
+# Storage. Keep the delegated credential in this process tree only. systemd
+# deliberately bypasses this wrapper, so unattended startup remains fenced.
+clicat_bin="$(command -v clicat 2>/dev/null || true)"
+if [[ "${1:-}" != "-h" && "${1:-}" != "--help" \
+    && -z "${OMNIGENT_HA_DELEGATED_CAT:-}" \
+    && -n "$clicat_bin" ]]; then
+  topology="${OMNIGENT_TOPOLOGY_FILE:-$DOTFILES/omnigent_config/topology.env}"
+  owner_fbid="${OMNIGENT_OWNER_FBID:-}"
+  if [[ -f "$topology" ]]; then
+    # shellcheck disable=SC1090
+    source "$topology"
+    owner_fbid="${owner_fbid:-${OMNIGENT_OWNER_FBID:-}}"
+  fi
+  if [[ -n "$owner_fbid" ]]; then
+    delegated_cat="$("$clicat_bin" create-delegated \
+      --signer_type FBID \
+      --signer_id "$owner_fbid" \
+      --token_timeout_seconds 900 \
+      --base64_url 2>/dev/null || true)"
+    if [[ -n "$delegated_cat" ]]; then
+      export OMNIGENT_HA_DELEGATED_CAT="$delegated_cat"
+    else
+      echo "WARNING: could not mint delegated Persistent Storage credential" >&2
+    fi
+  fi
+fi
+exec "$binary" "$@"

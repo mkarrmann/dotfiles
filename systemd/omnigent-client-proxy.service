@@ -1,0 +1,15 @@
+[Unit]
+Description=Omnigent stable loopback client proxy (inactive hub to active hub)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+EnvironmentFile=%h/dotfiles/omnigent_config/topology.env
+ExecStart=%h/bin/omnigent-client-proxy
+Restart=always
+RestartSec=5
+StateDirectory=omnigent-client-proxy
+StandardOutput=append:%S/omnigent-client-proxy/proxy.log
+StandardError=append:%S/omnigent-client-proxy/proxy.log

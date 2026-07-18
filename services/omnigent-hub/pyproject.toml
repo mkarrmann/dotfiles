@@ -1,0 +1,36 @@
+[project]
+name = "omnigent-hub"
+version = "0.1.0"
+description = "Personal Omnigent primary/standby administration."
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+omnigent-hub = "omnigent_hub.cli:main"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.16.0",
+    "pytest>=8.4.0",
+    "ruff>=0.12.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.0,<0.9.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [".uv-cache", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

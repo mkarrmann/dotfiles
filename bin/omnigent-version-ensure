@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Install the exact Omnigent release used by both hubs and the Mac client.
+set -euo pipefail
+
+DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
+TOPOLOGY="${OMNIGENT_TOPOLOGY_FILE:-$DOTFILES/omnigent_config/topology.env}"
+version_override="${OMNIGENT_VERSION:-}"
+if [[ -f "$TOPOLOGY" ]]; then
+  # shellcheck disable=SC1090
+  source "$TOPOLOGY"
+fi
+version="${version_override:-${OMNIGENT_VERSION:-}}"
+if [[ -z "$version" ]]; then
+  echo "ERROR: OMNIGENT_VERSION is not configured" >&2
+  exit 1
+fi
+
+installed=""
+if [[ -x "$HOME/.local/bin/omnigent" ]]; then
+  installed="$("$HOME/.local/bin/omnigent" --version 2>/dev/null | awk 'NR == 1 {print $2}')"
+fi
+if [[ "$installed" == "$version" ]]; then
+  echo "[omnigent-version] omnigent $version already installed"
+  exit 0
+fi
+if ! command -v uv >/dev/null 2>&1; then
+  echo "ERROR: uv is required to install omnigent $version" >&2
+  exit 1
+fi
+
+command=(uv tool install --force "omnigent==$version")
+if command -v with-proxy >/dev/null 2>&1; then
+  command=(with-proxy "${command[@]}")
+fi
+echo "[omnigent-version] installing omnigent $version"
+"${command[@]}"
+actual="$("$HOME/.local/bin/omnigent" --version 2>/dev/null | awk 'NR == 1 {print $2}')"
+if [[ "$actual" != "$version" ]]; then
+  echo "ERROR: expected omnigent $version after install, found ${actual:-nothing}" >&2
+  exit 1
+fi

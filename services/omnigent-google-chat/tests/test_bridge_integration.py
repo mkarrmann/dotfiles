@@ -192,7 +192,16 @@ async def test_existing_session_mirror_phone_reply_and_restart_dedup(tmp_path: P
                 "type": "message",
                 "data": {
                     "role": "user",
-                    "content": [{"type": "input_text", "text": "continue from my phone"}],
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "continue from my phone",
+                            "source": {
+                                "type": "google_chat",
+                                "message_name": "spaces/s/messages/phone",
+                            },
+                        }
+                    ],
                 },
             }
         ]

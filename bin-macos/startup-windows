@@ -31,6 +31,7 @@ WORKSPACES=(
   "1|chrome|Chrome: ws1"
   "T|ghostty|FTW: tunnels|FTW.*tunnels|~|nvs-tunnels devvm36111.ftw0.facebook.com FTW-main1 FTW-checkout1:~/checkout1/fbsource FTW-checkout2:~/checkout2/fbsource FTW-checkout3:~/checkout3/fbsource"
   "T|ghostty|CCO: tunnels|CCO.*tunnels|~|nvs-tunnels devvm20365.cco0.facebook.com CCO-main1 CCO-checkout1:~/checkout1/fbsource CCO-checkout2:~/checkout2/fbsource CCO-checkout3:~/checkout3/fbsource CCO-checkout4:~/checkout4/fbsource"
+  "T|ghostty|Omnigent: tunnel|Omnigent.*tunnel|~|omnigent-tunnel"
   "2|ghostty|CCO: checkout1|CCO.*checkout1\\b|~|nvs CCO-checkout1"
   "2|chrome|Chrome: ws2"
   "3|ghostty|FTW: checkout1|FTW.*checkout1\\b|~|nvs FTW-checkout1"
@@ -52,7 +53,6 @@ SWEEP_WORKSPACE="Z"
 CHROME_APP="Google Chrome"
 CHROME_INVALID_TITLE_PATTERN="^Who.s using Chrome\\?$"
 OMNIGENT_PORT="${OMNIGENT_PORT:-$(omnigent-server-url --port)}"
-OMNIGENT_REMOTE_PORT="${OMNIGENT_REMOTE_PORT:-16767}"
 # ─────────────────────────────────────────────────────────────────────
 
 # ── Window creation ─────────────────────────────────────────────────
@@ -147,6 +147,8 @@ close_window_id() {
 tunnel_command_is_current() {
   local host="$1"
   local cmds
+  # We need the complete command line to inspect its tunnel flags.
+  # shellcheck disable=SC2009
   cmds=$(ps -axo command | grep -F "x2ssh -et $host" | grep -v grep || true)
 
   # If the tunnel is between x2ssh attempts (Duo/reconnect), don't churn the
@@ -156,8 +158,7 @@ tunnel_command_is_current() {
 
   echo "$cmds" \
     | grep -F -- "-r " \
-    | grep -F "$OMNIGENT_REMOTE_PORT:$OMNIGENT_PORT" \
-    | grep -F "OMNIGENT_TUNNEL_BOOTSTRAP=v2" >/dev/null
+    | grep -Fv ",${OMNIGENT_PORT}:${OMNIGENT_PORT}" >/dev/null
 }
 
 stop_tunnel_processes_for_host() {
@@ -175,6 +176,8 @@ stop_tunnel_processes_for_host() {
 
   [[ -z "$pids" ]] && return 0
   echo "Stopping stale tunnel process(es) for $host: $(echo "$pids" | tr '\n' ' ')"
+  # pids is an intentional whitespace-delimited list produced by awk.
+  # shellcheck disable=SC2086
   kill $pids 2>/dev/null || true
 }
 
@@ -190,7 +193,7 @@ close_stale_tunnel_window_if_needed() {
     return 1
   fi
 
-  echo "[$title] existing tunnel is stale for $host; recreating so devvm port $OMNIGENT_REMOTE_PORT forwards to Mac port $OMNIGENT_PORT..."
+  echo "[$title] existing NVS tunnel is stale for $host; recreating it..."
   close_window_id "$wid" "stale tunnel"
   stop_tunnel_processes_for_host "$host"
 }
@@ -386,9 +389,9 @@ SNAPSHOT=$(snapshot_windows)
 
 failures=0
 
-# The central Omnigent server reaches the Mac through the hub ET forward
-# tunnel. An existing tunnel satisfies this preflight; on a cold start the
-# tunnel window created below repairs it.
+# The dedicated Omnigent ET forward exposes the active hub on Mac loopback. An
+# existing tunnel satisfies this preflight; on a cold start the tunnel window
+# created below repairs it.
 if ! curl -sf "http://127.0.0.1:${OMNIGENT_PORT}/health" >/dev/null 2>&1; then
   echo "Omnigent hub tunnel is not healthy yet at http://127.0.0.1:${OMNIGENT_PORT}; the tunnel bootstrap will retry it" >&2
 fi
@@ -540,7 +543,9 @@ for ws in $(managed_workspaces); do
   for wid in $stray_ids; do
     [[ -z "$wid" ]] && continue
     echo "Sweeping unmatched window $wid from workspace $ws to $SWEEP_WORKSPACE..."
-    aerospace move-node-to-workspace --window-id "$wid" "$SWEEP_WORKSPACE" 2>/dev/null && ((swept++)) || true
+    if aerospace move-node-to-workspace --window-id "$wid" "$SWEEP_WORKSPACE" 2>/dev/null; then
+      ((swept++)) || true
+    fi
   done
 done
 
@@ -566,7 +571,9 @@ for ws in $(managed_workspaces); do
       )] | .[]["window-id"]') || true
   for wid in $stray_ids; do
     [[ -z "$wid" ]] && continue
-    aerospace move-node-to-workspace --window-id "$wid" "$SWEEP_WORKSPACE" 2>/dev/null && ((swept++)) || true
+    if aerospace move-node-to-workspace --window-id "$wid" "$SWEEP_WORKSPACE" 2>/dev/null; then
+      ((swept++)) || true
+    fi
   done
 done
 
@@ -575,6 +582,8 @@ if [[ "$swept" -gt 0 ]]; then
 fi
 
 # Arrange layouts (tiles | accordion) on managed workspaces
+# managed_workspaces intentionally expands to separate workspace arguments.
+# shellcheck disable=SC2046
 ARRANGE_ATTEMPTS=8 ARRANGE_RETRY_SLEEP=1 arrange-workspaces --force $(managed_workspaces) || {
   echo "WARNING: arrange-workspaces did not converge" >&2
   ((failures++)) || true

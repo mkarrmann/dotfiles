@@ -141,14 +141,26 @@ class OmnigentClient:
             has_more=payload.get("has_more") is True,
         )
 
-    async def submit_message(self, session_id: str, text: str) -> str | None:
+    async def submit_message(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        source_message_name: str | None = None,
+    ) -> str | None:
+        content: dict[str, Any] = {"type": "input_text", "text": text}
+        if source_message_name:
+            content["source"] = {
+                "type": "google_chat",
+                "message_name": source_message_name,
+            }
         return await self.submit_event(
             session_id,
             {
                 "type": "message",
                 "data": {
                     "role": "user",
-                    "content": [{"type": "input_text", "text": text}],
+                    "content": [content],
                 },
             },
         )

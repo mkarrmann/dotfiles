@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Give both hub candidates a stable loopback URL. On the inactive hub this
+# forwards to the active hub's prod-network listener.
+set -euo pipefail
+
+DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
+SERVER_URL_BIN="${OMNIGENT_SERVER_URL_BIN:-$DOTFILES/bin/omnigent-server-url}"
+target="$($SERVER_URL_BIN --hub)"
+port="$($SERVER_URL_BIN --port)"
+
+export OMNIGENT_PRODNET_HOST=127.0.0.1
+export OMNIGENT_PORT="$port"
+export OMNIGENT_TARGET_HOST="$target"
+export OMNIGENT_TARGET_PORT="$port"
+exec python3 "$DOTFILES/bin/omnigent-prodnet-proxy"

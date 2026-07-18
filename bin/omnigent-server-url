@@ -1,54 +1,113 @@
 #!/usr/bin/env bash
-# Single source of truth for WHERE the Omnigent server lives.
-#
-# The server runs as an always-on systemd --user unit on the HUB devserver.
-# Everyone else dials it:
-#   - HUB devserver itself   -> loopback
-#   - other Meta devservers  -> HUB over the prod network (IPv6-routable)
-#   - Mac / off-corp         -> loopback (ET forward-tunnels Mac:6767 -> HUB:6767)
-#
-# Consumed by omnigent-host-run, init.sh (environment.d), .shell_env, the Mac
-# tunnel bootstrap, and hub-only systemd ExecCondition checks. The tracked
-# topology file is the single place to move the hub or change its port.
+# Resolve the active Omnigent server from the locally generated routing cache.
+# Static topology names candidate hubs; it never decides current ownership.
 set -euo pipefail
 
 DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
 TOPOLOGY="${OMNIGENT_TOPOLOGY_FILE:-$DOTFILES/omnigent_config/topology.env}"
-hub_override="${OMNIGENT_HUB_FQDN:-}"
+ROUTING_CACHE="${OMNIGENT_HA_ROUTING_CACHE:-$HOME/.config/omnigent/active-hub.json}"
+primary_override="${OMNIGENT_PRIMARY_FQDN:-}"
+standby_override="${OMNIGENT_STANDBY_FQDN:-}"
 port_override="${OMNIGENT_PORT:-}"
 if [[ -f "$TOPOLOGY" ]]; then
   # shellcheck disable=SC1090
   source "$TOPOLOGY"
 fi
-OMNIGENT_HUB_FQDN="${hub_override:-${OMNIGENT_HUB_FQDN:-devvm20365.cco0.facebook.com}}"
+primary="${primary_override:-${OMNIGENT_PRIMARY_FQDN:-devvm20365.cco0.facebook.com}}"
+standby="${standby_override:-${OMNIGENT_STANDBY_FQDN:-devvm36111.ftw0.facebook.com}}"
 port="${port_override:-${OMNIGENT_PORT:-6767}}"
-host="$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo unknown)"
+host="${OMNIGENT_LOCAL_FQDN:-$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo unknown)}"
 
 case "${1:-}" in
-  --hub)
-    echo "$OMNIGENT_HUB_FQDN"
+  --primary)
+    echo "$primary"
+    exit 0
+    ;;
+  --standby)
+    echo "$standby"
+    exit 0
+    ;;
+  --candidates)
+    printf '%s\n%s\n' "$primary" "$standby"
     exit 0
     ;;
   --port)
     echo "$port"
     exit 0
     ;;
-  --is-hub)
-    [[ "$host" == "$OMNIGENT_HUB_FQDN" ]]
+  --is-candidate)
+    [[ "$host" == "$primary" || "$host" == "$standby" ]]
     exit
-    ;;
-  "") ;;
-  *)
-    echo "usage: omnigent-server-url [--hub|--port|--is-hub]" >&2
-    exit 2
     ;;
 esac
 
-if [[ "$host" == "$OMNIGENT_HUB_FQDN" ]]; then
+read_cache() {
+  python3 - "$ROUTING_CACHE" "$primary" "$standby" <<'PY'
+import json
+import sys
+
+path, primary, standby = sys.argv[1:]
+try:
+    with open(path, encoding="utf-8") as handle:
+        value = json.load(handle)
+except (OSError, json.JSONDecodeError) as exc:
+    raise SystemExit(f"cannot read routing cache {path}: {exc}")
+if value.get("format_version") != 1:
+    raise SystemExit(f"invalid routing cache format in {path}")
+epoch = value.get("epoch")
+if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 1:
+    raise SystemExit(f"invalid routing cache epoch in {path}")
+state = value.get("state")
+active = value.get("active_hub")
+if state != "active":
+    transition = value.get("transition_id") or "unknown"
+    raise SystemExit(f"Omnigent is fenced by transition {transition} at epoch {epoch}")
+if active not in (primary, standby):
+    raise SystemExit(f"routing cache names unconfigured hub {active!r}")
+activation = value.get("activation_id")
+if not isinstance(activation, str) or not activation:
+    raise SystemExit("routing cache has no activation_id")
+print(f"{active}\t{epoch}\t{activation}")
+PY
+}
+
+# macOS clients always use the stable local ET endpoint. They only need the
+# active hub when managing the tunnel itself (--hub below).
+if [[ "$(uname -s)" == "Darwin" && -z "${1:-}" ]]; then
   echo "http://127.0.0.1:${port}"
-elif [[ "$host" == *.facebook.com || "$host" == *.tfbnw.net ]]; then
-  echo "http://${OMNIGENT_HUB_FQDN}:${port}"
-else
-  # Mac / off-corp: reach the HUB through the ET forward tunnel on loopback.
-  echo "http://127.0.0.1:${port}"
+  exit 0
 fi
+
+if ! cache_value="$(read_cache 2>&1)"; then
+  echo "ERROR: $cache_value" >&2
+  exit 1
+fi
+IFS=$'\t' read -r active_hub epoch activation_id <<< "$cache_value"
+
+case "${1:-}" in
+  --hub)
+    echo "$active_hub"
+    ;;
+  --epoch)
+    echo "$epoch"
+    ;;
+  --activation-id)
+    echo "$activation_id"
+    ;;
+  --is-hub)
+    [[ "$host" == "$active_hub" ]]
+    ;;
+  "")
+    if [[ "$host" == "$primary" || "$host" == "$standby" ]]; then
+      echo "http://127.0.0.1:${port}"
+    elif [[ "$host" == *.facebook.com || "$host" == *.tfbnw.net ]]; then
+      echo "http://${active_hub}:${port}"
+    else
+      echo "http://127.0.0.1:${port}"
+    fi
+    ;;
+  *)
+    echo "usage: omnigent-server-url [--hub|--primary|--standby|--candidates|--port|--epoch|--activation-id|--is-hub|--is-candidate]" >&2
+    exit 2
+    ;;
+esac
