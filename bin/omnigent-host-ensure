@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-OMNIGENT_PORT="${OMNIGENT_PORT:-6767}"
-OMNIGENT_URL="${OMNIGENT_URL:-http://127.0.0.1:${OMNIGENT_PORT}}"
+if [[ -z "${OMNIGENT_URL:-}" ]]; then
+  if command -v omnigent-server-url >/dev/null 2>&1; then
+    OMNIGENT_URL="$(omnigent-server-url)"
+  elif [[ -x "$HOME/dotfiles/bin/omnigent-server-url" ]]; then
+    OMNIGENT_URL="$("$HOME/dotfiles/bin/omnigent-server-url")"
+  else
+    OMNIGENT_URL="http://127.0.0.1:${OMNIGENT_PORT:-6767}"
+  fi
+fi
 OMNIGENT_BIN="${OMNIGENT_BIN:-}"
 
 state_dir="$HOME/.omnigent"

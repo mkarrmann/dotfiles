@@ -9,6 +9,7 @@ ConditionFileIsExecutable=/usr/local/bin/meta
 
 [Service]
 Type=simple
+ExecCondition=%h/bin/omnigent-server-url --is-hub
 WorkingDirectory=%h/dotfiles/services/omnigent-google-chat
 EnvironmentFile=%h/.config/omnigent-google-chat.env
 Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin

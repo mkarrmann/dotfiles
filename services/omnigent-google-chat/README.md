@@ -8,8 +8,9 @@ uses the sanctioned `meta google.chat.message` CLI for all Chat access.
 ## Safety model
 
 - Omnigent remains the agent runtime and transcript authority.
-- Sessions are opt-in by default through the
-  `omnigent.google_chat.enabled=true` label.
+- The reusable bridge defaults to explicit label opt-in. This personal
+  deployment deliberately uses all-host discovery, with an explicit
+  `omnigent.google_chat.enabled=false` escape hatch per session.
 - Chat output is authored as Meta Bot. The daemon refuses to start until Phase
   0 has established a bot actor distinct from the controlling human.
 - Every phone message is claimed durably before dispatch. An uncertain
@@ -29,26 +30,51 @@ uses the sanctioned `meta google.chat.message` CLI for all Chat access.
 
 Do not use a direct message. Meta Bot identity requires a named space.
 
+## Deployment topology
+
+The personal deployment is fully described in dotfiles:
+
+- `~/dotfiles/omnigent_config/topology.env` names the one hub devserver that
+  owns the Omnigent server, prod-network proxy, Google Chat bridge, transcript
+  database, and bridge database.
+- `~/dotfiles/omnigent_config/google-chat.env` contains the stable, non-secret
+  Google Chat resource IDs and bridge policy.
+- every devserver runs `omnigent-host.service` and resolves the central server
+  through `omnigent-server-url`;
+- the Mac reaches the same server through the hub ET tunnel and runs its local
+  execution host through launchd; and
+- the bridge runs only on the hub, but `host_scope=all` lets it mirror and
+  recover sessions bound to any host registered with the single-user server.
+
+Changing the hub is a tracked topology change, not a collection of local
+edits. Update `topology.env`, move `~/.omnigent/chat.db`, artifacts, and the
+Google Chat bridge database to the new hub, then rerun `init.sh` everywhere.
+
 ## Install
 
 ```bash
-cd ~/dotfiles/services/omnigent-google-chat
-uv sync --all-groups
-cp .env.example ~/.config/omnigent-google-chat.env
-chmod 600 ~/.config/omnigent-google-chat.env
+~/dotfiles/init.sh
 ```
 
-Fill in the exact space, human actor, bot actor, mention unixname, host, and
-Omnigent authentication settings. Omit `OMNIGENT_AUTH_EMAIL` for a local
-single-user server; sending that header selects a different identity instead
-of the server's reserved `local` owner. The actor IDs are Google Chat
-`sender.name` values such as `users/123...`, not display names.
+On the configured hub, bootstrap atomically materializes the tracked policy as
+`~/.config/omnigent-google-chat.env` with mode `0600`, adds the resolved local
+server URL, installs locked Python dependencies, and enables the service. On
+secondary devservers the same unit is installed but its hub `ExecCondition`
+keeps it inactive. On macOS the bridge is not installed.
+
+The generated env is not an override surface. Update the tracked policy and
+rerun `init.sh`. The actor IDs are Google Chat `sender.name` values such as
+`users/123...`, not display names. Omit `OMNIGENT_AUTH_EMAIL` for this local
+single-user server; sending that header would select a different identity
+instead of the reserved `local` owner.
 
 ## Phase 0
 
 Before enabling the daemon, run the interactive transport probe:
 
 ```bash
+cd ~/dotfiles/services/omnigent-google-chat
+set -a; source ~/dotfiles/omnigent_config/google-chat.env; set +a
 uv run omnigent-google-chat phase-zero
 ```
 
@@ -63,7 +89,8 @@ The probe uses synthetic text only. It:
 
 Reply to the probe from the phone when prompted. If Meta Bot is not a distinct
 non-human sender or a mentioned reply does not notify the phone, do not run the
-bridge. Otherwise set the reported actor IDs and:
+bridge. Otherwise update the reported actor IDs and validation gate in
+`~/dotfiles/omnigent_config/google-chat.env`, then rerun `init.sh`:
 
 ```text
 OMNIGENT_GCHAT_PHASE0_VALIDATED=true
@@ -72,17 +99,24 @@ OMNIGENT_GCHAT_PHASE0_VALIDATED=true
 ## Run
 
 ```bash
+cd ~/dotfiles/services/omnigent-google-chat
+set -a; source ~/.config/omnigent-google-chat.env; set +a
 uv run omnigent-google-chat run
 ```
 
-Add `omnigent.google_chat.enabled=true` to a session's labels through the normal
-Omnigent session update API or client label defaults. Label discovery also
-requires the session's host to equal `OMNIGENT_GCHAT_HOST_ID`, so a label from
-another machine cannot cross the bridge boundary. The bridge creates one thread
-for that existing session. It never creates an Omnigent session.
+The tracked personal policy uses `host-active` discovery with `host_scope=all`.
+It mirrors recent sessions from every Mac/devserver host registered with the
+central single-user server unless a session explicitly sets
+`omnigent.google_chat.enabled=false`. The bridge creates one thread for an
+existing session and never creates an Omnigent session.
 
-For CodeCompanion, set the label and the same exact host in its Omnigent adapter
-defaults:
+For a narrower deployment, use `host_scope=configured`, set
+`OMNIGENT_GCHAT_HOST_ID`, and add `omnigent.google_chat.enabled=true` to a
+session through the normal Omnigent session update API or client defaults.
+
+The tracked CodeCompanion config already resolves `host="auto"` to the local
+machine, uses the current workspace, and stamps the discovery label. A generic
+single-host setup can express the equivalent defaults as:
 
 ```lua
 require("codecompanion").setup({
@@ -114,13 +148,13 @@ require("codecompanion").setup({
 Omnigent labels are string-valued, so use `"true"`, not a Lua boolean.
 CodeCompanion's Omnigent session runtime merges these defaults into
 `POST /v1/sessions`; its existing tests cover static labels, label functions,
-and per-session overrides. `host` must match `OMNIGENT_GCHAT_HOST_ID`, and a
-remote devserver requires an explicit absolute `workspace`.
+and per-session overrides. In configured scope, `host` must match
+`OMNIGENT_GCHAT_HOST_ID`. In all scope, it must resolve to the actual execution
+host bound to the session. A remote devserver requires an absolute workspace.
 
-The optional `host-active` discovery mode mirrors recent, non-archived sessions
-on the configured host unless they explicitly carry
-`omnigent.google_chat.enabled=false`. This is convenient but copies more data
-to durable Chat history, so label mode is the default.
+The library default remains label-based and single-host. The tracked personal
+policy deliberately chooses all-host `host-active` behavior so CLI and
+CodeCompanion sessions started on any of these machines appear on the phone.
 
 ## Phone commands
 
@@ -150,9 +184,9 @@ Detaching stops future copies; it does not erase existing Chat history.
 
 ## systemd user service
 
-The dotfiles bootstrap installs `systemd/omnigent-google-chat.service` and
-syncs this project's locked environment when the private configuration and
-Meta CLI are present:
+The dotfiles bootstrap installs `systemd/omnigent-google-chat.service`,
+generates its private runtime environment on the hub, and syncs this project's
+locked environment when the Meta CLI is present:
 
 ```bash
 ~/dotfiles/init.sh
@@ -161,8 +195,28 @@ tail -f ~/.omnigent/google-chat.log
 
 The unit has no listening socket. It requires the existing Omnigent server and
 host services to be healthy but retries transient unavailability itself. It
-uses the host's provisioned x509 identity in place and keeps `/tmp` shared with
-the interactive `meta` CLI so authentication caches have the same lifecycle.
+uses the host's automatically provisioned x509 identity in place and never
+copies certificate material. `/tmp` remains shared with the interactive
+`meta` CLI so authentication caches have the same lifecycle.
+
+## Local state contract
+
+The remaining local files are runtime identity/state, not missing setup:
+
+- `~/.config/omnigent-google-chat.env` is generated from tracked policy on the
+  hub and replaced on every bootstrap; never edit it directly.
+- `~/.omnigent/config.yaml` is owned by Omnigent. Its `host.host_id` is a
+  unique per-machine registration and must not be copied between machines.
+  `omnigent-dvsc-ensure` reconciles the tracked server URL and ACP agent entry
+  while preserving that identity.
+- `~/.omnigent/chat.db` and `artifacts/` are authoritative server data on the
+  hub. `google-chat.sqlite3` is the bridge's delivery/dedup state. Logs and
+  caches are also hub-local runtime data.
+
+A fresh devserver only needs the dotfiles bootstrap: it receives central
+routing, starts its execution host, obtains its own host ID, and becomes
+eligible for all-host Google Chat discovery. The Mac receives the same routing
+through the ET tunnel and preserves its own host ID through launchd.
 
 ## Recovery
 
@@ -183,8 +237,8 @@ the interactive `meta` CLI so authentication caches have the same lifecycle.
   explicit migration after reviewing existing mappings.
 
 The database contains resource identities, hashes, cursors, and delivery
-state, but not phone message bodies or a transcript copy. Keep it and
-`~/.config/omnigent-google-chat.env` mode `0600` in private directories.
+state, but not phone message bodies or a transcript copy. Keep it in the
+owner-only `~/.omnigent` runtime directory.
 
 ## Development
 

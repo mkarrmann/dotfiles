@@ -12,7 +12,7 @@
 
   Quick verify:
     launchctl print gui/$UID/com.mkarrmann.omnigent-host | head
-    omnigent host status --server http://127.0.0.1:6767 --json
+    query Omnigent host status through http://127.0.0.1:6767
 -->
 <plist version="1.0">
   <dict>
@@ -33,8 +33,6 @@
     <dict>
       <key>PATH</key>
       <string>/Users/mkarrmann/bin:/Users/mkarrmann/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-      <key>OMNIGENT_PORT</key>
-      <string>6767</string>
       <!-- Codex reaches Meta's AI gateway through the local x2p proxy over mTLS.
            launchd does not inherit the interactive shell's exports (~/.zshrc), so
            a host-spawned codex subprocess needs these explicitly or it can't

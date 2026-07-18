@@ -7,14 +7,42 @@
 #   - other Meta devservers  -> HUB over the prod network (IPv6-routable)
 #   - Mac / off-corp         -> loopback (ET forward-tunnels Mac:6767 -> HUB:6767)
 #
-# Consumed by omnigent-host-run, init.sh (environment.d) and .shell_env. To move
-# the hub, change OMNIGENT_HUB_FQDN here and ConditionHost in
-# systemd/omnigent-server.service.
+# Consumed by omnigent-host-run, init.sh (environment.d), .shell_env, the Mac
+# tunnel bootstrap, and hub-only systemd ExecCondition checks. The tracked
+# topology file is the single place to move the hub or change its port.
 set -euo pipefail
 
-OMNIGENT_HUB_FQDN="${OMNIGENT_HUB_FQDN:-devvm20365.cco0.facebook.com}"
-port="${OMNIGENT_PORT:-6767}"
+DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
+TOPOLOGY="${OMNIGENT_TOPOLOGY_FILE:-$DOTFILES/omnigent_config/topology.env}"
+hub_override="${OMNIGENT_HUB_FQDN:-}"
+port_override="${OMNIGENT_PORT:-}"
+if [[ -f "$TOPOLOGY" ]]; then
+  # shellcheck disable=SC1090
+  source "$TOPOLOGY"
+fi
+OMNIGENT_HUB_FQDN="${hub_override:-${OMNIGENT_HUB_FQDN:-devvm20365.cco0.facebook.com}}"
+port="${port_override:-${OMNIGENT_PORT:-6767}}"
 host="$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo unknown)"
+
+case "${1:-}" in
+  --hub)
+    echo "$OMNIGENT_HUB_FQDN"
+    exit 0
+    ;;
+  --port)
+    echo "$port"
+    exit 0
+    ;;
+  --is-hub)
+    [[ "$host" == "$OMNIGENT_HUB_FQDN" ]]
+    exit
+    ;;
+  "") ;;
+  *)
+    echo "usage: omnigent-server-url [--hub|--port|--is-hub]" >&2
+    exit 2
+    ;;
+esac
 
 if [[ "$host" == "$OMNIGENT_HUB_FQDN" ]]; then
   echo "http://127.0.0.1:${port}"

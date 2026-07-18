@@ -22,7 +22,7 @@ class SessionReconciler:
         omnigent: OmnigentClient,
         sender: GoogleChatSender,
         space_name: str,
-        host_id: str,
+        host_id: str | None,
         discovery_mode: str,
         discovery_label: str,
         lookback_hours: int,
@@ -118,11 +118,14 @@ class SessionReconciler:
             return False
         label_value = session.labels.get(self._discovery_label)
         if self._discovery_mode == "label":
-            return session.host_id == self._host_id and _label_bool(label_value) is True
+            return self._host_allowed(session) and _label_bool(label_value) is True
         if _label_bool(label_value) is False:
             return False
         cutoff = int(time.time()) - self._lookback_seconds
-        return session.host_id == self._host_id and session.updated_at >= cutoff
+        return self._host_allowed(session) and session.updated_at >= cutoff
+
+    def _host_allowed(self, session: SessionSummary) -> bool:
+        return self._host_id is None or session.host_id == self._host_id
 
     async def _create_mapping(self, session: SessionSummary) -> None:
         sent = await self._sender.send(

@@ -45,7 +45,10 @@ class Settings(BaseSettings):
     omnigent_session_cookie: str | None = Field(
         default=None, validation_alias="OMNIGENT_SESSION_COOKIE"
     )
-    omnigent_host_id: str = Field(validation_alias="OMNIGENT_GCHAT_HOST_ID")
+    omnigent_host_id: str | None = Field(default=None, validation_alias="OMNIGENT_GCHAT_HOST_ID")
+    omnigent_host_scope: Literal["configured", "all"] = Field(
+        default="configured", validation_alias="OMNIGENT_GCHAT_HOST_SCOPE"
+    )
     omnigent_runner_launch_timeout_seconds: float = Field(
         default=60.0,
         ge=1.0,
@@ -182,6 +185,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_relationships(self) -> Settings:
+        if self.omnigent_host_scope == "configured" and not self.omnigent_host_id:
+            raise ValueError(
+                "OMNIGENT_GCHAT_HOST_ID is required when OMNIGENT_GCHAT_HOST_SCOPE=configured"
+            )
         if self.allowed_actor_id == self.meta_bot_actor_id:
             raise ValueError("human and Meta Bot actor identities must be distinct")
         if self.idle_poll_seconds < self.active_poll_seconds:

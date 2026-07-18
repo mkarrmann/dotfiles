@@ -18,7 +18,7 @@ Wants=omnigent-server.service
 [Service]
 Type=simple
 Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
-Environment=OMNIGENT_PORT=6767
+EnvironmentFile=%h/dotfiles/omnigent_config/topology.env
 # Agents spawned by the host need env that systemd --user does NOT inherit from
 # the login shell:
 #  - x509 for mTLS to Meta's AI gateway (used by codex; claude uses api-key-helper).

@@ -294,8 +294,8 @@ does not replace polling or message-name deduplication.
 
 ### 6.1 Safe default: explicit opt-in
 
-The default discovery mode mirrors only sessions on the configured Omnigent
-host that carry a configured label, for example:
+The reusable default discovery mode mirrors only sessions on the configured
+Omnigent host that carry a configured label, for example:
 
 ```text
 omnigent.google_chat.enabled="true"
@@ -309,15 +309,20 @@ This avoids permanently copying every agent transcript into Google Chat merely
 because it ran on the same host, and prevents a shared Omnigent server from
 projecting an opted-in session that belongs to another machine.
 
-### 6.2 Personal convenience mode
+### 6.2 Personal multi-host convenience mode
 
-An optional `host-active` mode mirrors all non-archived sessions that:
+An optional `host-active` mode mirrors non-archived sessions that:
 
-- are bound to the configured Omnigent host;
+- are within the configured host scope (`configured` or `all`);
 - have been updated within a configured time window;
 - are not explicitly labeled `omnigent.google_chat.enabled=false`.
 
-This mode is convenient for a single-user private space, but is not the default.
+The deployed personal policy uses `host_scope=all`. The hub server is a local
+single-user authority, so every writable session it returns belongs to the same
+user even when its runner is registered from another devserver or the Mac.
+This makes sessions portable across the user's machines without copying
+per-machine host IDs into shared configuration. Shared or multi-user server
+deployments must retain `host_scope=configured` or add a stronger allowlist.
 
 ### 6.3 Creating a thread
 
@@ -561,9 +566,10 @@ The bridge does not open a turn-specific SSE stream or wait for completion. The
 independent `SessionMirror` observes resulting durable items and status.
 
 If the session's host-bound runner is offline, rely first on the server's normal
-host relaunch path. If explicit recovery is needed for an unbound session, use
-the configured host/workspace. Do not select a random runner from another host,
-which the Slack integration currently permits for bot-created sessions.
+host relaunch path. If explicit recovery is needed, use the exact host ID and
+workspace already bound to that session. In `configured` scope, reject a
+different host; in `all` scope, accept the session's bound host but never select
+a random online runner.
 
 ### 8.6 Ambiguous Omnigent POST
 
@@ -821,12 +827,13 @@ OMNIGENT_GCHAT_ALLOWED_ACTOR_ID=<intern-fbid-or-verified-chat-id>
 OMNIGENT_GCHAT_META_BOT_ACTOR_ID=<verified-bot-chat-id>
 OMNIGENT_GCHAT_MENTION_UNIXNAME=<unixname>
 OMNIGENT_GCHAT_HOST_ID=<omnigent-host-id>
+OMNIGENT_GCHAT_HOST_SCOPE=configured
 OMNIGENT_GCHAT_PHASE0_VALIDATED=false
 OMNIGENT_GCHAT_DISCOVERY=label
 OMNIGENT_GCHAT_LABEL=omnigent.google_chat.enabled
 OMNIGENT_GCHAT_DATABASE=~/.omnigent/google-chat.sqlite3
 OMNIGENT_GCHAT_MIRROR_MODE=concise
-OMNIGENT_GCHAT_MENTION_ON_COMPLETION=true
+OMNIGENT_GCHAT_MENTION_ON_COMPLETION=false
 OMNIGENT_GCHAT_MENTION_ON_ROOT=true
 OMNIGENT_GCHAT_SESSION_LOOKBACK_HOURS=24
 OMNIGENT_GCHAT_MAX_MESSAGE_CHARS=12000
@@ -843,7 +850,7 @@ Validate at startup:
 
 - Omnigent is reachable and the authenticated identity can list/read/write the
   selected sessions;
-- the configured host exists;
+- the configured host exists when `host_scope=configured`;
 - the Google Chat space resource is exact and accessible;
 - Meta Bot can send to the space as a distinct non-human actor (no fallback);
 - root and thread-reply notifications reach the configured phone under the
@@ -862,6 +869,12 @@ review the private space once, then configure its immutable resource name.
 Private deployment layout:
 
 ```text
+omnigent_config/
+  topology.env
+  google-chat.env
+bin/
+  omnigent-google-chat-ensure
+  omnigent-server-url
 services/omnigent-google-chat/
   README.md
   pyproject.toml
@@ -884,8 +897,18 @@ services/omnigent-google-chat/
 ```
 
 The authoritative user unit lives at
-`~/dotfiles/systemd/omnigent-google-chat.service`; machine-specific settings
-live at `~/.config/omnigent-google-chat.env` and are not source controlled.
+`~/dotfiles/systemd/omnigent-google-chat.service`. Stable personal topology,
+Chat resource IDs, and policy are source controlled under `omnigent_config/`.
+On the configured hub, `omnigent-google-chat-ensure` materializes an atomic
+mode-`0600` runtime env with the resolved server URL. Secondary devservers
+install the same unit but fail its hub `ExecCondition`; macOS does not install
+the unit.
+
+`~/.omnigent/config.yaml` remains per-machine Omnigent state because its
+`host.host_id` is a unique execution-host identity. Bootstrap reconciles its
+portable server URL and agent declarations without copying or replacing that
+identity. The hub's transcript database, artifacts, bridge dedup database,
+logs, and caches are local runtime state and must be migrated if the hub moves.
 
 The installed user unit writes owner-only diagnostics to
 `~/.omnigent/google-chat.log` because user-journal access is unavailable on the
@@ -968,7 +991,8 @@ Use a fake `meta` executable in tests. Unit tests must not contact Google Chat.
 - only the first chunk of a logical attention notification contains a mention;
 - no token/reasoning/tool spam;
 - Google Chat send failure does not affect Omnigent;
-- host-bound runner relaunch stays on the configured host.
+- host-bound runner relaunch uses the session's exact host and never a random
+  runner; configured scope rejects other hosts and all scope supports them.
 
 ### 15.4 Inbound tests
 

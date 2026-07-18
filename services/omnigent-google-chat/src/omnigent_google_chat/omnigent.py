@@ -63,7 +63,7 @@ class OmnigentClient:
         base_url: str,
         auth: OmnigentAuth | None = None,
         timeout_seconds: float = 30.0,
-        configured_host_id: str,
+        configured_host_id: str | None,
         runner_launch_timeout_seconds: float = 60.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -189,6 +189,8 @@ class OmnigentClient:
         return item_id if isinstance(item_id, str) else None
 
     async def validate_host(self) -> dict[str, Any]:
+        if self._configured_host_id is None:
+            raise OmnigentError("no configured host is available to validate")
         payload = await self._get_json(f"/v1/hosts/{self._configured_host_id}")
         if not isinstance(payload, dict):
             raise OmnigentError("configured host response must be an object")
@@ -199,19 +201,21 @@ class OmnigentClient:
 
     async def recover_bound_runner(self, session_id: str) -> str:
         session = await self.get_session(session_id)
-        if session.host_id != self._configured_host_id:
+        if self._configured_host_id is not None and session.host_id != self._configured_host_id:
             raise OmnigentRejectedError(
                 "refusing runner recovery on a host other than the configured host"
             )
+        if not session.host_id:
+            raise OmnigentRejectedError("session has no bound host for runner recovery")
         if not session.workspace:
             raise OmnigentRejectedError("session has no workspace for runner recovery")
         if session.host_online is False:
-            raise OmnigentRejectedError("the configured session host is offline")
+            raise OmnigentRejectedError("the session host is offline")
         if session.runner_online is True and session.runner_id:
             return session.runner_id
 
         payload = await self._post_control_json(
-            f"/v1/hosts/{self._configured_host_id}/runners",
+            f"/v1/hosts/{session.host_id}/runners",
             {"session_id": session_id, "workspace": session.workspace},
         )
         runner_id = payload.get("runner_id") if isinstance(payload, dict) else None

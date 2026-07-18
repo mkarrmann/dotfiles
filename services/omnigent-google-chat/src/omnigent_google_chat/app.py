@@ -20,6 +20,9 @@ async def run(settings: Settings) -> None:
     _configure_logging(settings.log_level)
     logger = logging.getLogger(__name__)
     meta_executable = _resolve_meta_executable(str(settings.meta_cli))
+    configured_host_id = (
+        settings.omnigent_host_id if settings.omnigent_host_scope == "configured" else None
+    )
 
     store = SQLiteStore(settings.database_path)
     await store.initialize()
@@ -31,12 +34,13 @@ async def run(settings: Settings) -> None:
             session_cookie=settings.omnigent_session_cookie,
         ),
         timeout_seconds=settings.omnigent_timeout_seconds,
-        configured_host_id=settings.omnigent_host_id,
+        configured_host_id=configured_host_id,
         runner_launch_timeout_seconds=settings.omnigent_runner_launch_timeout_seconds,
     )
     try:
         await store.bind_space(settings.space_name)
-        await omnigent.validate_host()
+        if configured_host_id is not None:
+            await omnigent.validate_host()
         sessions = await omnigent.list_sessions()
         if any(
             session.permission_level is not None and session.permission_level < 2
@@ -92,7 +96,7 @@ async def run(settings: Settings) -> None:
             omnigent=omnigent,
             sender=sender,
             space_name=settings.space_name,
-            host_id=settings.omnigent_host_id,
+            host_id=configured_host_id,
             discovery_mode=settings.discovery,
             discovery_label=settings.discovery_label,
             lookback_hours=settings.session_lookback_hours,
@@ -112,9 +116,10 @@ async def run(settings: Settings) -> None:
         stop = asyncio.Event()
         _install_signal_handlers(stop)
         logger.info(
-            "Google Chat bridge started space=%s discovery=%s database=%s",
+            "Google Chat bridge started space=%s discovery=%s host_scope=%s database=%s",
             settings.space_name,
             settings.discovery,
+            settings.omnigent_host_scope,
             settings.database_path,
         )
         tasks = {

@@ -6,11 +6,11 @@
 #   curl -sf http://127.0.0.1:6767/health && ss -ltnp | grep 6767
 #
 # The Omnigent server runs on ONE devserver (the HUB) and is dialed by:
-#   - other devservers, directly over the prod network (server binds ::)
+#   - other devservers, through the hub's prod-network loopback proxy
 #   - the Mac, via the ET forward tunnel Mac:6767 -> HUB:6767 (see nvs-tunnels)
-# ConditionHost gates it so init.sh can enable it on every devserver while only
-# the HUB actually starts it. To move the hub: change ConditionHost here and
-# OMNIGENT_HUB_FQDN in ~/dotfiles/bin/omnigent-server-url.
+# A shared topology check gates it so init.sh can enable it on every devserver
+# while only the hub actually starts it. Move the hub in
+# ~/dotfiles/omnigent_config/topology.env and rerun init.sh on each machine.
 #
 # Runs the published uv-tool install (~/.local/bin/omnigent, prebuilt web UI) —
 # NOT the ~/repos/omnigent editable build, which can't compile its web UI here
@@ -19,19 +19,19 @@
 [Unit]
 Description=Omnigent server (hub; serves API + web UI, dialed by Mac and other devservers)
 After=network.target
-ConditionHost=devvm20365.cco0.facebook.com
 
 [Service]
 Type=simple
+ExecCondition=%h/bin/omnigent-server-url --is-hub
 Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
-Environment=OMNIGENT_PORT=6767
+EnvironmentFile=%h/dotfiles/omnigent_config/topology.env
 # Bind 127.0.0.1 (v4 loopback): serves every local consumer (Orchest,
 # CodeCompanion) and the Mac's ET forward tunnel, which connects to the remote
 # v4 loopback. NOTE: `--host ::` was rejected — uvicorn sets IPV6_V6ONLY, so a
 # v6 bind refuses v4 loopback and breaks the tunnel. Prod-network reach for the
 # OTHER devserver is provided separately by omnigent-prodnet.service (a v6->
 # loopback proxy), which keeps this server itself unexposed to the network.
-ExecStart=%h/.local/bin/omnigent server --host 127.0.0.1 --port 6767 --database-uri sqlite:///%h/.omnigent/chat.db --artifact-location %h/.omnigent/artifacts
+ExecStart=%h/.local/bin/omnigent server --host 127.0.0.1 --port ${OMNIGENT_PORT} --database-uri sqlite:///%h/.omnigent/chat.db --artifact-location %h/.omnigent/artifacts
 Restart=always
 RestartSec=5
 StateDirectory=omnigent-server

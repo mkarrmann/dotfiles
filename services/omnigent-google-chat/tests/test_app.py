@@ -60,6 +60,7 @@ class FakeOmnigent:
     def __init__(self, **kwargs: object) -> None:
         self.closed = False
         self.host_validated = False
+        self.configured_host_id = kwargs.get("configured_host_id")
         FakeOmnigent.instance = self
 
     async def validate_host(self) -> dict[str, object]:
@@ -168,6 +169,20 @@ async def test_app_rejects_nonmember_and_still_closes(
         await app.run(settings(tmp_path))
     assert FakeStore.instance is not None and FakeStore.instance.closed
     assert FakeOmnigent.instance is not None and FakeOmnigent.instance.closed
+
+
+async def test_app_all_host_scope_does_not_pin_or_validate_one_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_fakes(monkeypatch)
+    FakeChat.member_ids = {"users/human"}
+    configured = settings(tmp_path).model_copy(
+        update={"omnigent_host_scope": "all", "omnigent_host_id": None}
+    )
+    await app.run(configured)
+    assert FakeOmnigent.instance is not None
+    assert FakeOmnigent.instance.configured_host_id is None
+    assert not FakeOmnigent.instance.host_validated
 
 
 async def test_app_fails_when_component_exits_before_shutdown(

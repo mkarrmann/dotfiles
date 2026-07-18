@@ -463,10 +463,15 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
            "$HOME/.local/state/omnigent-host" \
            "$HOME/.local/state/omnigent-prodnet"
 
-  # The private Google Chat bridge is installed only on Meta Linux hosts where
-  # its machine-local configuration and sanctioned Meta CLI are both present.
+  # The private Google Chat bridge runs only beside the central server. Its
+  # stable personal policy is tracked; the hub check materializes a private
+  # runtime env containing the resolved loopback server URL. Other devservers
+  # install the same unit, whose ExecCondition keeps it inactive.
   gchat_project="$DOTFILES_DIR/services/omnigent-google-chat"
-  if [[ -f "$HOME/.config/omnigent-google-chat.env" ]] \
+  "$DOTFILES_DIR/bin/omnigent-google-chat-ensure" \
+    || echo "WARNING: omnigent-google-chat runtime config generation failed" >&2
+  if "$DOTFILES_DIR/bin/omnigent-server-url" --is-hub \
+      && [[ -f "$HOME/.config/omnigent-google-chat.env" ]] \
       && [[ -x /usr/local/bin/meta ]] \
       && [[ -f "$gchat_project/uv.lock" ]] \
       && command -v uv &>/dev/null; then

@@ -51,7 +51,7 @@ SWEEP_WORKSPACE="Z"
 
 CHROME_APP="Google Chrome"
 CHROME_INVALID_TITLE_PATTERN="^Who.s using Chrome\\?$"
-OMNIGENT_PORT="${OMNIGENT_PORT:-6767}"
+OMNIGENT_PORT="${OMNIGENT_PORT:-$(omnigent-server-url --port)}"
 OMNIGENT_REMOTE_PORT="${OMNIGENT_REMOTE_PORT:-16767}"
 # ─────────────────────────────────────────────────────────────────────
 
@@ -386,12 +386,11 @@ SNAPSHOT=$(snapshot_windows)
 
 failures=0
 
-# Omnigent's Mac-local lifecycle is owned by launchd
-# (launchd/com.mkarrmann.omnigent-server.plist). startup-windows only
-# verifies the dependency before opening devvm tunnels that reverse-forward it.
+# The central Omnigent server reaches the Mac through the hub ET forward
+# tunnel. An existing tunnel satisfies this preflight; on a cold start the
+# tunnel window created below repairs it.
 if ! curl -sf "http://127.0.0.1:${OMNIGENT_PORT}/health" >/dev/null 2>&1; then
-  echo "WARNING: Omnigent server is not healthy at http://127.0.0.1:${OMNIGENT_PORT}; launchd should start it" >&2
-  ((failures++)) || true
+  echo "Omnigent hub tunnel is not healthy yet at http://127.0.0.1:${OMNIGENT_PORT}; the tunnel bootstrap will retry it" >&2
 fi
 
 for i in "${!WORKSPACES[@]}"; do

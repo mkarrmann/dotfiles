@@ -6,6 +6,19 @@ Dotfile git repo.
 
 First run init.sh to symlink dotfiles.
 
+## Omnigent topology
+
+`omnigent_config/topology.env` declares the central Omnigent hub shared by the
+Mac and every devserver. Linux bootstrap runs an execution host everywhere but
+starts the server, prod-network proxy, and Google Chat mobile bridge only on
+that hub. The Mac reaches it through the ET tunnel.
+
+The Google Chat space/identity policy is tracked in
+`omnigent_config/google-chat.env`; `init.sh` materializes its owner-only runtime
+env on the hub. `~/.omnigent/config.yaml` remains local because its host ID is
+the unique identity of that physical machine. Bootstrap reconciles its server
+routing and ACP declarations without copying that identity.
+
 Agent session naming helpers:
 
 - Claude: managed by Agent Manager (`cn`, `cr`, etc.).

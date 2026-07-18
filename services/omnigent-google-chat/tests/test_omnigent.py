@@ -16,14 +16,18 @@ from omnigent_google_chat.omnigent import (
 )
 
 
-def client(handler: Callable[[httpx.Request], httpx.Response]) -> OmnigentClient:
+def client(
+    handler: Callable[[httpx.Request], httpx.Response],
+    *,
+    configured_host_id: str | None = "host_1",
+) -> OmnigentClient:
     http = httpx.AsyncClient(
         base_url="http://omnigent.test",
         transport=httpx.MockTransport(handler),
     )
     return OmnigentClient(
         base_url="http://omnigent.test",
-        configured_host_id="host_1",
+        configured_host_id=configured_host_id,
         client=http,
     )
 
@@ -191,6 +195,32 @@ async def test_runner_recovery_rejects_other_host() -> None:
 
     with pytest.raises(OmnigentRejectedError, match="other than"):
         await client(handler).recover_bound_runner("conv")
+
+
+async def test_runner_recovery_all_scope_uses_session_bound_host() -> None:
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        if request.url.path == "/v1/sessions/conv":
+            return httpx.Response(
+                200,
+                json=session_payload(
+                    "conv",
+                    host_id="host_other",
+                    runner_id=None,
+                    runner_online=False,
+                ),
+            )
+        if request.url.path == "/v1/hosts/host_other/runners":
+            return httpx.Response(200, json={"runner_id": "runner_other"})
+        if request.url.path == "/v1/runners/runner_other/status":
+            return httpx.Response(200, json={"online": True})
+        raise AssertionError(request.url.path)
+
+    runner = await client(handler, configured_host_id=None).recover_bound_runner("conv")
+    assert runner == "runner_other"
+    assert "/v1/hosts/host_other/runners" in requests
 
 
 async def test_sse_parser_handles_multiline_comments_and_done() -> None:

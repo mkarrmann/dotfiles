@@ -13,12 +13,12 @@
 Description=Omnigent prod-network proxy (v6 :6767 -> loopback server; hub only)
 After=network.target omnigent-server.service
 Wants=omnigent-server.service
-ConditionHost=devvm20365.cco0.facebook.com
 
 [Service]
 Type=simple
+ExecCondition=%h/bin/omnigent-server-url --is-hub
 Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
-Environment=OMNIGENT_PORT=6767
+EnvironmentFile=%h/dotfiles/omnigent_config/topology.env
 ExecStart=/usr/bin/env python3 %h/bin/omnigent-prodnet-proxy
 Restart=always
 RestartSec=5

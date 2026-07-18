@@ -19,10 +19,11 @@ set -euo pipefail
 
 NVS_CLIP_PORT="${NVS_CLIP_PORT:-8765}"
 PERSISTENCE_PORT="${PERSISTENCE_PORT:-7847}"
-OMNIGENT_PORT="${OMNIGENT_PORT:-6767}"
+server_url_bin="${OMNIGENT_SERVER_URL_BIN:-$HOME/bin/omnigent-server-url}"
+OMNIGENT_PORT="${OMNIGENT_PORT:-$("$server_url_bin" --port)}"
 # The Omnigent server runs on this HUB devserver; forward-tunnel it to the Mac
 # only for the HUB session. Other devservers dial the HUB over the prod network.
-OMNIGENT_HUB_FQDN="${OMNIGENT_HUB_FQDN:-devvm20365.cco0.facebook.com}"
+OMNIGENT_HUB_FQDN="${OMNIGENT_HUB_FQDN:-$("$server_url_bin" --hub)}"
 
 host="${1:?usage: nvs-tunnels HOST SESSION[:WORKDIR] ...}"
 shift

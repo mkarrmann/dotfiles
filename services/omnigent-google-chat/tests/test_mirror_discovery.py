@@ -321,14 +321,19 @@ async def test_stream_opens_before_reconcile_and_terminal_repair_is_deduplicated
 
 
 def make_reconciler(
-    store: SQLiteStore, omnigent: FakeOmnigent, sender: FakeSender, *, mode: str
+    store: SQLiteStore,
+    omnigent: FakeOmnigent,
+    sender: FakeSender,
+    *,
+    mode: str,
+    host_id: str | None = "host_1",
 ) -> SessionReconciler:
     return SessionReconciler(
         store=store,
         omnigent=omnigent,  # type: ignore[arg-type]
         sender=sender,  # type: ignore[arg-type]
         space_name="spaces/s",
-        host_id="host_1",
+        host_id=host_id,
         discovery_mode=mode,
         discovery_label="omnigent.google_chat.enabled",
         lookback_hours=24,
@@ -378,6 +383,22 @@ async def test_discovery_label_and_host_active_filters(tmp_path: Path) -> None:
         )
         assert host._eligible(recent)
         assert not host._eligible(replace(recent, host_id="other"))
+
+        all_hosts = make_reconciler(
+            store,
+            omnigent,
+            sender,
+            mode="host-active",
+            host_id=None,
+        )
+        assert all_hosts._eligible(replace(recent, host_id="other"))
+        assert not all_hosts._eligible(
+            replace(
+                recent,
+                host_id="other",
+                labels={"omnigent.google_chat.enabled": False},
+            )
+        )
     finally:
         store.close()
 

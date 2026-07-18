@@ -43,6 +43,20 @@ def test_settings_require_phase_zero_for_daemon() -> None:
     validated.validate_daemon_gate()
 
 
+def test_all_host_scope_does_not_require_one_host_id() -> None:
+    configured = settings(
+        OMNIGENT_GCHAT_HOST_SCOPE="all",
+        OMNIGENT_GCHAT_HOST_ID=None,
+    )
+    assert configured.omnigent_host_id is None
+    assert configured.omnigent_host_scope == "all"
+
+
+def test_configured_host_scope_requires_host_id() -> None:
+    with pytest.raises(ValidationError, match="HOST_ID is required"):
+        settings(OMNIGENT_GCHAT_HOST_ID=None)
+
+
 def test_phase_zero_settings_do_not_require_unknown_actor_ids() -> None:
     phase = PhaseZeroSettings.model_validate(
         {
