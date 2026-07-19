@@ -15,9 +15,9 @@ if [[ "$target" == "$local_fqdn" ]]; then
   exit 1
 fi
 
+# ClearAllForwardings would also discard the command-line -L below.
 exec "$SSH_BIN" \
   -o BatchMode=yes \
-  -o ClearAllForwardings=yes \
   -o ConnectTimeout=10 \
   -o ConnectionAttempts=3 \
   -o ExitOnForwardFailure=yes \

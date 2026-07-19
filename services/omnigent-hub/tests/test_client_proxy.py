@@ -25,6 +25,7 @@ def test_client_proxy_builds_ssh_loopback_forward(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     args = result.stdout.splitlines()
+    assert "ClearAllForwardings=yes" not in args
     assert "ExitOnForwardFailure=yes" in args
     assert "ServerAliveInterval=15" in args
     assert "127.0.0.1:6767:127.0.0.1:6767" in args
