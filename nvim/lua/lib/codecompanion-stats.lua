@@ -31,7 +31,7 @@ vim.api.nvim_create_autocmd("User", {
 
 -- Native omnigent usage. The omnigent handler/observer fire this with a
 -- {context_tokens, context_window, total_cost_usd} usage table (context_window
--- back-filled from the model catalog when the SSE usage event nulls it). Map
+-- back-filled from the session snapshot when the SSE usage event nulls it). Map
 -- context_tokens -> used (updates each turn) and context_window -> size (sticky:
 -- a later null must not clear a size we already learned).
 vim.api.nvim_create_autocmd("User", {

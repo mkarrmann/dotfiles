@@ -67,6 +67,15 @@ local function fmt_tokens(n)
   return tostring(n)
 end
 
+local function fmt_cost(cost)
+  local amt = cost.amount or 0
+  local sym = (cost.currency == nil or cost.currency == "USD") and "$" or (cost.currency .. " ")
+  if amt < 1 then
+    return string.format("%s%.3f", sym, amt)
+  end
+  return string.format("%s%.2f", sym, amt)
+end
+
 local function build_segments(state)
   local left, right = {}, {}
   if not state.chat_bufnr then return left, right end
@@ -141,23 +150,34 @@ local function build_segments(state)
   if dvsc_sel and dvsc_sel.effort then
     right[#right + 1] = { "effort:" .. tostring(dvsc_sel.effort), "DiagnosticInfo" }
   end
+  local omni_effort = meta.omnigent and meta.omnigent.reasoning_effort
+  if type(omni_effort) == "string" and omni_effort ~= "" then
+    right[#right + 1] = { "effort:" .. omni_effort, "DiagnosticInfo" }
+  end
   if meta.tools and meta.tools > 0 then
     right[#right + 1] = { meta.tools .. " tools", "DiagnosticInfo" }
   end
   if meta.context_items and meta.context_items > 0 then
     right[#right + 1] = { meta.context_items .. " ctx", "DiagnosticInfo" }
   end
-  if meta.tokens and meta.tokens > 0 then
-    right[#right + 1] = { fmt_tokens(meta.tokens) .. " tokens", "DiagnosticInfo" }
-  elseif acp_usage and acp_usage.used and acp_usage.used > 0 then
-    right[#right + 1] = { fmt_tokens(acp_usage.used) .. " tokens", "DiagnosticInfo" }
-  end
-  if acp_usage and acp_usage.used and acp_usage.size and acp_usage.size > 0 then
-    local pct = math.floor(100 * acp_usage.used / acp_usage.size)
+  -- Token / context-window usage. Prefer the adapter-reported chat token count
+  -- (http), else per-session usage (acp/omnigent). When the window size is known
+  -- fold the raw count into the "NN% used/size" segment instead of showing both.
+  local used = (meta.tokens and meta.tokens > 0 and meta.tokens)
+    or (acp_usage and acp_usage.used and acp_usage.used > 0 and acp_usage.used)
+    or nil
+  local size = (acp_usage and acp_usage.size and acp_usage.size > 0 and acp_usage.size) or nil
+  if used and size then
+    local pct = math.floor(100 * used / size)
     right[#right + 1] = {
-      string.format("%d%% %s/%s", pct, fmt_tokens(acp_usage.used), fmt_tokens(acp_usage.size)),
+      string.format("%d%% %s/%s", pct, fmt_tokens(used), fmt_tokens(size)),
       "DiagnosticInfo",
     }
+  elseif used then
+    right[#right + 1] = { fmt_tokens(used) .. " tokens", "DiagnosticInfo" }
+  end
+  if acp_usage and type(acp_usage.cost) == "table" and type(acp_usage.cost.amount) == "number" and acp_usage.cost.amount > 0 then
+    right[#right + 1] = { fmt_cost(acp_usage.cost), "DiagnosticInfo" }
   end
 
   if state.request_start_at then
