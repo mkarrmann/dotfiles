@@ -98,18 +98,17 @@ local DVSC_MODELS = {
   { id = "claude-opus-4.7-long",   provider = "anthropic", adaptive = true  },
   { id = "claude-opus-4.6",        provider = "anthropic", adaptive = true  },
   { id = "claude-opus-4.6-long",   provider = "anthropic", adaptive = true  },
-  { id = "claude-sonnet-4.6",      provider = "anthropic", adaptive = true  },
+  { id = "claude-sonnet-5",        provider = "anthropic", adaptive = true  },
   { id = "claude-sonnet-4.6-long", provider = "anthropic", adaptive = true  },
   { id = "claude-haiku-4.5",       provider = "anthropic", adaptive = false },
-  { id = "claude-haiku-4.5-long",  provider = "anthropic", adaptive = false },
   -- OpenAI
-  { id = "gpt-5-5",       provider = "openai" },
-  { id = "gpt-5-4",       provider = "openai" },
-  { id = "gpt-5-3-codex", provider = "openai" },
+  { id = "gpt-5-6", provider = "openai" },
+  { id = "gpt-5-5", provider = "openai" },
   -- Google (Native only — `getModelsForAgent` has no Google-specific harness)
   { id = "gemini-3-1-pro", provider = "google" },
+  { id = "gemini-3-flash", provider = "google" },
   -- Meta
-  { id = "avocado-tester", provider = "meta" },
+  { id = "avocado-code-internal-0529", provider = "meta" },
 }
 
 local function _dvsc_lookup_model(model_id)
