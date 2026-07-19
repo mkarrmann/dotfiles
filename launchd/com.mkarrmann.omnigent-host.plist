@@ -32,7 +32,7 @@
     <key>EnvironmentVariables</key>
     <dict>
       <key>PATH</key>
-      <string>/Users/mkarrmann/bin:/Users/mkarrmann/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+      <string>/Users/mkarrmann/.local/bin:/Users/mkarrmann/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
       <!-- Codex reaches Meta's AI gateway through the local x2p proxy over mTLS.
            launchd does not inherit the interactive shell's exports (~/.zshrc), so
            a host-spawned codex subprocess needs these explicitly or it can't

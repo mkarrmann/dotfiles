@@ -10,7 +10,7 @@ if [[ -z "${OMNIGENT_URL:-}" ]]; then
     OMNIGENT_URL="http://127.0.0.1:${OMNIGENT_PORT:-6767}"
   fi
 fi
-OMNIGENT_BIN="${OMNIGENT_BIN:-}"
+OMNIGENT_BIN="${OMNIGENT_BIN:-$HOME/.local/bin/omnigent}"
 
 state_dir="$HOME/.omnigent"
 target_id="$(printf '%s' "$OMNIGENT_URL" | cksum | awk '{print $1}')"
@@ -18,21 +18,62 @@ session_name="omnigent-host-${target_id}"
 
 mkdir -p "$state_dir"
 
-if [[ -z "$OMNIGENT_BIN" ]]; then
+if [[ ! -x "$OMNIGENT_BIN" ]]; then
   if command -v omnigent >/dev/null 2>&1; then
     OMNIGENT_BIN="$(command -v omnigent)"
-  elif [[ -x "$HOME/dotfiles/bin/omnigent" ]]; then
-    OMNIGENT_BIN="$HOME/dotfiles/bin/omnigent"
   else
-    echo "ERROR: omnigent not found on PATH and $HOME/dotfiles/bin/omnigent is missing" >&2
+    echo "ERROR: pinned omnigent not found at $HOME/.local/bin/omnigent or on PATH" >&2
     exit 1
   fi
 fi
 
+desired_host_id="$(awk '$1 == "host_id:" { print $2; exit }' "$state_dir/config.yaml" 2>/dev/null || true)"
+
 host_online() {
   local status
   status="$("$OMNIGENT_BIN" host status --server "$OMNIGENT_URL" --json 2>/dev/null || true)"
-  [[ "$status" == *'"host_status": "online"'* && "$status" == *'"process": "online"'* ]]
+  python3 -c '
+import json
+import sys
+
+target, desired = sys.argv[1:]
+try:
+    payload = json.load(sys.stdin)
+except (TypeError, ValueError):
+    raise SystemExit(1)
+
+for daemon in payload.get("daemons", []):
+    if daemon.get("target", "").rstrip("/") != target.rstrip("/"):
+        continue
+    if desired and daemon.get("host_id") != desired:
+        continue
+    if daemon.get("host_status") == "online" and daemon.get("process") == "online":
+        raise SystemExit(0)
+raise SystemExit(1)
+' "$OMNIGENT_URL" "$desired_host_id" <<<"$status"
+}
+
+daemon_identity_mismatch() {
+  [[ -n "$desired_host_id" ]] || return 1
+  local status
+  status="$("$OMNIGENT_BIN" host status --server "$OMNIGENT_URL" --json 2>/dev/null || true)"
+  python3 -c '
+import json
+import sys
+
+target, desired = sys.argv[1:]
+try:
+    payload = json.load(sys.stdin)
+except (TypeError, ValueError):
+    raise SystemExit(1)
+
+for daemon in payload.get("daemons", []):
+    if daemon.get("target", "").rstrip("/") == target.rstrip("/"):
+        host_id = daemon.get("host_id")
+        if host_id and host_id != desired:
+            raise SystemExit(0)
+raise SystemExit(1)
+' "$OMNIGENT_URL" "$desired_host_id" <<<"$status"
 }
 
 "$OMNIGENT_BIN" config set --global "server=${OMNIGENT_URL}" >/dev/null
@@ -57,6 +98,11 @@ else
 fi
 
 if [[ -n "$tmux_bin" ]]; then
+  if "$tmux_bin" has-session -t "$session_name" 2>/dev/null && daemon_identity_mismatch; then
+    echo "[Omnigent] replacing host daemon with mismatched identity"
+    "$OMNIGENT_BIN" host stop --server "$OMNIGENT_URL" --daemon-only --force >/dev/null 2>&1 || true
+    "$tmux_bin" kill-session -t "$session_name" 2>/dev/null || true
+  fi
   if ! "$tmux_bin" has-session -t "$session_name" 2>/dev/null; then
     "$tmux_bin" new-session -d -s "$session_name" "exec '$OMNIGENT_BIN' host --server '$OMNIGENT_URL' --non-interactive"
   fi
