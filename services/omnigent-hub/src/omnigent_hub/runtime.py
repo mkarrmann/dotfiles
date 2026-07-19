@@ -634,26 +634,32 @@ def reconcile_services(config: HubConfig) -> dict[str, Any]:
             "state": record.state,
             "epoch": record.epoch,
             "services": services,
+            "host_restarted": False,
         }
     if record.active_hub != config.local_fqdn:
         services = service_action(config, "stop-hub")
         config.activation_marker.unlink(missing_ok=True)
         route = reconcile_local_route(config, restart_host=False)
         client = service_action(config, "start-client")
+        host_restarted = False
         if route["changed"]:
             service_action(config, "restart-host")
+            host_restarted = True
         return {
             "host": config.local_fqdn,
             "state": "standby",
             "epoch": record.epoch,
             "route": route,
             "services": {**services, **client},
+            "host_restarted": host_restarted,
         }
     service_action(config, "stop-client")
     route = reconcile_local_route(config, restart_host=False)
     core = service_action(config, "start-core")
+    host_restarted = False
     if route["changed"]:
         service_action(config, "restart-host")
+        host_restarted = True
     tail = service_action(config, "start-tail")
     return {
         "host": config.local_fqdn,
@@ -661,6 +667,7 @@ def reconcile_services(config: HubConfig) -> dict[str, Any]:
         "epoch": record.epoch,
         "route": route,
         "services": {**core, **tail},
+        "host_restarted": host_restarted,
     }
 
 

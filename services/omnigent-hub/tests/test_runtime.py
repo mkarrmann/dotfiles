@@ -198,6 +198,7 @@ def test_active_reconciliation_frees_loopback_before_starting_server(
 
     assert result["state"] == "active"
     assert actions == ["stop-client", "start-core", "start-tail"]
+    assert result["host_restarted"] is False
 
 
 def test_standby_reconciliation_starts_proxy_before_restarting_host(
@@ -226,6 +227,7 @@ def test_standby_reconciliation_starts_proxy_before_restarting_host(
 
     assert result["state"] == "standby"
     assert actions == ["stop-hub", "start-client", "restart-host"]
+    assert result["host_restarted"] is True
     assert not standby.activation_marker.exists()
 
 

@@ -181,6 +181,7 @@ class HandoffOrchestrator:
         self._call(target, "services", "stop-client", "--json")
         self._call(target, "route-ensure", "--json")
         self._call(target, "services", "start-core", "--json", timeout=180)
+        self._call(target, "services", "restart-host", "--json")
         try:
             self._reconcile_source_after_activation(source, activation)
         except RemoteError as exc:
@@ -223,7 +224,9 @@ class HandoffOrchestrator:
                         f"{source}: activation refresh attempt {attempt} did not converge; retrying"
                     )
                 continue
-            self._call(source, "reconcile-services", "--json")
+            reconciled = self._call(source, "reconcile-services", "--json")
+            if reconciled.get("host_restarted") is not True:
+                self._call(source, "services", "restart-host", "--json")
             return
         assert last_error is not None
         raise last_error

@@ -629,10 +629,12 @@ For planned maintenance:
    generation.
 9. Finalize the shared record from transition state to FTW active, retaining
    that epoch and naming FTW's activation ID.
-10. Stop FTW's loopback client proxy, reconcile its stable loopback config, and
-   start FTW server plus prodnet proxy.
+10. Stop FTW's loopback client proxy, reconcile its stable loopback config,
+    start FTW server plus prodnet proxy, and restart FTW's execution host so
+    its long-lived connection binds to the new local server.
 11. Reconcile CCO as standby: stop hub services, start its loopback client
-    proxy to FTW, and restart `omnigent-host` only if its URL was stale.
+    proxy to FTW, and restart `omnigent-host` for the new activation even
+    though its stable loopback URL is unchanged.
 12. Validate the FTW API locally and through CCO's loopback proxy.
 13. Start the Google Chat bridge last.
 14. Start the periodic snapshot timer only after FTW is active and healthy.

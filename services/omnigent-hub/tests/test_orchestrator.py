@@ -243,12 +243,18 @@ def test_planned_handoff_orders_fence_restore_and_tail(hub_config: HubConfig) ->
     )
     assert refresh_target < snapshots < restore
     start_core = calls.index(("standby.example.com", ("services", "start-core", "--json")))
-    assert stop_client < start_core
+    restart_target_host = calls.index(
+        ("standby.example.com", ("services", "restart-host", "--json"))
+    )
+    assert stop_client < start_core < restart_target_host
     refresh_source = calls.index(
         ("primary.example.com", ("cache-routing", "--force-remount", "--json"))
     )
     reconcile_source = calls.index(("primary.example.com", ("reconcile-services", "--json")))
-    assert refresh_source < reconcile_source
+    restart_source_host = calls.index(
+        ("primary.example.com", ("services", "restart-host", "--json"))
+    )
+    assert refresh_source < reconcile_source < restart_source_host
     assert (
         "primary.example.com",
         ("reconcile-services", "--json"),
