@@ -231,6 +231,65 @@ def test_standby_reconciliation_retargets_proxy_before_restarting_host(
     assert not standby.activation_marker.exists()
 
 
+def test_standby_reconciliation_restarts_wedged_client_proxy(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    standby = replace(hub_config, local_fqdn="standby.example.com")
+    actions: list[str] = []
+    monkeypatch.setattr(
+        "omnigent_hub.runtime.resolve_record",
+        lambda config: initialize_record_for_test(config, "primary.example.com"),
+    )
+    monkeypatch.setattr(
+        "omnigent_hub.runtime.reconcile_local_route",
+        lambda config, restart_host: {"changed": False, "url": "http://127.0.0.1:6767"},
+    )
+    monkeypatch.setattr("omnigent_hub.runtime.systemd_state", lambda unit: "active")
+    monkeypatch.setattr("omnigent_hub.runtime.probe_health", lambda config: False)
+
+    def record_action(config: HubConfig, action: str) -> dict[str, str]:
+        actions.append(action)
+        return {}
+
+    monkeypatch.setattr("omnigent_hub.runtime.service_action", record_action)
+
+    result = reconcile_services(standby)
+
+    assert result["state"] == "standby"
+    # Route unchanged, but a dead endpoint on an active unit forces a restart.
+    assert actions == ["stop-hub", "restart-client"]
+    assert result["host_restarted"] is False
+
+
+def test_standby_reconciliation_leaves_healthy_client_proxy(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    standby = replace(hub_config, local_fqdn="standby.example.com")
+    actions: list[str] = []
+    monkeypatch.setattr(
+        "omnigent_hub.runtime.resolve_record",
+        lambda config: initialize_record_for_test(config, "primary.example.com"),
+    )
+    monkeypatch.setattr(
+        "omnigent_hub.runtime.reconcile_local_route",
+        lambda config, restart_host: {"changed": False, "url": "http://127.0.0.1:6767"},
+    )
+    monkeypatch.setattr("omnigent_hub.runtime.systemd_state", lambda unit: "active")
+    monkeypatch.setattr("omnigent_hub.runtime.probe_health", lambda config: True)
+
+    def record_action(config: HubConfig, action: str) -> dict[str, str]:
+        actions.append(action)
+        return {}
+
+    monkeypatch.setattr("omnigent_hub.runtime.service_action", record_action)
+
+    result = reconcile_services(standby)
+
+    assert result["state"] == "standby"
+    assert actions == ["stop-hub", "start-client"]
+    assert result["host_restarted"] is False
+
+
 def test_candidate_route_changes_when_activation_changes_without_url_change(
     hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:

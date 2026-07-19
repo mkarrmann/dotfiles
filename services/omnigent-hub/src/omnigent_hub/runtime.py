@@ -529,6 +529,32 @@ def wait_for_health(config: HubConfig, *, timeout_seconds: float = 60) -> None:
     raise HubRuntimeError(f"Omnigent did not become healthy at {url}: {last_error}")
 
 
+def probe_health(config: HubConfig, *, timeout_seconds: float = 2.0) -> bool:
+    """Single-shot loopback health check, bypassing any ambient HTTP proxy."""
+    url = f"http://127.0.0.1:{config.topology.port}/health"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(url, timeout=timeout_seconds) as response:
+            return bool(response.status == 200)
+    except (OSError, urllib.error.URLError):
+        return False
+
+
+def _client_reconcile_action(config: HubConfig, *, route_changed: bool) -> str:
+    """Choose how to reconcile the client proxy on a non-hub host.
+
+    A changed route always restarts to retarget the tunnel. Otherwise a plain
+    start would no-op an already-active unit -- which hides a wedged tunnel whose
+    unit is "active" but whose endpoint is dead. Probe the endpoint and force a
+    restart in that case so a stuck proxy self-heals within a reconcile cycle.
+    """
+    if route_changed:
+        return "restart-client"
+    if systemd_state("omnigent-client-proxy.service") == "active" and not probe_health(config):
+        return "restart-client"
+    return "start-client"
+
+
 def assert_sessions_quiescent(config: HubConfig) -> dict[str, Any]:
     url = f"http://127.0.0.1:{config.topology.port}/v1/sessions?limit=1000&kind=any"
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -635,7 +661,7 @@ def reconcile_services(config: HubConfig) -> dict[str, Any]:
         services = service_action(config, "stop-hub")
         config.activation_marker.unlink(missing_ok=True)
         route = reconcile_local_route(config, restart_host=False)
-        client_action = "restart-client" if route["changed"] else "start-client"
+        client_action = _client_reconcile_action(config, route_changed=bool(route["changed"]))
         client = service_action(config, client_action)
         host_restarted = False
         if route["changed"]:

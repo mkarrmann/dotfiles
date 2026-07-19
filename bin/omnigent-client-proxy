@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
-# Give every non-active Linux client a stable loopback URL by forwarding it
-# over SSH to the active hub's loopback-only Omnigent server.
+# Give every non-active Linux client a resilient, stable loopback URL for the
+# active hub's loopback-only Omnigent server.
+#
+# This resolves the active hub and hands off to omnigent_hub.client_proxy, which
+# owns 127.0.0.1:<port> persistently and relays to a private backend port fed by
+# a supervised, self-healing SSH tunnel. Decoupling the listening socket from the
+# SSH connection keeps the endpoint alive across tunnel flaps, so an in-flight
+# agent turn survives a blip instead of dying with runner_disconnected.
 set -euo pipefail
 
 DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
 SERVER_URL_BIN="${OMNIGENT_SERVER_URL_BIN:-$DOTFILES/bin/omnigent-server-url}"
 SSH_BIN="${OMNIGENT_SSH_BIN:-/usr/bin/ssh}"
+PYTHON="${OMNIGENT_HUB_PYTHON:-$DOTFILES/services/omnigent-hub/.venv/bin/python}"
 target="$($SERVER_URL_BIN --hub)"
 port="$($SERVER_URL_BIN --port)"
+backend_port="${OMNIGENT_CLIENT_BACKEND_PORT:-6768}"
 local_fqdn="${OMNIGENT_LOCAL_FQDN:-$(hostname -f 2>/dev/null || hostname)}"
 
 if [[ "$target" == "$local_fqdn" ]]; then
@@ -15,14 +23,8 @@ if [[ "$target" == "$local_fqdn" ]]; then
   exit 1
 fi
 
-# ClearAllForwardings would also discard the command-line -L below.
-exec "$SSH_BIN" \
-  -o BatchMode=yes \
-  -o ConnectTimeout=10 \
-  -o ConnectionAttempts=3 \
-  -o ExitOnForwardFailure=yes \
-  -o ServerAliveInterval=15 \
-  -o ServerAliveCountMax=3 \
-  -N \
-  -L "127.0.0.1:${port}:127.0.0.1:${port}" \
-  "$target"
+exec "$PYTHON" -m omnigent_hub.client_proxy \
+  --hub "$target" \
+  --server-port "$port" \
+  --backend-port "$backend_port" \
+  --ssh-bin "$SSH_BIN"

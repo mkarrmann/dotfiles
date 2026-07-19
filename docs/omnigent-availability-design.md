@@ -142,8 +142,9 @@ recoverable there.
 
 CCO remains both an execution host and the control-plane hub. FTW remains an
 execution host, but its server, bridge, and snapshot timer are inactive. Its
-SSH client proxy owns `127.0.0.1:6767` and forwards to CCO's loopback socket,
-so FTW CLI and already-open Neovim clients keep a stable URL.
+client proxy owns `127.0.0.1:6767` through a persistent local forwarder fed by a
+supervised, self-healing SSH tunnel to CCO's loopback socket, so FTW CLI and
+already-open Neovim clients keep a stable URL across tunnel flaps.
 
 ### 3.2 During CCO maintenance
 
@@ -318,11 +319,37 @@ http://127.0.0.1:6767
 ```
 
 On the active hub, the server owns that socket. On every other Linux host,
-`omnigent-client-proxy.service` owns it and uses an authenticated SSH local
-forward to the active hub's loopback socket. The reconciler stops the client
-proxy before starting a local server, and stops all hub services before
-starting the client proxy. During a transition, both candidate endpoints are
-stopped; ordinary execution hosts retain no authority to choose a target.
+`omnigent-client-proxy.service` owns it — but the listening socket's existence
+is deliberately decoupled from the SSH connection. The service runs
+`omnigent_hub.client_proxy`, which keeps two independent layers:
+
+- A persistent stdlib asyncio forwarder binds `127.0.0.1:6767` for the whole
+  life of the process and relays each connection to a private backend port
+  (`OMNIGENT_CLIENT_BACKEND_PORT`, default `6768`). The public socket never
+  disappears while the service runs.
+- A supervisor owns the SSH child that provides the backend
+  (`-L 127.0.0.1:6768 -> active hub 127.0.0.1:6767`, hardened with TCP
+  keepalives and a ~15s `ServerAlive` budget). It restarts the tunnel promptly
+  on exit and actively probes the backend's `/health`, recycling a tunnel whose
+  transport is alive but whose forwarding is already dead.
+
+This addresses the failure that motivated the rework: previously the SSH
+process owned `127.0.0.1:6767` directly, so any tunnel drop removed the socket
+entirely (`ECONNREFUSED`) for the seconds it took systemd to restart it, and a
+half-open transport could keep the socket bound while forwarding was already
+dead — invisible to systemd's process-liveness supervision. In-flight agent
+turns during that window died with `runner_disconnected`. Decoupling turns a
+tunnel flap into a sub-second connect retry behind a socket that never closes.
+
+The 60-second reconciler is the coarse backstop: on a client host it probes
+`127.0.0.1:6767/health` and forces a restart of an `active` unit whose endpoint
+is nonetheless dead, closing the "unit active but endpoint wedged" blind spot a
+plain `systemctl start` (a no-op on a running unit) would miss.
+
+The reconciler stops the client proxy before starting a local server, and stops
+all hub services before starting the client proxy. During a transition, both
+candidate endpoints are stopped; ordinary execution hosts retain no authority to
+choose a target.
 
 The earlier stdlib TCP proxy over the prod-network listener passed ordinary
 HTTP but corrupted real runner WebSocket request/response traffic. A live
