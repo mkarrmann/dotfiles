@@ -115,21 +115,12 @@ class RemoteClient:
         try:
             value = json.loads(result.stdout)
         except json.JSONDecodeError:
-            value = None
-            # x2ssh -et may wrap a machine-readable command with terminal
-            # banners or connection notices. Every --json hub command emits
-            # one compact JSON object, so recover that complete line without
-            # accepting arbitrary partial JSON from other output.
-            for line in reversed(result.stdout.splitlines()):
-                try:
-                    candidate = json.loads(line.strip())
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(candidate, dict):
-                    value = candidate
-                    break
+            value = _embedded_json_object(result.stdout, result.stderr)
             if value is None:
-                raise RemoteError(f"command on {result.host} did not return JSON") from None
+                raise RemoteError(
+                    f"command on {result.host} did not return JSON "
+                    f"(stdout_bytes={len(result.stdout)}, stderr_bytes={len(result.stderr)})"
+                ) from None
         if not isinstance(value, dict):
             raise RemoteError(f"command on {result.host} returned non-object JSON")
         return value
@@ -164,6 +155,25 @@ class RemoteClient:
                     f"{highest[0][1]} and {host}"
                 )
         return canonical, highest[0][1], errors
+
+
+def _embedded_json_object(*streams: str) -> dict[str, Any] | None:
+    """Return the largest complete JSON object embedded in terminal output."""
+    decoder = json.JSONDecoder()
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    for stream in streams:
+        for start, char in enumerate(stream):
+            if char != "{":
+                continue
+            try:
+                value, end = decoder.raw_decode(stream, start)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                candidates.append((end - start, value))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda candidate: candidate[0])[1]
 
 
 def mint_delegated_cat(owner_fbid: str) -> str:

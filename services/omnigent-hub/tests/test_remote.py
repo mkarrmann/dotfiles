@@ -82,8 +82,21 @@ def test_remote_json_accepts_x2ssh_terminal_noise(hub_config: HubConfig) -> None
 
     def run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
         del timeout
-        stdout = f"Welcome to the host\r\n{json.dumps(payload)}\r\nConnection closed\r\n"
+        stdout = f"\x1b]0;remote host\x07{json.dumps(payload)}\x1b[0mConnection closed\r\n"
         return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+    client = RemoteClient(hub_config, runner=run, system="Darwin")
+
+    assert client.json("standby.example.com", ("resolve", "--json")) == payload
+
+
+def test_remote_json_accepts_x2ssh_stderr_output(hub_config: HubConfig) -> None:
+    payload = active_payload(4)
+
+    def run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        del timeout
+        stderr = f"ET status: connected {json.dumps(payload)} disconnected"
+        return subprocess.CompletedProcess(argv, 0, "", stderr)
 
     client = RemoteClient(hub_config, runner=run, system="Darwin")
 
