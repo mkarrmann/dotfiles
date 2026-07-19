@@ -35,6 +35,12 @@ M.configs = {
 
     -- Lazy.nvim overrides
     lazy_overrides = function()
+      -- Meta credentials also exist on the Mac, where GitHub is reachable.
+      -- These workarounds are only needed on devservers behind fwdproxy.
+      if vim.fn.has("mac") == 1 then
+        return
+      end
+
       local ok, Config = pcall(require, "lazy.core.config")
       if ok and Config.options then
         -- Disable automatic checking due to proxy blocking GitHub

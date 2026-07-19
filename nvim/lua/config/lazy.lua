@@ -22,5 +22,6 @@ require("lazy").setup({
 	-- magick, luaxml) — at that point you'll also need a working Lua 5.1
 	-- toolchain (hererocks or system lua5.1 + luarocks).
 	rocks = { enabled = false },
+	git = { timeout = 600 },
 	checker = { enabled = true },
 })
