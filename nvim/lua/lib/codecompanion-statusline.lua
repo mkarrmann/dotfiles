@@ -11,7 +11,8 @@
 --   state.status_bufnr  -- buffer that holds the rendered lines
 --   state.status_winnr  -- window showing that buffer
 --   state.chat_bufnr    -- chat we're describing
---   state.queued        -- bool, drives "Queued" vs "Draft"
+--   state.queue         -- FIFO of pending messages; count drives "Queued (N)"
+--   state.queued        -- derived bool (#queue > 0), drives the highlight
 --   state.request_start_at  -- os.time() of in-flight request, or nil
 --   state.tick_active   -- internal, set by start()/stop()
 --
@@ -117,8 +118,9 @@ local function build_segments(state)
     end
   end
 
-  if state.queued then
-    left[#left + 1] = { " Queued ", "DiagnosticWarn" }
+  local qn = state.queue and #state.queue or 0
+  if qn > 0 then
+    left[#left + 1] = { string.format(" Queued (%d) ", qn), "DiagnosticWarn" }
   else
     left[#left + 1] = { " Draft ", "Comment" }
   end

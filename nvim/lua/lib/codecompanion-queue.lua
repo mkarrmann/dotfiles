@@ -15,6 +15,7 @@
 -- changes.
 
 local statusline = require("lib.codecompanion-statusline")
+local queuepane = require("lib.codecompanion-queuepane")
 
 local M = {}
 
@@ -23,13 +24,18 @@ local M = {}
 --- @field winnr number?         input window
 --- @field status_bufnr number?  status-line buffer
 --- @field status_winnr number?  status-line window
+--- @field pane_bufnr number?    queue-manager float buffer (owned by queuepane)
+--- @field pane_winnr number?    queue-manager float window (owned by queuepane)
 --- @field chat_bufnr number?    the chat buffer this queue feeds
---- @field queued boolean
---- @field suppress_unqueue boolean
+--- @field queue string[]        FIFO of pending message texts, flushed one/turn
+--- @field queued boolean        derived: #queue > 0 (drives statusline/highlight)
+--- @field editing_index number? queue slot being edited in the input box, or nil
 --- @field fullscreen boolean
 --- @field request_start_at number?
 --- @field in_flight_id any      request id of the in-flight prompt, or nil
 --- @field last_finished_status string? "success" | "cancelled" | "error" | ...
+--- @field hist_idx number?      index into shared history while browsing, or nil
+--- @field hist_stash string?    in-progress draft saved when history browse began
 
 --- @type table<number, CCQueueState>
 local states = {}
@@ -74,8 +80,77 @@ local function clear_draft_buf(s)
     vim.api.nvim_buf_set_lines(s.bufnr, 0, -1, false, {})
     s.suppress_unqueue = false
   end
-  s.queued = false
+  s.hist_idx = nil
+  s.hist_stash = nil
   update_ui(s)
+end
+
+-- Recompute the derived `queued` flag from the queue and repaint every
+-- surface that reflects queue contents: the input/status highlight, the
+-- status line, and (if open) the queue-manager pane.
+local function sync_queue_ui(s)
+  s.queued = s.queue ~= nil and #s.queue > 0
+  update_ui(s)
+  queuepane.refresh(s)
+end
+
+-- Session-scoped prompt history, shared across every tab's input box (like
+-- shell history). Oldest first; capped at MAX_HISTORY. In-memory only — not
+-- persisted across nvim restarts.
+local MAX_HISTORY = 200
+local history = {}
+
+local function push_history(text)
+  if not text or text == "" then return end
+  if history[#history] == text then return end
+  history[#history + 1] = text
+  if #history > MAX_HISTORY then
+    table.remove(history, 1)
+  end
+end
+
+-- Overwrite the input draft with `text` without tripping the TextChanged
+-- unqueue/hist-reset handler, then park the cursor at the end.
+local function set_draft_text(s, text)
+  if not s.bufnr or not vim.api.nvim_buf_is_valid(s.bufnr) then return end
+  local lines = vim.split(text or "", "\n")
+  s.suppress_unqueue = true
+  vim.api.nvim_buf_set_lines(s.bufnr, 0, -1, false, lines)
+  s.suppress_unqueue = false
+  if s.winnr and vim.api.nvim_win_is_valid(s.winnr) then
+    local last = #lines
+    vim.api.nvim_win_set_cursor(s.winnr, { last, #lines[last] })
+  end
+end
+
+-- Step to an older prompt. On first step we stash the in-progress draft so
+-- stepping back down past the newest entry restores it. `hist_idx` points at
+-- the entry currently shown; `#history + 1` is the sentinel "working draft".
+local function history_prev(t)
+  local s = states[t]
+  if not s or #history == 0 then return end
+  if not s.hist_idx then
+    s.hist_stash = get_draft_text(s) or ""
+    s.hist_idx = #history + 1
+  end
+  if s.hist_idx > 1 then
+    s.hist_idx = s.hist_idx - 1
+  end
+  set_draft_text(s, history[s.hist_idx])
+end
+
+-- Step to a newer prompt; stepping past the newest restores the stashed draft.
+local function history_next(t)
+  local s = states[t]
+  if not s or not s.hist_idx then return end
+  s.hist_idx = s.hist_idx + 1
+  if s.hist_idx > #history then
+    set_draft_text(s, s.hist_stash or "")
+    s.hist_idx = nil
+    s.hist_stash = nil
+  else
+    set_draft_text(s, history[s.hist_idx])
+  end
 end
 
 -- Append `text` to the chat buffer as a user message and call `chat:submit()`.
@@ -157,41 +232,128 @@ local function submit_to_chat(chat_bufnr, text)
   return true
 end
 
+-- Submit `text` to the chat now, recording history and clearing the box on
+-- success. Returns true on success. Caller guarantees the chat exists.
+local function submit_now(s, text)
+  if submit_to_chat(s.chat_bufnr, text) then
+    push_history(text)
+    clear_draft_buf(s)
+    return true
+  end
+  vim.notify("CodeCompanion submit failed; draft kept.", vim.log.levels.WARN)
+  return false
+end
+
+-- <C-s> from the input box. Idle with an empty queue submits immediately;
+-- otherwise the draft joins the FIFO and the box is freed for the next
+-- message. An in-progress edit (see `edit_item`) returns to its original
+-- slot instead of appending.
 local function send(t)
   local s = states[t]
   if not s then return end
   local text = get_draft_text(s)
   if not text then return end
 
-  local cc = require("codecompanion")
-  local chat = cc.buf_get_chat(s.chat_bufnr)
+  local chat = require("codecompanion").buf_get_chat(s.chat_bufnr)
   if not chat then
-    -- Chat is gone but the input window is still open. Don't queue
-    -- (nothing will ever flush it). Leave the draft so the user can
-    -- copy it.
+    -- Chat is gone but the input window is still open. Leave the draft so
+    -- the user can copy it; queuing would never flush.
     vim.notify("CodeCompanion chat is closed; draft kept in input box.",
       vim.log.levels.WARN)
-    s.queued = false
-    update_ui(s)
     return
   end
 
-  if not s.in_flight_id then
-    -- Submit immediately. Only clear the draft after the buffer mutation
-    -- succeeds, so a failed submit doesn't silently swallow the text.
-    if submit_to_chat(s.chat_bufnr, text) then
-      clear_draft_buf(s)
-    else
-      vim.notify("CodeCompanion submit failed; draft kept.", vim.log.levels.WARN)
-    end
+  local editing = s.editing_index
+  s.editing_index = nil
+
+  if not s.in_flight_id and #s.queue == 0 then
+    submit_now(s, text)
     return
   end
 
-  -- Queue for after the in-flight request finishes.
-  s.queued = true
-  s.suppress_unqueue = true
-  update_ui(s)
-  vim.schedule(function() s.suppress_unqueue = false end)
+  local pos = editing and math.max(1, math.min(editing, #s.queue + 1)) or (#s.queue + 1)
+  table.insert(s.queue, pos, text)
+  push_history(text)
+  clear_draft_buf(s)
+  sync_queue_ui(s)
+end
+
+-- ─── Queue-manager operations (driven by the queue pane) ───────────────────
+
+local function delete_item(t, i)
+  local s = states[t]
+  if not s or not s.queue[i] then return end
+  table.remove(s.queue, i)
+  sync_queue_ui(s)
+end
+
+local function move_item(t, i, dir)
+  local s = states[t]
+  if not s then return end
+  local j = i + dir
+  if j < 1 or j > #s.queue then return end
+  s.queue[i], s.queue[j] = s.queue[j], s.queue[i]
+  sync_queue_ui(s)
+end
+
+-- Pull queued item `i` out into the input box for editing; `send` reinserts
+-- it at slot `i`. Focuses the input box so the user can edit immediately.
+local function edit_item(t, i)
+  local s = states[t]
+  if not s or not s.queue[i] then return end
+  local text = table.remove(s.queue, i)
+  s.editing_index = i
+  set_draft_text(s, text)
+  sync_queue_ui(s)
+  if s.winnr and vim.api.nvim_win_is_valid(s.winnr) then
+    vim.api.nvim_set_current_win(s.winnr)
+    vim.cmd("startinsert")
+  end
+end
+
+-- Submit the head of the queue now. The manual "resume" after a paused
+-- queue (see `on_chat_done`); no-op if a request is already in flight.
+local function flush_next(t)
+  local s = states[t]
+  if not s or #s.queue == 0 then return end
+  if s.in_flight_id then
+    vim.notify("A request is in flight; the queue will flush when it finishes.",
+      vim.log.levels.INFO)
+    return
+  end
+  local text = table.remove(s.queue, 1)
+  if not submit_to_chat(s.chat_bufnr, text) then
+    table.insert(s.queue, 1, text)
+    vim.notify("CodeCompanion submit failed; kept in queue.", vim.log.levels.WARN)
+  end
+  sync_queue_ui(s)
+end
+
+local function clear_queue(t)
+  local s = states[t]
+  if not s then return end
+  s.queue = {}
+  s.editing_index = nil
+  sync_queue_ui(s)
+end
+
+local function pane_ops(t)
+  return {
+    delete = function(i) delete_item(t, i) end,
+    move = function(i, dir) move_item(t, i, dir) end,
+    edit = function(i) edit_item(t, i) end,
+    flush = function() flush_next(t) end,
+    clear = function() clear_queue(t) end,
+  }
+end
+
+local function toggle_pane(t)
+  local s = states[t]
+  if not s then
+    vim.notify("No CodeCompanion queue in this tab", vim.log.levels.WARN)
+    return
+  end
+  queuepane.toggle(s, pane_ops(t))
 end
 
 local function toggle_fullscreen(t)
@@ -218,6 +380,28 @@ local function create_input_buf(t)
     { buffer = buf, desc = "Send/queue prompt" })
   vim.keymap.set({ "n", "i" }, "<C-g>", function() toggle_fullscreen(t) end,
     { buffer = buf, desc = "Toggle fullscreen" })
+  vim.keymap.set({ "n", "i" }, "<C-q>", function() toggle_pane(t) end,
+    { buffer = buf, desc = "Toggle queue manager" })
+
+  -- Edge-triggered history navigation: <Up>/<Down> browse prompt history only
+  -- at the first/last line, and otherwise fall through to ordinary cursor
+  -- movement within a multi-line draft.
+  vim.keymap.set({ "n", "i" }, "<Up>", function()
+    if vim.api.nvim_win_get_cursor(0)[1] > 1 then
+      vim.api.nvim_feedkeys(
+        vim.api.nvim_replace_termcodes("<Up>", true, false, true), "n", false)
+    else
+      history_prev(t)
+    end
+  end, { buffer = buf, desc = "Previous prompt / move up" })
+  vim.keymap.set({ "n", "i" }, "<Down>", function()
+    if vim.api.nvim_win_get_cursor(0)[1] < vim.api.nvim_buf_line_count(buf) then
+      vim.api.nvim_feedkeys(
+        vim.api.nvim_replace_termcodes("<Down>", true, false, true), "n", false)
+    else
+      history_next(t)
+    end
+  end, { buffer = buf, desc = "Next prompt / move down" })
 
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
     buffer = buf,
@@ -225,10 +409,11 @@ local function create_input_buf(t)
       local s = states[t]
       if not s then return end
       if s.suppress_unqueue then return end
-      if s.queued then
-        s.queued = false
-        update_ui(s)
-      end
+      -- A manual edit ends any history browse and forks a fresh draft. The
+      -- queue itself is independent of the box now, so editing the draft no
+      -- longer unqueues anything.
+      s.hist_idx = nil
+      s.hist_stash = nil
     end,
   })
 
@@ -264,6 +449,7 @@ function M.teardown(t)
   tearing_down[t] = true
 
   statusline.stop(s)
+  queuepane.close(s)
 
   -- Close the chat window(s) in the owning tab. Window close doesn't
   -- delete the chat buffer; that happens below via chat:close().
@@ -348,6 +534,11 @@ vim.api.nvim_create_autocmd("WinNew", {
     end
 
     local new_win = vim.api.nvim_get_current_win()
+    -- Never redirect a floating window (e.g. the queue-manager pane, which is
+    -- opened from the input box so `prev` matches s.winnr) into a split.
+    if vim.api.nvim_win_get_config(new_win).relative ~= "" then
+      return
+    end
     vim.schedule(function()
       if not vim.api.nvim_win_is_valid(new_win) then return end
       local chat_win = s.chat_bufnr and vim.fn.bufwinid(s.chat_bufnr)
@@ -406,7 +597,8 @@ function M.on_chat_opened(chat_bufnr)
   end
 
   s.chat_bufnr = chat_bufnr
-  s.queued = s.queued or false
+  s.queue = s.queue or {}
+  s.queued = #s.queue > 0
   s.suppress_unqueue = false
   s.fullscreen = false
 
@@ -462,6 +654,7 @@ function M.on_chat_hidden(chat_bufnr)
   local s = states[t]
   if not s or s.chat_bufnr ~= chat_bufnr then return end
   s.fullscreen = false
+  queuepane.close(s)
   -- Null the window handles *before* closing so the WinClosed handler
   -- sees no matching winnr/status_winnr and treats this as a toggle-off,
   -- not a full teardown. The input/status buffers are kept for re-open.
@@ -477,34 +670,26 @@ function M.on_chat_hidden(chat_bufnr)
   statusline.stop(s)
 end
 
--- Auto-flush a queued draft when a request completes successfully.
--- On cancel/error, drop the queued flag but keep the text in the input
--- box so the user can decide whether to resend.
+-- Auto-flush the queue one message per turn. On success, pop the head and
+-- submit it; the next turn's completion flushes the following one, and so on.
+-- On cancel/error the queue is left intact (pause): nothing is lost, and the
+-- user resumes with send-now (<C-s> in the queue pane) once things look right.
 function M.on_chat_done(chat_bufnr)
   local t = tab_for_chat(chat_bufnr)
   if not t then return end
   local s = states[t]
-  if not s or not s.queued or s.chat_bufnr ~= chat_bufnr then return end
+  if not s or not s.queue or #s.queue == 0 or s.chat_bufnr ~= chat_bufnr then return end
 
   if s.last_finished_status and s.last_finished_status ~= "success" then
-    s.queued = false
-    update_ui(s)
+    sync_queue_ui(s)
     return
   end
 
-  local text = get_draft_text(s)
-  if not text then
-    s.queued = false
-    update_ui(s)
-    return
+  local text = table.remove(s.queue, 1)
+  if not submit_to_chat(chat_bufnr, text) then
+    table.insert(s.queue, 1, text)
   end
-
-  if submit_to_chat(chat_bufnr, text) then
-    clear_draft_buf(s)
-  else
-    s.queued = false
-    update_ui(s)
-  end
+  sync_queue_ui(s)
 end
 
 -- Chat closed by CodeCompanion (or by us). Route to the unified
@@ -583,6 +768,11 @@ function M.focus()
   else
     vim.notify("No CodeCompanion input box open in this tab", vim.log.levels.WARN)
   end
+end
+
+-- Toggle the queue-manager float for the current tab.
+function M.toggle_pane()
+  toggle_pane(vim.api.nvim_get_current_tabpage())
 end
 
 return M
