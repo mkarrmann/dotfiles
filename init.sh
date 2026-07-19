@@ -451,7 +451,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-host.plist"
   # The Omnigent server moved to the HUB devserver (systemd omnigent-server).
   # Retire the old Mac-local server job so it can't bind :6767 and collide with
-  # the ET forward tunnel that now exposes the HUB server on Mac localhost.
+  # the local failover proxy that exposes the HUB server on Mac localhost.
   retire_launchd_plist "com.mkarrmann.omnigent-server"
 fi
 

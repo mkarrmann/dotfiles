@@ -38,13 +38,21 @@ active Linux hub seeds shared agent definitions into the authoritative
 database. A legacy Mac database from the former local-server deployment may
 remain on disk, but it is not part of the active topology.
 
+Mac port 6767 is a local TCP failover proxy. The existing CCO and FTW
+`nvs-tunnels` sessions expose candidate ports 16767 and 26767 respectively;
+the proxy prefers a healthy CCO route and falls back to FTW. The inactive
+candidate already forwards its loopback Omnigent port to the active hub, so
+the Mac needs neither a third ET connection nor direct ownership discovery.
+Starting either candidate ET session also performs a best-effort Persistent
+Storage refresh inside that authenticated connection.
+
 A cold devserver cannot mint an unattended credential for private Persistent
 Storage. The interactive `omnigent-hub` wrapper mints a short-lived delegated
 CAT for its process tree and passes it over SSH/ET when needed, which lets a
 candidate mount or refresh the namespace. No bearer credential is persisted
 in dotfiles or on disk. systemd bypasses that wrapper, so startup stays
-fail-closed until the Mac tunnel or another authenticated operator command
-performs this bootstrap.
+fail-closed until an existing Mac `nvs-tunnels` session or another
+authenticated operator command performs this bootstrap.
 
 That interactive credential bootstrap is the one machine-local exception to
 automatic onboarding. If `init.sh` reports that Persistent Storage could not

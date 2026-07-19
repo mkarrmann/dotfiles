@@ -53,6 +53,10 @@ SWEEP_WORKSPACE="Z"
 CHROME_APP="Google Chrome"
 CHROME_INVALID_TITLE_PATTERN="^Who.s using Chrome\\?$"
 OMNIGENT_PORT="${OMNIGENT_PORT:-$(omnigent-server-url --port)}"
+OMNIGENT_PRIMARY_FQDN="${OMNIGENT_PRIMARY_FQDN:-$(omnigent-server-url --primary)}"
+OMNIGENT_STANDBY_FQDN="${OMNIGENT_STANDBY_FQDN:-$(omnigent-server-url --standby)}"
+OMNIGENT_PRIMARY_TUNNEL_PORT="${OMNIGENT_PRIMARY_TUNNEL_PORT:-$(omnigent-server-url --primary-tunnel-port)}"
+OMNIGENT_STANDBY_TUNNEL_PORT="${OMNIGENT_STANDBY_TUNNEL_PORT:-$(omnigent-server-url --standby-tunnel-port)}"
 # ─────────────────────────────────────────────────────────────────────
 
 # ── Window creation ─────────────────────────────────────────────────
@@ -146,19 +150,42 @@ close_window_id() {
 
 tunnel_command_is_current() {
   local host="$1"
-  local cmds
+  local cmds local_port expected
   # We need the complete command line to inspect its tunnel flags.
   # shellcheck disable=SC2009
   cmds=$(ps -axo command | grep -F "x2ssh -et $host" | grep -v grep || true)
 
   # If the tunnel is between x2ssh attempts (Duo/reconnect), don't churn the
-  # Ghostty window. We only know it is stale when a live x2ssh command is using
-  # the old reverse-forward set.
+  # Ghostty window. We only know it is stale when a live x2ssh command lacks
+  # the candidate-specific Omnigent forward.
   [[ -z "$cmds" ]] && return 0
 
-  echo "$cmds" \
-    | grep -F -- "-r " \
-    | grep -Fv ",${OMNIGENT_PORT}:${OMNIGENT_PORT}" >/dev/null
+  case "$host" in
+    "$OMNIGENT_PRIMARY_FQDN") local_port="$OMNIGENT_PRIMARY_TUNNEL_PORT" ;;
+    "$OMNIGENT_STANDBY_FQDN") local_port="$OMNIGENT_STANDBY_TUNNEL_PORT" ;;
+    *) return 0 ;;
+  esac
+  expected="${local_port}:${OMNIGENT_PORT}"
+  echo "$cmds" | grep -F -- "-t " | grep -F -- "$expected" >/dev/null
+}
+
+omnigent_local_proxy_running() {
+  ps -axo comm=,args= | awk '
+    $1 ~ /python/ && index($0, "-m omnigent_hub.mac_proxy") { found = 1 }
+    END { exit(found ? 0 : 1) }
+  '
+}
+
+stop_legacy_omnigent_tunnel() {
+  local pids
+  pids=$(ps -axo pid,command | awk -v port="$OMNIGENT_PORT" '
+    (index($0, "omnigent-tunnel") ||
+     (index($0, "x2ssh -et ") && index($0, "-t " port ":" port)) ||
+     index($0, "omnigent-hub watch-activation")) { print $1 }
+  ') || true
+  # pids is an intentional whitespace-delimited list produced by awk.
+  # shellcheck disable=SC2086
+  [[ -z "$pids" ]] || kill $pids 2>/dev/null || true
 }
 
 stop_tunnel_processes_for_host() {
@@ -184,6 +211,13 @@ stop_tunnel_processes_for_host() {
 close_stale_tunnel_window_if_needed() {
   local wid="$1" title="$2" cmd="$3"
   local _nvs host _rest
+
+  if [[ "$cmd" == "omnigent-tunnel" ]] && ! omnigent_local_proxy_running; then
+    echo "[$title] replacing dedicated ET tunnel with local failover proxy..."
+    close_window_id "$wid" "legacy Omnigent tunnel"
+    stop_legacy_omnigent_tunnel
+    return 0
+  fi
 
   [[ "$cmd" == nvs-tunnels\ * ]] || return 1
   read -r _nvs host _rest <<< "$cmd"
@@ -389,11 +423,10 @@ SNAPSHOT=$(snapshot_windows)
 
 failures=0
 
-# The dedicated Omnigent ET forward exposes the active hub on Mac loopback. An
-# existing tunnel satisfies this preflight; on a cold start the tunnel window
-# created below repairs it.
+# The local Omnigent proxy exposes the hub on Mac loopback. The CCO and FTW
+# nvs-tunnels supply its candidate-specific upstream forwards.
 if ! curl -sf "http://127.0.0.1:${OMNIGENT_PORT}/health" >/dev/null 2>&1; then
-  echo "Omnigent hub tunnel is not healthy yet at http://127.0.0.1:${OMNIGENT_PORT}; the tunnel bootstrap will retry it" >&2
+  echo "Omnigent proxy is not healthy yet at http://127.0.0.1:${OMNIGENT_PORT}; startup will repair its candidate forwards" >&2
 fi
 
 for i in "${!WORKSPACES[@]}"; do

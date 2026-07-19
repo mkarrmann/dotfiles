@@ -347,47 +347,40 @@ with `16767` versus `6767`.
 The shared record is the startup fence. The local files are routing caches.
 They are not independent sources of truth.
 
-### 5.4 Mac discovery is pull-based
+### 5.4 Mac routing reuses the existing ET connections
 
-The Mac does not mount Meta Persistent Storage and never reads
-`active-hub.json` directly. Persistent Storage access is restricted to the CCO
-and FTW hub-control helpers.
+The Mac does not mount Meta Persistent Storage, read `active-hub.json`, or run
+an additional authenticated discovery command. Persistent Storage access stays
+restricted to the CCO and FTW hub-control helpers.
 
-The tracked topology on the Mac contains only static candidates:
+The two existing `nvs-tunnels` ET connections carry candidate-specific local
+forwards in addition to their Neovim RPC forwards:
 
 ```text
-OMNIGENT_PRIMARY_FQDN=devvm20365.cco0.facebook.com
-OMNIGENT_STANDBY_FQDN=devvm36111.ftw0.facebook.com
-OMNIGENT_PORT=6767
+Mac 127.0.0.1:16767 --CCO ET--> CCO 127.0.0.1:6767
+Mac 127.0.0.1:26767 --FTW ET--> FTW 127.0.0.1:6767
 ```
 
-On tunnel startup, periodic reconciliation, and connection failure, the Mac:
+`bin-macos/omnigent-tunnel` is now a local TCP failover proxy, despite retaining
+its historical command name. It listens on Mac port 6767, health-checks CCO's
+candidate endpoint first, falls back to FTW, and relays the complete TCP stream
+(including HTTP, SSE, and WebSocket traffic) through the selected existing ET
+connection.
 
-1. Contacts a reachable candidate through the existing authenticated SSH/ET
-   path.
-2. Runs a read-only remote command such as
-   `omnigent-hub resolve --json`.
-3. The Mac mints an ephemeral delegated CAT, passes it in the remote command
-   environment, and the helper mounts or refreshes Persistent Storage before
-   returning the active hub, epoch, state, and activation ID. The token is
-   neither logged nor written to disk.
-4. If the first candidate is unavailable, the Mac queries the other.
-5. If valid responses disagree at the same epoch, resolution fails closed. A
-   higher validated epoch supersedes a lower stale response.
-6. A transition-state response means no hub is currently active; the Mac
-   keeps retrying and does not guess a target.
-7. Once an active record is obtained, the Mac points its local port 6767 ET
-   forward at that hub and verifies the remote Omnigent health endpoint.
+This does not let the Mac guess ownership. The active candidate serves its
+local Omnigent server directly; the inactive candidate's
+`omnigent-client-proxy` forwards its loopback port to the active candidate.
+Therefore any healthy candidate endpoint terminates at the one fenced writable
+server. During transition state neither candidate exposes a healthy API.
 
-The Mac caches the last validated response for diagnostics, not authority. If
-neither candidate can answer, it may keep an already-healthy tunnel running,
-but it must not retarget from stale cache. If the existing tunnel is unhealthy
-and discovery is unavailable, it reports Omnigent disconnected and retries.
-
-The tracked `bin-macos/omnigent-tunnel` process is launched in its own Ghostty
-window by `startup-windows`. It keeps an ET forward open while a remote
-`watch-activation` command confirms the epoch every 30 seconds, probes local
-health every 10 seconds, and rediscovers immediately after either fails.
+If a selected ET connection drops, existing TCP streams close normally. Clients
+reconnect to stable Mac port 6767, where the local proxy selects the other
+healthy candidate. `startup-windows` restarts the CCO and FTW tunnel windows
+once when it detects that they lack their candidate-specific forward. No extra
+Duo authentication is required beyond those two already-needed ET sessions.
+Each remote tunnel startup also performs a best-effort `cache-routing
+--force-remount` on its candidate, preserving authenticated cold-boot storage
+recovery without a separate discovery connection.
 
 On the Mac, both `~/.omnigent/config.yaml` and `OMNIGENT_URL` continue to use:
 
@@ -396,7 +389,8 @@ http://127.0.0.1:6767
 ```
 
 They do not change during promotion. Existing Mac Neovim and CLI processes
-therefore reconnect through the retargeted local tunnel without restarting.
+therefore reconnect through the local proxy's newly healthy candidate without
+restarting.
 Linux clients also keep the same loopback URL through their SSH forward, so
 already-running devserver Neovim processes do not require a promotion restart.
 
@@ -417,10 +411,11 @@ Every non-active Linux devserver runs:
 127.0.0.1:6767 --SSH--> active hub 127.0.0.1:6767
 ```
 
-The active hub runs no prod-network listener for Omnigent. The Mac uses an ET
-forward to the same loopback port. The Mac learns the target through the pull
-protocol in Section 5.4, not through Manifold or a hub-to-laptop push.
-Promotion retargets the SSH/ET transports; it does not introduce ServiceRouter,
+The active hub runs no prod-network listener for Omnigent. The Mac reaches both
+candidate loopback ports through its existing ET connections and selects a
+healthy route locally as described in Section 5.4. Promotion reconciles the
+inactive candidate's loopback proxy; the Mac needs no Manifold access,
+server-side push, or ET retarget. This does not introduce ServiceRouter,
 VPNLess, a VIP, or a public endpoint.
 
 Ordinary clients never need Persistent Storage credentials or filesystem
@@ -593,9 +588,9 @@ For each candidate, also report:
 - local routing epoch; and
 - any Neovim process that is not using the stable loopback URL.
 
-On the Mac, `omnigent-hub status` reports the remotely validated record and
-which candidate supplied it. The `omnigent-tunnel` window separately shows the
-current ET target and continuously verifies health through local port 6767.
+The Mac does not need `omnigent-hub status` for client routing. The
+`omnigent-tunnel` window reports whether stable port 6767 is currently routing
+through the CCO or FTW candidate forward.
 
 ### 8.2 `omnigent-hub backup --quiesced`
 
@@ -638,8 +633,8 @@ For planned maintenance:
 13. Start the Google Chat bridge last.
 14. Start the periodic snapshot timer only after FTW is active and healthy.
 15. Verify existing Chat mappings before enabling inbound polling.
-16. Let an awake Mac's `omnigent-tunnel` observe the new epoch and retarget
-    local port 6767; an asleep Mac converges when `startup-windows` resumes it.
+16. Verify the Mac's stable local proxy reaches the API through either healthy
+    candidate forward; no Mac-side epoch observation or retarget is required.
 
 The operator lock is machine-local, not a distributed CAS. This personal
 deployment assumes one human operator and must not run promotion, failback,
@@ -827,9 +822,8 @@ This phase immediately reduces session-loss risk without changing topology.
 - Implement an explicit, guarded `force-start` recovery path for a coordination
   storage outage.
 - Update devserver routing caches.
-- Implement the read-only remote resolver and Mac pull/reconciliation loop;
-  use it to select the Mac ET tunnel target and never require a Manifold mount
-  or inbound push on macOS.
+- Reuse the existing CCO and FTW ET sessions for candidate-specific Omnigent
+  forwards and route stable Mac port 6767 through a local health-aware proxy.
 - Reconcile `config.yaml` and generated `OMNIGENT_URL` on promotion.
 - Make the bridge start last and fail closed after stale recovery.
 - Implement `reconcile-gchat` with exact-identity matching and explicit
@@ -893,12 +887,12 @@ leave version convergence until promotion time.
     Omnigent, bridge, or hub-controller versions differ, or when the snapshot
     Omnigent/bridge versions differ from the target.
 18. A quiesced handoff cannot race the periodic snapshot timer.
-19. A Mac with no Persistent Storage access can discover either active hub
-    through either reachable candidate and retarget its ET forward.
+19. A Mac with no Persistent Storage access reaches Omnigent through either
+    existing candidate ET connection without additional authentication.
 20. A sleeping Mac that misses a promotion converges after wake without a
     server-side push, source-control change, or Neovim restart.
-21. Transition state, unavailable candidates, and conflicting same-epoch
-    responses never make the Mac guess an active hub.
+21. Transition state or unavailable candidates cannot make the Mac bypass the
+    fenced candidate loopback routes.
 22. Running `init.sh` on a new execution devserver discovers the active hub,
     starts its execution host, and keeps its route current without granting
     that client Persistent Storage access.
@@ -945,10 +939,11 @@ operator command.
 
 The dotfiles implementation currently has the following local evidence:
 
-- 63 `omnigent-hub` tests cover record validation, fencing, force recovery,
+- 68 `omnigent-hub` tests cover record validation, fencing, force recovery,
   stale-mount refresh, service ordering, stable routing, delegated-CAT
   transport, credential exclusion, version drift, Google Chat reconciliation,
-  interrupted-transition resumption, and Mac candidate/conflict resolution;
+  interrupted-transition resumption, Mac candidate/conflict resolution, and
+  preferred/fallback selection by the local Mac TCP proxy;
 - an in-process two-hub integration test performs a real planned promotion,
   verifies both restored SQLite stores and artifacts, adds FTW-era state,
   performs a real failback, and verifies that newer state on CCO;
@@ -960,12 +955,13 @@ The dotfiles implementation currently has the following local evidence:
   checksum-validated, restored to a temporary directory, booted on an isolated
   loopback port, and queried successfully through `/health` and `/v1/sessions`.
 
-The real-machine rehearsal additionally proved criteria 2-6, 12, and 19-20:
-CCO promoted to FTW, the Mac retargeted through candidate discovery, CCO stayed
-fenced while its standby proxy served the FTW API, FTW produced a 19-session
-snapshot containing a new marker, and failback restored that marker to CCO.
-The final epoch-5 status had no warnings and showed exactly one owner for each
-hub-only service.
+The real-machine rehearsal additionally proved criteria 2-6 and 12: CCO
+promoted to FTW, CCO stayed fenced while its standby proxy served the FTW API,
+FTW produced a 19-session snapshot containing a new marker, and failback
+restored that marker to CCO. The earlier direct Mac ET retarget also worked in
+that rehearsal. Its replacement local proxy is unit-tested; one live Mac
+`startup-windows` run still needs to validate the candidate forwards and stable
+port 6767 end to end.
 
 A subsequent FTW runner rehearsal exposed that the retired prodnet TCP proxy
 passed health checks but dropped real runner WebSocket response traffic. The

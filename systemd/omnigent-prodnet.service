@@ -2,7 +2,7 @@
 # Symlinked into ~/.config/systemd/user/ by ~/dotfiles/init.sh (Linux block).
 #
 # The Omnigent server binds 127.0.0.1 only (a v6 bind is IPv6-only under uvicorn
-# and would break the v4 loopback the Mac ET tunnel + Orchest use). This proxy
+# and would break the v4 loopback the Mac ET forwards + Orchest use). This proxy
 # exposes the hub's prod-network v6 address :6767 and relays to the loopback
 # server, so the OTHER devserver can dial the hub's FQDN directly. HUB only.
 #

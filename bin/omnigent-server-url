@@ -9,6 +9,8 @@ ROUTING_CACHE="${OMNIGENT_HA_ROUTING_CACHE:-$HOME/.config/omnigent/active-hub.js
 primary_override="${OMNIGENT_PRIMARY_FQDN:-}"
 standby_override="${OMNIGENT_STANDBY_FQDN:-}"
 port_override="${OMNIGENT_PORT:-}"
+primary_tunnel_port_override="${OMNIGENT_PRIMARY_TUNNEL_PORT:-}"
+standby_tunnel_port_override="${OMNIGENT_STANDBY_TUNNEL_PORT:-}"
 if [[ -f "$TOPOLOGY" ]]; then
   # shellcheck disable=SC1090
   source "$TOPOLOGY"
@@ -16,6 +18,8 @@ fi
 primary="${primary_override:-${OMNIGENT_PRIMARY_FQDN:-devvm20365.cco0.facebook.com}}"
 standby="${standby_override:-${OMNIGENT_STANDBY_FQDN:-devvm36111.ftw0.facebook.com}}"
 port="${port_override:-${OMNIGENT_PORT:-6767}}"
+primary_tunnel_port="${primary_tunnel_port_override:-${OMNIGENT_PRIMARY_TUNNEL_PORT:-16767}}"
+standby_tunnel_port="${standby_tunnel_port_override:-${OMNIGENT_STANDBY_TUNNEL_PORT:-26767}}"
 host="${OMNIGENT_LOCAL_FQDN:-$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo unknown)}"
 
 case "${1:-}" in
@@ -33,6 +37,14 @@ case "${1:-}" in
     ;;
   --port)
     echo "$port"
+    exit 0
+    ;;
+  --primary-tunnel-port)
+    echo "$primary_tunnel_port"
+    exit 0
+    ;;
+  --standby-tunnel-port)
+    echo "$standby_tunnel_port"
     exit 0
     ;;
   --is-candidate)
@@ -71,8 +83,8 @@ print(f"{active}\t{epoch}\t{activation}")
 PY
 }
 
-# macOS clients always use the stable local ET endpoint. They only need the
-# active hub when managing the tunnel itself (--hub below).
+# macOS clients always use the stable local proxy. Its existing CCO/FTW ET
+# forwards handle reachability, so normal client resolution needs no hub cache.
 if [[ "$(uname -s)" == "Darwin" && -z "${1:-}" ]]; then
   echo "http://127.0.0.1:${port}"
   exit 0
@@ -104,7 +116,7 @@ case "${1:-}" in
     echo "http://127.0.0.1:${port}"
     ;;
   *)
-    echo "usage: omnigent-server-url [--hub|--primary|--standby|--candidates|--port|--epoch|--activation-id|--is-hub|--is-candidate]" >&2
+    echo "usage: omnigent-server-url [--hub|--primary|--standby|--candidates|--port|--primary-tunnel-port|--standby-tunnel-port|--epoch|--activation-id|--is-hub|--is-candidate]" >&2
     exit 2
     ;;
 esac

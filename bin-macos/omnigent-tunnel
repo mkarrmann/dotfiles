@@ -1,63 +1,19 @@
 #!/usr/bin/env bash
-# Keep one Mac localhost tunnel pointed at the authoritative active hub.
+# Serve stable Mac localhost:6767 through the existing CCO/FTW ET forwards.
 set -euo pipefail
 
-HUB_BIN="${OMNIGENT_HUB_BIN:-$HOME/bin/omnigent-hub}"
+DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
+PYTHON="$DOTFILES/services/omnigent-hub/.venv/bin/python"
 SERVER_URL_BIN="${OMNIGENT_SERVER_URL_BIN:-$HOME/bin/omnigent-server-url}"
-PORT="${OMNIGENT_PORT:-$("$SERVER_URL_BIN" --port)}"
-RETRY_SECONDS="${OMNIGENT_TUNNEL_RETRY_SECONDS:-5}"
-HEALTH_FAILURE_LIMIT="${OMNIGENT_TUNNEL_HEALTH_FAILURE_LIMIT:-3}"
 
-if [[ ! -x "$HUB_BIN" ]]; then
-  echo "ERROR: omnigent-hub is not installed at $HUB_BIN; run ~/dotfiles/init.sh" >&2
+if [[ ! -x "$PYTHON" ]]; then
+  echo "ERROR: omnigent-hub is not installed; run $DOTFILES/init.sh" >&2
   exit 1
 fi
 
+export OMNIGENT_PORT="${OMNIGENT_PORT:-$("$SERVER_URL_BIN" --port)}"
+export OMNIGENT_PRIMARY_TUNNEL_PORT="${OMNIGENT_PRIMARY_TUNNEL_PORT:-$("$SERVER_URL_BIN" --primary-tunnel-port)}"
+export OMNIGENT_STANDBY_TUNNEL_PORT="${OMNIGENT_STANDBY_TUNNEL_PORT:-$("$SERVER_URL_BIN" --standby-tunnel-port)}"
+
 printf '\033]0;%s\007' "Omnigent: tunnel"
-
-while true; do
-  echo "Resolving the active Omnigent hub through CCO and FTW..."
-  if ! discovery="$($HUB_BIN discover --json)"; then
-    echo "Discovery failed; retrying in ${RETRY_SECONDS}s" >&2
-    sleep "$RETRY_SECONDS"
-    continue
-  fi
-  read -r target epoch activation_id < <(
-    python3 -c '
-import json, sys
-value = json.load(sys.stdin)["record"]
-if value.get("state") != "active":
-    raise SystemExit("deployment is in transition state")
-print(value["active_hub"], value["epoch"], value["activation_id"])
-' <<< "$discovery"
-  ) || {
-    echo "No active hub is available; retrying in ${RETRY_SECONDS}s" >&2
-    sleep "$RETRY_SECONDS"
-    continue
-  }
-
-  echo "Forwarding Mac localhost:${PORT} to ${target}:${PORT} (epoch ${epoch})"
-  remote_watch="\$HOME/bin/omnigent-hub watch-activation --epoch ${epoch} --activation-id ${activation_id} --json"
-  OMNIGENT_TUNNEL_BOOTSTRAP=v3 x2ssh -et "$target" \
-    -t "${PORT}:${PORT}" \
-    -c "zsh -lc '$remote_watch'" &
-  et_pid=$!
-  failures=0
-  while kill -0 "$et_pid" 2>/dev/null; do
-    printf '\033]0;%s\007' "Omnigent: tunnel"
-    if curl -sf --noproxy '*' --max-time 3 "http://127.0.0.1:${PORT}/health" >/dev/null; then
-      failures=0
-    else
-      failures=$((failures + 1))
-      if (( failures >= HEALTH_FAILURE_LIMIT )); then
-        echo "Tunnel health failed ${failures} times; reconnecting" >&2
-        kill "$et_pid" 2>/dev/null || true
-        break
-      fi
-    fi
-    sleep 10
-  done
-  wait "$et_pid" 2>/dev/null || true
-  echo "Omnigent tunnel ended; rediscovering in ${RETRY_SECONDS}s"
-  sleep "$RETRY_SECONDS"
-done
+exec "$PYTHON" -m omnigent_hub.mac_proxy
