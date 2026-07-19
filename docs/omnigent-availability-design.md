@@ -1,8 +1,8 @@
 # Personal Omnigent primary/standby availability
 
-**Status:** Implemented in dotfiles. The first real cross-hub rehearsal safely
-aborted on a partial ManifoldFS record view; authenticated remount-and-verify
-handling is implemented and the rehearsal must be repeated after deployment.
+**Status:** Implemented and rehearsed across CCO, FTW, and macOS. A real
+planned promotion and failback preserved FTW-era state, kept the old primary
+fenced, and returned ownership to CCO.
 
 **Owner:** `mkarrmann`
 
@@ -289,11 +289,14 @@ sequence. ManifoldFS rename is locally atomic but another mounted client can
 briefly retain a partial or stale cached view. A parse failure therefore
 forces one authenticated remount and retry. More importantly, a handoff
 force-remounts the target after the source publishes the transition and
-verifies every transition identity field before restore; after activation it
-does the same on the old source before service reconciliation. A mismatch
-leaves both sides fenced. Because only one human-operated command changes the
-record, this does not need a general consensus protocol. A monotonically
-increasing epoch makes stale local routing state detectable.
+verifies every transition identity field before restore. After activation it
+retries authenticated remounts on the old source for up to 30 seconds before
+service reconciliation because the real rehearsal observed a brief
+same-epoch stale view. An unresolved identity mismatch leaves the target's
+tail services stopped; an unreachable old source is reported as deferred and
+its periodic reconciler converges later. Because only one human-operated
+command changes the record, this does not need a general consensus protocol.
+A monotonically increasing epoch makes stale local routing state detectable.
 
 There is no automatic preferred-primary exception when Persistent Storage is
 unreadable. Such an exception is unsafe: CCO could return during an FTW
@@ -787,7 +790,7 @@ smaller correctness surface.
 
 This phase immediately reduces session-loss risk without changing topology.
 
-### Phase 2: standby preparation (installed; latest reconciliation update pending)
+### Phase 2: standby preparation (complete)
 
 - Track primary and standby FQDNs in dotfiles.
 - Install identical pinned Omnigent and bridge versions on FTW.
@@ -818,7 +821,7 @@ This phase immediately reduces session-loss risk without changing topology.
   ambiguous-message disposition.
 - Add dry-run output showing every host and generation affected.
 
-### Phase 4: cross-hub rehearsal (pending operator installation on FTW)
+### Phase 4: cross-hub rehearsal (complete)
 
 1. Perform a planned CCO-to-FTW handoff.
 2. Validate API, CLI, CodeCompanion, web UI, peer hosts, and Google Chat.
@@ -826,7 +829,13 @@ This phase immediately reduces session-loss risk without changing topology.
 4. Fail back with FTW's newer state.
 5. Verify CCO is primary again and FTW is inactive.
 
-Only after this rehearsal should the workflow be considered dependable.
+The rehearsal completed on 2026-07-18. FTW served the API and Mac tunnel at
+epoch 4, CCO's startup gate rejected all hub services while FTW was active, an
+FTW-era marker appeared in an FTW-authored snapshot, and failback restored that
+marker to CCO at epoch 5. Service ownership and routing converged without
+warnings. The promotion also exposed a short-lived stale activation view on
+CCO; the bounded post-activation refresh retry described in section 5.2 was
+added from that evidence.
 
 ### Ongoing upgrades
 
@@ -920,7 +929,7 @@ operator command.
 
 The dotfiles implementation currently has the following local evidence:
 
-- 49 `omnigent-hub` tests cover record validation, fencing, force recovery,
+- 51 `omnigent-hub` tests cover record validation, fencing, force recovery,
   stale-mount refresh, service ordering, stable routing, delegated-CAT
   transport, credential exclusion, version drift, Google Chat reconciliation,
   interrupted-transition resumption, and Mac candidate/conflict resolution;
@@ -935,10 +944,12 @@ The dotfiles implementation currently has the following local evidence:
   checksum-validated, restored to a temporary directory, booted on an isolated
   loopback port, and queried successfully through `/health` and `/v1/sessions`.
 
-This evidence proves the local algorithms and artifacts. It does not replace
-Phase 4: after the commit is available on FTW and the Mac, the operator must
-run `init.sh` there and perform the planned promotion/failback rehearsal before
-claiming criteria 2-6, 12, and 19-20 against the actual machines and ET path.
+The real-machine rehearsal additionally proved criteria 2-6, 12, and 19-20:
+CCO promoted to FTW, the Mac retargeted through candidate discovery, CCO stayed
+fenced while its standby proxy served the FTW API, FTW produced a 19-session
+snapshot containing a new marker, and failback restored that marker to CCO.
+The final epoch-5 status had no warnings and showed exactly one owner for each
+hub-only service.
 
 ## 15. References
 

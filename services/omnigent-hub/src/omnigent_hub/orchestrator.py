@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -51,9 +52,18 @@ class HandoffResult:
 
 
 class HandoffOrchestrator:
-    def __init__(self, config: HubConfig, remote: RemoteOperations) -> None:
+    _ACTIVATION_REFRESH_DELAYS = (0.0, 1.0, 2.0, 4.0, 8.0, 15.0)
+
+    def __init__(
+        self,
+        config: HubConfig,
+        remote: RemoteOperations,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self._config = config
         self._remote = remote
+        self._sleep = sleep
         self._steps: list[str] = []
 
     def status(self) -> dict[str, Any]:
@@ -172,14 +182,7 @@ class HandoffOrchestrator:
         self._call(target, "route-ensure", "--json")
         self._call(target, "services", "start-core", "--json", timeout=180)
         try:
-            observed_activation = self._call(
-                source,
-                "cache-routing",
-                "--force-remount",
-                "--json",
-            )
-            _require_same_activation(observed_activation, activation)
-            self._call(source, "reconcile-services", "--json")
+            self._reconcile_source_after_activation(source, activation)
         except RemoteError as exc:
             self._steps.append(f"{source}: reconciliation deferred: {exc}")
         if unexpected:
@@ -195,6 +198,35 @@ class HandoffOrchestrator:
             gchat_reconciliation_required=unexpected,
             steps=tuple(self._steps),
         )
+
+    def _reconcile_source_after_activation(
+        self,
+        source: str,
+        activation: dict[str, Any],
+    ) -> None:
+        last_error: RemoteError | HandoffError | None = None
+        for attempt, delay in enumerate(self._ACTIVATION_REFRESH_DELAYS, start=1):
+            if delay:
+                self._sleep(delay)
+            try:
+                observed = self._call(
+                    source,
+                    "cache-routing",
+                    "--force-remount",
+                    "--json",
+                )
+                _require_same_activation(observed, activation)
+            except (RemoteError, HandoffError) as exc:
+                last_error = exc
+                if attempt < len(self._ACTIVATION_REFRESH_DELAYS):
+                    self._steps.append(
+                        f"{source}: activation refresh attempt {attempt} did not converge; retrying"
+                    )
+                continue
+            self._call(source, "reconcile-services", "--json")
+            return
+        assert last_error is not None
+        raise last_error
 
     def _planned_quiesce(self, source: str, target: str) -> dict[str, Any]:
         self._call(source, "services", "stop-ingress", "--json")

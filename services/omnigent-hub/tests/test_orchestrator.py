@@ -46,6 +46,7 @@ class FakeRemote:
     record: ActiveHubRecord
     fail_quiesce: bool = False
     mismatch_target_version: bool = False
+    stale_source_activation_reads: int = 0
 
     def __post_init__(self) -> None:
         self.calls: list[tuple[str, tuple[str, ...]]] = []
@@ -150,6 +151,21 @@ class FakeRemote:
                     "target_hub": "standby.example.com",
                     "transition_id": transition_id,
                 }
+            if self.stale_source_activation_reads:
+                self.stale_source_activation_reads -= 1
+                return {
+                    "format_version": 1,
+                    "epoch": 2,
+                    "state": "transition",
+                    "active_hub": None,
+                    "activation_id": None,
+                    "restored_generation": "generation-2",
+                    "updated_at": "2026-07-18T20:02:00Z",
+                    "updated_by": "tester",
+                    "source_hub": "primary.example.com",
+                    "target_hub": "standby.example.com",
+                    "transition_id": "transition-2",
+                }
             return {
                 "format_version": 1,
                 "epoch": 2,
@@ -219,6 +235,45 @@ def test_planned_handoff_orders_fence_restore_and_tail(hub_config: HubConfig) ->
         ("reconcile-services", "--json"),
     ) in calls
     assert calls[-1] == ("standby.example.com", ("services", "start-tail", "--json"))
+
+
+def test_planned_handoff_retries_stale_source_activation_view(
+    hub_config: HubConfig,
+) -> None:
+    remote = FakeRemote(active_record(), stale_source_activation_reads=2)
+    sleeps: list[float] = []
+
+    result = HandoffOrchestrator(hub_config, remote, sleep=sleeps.append).handoff(
+        "standby.example.com",
+        unexpected=False,
+        source_confirmed_stopped=False,
+        dry_run=False,
+    )
+
+    refresh = ("primary.example.com", ("cache-routing", "--force-remount", "--json"))
+    assert remote.calls.count(refresh) == 3
+    assert sleeps == [1.0, 2.0]
+    assert any("activation refresh attempt 2" in step for step in result.steps)
+    assert remote.calls[-1] == ("standby.example.com", ("services", "start-tail", "--json"))
+
+
+def test_planned_handoff_keeps_tail_stopped_when_source_view_never_converges(
+    hub_config: HubConfig,
+) -> None:
+    remote = FakeRemote(
+        active_record(),
+        stale_source_activation_reads=len(HandoffOrchestrator._ACTIVATION_REFRESH_DELAYS),
+    )
+
+    with pytest.raises(HandoffError, match="source did not observe the target activation"):
+        HandoffOrchestrator(hub_config, remote, sleep=lambda _: None).handoff(
+            "standby.example.com",
+            unexpected=False,
+            source_confirmed_stopped=False,
+            dry_run=False,
+        )
+
+    assert not any(call[1] == ("services", "start-tail", "--json") for call in remote.calls)
 
 
 def test_dry_run_does_not_issue_mutating_calls(hub_config: HubConfig) -> None:

@@ -49,7 +49,9 @@ runtime ownership file should be edited manually.
 ManifoldFS may expose a partially cached mutable record across mounts. Record
 reads remount and retry after a parse failure, and every handoff force-refreshes
 the target before restore and the source after activation. The exact transition
-or activation must match after refresh or the handoff remains fenced.
+or activation must match after refresh or the handoff remains fenced. The old
+source's post-activation refresh has a bounded 30-second retry because distinct
+mounts can briefly retain a valid but stale same-epoch view.
 
 The same 60-second reconciler has role-specific behavior: candidates reconcile
 hub ownership from Persistent Storage, while ordinary devservers query both
@@ -128,6 +130,5 @@ uv run mypy src tests
 ```
 
 The full suite includes an in-process two-hub promotion/failback integration
-test. The real-machine rehearsal remains explicit: install on CCO, FTW, and
-the Mac, run `omnigent-hub promote ftw --dry-run`, then follow the design's
-Phase 4 checklist.
+test. The real-machine rehearsal completed on 2026-07-18; repeat the design's
+Phase 4 checklist after material changes to fencing, storage, or routing.
