@@ -482,9 +482,10 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   done
   systemctl --user daemon-reload 2>/dev/null || true
   # A running service keeps the old ExecStart process across daemon-reload.
-  # Stop it so this run installs the tracked tunnel implementation; role
-  # reconciliation below starts it again only where appropriate.
-  systemctl --user stop omnigent-client-proxy.service 2>/dev/null || true
+  # Refresh an existing client tunnel in place, but do not stop it first: a
+  # candidate may temporarily lack a delegated Persistent Storage credential,
+  # and its last validated route must remain usable while reconciliation waits.
+  systemctl --user try-restart omnigent-client-proxy.service 2>/dev/null || true
 
   # Pre-create state dirs: systemd opens StandardOutput=append: BEFORE creating
   # StateDirectory=, so a unit's very first start fails 209/STDOUT if the dir is
