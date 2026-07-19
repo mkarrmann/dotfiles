@@ -106,7 +106,13 @@ class HandoffOrchestrator:
                         "unexpected recovery requires independent confirmation "
                         "that the source stopped"
                     )
-                generation, archive = self._newest_snapshot(target)
+                self._call(
+                    target,
+                    "cache-routing",
+                    "--force-remount",
+                    "--json",
+                )
+                generation, _ = self._newest_snapshot(target)
                 self._call(target, "services", "stop-all", "--json")
                 transition = self._call(
                     target,
@@ -122,7 +128,6 @@ class HandoffOrchestrator:
             else:
                 transition = self._planned_quiesce(source, target)
                 generation = _required_string(transition, "restored_generation")
-                archive = self._archive_path(target, generation)
         else:
             source = record.source_hub
             if source is None or record.target_hub != target:
@@ -143,7 +148,6 @@ class HandoffOrchestrator:
             if not unexpected and transition.get("restored_generation") is None:
                 transition = self._resume_planned_snapshot(source)
             generation = _required_string(transition, "restored_generation")
-            archive = self._archive_path(target, generation)
 
         observed_transition = self._call(
             target,
@@ -152,6 +156,7 @@ class HandoffOrchestrator:
             "--json",
         )
         _require_same_transition(observed_transition, transition)
+        archive = self._archive_path(target, generation)
         self._call(target, "services", "stop-hub", "--json")
         self._call(target, "validate-snapshot", archive, "--json", timeout=300)
         self._call(target, "restore", archive, "--yes", "--json", timeout=300)
@@ -286,6 +291,7 @@ class HandoffOrchestrator:
         unexpected: bool,
     ) -> HandoffResult:
         if unexpected:
+            generation = "<newest-valid-generation>"
             steps = (
                 f"select newest validated snapshot visible from {target}",
                 f"publish unexpected transition from {source} to {target}",
@@ -294,6 +300,11 @@ class HandoffOrchestrator:
                 "leave Google Chat stopped pending reconcile-gchat",
             )
         else:
+            generation = (
+                record.restored_generation
+                if record.state == "transition" and record.restored_generation
+                else "<new-quiesced-generation>"
+            )
             steps = (
                 f"stop ingress on {source}",
                 f"publish transition fence from {source} to {target}",
@@ -304,7 +315,7 @@ class HandoffOrchestrator:
         return HandoffResult(
             source=source,
             target=target,
-            generation=record.restored_generation or "<new-quiesced-generation>",
+            generation=generation,
             epoch=record.epoch if record.state == "transition" else record.epoch + 1,
             unexpected=unexpected,
             gchat_reconciliation_required=unexpected,

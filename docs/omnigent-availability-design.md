@@ -787,7 +787,7 @@ smaller correctness surface.
 
 This phase immediately reduces session-loss risk without changing topology.
 
-### Phase 2: standby preparation (implemented in dotfiles; install pending)
+### Phase 2: standby preparation (installed; latest reconciliation update pending)
 
 - Track primary and standby FQDNs in dotfiles.
 - Install identical pinned Omnigent and bridge versions on FTW.
@@ -874,6 +874,9 @@ time.
     server-side push, source-control change, or Neovim restart.
 21. Transition state, unavailable candidates, and conflicting same-epoch
     responses never make the Mac guess an active hub.
+22. Running `init.sh` on a new execution devserver discovers the active hub,
+    starts its execution host, and keeps its route current without granting
+    that client Persistent Storage access.
 
 ## 13. Operational summary
 
@@ -902,7 +905,7 @@ Installation on each machine is intentionally explicit:
 
 ```text
 cd ~/dotfiles
-git pull
+sl pull --rebase
 ./init.sh
 ```
 
@@ -917,7 +920,7 @@ operator command.
 
 The dotfiles implementation currently has the following local evidence:
 
-- 46 `omnigent-hub` tests cover record validation, fencing, force recovery,
+- 49 `omnigent-hub` tests cover record validation, fencing, force recovery,
   stale-mount refresh, service ordering, stable routing, delegated-CAT
   transport, credential exclusion, version drift, Google Chat reconciliation,
   interrupted-transition resumption, and Mac candidate/conflict resolution;
@@ -950,6 +953,9 @@ claiming criteria 2-6, 12, and 19-20 against the actual machines and ET path.
 - `~/dotfiles/systemd/omnigent-hub-reconcile.timer`
 - `~/dotfiles/systemd/omnigent-snapshot.timer`
 - `~/dotfiles/bin/omnigent-hub`
+- `~/dotfiles/bin/omnigent-hub-reconcile`
+- `~/dotfiles/bin/omnigent-onboard-check`
+- `~/dotfiles/bin/omnigent-retire-legacy-standby`
 - `~/dotfiles/bin/omnigent-server-url`
 - `~/dotfiles/bin-macos/omnigent-tunnel`
 - `~/dotfiles/services/omnigent-hub/README.md`

@@ -125,6 +125,13 @@ class FakeRemote:
             }
         if command == "cache-routing":
             if host == "standby.example.com":
+                transition_started = any(
+                    call[1][0]
+                    in {"begin-transition", "begin-unexpected-transition", "attach-generation"}
+                    for call in self.calls
+                )
+                if not transition_started:
+                    return active_record().to_dict()
                 transition_id = (
                     "unexpected-2"
                     if any(call[1][0] == "begin-unexpected-transition" for call in self.calls)
@@ -195,10 +202,11 @@ def test_planned_handoff_orders_fence_restore_and_tail(hub_config: HubConfig) ->
     refresh_target = calls.index(
         ("standby.example.com", ("cache-routing", "--force-remount", "--json"))
     )
+    snapshots = calls.index(("standby.example.com", ("snapshots", "--json")))
     restore = calls.index(
         ("standby.example.com", ("restore", "/snap/generation-2.tar.gz", "--yes", "--json"))
     )
-    assert refresh_target < restore
+    assert refresh_target < snapshots < restore
     start_core = calls.index(("standby.example.com", ("services", "start-core", "--json")))
     assert stop_client < start_core
     refresh_source = calls.index(
@@ -222,7 +230,7 @@ def test_dry_run_does_not_issue_mutating_calls(hub_config: HubConfig) -> None:
         dry_run=True,
     )
     assert remote.calls == []
-    assert result.generation == "old-generation"
+    assert result.generation == "<new-quiesced-generation>"
     assert "stop ingress" in result.steps[0]
 
 
@@ -312,6 +320,10 @@ def test_unexpected_handoff_requires_fencing_and_leaves_bridge_stopped(
     )
 
     assert result.gchat_reconciliation_required is True
+    refresh = remote.calls.index(
+        ("standby.example.com", ("cache-routing", "--force-remount", "--json"))
+    )
+    snapshots = remote.calls.index(("standby.example.com", ("snapshots", "--json")))
     stop_all = remote.calls.index(("standby.example.com", ("services", "stop-all", "--json")))
     fence = remote.calls.index(
         (
@@ -328,7 +340,7 @@ def test_unexpected_handoff_requires_fencing_and_leaves_bridge_stopped(
             ),
         )
     )
-    assert stop_all < fence
+    assert refresh < snapshots < stop_all < fence
     assert remote.calls[-1] == (
         "standby.example.com",
         ("services", "start-timer", "--json"),

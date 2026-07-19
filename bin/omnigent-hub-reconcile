@@ -5,7 +5,7 @@ set -euo pipefail
 
 DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
 SERVER_URL_BIN="${OMNIGENT_SERVER_URL_BIN:-$DOTFILES/bin/omnigent-server-url}"
-HUB_BIN="${OMNIGENT_HUB_BIN:-$DOTFILES/bin/omnigent-hub}"
+HUB_BIN="${OMNIGENT_HUB_BIN:-$DOTFILES/services/omnigent-hub/.venv/bin/omnigent-hub}"
 
 if "$SERVER_URL_BIN" --is-candidate; then
   exec "$HUB_BIN" reconcile-services --json
