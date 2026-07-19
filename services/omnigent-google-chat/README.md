@@ -176,9 +176,10 @@ terminal output, commands, logs, file contents, and diffs. `status-only` mode
 copies no transcript content.
 
 Waiting/blocked, approval-needed, and failure notices mention the configured
-user. Completion mentions are controlled by
-`OMNIGENT_GCHAT_MENTION_ON_COMPLETION`. Routine output is not mentioned. Only
-the first chunk of one logical notification carries a mention.
+user. `OMNIGENT_GCHAT_MENTION_ON_COMPLETION=true` enables a mentioned
+completion notice; `false` suppresses completion notices entirely. Routine
+output is not mentioned. Only the first chunk of one logical notification
+carries a mention.
 
 Detaching stops future copies; it does not erase existing Chat history.
 

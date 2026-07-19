@@ -38,7 +38,6 @@ class SessionMirror:
         self._mention_on_completion = mention_on_completion
         self._max_session_chars = max_session_chars
         self._status_changed = status_changed
-        self._assistant_sent_since_running = False
         self._logger = logging.getLogger(__name__)
 
     async def run(self, stop: asyncio.Event) -> None:
@@ -169,8 +168,6 @@ class SessionMirror:
             text=text,
             thread_name=thread_name,
         )
-        if role == "assistant":
-            self._assistant_sent_since_running = True
         return len(text)
 
     async def _handle_event(self, event: dict[str, Any]) -> None:
@@ -187,7 +184,6 @@ class SessionMirror:
             self._status_changed(self.session_id, status)
             transition_source = await self._store.observe_session_status(self.session_id, status)
             if status == "running":
-                self._assistant_sent_since_running = False
                 return
             if status in {"idle", "failed"}:
                 await self.reconcile_items()
@@ -199,14 +195,12 @@ class SessionMirror:
                     mention=True,
                     fallback_source=transition_source,
                 )
-            elif status == "idle" and (
-                self._mention_on_completion or not self._assistant_sent_since_running
-            ):
+            elif status == "idle" and self._mention_on_completion:
                 await self._send_status(
                     event,
                     status="idle",
                     text="Session completed.",
-                    mention=self._mention_on_completion,
+                    mention=True,
                     fallback_source=transition_source,
                 )
             elif status in {"waiting", "blocked"}:

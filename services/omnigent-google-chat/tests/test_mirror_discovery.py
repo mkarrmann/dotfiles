@@ -230,11 +230,11 @@ async def test_notification_policy_ignores_response_completed_and_mentions_atten
         store.close()
 
 
-async def test_completion_setting_controls_mention(tmp_path: Path) -> None:
+async def test_disabled_completion_setting_suppresses_notification(tmp_path: Path) -> None:
     store, _, sender, mirror = await setup_mirror(tmp_path, mention_completion=False)
     try:
         await mirror._handle_event({"type": "session.status", "status": "idle", "id": "s1"})
-        assert sender.calls[-1]["mention_unixname"] is None
+        assert sender.calls == []
     finally:
         store.close()
 

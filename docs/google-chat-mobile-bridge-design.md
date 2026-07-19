@@ -395,8 +395,7 @@ Default `concise` mode sends:
 - session failures and interruption;
 - waiting/blocked notifications that require human attention;
 - approval-needed notifications without actionable approve/reject controls;
-- a short completion/status notice only when no assistant message made the
-  outcome clear.
+- an optional mentioned completion notice when explicitly enabled.
 
 It does not send:
 
@@ -419,8 +418,8 @@ The MVP notification policy is:
 
 - mention the configured user for waiting/blocked, approval-needed, and failed
   states because they require human attention;
-- make mentions for successful session completion configurable, enabled by
-  default for the personal bridge;
+- make successful completion notifications configurable and suppress them in
+  the tracked personal policy;
 - do not mention routine assistant output, mirrored user messages,
   interruption confirmations, or other informational updates.
 
@@ -986,8 +985,8 @@ Use a fake `meta` executable in tests. Unit tests must not contact Google Chat.
 - item-ID and Google request-ID dedup;
 - intermediate `response.completed` does not end an orchestrated turn;
 - final assistant messages and failure/waiting notices;
-- attention states mention the configured user, completion follows its setting,
-  and routine mirrored messages do not mention;
+- attention states mention the configured user, disabled completion notices
+  emit nothing, and routine mirrored messages do not mention;
 - only the first chunk of a logical attention notification contains a mention;
 - no token/reasoning/tool spam;
 - Google Chat send failure does not affect Omnigent;
@@ -1024,8 +1023,8 @@ Use a fake `meta` executable in tests. Unit tests must not contact Google Chat.
 11. Attempt input from another actor/unmapped thread; verify rejection.
 12. Confirm no inbound devserver listener was created.
 13. With Chat backgrounded or the phone locked, verify waiting/blocked,
-    approval-needed, and failed replies notify through a mention; verify
-    completion follows its configured mention policy.
+    approval-needed, and failed replies notify through a mention; verify a
+    disabled completion setting emits no Chat message.
 
 ---
 
