@@ -15,6 +15,9 @@ local function read_file_lines(path)
 	end
 	local content = f:read("*a")
 	f:close()
+	if content == nil then -- e.g. path is a directory / unreadable special file
+		return nil
+	end
 	return vim.split(content, "\n", { plain = true })
 end
 
@@ -323,7 +326,7 @@ end
 
 local function read_disk_bounded(abs)
 	local st = uv.fs_stat(abs)
-	if not st then
+	if not st or st.type ~= "file" then -- skip dirs/symlinks-to-dirs/special files
 		return {}
 	end
 	if st.size and st.size > MAX_FILE_BYTES then
