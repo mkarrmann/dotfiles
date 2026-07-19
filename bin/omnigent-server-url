@@ -98,13 +98,10 @@ case "${1:-}" in
     [[ "$host" == "$active_hub" ]]
     ;;
   "")
-    if [[ "$host" == "$primary" || "$host" == "$standby" ]]; then
-      echo "http://127.0.0.1:${port}"
-    elif [[ "$host" == *.facebook.com || "$host" == *.tfbnw.net ]]; then
-      echo "http://${active_hub}:${port}"
-    else
-      echo "http://127.0.0.1:${port}"
-    fi
+    # Every client uses a stable loopback endpoint. The active hub serves it
+    # directly; other Linux hosts reach it through omnigent-client-proxy; the
+    # Mac reaches it through bin-macos/omnigent-tunnel.
+    echo "http://127.0.0.1:${port}"
     ;;
   *)
     echo "usage: omnigent-server-url [--hub|--primary|--standby|--candidates|--port|--epoch|--activation-id|--is-hub|--is-candidate]" >&2

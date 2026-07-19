@@ -1,5 +1,5 @@
 [Unit]
-Description=Omnigent stable loopback client proxy (inactive hub to active hub)
+Description=Omnigent stable loopback SSH tunnel to the active hub
 After=network-online.target
 Wants=network-online.target
 

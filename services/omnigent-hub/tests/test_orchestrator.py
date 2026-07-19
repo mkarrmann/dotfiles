@@ -468,7 +468,6 @@ def test_status_warns_for_stale_cache_and_missing_standby_proxy() -> None:
     record = active_record()
     active_services = {
         "omnigent-server.service": "active",
-        "omnigent-prodnet.service": "active",
         "omnigent-google-chat.service": "active",
         "omnigent-snapshot.timer": "active",
         "omnigent-client-proxy.service": "inactive",

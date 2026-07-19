@@ -471,7 +471,7 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   sync_link_dir "$DOTFILES_DIR/systemd" "$HOME/.config/systemd/user" "*.service"
   sync_link_dir "$DOTFILES_DIR/systemd" "$HOME/.config/systemd/user" "*.timer"
   # Hub ownership is dynamic. Only the reconcile timer starts at boot; it
-  # starts the linked hub units on the owner and stops them on the standby.
+  # starts hub units on the owner and an SSH client tunnel everywhere else.
   for unit_name in omnigent-server.service \
       omnigent-prodnet.service \
       omnigent-client-proxy.service \
@@ -481,6 +481,10 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
           "$HOME/.config/systemd/user/timers.target.wants/$unit_name"
   done
   systemctl --user daemon-reload 2>/dev/null || true
+  # A running service keeps the old ExecStart process across daemon-reload.
+  # Stop it so this run installs the tracked tunnel implementation; role
+  # reconciliation below starts it again only where appropriate.
+  systemctl --user stop omnigent-client-proxy.service 2>/dev/null || true
 
   # Pre-create state dirs: systemd opens StandardOutput=append: BEFORE creating
   # StateDirectory=, so a unit's very first start fails 209/STDOUT if the dir is
@@ -521,10 +525,9 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   fi
 
   # Omnigent server URL for systemd --user units (nvs@ nvim -> CodeCompanion,
-  # and omnigent-host). environment.d is read by the user manager at start;
-  # Both hub candidates use loopback: the owner reaches the server directly and
-  # the standby reaches it through omnigent-client-proxy. Other devservers dial
-  # the active hub directly.
+  # and omnigent-host). Every client uses loopback: the owner reaches the
+  # server directly and other Linux hosts use omnigent-client-proxy's SSH
+  # forward. environment.d is read by the user manager at start.
   # Takes full effect after the next relogin / `systemctl --user daemon-reexec`.
   mkdir -p "$HOME/.config/environment.d"
   if [[ -x "$HOME/bin/omnigent-server-url" ]]; then
@@ -553,14 +556,12 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   done
   shopt -u nullglob
 
-  # The retry timer runs on both candidates. It enables the hub-only services
-  # and snapshot timer only on the active owner, and disables them elsewhere.
+  # The retry timer runs everywhere. It enables hub-only services on the active
+  # owner and maintains the loopback SSH tunnel on every other devserver.
   systemctl --user enable --now omnigent-hub-reconcile.timer 2>/dev/null \
     || echo "WARNING: failed to enable omnigent-hub-reconcile.timer" >&2
-  if "$DOTFILES_DIR/bin/omnigent-server-url" --is-candidate; then
-    "$DOTFILES_DIR/bin/omnigent-hub" reconcile-services --json >/dev/null \
-      || echo "WARNING: initial Omnigent service reconciliation failed" >&2
-  fi
+  "$DOTFILES_DIR/bin/omnigent-hub" reconcile-services --json >/dev/null \
+    || echo "WARNING: initial Omnigent service reconciliation failed" >&2
 
   omnigent_onboarded=false
   for _ in $(seq 1 15); do

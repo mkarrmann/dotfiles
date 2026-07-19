@@ -26,10 +26,11 @@ Omnigent versions.
 On Linux, `init.sh` is also the onboarding reconciler. It refreshes the shared
 record, retires pre-HA local servers and tmux host launchers on an inactive
 candidate, starts only the services appropriate for the machine's role, and
-waits for `omnigent-onboard-check` to verify loopback health, fencing, and
-service ownership. Ordinary devservers discover the active hub through the two
-configured candidates and materialize the same local routing cache without
-mounting Persistent Storage. Re-running `init.sh` is safe.
+waits for `omnigent-onboard-check` to verify loopback health, a bidirectional
+execution-host RPC, fencing, and service ownership. Ordinary devservers
+discover the active hub through the two configured candidates, materialize the
+same local routing cache without mounting Persistent Storage, and maintain an
+SSH local forward to the active hub. Re-running `init.sh` is safe.
 
 The Mac is always a client: installation reconciles its Omnigent URL and ACP
 configuration but never opens or migrates `~/.omnigent/chat.db`. Only the
@@ -58,10 +59,12 @@ or activation must match after refresh or the handoff remains fenced. The old
 source's post-activation refresh has a bounded 30-second retry because distinct
 mounts can briefly retain a valid but stale same-epoch view.
 
-The same 60-second reconciler has role-specific behavior: candidates reconcile
-hub ownership from Persistent Storage, while ordinary devservers query both
-candidates without a delegated credential, update their local routing cache,
-and restart the execution host only if its target changed.
+The same 60-second reconciler has role-specific discovery: candidates read hub
+ownership from Persistent Storage, while ordinary devservers query both
+candidates without a delegated credential. Both then reconcile a stable
+loopback endpoint: the active owner serves it directly and every other Linux
+host forwards it over SSH, restarting the execution host when activation
+identity changes.
 
 ## Routine operations
 

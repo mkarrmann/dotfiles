@@ -437,7 +437,6 @@ def _status_warnings(record: ActiveHubRecord | None, hosts: dict[str, Any]) -> l
         )
     for service in (
         "omnigent-server.service",
-        "omnigent-prodnet.service",
         "omnigent-google-chat.service",
         "omnigent-snapshot.timer",
     ):

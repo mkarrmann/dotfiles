@@ -13,6 +13,36 @@ url="$($SERVER_URL_BIN)"
 curl -sf --noproxy '*' --max-time 5 "$url/health" >/dev/null
 systemctl --user is-active --quiet omnigent-host.service
 
+# Exercise one real request over the host WebSocket. The host list's `online`
+# flag only proves that a socket was accepted; this RPC proves bidirectional
+# request/response delivery, which runner launch also requires.
+ONBOARD_URL="$url" ONBOARD_FQDN="$local_fqdn" python3 - <<'PY'
+import json
+import os
+import urllib.parse
+import urllib.request
+
+base = os.environ["ONBOARD_URL"].rstrip("/")
+fqdn = os.environ["ONBOARD_FQDN"]
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+with opener.open(f"{base}/v1/hosts", timeout=5) as response:
+    payload = json.load(response)
+hosts = payload.get("hosts") if isinstance(payload, dict) else None
+if not isinstance(hosts, list):
+    raise SystemExit("Omnigent host list returned an invalid payload")
+matches = [host for host in hosts if isinstance(host, dict) and host.get("name") == fqdn]
+if len(matches) != 1 or matches[0].get("status") != "online":
+    raise SystemExit(f"execution host {fqdn!r} is not uniquely online")
+host_id = matches[0].get("host_id")
+if not isinstance(host_id, str) or not host_id:
+    raise SystemExit(f"execution host {fqdn!r} has no host id")
+path = urllib.parse.quote(host_id, safe="")
+with opener.open(f"{base}/v1/hosts/{path}/filesystem?limit=1", timeout=10) as response:
+    result = json.load(response)
+if not isinstance(result, dict) or not isinstance(result.get("data"), list):
+    raise SystemExit(f"execution host {fqdn!r} RPC returned an invalid payload")
+PY
+
 if "$SERVER_URL_BIN" --is-candidate; then
   status="$($HUB_BIN local-status --json)"
   STATUS_JSON="$status" python3 - "$local_fqdn" <<'PY'
@@ -34,7 +64,6 @@ active = record.get("active_hub") == local_fqdn
 required = (
     {
         "omnigent-server.service",
-        "omnigent-prodnet.service",
         "omnigent-google-chat.service",
         "omnigent-snapshot.timer",
     }
@@ -49,7 +78,7 @@ if services.get("omnigent-host.service") != "active":
 if (gate.get("allowed") is True) != active:
     raise SystemExit("startup gate does not match this candidate's role")
 forbidden = (
-    {"omnigent-client-proxy.service"}
+    {"omnigent-client-proxy.service", "omnigent-prodnet.service"}
     if active
     else {
         "omnigent-server.service",
@@ -62,6 +91,8 @@ for service in forbidden:
     if services.get(service) == "active":
         raise SystemExit(f"{service} must be inactive for this role")
 PY
+else
+  systemctl --user is-active --quiet omnigent-client-proxy.service
 fi
 
 echo "[omnigent-onboard] healthy on $local_fqdn via $url"

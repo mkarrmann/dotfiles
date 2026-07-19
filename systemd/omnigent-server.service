@@ -6,7 +6,7 @@
 #   curl -sf http://127.0.0.1:6767/health && ss -ltnp | grep 6767
 #
 # The Omnigent server runs on ONE devserver (the HUB) and is dialed by:
-#   - other devservers, through the hub's prod-network loopback proxy
+#   - other devservers, through their local SSH forwards
 #   - the Mac, via omnigent-tunnel's ET forward Mac:6767 -> active HUB:6767
 # A shared epoch/lineage check gates it so init.sh can enable it on both hub
 # candidates while only the active owner starts. Ownership changes through
@@ -29,9 +29,8 @@ ExecCondition=%h/dotfiles/services/omnigent-hub/.venv/bin/omnigent-hub gate
 # Bind 127.0.0.1 (v4 loopback): serves every local consumer (Orchest,
 # CodeCompanion) and the Mac's ET forward tunnel, which connects to the remote
 # v4 loopback. NOTE: `--host ::` was rejected — uvicorn sets IPV6_V6ONLY, so a
-# v6 bind refuses v4 loopback and breaks the tunnel. Prod-network reach for the
-# OTHER devserver is provided separately by omnigent-prodnet.service (a v6->
-# loopback proxy), which keeps this server itself unexposed to the network.
+# v6 bind refuses v4 loopback and breaks the tunnel. Other devservers use
+# authenticated SSH local forwarding, so the server stays unexposed.
 ExecStart=%h/.local/bin/omnigent server --host 127.0.0.1 --port ${OMNIGENT_PORT} --database-uri sqlite:///%h/.omnigent/chat.db --artifact-location %h/.omnigent/artifacts
 Restart=always
 RestartSec=5

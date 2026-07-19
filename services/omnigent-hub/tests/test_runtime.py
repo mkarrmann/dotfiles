@@ -201,7 +201,7 @@ def test_active_reconciliation_frees_loopback_before_starting_server(
     assert result["host_restarted"] is False
 
 
-def test_standby_reconciliation_starts_proxy_before_restarting_host(
+def test_standby_reconciliation_retargets_proxy_before_restarting_host(
     hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     standby = replace(hub_config, local_fqdn="standby.example.com")
@@ -226,7 +226,7 @@ def test_standby_reconciliation_starts_proxy_before_restarting_host(
     result = reconcile_services(standby)
 
     assert result["state"] == "standby"
-    assert actions == ["stop-hub", "start-client", "restart-host"]
+    assert actions == ["stop-hub", "restart-client", "restart-host"]
     assert result["host_restarted"] is True
     assert not standby.activation_marker.exists()
 
@@ -268,6 +268,74 @@ def test_peer_route_uses_discovered_cache_without_shared_storage(hub_config: Hub
     observed = resolve_routing_record(peer)
 
     assert observed == record
+
+
+def test_peer_route_materializes_stable_loopback_url(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    peer = replace(hub_config, local_fqdn="peer.example.com")
+    record = initialize_record_for_test(peer, "standby.example.com")
+    peer.routing_cache.parent.mkdir(parents=True)
+    peer.routing_cache.write_text(json.dumps(record.to_dict()), encoding="utf-8")
+    ensure = peer.dotfiles / "bin/omnigent-dvsc-ensure"
+    ensure.parent.mkdir(parents=True)
+    ensure.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    ensure.chmod(0o755)
+
+    result = reconcile_local_route(peer, restart_host=False)
+
+    assert result["url"] == "http://127.0.0.1:6767"
+    environment_file = peer.home / ".config/environment.d/omnigent.conf"
+    assert environment_file.read_text(encoding="utf-8") == ("OMNIGENT_URL=http://127.0.0.1:6767\n")
+
+
+def test_peer_reconciliation_retargets_ssh_proxy_before_host(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    peer = replace(hub_config, local_fqdn="peer.example.com")
+    record = initialize_record_for_test(peer, "primary.example.com")
+    peer.routing_cache.parent.mkdir(parents=True)
+    peer.routing_cache.write_text(json.dumps(record.to_dict()), encoding="utf-8")
+    actions: list[str] = []
+    monkeypatch.setattr(
+        "omnigent_hub.runtime.reconcile_local_route",
+        lambda config, restart_host: {"changed": True, "url": "http://127.0.0.1:6767"},
+    )
+
+    def record_action(config: HubConfig, action: str) -> dict[str, str]:
+        actions.append(action)
+        return {}
+
+    monkeypatch.setattr("omnigent_hub.runtime.service_action", record_action)
+
+    result = reconcile_services(peer)
+
+    assert result["state"] == "standby"
+    assert actions == ["stop-hub", "restart-client", "restart-host"]
+    assert result["host_restarted"] is True
+
+
+def test_start_core_retires_prodnet_proxy_before_server(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr("omnigent_hub.runtime.check_gate", lambda config: None)
+    monkeypatch.setattr("omnigent_hub.runtime.wait_for_health", lambda config: None)
+
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "active\n", "")
+
+    monkeypatch.setattr("omnigent_hub.runtime.subprocess.run", run)
+
+    service_action(hub_config, "start-core")
+
+    mutations = [call for call in calls if "start" in call or "stop" in call]
+    assert mutations == [
+        ["systemctl", "--user", "stop", "omnigent-prodnet.service"],
+        ["systemctl", "--user", "start", "omnigent-server.service"],
+    ]
 
 
 def test_stop_ingress_stops_timer_before_active_snapshot(

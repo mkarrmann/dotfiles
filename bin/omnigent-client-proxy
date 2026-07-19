@@ -1,15 +1,28 @@
 #!/usr/bin/env bash
-# Give both hub candidates a stable loopback URL. On the inactive hub this
-# forwards to the active hub's prod-network listener.
+# Give every non-active Linux client a stable loopback URL by forwarding it
+# over SSH to the active hub's loopback-only Omnigent server.
 set -euo pipefail
 
 DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
 SERVER_URL_BIN="${OMNIGENT_SERVER_URL_BIN:-$DOTFILES/bin/omnigent-server-url}"
+SSH_BIN="${OMNIGENT_SSH_BIN:-/usr/bin/ssh}"
 target="$($SERVER_URL_BIN --hub)"
 port="$($SERVER_URL_BIN --port)"
+local_fqdn="${OMNIGENT_LOCAL_FQDN:-$(hostname -f 2>/dev/null || hostname)}"
 
-export OMNIGENT_PRODNET_HOST=127.0.0.1
-export OMNIGENT_PORT="$port"
-export OMNIGENT_TARGET_HOST="$target"
-export OMNIGENT_TARGET_PORT="$port"
-exec python3 "$DOTFILES/bin/omnigent-prodnet-proxy"
+if [[ "$target" == "$local_fqdn" ]]; then
+  echo "ERROR: refusing to proxy the active hub to itself: $target" >&2
+  exit 1
+fi
+
+exec "$SSH_BIN" \
+  -o BatchMode=yes \
+  -o ClearAllForwardings=yes \
+  -o ConnectTimeout=10 \
+  -o ConnectionAttempts=3 \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=15 \
+  -o ServerAliveCountMax=3 \
+  -N \
+  -L "127.0.0.1:${port}:127.0.0.1:${port}" \
+  "$target"

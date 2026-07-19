@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Candidate hubs reconcile ownership; ordinary devservers only refresh their
-# route and execution host against the candidates.
+# Candidate hubs reconcile ownership from Persistent Storage. Ordinary
+# devservers first discover that ownership through the candidates, then use
+# the same reconciliation path to maintain their local SSH client tunnel.
 set -euo pipefail
 
 DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
@@ -12,4 +13,4 @@ if "$SERVER_URL_BIN" --is-candidate; then
 fi
 
 "$HUB_BIN" discover --json >/dev/null
-exec "$HUB_BIN" route-ensure --restart-host --json
+exec "$HUB_BIN" reconcile-services --json

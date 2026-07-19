@@ -121,19 +121,18 @@ recoverable there.
                   |   ~/.omnigent/chat.db          |
                   |   ~/.omnigent/artifacts/       |
                   |                                |
-                  | omnigent-prodnet proxy         |
                   | omnigent-google-chat           |
                   | snapshot timer                 |
                   +--------------------------------+
                          ^                 |
                          |                 v
-              prodnet HTTP/WebSocket   Meta Persistent Storage
+                 SSH local forward     Meta Persistent Storage
                          |             active-hub.json + snapshots
                          |
                   +------+-------------------------+
                   | FTW devserver (STANDBY)         |
                   | omnigent-host                   |
-                  | loopback client proxy -> CCO   |
+                  | loopback SSH forward -> CCO    |
                   | server and bridge stopped      |
                   | same pinned software installed |
                   +--------------------------------+
@@ -142,9 +141,9 @@ recoverable there.
 ```
 
 CCO remains both an execution host and the control-plane hub. FTW remains an
-execution host, but its server, prodnet proxy, bridge, and snapshot timer are
-inactive. Its client proxy owns `127.0.0.1:6767`, so FTW CLI and already-open
-Neovim clients keep a stable loopback URL while reaching CCO.
+execution host, but its server, bridge, and snapshot timer are inactive. Its
+SSH client proxy owns `127.0.0.1:6767` and forwards to CCO's loopback socket,
+so FTW CLI and already-open Neovim clients keep a stable URL.
 
 ### 3.2 During CCO maintenance
 
@@ -157,7 +156,6 @@ Neovim clients keep a stable loopback URL while reaching CCO.
                   +--------------------------------+
                   | restored Omnigent state        |
                   | omnigent-server                |
-                  | omnigent-prodnet proxy         |
                   | omnigent-google-chat           |
                   | snapshot timer                 |
                   +--------------------------------+
@@ -311,26 +309,34 @@ resolution first attempts to mount and read the shared record. The override is
 used only after that read fails; a readable equal or newer shared epoch retires
 the override so it cannot revive during a later storage outage.
 
-### 5.3 Stable client endpoint on both devservers
+### 5.3 Stable client endpoint on every devserver
 
-CCO and FTW always configure Omnigent clients with:
+Every devserver configures Omnigent clients with:
 
 ```text
 http://127.0.0.1:6767
 ```
 
-On the active hub, the server owns that socket. On the inactive hub,
-`omnigent-client-proxy.service` owns it and relays to the active hub's prodnet
-listener. The reconciler stops the client proxy before starting a local
-server, and stops all hub services before starting the client proxy. During a
-transition, both are stopped.
+On the active hub, the server owns that socket. On every other Linux host,
+`omnigent-client-proxy.service` owns it and uses an authenticated SSH local
+forward to the active hub's loopback socket. The reconciler stops the client
+proxy before starting a local server, and stops all hub services before
+starting the client proxy. During a transition, both candidate endpoints are
+stopped; ordinary execution hosts retain no authority to choose a target.
 
-This stable endpoint eliminates promotion-time Neovim restarts on both
+The earlier stdlib TCP proxy over the prod-network listener passed ordinary
+HTTP but corrupted real runner WebSocket request/response traffic. A live
+probe could therefore report a host as online while runner launch timed out.
+The SSH transport is maintained infrastructure, does not expose port 6767 on
+the prod network, and is validated during onboarding with an actual host
+filesystem RPC rather than a socket-presence check.
+
+This stable endpoint eliminates promotion-time Neovim restarts on Linux
 devservers. `omnigent-dvsc-ensure --config-only` still reconciles
 `~/.omnigent/config.yaml`, and `~/.config/environment.d/omnigent.conf` still
 records `OMNIGENT_URL`, but their values no longer change between CCO and FTW
 ownership. A changed or missing value restarts `omnigent-host`; an ownership
-epoch change alone does not.
+epoch or activation change also restarts it so runners inherit the new tunnel.
 
 `omnigent-hub status` compares each candidate's `config.yaml` server,
 generated `OMNIGENT_URL`, routing epoch, hub services, and standby client
@@ -391,7 +397,7 @@ http://127.0.0.1:6767
 
 They do not change during promotion. Existing Mac Neovim and CLI processes
 therefore reconnect through the retargeted local tunnel without restarting.
-CCO and FTW also keep the same loopback URL through the standby proxy, so
+Linux clients also keep the same loopback URL through their SSH forward, so
 already-running devserver Neovim processes do not require a promotion restart.
 
 ## 6. Network behavior
@@ -405,23 +411,17 @@ The active server continues to bind only:
 Do not bind uvicorn directly to `::`; its IPv6-only socket breaks IPv4
 loopback and the existing Mac ET path.
 
-The active hub alone runs `omnigent-prodnet.service`:
+Every non-active Linux devserver runs:
 
 ```text
-[active hub prodnet IPv6]:6767 -> 127.0.0.1:6767
+127.0.0.1:6767 --SSH--> active hub 127.0.0.1:6767
 ```
 
-The inactive candidate alone runs:
-
-```text
-127.0.0.1:6767 -> [active hub prodnet IPv6]:6767
-```
-
-Peer devservers use that prodnet endpoint. The Mac uses an ET forward to the
-active hub's loopback port. The Mac learns the target through the pull protocol
-in Section 5.4, not through Manifold or a hub-to-laptop push. Promotion changes
-the selected ET host; it does not introduce ServiceRouter, VPNLess, a VIP, or
-a public endpoint.
+The active hub runs no prod-network listener for Omnigent. The Mac uses an ET
+forward to the same loopback port. The Mac learns the target through the pull
+protocol in Section 5.4, not through Manifold or a hub-to-laptop push.
+Promotion retargets the SSH/ET transports; it does not introduce ServiceRouter,
+VPNLess, a VIP, or a public endpoint.
 
 Ordinary clients never need Persistent Storage credentials or filesystem
 access. Hub-control helpers use it for snapshots and coordination; Mac and
@@ -536,17 +536,16 @@ For a planned transfer:
 3. Stop the Google Chat bridge.
 4. Stop the periodic snapshot timer and wait for any active snapshot job to
    finish or cancel it before staging begins.
-5. Stop the prodnet proxy.
-6. Write and verify a new shared transition record that increments the epoch,
+5. Write and verify a new shared transition record that increments the epoch,
    names the source and target hubs, and has no active hub.
-7. Verify the source hub's startup gate rejects the transition epoch.
-8. Stop the Omnigent server.
-9. Confirm the bridge, proxy, server, and timer are stopped and the health
+6. Verify the source hub's startup gate rejects the transition epoch.
+7. Stop the Omnigent server.
+8. Confirm the bridge, server, and timer are stopped and the health
    endpoint is closed.
-10. Snapshot both databases and artifacts.
-11. Verify SQLite integrity and all checksums locally.
-12. Copy and re-verify the generation in Persistent Storage.
-13. Leave the old hub's services stopped.
+9. Snapshot both databases and artifacts.
+10. Verify SQLite integrity and all checksums locally.
+11. Copy and re-verify the generation in Persistent Storage.
+12. Leave the old hub's services stopped.
 
 The transition record is written before the old server stops. During the
 short interval between those operations, the existing source process may
@@ -630,12 +629,12 @@ For planned maintenance:
 9. Finalize the shared record from transition state to FTW active, retaining
    that epoch and naming FTW's activation ID.
 10. Stop FTW's loopback client proxy, reconcile its stable loopback config,
-    start FTW server plus prodnet proxy, and restart FTW's execution host so
+    start the FTW server, and restart FTW's execution host so
     its long-lived connection binds to the new local server.
 11. Reconcile CCO as standby: stop hub services, start its loopback client
     proxy to FTW, and restart `omnigent-host` for the new activation even
     though its stable loopback URL is unchanged.
-12. Validate the FTW API locally and through CCO's loopback proxy.
+12. Validate the FTW API locally and through CCO's loopback SSH forward.
 13. Start the Google Chat bridge last.
 14. Start the periodic snapshot timer only after FTW is active and healthy.
 15. Verify existing Chat mappings before enabling inbound polling.
@@ -865,7 +864,7 @@ leave version convergence until promotion time.
 ## 12. Acceptance criteria
 
 1. CCO is the preferred and normal active hub.
-2. FTW's server, prodnet, bridge, and snapshot timer are inactive during
+2. FTW's server, bridge, and snapshot timer are inactive during
    normal operation; its loopback client proxy is active.
 3. Planned promotion transfers all committed Omnigent and bridge state with no
    loss.
@@ -875,7 +874,7 @@ leave version convergence until promotion time.
 6. Failback transfers all FTW-era writes and returns service to CCO.
 7. An unexpected failure can recover from a validated snapshot with a measured
    maximum loss window.
-8. At most one server, prodnet proxy, bridge, and snapshot timer are active.
+8. At most one server, bridge, and snapshot timer are active.
 9. Active SQLite files remain on local disk.
 10. No credentials or machine host identity enter the backup.
 11. No Omnigent OSS changes are required.
@@ -931,7 +930,7 @@ Installation on each machine is intentionally explicit:
 
 ```text
 cd ~/dotfiles
-sl pull --rebase
+git pull --rebase
 ./init.sh
 ```
 
@@ -946,7 +945,7 @@ operator command.
 
 The dotfiles implementation currently has the following local evidence:
 
-- 58 `omnigent-hub` tests cover record validation, fencing, force recovery,
+- 63 `omnigent-hub` tests cover record validation, fencing, force recovery,
   stale-mount refresh, service ordering, stable routing, delegated-CAT
   transport, credential exclusion, version drift, Google Chat reconciliation,
   interrupted-transition resumption, and Mac candidate/conflict resolution;
@@ -968,13 +967,18 @@ snapshot containing a new marker, and failback restored that marker to CCO.
 The final epoch-5 status had no warnings and showed exactly one owner for each
 hub-only service.
 
+A subsequent FTW runner rehearsal exposed that the retired prodnet TCP proxy
+passed health checks but dropped real runner WebSocket response traffic. The
+replacement SSH local forward completed a remote Codex runner launch and
+terminal creation through FTW, and onboarding now uses the same host RPC that
+failed on the old transport.
+
 ## 15. References
 
 ### Personal deployment
 
 - `~/dotfiles/omnigent_config/topology.env`
 - `~/dotfiles/systemd/omnigent-server.service`
-- `~/dotfiles/systemd/omnigent-prodnet.service`
 - `~/dotfiles/systemd/omnigent-client-proxy.service`
 - `~/dotfiles/systemd/omnigent-host.service`
 - `~/dotfiles/systemd/omnigent-google-chat.service`

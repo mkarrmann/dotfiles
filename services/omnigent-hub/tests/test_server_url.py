@@ -52,10 +52,10 @@ def test_inactive_hub_uses_loopback_proxy(tmp_path: Path) -> None:
     assert result.stdout.strip() == "http://127.0.0.1:6767"
 
 
-def test_peer_uses_active_hub_fqdn(tmp_path: Path) -> None:
+def test_peer_uses_loopback_ssh_proxy(tmp_path: Path) -> None:
     result = run_script(tmp_path, host="peer.facebook.com")
     assert result.returncode == 0
-    assert result.stdout.strip() == "http://standby.example.com:6767"
+    assert result.stdout.strip() == "http://127.0.0.1:6767"
 
 
 def test_static_candidates_do_not_require_cache(tmp_path: Path) -> None:

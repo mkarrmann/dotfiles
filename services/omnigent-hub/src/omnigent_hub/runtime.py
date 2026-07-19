@@ -378,10 +378,7 @@ def local_status(config: HubConfig) -> dict[str, Any]:
         snapshot_error = str(exc)
     expected_url: str | None = None
     if record and record.state == "active" and record.active_hub:
-        if config.local_fqdn in config.topology.hubs:
-            expected_url = f"http://127.0.0.1:{config.topology.port}"
-        else:
-            expected_url = f"http://{record.active_hub}:{config.topology.port}"
+        expected_url = f"http://127.0.0.1:{config.topology.port}"
     cli_url = _read_config_server(config.data_dir / "config.yaml")
     environment_url = _read_environment_url(config.home / ".config/environment.d/omnigent.conf")
     nvim_urls = _nvim_environment_urls()
@@ -473,8 +470,8 @@ def service_action(config: HubConfig, action: str) -> dict[str, str]:
             ("stop", "omnigent-client-proxy.service"),
         ),
         "start-core": (
+            ("stop", "omnigent-prodnet.service"),
             ("start", "omnigent-server.service"),
-            ("start", "omnigent-prodnet.service"),
         ),
         "start-tail": (
             ("start", "omnigent-google-chat.service"),
@@ -483,6 +480,7 @@ def service_action(config: HubConfig, action: str) -> dict[str, str]:
         "start-bridge": (("start", "omnigent-google-chat.service"),),
         "start-timer": (("start", "omnigent-snapshot.timer"),),
         "start-client": (("start", "omnigent-client-proxy.service"),),
+        "restart-client": (("restart", "omnigent-client-proxy.service"),),
         "restart-host": (("restart", "omnigent-host.service"),),
     }
     if action not in actions:
@@ -510,7 +508,7 @@ def service_action(config: HubConfig, action: str) -> dict[str, str]:
             text=True,
             capture_output=True,
         )
-    if action in {"start-core", "start-client"}:
+    if action in {"start-core", "start-client", "restart-client"}:
         wait_for_health(config)
     return {unit: systemd_state(unit) for unit in units}
 
@@ -572,10 +570,7 @@ def reconcile_local_route(config: HubConfig, *, restart_host: bool) -> dict[str,
     write_routing_cache(config, record)
     if record.state != "active" or record.active_hub is None:
         raise HubRuntimeError("cannot reconcile client routes during transition state")
-    if config.local_fqdn in config.topology.hubs:
-        url = f"http://127.0.0.1:{config.topology.port}"
-    else:
-        url = f"http://{record.active_hub}:{config.topology.port}"
+    url = f"http://127.0.0.1:{config.topology.port}"
     environment_file = config.home / ".config/environment.d/omnigent.conf"
     environment_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     environment_file.write_text(f"OMNIGENT_URL={url}\n", encoding="utf-8")
@@ -625,7 +620,7 @@ def resolve_routing_record(config: HubConfig) -> ActiveHubRecord:
 
 
 def reconcile_services(config: HubConfig) -> dict[str, Any]:
-    record = resolve_record(config)
+    record = resolve_routing_record(config)
     if record.state != "active":
         services = service_action(config, "stop-all")
         config.activation_marker.unlink(missing_ok=True)
@@ -640,7 +635,8 @@ def reconcile_services(config: HubConfig) -> dict[str, Any]:
         services = service_action(config, "stop-hub")
         config.activation_marker.unlink(missing_ok=True)
         route = reconcile_local_route(config, restart_host=False)
-        client = service_action(config, "start-client")
+        client_action = "restart-client" if route["changed"] else "start-client"
+        client = service_action(config, client_action)
         host_restarted = False
         if route["changed"]:
             service_action(config, "restart-host")
