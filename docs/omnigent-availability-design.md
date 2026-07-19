@@ -27,10 +27,10 @@ Use:
 - a dotfiles command that performs promotion, failback, and validation; and
 - manual promotion rather than automatic failover.
 
-Dotfiles pin the Omnigent and Google Chat bridge versions used by both hubs.
-For the bridge, "version" means a reproducible source-content digest or
-dotfiles revision recorded by its deployment tooling, not a manually entered
-label. CCO and FTW must remain in lockstep even while FTW is inactive.
+Dotfiles pin the Omnigent, Google Chat bridge, and hub-controller versions used
+by both hubs. For the bridge and controller, "version" means a reproducible
+source-content digest, not a manually entered label. CCO and FTW must remain in
+lockstep even while FTW is inactive.
 
 `init.sh` is the supported onboarding and reconciliation entry point on every
 machine. On a Linux candidate it mounts or refreshes coordination state,
@@ -793,9 +793,12 @@ This phase immediately reduces session-loss risk without changing topology.
 ### Phase 2: standby preparation (complete)
 
 - Track primary and standby FQDNs in dotfiles.
-- Install identical pinned Omnigent and bridge versions on FTW.
-- Make `status` and promotion preflight compare both installed versions with
-  the newest snapshot manifest before a database is opened.
+- Install identical pinned Omnigent, bridge, and hub-controller versions on FTW.
+- Make `status` and promotion preflight compare Omnigent, bridge, and
+  hub-controller versions across both candidates. Compare the Omnigent and
+  bridge versions with the newest snapshot manifest before a database is
+  opened; controller code is not recovery data and therefore is not embedded
+  in snapshots.
 - Add shared active-hub record parsing and fail-closed service conditions.
 - Add bounded Persistent Storage mount/remount and startup retries with
   ephemeral delegated-CAT bootstrap.
@@ -839,12 +842,12 @@ added from that evidence.
 
 ### Ongoing upgrades
 
-An Omnigent or bridge upgrade is incomplete until the same pinned version is
-installed on both CCO and FTW and `omnigent-hub status` reports them equal.
-Install the package on the inactive standby without starting its hub services,
-upgrade CCO, verify normal operation, and produce a snapshot whose manifest
-records the new version. Do not leave version convergence until promotion
-time.
+An Omnigent, bridge, or hub-controller upgrade is incomplete until the same
+pinned version is installed on both CCO and FTW and `omnigent-hub status`
+reports them equal. Install the package on the inactive standby without
+starting its hub services, upgrade CCO, verify normal operation, and produce a
+snapshot whose manifest records the new Omnigent and bridge versions. Do not
+leave version convergence until promotion time.
 
 ## 12. Acceptance criteria
 
@@ -874,8 +877,9 @@ time.
     operator process supplies only an ephemeral delegated CAT.
 16. Stale Google Chat recovery never automatically resubmits an instruction
     without exact durable evidence that it was not previously delivered.
-17. Promotion is blocked before database open when the source, target, or
-    snapshot Omnigent/bridge versions differ.
+17. Promotion is blocked before database open when source and target
+    Omnigent, bridge, or hub-controller versions differ, or when the snapshot
+    Omnigent/bridge versions differ from the target.
 18. A quiesced handoff cannot race the periodic snapshot timer.
 19. A Mac with no Persistent Storage access can discover either active hub
     through either reachable candidate and retarget its ET forward.
@@ -929,7 +933,7 @@ operator command.
 
 The dotfiles implementation currently has the following local evidence:
 
-- 51 `omnigent-hub` tests cover record validation, fencing, force recovery,
+- 53 `omnigent-hub` tests cover record validation, fencing, force recovery,
   stale-mount refresh, service ordering, stable routing, delegated-CAT
   transport, credential exclusion, version drift, Google Chat reconciliation,
   interrupted-transition resumption, and Mac candidate/conflict resolution;

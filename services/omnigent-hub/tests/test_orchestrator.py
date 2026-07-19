@@ -46,6 +46,7 @@ class FakeRemote:
     record: ActiveHubRecord
     fail_quiesce: bool = False
     mismatch_target_version: bool = False
+    mismatch_target_hub_version: bool = False
     stale_source_activation_reads: int = 0
 
     def __post_init__(self) -> None:
@@ -79,7 +80,18 @@ class FakeRemote:
                 if self.mismatch_target_version and host == "standby.example.com"
                 else "omnigent 0.test"
             )
-            return {"versions": {"omnigent": omnigent, "bridge": "sha256:bridge"}}
+            hub = (
+                "sha256:other-hub"
+                if self.mismatch_target_hub_version and host == "standby.example.com"
+                else "sha256:hub"
+            )
+            return {
+                "versions": {
+                    "omnigent": omnigent,
+                    "bridge": "sha256:bridge",
+                    "hub": hub,
+                }
+            }
         if command == "begin-transition":
             return {
                 "format_version": 1,
@@ -330,6 +342,25 @@ def test_planned_handoff_rejects_version_drift_before_stopping_source(
     ]
 
 
+def test_planned_handoff_rejects_hub_controller_drift(
+    hub_config: HubConfig,
+) -> None:
+    remote = FakeRemote(active_record(), mismatch_target_hub_version=True)
+
+    with pytest.raises(HandoffError, match="hub version mismatch"):
+        HandoffOrchestrator(hub_config, remote).handoff(
+            "standby.example.com",
+            unexpected=False,
+            source_confirmed_stopped=False,
+            dry_run=False,
+        )
+
+    assert remote.calls == [
+        ("primary.example.com", ("local-status", "--json")),
+        ("standby.example.com", ("local-status", "--json")),
+    ]
+
+
 def test_planned_handoff_resumes_transition_missing_final_generation(
     hub_config: HubConfig,
 ) -> None:
@@ -417,11 +448,13 @@ def test_status_warns_for_stale_cache_and_missing_standby_proxy() -> None:
             "routing_cache": record.to_dict(),
             "services": active_services,
             "gate": {"allowed": True},
+            "versions": {"hub": "sha256:primary"},
         },
         "standby.example.com": {
             "routing_cache": {**record.to_dict(), "epoch": 0},
             "services": {"omnigent-client-proxy.service": "inactive"},
             "gate": {"allowed": False},
+            "versions": {"hub": "sha256:standby"},
         },
     }
 
@@ -429,3 +462,4 @@ def test_status_warns_for_stale_cache_and_missing_standby_proxy() -> None:
 
     assert "WARNING: standby.example.com routing cache is stale" in warnings
     assert any("client proxy owners [] differ from standby" in warning for warning in warnings)
+    assert any("hub controller versions differ" in warning for warning in warnings)

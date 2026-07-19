@@ -16,6 +16,7 @@ from omnigent_hub.config import HubConfig
 from omnigent_hub.models import ActiveHubRecord, ValidationError
 from omnigent_hub.snapshot import (
     bridge_version,
+    hub_version,
     list_valid_snapshots,
     load_manifest_from_archive,
     omnigent_version,
@@ -418,6 +419,7 @@ def local_status(config: HubConfig) -> dict[str, Any]:
         "versions": {
             "omnigent": _capture_version(config),
             "bridge": _capture_bridge_version(config),
+            "hub": _capture_hub_version(config),
         },
         "paths": {
             "chat_db": str(config.chat_db),
@@ -661,6 +663,13 @@ def _capture_version(config: HubConfig) -> str:
 def _capture_bridge_version(config: HubConfig) -> str:
     try:
         return bridge_version(config.bridge_project)
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+
+def _capture_hub_version(config: HubConfig) -> str:
+    try:
+        return hub_version(config.dotfiles / "services/omnigent-hub")
     except Exception as exc:
         return f"ERROR: {exc}"
 

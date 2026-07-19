@@ -14,6 +14,7 @@ from omnigent_hub.models import ActiveHubRecord
 from omnigent_hub.snapshot import (
     SnapshotError,
     create_snapshot,
+    hub_version,
     restore_snapshot,
     sqlite_summary,
     validate_snapshot,
@@ -101,6 +102,15 @@ def test_bridge_source_change_blocks_restore(
     source.write_text("VALUE = 2\n", encoding="utf-8")
     with pytest.raises(SnapshotError, match="bridge version mismatch"):
         validate_snapshot(hub_config, archive)
+
+
+def test_hub_version_tracks_controller_source(hub_config: HubConfig) -> None:
+    project = hub_config.dotfiles / "services/omnigent-hub"
+    initial = hub_version(project)
+
+    (project / "src/omnigent_hub/__init__.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+    assert hub_version(project) != initial
 
 
 def test_omnigent_version_change_blocks_restore(

@@ -276,7 +276,7 @@ class HandoffOrchestrator:
         target_versions = target_status.get("versions")
         if not isinstance(source_versions, dict) or not isinstance(target_versions, dict):
             raise HandoffError("version preflight returned an invalid status payload")
-        for component in ("omnigent", "bridge"):
+        for component in ("omnigent", "bridge", "hub"):
             source_version = source_versions.get(component)
             target_version = target_versions.get(component)
             if (
@@ -377,12 +377,16 @@ def _require_same_activation(observed: dict[str, Any], expected: dict[str, Any])
 def _status_warnings(record: ActiveHubRecord | None, hosts: dict[str, Any]) -> list[str]:
     warnings: list[str] = []
     active_services: dict[str, list[str]] = {}
+    hub_versions: dict[str, str | None] = {}
     for host, payload in hosts.items():
         if not isinstance(payload, dict):
             continue
         if payload.get("reachable") is False:
             warnings.append(f"WARNING: {host} is unreachable")
             continue
+        versions = payload.get("versions")
+        raw_hub_version = versions.get("hub") if isinstance(versions, dict) else None
+        hub_versions[host] = raw_hub_version if isinstance(raw_hub_version, str) else None
         routing = payload.get("routing")
         if isinstance(routing, dict):
             if routing.get("cli_stale") is True:
@@ -408,7 +412,6 @@ def _status_warnings(record: ActiveHubRecord | None, hosts: dict[str, Any]) -> l
             age = snapshot.get("age_seconds")
             if isinstance(age, int) and age > 600:
                 warnings.append(f"WARNING: newest snapshot seen by {host} is {age}s old")
-            versions = payload.get("versions")
             if isinstance(versions, dict):
                 if versions.get("omnigent") != snapshot.get("omnigent_version"):
                     warnings.append(f"CRITICAL: {host} Omnigent version differs from snapshot")
@@ -422,6 +425,13 @@ def _status_warnings(record: ActiveHubRecord | None, hosts: dict[str, Any]) -> l
         for service, state in services.items():
             if state == "active":
                 active_services.setdefault(str(service), []).append(host)
+    if len(set(hub_versions.values())) > 1 or any(
+        not isinstance(version, str) or version.startswith("ERROR:")
+        for version in hub_versions.values()
+    ):
+        warnings.append(
+            f"CRITICAL: hub controller versions differ across candidates: {hub_versions}"
+        )
     for service in (
         "omnigent-server.service",
         "omnigent-prodnet.service",

@@ -18,6 +18,11 @@ systemd user units on Linux, and starts the ownership reconciler on candidate
 hubs. Current hub ownership is runtime state in private Persistent Storage and
 is never committed to git.
 
+`omnigent-hub status` reports reproducible source digests for both this hub
+controller and the Google Chat bridge. Promotion fails before quiescing the
+source unless both candidate hubs have identical controller, bridge, and
+Omnigent versions.
+
 On Linux, `init.sh` is also the onboarding reconciler. It refreshes the shared
 record, retires pre-HA local servers and tmux host launchers on an inactive
 candidate, starts only the services appropriate for the machine's role, and

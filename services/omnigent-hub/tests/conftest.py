@@ -22,6 +22,12 @@ def hub_config(tmp_path: Path) -> HubConfig:
     (bridge / "pyproject.toml").write_text("[project]\nname='bridge'\n", encoding="utf-8")
     (bridge / "uv.lock").write_text("version = 1\n", encoding="utf-8")
     (bridge_source / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    hub = dotfiles / "services/omnigent-hub"
+    hub_source = hub / "src/omnigent_hub"
+    hub_source.mkdir(parents=True)
+    (hub / "pyproject.toml").write_text("[project]\nname='hub'\n", encoding="utf-8")
+    (hub / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (hub_source / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
     omnigent = home / ".local/bin/omnigent"
     omnigent.parent.mkdir(parents=True)
     omnigent.write_text("#!/bin/sh\necho 'omnigent 0.test'\n", encoding="utf-8")

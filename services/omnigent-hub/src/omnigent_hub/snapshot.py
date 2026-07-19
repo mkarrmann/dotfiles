@@ -33,7 +33,7 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def bridge_version(project: Path) -> str:
+def _source_version(project: Path, *, component: str) -> str:
     digest = hashlib.sha256()
     paths = [project / "pyproject.toml", project / "uv.lock"]
     source = project / "src"
@@ -47,7 +47,7 @@ def bridge_version(project: Path) -> str:
         )
     existing = sorted((path for path in paths if path.is_file()), key=lambda p: str(p))
     if not existing:
-        raise SnapshotError(f"Google Chat bridge source is missing under {project}")
+        raise SnapshotError(f"{component} source is missing under {project}")
     for path in existing:
         relative = path.relative_to(project).as_posix().encode()
         digest.update(len(relative).to_bytes(4, "big"))
@@ -56,6 +56,14 @@ def bridge_version(project: Path) -> str:
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
     return f"sha256:{digest.hexdigest()}"
+
+
+def bridge_version(project: Path) -> str:
+    return _source_version(project, component="Google Chat bridge")
+
+
+def hub_version(project: Path) -> str:
+    return _source_version(project, component="Omnigent hub controller")
 
 
 def omnigent_version(binary: Path) -> str:

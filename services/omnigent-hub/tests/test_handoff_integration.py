@@ -25,6 +25,7 @@ from omnigent_hub.runtime import (
 from omnigent_hub.snapshot import (
     bridge_version,
     create_snapshot,
+    hub_version,
     list_valid_snapshots,
     omnigent_version,
     restore_snapshot,
@@ -96,6 +97,7 @@ class InProcessRemote:
                 "versions": {
                     "omnigent": omnigent_version(config.omnigent_bin),
                     "bridge": bridge_version(config.bridge_project),
+                    "hub": hub_version(config.dotfiles / "services/omnigent-hub"),
                 }
             }
         if command in {"services", "route-ensure", "reconcile-services", "quiesce-check"}:
