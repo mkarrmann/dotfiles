@@ -77,6 +77,42 @@ def test_remote_reuses_operator_cat(hub_config: HubConfig, monkeypatch: pytest.M
     assert "OMNIGENT_HA_DELEGATED_CAT=operator-secret" in commands[0][-1]
 
 
+def test_remote_json_accepts_x2ssh_terminal_noise(hub_config: HubConfig) -> None:
+    payload = active_payload(4)
+
+    def run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        del timeout
+        stdout = f"Welcome to the host\r\n{json.dumps(payload)}\r\nConnection closed\r\n"
+        return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+    client = RemoteClient(hub_config, runner=run, system="Darwin")
+
+    assert client.json("standby.example.com", ("resolve", "--json")) == payload
+
+
+def test_resolve_does_not_retry_successful_non_json_command(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[list[str]] = []
+
+    def fail_mint(owner_fbid: str) -> str:
+        raise AssertionError(f"unexpected mint for {owner_fbid}")
+
+    def run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        del timeout
+        commands.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "terminal noise only", "")
+
+    monkeypatch.delenv("OMNIGENT_HA_DELEGATED_CAT", raising=False)
+    monkeypatch.setattr("omnigent_hub.remote.mint_delegated_cat", fail_mint)
+    client = RemoteClient(hub_config, runner=run, system="Darwin")
+
+    with pytest.raises(RemoteError, match="no hub candidate returned"):
+        client.resolve()
+
+    assert len(commands) == 2
+
+
 def test_local_remote_never_mints_cat(
     hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:

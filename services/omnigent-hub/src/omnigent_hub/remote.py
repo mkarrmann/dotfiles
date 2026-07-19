@@ -108,12 +108,30 @@ class RemoteClient:
         use_delegated_cat: bool = True,
     ) -> dict[str, Any]:
         result = self.run(host, args, timeout=timeout, use_delegated_cat=use_delegated_cat)
+        return self._json_result(result)
+
+    @staticmethod
+    def _json_result(result: RemoteResult) -> dict[str, Any]:
         try:
             value = json.loads(result.stdout)
-        except json.JSONDecodeError as exc:
-            raise RemoteError(f"command on {host} did not return JSON") from exc
+        except json.JSONDecodeError:
+            value = None
+            # x2ssh -et may wrap a machine-readable command with terminal
+            # banners or connection notices. Every --json hub command emits
+            # one compact JSON object, so recover that complete line without
+            # accepting arbitrary partial JSON from other output.
+            for line in reversed(result.stdout.splitlines()):
+                try:
+                    candidate = json.loads(line.strip())
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(candidate, dict):
+                    value = candidate
+                    break
+            if value is None:
+                raise RemoteError(f"command on {result.host} did not return JSON") from None
         if not isinstance(value, dict):
-            raise RemoteError(f"command on {host} returned non-object JSON")
+            raise RemoteError(f"command on {result.host} returned non-object JSON")
         return value
 
     def resolve(self) -> tuple[ActiveHubRecord, str, dict[str, str]]:
@@ -121,13 +139,15 @@ class RemoteClient:
         errors: dict[str, str] = {}
         for host in self._config.topology.hubs:
             try:
-                try:
-                    value = self.json(
-                        host,
-                        ("resolve", "--json"),
-                        use_delegated_cat=False,
-                    )
-                except RemoteError:
+                result = self.run(
+                    host,
+                    ("resolve", "--json"),
+                    check=False,
+                    use_delegated_cat=False,
+                )
+                if result.returncode == 0:
+                    value = self._json_result(result)
+                else:
                     value = self.json(host, ("resolve", "--json"))
                 responses.append((ActiveHubRecord.from_dict(value, self._config.topology), host))
             except (RemoteError, ValueError) as exc:
