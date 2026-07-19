@@ -626,6 +626,15 @@ fi
 "$DOTFILES_DIR/bin/omnigent-dvsc-ensure" \
     || echo "WARNING: omnigent-dvsc-ensure failed (dvsc agent may not appear in the picker)" >&2
 
+# Omnigent: register the direct-harness builtin agents (claude-sdk, codex) so
+# they show in the CodeCompanion omnigent picker (<leader>aM / <leader>aA)
+# alongside polly/debby/dvsc. The picker's model/effort steps key off each
+# agent's harness family, so registering the specs is the whole job. Idempotent
+# and self-skips off the active Linux hub. See bin/omnigent-agents-ensure and
+# omnigent_config/agents/{claude,codex}/.
+"$DOTFILES_DIR/bin/omnigent-agents-ensure" \
+    || echo "WARNING: omnigent-agents-ensure failed (claude/codex agents may not appear in the picker)" >&2
+
 if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
     KEEP_ZSHRC=yes sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
     echo "installed oh-my-zsh"

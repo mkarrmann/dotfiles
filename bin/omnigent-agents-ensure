@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# omnigent-agents-ensure — register the dotfiles builtin Omnigent agents that
+# run a vendor harness DIRECTLY (claude-sdk, codex), so they show up in the
+# CodeCompanion omnigent picker (<leader>aM / <leader>aA) alongside
+# polly/debby/dvsc. The existing model/effort pickers key off each agent's
+# harness family (claude-sdk -> claude, codex -> codex), so no Neovim change is
+# needed — registering the specs is the whole job.
+#
+# This is the generic sibling of omnigent-dvsc-ensure: dvsc needs an extra
+# acp: config merge (its harness is acp:dvsc-core), so it keeps its own script;
+# claude/codex are pure executor.type=omnigent builtins that only need the
+# agent-store seed, which this script does for all of them in ONE throwaway
+# server boot.
+#
+# Idempotent and portable: safe to re-run, and self-skips where omnigent isn't
+# installed or this host isn't the active Linux hub. Wired into init.sh.
+#
+# The managed `omnigent server start` has no `--agent` hook, so — exactly like
+# omnigent-dvsc-ensure — we register by briefly booting a throwaway server (a
+# free port, the SAME chat.db) with one `--agent` per missing spec; it writes
+# the builtin rows + bundles, then exits. The active server reads the new rows
+# without a restart. Clients, the standby, and macOS never open a local chat.db.
+#
+# Env overrides: OMNIGENT_BIN, DOTFILES_DIR, OMNIGENT_DATA_DIR,
+# OMNIGENT_SERVER_URL.
+set -euo pipefail
+
+if [[ $# -ne 0 ]]; then
+  echo "usage: omnigent-agents-ensure" >&2
+  exit 2
+fi
+
+log() { printf '[agents-ensure] %s\n' "$*"; }
+
+DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
+OMNIGENT_BIN="${OMNIGENT_BIN:-$HOME/.local/bin/omnigent}"
+command -v "$OMNIGENT_BIN" >/dev/null 2>&1 || OMNIGENT_BIN="omnigent"
+
+DATA_DIR="${OMNIGENT_DATA_DIR:-${OMNIGENT_CONFIG_HOME:-$HOME/.omnigent}}"
+AGENTS_DIR="$DOTFILES/omnigent_config/agents"
+
+# The builtin agents this script owns (spec dir basename == agent name).
+AGENT_NAMES=(claude codex)
+
+SERVER_URL="${OMNIGENT_SERVER_URL:-}"
+if [ -z "$SERVER_URL" ]; then
+  if command -v omnigent-server-url >/dev/null 2>&1; then
+    SERVER_URL="$(omnigent-server-url)"
+  elif [ -x "$DOTFILES/bin/omnigent-server-url" ]; then
+    SERVER_URL="$("$DOTFILES/bin/omnigent-server-url")"
+  fi
+fi
+
+# Skip cleanly on machines without a usable omnigent install.
+if ! command -v "$OMNIGENT_BIN" >/dev/null 2>&1; then
+  log "omnigent not installed; skipping"
+  exit 0
+fi
+
+# Only the active Linux hub owns the authoritative database. A Mac may retain a
+# legacy ~/.omnigent/chat.db; standbys and peer devservers reconcile config
+# without mutating a local database copy.
+if [[ "$(uname -s)" != "Linux" ]]; then
+  log "client host detected; skipping local agent-store seed"
+  exit 0
+fi
+if ! "$DOTFILES/bin/omnigent-server-url" --is-hub >/dev/null 2>&1; then
+  log "non-active hub/client detected; skipping local agent-store seed"
+  exit 0
+fi
+
+# True iff GET <url>/v1/agents lists an agent named "$2".
+has_agent() {
+  local url="$1" name="$2"
+  [ -n "$url" ] || return 1
+  curl -sf --noproxy '*' --max-time 5 "$url/v1/agents?limit=1000" 2>/dev/null \
+    | AGENT_NAME="$name" python3 -c 'import os,sys,json
+name=os.environ["AGENT_NAME"]
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if any(a.get("name")==name for a in (d.get("data") or [])) else 1)'
+}
+
+# The HA server is systemd-managed, so `omnigent server status` may not know its
+# URL; the resolved active-hub URL is authoritative in that topology.
+status_json="$("$OMNIGENT_BIN" server status --json 2>/dev/null || echo '{}')"
+managed_url="$(printf '%s' "$status_json" \
+  | python3 -c 'import sys,json;print((json.load(sys.stdin) or {}).get("url") or "")' 2>/dev/null || true)"
+live_url="$managed_url"
+if [ -z "$live_url" ]; then
+  live_url="$SERVER_URL"
+fi
+
+# Collect the spec dirs for agents that aren't registered yet.
+missing_dirs=()
+missing_names=()
+for name in "${AGENT_NAMES[@]}"; do
+  spec_dir="$AGENTS_DIR/$name"
+  if [ ! -d "$spec_dir" ]; then
+    log "agent spec missing at $spec_dir; skipping $name"
+    continue
+  fi
+  if [ -n "$live_url" ] && has_agent "$live_url" "$name"; then
+    log "$name agent already registered ✓ ($live_url)"
+    continue
+  fi
+  missing_dirs+=("$spec_dir")
+  missing_names+=("$name")
+done
+
+if [ "${#missing_dirs[@]}" -eq 0 ]; then
+  log "all builtin agents present ✓"
+  exit 0
+fi
+
+log "registering builtins (${missing_names[*]}) on a throwaway port…"
+db="sqlite:///$DATA_DIR/chat.db"
+art="$DATA_DIR/artifacts"
+seed_port="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
+seed_url="http://127.0.0.1:$seed_port"
+seed_log="$(mktemp -t omnigent-agents-seed.XXXXXX.log)"
+
+agent_flags=()
+for d in "${missing_dirs[@]}"; do
+  agent_flags+=(--agent "$d")
+done
+
+"$OMNIGENT_BIN" server \
+    "${agent_flags[@]}" \
+    --host 127.0.0.1 --port "$seed_port" \
+    --database-uri "$db" --artifact-location "$art" \
+    >"$seed_log" 2>&1 &
+seed_pid=$!
+
+cleanup() {
+  kill "$seed_pid" 2>/dev/null || true
+  wait "$seed_pid" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# Wait for the seed server to boot and confirm it registered every missing agent.
+registered=false
+for _ in $(seq 1 60); do
+  if ! kill -0 "$seed_pid" 2>/dev/null; then
+    log "seed server exited early; log follows:"; tail -n 20 "$seed_log" >&2; exit 1
+  fi
+  all=true
+  for name in "${missing_names[@]}"; do
+    has_agent "$seed_url" "$name" || { all=false; break; }
+  done
+  if [ "$all" = true ]; then registered=true; break; fi
+  sleep 1
+done
+if [ "$registered" != true ]; then
+  log "timed out waiting for seed server to register ${missing_names[*]}; log follows:"
+  tail -n 20 "$seed_log" >&2
+  exit 1
+fi
+log "seed server registered ${missing_names[*]} into chat.db"
+
+cleanup
+trap - EXIT
+
+# Verify the running server (if any) now sees them via its live DB query.
+if [ -n "$live_url" ]; then
+  for name in "${missing_names[@]}"; do
+    ok=false
+    for _ in $(seq 1 10); do
+      if has_agent "$live_url" "$name"; then ok=true; break; fi
+      sleep 1
+    done
+    if [ "$ok" = true ]; then
+      log "$name registered ✓ (visible on running server $live_url)"
+    else
+      log "$name written to chat.db but not yet visible on $live_url — restart it with 'omnigent server stop && omnigent server start' if it doesn't appear"
+    fi
+  done
+else
+  log "registered ${missing_names[*]} ✓ into chat.db (no server currently running; they'll appear when omnigent starts)"
+fi
+
+# Success: drop the seed log. Failure paths above exit before here, leaving it
+# in place for debugging.
+rm -f "$seed_log"
