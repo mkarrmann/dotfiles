@@ -89,6 +89,7 @@ async def setup_mirror(
     *,
     mode: str = "concise",
     mention_completion: bool = True,
+    mention_enabled: bool = True,
     max_chars: int = 1000,
 ) -> tuple[SQLiteStore, FakeOmnigent, FakeSender, SessionMirror]:
     store = SQLiteStore(tmp_path / "bridge.sqlite3")
@@ -103,6 +104,7 @@ async def setup_mirror(
         sender=sender,  # type: ignore[arg-type]
         mirror_mode=mode,
         mention_unixname="owner",
+        mention_enabled=mention_enabled,
         mention_on_completion=mention_completion,
         max_session_chars=max_chars,
         status_changed=lambda session_id, status: None,
@@ -230,6 +232,47 @@ async def test_notification_policy_ignores_response_completed_and_mentions_atten
         store.close()
 
 
+async def test_disabled_mentions_suppress_all_attention_and_failure_tags(tmp_path: Path) -> None:
+    store, omnigent, sender, mirror = await setup_mirror(tmp_path, mention_enabled=False)
+    try:
+        omnigent.sessions = [
+            SessionSummary(
+                id="conv",
+                title="Session",
+                status="waiting",
+                updated_at=10,
+                pending_elicitations_count=1,
+            )
+        ]
+        await mirror._handle_event(
+            {"type": "response.elicitation_request", "elicitation_id": "elicit_1"}
+        )
+        await mirror._handle_event(
+            {"type": "session.status", "data": {"status": "waiting"}, "id": "wait_1"}
+        )
+        await mirror._handle_event({"type": "response.failed", "response": {"id": "response_1"}})
+        assert sender.calls, "attention and failure posts should still be sent"
+        assert all(call["mention_unixname"] is None for call in sender.calls)
+    finally:
+        store.close()
+
+
+async def test_disabled_mentions_suppress_root_tag(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "bridge.sqlite3")
+    await store.initialize()
+    omnigent = FakeOmnigent()
+    sender = FakeSender()
+    reconciler = make_reconciler(store, omnigent, sender, mode="label", mention_enabled=False)
+    try:
+        await reconciler._create_mapping(
+            SessionSummary(id="conv", title="Session", status="idle", updated_at=10)
+        )
+        root_calls = [call for call in sender.calls if call["source_kind"] == "root"]
+        assert root_calls and all(call["mention_unixname"] is None for call in root_calls)
+    finally:
+        store.close()
+
+
 async def test_disabled_completion_setting_suppresses_notification(tmp_path: Path) -> None:
     store, _, sender, mirror = await setup_mirror(tmp_path, mention_completion=False)
     try:
@@ -327,6 +370,7 @@ def make_reconciler(
     *,
     mode: str,
     host_id: str | None = "host_1",
+    mention_enabled: bool = True,
 ) -> SessionReconciler:
     return SessionReconciler(
         store=store,
@@ -341,6 +385,7 @@ def make_reconciler(
         recent_active_seconds=120,
         mirror_mode="concise",
         mention_unixname="owner",
+        mention_enabled=mention_enabled,
         mention_on_root=True,
         mention_on_completion=True,
         meta_bot_actor_id="users/bot",

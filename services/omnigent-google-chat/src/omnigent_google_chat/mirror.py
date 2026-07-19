@@ -25,6 +25,7 @@ class SessionMirror:
         sender: GoogleChatSender,
         mirror_mode: str,
         mention_unixname: str,
+        mention_enabled: bool,
         mention_on_completion: bool,
         max_session_chars: int,
         status_changed: Callable[[str, str], None],
@@ -35,6 +36,7 @@ class SessionMirror:
         self._sender = sender
         self._mirror_mode = mirror_mode
         self._mention_unixname = mention_unixname
+        self._mention_enabled = mention_enabled
         self._mention_on_completion = mention_on_completion
         self._max_session_chars = max_session_chars
         self._status_changed = status_changed
@@ -268,7 +270,9 @@ class SessionMirror:
                 source_id=f"{source_id}:{status}",
                 text=text,
                 thread_name=mapping.thread_name,
-                mention_unixname=self._mention_unixname if mention else None,
+                mention_unixname=(
+                    self._mention_unixname if mention and self._mention_enabled else None
+                ),
             )
         except MetaChatError:
             self._logger.warning(

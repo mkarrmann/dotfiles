@@ -30,6 +30,7 @@ class SessionReconciler:
         recent_active_seconds: float,
         mirror_mode: str,
         mention_unixname: str,
+        mention_enabled: bool,
         mention_on_root: bool,
         mention_on_completion: bool,
         meta_bot_actor_id: str,
@@ -48,6 +49,7 @@ class SessionReconciler:
         self._recent_active_seconds = recent_active_seconds
         self._mirror_mode = mirror_mode
         self._mention_unixname = mention_unixname
+        self._mention_enabled = mention_enabled
         self._mention_on_root = mention_on_root
         self._mention_on_completion = mention_on_completion
         self._meta_bot_actor_id = meta_bot_actor_id
@@ -134,7 +136,11 @@ class SessionReconciler:
             source_id=session.id,
             text=format_root(session),
             thread_name=None,
-            mention_unixname=self._mention_unixname if self._mention_on_root else None,
+            mention_unixname=(
+                self._mention_unixname
+                if self._mention_enabled and self._mention_on_root
+                else None
+            ),
         )
         if len(sent) != 1:
             raise MetaChatOutputError("session root unexpectedly required multiple messages")
@@ -180,6 +186,7 @@ class SessionReconciler:
             sender=self._sender,
             mirror_mode=self._mirror_mode,
             mention_unixname=self._mention_unixname,
+            mention_enabled=self._mention_enabled,
             mention_on_completion=self._mention_on_completion,
             max_session_chars=self._max_session_chars,
             status_changed=self._status_changed,

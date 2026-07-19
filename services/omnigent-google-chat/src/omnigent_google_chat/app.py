@@ -104,6 +104,7 @@ async def run(settings: Settings) -> None:
             recent_active_seconds=settings.recent_active_seconds,
             mirror_mode=settings.mirror_mode,
             mention_unixname=settings.mention_unixname,
+            mention_enabled=settings.mention_enabled,
             mention_on_root=settings.mention_on_root,
             mention_on_completion=settings.mention_on_completion,
             meta_bot_actor_id=settings.meta_bot_actor_id,

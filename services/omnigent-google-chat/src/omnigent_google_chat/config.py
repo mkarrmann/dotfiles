@@ -88,6 +88,10 @@ class Settings(BaseSettings):
     mirror_mode: Literal["concise", "status-only"] = Field(
         default="concise", validation_alias="OMNIGENT_GCHAT_MIRROR_MODE"
     )
+    mention_enabled: bool = Field(
+        default=True,
+        validation_alias="OMNIGENT_GCHAT_MENTION_ENABLED",
+    )
     mention_on_completion: bool = Field(
         default=True,
         validation_alias="OMNIGENT_GCHAT_MENTION_ON_COMPLETION",
