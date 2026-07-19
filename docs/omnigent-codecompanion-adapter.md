@@ -21,6 +21,10 @@ definition + a launch keymap. Everything else is parity/polish.
 > - **Track C parity**: winbar session pill + statusline + context-% now light up
 >   for omnigent via the shared `lib/codecompanion-session.lua` resolver +
 >   `CodeCompanionOmnigentUsage` feed; doctor/reap have omnigent arms.
+> - **Native harnesses + Codex Goal**: the agent picker admits the exact built-in
+>   `claude-native-ui`/`claude-native` and `codex-native-ui`/`codex-native`
+>   pairs. `/goal` creates or attaches a Codex-native session and provides
+>   create/view/edit/pause/resume/clear controls through asynchronous REST calls.
 >
 > See `~/repos/codecompanion.nvim/.codecompanion/omnigent-native-progress.md` for
 > the full per-milestone status and the manual GUI verification checklist (the only
@@ -47,9 +51,9 @@ adapters = {
         formatted_name = "Omnigent",
         url = vim.env.OMNIGENT_URL or "http://127.0.0.1:6767",
         defaults = {
-          -- Use a claude-sdk agent: it streams output_text + emits elicitations.
-          -- claude-native-ui (terminal harness) completes turns but streams NO
-          -- text to CodeCompanion (its output goes to the tmux terminal).
+          -- SDK agents and the built-in claude-native-ui/codex-native-ui agents
+          -- normalize output and Omnigent policy elicitations onto the session
+          -- stream. Native agents use their vendor rules and tool surface.
           agent = "polly",
           host = "auto",       -- fail-closed FQDN match to this machine
           workspace = "auto",  -- cwd, but only when the resolved host is local
@@ -80,6 +84,11 @@ launch machinery are needed — just a keymap in the `keys = { ... }` table:
 
 (`<leader>aM` is a suggestion — the `aM`/`aN` slots look free next to your
 `aG`/`aC`/`aO` agent launchers.)
+
+For Codex Goal, launch `<leader>aA`, select `codex-native-ui`, and run `/goal` in
+the new chat. `/goal` also works before the first prompt: it creates the bound
+native session without posting a dummy message, then opens create/view/edit/
+pause/resume/clear controls.
 
 ## What works immediately
 
@@ -113,10 +122,9 @@ launch machinery are needed — just a keymap in the `keys = { ... }` table:
   pattern), add `defaults.labels = { ... }` here and have `session:create` copy
   `d.labels` into the create body (currently it copies model_override /
   reasoning_effort / harness_override only).
-- **Async REST**: not needed. `create`/`post` return in <1s (the agent's thinking
-  happens over the async SSE stream), so there's no editor freeze like the ACP
-  `session/new` case — the `async_utils.sync` wrap you applied to `_submit_acp`
-  isn't required here.
+- **Async REST**: foreground `create`/`post` remain synchronous because model work
+  happens over SSE. Codex Goal GET/mutations use the asynchronous client path
+  because those calls may wake an offline native runner.
 
 ## Open questions
 

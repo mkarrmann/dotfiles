@@ -939,12 +939,9 @@ end
 -- {agent, model, effort}: the agent is the session harness (IMMUTABLE after
 -- create, so launch-time only), while model + effort are the initial overrides
 -- passed at session create and stay switchable mid-session via <leader>ao.
--- Only SDK/streaming harnesses are offered. Native harnesses (`*-native`: Claude
--- Code = claude-native, Codex = codex-native, cursor, ...) boot a vendor TUI in a
--- tmux terminal on the runner and send their output THERE, not to the chat stream
--- (verified empirically: a claude-native-ui turn renders nothing in the buffer,
--- and codex-native-ui fails to start) -- they're the wrong abstraction for a chat
--- surface. Use a terminal-attach flow for native harnesses instead.
+-- SDK/streaming harnesses are offered along with the two built-in native agents
+-- whose terminal output Omnigent normalizes onto the ordinary session stream.
+-- Other native harnesses remain excluded until their chat forwarding is tested.
 local OMNIGENT_AGENT_CACHE_PATH = vim.fn.stdpath("data") .. "/codecompanion-omnigent-agent.json"
 
 -- The launch selection is a triple {agent, model?, effort?} (mirroring how the
@@ -967,22 +964,21 @@ local function _omnigent_write_selection(sel)
   f:close()
 end
 
--- A harness whose output streams into the chat buffer. SDK/subprocess harnesses
--- (claude-sdk, codex, pi, openai-agents, ...) run the vendor model directly and
--- emit response.output_text deltas; native harnesses (`*-native`) run a terminal
--- TUI and don't, so they're excluded from a chat picker.
-local function _omnigent_is_chat_harness(harness)
-  return not (type(harness) == "string" and harness:match("%-native$"))
+-- Whether this exact agent/harness pair has a supported chat stream contract.
+local function _omnigent_is_chat_agent(agent)
+  if not (type(agent.harness) == "string" and agent.harness:match("%-native$")) then return true end
+  return (agent.name == "claude-native-ui" and agent.harness == "claude-native")
+    or (agent.name == "codex-native-ui" and agent.harness == "codex-native")
 end
 
--- Live agent catalog, filtered to chat-capable (SDK) harnesses:
+-- Live agent catalog, filtered to validated chat-capable harnesses:
 -- { { id, name, harness, description }, ... } or nil, err.
 local function _omnigent_pickable_agents()
   local agents, err = _omnigent_client():list_agents()
   if not agents then return nil, err end
   local out = {}
   for _, a in ipairs(agents) do
-    if a.name and _omnigent_is_chat_harness(a.harness) then
+    if a.name and _omnigent_is_chat_agent(a) then
       out[#out + 1] = { id = a.id, name = a.name, harness = a.harness, description = a.description }
     end
   end
@@ -1149,14 +1145,11 @@ local function _omnigent_select(force, cb)
   end
   if #agents == 0 then
     return vim.notify(
-      "omnigent: no streaming (SDK) agents available — register a claude-sdk / codex agent "
-        .. "(native-ui agents can't render in a chat)",
+      "omnigent: no validated chat-capable agents are available",
       vim.log.levels.WARN
     )
   end
-  -- Reuse the cached choice only if its agent is still a valid chat-capable
-  -- agent: a previously-cached native agent must not silently relaunch into a
-  -- dead end.
+  -- Reuse the cached choice only if its exact agent remains chat-capable.
   if not force then
     local cached = _omnigent_read_selection()
     if cached.agent then
@@ -1168,6 +1161,11 @@ local function _omnigent_select(force, cb)
   vim.ui.select(agents, {
     prompt = "Omnigent agent:",
     format_item = function(a)
+      if a.name == "codex-native-ui" then
+        return a.name .. "  —  Codex native session (Goal support)"
+      elseif a.name == "claude-native-ui" then
+        return a.name .. "  —  Claude native session (terminal-backed, chat-rendered)"
+      end
       local detail = (a.description and a.description ~= "") and a.description or a.harness
       return detail and (a.name .. "  —  " .. detail) or a.name
     end,
