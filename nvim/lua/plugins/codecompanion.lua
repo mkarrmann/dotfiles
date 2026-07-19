@@ -2020,9 +2020,6 @@ end
 return {
   {
     "mkarrmann/codecompanion.nvim", -- fork: adds the native omnigent adapter (see <leader>aM)
-    dir = vim.fn.isdirectory(vim.fn.expand("~/repos/codecompanion.nvim")) == 1
-        and vim.fn.expand("~/repos/codecompanion.nvim")
-      or nil,
     dependencies = {
       "nvim-lua/plenary.nvim",
       "nvim-treesitter/nvim-treesitter",
