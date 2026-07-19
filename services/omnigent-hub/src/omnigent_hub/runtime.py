@@ -558,7 +558,7 @@ def assert_sessions_quiescent(config: HubConfig) -> dict[str, Any]:
 
 
 def reconcile_local_route(config: HubConfig, *, restart_host: bool) -> dict[str, Any]:
-    record = resolve_record(config)
+    record = resolve_routing_record(config)
     previous_cli_url = _read_config_server(config.data_dir / "config.yaml")
     previous_environment_url = _read_environment_url(
         config.home / ".config/environment.d/omnigent.conf"
@@ -597,6 +597,13 @@ def reconcile_local_route(config: HubConfig, *, restart_host: bool) -> dict[str,
         "changed": changed,
         "host_restarted": restart_host and changed,
     }
+
+
+def resolve_routing_record(config: HubConfig) -> ActiveHubRecord:
+    if config.local_fqdn in config.topology.hubs:
+        return resolve_record(config)
+    cache = read_json_object(config.routing_cache)
+    return ActiveHubRecord.from_dict(cache, config.topology)
 
 
 def reconcile_services(config: HubConfig) -> dict[str, Any]:

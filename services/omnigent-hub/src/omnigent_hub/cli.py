@@ -39,7 +39,7 @@ from omnigent_hub.snapshot import (
     restore_snapshot,
     validate_snapshot,
 )
-from omnigent_hub.storage import StorageError, local_lock, read_record
+from omnigent_hub.storage import StorageError, ensure_storage, local_lock, read_record
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,6 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--json", action="store_true")
 
     cache = subparsers.add_parser("cache-routing", help="refresh the local routing cache")
+    cache.add_argument("--force-remount", action="store_true")
     cache.add_argument("--json", action="store_true")
 
     transition = subparsers.add_parser("begin-transition", help="publish a no-active-hub fence")
@@ -229,7 +230,11 @@ def main(argv: list[str] | None = None) -> None:
             _require_yes(parser, args.yes, "initialize")
             _emit(initialize(config, active_hub=args.active).to_dict(), args.json)
         elif args.command == "cache-routing":
-            record = resolve_record(config)
+            if args.force_remount:
+                ensure_storage(config, force_remount=True)
+                record = read_record(config, ensure_mounted=False)
+            else:
+                record = resolve_record(config)
             write_routing_cache(config, record)
             _emit(record.to_dict(), args.json)
         elif args.command == "begin-transition":

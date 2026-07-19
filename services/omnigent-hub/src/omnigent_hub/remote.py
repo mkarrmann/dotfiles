@@ -59,6 +59,7 @@ class RemoteClient:
         *,
         timeout: float = 180,
         check: bool = True,
+        use_delegated_cat: bool = True,
     ) -> RemoteResult:
         self._config.topology.validate_hub(host)
         command = " ".join([self._remote_binary, *(shlex.quote(arg) for arg in args)])
@@ -68,10 +69,12 @@ class RemoteClient:
                 *args,
             ]
         elif self._system == "Darwin":
-            command = self._with_delegated_cat(command)
+            if use_delegated_cat:
+                command = self._with_delegated_cat(command)
             argv = ["x2ssh", "-et", host, "-c", f"zsh -lc {shlex.quote(command)}"]
         else:
-            command = self._with_delegated_cat(command)
+            if use_delegated_cat:
+                command = self._with_delegated_cat(command)
             argv = ["ssh", "-o", "BatchMode=yes", host, command]
         try:
             completed = self._runner(argv, timeout)
@@ -96,8 +99,15 @@ class RemoteClient:
             )
         return f"OMNIGENT_HA_DELEGATED_CAT={shlex.quote(self._delegated_cat)} {command}"
 
-    def json(self, host: str, args: Sequence[str], *, timeout: float = 180) -> dict[str, Any]:
-        result = self.run(host, args, timeout=timeout)
+    def json(
+        self,
+        host: str,
+        args: Sequence[str],
+        *,
+        timeout: float = 180,
+        use_delegated_cat: bool = True,
+    ) -> dict[str, Any]:
+        result = self.run(host, args, timeout=timeout, use_delegated_cat=use_delegated_cat)
         try:
             value = json.loads(result.stdout)
         except json.JSONDecodeError as exc:
@@ -111,7 +121,14 @@ class RemoteClient:
         errors: dict[str, str] = {}
         for host in self._config.topology.hubs:
             try:
-                value = self.json(host, ("resolve", "--json"))
+                try:
+                    value = self.json(
+                        host,
+                        ("resolve", "--json"),
+                        use_delegated_cat=False,
+                    )
+                except RemoteError:
+                    value = self.json(host, ("resolve", "--json"))
                 responses.append((ActiveHubRecord.from_dict(value, self._config.topology), host))
             except (RemoteError, ValueError) as exc:
                 errors[host] = str(exc)

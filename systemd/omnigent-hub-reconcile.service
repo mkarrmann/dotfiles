@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=oneshot
 Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 EnvironmentFile=%h/dotfiles/omnigent_config/topology.env
-ExecStart=%h/dotfiles/services/omnigent-hub/.venv/bin/omnigent-hub reconcile-services --json
+ExecStart=%h/dotfiles/bin/omnigent-hub-reconcile
 TimeoutStartSec=180
 StandardOutput=append:%S/omnigent-hub/reconcile.log
 StandardError=append:%S/omnigent-hub/reconcile.log

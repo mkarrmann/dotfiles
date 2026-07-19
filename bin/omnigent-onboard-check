@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Verify that init.sh converged this Linux machine to its declared Omnigent role.
+set -euo pipefail
+
+DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
+SERVER_URL_BIN="${OMNIGENT_SERVER_URL_BIN:-$DOTFILES/bin/omnigent-server-url}"
+HUB_BIN="${OMNIGENT_HUB_BIN:-$DOTFILES/bin/omnigent-hub}"
+local_fqdn="${OMNIGENT_LOCAL_FQDN:-$(hostname -f 2>/dev/null || hostname)}"
+
+[[ "$(uname -s)" == Linux ]] || exit 0
+
+url="$($SERVER_URL_BIN)"
+curl -sf --noproxy '*' --max-time 5 "$url/health" >/dev/null
+systemctl --user is-active --quiet omnigent-host.service
+
+if "$SERVER_URL_BIN" --is-candidate; then
+  status="$($HUB_BIN local-status --json)"
+  STATUS_JSON="$status" python3 - "$local_fqdn" <<'PY'
+import json
+import os
+import sys
+
+status = json.loads(os.environ["STATUS_JSON"])
+local_fqdn = sys.argv[1]
+record = status.get("record")
+services = status.get("services")
+gate = status.get("gate")
+if not isinstance(record, dict) or record.get("state") != "active":
+    raise SystemExit("shared active-hub record is unavailable or fenced")
+if not isinstance(services, dict) or not isinstance(gate, dict):
+    raise SystemExit("local hub status is incomplete")
+
+active = record.get("active_hub") == local_fqdn
+required = (
+    {
+        "omnigent-server.service",
+        "omnigent-prodnet.service",
+        "omnigent-google-chat.service",
+        "omnigent-snapshot.timer",
+    }
+    if active
+    else {"omnigent-client-proxy.service"}
+)
+for service in required:
+    if services.get(service) != "active":
+        raise SystemExit(f"{service} is {services.get(service)!r}, expected 'active'")
+if services.get("omnigent-host.service") != "active":
+    raise SystemExit("omnigent-host.service is not active")
+if (gate.get("allowed") is True) != active:
+    raise SystemExit("startup gate does not match this candidate's role")
+forbidden = (
+    {"omnigent-client-proxy.service"}
+    if active
+    else {
+        "omnigent-server.service",
+        "omnigent-prodnet.service",
+        "omnigent-google-chat.service",
+        "omnigent-snapshot.timer",
+    }
+)
+for service in forbidden:
+    if services.get(service) == "active":
+        raise SystemExit(f"{service} must be inactive for this role")
+PY
+fi
+
+echo "[omnigent-onboard] healthy on $local_fqdn via $url"

@@ -20,6 +20,7 @@ from omnigent_hub.runtime import (
     begin_transition,
     check_gate,
     initialize,
+    write_routing_cache,
 )
 from omnigent_hub.snapshot import (
     bridge_version,
@@ -74,6 +75,10 @@ class InProcessRemote:
             return attach_transition_generation(
                 config, generation=argument(values, "--generation")
             ).to_dict()
+        if command == "cache-routing":
+            record = read_record(config)
+            write_routing_cache(config, record)
+            return record.to_dict()
         if command == "snapshots":
             return {"snapshots": [str(path) for path in list_valid_snapshots(config)]}
         if command == "validate-snapshot":

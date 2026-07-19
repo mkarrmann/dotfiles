@@ -93,6 +93,20 @@ class FakeRemote:
                 "target_hub": "standby.example.com",
                 "transition_id": "transition-2",
             }
+        if command == "begin-unexpected-transition":
+            return {
+                "format_version": 1,
+                "epoch": 2,
+                "state": "transition",
+                "active_hub": None,
+                "activation_id": None,
+                "restored_generation": "generation-2",
+                "updated_at": "2026-07-18T20:01:00Z",
+                "updated_by": "tester",
+                "source_hub": "primary.example.com",
+                "target_hub": "standby.example.com",
+                "transition_id": "unexpected-2",
+            }
         if command == "snapshot":
             return {"generation_id": "generation-2", "archive_path": "/snap/generation-2.tar.gz"}
         if command == "attach-generation":
@@ -109,12 +123,48 @@ class FakeRemote:
                 "target_hub": "standby.example.com",
                 "transition_id": "transition-2",
             }
+        if command == "cache-routing":
+            if host == "standby.example.com":
+                transition_id = (
+                    "unexpected-2"
+                    if any(call[1][0] == "begin-unexpected-transition" for call in self.calls)
+                    else "transition-2"
+                )
+                return {
+                    "format_version": 1,
+                    "epoch": 2,
+                    "state": "transition",
+                    "active_hub": None,
+                    "activation_id": None,
+                    "restored_generation": "generation-2",
+                    "updated_at": "2026-07-18T20:02:00Z",
+                    "updated_by": "tester",
+                    "source_hub": "primary.example.com",
+                    "target_hub": "standby.example.com",
+                    "transition_id": transition_id,
+                }
+            return {
+                "format_version": 1,
+                "epoch": 2,
+                "state": "active",
+                "active_hub": "standby.example.com",
+                "activation_id": "activation-2",
+                "restored_generation": "generation-2",
+                "updated_at": "2026-07-18T20:03:00Z",
+                "updated_by": "tester",
+            }
         if command == "snapshots":
             return {"snapshots": ["/snap/generation-2.tar.gz"]}
         if command == "validate-snapshot":
             return {"generation_id": "generation-2"}
         if command == "activate":
-            return {"epoch": 2, "active_hub": "standby.example.com"}
+            return {
+                "epoch": 2,
+                "state": "active",
+                "active_hub": "standby.example.com",
+                "activation_id": "activation-2",
+                "restored_generation": "generation-2",
+            }
         return {}
 
 
@@ -142,8 +192,20 @@ def test_planned_handoff_orders_fence_restore_and_tail(hub_config: HubConfig) ->
     snapshot = calls.index(("primary.example.com", ("snapshot", "--quiesced", "--json")))
     assert stop_server < snapshot
     stop_client = calls.index(("standby.example.com", ("services", "stop-client", "--json")))
+    refresh_target = calls.index(
+        ("standby.example.com", ("cache-routing", "--force-remount", "--json"))
+    )
+    restore = calls.index(
+        ("standby.example.com", ("restore", "/snap/generation-2.tar.gz", "--yes", "--json"))
+    )
+    assert refresh_target < restore
     start_core = calls.index(("standby.example.com", ("services", "start-core", "--json")))
     assert stop_client < start_core
+    refresh_source = calls.index(
+        ("primary.example.com", ("cache-routing", "--force-remount", "--json"))
+    )
+    reconcile_source = calls.index(("primary.example.com", ("reconcile-services", "--json")))
+    assert refresh_source < reconcile_source
     assert (
         "primary.example.com",
         ("reconcile-services", "--json"),

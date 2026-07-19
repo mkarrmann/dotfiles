@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Retire launchers from the pre-HA topology before systemd owns an inactive
+# candidate. Durable databases and artifacts are deliberately left untouched.
+set -euo pipefail
+
+DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
+SERVER_URL_BIN="${OMNIGENT_SERVER_URL_BIN:-$DOTFILES/bin/omnigent-server-url}"
+OMNIGENT_BIN="${OMNIGENT_BIN:-$HOME/.local/bin/omnigent}"
+local_fqdn="${OMNIGENT_LOCAL_FQDN:-$(hostname -f 2>/dev/null || hostname)}"
+
+if [[ "$(uname -s)" != Linux ]] || ! "$SERVER_URL_BIN" --is-candidate; then
+  exit 0
+fi
+if ! active_hub="$($SERVER_URL_BIN --hub 2>/dev/null)"; then
+  echo "ERROR: cannot determine active Omnigent hub; refusing legacy cleanup" >&2
+  exit 1
+fi
+if [[ "$local_fqdn" == "$active_hub" ]]; then
+  exit 0
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --user stop omnigent-host.service omnigent-client-proxy.service 2>/dev/null || true
+fi
+
+if [[ -x "$OMNIGENT_BIN" ]]; then
+  server_running="$($OMNIGENT_BIN server status --json 2>/dev/null \
+    | python3 -c 'import json,sys; print("true" if json.load(sys.stdin).get("running") else "false")' \
+    2>/dev/null || echo false)"
+  if [[ "$server_running" == true ]]; then
+    echo "[omnigent-onboard] stopping legacy local server on inactive candidate"
+    "$OMNIGENT_BIN" server stop --force
+  fi
+  "$OMNIGENT_BIN" host stop --all --daemon-only --force >/dev/null 2>&1 || true
+fi
+
+if command -v tmux >/dev/null 2>&1; then
+  while IFS= read -r session; do
+    case "$session" in
+      omnigent-host-*) tmux kill-session -t "$session" 2>/dev/null || true ;;
+    esac
+  done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
+fi
+
+echo "[omnigent-onboard] legacy standby launchers retired"

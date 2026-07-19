@@ -145,6 +145,13 @@ class HandoffOrchestrator:
             generation = _required_string(transition, "restored_generation")
             archive = self._archive_path(target, generation)
 
+        observed_transition = self._call(
+            target,
+            "cache-routing",
+            "--force-remount",
+            "--json",
+        )
+        _require_same_transition(observed_transition, transition)
         self._call(target, "services", "stop-hub", "--json")
         self._call(target, "validate-snapshot", archive, "--json", timeout=300)
         self._call(target, "restore", archive, "--yes", "--json", timeout=300)
@@ -160,6 +167,13 @@ class HandoffOrchestrator:
         self._call(target, "route-ensure", "--json")
         self._call(target, "services", "start-core", "--json", timeout=180)
         try:
+            observed_activation = self._call(
+                source,
+                "cache-routing",
+                "--force-remount",
+                "--json",
+            )
+            _require_same_activation(observed_activation, activation)
             self._call(source, "reconcile-services", "--json")
         except RemoteError as exc:
             self._steps.append(f"{source}: reconciliation deferred: {exc}")
@@ -303,6 +317,18 @@ def _required_string(value: dict[str, Any], key: str) -> str:
     if not isinstance(item, str) or not item:
         raise HandoffError(f"response is missing {key}")
     return item
+
+
+def _require_same_transition(observed: dict[str, Any], expected: dict[str, Any]) -> None:
+    keys = ("epoch", "state", "source_hub", "target_hub", "transition_id", "restored_generation")
+    if any(observed.get(key) != expected.get(key) for key in keys):
+        raise HandoffError("target did not observe the exact published transition after remount")
+
+
+def _require_same_activation(observed: dict[str, Any], expected: dict[str, Any]) -> None:
+    keys = ("epoch", "state", "active_hub", "activation_id", "restored_generation")
+    if any(observed.get(key) != expected.get(key) for key in keys):
+        raise HandoffError("source did not observe the target activation after remount")
 
 
 def _status_warnings(record: ActiveHubRecord | None, hosts: dict[str, Any]) -> list[str]:

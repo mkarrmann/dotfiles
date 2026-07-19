@@ -23,6 +23,7 @@ from omnigent_hub.runtime import (
     initialize,
     read_force_override,
     reconcile_services,
+    resolve_routing_record,
     service_action,
 )
 from omnigent_hub.storage import StorageError
@@ -171,6 +172,17 @@ def test_standby_reconciliation_starts_proxy_before_restarting_host(
 
     assert result["state"] == "standby"
     assert actions == ["stop-hub", "start-client", "restart-host"]
+
+
+def test_peer_route_uses_discovered_cache_without_shared_storage(hub_config: HubConfig) -> None:
+    peer = replace(hub_config, local_fqdn="peer.example.com")
+    record = initialize_record_for_test(peer, "standby.example.com")
+    peer.routing_cache.parent.mkdir(parents=True)
+    peer.routing_cache.write_text(json.dumps(record.to_dict()), encoding="utf-8")
+
+    observed = resolve_routing_record(peer)
+
+    assert observed == record
 
 
 def test_stop_ingress_stops_timer_before_active_snapshot(

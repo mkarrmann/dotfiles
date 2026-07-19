@@ -1,7 +1,8 @@
 # Personal Omnigent primary/standby availability
 
-**Status:** Implemented in dotfiles; standby installation and the first
-cross-hub rehearsal remain operator deployment steps.
+**Status:** Implemented in dotfiles. The first real cross-hub rehearsal safely
+aborted on a partial ManifoldFS record view; authenticated remount-and-verify
+handling is implemented and the rehearsal must be repeated after deployment.
 
 **Owner:** `mkarrmann`
 
@@ -30,6 +31,20 @@ Dotfiles pin the Omnigent and Google Chat bridge versions used by both hubs.
 For the bridge, "version" means a reproducible source-content digest or
 dotfiles revision recorded by its deployment tooling, not a manually entered
 label. CCO and FTW must remain in lockstep even while FTW is inactive.
+
+`init.sh` is the supported onboarding and reconciliation entry point on every
+machine. On a Linux candidate it mounts or refreshes coordination state,
+retires incompatible pre-HA launchers only while that machine is inactive,
+reconciles systemd services to the current role, and runs an end-state health
+check. A cold Persistent Storage mount may require one interactive
+Meta-authenticated `omnigent-hub status` invocation; this credential bootstrap
+is the only intentional machine-local onboarding step.
+
+An ordinary execution devserver does not mount Persistent Storage. During
+`init.sh` it asks the configured candidates for the highest valid epoch,
+materializes the routing cache locally, and starts its execution host against
+that active hub. Thus onboarding a new execution devserver requires only the
+tracked topology plus connectivity to either candidate.
 
 Do not permanently relocate the control plane to FTW. That would only exchange
 one single point of failure for another and would put the normal workload on
@@ -270,9 +285,15 @@ Persistent Storage outage does not kill it. The check primarily prevents a
 rebooted CCO from automatically becoming a second writer while FTW is active.
 
 The promotion tool updates the record through a write-new, verify, and rename
-sequence. Because only one human-operated command changes it, this does not
-need a general consensus protocol. A monotonically increasing epoch makes
-stale local routing state detectable.
+sequence. ManifoldFS rename is locally atomic but another mounted client can
+briefly retain a partial or stale cached view. A parse failure therefore
+forces one authenticated remount and retry. More importantly, a handoff
+force-remounts the target after the source publishes the transition and
+verifies every transition identity field before restore; after activation it
+does the same on the old source before service reconciliation. A mismatch
+leaves both sides fenced. Because only one human-operated command changes the
+record, this does not need a general consensus protocol. A monotonically
+increasing epoch makes stale local routing state detectable.
 
 There is no automatic preferred-primary exception when Persistent Storage is
 unreadable. Such an exception is unsafe: CCO could return during an FTW

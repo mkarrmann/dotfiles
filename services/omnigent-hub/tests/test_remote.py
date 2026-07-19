@@ -113,6 +113,30 @@ def test_resolve_uses_reachable_candidate_and_highest_epoch(
     assert "primary.example.com" in errors
 
 
+def test_resolve_avoids_credentials_when_candidate_mount_is_readable(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[list[str]] = []
+
+    def fail_mint(owner_fbid: str) -> str:
+        raise AssertionError(f"unexpected mint for {owner_fbid}")
+
+    def run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        del timeout
+        commands.append(argv)
+        return subprocess.CompletedProcess(argv, 0, json.dumps(active_payload(4)), "")
+
+    monkeypatch.delenv("OMNIGENT_HA_DELEGATED_CAT", raising=False)
+    monkeypatch.setattr("omnigent_hub.remote.mint_delegated_cat", fail_mint)
+    peer = replace(hub_config, local_fqdn="peer.example.com")
+
+    record, _, _ = RemoteClient(peer, runner=run, system="Linux").resolve()
+
+    assert record.epoch == 4
+    assert len(commands) == 2
+    assert all("OMNIGENT_HA_DELEGATED_CAT" not in command[-1] for command in commands)
+
+
 def test_resolve_rejects_conflicting_same_epoch(
     hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:

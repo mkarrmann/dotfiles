@@ -491,14 +491,18 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
            "$HOME/.local/state/omnigent-client-proxy" \
            "$HOME/.local/state/omnigent-hub"
 
-  # Candidate hubs read the authoritative record through Persistent Storage
-  # and materialize a routing cache before any client or service resolves its
-  # server URL. A fresh private mount may remain fenced until the interactive
-  # Mac tunnel or operator wrapper supplies an ephemeral delegated CAT.
+  # Materialize routing before any client or service resolves its server URL.
+  # Candidates read Persistent Storage directly; ordinary devservers discover
+  # through the candidates and never need the shared mount themselves.
   if "$DOTFILES_DIR/bin/omnigent-server-url" --is-candidate \
       && [[ -x "$hub_project/.venv/bin/omnigent-hub" ]]; then
-    "$hub_project/.venv/bin/omnigent-hub" cache-routing --json >/dev/null \
-      || echo "WARNING: failed to refresh the Omnigent active-hub cache" >&2
+    "$DOTFILES_DIR/bin/omnigent-hub" cache-routing --force-remount --json >/dev/null \
+      || echo "WARNING: failed to mount Persistent Storage and refresh the Omnigent active-hub cache; run 'omnigent-hub status' interactively" >&2
+    "$DOTFILES_DIR/bin/omnigent-retire-legacy-standby" \
+      || echo "WARNING: failed to retire legacy Omnigent standby launchers" >&2
+  elif [[ -x "$hub_project/.venv/bin/omnigent-hub" ]]; then
+    "$DOTFILES_DIR/bin/omnigent-hub" discover --json >/dev/null \
+      || echo "WARNING: failed to discover the active Omnigent hub through the configured candidates" >&2
   fi
 
   # The private Google Chat bridge runs only beside the central server. Its
@@ -554,8 +558,20 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   systemctl --user enable --now omnigent-hub-reconcile.timer 2>/dev/null \
     || echo "WARNING: failed to enable omnigent-hub-reconcile.timer" >&2
   if "$DOTFILES_DIR/bin/omnigent-server-url" --is-candidate; then
-    "$hub_project/.venv/bin/omnigent-hub" reconcile-services --json >/dev/null \
+    "$DOTFILES_DIR/bin/omnigent-hub" reconcile-services --json >/dev/null \
       || echo "WARNING: initial Omnigent service reconciliation failed" >&2
+  fi
+
+  omnigent_onboarded=false
+  for _ in $(seq 1 15); do
+    if "$DOTFILES_DIR/bin/omnigent-onboard-check"; then
+      omnigent_onboarded=true
+      break
+    fi
+    sleep 2
+  done
+  if [[ "$omnigent_onboarded" != true ]]; then
+    echo "WARNING: Omnigent onboarding did not converge; run 'omnigent-hub status' for the specific failing invariant" >&2
   fi
 
   # Per-session nvim daemons (nvs@SESSION.service instances).

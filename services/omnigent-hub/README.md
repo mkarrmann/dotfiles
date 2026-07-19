@@ -18,6 +18,14 @@ systemd user units on Linux, and starts the ownership reconciler on candidate
 hubs. Current hub ownership is runtime state in private Persistent Storage and
 is never committed to git.
 
+On Linux, `init.sh` is also the onboarding reconciler. It refreshes the shared
+record, retires pre-HA local servers and tmux host launchers on an inactive
+candidate, starts only the services appropriate for the machine's role, and
+waits for `omnigent-onboard-check` to verify loopback health, fencing, and
+service ownership. Ordinary devservers discover the active hub through the two
+configured candidates and materialize the same local routing cache without
+mounting Persistent Storage. Re-running `init.sh` is safe.
+
 The Mac is always a client: installation reconciles its Omnigent URL and ACP
 configuration but never opens or migrates `~/.omnigent/chat.db`. Only the
 active Linux hub seeds shared agent definitions into the authoritative
@@ -31,6 +39,22 @@ candidate mount or refresh the namespace. No bearer credential is persisted
 in dotfiles or on disk. systemd bypasses that wrapper, so startup stays
 fail-closed until the Mac tunnel or another authenticated operator command
 performs this bootstrap.
+
+That interactive credential bootstrap is the one machine-local exception to
+automatic onboarding. If `init.sh` reports that Persistent Storage could not
+be mounted, establish an interactive Meta-authenticated shell on either hub
+and run `omnigent-hub status`; then rerun `init.sh`. No hostname, token, or
+runtime ownership file should be edited manually.
+
+ManifoldFS may expose a partially cached mutable record across mounts. Record
+reads remount and retry after a parse failure, and every handoff force-refreshes
+the target before restore and the source after activation. The exact transition
+or activation must match after refresh or the handoff remains fenced.
+
+The same 60-second reconciler has role-specific behavior: candidates reconcile
+hub ownership from Persistent Storage, while ordinary devservers query both
+candidates without a delegated credential, update their local routing cache,
+and restart the execution host only if its target changed.
 
 ## Routine operations
 

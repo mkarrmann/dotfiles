@@ -151,7 +151,125 @@ EOF
     || fail "active hub did not recognize the live systemd-managed server"
 }
 
+test_legacy_standby_retirement() {
+  local home="$TMP/legacy-home"
+  local dotfiles="$TMP/legacy-dotfiles"
+  local fake_bin="$TMP/legacy-bin"
+  mkdir -p "$home" "$dotfiles/bin" "$fake_bin"
+
+  cat > "$dotfiles/bin/omnigent-server-url" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --is-candidate) exit 0 ;;
+  --hub) echo primary.example.com ;;
+  *) echo http://127.0.0.1:6767 ;;
+esac
+EOF
+  cat > "$fake_bin/systemctl" <<EOF
+#!/usr/bin/env bash
+echo "systemctl \$*" >> "$TMP/legacy-actions.log"
+EOF
+  cat > "$fake_bin/omnigent" <<EOF
+#!/usr/bin/env bash
+if [[ "\${1:-} \${2:-}" == 'server status' ]]; then
+  echo '{"running":true}'
+  exit 0
+fi
+echo "omnigent \$*" >> "$TMP/legacy-actions.log"
+EOF
+  cat > "$fake_bin/tmux" <<EOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == list-sessions ]]; then
+  printf 'omnigent-host-old\nunrelated\n'
+  exit 0
+fi
+echo "tmux \$*" >> "$TMP/legacy-actions.log"
+EOF
+  chmod +x "$dotfiles/bin/omnigent-server-url" "$fake_bin/systemctl" \
+    "$fake_bin/omnigent" "$fake_bin/tmux"
+
+  HOME="$home" DOTFILES_DIR="$dotfiles" OMNIGENT_BIN="$fake_bin/omnigent" \
+    OMNIGENT_LOCAL_FQDN=standby.example.com PATH="$fake_bin:/usr/bin:/bin" \
+    bash "$ROOT/bin/omnigent-retire-legacy-standby" >/dev/null
+
+  sed -n '/omnigent server stop --force/p' "$TMP/legacy-actions.log" | sed -n '1p' \
+    | read -r _ || fail "legacy local server was not retired"
+  sed -n '/omnigent host stop --all --daemon-only --force/p' "$TMP/legacy-actions.log" \
+    | sed -n '1p' | read -r _ || fail "legacy host daemons were not retired"
+  sed -n '/tmux kill-session -t omnigent-host-old/p' "$TMP/legacy-actions.log" \
+    | sed -n '1p' | read -r _ || fail "legacy tmux host launcher was not retired"
+  if sed -n '/unrelated/p' "$TMP/legacy-actions.log" | sed -n '1p' | read -r _; then
+    fail "unrelated tmux session was modified"
+  fi
+}
+
+test_standby_onboard_health_check() {
+  local home="$TMP/health-home"
+  local dotfiles="$TMP/health-dotfiles"
+  local fake_bin="$TMP/health-bin"
+  mkdir -p "$home" "$dotfiles/bin" "$fake_bin"
+
+  cat > "$dotfiles/bin/omnigent-server-url" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == --is-candidate ]]; then
+  exit 0
+fi
+echo http://127.0.0.1:6767
+EOF
+  cat > "$fake_bin/omnigent-hub" <<'EOF'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"record":{"state":"active","active_hub":"primary.example.com"},"gate":{"allowed":false},"services":{"omnigent-client-proxy.service":"active","omnigent-host.service":"active","omnigent-server.service":"inactive","omnigent-prodnet.service":"inactive","omnigent-google-chat.service":"inactive","omnigent-snapshot.timer":"inactive"}}
+JSON
+EOF
+  cat > "$fake_bin/curl" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  cat > "$fake_bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "$dotfiles/bin/omnigent-server-url" "$fake_bin/omnigent-hub" \
+    "$fake_bin/curl" "$fake_bin/systemctl"
+
+  HOME="$home" DOTFILES_DIR="$dotfiles" OMNIGENT_HUB_BIN="$fake_bin/omnigent-hub" \
+    OMNIGENT_LOCAL_FQDN=standby.example.com PATH="$fake_bin:/usr/bin:/bin" \
+    bash "$ROOT/bin/omnigent-onboard-check" > "$TMP/health-output.log"
+  sed -n '/healthy on standby.example.com/p' "$TMP/health-output.log" | sed -n '1p' \
+    | read -r _ || fail "standby onboarding health check did not pass"
+}
+
+test_peer_route_reconciliation() {
+  local home="$TMP/peer-home"
+  local dotfiles="$TMP/peer-dotfiles"
+  local fake_bin="$TMP/peer-bin"
+  mkdir -p "$home" "$dotfiles/bin" "$fake_bin"
+
+  cat > "$dotfiles/bin/omnigent-server-url" <<'EOF'
+#!/usr/bin/env bash
+[[ "${1:-}" == --is-candidate ]] && exit 1
+echo http://active.example:6767
+EOF
+  cat > "$fake_bin/omnigent-hub" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "$TMP/peer-actions.log"
+EOF
+  chmod +x "$dotfiles/bin/omnigent-server-url" "$fake_bin/omnigent-hub"
+
+  HOME="$home" DOTFILES_DIR="$dotfiles" OMNIGENT_HUB_BIN="$fake_bin/omnigent-hub" \
+    PATH="$fake_bin:/usr/bin:/bin" bash "$ROOT/bin/omnigent-hub-reconcile" >/dev/null
+
+  [[ "$(sed -n '1p' "$TMP/peer-actions.log")" == 'discover --json' ]] \
+    || fail "peer reconciler did not discover through candidates first"
+  [[ "$(sed -n '2p' "$TMP/peer-actions.log")" == 'route-ensure --restart-host --json' ]] \
+    || fail "peer reconciler did not apply the discovered route"
+}
+
 test_plugin_bootstrap
 test_client_dvsc_reconciliation
 test_active_hub_dvsc_idempotency
+test_legacy_standby_retirement
+test_standby_onboard_health_check
+test_peer_route_reconciliation
 echo "macOS/client init portability tests passed"

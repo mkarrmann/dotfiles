@@ -89,7 +89,7 @@ def read_record(config: HubConfig, *, ensure_mounted: bool = True) -> ActiveHubR
         ensure_storage(config)
     try:
         payload = json.loads(config.record_path.read_text(encoding="utf-8"))
-    except OSError as exc:
+    except (OSError, json.JSONDecodeError) as exc:
         if not ensure_mounted:
             raise StorageError(f"cannot read active-hub record: {exc}") from exc
         ensure_storage(config, force_remount=True)
@@ -97,8 +97,6 @@ def read_record(config: HubConfig, *, ensure_mounted: bool = True) -> ActiveHubR
             payload = json.loads(config.record_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise StorageError(f"cannot read active-hub record: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise StorageError(f"cannot read active-hub record: {exc}") from exc
     return ActiveHubRecord.from_dict(payload, config.topology)
 
 
