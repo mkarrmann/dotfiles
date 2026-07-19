@@ -166,6 +166,9 @@ if [[ -n "$platform_bin" && -d "$platform_bin" ]]; then
 fi
 sync_link_dir "$DOTFILES_DIR/bin" "$HOME/bin" "*"
 
+"$DOTFILES_DIR/bin/codecompanion-fork-ensure" \
+  || echo "WARNING: CodeCompanion fork bootstrap failed; Lazy may be unable to install it" >&2
+
 # wofi
 mkdir -p "$HOME/.config/wofi"
 link_one "$DOTFILES_DIR/wofi_config" "$HOME/.config/wofi/config"

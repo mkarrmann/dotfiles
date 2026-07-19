@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Ensure Linux devservers have an internal source for the CodeCompanion fork.
+set -euo pipefail
+
+repo="${CODECOMPANION_NVIM_REPO:-$HOME/repos/codecompanion.nvim}"
+installed="$HOME/.local/share/nvim/lazy/codecompanion.nvim"
+adapter_rel="lua/codecompanion/adapters/omnigent/init.lua"
+
+valid_repo() {
+  [[ -d "$1/.git" && -f "$1/$adapter_rel" ]]
+}
+
+if valid_repo "$repo"; then
+  echo "[codecompanion] local fork already available at $repo"
+  exit 0
+fi
+
+if [[ -e "$repo" ]]; then
+  echo "ERROR: $repo exists but is not a valid Omnigent-capable CodeCompanion checkout" >&2
+  exit 1
+fi
+
+if [[ "$(uname -s)" != "Linux" ]]; then
+  echo "[codecompanion] local fork absent; Lazy will use GitHub on this platform"
+  exit 0
+fi
+
+mkdir -p "$(dirname "$repo")"
+tmp="${repo}.bootstrap.$$"
+trap 'rm -rf "$tmp"' EXIT
+
+finish_clone() {
+  if ! valid_repo "$tmp"; then
+    return 1
+  fi
+  git -C "$tmp" remote set-url origin https://github.com/mkarrmann/codecompanion.nvim.git
+  mv "$tmp" "$repo"
+  trap - EXIT
+  echo "[codecompanion] bootstrapped local fork at $repo"
+}
+
+if valid_repo "$installed"; then
+  if git clone --local --no-hardlinks "$installed" "$tmp" >/dev/null 2>&1 && finish_clone; then
+    exit 0
+  fi
+  rm -rf "$tmp"
+fi
+
+primary="$(omnigent-server-url --primary 2>/dev/null || true)"
+standby="$(omnigent-server-url --standby 2>/dev/null || true)"
+local_host="$(hostname -f 2>/dev/null || hostname)"
+ssh_command="ssh -o BatchMode=yes -o ConnectTimeout=5"
+
+for host in "$primary" "$standby"; do
+  [[ -n "$host" && "$host" != "$local_host" ]] || continue
+  if GIT_SSH_COMMAND="$ssh_command" \
+      git clone --no-hardlinks "$host:$repo" "$tmp" >/dev/null 2>&1 \
+      && finish_clone; then
+    exit 0
+  fi
+  rm -rf "$tmp"
+done
+
+echo "ERROR: could not bootstrap $repo from an installed plugin or either hub candidate" >&2
+echo "Install the fork on one hub, then rerun ~/dotfiles/init.sh" >&2
+exit 1
