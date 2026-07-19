@@ -561,6 +561,7 @@ def assert_sessions_quiescent(config: HubConfig) -> dict[str, Any]:
 
 def reconcile_local_route(config: HubConfig, *, restart_host: bool) -> dict[str, Any]:
     record = resolve_routing_record(config)
+    previous_cache = _read_optional_json(config.routing_cache)
     previous_cli_url = _read_config_server(config.data_dir / "config.yaml")
     previous_environment_url = _read_environment_url(
         config.home / ".config/environment.d/omnigent.conf"
@@ -588,7 +589,19 @@ def reconcile_local_route(config: HubConfig, *, restart_host: bool) -> dict[str,
         if result.returncode != 0:
             detail = (result.stderr or result.stdout).strip()
             raise HubRuntimeError(f"Google Chat configuration reconciliation failed: {detail}")
-    changed = previous_cli_url != url or previous_environment_url != url
+    previous_identity = None
+    if previous_cache is not None:
+        previous_identity = (
+            previous_cache.get("epoch"),
+            previous_cache.get("active_hub"),
+            previous_cache.get("activation_id"),
+        )
+    current_identity = (record.epoch, record.active_hub, record.activation_id)
+    changed = (
+        previous_cli_url != url
+        or previous_environment_url != url
+        or previous_identity != current_identity
+    )
     if restart_host and changed:
         service_action(config, "restart-host")
     return {

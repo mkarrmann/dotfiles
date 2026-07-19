@@ -22,6 +22,7 @@ from omnigent_hub.runtime import (
     force_start,
     initialize,
     read_force_override,
+    reconcile_local_route,
     reconcile_services,
     resolve_routing_record,
     service_action,
@@ -172,6 +173,34 @@ def test_standby_reconciliation_starts_proxy_before_restarting_host(
 
     assert result["state"] == "standby"
     assert actions == ["stop-hub", "start-client", "restart-host"]
+
+
+def test_candidate_route_changes_when_activation_changes_without_url_change(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_record = initialize_record_for_test(hub_config, "primary.example.com")
+    old_record = replace(old_record, epoch=1, activation_id="activation-1")
+    new_record = initialize_record_for_test(hub_config, "standby.example.com")
+    hub_config.routing_cache.parent.mkdir(parents=True)
+    hub_config.routing_cache.write_text(json.dumps(old_record.to_dict()), encoding="utf-8")
+    hub_config.data_dir.joinpath("config.yaml").write_text(
+        "server: http://127.0.0.1:6767\n",
+        encoding="utf-8",
+    )
+    environment_file = hub_config.home / ".config/environment.d/omnigent.conf"
+    environment_file.parent.mkdir(parents=True)
+    environment_file.write_text("OMNIGENT_URL=http://127.0.0.1:6767\n", encoding="utf-8")
+    ensure = hub_config.dotfiles / "bin/omnigent-dvsc-ensure"
+    ensure.parent.mkdir(parents=True)
+    ensure.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    ensure.chmod(0o755)
+    monkeypatch.setattr("omnigent_hub.runtime.resolve_record", lambda config: new_record)
+
+    result = reconcile_local_route(hub_config, restart_host=False)
+
+    assert result["url"] == "http://127.0.0.1:6767"
+    assert result["changed"] is True
+    assert json.loads(hub_config.routing_cache.read_text(encoding="utf-8")) == new_record.to_dict()
 
 
 def test_peer_route_uses_discovered_cache_without_shared_storage(hub_config: HubConfig) -> None:
