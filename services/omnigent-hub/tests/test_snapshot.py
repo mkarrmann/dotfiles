@@ -15,6 +15,7 @@ from omnigent_hub.snapshot import (
     SnapshotError,
     create_snapshot,
     hub_version,
+    list_valid_snapshots,
     restore_snapshot,
     sqlite_summary,
     validate_snapshot,
@@ -74,6 +75,19 @@ def test_archive_corruption_is_rejected(
     with archive.open("ab") as handle:
         handle.write(b"corrupt")
     with pytest.raises(SnapshotError, match="archive checksum mismatch"):
+        validate_snapshot(hub_config, archive)
+
+
+def test_snapshot_without_completion_sidecar_is_rejected(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    manifest = create_snapshot(hub_config, record(), quiesced=True)
+    archive = Path(str(manifest["archive_path"]))
+    archive.with_suffix(archive.suffix + ".sha256").unlink()
+
+    assert list_valid_snapshots(hub_config) == []
+    with pytest.raises(SnapshotError, match="invalid snapshot sidecar"):
         validate_snapshot(hub_config, archive)
 
 

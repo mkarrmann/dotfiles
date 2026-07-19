@@ -24,6 +24,7 @@ from omnigent_hub.runtime import (
     read_force_override,
     reconcile_local_route,
     reconcile_services,
+    resolve_record,
     resolve_routing_record,
     service_action,
 )
@@ -42,6 +43,7 @@ def test_initialize_gate_transition_and_activate(
     transition = begin_transition(hub_config, target_hub="standby.example.com")
     assert transition.epoch == 2
     assert transition.state == "transition"
+    assert not hub_config.activation_marker.exists()
     with pytest.raises(HubRuntimeError, match="fenced by transition"):
         check_gate(hub_config)
     transition = attach_transition_generation(hub_config, generation="generation-2")
@@ -91,6 +93,55 @@ def test_force_start_requires_storage_outage_and_uses_expiring_override(
     assert forced.activation_id is not None and forced.activation_id.startswith("force-2-")
     assert read_force_override(hub_config) == forced
     assert check_gate(hub_config).record == forced
+
+
+def test_gate_fails_closed_when_storage_is_unreadable_without_override(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unavailable(config: HubConfig) -> ActiveHubRecord:
+        raise StorageError("unavailable")
+
+    monkeypatch.setattr("omnigent_hub.runtime.read_record", unavailable)
+
+    with pytest.raises(StorageError, match="unavailable"):
+        check_gate(hub_config)
+
+
+def test_readable_shared_record_retires_stale_force_override(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    initialize(hub_config, active_hub="primary.example.com")
+
+    def unavailable(config: HubConfig) -> ActiveHubRecord:
+        raise StorageError("unavailable")
+
+    monkeypatch.setattr("omnigent_hub.runtime.read_record", unavailable)
+    forced = force_start(hub_config, reason="test outage")
+    shared = ActiveHubRecord(
+        format_version=1,
+        epoch=forced.epoch,
+        state="active",
+        active_hub="standby.example.com",
+        activation_id="activation-shared",
+        restored_generation=forced.restored_generation,
+        updated_at="2026-07-18T23:00:00Z",
+        updated_by="tester",
+    )
+    reads = 0
+
+    def readable(config: HubConfig) -> ActiveHubRecord:
+        nonlocal reads
+        reads += 1
+        return shared
+
+    monkeypatch.setattr("omnigent_hub.runtime.read_record", readable)
+
+    assert resolve_record(hub_config) == shared
+    assert reads == 1
+    assert not (hub_config.local_state_dir / "force-start.json").exists()
+    with pytest.raises(HubRuntimeError, match="active hub is standby"):
+        check_gate(hub_config)
 
 
 def test_record_read_remounts_after_stale_mount_error(
@@ -168,11 +219,14 @@ def test_standby_reconciliation_starts_proxy_before_restarting_host(
         return {}
 
     monkeypatch.setattr("omnigent_hub.runtime.service_action", record_action)
+    standby.activation_marker.parent.mkdir(parents=True)
+    standby.activation_marker.write_text("{}", encoding="utf-8")
 
     result = reconcile_services(standby)
 
     assert result["state"] == "standby"
     assert actions == ["stop-hub", "start-client", "restart-host"]
+    assert not standby.activation_marker.exists()
 
 
 def test_candidate_route_changes_when_activation_changes_without_url_change(

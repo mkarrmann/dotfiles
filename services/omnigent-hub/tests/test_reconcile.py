@@ -7,7 +7,7 @@ import sqlite3
 import pytest
 
 from omnigent_hub.config import HubConfig
-from omnigent_hub.reconcile import reconcile_gchat
+from omnigent_hub.reconcile import ReconcileError, reconcile_gchat
 from omnigent_hub.runtime import initialize
 
 
@@ -56,6 +56,54 @@ def test_reconcile_uses_exact_source_and_consumes_ambiguous(
         )
     assert rows == {"messages/exact": "submitted", "messages/unknown": "ambiguous"}
     assert cursor == ["2026-07-18T20:02:00Z", "messages/unknown"]
+
+
+def test_reconcile_rejects_unknown_restored_inbound_state_without_advancing_cursor(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    monkeypatch.setattr("omnigent_hub.reconcile.service_action", lambda config, action: {})
+    initialize(hub_config, active_hub="primary.example.com")
+    policy = hub_config.dotfiles / "omnigent_config/google-chat.env"
+    policy.parent.mkdir(parents=True, exist_ok=True)
+    policy.write_text(
+        "OMNIGENT_GCHAT_SPACE=spaces/space\nOMNIGENT_GCHAT_ALLOWED_ACTOR_ID=users/human\n",
+        encoding="utf-8",
+    )
+    _create_databases(hub_config)
+    with sqlite3.connect(hub_config.bridge_db) as db:
+        db.execute(
+            "INSERT INTO gchat_inbound VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "messages/future",
+                "threads/thread-1",
+                "users/human",
+                "2026-07-18T20:01:00Z",
+                "hash",
+                "future-state",
+                None,
+                None,
+                1,
+                1,
+            ),
+        )
+
+    with pytest.raises(ReconcileError, match="unknown state 'future-state'"):
+        reconcile_gchat(
+            hub_config,
+            start_bridge=False,
+            meta_runner=lambda argv: {
+                "messages": [_message("messages/future", "2026-07-18T20:01:00Z", "future")]
+            },
+        )
+
+    with sqlite3.connect(hub_config.bridge_db) as db:
+        cursor = json.loads(
+            db.execute("SELECT value FROM bridge_state WHERE key = 'gchat_poll_cursor'").fetchone()[
+                0
+            ]
+        )
+    assert cursor == ["2026-07-18T20:00:00Z", "messages/old"]
 
 
 def _create_databases(config: HubConfig) -> None:

@@ -45,6 +45,7 @@ def interrupted_transition() -> ActiveHubRecord:
 class FakeRemote:
     record: ActiveHubRecord
     fail_quiesce: bool = False
+    source_gate_passes: bool = False
     mismatch_target_version: bool = False
     mismatch_target_hub_version: bool = False
     stale_source_activation_reads: int = 0
@@ -65,7 +66,13 @@ class FakeRemote:
     ) -> RemoteResult:
         del timeout, check
         self.calls.append((host, tuple(args)))
-        return RemoteResult(host, tuple(args), 1, "", "fenced")
+        return RemoteResult(
+            host,
+            tuple(args),
+            0 if self.source_gate_passes else 1,
+            "{}" if self.source_gate_passes else "",
+            "" if self.source_gate_passes else "fenced",
+        )
 
     def json(self, host: str, args: Sequence[str], *, timeout: float = 180) -> dict[str, Any]:
         del timeout
@@ -247,6 +254,23 @@ def test_planned_handoff_orders_fence_restore_and_tail(hub_config: HubConfig) ->
         ("reconcile-services", "--json"),
     ) in calls
     assert calls[-1] == ("standby.example.com", ("services", "start-tail", "--json"))
+
+
+def test_planned_handoff_stops_when_source_gate_still_passes(
+    hub_config: HubConfig,
+) -> None:
+    remote = FakeRemote(active_record(), source_gate_passes=True)
+
+    with pytest.raises(HandoffError, match="source startup gate still passes"):
+        HandoffOrchestrator(hub_config, remote).handoff(
+            "standby.example.com",
+            unexpected=False,
+            source_confirmed_stopped=False,
+            dry_run=False,
+        )
+
+    assert ("primary.example.com", ("gate", "--json")) in remote.calls
+    assert ("primary.example.com", ("services", "stop-server", "--json")) not in remote.calls
 
 
 def test_planned_handoff_retries_stale_source_activation_view(

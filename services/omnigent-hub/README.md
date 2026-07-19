@@ -120,6 +120,11 @@ omnigent-hub force-start \
 omnigent-hub repair-force-start --yes
 ```
 
+An existing force override never bypasses an authoritative storage read. It is
+used only when that read fails, and a readable equal or newer shared epoch
+retires the local override. Transition and standby reconciliation also remove
+obsolete activation markers.
+
 Logs are under `~/.local/state/omnigent-hub/` and the service-specific
 `~/.local/state/omnigent-*/` directories. The coordination record and immutable
 snapshot generations live under `~/persistent/private-30d/omnigent-ha/`.

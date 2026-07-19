@@ -101,14 +101,15 @@ def check_gate(config: HubConfig) -> GateResult:
 
 def resolve_record(config: HubConfig) -> ActiveHubRecord:
     forced = read_force_override(config)
-    if forced is not None and not os.path.ismount(config.storage_mount):
-        return forced
     try:
-        return read_record(config)
+        shared = read_record(config)
     except StorageError:
         if forced is None:
             raise
         return forced
+    if forced is not None and (shared == forced or shared.epoch >= forced.epoch):
+        (config.local_state_dir / "force-start.json").unlink(missing_ok=True)
+    return shared
 
 
 def read_force_override(config: HubConfig) -> ActiveHubRecord | None:
@@ -178,6 +179,7 @@ def begin_transition(config: HubConfig, *, target_hub: str) -> ActiveHubRecord:
         transition_id=f"transition-{current.epoch + 1}-{uuid.uuid4().hex}",
     )
     publish_record(config, transition)
+    config.activation_marker.unlink(missing_ok=True)
     write_routing_cache(config, transition)
     return transition
 
@@ -210,6 +212,7 @@ def begin_unexpected_transition(
         transition_id=f"unexpected-{current.epoch + 1}-{uuid.uuid4().hex}",
     )
     publish_record(config, transition)
+    config.activation_marker.unlink(missing_ok=True)
     write_routing_cache(config, transition)
     return transition
 
@@ -625,6 +628,7 @@ def reconcile_services(config: HubConfig) -> dict[str, Any]:
     record = resolve_record(config)
     if record.state != "active":
         services = service_action(config, "stop-all")
+        config.activation_marker.unlink(missing_ok=True)
         return {
             "host": config.local_fqdn,
             "state": record.state,
@@ -633,6 +637,7 @@ def reconcile_services(config: HubConfig) -> dict[str, Any]:
         }
     if record.active_hub != config.local_fqdn:
         services = service_action(config, "stop-hub")
+        config.activation_marker.unlink(missing_ok=True)
         route = reconcile_local_route(config, restart_host=False)
         client = service_action(config, "start-client")
         if route["changed"]:

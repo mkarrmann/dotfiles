@@ -202,8 +202,10 @@ def _classify_message(
                 ),
             )
             classification = "ambiguous-consumed"
-        else:
+        elif state in ("submitted", "ambiguous", "rejected"):
             classification = f"existing-{state}"
+        else:
+            raise ReconcileError(f"restored Google Chat input {name} has unknown state {state!r}")
         return {
             "message_name": name,
             "classification": classification,

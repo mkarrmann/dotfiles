@@ -278,7 +278,9 @@ the database accepts normal writes. Consequently, a routine restart of the
 rightful primary succeeds. Initial deployment creates both the shared CCO
 record and CCO's matching local marker before enabling the startup condition.
 Promotion writes the replacement's marker only after restoring and validating
-the named snapshot.
+the named snapshot. Publishing a transition and reconciling a hub to standby
+delete its old marker, so a stale well-formed record cannot re-enable a
+previous owner merely by matching retained local lineage.
 
 If any check fails, startup fails closed. Once a server is running, a transient
 Persistent Storage outage does not kill it. The check primarily prevents a
@@ -304,7 +306,10 @@ promotion and start from stale state while FTW is already writable. Provide a
 manual `force-start` recovery operation instead. It requires the operator to
 confirm that the other hub's server, proxy, and bridge are stopped, records a
 loud audit warning, and repairs the shared record and local marker when
-Persistent Storage returns.
+Persistent Storage returns. Even while a force override exists, every record
+resolution first attempts to mount and read the shared record. The override is
+used only after that read fails; a readable equal or newer shared epoch retires
+the override so it cannot revive during a later storage outage.
 
 ### 5.3 Stable client endpoint on both devservers
 
@@ -635,6 +640,10 @@ For planned maintenance:
 16. Let an awake Mac's `omnigent-tunnel` observe the new epoch and retarget
     local port 6767; an asleep Mac converges when `startup-windows` resumes it.
 
+The operator lock is machine-local, not a distributed CAS. This personal
+deployment assumes one human operator and must not run promotion, failback,
+abort, or force-recovery commands concurrently from different machines.
+
 For unexpected failure, require an explicit `--unexpected-failure` flag. The
 command selects the newest valid snapshot, displays its age and the possible
 loss window, and requires confirmation that CCO cannot still accept writes.
@@ -651,7 +660,9 @@ submitted phone instruction.
    name against restored inbound records and any exact source identity stored
    with durable Omnigent input.
 4. Mark an exact previously submitted match as consumed without submitting it
-   again.
+   again. Accept only the bridge's known inbound states (`claimed`,
+   `dispatching`, `submitted`, `ambiguous`, and `rejected`); an unknown restored
+   state fails closed without advancing the cursor.
 5. Classify a message with no exact durable identity as `AMBIGUOUS`; show its
    resource name, timestamp, text, target session, and transcript tail to the
    operator.
@@ -933,7 +944,7 @@ operator command.
 
 The dotfiles implementation currently has the following local evidence:
 
-- 53 `omnigent-hub` tests cover record validation, fencing, force recovery,
+- 58 `omnigent-hub` tests cover record validation, fencing, force recovery,
   stale-mount refresh, service ordering, stable routing, delegated-CAT
   transport, credential exclusion, version drift, Google Chat reconciliation,
   interrupted-transition resumption, and Mac candidate/conflict resolution;
