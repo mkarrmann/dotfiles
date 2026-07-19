@@ -120,6 +120,16 @@ local _repo_cache = {}
 -- reconcile_turn only attributes VCS-changed files present here, so concurrent
 -- sessions editing different files in one repo don't steal each other's diffs.
 local _turn_paths = {}
+-- [chat_bufnr] = { [abspath]=lines }  a file's turn-start baseline ("before"
+-- pane), resolved once per turn (cwd snapshot else committed parent) and shared
+-- by the live per-tool-call flush and turn-end reconciliation, so `sl cat`/`git
+-- show` runs at most once per file per turn.
+local _turn_before_cache = {}
+-- [chat_bufnr] = { {root, vcs, abs}, ... }  VCS edit targets from the most recent
+-- omnigent tool call. Flushed to the diff split when the *next* tool call arrives
+-- (by which point the agent has serially executed this call's write) and again at
+-- turn end. Lets omnigent edits show live instead of only at turn end.
+local _pending_flush = {}
 
 local function path_exists(p)
 	return uv.fs_stat(p) ~= nil
@@ -211,43 +221,44 @@ local function note_repo_for_path(chat_bufnr, path, base)
 	paths[abs] = true
 end
 
--- Discover which repos a tool call touched, from any path-shaped field. Over-
--- collecting is harmless (we just run `status` in an extra repo); under-
--- collecting risks missing a repo, so we cast wide: structured fields plus any
--- slash-containing token in rawInput.command / title (covers `sed -i path`).
+local PATH_KEYS =
+	{ "file_path", "filePath", "abs_path", "absPath", "path", "filename", "notebook_path", "notebookPath", "cwd" }
+
+-- Invoke fn(path, base) for every path-shaped field on a tool call: structured
+-- `diff`/`locations` paths, rawInput path keys, and any slash-containing token in
+-- rawInput.command / title (covers `sed -i path`). `base` is the tool call's own
+-- cwd when it reports one, so relative tokens resolve against the agent's working
+-- dir rather than nvim's. Cast wide: over-collecting is harmless, under-
+-- collecting risks missing a repo or edit.
 --
--- LIMITATION: relative path tokens resolve against nvim's cwd (find_repo → :p),
--- not the shell's working dir, so a *second* repo addressed only by a relative
--- shell path can be missed. The cwd repo is always reconciled regardless, so
--- this only loses out-of-tree repos referenced relatively — uncommon, and not
--- fixable here since the tool call doesn't reliably carry the shell's cwd.
-local function collect_repos_from_tool_call(chat_bufnr, tool_call)
+-- LIMITATION: relative path tokens still resolve against nvim's cwd when the tool
+-- reports no cwd, so a *second* repo addressed only by a relative shell path can
+-- be missed. The cwd repo is always reconciled regardless, so this only loses
+-- out-of-tree repos referenced relatively — uncommon, and not fixable here since
+-- the tool call doesn't reliably carry the shell's cwd.
+local function for_each_tool_call_path(tool_call, fn)
 	for _, d in ipairs(find_diffs(tool_call)) do
-		note_repo_for_path(chat_bufnr, d.path)
+		fn(d.path, nil)
 	end
 	if type(tool_call.locations) == "table" then
 		for _, loc in ipairs(tool_call.locations) do
 			if type(loc) == "table" and type(loc.path) == "string" then
-				note_repo_for_path(chat_bufnr, loc.path)
+				fn(loc.path, nil)
 			end
 		end
 	end
 	local ri = tool_call.rawInput
-	-- Resolve relative command/title path tokens against the tool call's own cwd
-	-- when it reports one, not nvim's cwd.
 	local cwd = type(ri) == "table" and type(ri.cwd) == "string" and ri.cwd ~= "" and ri.cwd or nil
 	if type(ri) == "table" then
-		local PATH_KEYS =
-			{ "file_path", "filePath", "abs_path", "absPath", "path", "filename", "notebook_path", "notebookPath", "cwd" }
 		for _, k in ipairs(PATH_KEYS) do
 			if type(ri[k]) == "string" then
-				note_repo_for_path(chat_bufnr, ri[k], cwd)
+				fn(ri[k], cwd)
 			end
 		end
 		if type(ri.command) == "string" then
 			for tok in ri.command:gmatch("%S+") do
 				if tok:find("/", 1, true) then
-					note_repo_for_path(chat_bufnr, (tok:gsub("[\"'`]", "")), cwd)
+					fn((tok:gsub("[\"'`]", "")), cwd)
 				end
 			end
 		end
@@ -255,10 +266,18 @@ local function collect_repos_from_tool_call(chat_bufnr, tool_call)
 	if type(tool_call.title) == "string" then
 		for tok in tool_call.title:gmatch("%S+") do
 			if tok:find("/", 1, true) then
-				note_repo_for_path(chat_bufnr, (tok:gsub("[\"'`]", "")), cwd)
+				fn((tok:gsub("[\"'`]", "")), cwd)
 			end
 		end
 	end
+end
+
+-- Note every repo/path a tool call touched (incl. read/execute) so turn-end VCS
+-- reconciliation knows where to look for shell-driven edits.
+local function collect_repos_from_tool_call(chat_bufnr, tool_call)
+	for_each_tool_call_path(tool_call, function(path, base)
+		note_repo_for_path(chat_bufnr, path, base)
+	end)
 end
 
 -- Run a command async; cb is invoked on the main loop (safe for vim.fn/api).
@@ -350,6 +369,57 @@ local function lines_equal(a, b)
 	return true
 end
 
+-- Resolve a file's turn-start baseline (the "before" pane) once per turn, caching
+-- the result. cwd-repo files dirty at turn start use the exact snapshot; all
+-- others use the committed parent (which IS their turn-start state when they were
+-- clean). cb(before_lines) always runs on the main loop.
+local function resolve_baseline(chat_bufnr, repo, abs, rel, cb)
+	local cache = _turn_before_cache[chat_bufnr]
+	if not cache then
+		cache = {}
+		_turn_before_cache[chat_bufnr] = cache
+	end
+	if cache[abs] ~= nil then
+		cb(cache[abs])
+		return
+	end
+	local snap = _turn_snapshot[chat_bufnr]
+	local snapped = (snap and snap.ready and repo.root == snap.root) and snap.files[abs] or nil
+	if snapped ~= nil then
+		cache[abs] = snapped
+		cb(snapped)
+	else
+		vcs_cat_committed(repo, { rel = rel }, function(before)
+			before = before or {}
+			if cache[abs] == nil then
+				cache[abs] = before
+			end
+			cb(cache[abs])
+		end)
+	end
+end
+
+-- Record one VCS file's turn diff: baseline via resolve_baseline, "after" from
+-- current disk (a missing file reads as {}, i.e. a deletion). No-op changes are
+-- skipped. Safe to call repeatedly and from both the live and turn-end paths:
+-- add_file keeps the first baseline and only refreshes "after". Drops stragglers
+-- whose turn advanced (epoch) or whose chat closed while an async cat was in
+-- flight.
+local function record_vcs_diff(chat_bufnr, repo, abs, rel, epoch)
+	resolve_baseline(chat_bufnr, repo, abs, rel, function(before)
+		if _turn_epoch[chat_bufnr] ~= epoch or not vim.api.nvim_buf_is_valid(chat_bufnr) then
+			return
+		end
+		local after = read_disk_bounded(abs)
+		if after == nil then
+			return -- too large to diff
+		end
+		if not lines_equal(before, after) then
+			pcall(M.record_write, chat_bufnr, abs, before, after)
+		end
+	end)
+end
+
 -- Snapshot the cwd repo's already-dirty files at turn start, so turn-before is
 -- exact even for files the agent re-touches via shell. Bounded; clean files are
 -- omitted (their turn-start content equals the committed parent, fetched lazily).
@@ -405,13 +475,10 @@ local function reconcile_turn(chat_bufnr)
 	if not repos then
 		return
 	end
-	local snap = _turn_snapshot[chat_bufnr]
-	local cwd_root = snap and snap.root or nil
 	local epoch = _turn_epoch[chat_bufnr]
 
 	for root, vcs in pairs(repos) do
 		local repo = { root = root, vcs = vcs }
-		local is_cwd = root == cwd_root
 		vcs_status(repo, function(files)
 			if #files > MAX_RECONCILE_FILES then
 				vim.notify(
@@ -426,37 +493,74 @@ local function reconcile_turn(chat_bufnr)
 			-- Only attribute files this session referenced this turn. A nil set means
 			-- the session made no path-bearing tool calls, so nothing is attributable
 			-- to it — skip rather than claim another agent's concurrent changes.
+			-- record_vcs_diff skips files VCS lists that didn't actually change
+			-- (pre-existing dirty/untracked noise) and dedupes against live-recorded
+			-- edits via add_file's set-if-nil baseline.
 			local scoped = _turn_paths[chat_bufnr]
 			for i, f in ipairs(files) do
 				if i > MAX_RECONCILE_FILES then
 					break
 				end
-				local after = f.removed and {} or read_disk_bounded(f.abs)
-				if after ~= nil and scoped and scoped[f.abs] then
-					local function finish(before)
-						-- Drop stragglers: a newer turn started (epoch advanced) or the
-						-- chat buffer closed while this async probe was in flight.
-						if _turn_epoch[chat_bufnr] ~= epoch or not vim.api.nvim_buf_is_valid(chat_bufnr) then
-							return
-						end
-						before = before or {}
-						-- Skip files VCS lists that didn't actually change this turn
-						-- (pre-existing dirty/untracked noise). Edits already captured
-						-- by the structured paths are deduped downstream by add_file's
-						-- set-if-nil baseline, so re-recording here is harmless.
-						if not lines_equal(before, after) then
-							pcall(M.record_write, chat_bufnr, f.abs, before, after)
-						end
-					end
-					local snapped = (is_cwd and snap and snap.ready) and snap.files[f.abs] or nil
-					if snapped ~= nil then
-						finish(snapped)
-					else
-						vcs_cat_committed(repo, f, finish)
-					end
+				if scoped and scoped[f.abs] then
+					record_vcs_diff(chat_bufnr, repo, f.abs, f.rel, epoch)
 				end
 			end
 		end)
+	end
+end
+
+local function repo_rel(root, abs)
+	local prefix = root:gsub("/+$", "") .. "/"
+	if abs:sub(1, #prefix) == prefix then
+		return abs:sub(#prefix + 1)
+	end
+	return nil
+end
+
+-- Heuristic: does this tool name denote a file edit? Only gates the LIVE flush
+-- (turn-end reconciliation is name-agnostic), so an unrecognized editor tool
+-- still surfaces at turn end — just not live. Keeps live work off read-only tools
+-- (Read/Grep/...) so we don't `sl cat`/`git show` files nobody changed.
+local function is_edit_tool(name)
+	if type(name) ~= "string" then
+		return false
+	end
+	local n = name:lower()
+	return n:find("edit") ~= nil
+		or n:find("write") ~= nil
+		or n:find("create") ~= nil
+		or n:find("patch") ~= nil
+		or n:find("replace") ~= nil
+		or n:find("insert") ~= nil
+end
+
+-- Stage an omnigent edit tool call's VCS target paths for the next flush.
+local function stage_pending(chat_bufnr, tool_call)
+	local list = {}
+	for_each_tool_call_path(tool_call, function(path, base)
+		local abs = to_abs(path, base)
+		local repo = find_repo(abs)
+		if repo then
+			list[#list + 1] = { root = repo.root, vcs = repo.vcs, abs = abs }
+		end
+	end)
+	_pending_flush[chat_bufnr] = (#list > 0) and list or nil
+end
+
+-- Flush staged edits to the diff split. Called when the *next* tool call arrives
+-- (previous write has landed) and again at turn end.
+local function flush_pending(chat_bufnr)
+	local list = _pending_flush[chat_bufnr]
+	_pending_flush[chat_bufnr] = nil
+	if not list or not chat_bufnr or not vim.api.nvim_buf_is_valid(chat_bufnr) then
+		return
+	end
+	local epoch = _turn_epoch[chat_bufnr]
+	for _, e in ipairs(list) do
+		local rel = repo_rel(e.root, e.abs)
+		if rel then
+			record_vcs_diff(chat_bufnr, { root = e.root, vcs = e.vcs }, e.abs, rel, epoch)
+		end
 	end
 end
 
@@ -497,6 +601,8 @@ function M.cleanup(chat_bufnr)
 	_disk_before[chat_bufnr] = nil
 	_turn_repos[chat_bufnr] = nil
 	_turn_paths[chat_bufnr] = nil
+	_turn_before_cache[chat_bufnr] = nil
+	_pending_flush[chat_bufnr] = nil
 	_turn_snapshot[chat_bufnr] = nil
 	_turn_epoch[chat_bufnr] = nil
 	mgr:cleanup(chat_bufnr)
@@ -511,6 +617,8 @@ function M.new_turn(chat_bufnr)
 	_disk_before[chat_bufnr] = nil
 	_turn_repos[chat_bufnr] = nil
 	_turn_paths[chat_bufnr] = nil
+	_turn_before_cache[chat_bufnr] = nil
+	_pending_flush[chat_bufnr] = nil
 	_turn_snapshot[chat_bufnr] = nil
 	_turn_epoch[chat_bufnr] = (_turn_epoch[chat_bufnr] or 0) + 1
 	-- Re-resolve repo roots each turn so a repo created/removed mid-session isn't
@@ -708,19 +816,22 @@ function M.setup()
 		callback = function(args)
 			local bufnr = args.data and args.data.bufnr
 			if bufnr then
+				pcall(flush_pending, bufnr)
 				reconcile_turn(bufnr)
 			end
 		end,
 	})
 
 	-- Omnigent edits run server-side, so none of the three patches above fire (no
-	-- ACP fs/write, no HTTP insert_edit, and OmnigentHandler is its own class). But
-	-- the handler emits CodeCompanionOmnigentToolCall per committed tool call, and
-	-- its RequestStarted/Finished already drive new_turn/reconcile_turn. Routing the
-	-- tool call's paths through the same collector the ACP path uses populates
-	-- _turn_paths so turn-end VCS reconciliation attributes the edits. `arguments`
-	-- is a JSON string of the tool params (file_path / command / ...) -- i.e.
-	-- omnigent's equivalent of an ACP tool call's `rawInput`.
+	-- ACP fs/write, no HTTP insert_edit, and OmnigentHandler is its own class), and
+	-- the stream carries no structured before/after (unlike an ACP `diff` block) —
+	-- only the tool name + `arguments` (a JSON string of the tool params, i.e.
+	-- omnigent's equivalent of `rawInput`). So we reconstruct diffs against VCS:
+	-- routing paths through the shared collector populates _turn_paths for turn-end
+	-- reconciliation, and for edit tools we stage the target paths and flush them
+	-- when the NEXT tool call arrives — by which point the agent has serially
+	-- executed this call's write, so disk holds the post-edit content. That makes
+	-- edits show live instead of only at turn end.
 	vim.api.nvim_create_autocmd("User", {
 		pattern = "CodeCompanionOmnigentToolCall",
 		group = lifecycle_group,
@@ -739,7 +850,12 @@ function M.setup()
 			if type(raw) ~= "table" then
 				return
 			end
-			pcall(collect_repos_from_tool_call, chat_bufnr, { rawInput = raw, title = item.name })
+			local tool_call = { rawInput = raw, title = item.name }
+			pcall(collect_repos_from_tool_call, chat_bufnr, tool_call)
+			pcall(flush_pending, chat_bufnr)
+			if is_edit_tool(item.name) then
+				pcall(stage_pending, chat_bufnr, tool_call)
+			end
 		end,
 	})
 
