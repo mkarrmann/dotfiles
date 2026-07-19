@@ -1,0 +1,29 @@
+# Omnigent server config, passed via `--config` from the systemd unit
+# (~/dotfiles/systemd/omnigent-server.service).
+#
+# The published uv-tool install reads NO config unless `--config` is given, so
+# everything below is opt-in. It layers extra, out-of-tree policy modules onto
+# the server WITHOUT patching the installed package (respecting "no OSS hacks"):
+# the module lives in ~/dotfiles/omnigent_config/policy_modules/ and is put on
+# PYTHONPATH by the unit so `importlib.import_module("capture_diff")` resolves.
+
+# Extra policy modules to import at startup (dotted module paths, resolved via
+# PYTHONPATH). Their POLICY_REGISTRY entries are merged into the registry.
+policy_modules:
+  - capture_diff
+
+# Server-wide default policies, appended after per-agent policies for EVERY
+# session. `type: function` self-selects its phase (a tool_result capture here),
+# so no `on:` is needed.
+policies:
+  capture_diff:
+    type: function
+    function:
+      path: capture_diff.capture_labels_policy
+      arguments:
+        patterns:
+          # Phabricator diff created by any tool -> omnigent.diff.number = D<n>.
+          omnigent.diff.number: 'Differential Revision:[^\n]*?(D\d+)'
+    # Whitelist of label keys this policy may write.
+    set_labels:
+      - omnigent.diff.number
