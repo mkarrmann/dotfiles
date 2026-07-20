@@ -100,6 +100,10 @@ return {
 			opts.options.disabled_filetypes.winbar = opts.options.disabled_filetypes.winbar or {}
 			opts.options.disabled_filetypes.statusline = opts.options.disabled_filetypes.statusline or {}
 			vim.list_extend(opts.options.disabled_filetypes.winbar, { "codecompanion_input" })
+			-- Lualine may install a tabs fallback when bufferline is disabled. It
+			-- refreshes that tabline on a timer, so a one-time option reset is not
+			-- enough; remove its tabline sections entirely.
+			opts.tabline = {}
 
 			local winbar_color = { fg = "#888888", bg = require("lib.session-accent").winbar_bg() }
 			local winbar_cwd = { cwd, color = winbar_color }
@@ -130,6 +134,12 @@ return {
 			opts.inactive_sections.lualine_z = opts.sections.lualine_z
 
 			return opts
+		end,
+		config = function(_, opts)
+			require("lualine").setup(opts)
+			-- Lualine restores its cached tabline during setup. Activate ours only
+			-- after that restore, once Lualine's tabline refresh is disabled.
+			require("lib.agent-tabline").setup()
 		end,
 	},
 	{

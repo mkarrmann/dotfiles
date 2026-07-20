@@ -135,7 +135,10 @@ function M.run()
 
 	vim.api.nvim_tabpage_set_var(agent_tab, "tab_name", "omni%chat")
 	local tabline = require("lib.agent-tabline")
+	vim.o.tabline = "%!v:lua.require'lualine'.tabline()"
 	tabline.setup()
+	eq(vim.o.tabline, "%!v:lua._tabline()", "agent tabline reclaims the option after plugin setup")
+	eq(vim.o.showtabline, 2, "agent tabline remains visible")
 	local rendered = tabline.render()
 	if not rendered:find("2:omni%%chat", 1, true) then
 		error("tabline did not render an escaped tab name: " .. rendered)

@@ -93,6 +93,8 @@ function M.setup()
 		callback = setup_highlights,
 	})
 	_G._tabline = M.render
+	vim.o.tabline = "%!v:lua._tabline()"
+	vim.o.showtabline = 2
 end
 
 return M
