@@ -21,6 +21,9 @@ local NS = api.nvim_create_namespace("cc_tool_output")
 
 -- state[bufnr][mark_id] = { lines = string[], expanded = boolean }
 local state = {}
+local call_marks = {}
+local pending_outputs = {}
+local streamed_calls = {}
 
 local CONFIG = {
   max_lines = 500, -- cap rendered output (post-wrap) to keep the buffer sane
@@ -162,6 +165,71 @@ function M.set(bufnr, header_line, text)
   render(bufnr, row0, mark_id)
 end
 
+local function find_tool_row(bufnr, line)
+  local count = api.nvim_buf_line_count(bufnr)
+  local row0 = math.max(0, math.min(count - 1, (tonumber(line) or 1) - 1))
+  local first = math.max(0, row0 - 2)
+  local last = math.min(count - 1, row0 + 8)
+  local lines = api.nvim_buf_get_lines(bufnr, first, last + 1, false)
+  local best, best_distance
+  for i, text in ipairs(lines) do
+    if text:find("⚙ **tool**", 1, true) then
+      local candidate = first + i - 1
+      local distance = math.abs(candidate - row0)
+      if not best_distance or distance < best_distance then
+        best, best_distance = candidate, distance
+      end
+    end
+  end
+  return best or row0
+end
+
+---Bind an Omnigent call ID to its rendered header line.
+---@param bufnr number
+---@param call_id string
+---@param header_line number
+function M.bind_call(bufnr, call_id, header_line)
+  if not (bufnr and api.nvim_buf_is_valid(bufnr) and call_id and header_line) then return end
+  local row0 = find_tool_row(bufnr, header_line)
+  local mark_id = api.nvim_buf_set_extmark(bufnr, NS, row0, 0, { priority = 130 })
+  call_marks[bufnr] = call_marks[bufnr] or {}
+  call_marks[bufnr][call_id] = mark_id
+  local pending = pending_outputs[bufnr] and pending_outputs[bufnr][call_id]
+  if pending then
+    pending_outputs[bufnr][call_id] = nil
+    M.set_call_output(bufnr, call_id, pending)
+  end
+end
+
+---Record that this call already streamed visible output into the transcript.
+---@param bufnr number
+---@param call_id string
+function M.mark_call_streamed(bufnr, call_id)
+  if not (bufnr and call_id) then return end
+  streamed_calls[bufnr] = streamed_calls[bufnr] or {}
+  streamed_calls[bufnr][call_id] = true
+end
+
+---Attach committed Omnigent output unless it was already rendered as deltas.
+---@param bufnr number
+---@param call_id string
+---@param text string
+function M.set_call_output(bufnr, call_id, text)
+  if not (bufnr and api.nvim_buf_is_valid(bufnr) and call_id and type(text) == "string" and text ~= "") then
+    return
+  end
+  if streamed_calls[bufnr] and streamed_calls[bufnr][call_id] then return end
+  local mark_id = call_marks[bufnr] and call_marks[bufnr][call_id]
+  if not mark_id then
+    pending_outputs[bufnr] = pending_outputs[bufnr] or {}
+    pending_outputs[bufnr][call_id] = text
+    return
+  end
+  local pos = api.nvim_buf_get_extmark_by_id(bufnr, NS, mark_id, {})
+  if #pos == 0 then return end
+  M.set(bufnr, pos[1] + 1, text)
+end
+
 ---Toggle expand/collapse for the tool call whose header is the cursor line.
 ---@param bufnr number
 ---@param cursor_line number 1-based
@@ -190,6 +258,9 @@ end
 ---@param bufnr number
 function M.clear(bufnr)
   state[bufnr] = nil
+  call_marks[bufnr] = nil
+  pending_outputs[bufnr] = nil
+  streamed_calls[bufnr] = nil
   if api.nvim_buf_is_valid(bufnr) then
     pcall(api.nvim_buf_clear_namespace, bufnr, NS, 0, -1)
   end

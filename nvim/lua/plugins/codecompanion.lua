@@ -2713,6 +2713,28 @@ Placement guidance (overrides the base prompt where they conflict):
       -- is re-implemented from handler.lua (module-local there) so we can read
       -- the merged status/content before upstream clears self.tools[id].
       local tool_output = require("lib.codecompanion-tool-output")
+      local omnigent_tool_group = vim.api.nvim_create_augroup("codecompanion_omnigent_tool_output", { clear = true })
+      vim.api.nvim_create_autocmd("User", {
+        group = omnigent_tool_group,
+        pattern = "CodeCompanionOmnigentToolCall",
+        callback = function(args)
+          local data = args.data or {}
+          local item = data.item or {}
+          tool_output.bind_call(data.bufnr, item.call_id, data.line_number)
+        end,
+      })
+      vim.api.nvim_create_autocmd("User", {
+        group = omnigent_tool_group,
+        pattern = "CodeCompanionOmnigentToolOutput",
+        callback = function(args)
+          local data = args.data or {}
+          if data.streaming then
+            tool_output.mark_call_streamed(data.bufnr, data.call_id)
+          else
+            tool_output.set_call_output(data.bufnr, data.call_id, data.output)
+          end
+        end,
+      })
       local ACPHandler = require("codecompanion.interactions.chat.acp.handler")
 
       local function merge_tool_call(existing, incoming)
