@@ -4,6 +4,7 @@
 
 - My fbsource checkouts live in paired workspaces: each `~/checkoutN/` holds both `fbsource/` and `configerator/` side by side (`~/checkout1/{fbsource,configerator}`, `~/checkout2/{fbsource,configerator}`, etc.). The `configerator` checkout is always the **sibling** of the `fbsource` checkout you are currently working in.
 - When you need the configerator checkout (or any sibling repo) for the workspace you're in, derive it from the current fbsource path — e.g. working in `~/checkout2/fbsource` → configerator is `~/checkout2/configerator`. NEVER hardcode a specific `~/checkoutN`, and never assume a bare `~/configerator` or `~/fbsource`.
+- Confirm the process working directory before accessing checkout-specific files. If it does not identify a checkout, do not choose a "primary" checkout from project notes; recover the editor/session workspace or ask rather than guessing.
 
 ## Workflow Constraints
 
@@ -15,6 +16,7 @@
 ## Do's
 
 - DO: Bias toward encoding logic and contracts in a type-safe manner, elegantly leveraging the type system of the programming language.
+- DO: Treat checked-in source as the primary evidence when it is available. Use generated artifacts or bytecode only to corroborate source or resolve a specific ambiguity.
 - DO: Bias toward following the style and conventions of the existing codebase. HOWEVER, do NOT follow conventions blindly. When you think it might be best to use a different style/convention/approach than the existing codebase is using, raise this with me. We will discuss the trade-offs to determine whether it is best to use your new convention, follow the existing conventions, or refactor the existing codebase.
 - DO: Proactively detect bug, style issues, and poor quality in the existing codebase while you work. HOWEVER, do NOT fix these issues unless it directly contributes to the task. Instead, mark these issues with TODO comments for my later review, and carry on with your work.
 

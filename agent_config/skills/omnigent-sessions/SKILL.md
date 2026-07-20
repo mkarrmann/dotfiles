@@ -180,6 +180,7 @@ Each item has `id`, `type`, `status`, `created_at`, `response_id`, and a
 | `type` | `data` shape | Meaning |
 |--------|--------------|---------|
 | `message` | `role` ∈ {user, assistant}; `content[]` blocks of `type` `input_text` (user) or `output_text` (assistant); assistant also has `model` | A conversational turn. Reasoning shows up inline in `output_text`. |
+| `function_call` | `name`, `arguments`, `call_id` | An Omnigent-observed tool invocation. SDK-vendor-native tools may be absent unless disabled in that harness. |
 | `function_call_output` | `call_id`, `output` (a JSON string: `{"data":…, "info":…}`) | Result of a tool call. `info` often carries human-readable status ("moved to background", "was cancelled", "Tool result too large → /tmp/…"). |
 | `resource_event` | `event_type` (e.g. `session.resource.created`), `resource` | Terminal/file/env resource lifecycle. |
 | `error` | `source`, `code`, `message` | A turn-level failure (see below). |
@@ -211,13 +212,23 @@ curl -s --noproxy '*' "$BASE/v1/sessions/$CONV" | jq -r '
    > `RuntimeError: turn exceeded the 240s harness idle watchdog (run_turn
    > emitted no events for 240s; likely a wedged LLM or tool call)`
 
-   This fires when a turn produces **no events for 240s** — classically from
-   synchronously blocking on backgrounded tool/subagent jobs (e.g.
-   `task_output(..., wait_for_all=true)` on jobs that each exceed the 30s
-   foreground limit). The watchdog kill also **cancels those background jobs**
-   (you'll see `function_call_output` items with `"was cancelled"`). Fix on the
-   agent side: use `wait_for_any` / drain one job at a time, or keep working so
-   events keep flowing.
+   This fires when the outer harness receives **no progress events** for the
+   configured interval; it does not prove the model or tool is wedged. Check
+   the timeline after the error. If SDK Codex keeps making native app-server
+   tool calls or later produces an answer, those inner events were invisible
+   to the watchdog. Matt's direct Codex agent disables native tools so calls
+   travel through persisted Omnigent `function_call` / `function_call_output`
+   items; `HARNESS_TURN_TIMEOUT_S` is only the fallback. A genuinely blocked
+   background job is the other common case (for example, waiting for every
+   long subagent at once); drain completed jobs incrementally.
+
+3. **CWD signal:** a session's stored `workspace` proves what the client asked
+   the host to launch, not what an inner SDK subprocess actually used. For
+   direct Codex, confirm all three layers when diagnosing checkout drift:
+   `OMNIGENT_RUNNER_WORKSPACE` in the runner environment, the Codex app-server
+   process's `/proc/<pid>/cwd`, and a persisted `sys_os_shell` result's `cwd`.
+   They should all name the same checkout. Do not infer the checkout from an
+   agent's project notes when any of these disagree.
 
 ## Agents (harnesses)
 
