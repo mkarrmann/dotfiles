@@ -45,10 +45,10 @@ if [[ "${1:-}" == "app-server" ]]; then
 fi
 
 if [[ -x /usr/local/bin/codex ]]; then
-  exec /usr/local/bin/codex "${args[@]}"
+  exec /usr/local/bin/codex ${args[@]+"${args[@]}"}
 fi
 if [[ -x /opt/homebrew/bin/codex ]]; then
-  exec /opt/homebrew/bin/codex "${args[@]}"
+  exec /opt/homebrew/bin/codex ${args[@]+"${args[@]}"}
 fi
 
 echo "codex launcher not found" >&2
