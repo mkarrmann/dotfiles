@@ -16,12 +16,12 @@
 # makes list-windows calls before bailing, the AeroSpace CLI server
 # saturates and `list-windows --all --json` can block indefinitely,
 # deadlocking startup-windows itself.
-[[ -f /tmp/startup-windows.lock ]] && exit 0
+[[ -e /tmp/startup-windows.lock ]] && exit 0
 
 sleep 0.3
 
 # Re-check: startup-windows may have grabbed the lock during our sleep.
-[[ -f /tmp/startup-windows.lock ]] && exit 0
+[[ -e /tmp/startup-windows.lock ]] && exit 0
 
 wid="${AEROSPACE_WINDOW_ID}"
 [[ -z "$wid" ]] && exit 0

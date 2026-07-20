@@ -6,7 +6,7 @@ enable-normalization-flatten-containers = false
 enable-normalization-opposite-orientation-for-nested-containers = true
 
 after-startup-command = [
-    'exec-and-forget /bin/bash -l -c "sleep 3 && startup-windows"',
+    'exec-and-forget /bin/bash -l -c "mkdir -p ~/.local/state/startup-windows-logs && sleep 3 && startup-windows > ~/.local/state/startup-windows-logs/latest.log 2>&1"',
     'exec-and-forget sketchybar',
 ]
 
@@ -199,4 +199,3 @@ run = 'move-node-to-workspace 8'
 # [[on-window-detected]]
 # if.during-aerospace-startup = false
 # run = 'exec-and-forget ~/bin/auto-accordion'
-

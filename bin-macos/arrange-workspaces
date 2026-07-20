@@ -1,6 +1,45 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Do not let one wedged AeroSpace IPC client freeze workspace startup. Layout
+# verification already retries the whole operation, so timed-out mutations are
+# safely observed and corrected by the next pass.
+AEROSPACE_COMMAND_TIMEOUT="${AEROSPACE_COMMAND_TIMEOUT:-8}"
+AEROSPACE_TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
+AEROSPACE_BIN="$(command -v aerospace || true)"
+
+aerospace() {
+  local attempts=1 attempt=1 output status
+  case "${1:-}" in
+    list-*) attempts=3 ;;
+  esac
+
+  while [[ "$attempt" -le "$attempts" ]]; do
+    if [[ -n "$AEROSPACE_TIMEOUT_BIN" ]]; then
+      if output=$("$AEROSPACE_TIMEOUT_BIN" --foreground --kill-after=1 \
+          "$AEROSPACE_COMMAND_TIMEOUT" "$AEROSPACE_BIN" "$@"); then
+        printf '%s' "$output"
+        return 0
+      else
+        status=$?
+      fi
+    else
+      if output=$("$AEROSPACE_BIN" "$@"); then
+        printf '%s' "$output"
+        return 0
+      else
+        status=$?
+      fi
+    fi
+    if [[ "$status" -eq 124 || "$status" -eq 137 ]]; then
+      echo "WARNING: AeroSpace command timed out: aerospace $*" >&2
+    fi
+    attempt=$(( attempt + 1 ))
+    [[ "$attempt" -le "$attempts" ]] && sleep 0.25
+  done
+  return "$status"
+}
+
 # arrange-workspaces: On each workspace, put Orchest windows as tiles on the
 # left (sidebar) and all other windows in an accordion on the right.
 # If a workspace has no Orchest windows, it stays as a flat accordion.
@@ -320,11 +359,6 @@ arrange_workspace_once() {
   local swap_iter=0
   local swap_overflow=false
   while true; do
-    if [[ "$swap_iter" -ge "$swap_max" ]]; then
-      swap_overflow=true
-      break
-    fi
-    swap_iter=$(( swap_iter + 1 ))
     aerospace focus --window-id "$first_sidebar" 2>/dev/null
     discover_spatial_order
     echo "    swap scan: ${_spatial[*]}"
@@ -334,6 +368,11 @@ arrange_workspace_once() {
       local cur="${_spatial[$idx]}" nxt="${_spatial[$((idx + 1))]}"
       if echo "$accordion_ids" | grep -qx "$cur" && \
          echo "$sidebar_ids" | grep -qx "$nxt"; then
+        if [[ "$swap_iter" -ge "$swap_max" ]]; then
+          swap_overflow=true
+          break
+        fi
+        swap_iter=$(( swap_iter + 1 ))
         echo "    swapping $cur right (past sidebar $nxt)"
         aerospace focus --window-id "$cur" 2>/dev/null
         aerospace move right 2>/dev/null || true
@@ -341,6 +380,7 @@ arrange_workspace_once() {
         break
       fi
     done
+    $swap_overflow && break
     $did_swap || break
   done
   if $swap_overflow; then

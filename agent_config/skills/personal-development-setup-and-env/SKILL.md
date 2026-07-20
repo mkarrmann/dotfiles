@@ -152,9 +152,9 @@ a Chrome window. Code editing runs through Ghostty-backed `nvs` sessions.
 
 | Script | Purpose |
 |--------|---------|
-| `startup-windows` | Creates/places all windows on correct AeroSpace workspaces, runs orchest, reconciles late-appearing windows, sweeps strays to Z |
-| `arrange-workspaces` | Sets sidebar\|accordion layout per workspace (Orchest 20% left, rest in accordion right). Use `--force` to bypass fingerprint caching. |
-| `auto-accordion` | Optional AeroSpace `on-window-detected` callback. Currently disabled in `aerospace.toml`; if re-enabled, it should be suppressed by `/tmp/startup-windows.lock`. |
+| `startup-windows` | Creates/places all windows on correct AeroSpace workspaces, runs orchest, reconciles late-appearing windows, distributes Chrome session-restored windows, sweeps strays to Z |
+| `arrange-workspaces` | Sets sidebar\|accordion layout per workspace (Orchest 12% left, rest in accordion right). Use `--force` to bypass fingerprint caching. |
+| `auto-accordion` | Optional AeroSpace `on-window-detected` callback. Currently disabled in `aerospace.toml`; if re-enabled, it is suppressed while the `/tmp/startup-windows.lock` directory exists. |
 
 ### AeroSpace gotchas
 
@@ -173,6 +173,8 @@ These behaviors differ from what you'd expect and have caused bugs:
 - **`aerospace focus left/right` defaults to `--boundaries-action wrap-around-the-workspace`, AND `stop` doesn't always engage.** Bare `focus left` from the leftmost window wraps to the rightmost — focus *always* changes. Passing `--boundaries-action stop` helps in the well-behaved case but **still wraps** when a phantom/unfocusable window sits in the tree (observed with `cmux` occasionally reporting `window-id 0` in workspace 1 — `focus right` from the rightmost *visible* window wraps past it to the leftmost). Conclusion: never trust "walk until focus stops moving" as a sole terminator. `discover_spatial_order` in `arrange-workspaces` uses cycle detection (track visited window IDs, break on repeat) as a backstop. Confirmed on AeroSpace 0.20.3-Beta. The `alt-h/j/k/l` keybindings setting wrap-around explicitly are redundant (matches the default), not the cause.
 - **`aerospace focus --window-id N` can silently land focus on a *different* window for phantom/sentinel IDs.** Observed with cmux reporting `window-id 0`: focusing 0 from one neighbor lands on 0, but from another lands on whichever window AeroSpace's resolver picks (typically 163). The result is starting-state-dependent, so any logic that assumes "focus --window-id X means focus is now X" can silently misbehave. Generic detection: after each `focus --window-id`, re-query `list-windows --focused --format '%{window-id}'` and compare. `arrange-workspaces` does this in `focus_verified` and sweeps any window that fails verification to workspace Z before computing the layout — no need to hard-code phantom IDs or app names.
 - **`wait_for_new_window` uses a 10s timeout.** Some app windows can take longer to appear or settle their titles. The reconciliation pass in `startup-windows` catches these late-appearing windows.
+- **Individual AeroSpace CLI clients can wedge during a login-time window burst.** `startup-windows` and `arrange-workspaces` bound each CLI call and retry read-only queries. Automatic startup logs to `~/.local/state/startup-windows-logs/latest.log` for post-login diagnosis.
+- **Chrome restores all previous windows onto the active workspace.** `startup-windows` waits for that restore burst to settle, assigns one restored window to each managed workspace, and moves surplus restored windows to Z.
 - **macOS bash is 3.2.** No associative arrays (`declare -A`). Use `grep -qx` against newline-separated ID lists instead.
 
 ### Debugging workspace layouts

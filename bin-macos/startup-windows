@@ -1,6 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# AeroSpace's CLI can occasionally leave an individual IPC client blocked while
+# newer clients continue to work. Bound every call so one stale client cannot
+# freeze the entire login sequence. Read-only calls are safe to retry.
+AEROSPACE_COMMAND_TIMEOUT="${AEROSPACE_COMMAND_TIMEOUT:-8}"
+AEROSPACE_TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
+AEROSPACE_BIN="$(command -v aerospace || true)"
+
+aerospace() {
+  local attempts=1 attempt=1 output status
+  case "${1:-}" in
+    list-*) attempts=3 ;;
+  esac
+
+  while [[ "$attempt" -le "$attempts" ]]; do
+    if [[ -n "$AEROSPACE_TIMEOUT_BIN" ]]; then
+      if output=$("$AEROSPACE_TIMEOUT_BIN" --foreground --kill-after=1 \
+          "$AEROSPACE_COMMAND_TIMEOUT" "$AEROSPACE_BIN" "$@"); then
+        printf '%s' "$output"
+        return 0
+      else
+        status=$?
+      fi
+    else
+      if output=$("$AEROSPACE_BIN" "$@"); then
+        printf '%s' "$output"
+        return 0
+      else
+        status=$?
+      fi
+    fi
+
+    if [[ "$status" -eq 124 || "$status" -eq 137 ]]; then
+      echo "WARNING: AeroSpace command timed out: aerospace $*" >&2
+    fi
+    attempt=$(( attempt + 1 ))
+    [[ "$attempt" -le "$attempts" ]] && sleep 0.25
+  done
+  return "$status"
+}
+
 # ── Args ─────────────────────────────────────────────────────────────
 ORCHEST_MODE_FLAG=""
 while [[ $# -gt 0 ]]; do
@@ -16,6 +56,31 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+# AeroSpace can invoke after-startup-command more than once across a config
+# reload/restart. Only one reconciler may mutate the workspace tree at a time.
+STARTUP_LOCK_DIR="/tmp/startup-windows.lock"
+if ! mkdir "$STARTUP_LOCK_DIR" 2>/dev/null; then
+  lock_pid=$(cat "$STARTUP_LOCK_DIR/pid" 2>/dev/null || true)
+  if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
+    echo "startup-windows is already running as PID $lock_pid; exiting."
+    exit 0
+  fi
+
+  rm -f "$STARTUP_LOCK_DIR/pid"
+  if ! rmdir "$STARTUP_LOCK_DIR" 2>/dev/null || ! mkdir "$STARTUP_LOCK_DIR" 2>/dev/null; then
+    echo "ERROR: could not acquire $STARTUP_LOCK_DIR" >&2
+    exit 1
+  fi
+fi
+echo "$$" > "$STARTUP_LOCK_DIR/pid"
+cleanup_startup_lock() {
+  rm -f "$STARTUP_LOCK_DIR/pid"
+  rmdir "$STARTUP_LOCK_DIR" 2>/dev/null || true
+}
+trap cleanup_startup_lock EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # ── Workspace definitions ────────────────────────────────────────────
 # Format: ws|type|title|title_match|...
@@ -52,6 +117,8 @@ SWEEP_WORKSPACE="Z"
 
 CHROME_APP="Google Chrome"
 CHROME_INVALID_TITLE_PATTERN="^Who.s using Chrome\\?$"
+claimed_chrome_ids=""
+chrome_restore_settled=false
 OMNIGENT_PORT="${OMNIGENT_PORT:-$(omnigent-server-url --port)}"
 OMNIGENT_PRIMARY_FQDN="${OMNIGENT_PRIMARY_FQDN:-$(omnigent-server-url --primary)}"
 OMNIGENT_STANDBY_FQDN="${OMNIGENT_STANDBY_FQDN:-$(omnigent-server-url --standby)}"
@@ -97,6 +164,33 @@ managed_workspaces() {
 
 snapshot_windows() {
   aerospace list-windows --all --json 2>/dev/null
+}
+
+wait_for_window_settle() {
+  local app_name="$1" stable_seconds="${2:-2}" timeout="${3:-20}"
+  local deadline last_ids="" stable_since=0 snapshot ids now
+  deadline=$(($(date +%s) + timeout))
+
+  while [[ $(date +%s) -lt "$deadline" ]]; do
+    snapshot=$(snapshot_windows) || {
+      sleep 0.5
+      continue
+    }
+    ids=$(echo "$snapshot" | jq -r --arg app "$app_name" \
+      '[.[] | select(."app-name" == $app)] | .[]["window-id"]' | sort -n)
+    now=$(date +%s)
+    if [[ "$ids" == "$last_ids" ]]; then
+      [[ "$stable_since" -eq 0 ]] && stable_since="$now"
+      if [[ $((now - stable_since)) -ge "$stable_seconds" ]]; then
+        return 0
+      fi
+    else
+      last_ids="$ids"
+      stable_since="$now"
+    fi
+    sleep 0.5
+  done
+  return 1
 }
 
 find_window_id() {
@@ -170,8 +264,13 @@ tunnel_command_is_current() {
 }
 
 omnigent_local_proxy_running() {
-  ps -axo comm=,args= | awk '
-    $1 ~ /python/ && index($0, "-m omnigent_hub.mac_proxy") { found = 1 }
+  # macOS truncates `ps comm` to the first 16 characters of the executable
+  # path, which is typically just "/Users/mkarrmann" for the venv Python.
+  # Match the structured argv fields instead.
+  ps -axo pid=,args= | awk '
+    $2 ~ /(^|\/)python([0-9.]*)?$/ &&
+    $3 == "-m" &&
+    $4 == "omnigent_hub.mac_proxy" { found = 1 }
     END { exit(found ? 0 : 1) }
   '
 }
@@ -255,14 +354,60 @@ wait_for_new_window() {
   return 1
 }
 
-find_valid_chrome_window_on_workspace() {
+chrome_id_is_claimed() {
+  local wid="$1"
+  [[ -n "$claimed_chrome_ids" ]] && echo "$claimed_chrome_ids" | grep -qx "$wid"
+}
+
+claim_chrome_window() {
+  local wid="$1"
+  chrome_id_is_claimed "$wid" || claimed_chrome_ids="${claimed_chrome_ids}${claimed_chrome_ids:+$'\n'}${wid}"
+}
+
+find_valid_unclaimed_chrome_window_on_workspace() {
   local ws="$1"
-  aerospace list-windows --workspace "$ws" --json 2>/dev/null \
+  local wid
+  for wid in $(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
     | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" \
-      '[.[] | select(
+      '.[] | select(
         ."app-name" == $app and
         ((.["window-title"] // "") | test($invalid) | not)
-      )] | first | .["window-id"] // empty'
+      ) | .["window-id"]' | sort -n); do
+    if ! chrome_id_is_claimed "$wid"; then
+      echo "$wid"
+      return 0
+    fi
+  done
+  return 1
+}
+
+find_valid_unclaimed_chrome_window() {
+  local wid
+  for wid in $(aerospace list-windows --all --json 2>/dev/null \
+    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" \
+      '.[] | select(
+        ."app-name" == $app and
+        ((.["window-title"] // "") | test($invalid) | not)
+      ) | .["window-id"]' | sort -n); do
+    if ! chrome_id_is_claimed "$wid"; then
+      echo "$wid"
+      return 0
+    fi
+  done
+  return 1
+}
+
+workspace_has_claimed_chrome_window() {
+  local ws="$1" wid
+  for wid in $(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
+    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" \
+      '.[] | select(
+        ."app-name" == $app and
+        ((.["window-title"] // "") | test($invalid) | not)
+      ) | .["window-id"]'); do
+    chrome_id_is_claimed "$wid" && return 0
+  done
+  return 1
 }
 
 close_invalid_chrome_windows_on_workspace() {
@@ -392,11 +537,7 @@ reconcile_expected_managed_windows() {
 
 # ── Main ─────────────────────────────────────────────────────────────
 
-# Prevent auto-accordion callback from interfering during startup
-touch /tmp/startup-windows.lock
-trap 'rm -f /tmp/startup-windows.lock' EXIT
-
-if ! command -v aerospace &>/dev/null; then
+if [[ -z "$AEROSPACE_BIN" ]]; then
   echo "ERROR: aerospace CLI not found." >&2
   echo "Install AeroSpace: brew install --cask nikitabobko/tap/aerospace" >&2
   exit 1
@@ -505,14 +646,29 @@ for i in "${!WORKSPACES[@]}"; do
     chrome)
       app_name="$CHROME_APP"
 
+      if [[ "$chrome_restore_settled" != true ]] && \
+         osascript -e 'application "Google Chrome" is running' 2>/dev/null | grep -q 'true'; then
+        echo "[Chrome] waiting for session restore to settle..."
+        wait_for_window_settle "$CHROME_APP" 2 20 || true
+        chrome_restore_settled=true
+        SNAPSHOT=$(snapshot_windows)
+      fi
+
       # Profile-picker windows are Chrome windows, but they do not satisfy the
       # workspace contract. Close them so we create/reuse a real profile window.
       close_invalid_chrome_windows_on_workspace "$ws"
 
-      # Check if a usable Chrome window already exists on this workspace.
-      existing=$(find_valid_chrome_window_on_workspace "$ws") || true
+      # Prefer a usable window already on this workspace. If Chrome restored
+      # all of its previous windows onto the active workspace, reuse the next
+      # unclaimed restored window instead of opening another one.
+      existing=$(find_valid_unclaimed_chrome_window_on_workspace "$ws") || true
+      if [[ -z "$existing" ]]; then
+        existing=$(find_valid_unclaimed_chrome_window) || true
+      fi
       if [[ -n "$existing" ]]; then
-        echo "[$title] Chrome already on workspace $ws"
+        echo "[$title] assigning restored Chrome window $existing to workspace $ws..."
+        aerospace move-node-to-workspace --window-id "$existing" "$ws" 2>/dev/null || true
+        claim_chrome_window "$existing"
       else
         echo "[$title] creating on workspace $ws..."
         before_snapshot="$SNAPSHOT"
@@ -526,6 +682,11 @@ for i in "${!WORKSPACES[@]}"; do
         }
         if [[ -n "$window_id" ]]; then
           aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || true
+          claim_chrome_window "$window_id"
+          # The first Chrome launch may restore many windows asynchronously.
+          # Let that burst finish so later workspace entries can reuse them.
+          wait_for_window_settle "$CHROME_APP" 2 20 || true
+          chrome_restore_settled=true
         else
           echo "WARNING: [$title] could not find new Chrome window" >&2
           ((failures++)) || true
@@ -534,6 +695,38 @@ for i in "${!WORKSPACES[@]}"; do
       fi
       ;;
   esac
+done
+
+# Chrome session restore can continue after an individual wait_for_new_window
+# returns. Fill any still-missing Chrome slots from the restored pool, then put
+# surplus restored windows on the overflow workspace rather than leaving them
+# piled onto a managed workspace.
+for entry in "${WORKSPACES[@]}"; do
+  IFS='|' read -r ws type _title _rest <<< "$entry"
+  [[ "$type" == "chrome" ]] || continue
+  workspace_has_claimed_chrome_window "$ws" && continue
+
+  existing=$(find_valid_unclaimed_chrome_window_on_workspace "$ws") || true
+  if [[ -z "$existing" ]]; then
+    existing=$(find_valid_unclaimed_chrome_window) || true
+    if [[ -n "$existing" ]]; then
+      echo "[Chrome reconciliation] assigning window $existing to workspace $ws..."
+      aerospace move-node-to-workspace --window-id "$existing" "$ws" 2>/dev/null || true
+    fi
+  fi
+  [[ -z "$existing" ]] || claim_chrome_window "$existing"
+done
+
+extra_chrome_ids=$(aerospace list-windows --all --json 2>/dev/null \
+  | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" \
+    '.[] | select(
+      ."app-name" == $app and
+      ((.["window-title"] // "") | test($invalid) | not)
+    ) | .["window-id"]' | sort -n) || true
+for wid in $extra_chrome_ids; do
+  chrome_id_is_claimed "$wid" && continue
+  echo "Sweeping surplus restored Chrome window $wid to $SWEEP_WORKSPACE..."
+  aerospace move-node-to-workspace --window-id "$wid" "$SWEEP_WORKSPACE" 2>/dev/null || true
 done
 
 # ── Orchest ──────────────────────────────────────────────────────────
