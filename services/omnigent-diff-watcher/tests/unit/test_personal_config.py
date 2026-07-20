@@ -166,3 +166,11 @@ def test_agent_ensure_reconciles_existing_bundle_content() -> None:
 def test_init_restarts_only_an_active_watcher_after_sync() -> None:
     script = (DOTFILES / "init.sh").read_text()
     assert "systemctl --user try-restart omnigent-diff-watcher.service" in script
+
+
+def test_sync_leaves_hub_owned_watcher_to_reconciliation() -> None:
+    script = (DOTFILES / "sync.sh").read_text()
+    generic_enable_case = script.split('case "$unit_name" in', maxsplit=1)[1].split(
+        "esac", maxsplit=1
+    )[0]
+    assert "omnigent-diff-watcher.service" in generic_enable_case

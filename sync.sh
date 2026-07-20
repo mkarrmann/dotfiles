@@ -473,7 +473,7 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
     # Timer activation owns this oneshot; starting it during every dotfiles
     # reconciliation would create an unnecessary extra archive.
     case "$unit_name" in
-      omnigent-server.service|omnigent-prodnet.service|omnigent-client-proxy.service|omnigent-google-chat.service|omnigent-snapshot.service|omnigent-hub-reconcile.service)
+      omnigent-server.service|omnigent-prodnet.service|omnigent-client-proxy.service|omnigent-google-chat.service|omnigent-diff-watcher.service|omnigent-snapshot.service|omnigent-hub-reconcile.service)
         continue
         ;;
     esac
