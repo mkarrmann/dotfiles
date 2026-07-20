@@ -22,6 +22,11 @@ require("lazy").setup({
 	-- magick, luaxml) — at that point you'll also need a working Lua 5.1
 	-- toolchain (hererocks or system lua5.1 + luarocks).
 	rocks = { enabled = false },
-	git = { timeout = 600 },
+	-- filter = false disables `git clone --filter=blob:none`. Meta's fwdproxy
+	-- refuses the partial-clone filter ("filtering not recognized by server"),
+	-- but git still marks the repo as a promisor partial clone, so the post-clone
+	-- checkout tries to lazy-fetch through the proxy and fails ("Clone succeeded,
+	-- but checkout failed"). A full clone keeps checkout local and works.
+	git = { filter = false, timeout = 600 },
 	checker = { enabled = true },
 })
