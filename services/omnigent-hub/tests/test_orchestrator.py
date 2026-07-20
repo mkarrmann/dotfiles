@@ -48,6 +48,7 @@ class FakeRemote:
     source_gate_passes: bool = False
     mismatch_target_version: bool = False
     mismatch_target_hub_version: bool = False
+    mismatch_target_watcher_version: bool = False
     stale_source_activation_reads: int = 0
 
     def __post_init__(self) -> None:
@@ -92,10 +93,16 @@ class FakeRemote:
                 if self.mismatch_target_hub_version and host == "standby.example.com"
                 else "sha256:hub"
             )
+            watcher = (
+                "sha256:other-watcher"
+                if self.mismatch_target_watcher_version and host == "standby.example.com"
+                else "sha256:watcher"
+            )
             return {
                 "versions": {
                     "omnigent": omnigent,
                     "bridge": "sha256:bridge",
+                    "diff_watcher": watcher,
                     "hub": hub,
                 }
             }
@@ -378,6 +385,20 @@ def test_planned_handoff_rejects_hub_controller_drift(
     remote = FakeRemote(active_record(), mismatch_target_hub_version=True)
 
     with pytest.raises(HandoffError, match="hub version mismatch"):
+        HandoffOrchestrator(hub_config, remote).handoff(
+            "standby.example.com",
+            unexpected=False,
+            source_confirmed_stopped=False,
+            dry_run=False,
+        )
+
+
+def test_planned_handoff_rejects_diff_watcher_drift(
+    hub_config: HubConfig,
+) -> None:
+    remote = FakeRemote(active_record(), mismatch_target_watcher_version=True)
+
+    with pytest.raises(HandoffError, match="diff_watcher version mismatch"):
         HandoffOrchestrator(hub_config, remote).handoff(
             "standby.example.com",
             unexpected=False,

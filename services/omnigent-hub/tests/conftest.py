@@ -22,6 +22,12 @@ def hub_config(tmp_path: Path) -> HubConfig:
     (bridge / "pyproject.toml").write_text("[project]\nname='bridge'\n", encoding="utf-8")
     (bridge / "uv.lock").write_text("version = 1\n", encoding="utf-8")
     (bridge_source / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    watcher = dotfiles / "services/omnigent-diff-watcher"
+    watcher_source = watcher / "src/omnigent_diff_watcher"
+    watcher_source.mkdir(parents=True)
+    (watcher / "pyproject.toml").write_text("[project]\nname='watcher'\n", encoding="utf-8")
+    (watcher / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (watcher_source / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
     hub = dotfiles / "services/omnigent-hub"
     hub_source = hub / "src/omnigent_hub"
     hub_source.mkdir(parents=True)
@@ -35,6 +41,7 @@ def hub_config(tmp_path: Path) -> HubConfig:
     data.mkdir(parents=True)
     _create_database(data / "chat.db", "sessions", 3)
     _create_database(data / "google-chat.sqlite3", "gchat_inbound", 2)
+    _create_database(data / "diff-watcher.sqlite3", "subscriptions", 4)
     artifacts = data / "artifacts"
     artifacts.mkdir()
     (artifacts / "blob").write_bytes(b"artifact")

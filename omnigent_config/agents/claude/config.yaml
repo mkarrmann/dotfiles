@@ -41,6 +41,15 @@ guardrails:
         arguments:
           gate_pushes: false
 
+tools:
+  diff_watch:
+    type: mcp
+    command: omnigent-diff-watch-mcp
+    tools:
+      - diff_watch_subscribe
+      - diff_watch_unsubscribe
+      - diff_watch_status
+
 prompt: |
   You are Claude, a software-engineering assistant running on the Claude Agent
   SDK inside Omnigent and streaming into a CodeCompanion chat in Neovim. You

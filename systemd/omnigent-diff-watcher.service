@@ -1,0 +1,28 @@
+[Unit]
+Description=Opt-in Phabricator diff watcher for Omnigent sessions
+After=network-online.target omnigent-server.service
+Wants=network-online.target omnigent-server.service
+ConditionPathExists=%h/dotfiles/services/omnigent-diff-watcher/.venv/bin/omnigent-diff-watcher
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dotfiles/services/omnigent-diff-watcher
+Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+Environment=OMNIGENT_URL=http://127.0.0.1:6767
+Environment=THRIFT_TLS_CL_CERT_PATH=/var/facebook/credentials/%u/x509/%u.pem
+Environment=THRIFT_TLS_CL_KEY_PATH=/var/facebook/credentials/%u/x509/%u.pem
+ExecCondition=%h/dotfiles/services/omnigent-hub/.venv/bin/omnigent-hub gate
+ExecStartPre=/usr/bin/mkdir -p %h/.omnigent
+ExecStart=%h/dotfiles/services/omnigent-diff-watcher/.venv/bin/omnigent-diff-watcher --config %h/dotfiles/services/omnigent-diff-watcher/config.toml run
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=90
+StateDirectory=omnigent-diff-watcher
+StandardOutput=append:%S/omnigent-diff-watcher/service.log
+StandardError=append:%S/omnigent-diff-watcher/service.log
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=full
+
+[Install]
+WantedBy=default.target

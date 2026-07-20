@@ -423,6 +423,16 @@ if [[ -f "$hub_project/uv.lock" ]] && command -v uv &>/dev/null; then
   (cd "$hub_project" && uv sync --frozen --all-groups) \
     || echo "WARNING: omnigent-hub dependency sync failed" >&2
 fi
+diff_watcher_project="$DOTFILES_DIR/services/omnigent-diff-watcher"
+if [[ -f "$diff_watcher_project/uv.lock" ]] && command -v uv &>/dev/null; then
+  (cd "$diff_watcher_project" && uv sync --frozen --all-groups) \
+    || echo "WARNING: omnigent-diff-watcher dependency sync failed" >&2
+  if [[ -x "$diff_watcher_project/.venv/bin/omnigent-diff-watcher" ]]; then
+    "$diff_watcher_project/.venv/bin/omnigent-diff-watcher" \
+      --config "$diff_watcher_project/config.toml" status --json >/dev/null \
+      || echo "WARNING: omnigent-diff-watcher state bootstrap failed" >&2
+  fi
+fi
 
 # Linux-only: systemd --user units. Linger is expected to be enabled
 # (`loginctl enable-linger`) so these survive logout and start at boot.
@@ -435,6 +445,7 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
       omnigent-prodnet.service \
       omnigent-client-proxy.service \
       omnigent-google-chat.service \
+      omnigent-diff-watcher.service \
       omnigent-snapshot.timer; do
     rm -f "$HOME/.config/systemd/user/default.target.wants/$unit_name" \
           "$HOME/.config/systemd/user/timers.target.wants/$unit_name"
@@ -453,6 +464,7 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
            "$HOME/.local/state/omnigent-host" \
            "$HOME/.local/state/omnigent-prodnet" \
            "$HOME/.local/state/omnigent-client-proxy" \
+           "$HOME/.local/state/omnigent-diff-watcher" \
            "$HOME/.local/state/omnigent-hub"
 
   # Materialize routing before any client or service resolves its server URL.

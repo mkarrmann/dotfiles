@@ -25,6 +25,7 @@ from omnigent_hub.runtime import (
 from omnigent_hub.snapshot import (
     bridge_version,
     create_snapshot,
+    diff_watcher_version,
     hub_version,
     list_valid_snapshots,
     omnigent_version,
@@ -97,6 +98,7 @@ class InProcessRemote:
                 "versions": {
                     "omnigent": omnigent_version(config.omnigent_bin),
                     "bridge": bridge_version(config.bridge_project),
+                    "diff_watcher": diff_watcher_version(config.diff_watcher_project),
                     "hub": hub_version(config.dotfiles / "services/omnigent-hub"),
                 }
             }
@@ -131,12 +133,15 @@ def test_real_snapshot_promotion_and_failback_preserve_both_eras(
     assert check_gate(standby).record.active_hub == "standby.example.com"
     assert database_count(standby.chat_db, "sessions") == 3
     assert database_count(standby.bridge_db, "gchat_inbound") == 2
+    assert database_count(standby.diff_watcher_db, "subscriptions") == 4
     assert (standby.artifacts_dir / "blob").read_bytes() == b"artifact"
 
     with sqlite3.connect(standby.chat_db) as db:
         db.execute("INSERT INTO sessions (value) VALUES ('ftw-era')")
     with sqlite3.connect(standby.bridge_db) as db:
         db.execute("INSERT INTO gchat_inbound (value) VALUES ('ftw-phone-reply')")
+    with sqlite3.connect(standby.diff_watcher_db) as db:
+        db.execute("INSERT INTO subscriptions (value) VALUES ('ftw-watch')")
     (standby.artifacts_dir / "ftw-era").write_bytes(b"ftw")
 
     failed_back = HandoffOrchestrator(standby, remote).handoff(
@@ -150,6 +155,7 @@ def test_real_snapshot_promotion_and_failback_preserve_both_eras(
     assert check_gate(hub_config).record.active_hub == "primary.example.com"
     assert database_count(hub_config.chat_db, "sessions") == 4
     assert database_count(hub_config.bridge_db, "gchat_inbound") == 3
+    assert database_count(hub_config.diff_watcher_db, "subscriptions") == 5
     assert (hub_config.artifacts_dir / "ftw-era").read_bytes() == b"ftw"
 
 
@@ -159,6 +165,7 @@ def standby_config(primary: HubConfig, tmp_path: Path) -> HubConfig:
     data.mkdir(parents=True)
     create_database(data / "chat.db", "sessions", "standby-old")
     create_database(data / "google-chat.sqlite3", "gchat_inbound", "standby-old")
+    create_database(data / "diff-watcher.sqlite3", "subscriptions", "standby-old")
     (data / "artifacts").mkdir()
     return replace(
         primary,

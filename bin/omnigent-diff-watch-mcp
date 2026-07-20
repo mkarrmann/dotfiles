@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+binary="$HOME/dotfiles/services/omnigent-diff-watcher/.venv/bin/omnigent-diff-watch-mcp"
+if [[ ! -x "$binary" ]]; then
+  echo "omnigent-diff-watch-mcp: runtime is not installed; run ~/dotfiles/init.sh" >&2
+  exit 127
+fi
+exec "$binary" "$@"

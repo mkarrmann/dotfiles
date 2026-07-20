@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "diff_id": "D90000005",
+  "lifecycle": "missing",
+  "author_id": null,
+  "latest_version_id": null,
+  "last_activity_at": "2026-01-15T12:05:00Z",
+  "observed_at": "2026-01-15T12:05:00Z",
+  "comments": {
+    "status": "error",
+    "cursor": null,
+    "items": [],
+    "error": {
+      "category": "missing",
+      "retryable": false,
+      "summary": "diff was not found"
+    }
+  },
+  "ci": {
+    "status": "error",
+    "cursor": null,
+    "aggregate": "unknown",
+    "failures": [],
+    "error": {
+      "category": "missing",
+      "retryable": false,
+      "summary": "diff was not found"
+    }
+  }
+}

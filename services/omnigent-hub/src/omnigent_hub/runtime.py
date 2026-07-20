@@ -16,6 +16,7 @@ from omnigent_hub.config import HubConfig
 from omnigent_hub.models import ActiveHubRecord, ValidationError
 from omnigent_hub.snapshot import (
     bridge_version,
+    diff_watcher_version,
     hub_version,
     list_valid_snapshots,
     load_manifest_from_archive,
@@ -389,6 +390,7 @@ def local_status(config: HubConfig) -> dict[str, Any]:
             "omnigent-prodnet.service",
             "omnigent-client-proxy.service",
             "omnigent-google-chat.service",
+            "omnigent-diff-watcher.service",
             "omnigent-snapshot.service",
             "omnigent-snapshot.timer",
             "omnigent-host.service",
@@ -419,6 +421,7 @@ def local_status(config: HubConfig) -> dict[str, Any]:
         "versions": {
             "omnigent": _capture_version(config),
             "bridge": _capture_bridge_version(config),
+            "diff_watcher": _capture_diff_watcher_version(config),
             "hub": _capture_hub_version(config),
         },
         "paths": {
@@ -446,6 +449,7 @@ def systemd_state(unit: str) -> str:
 def service_action(config: HubConfig, action: str) -> dict[str, str]:
     actions = {
         "stop-ingress": (
+            ("stop", "omnigent-diff-watcher.service"),
             ("stop", "omnigent-google-chat.service"),
             ("stop", "omnigent-snapshot.timer"),
             ("stop", "omnigent-snapshot.service"),
@@ -454,6 +458,7 @@ def service_action(config: HubConfig, action: str) -> dict[str, str]:
         "stop-server": (("stop", "omnigent-server.service"),),
         "stop-bridge": (("stop", "omnigent-google-chat.service"),),
         "stop-hub": (
+            ("stop", "omnigent-diff-watcher.service"),
             ("stop", "omnigent-google-chat.service"),
             ("stop", "omnigent-snapshot.timer"),
             ("stop", "omnigent-snapshot.service"),
@@ -462,6 +467,7 @@ def service_action(config: HubConfig, action: str) -> dict[str, str]:
         ),
         "stop-client": (("stop", "omnigent-client-proxy.service"),),
         "stop-all": (
+            ("stop", "omnigent-diff-watcher.service"),
             ("stop", "omnigent-google-chat.service"),
             ("stop", "omnigent-snapshot.timer"),
             ("stop", "omnigent-snapshot.service"),
@@ -474,10 +480,12 @@ def service_action(config: HubConfig, action: str) -> dict[str, str]:
             ("start", "omnigent-server.service"),
         ),
         "start-tail": (
+            ("start", "omnigent-diff-watcher.service"),
             ("start", "omnigent-google-chat.service"),
             ("start", "omnigent-snapshot.timer"),
         ),
         "start-bridge": (("start", "omnigent-google-chat.service"),),
+        "start-watcher": (("start", "omnigent-diff-watcher.service"),),
         "start-timer": (("start", "omnigent-snapshot.timer"),),
         "start-client": (("start", "omnigent-client-proxy.service"),),
         "restart-client": (("restart", "omnigent-client-proxy.service"),),
@@ -486,7 +494,13 @@ def service_action(config: HubConfig, action: str) -> dict[str, str]:
     if action not in actions:
         raise HubRuntimeError(f"unsupported service action {action!r}")
     commands = actions[action]
-    if action in {"start-core", "start-tail", "start-bridge", "start-timer"}:
+    if action in {
+        "start-core",
+        "start-tail",
+        "start-bridge",
+        "start-watcher",
+        "start-timer",
+    }:
         check_gate(config)
     units: list[str] = []
     for command in commands:
@@ -710,6 +724,13 @@ def _capture_version(config: HubConfig) -> str:
 def _capture_bridge_version(config: HubConfig) -> str:
     try:
         return bridge_version(config.bridge_project)
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+
+def _capture_diff_watcher_version(config: HubConfig) -> str:
+    try:
+        return diff_watcher_version(config.diff_watcher_project)
     except Exception as exc:
         return f"ERROR: {exc}"
 

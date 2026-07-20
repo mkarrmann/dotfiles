@@ -108,6 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
             "start-core",
             "start-tail",
             "start-bridge",
+            "start-watcher",
             "start-timer",
             "start-client",
             "restart-host",
@@ -333,10 +334,12 @@ def main(argv: list[str] | None = None) -> None:
             service_action(config, "start-core")
             service_action(config, "restart-host")
             service_action(config, "start-bridge")
+            service_action(config, "start-watcher")
             _emit(activation.to_dict(), args.json)
         elif args.command == "repair-force-start":
             _require_yes(parser, args.yes, "repair-force-start")
             activation = repair_force_start(config)
+            service_action(config, "start-watcher")
             service_action(config, "start-timer")
             _emit(activation.to_dict(), args.json)
         elif args.command == "snapshot":

@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "diff_id": "D90000006",
+  "lifecycle": "active",
+  "author_id": "user-author",
+  "latest_version_id": "version-partial-2",
+  "last_activity_at": "2026-01-15T12:00:00Z",
+  "observed_at": "2026-01-15T12:05:00Z",
+  "comments": {
+    "status": "ok",
+    "cursor": "comments-partial-2",
+    "items": []
+  },
+  "ci": {
+    "status": "error",
+    "cursor": null,
+    "aggregate": "unknown",
+    "failures": [],
+    "error": {
+      "category": "unavailable",
+      "retryable": true,
+      "summary": "CI query is temporarily unavailable"
+    }
+  }
+}

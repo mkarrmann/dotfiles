@@ -2,10 +2,9 @@
 # (~/dotfiles/systemd/omnigent-server.service).
 #
 # The published uv-tool install reads NO config unless `--config` is given, so
-# everything below is opt-in. It layers extra, out-of-tree policy modules onto
-# the server WITHOUT patching the installed package (respecting "no OSS hacks"):
-# the module lives in ~/dotfiles/omnigent_config/policy_modules/ and is put on
-# PYTHONPATH by the unit so `importlib.import_module("capture_diff")` resolves.
+# everything below is opt-in. It layers out-of-tree policies onto the server
+# without patching the installed package. The policy module root is placed on
+# PYTHONPATH by the systemd unit.
 
 # Extra policy modules to import at startup (dotted module paths, resolved via
 # PYTHONPATH). Their POLICY_REGISTRY entries are merged into the registry.
@@ -16,6 +15,16 @@ policy_modules:
 # session. `type: function` self-selects its phase (a tool_result capture here),
 # so no `on:` is needed.
 policies:
+  approve_diff_watch_subscription:
+    type: function
+    function: capture_diff.approve_diff_watch_subscription
+
+  diff_watch_preferences:
+    type: function
+    function: capture_diff.diff_watch_preference_policy
+    set_labels:
+      - omnigent.diff.watch
+
   capture_diff:
     type: function
     function:

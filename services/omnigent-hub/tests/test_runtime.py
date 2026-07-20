@@ -413,6 +413,7 @@ def test_stop_ingress_stops_timer_before_active_snapshot(
 
     mutations = [call for call in calls if "stop" in call]
     assert mutations == [
+        ["systemctl", "--user", "stop", "omnigent-diff-watcher.service"],
         ["systemctl", "--user", "stop", "omnigent-google-chat.service"],
         ["systemctl", "--user", "stop", "omnigent-snapshot.timer"],
         ["systemctl", "--user", "stop", "omnigent-snapshot.service"],

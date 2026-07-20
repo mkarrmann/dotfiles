@@ -8,9 +8,8 @@ required.
 
 The canonical use is stamping a session with the Phabricator diff it created:
 when any tool's output contains ``Differential Revision: .../D12345``, the
-``D12345`` is written to the ``omnigent.diff.number`` session label. Orchest
-already polls session labels, so the diff surfaces on the associated task with
-no further wiring.
+``D12345`` is written to the ``omnigent.diff.number`` session label. The diff
+watcher also binds its stateless MCP intent tools to the current session here.
 
 Contract (verified against omnigent 0.5.1):
 - Declared as a *factory* in ``POLICY_REGISTRY`` (kind ``factory``); the server
@@ -27,10 +26,18 @@ Contract (verified against omnigent 0.5.1):
 
 from __future__ import annotations
 
+import json
 import re
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 _LABEL_VALUE_MAX = 256
+_WATCH_LABEL = "omnigent.diff.watch"
+_WATCH_TOOLS = {
+    "diff_watch_subscribe",
+    "diff_watch_unsubscribe",
+    "diff_watch_status",
+}
 
 
 def _result_text(event: dict) -> str:
@@ -53,9 +60,9 @@ def _result_text(event: dict) -> str:
 
 
 def capture_labels_policy(
-    patterns: Optional[dict] = None,
-    on_tools: Optional[list] = None,
-) -> Callable[[dict], Optional[dict]]:
+    patterns: dict | None = None,
+    on_tools: list | None = None,
+) -> Callable[[dict], dict | None]:
     """Build a passive capture evaluator.
 
     :param patterns: Map of ``label_key -> regex``. On a ``tool_result`` whose
@@ -75,7 +82,7 @@ def capture_labels_policy(
             continue
     tool_filter = set(on_tools) if on_tools else None
 
-    def _evaluate(event: dict) -> Optional[dict]:
+    def _evaluate(event: dict) -> dict | None:
         try:
             if event.get("type") != "tool_result":
                 return None
@@ -103,14 +110,101 @@ def capture_labels_policy(
             return {
                 "result": "ALLOW",
                 "set_labels": set_labels,
-                "reason": "capture_diff: stamped session metadata "
-                + ", ".join(sorted(set_labels)),
+                "reason": "capture_diff: stamped session metadata " + ", ".join(sorted(set_labels)),
             }
         except Exception:
             # Never let a capture failure block or deny a tool call.
             return None
 
     return _evaluate
+
+
+def approve_diff_watch_subscription(event: dict) -> dict | None:
+    """Require explicit approval for the one persistent watcher mutation."""
+
+    try:
+        if event.get("type") != "tool_call":
+            return None
+        data = event.get("data")
+        name = data.get("name") if isinstance(data, dict) else event.get("target")
+        if _watch_tool_name(name) != "diff_watch_subscribe":
+            return None
+        return {
+            "result": "ASK",
+            "reason": "Subscribe this session to batched review and CI notifications?",
+        }
+    except Exception:
+        # Approval policy failures must fail closed in the policy engine.
+        return {"result": "DENY", "reason": "Could not validate diff-watch opt-in."}
+
+
+def diff_watch_preference_policy(event: dict) -> dict | None:
+    """Bind stateless MCP intent tools to the authenticated session labels."""
+
+    try:
+        if event.get("type") != "tool_result":
+            return None
+        tool = _watch_tool_name(event.get("target"))
+        if tool is None:
+            return None
+        context = event.get("context")
+        labels = context.get("labels", {}) if isinstance(context, dict) else {}
+        if not isinstance(labels, dict):
+            labels = {}
+        diff_id = labels.get("omnigent.diff.number")
+
+        if tool == "diff_watch_status":
+            preference = labels.get(_WATCH_LABEL, "off")
+            return {
+                "result": "ALLOW",
+                "data": f"Diff watch: {preference}; associated diff: {diff_id or 'none'}.",
+            }
+        if tool == "diff_watch_unsubscribe":
+            return {
+                "result": "ALLOW",
+                "set_labels": {_WATCH_LABEL: "off"},
+                "data": "Diff-watch notifications are disabled for this session.",
+            }
+        if not isinstance(diff_id, str) or not re.fullmatch(r"D[1-9][0-9]*", diff_id):
+            return {
+                "result": "ALLOW",
+                "data": "Cannot subscribe: this session has no associated Phabricator diff.",
+            }
+        request = event.get("request_data")
+        arguments = request.get("arguments", {}) if isinstance(request, dict) else {}
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                arguments = {}
+        raw_events = arguments.get("events") if isinstance(arguments, dict) else None
+        if raw_events is None:
+            events = ["ci_failure", "review_comment"]
+        elif (
+            isinstance(raw_events, list)
+            and raw_events
+            and all(item in {"review_comment", "ci_failure"} for item in raw_events)
+        ):
+            events = sorted(set(raw_events))
+        else:
+            return {
+                "result": "ALLOW",
+                "data": "Cannot subscribe: events must select review_comment or ci_failure.",
+            }
+        preference = ",".join(events)
+        return {
+            "result": "ALLOW",
+            "set_labels": {_WATCH_LABEL: preference},
+            "data": f"Diff-watch notifications requested for {diff_id}: {preference}.",
+        }
+    except Exception:
+        return None
+
+
+def _watch_tool_name(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return next((name for name in _WATCH_TOOLS if value.endswith(name)), None)
 
 
 POLICY_REGISTRY: list[dict[str, Any]] = [

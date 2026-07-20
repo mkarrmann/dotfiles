@@ -1,0 +1,20 @@
+cases:
+  - name: created_and_owned
+    prompt: I submitted D90000001 from this workspace and will handle follow-up.
+    expected_calls: [diff_watch__diff_watch_subscribe]
+  - name: explicit_watch_request
+    prompt: Watch the diff associated with this session for comments and CI.
+    expected_calls: [diff_watch__diff_watch_subscribe]
+  - name: read_only_review
+    prompt: Review D90000002, which belongs to another engineer.
+    expected_calls: []
+  - name: temporary_child_research
+    prompt: As a temporary sub-agent, investigate the history of D90000003.
+    expected_calls: []
+  - name: watcher_wake
+    prompt: "[Diff watcher dwb_test] D90000001 has reviewer comments and CI failures."
+    expected_calls: [diff_comments_current, ci_signals_current]
+    forbidden_calls: [diff_watch__diff_watch_subscribe]
+  - name: handoff
+    prompt: Stop watching this diff; another engineer owns it now.
+    expected_calls: [diff_watch__diff_watch_unsubscribe]

@@ -49,6 +49,7 @@ def test_create_validate_and_restore_snapshot(
     assert archive.is_file()
     assert archive.with_suffix(archive.suffix + ".sha256").is_file()
     assert manifest["databases"]["chat.db"]["table_counts"]["sessions"] == 3
+    assert manifest["databases"]["diff-watcher.sqlite3"]["table_counts"] == {"subscriptions": 4}
     assert manifest["credentials"] == {"account_tokens": 0, "password_hashes": 0}
     assert manifest["artifacts"] == {"count": 1, "total_bytes": 8}
 
@@ -58,10 +59,13 @@ def test_create_validate_and_restore_snapshot(
 
     with sqlite3.connect(hub_config.chat_db) as db:
         db.execute("DELETE FROM sessions")
+    with sqlite3.connect(hub_config.diff_watcher_db) as db:
+        db.execute("DELETE FROM subscriptions")
     (hub_config.artifacts_dir / "blob").write_bytes(b"changed")
     restored = restore_snapshot(hub_config, archive)
     assert restored["generation_id"] == manifest["generation_id"]
     assert sqlite_summary(hub_config.chat_db)["table_counts"]["sessions"] == 3
+    assert sqlite_summary(hub_config.diff_watcher_db)["table_counts"]["subscriptions"] == 4
     assert (hub_config.artifacts_dir / "blob").read_bytes() == b"artifact"
     assert Path(str(restored["pre_restore_backup"])).is_dir()
 
@@ -115,6 +119,18 @@ def test_bridge_source_change_blocks_restore(
     source = hub_config.bridge_project / "src/omnigent_google_chat/__init__.py"
     source.write_text("VALUE = 2\n", encoding="utf-8")
     with pytest.raises(SnapshotError, match="bridge version mismatch"):
+        validate_snapshot(hub_config, archive)
+
+
+def test_diff_watcher_source_change_blocks_restore(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    manifest = create_snapshot(hub_config, record(), quiesced=False)
+    archive = Path(str(manifest["archive_path"]))
+    source = hub_config.diff_watcher_project / "src/omnigent_diff_watcher/__init__.py"
+    source.write_text("VALUE = 2\n", encoding="utf-8")
+    with pytest.raises(SnapshotError, match="diff watcher version mismatch"):
         validate_snapshot(hub_config, archive)
 
 

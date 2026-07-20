@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "diff_id": "D90000003",
+  "lifecycle": "active",
+  "author_id": "user-author",
+  "latest_version_id": "version-green-9",
+  "last_activity_at": "2026-01-15T08:00:00Z",
+  "observed_at": "2026-01-15T12:05:00Z",
+  "comments": {
+    "status": "ok",
+    "cursor": "comments-green-1",
+    "items": []
+  },
+  "ci": {
+    "status": "ok",
+    "cursor": "ci-green-1",
+    "aggregate": "passed",
+    "failures": []
+  }
+}

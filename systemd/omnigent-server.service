@@ -24,8 +24,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
-# Put out-of-tree policy modules (capture_diff) on the import path so the
-# server can `importlib.import_module` them without patching the installed pkg.
+# Put out-of-tree policy modules on the import path.
 Environment=PYTHONPATH=%h/dotfiles/omnigent_config/policy_modules
 EnvironmentFile=%h/dotfiles/omnigent_config/topology.env
 ExecCondition=%h/dotfiles/services/omnigent-hub/.venv/bin/omnigent-hub gate

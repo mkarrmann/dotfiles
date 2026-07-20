@@ -36,6 +36,14 @@ class HubConfig:
         return self.data_dir / "google-chat.sqlite3"
 
     @property
+    def diff_watcher_db(self) -> Path:
+        return self.data_dir / "diff-watcher.sqlite3"
+
+    @property
+    def diff_watcher_project(self) -> Path:
+        return self.dotfiles / "services/omnigent-diff-watcher"
+
+    @property
     def artifacts_dir(self) -> Path:
         return self.data_dir / "artifacts"
 
