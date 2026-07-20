@@ -1,21 +1,51 @@
 #!/usr/bin/env bash
+# Prod Omnigent launcher: run the published uv-tool binary, but default
+# client subcommands to the remote hub.
+#
+# The omnigent CLI has no default-server support — every `--server` option
+# defaults to a local server — so a bare `omnigent resume/run/...` silently
+# talks to the local store instead of the hub. Inject `--server` here from the
+# same resolver the rest of the setup uses (`omnigent-server-url`, exported as
+# `OMNIGENT_URL` by ~/dotfiles/.shell_env), so `omnigent` "just works" against
+# prod on every machine.
+#
+# The dev/source build lives in `omnigent-dev`.
 set -euo pipefail
 
-repo="${OMNIGENT_REPO:-$HOME/repos/omnigent}"
-
-if [[ ! -d "$repo" ]]; then
-  echo "ERROR: Omnigent repo not found: $repo" >&2
-  exit 1
+real="$HOME/.local/bin/omnigent"
+if [[ ! -x "$real" ]]; then
+  echo "omnigent: prod binary not found at $real (is the uv tool installed?)" >&2
+  exit 127
 fi
 
-if command -v uv >/dev/null 2>&1; then
-  uv_bin="$(command -v uv)"
-elif [[ -x "$HOME/.local/bin/uv" ]]; then
-  uv_bin="$HOME/.local/bin/uv"
-else
-  echo "ERROR: uv not found; install uv or add it to PATH" >&2
-  exit 1
+# Client leaf-subcommands that accept `--server` and should target the hub by
+# default. Management/local subcommands (server, host, session, debug, setup,
+# login, config, stop, update, ...) are intentionally excluded — they run
+# locally or manage the hub directly, and would reject an injected `--server`.
+inject=0
+case "${1:-}" in
+  resume | run | attach | antigravity | claude | codex | cursor | goose | hermes | kimi | kiro | opencode | pi | qwen)
+    inject=1
+    ;;
+esac
+
+# Never override an explicit server/local choice.
+if ((inject)); then
+  for arg in "$@"; do
+    case "$arg" in
+      --server | --server=* | --local)
+        inject=0
+        break
+        ;;
+    esac
+  done
 fi
 
-cd "$repo"
-exec "$uv_bin" run omnigent "$@"
+if ((inject)); then
+  server="${OMNIGENT_URL:-$(omnigent-server-url)}"
+  sub="$1"
+  shift
+  exec "$real" "$sub" --server "$server" "$@"
+fi
+
+exec "$real" "$@"
