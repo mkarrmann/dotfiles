@@ -227,14 +227,6 @@ tmp=$(jq '
   .statusLine = {"type": "command", "command": "~/.claude/statusline.sh"} |
   .hooks.PreToolUse = [
     {
-      "hooks": [
-        {
-          "type": "command",
-          "command": "bash ~/.claude/hooks/nvim-notify.sh"
-        }
-      ]
-    },
-    {
       "matcher": "Edit|Write",
       "hooks": [
         {
@@ -269,14 +261,6 @@ tmp=$(jq '
       "hooks": [
         {
           "type": "command",
-          "command": "bash ~/.claude/hooks/nvim-notify.sh"
-        }
-      ]
-    },
-    {
-      "hooks": [
-        {
-          "type": "command",
           "command": "[ -f ~/.claude/agent-manager/bin/agent-tracker.sh ] && cat | bash ~/.claude/agent-manager/bin/agent-tracker.sh done || cat > /dev/null",
           "timeout": 10
         }
@@ -284,14 +268,6 @@ tmp=$(jq '
     }
   ] |
   .hooks.UserPromptSubmit = [
-    {
-      "hooks": [
-        {
-          "type": "command",
-          "command": "bash ~/.claude/hooks/nvim-notify.sh"
-        }
-      ]
-    },
     {
       "hooks": [
         {
@@ -311,14 +287,6 @@ tmp=$(jq '
     }
   ] |
   .hooks.SessionStart = [
-    {
-      "hooks": [
-        {
-          "type": "command",
-          "command": "bash ~/.claude/hooks/nvim-notify.sh"
-        }
-      ]
-    },
     {
       "hooks": [
         {
@@ -344,10 +312,6 @@ tmp=$(jq '
       "hooks": [
         {
           "type": "command",
-          "command": "bash ~/.claude/hooks/nvim-notify.sh"
-        },
-        {
-          "type": "command",
           "command": "[ -f ~/.claude/agent-manager/bin/agent-tracker.sh ] && cat | bash ~/.claude/agent-manager/bin/agent-tracker.sh waiting || cat > /dev/null",
           "timeout": 5
         }
@@ -355,14 +319,6 @@ tmp=$(jq '
     }
   ] |
   .hooks.SessionEnd = [
-    {
-      "hooks": [
-        {
-          "type": "command",
-          "command": "bash ~/.claude/hooks/nvim-notify.sh"
-        }
-      ]
-    },
     {
       "hooks": [
         {

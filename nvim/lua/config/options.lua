@@ -23,11 +23,9 @@ vim.opt.statuscolumn = table.concat({
 vim.opt.conceallevel = 0
 vim.opt.concealcursor = ""
 
--- Custom tabline showing tab names and Claude state indicators.
--- State colors: blue=⚙ (working), red=! (needs input), yellow=✓ (done unread).
--- The "~" (seen) and "" (idle) states use default tabline colors.
--- TabEnter autocmd (autocmds.lua) downgrades ✓ → ~ when the tab is viewed.
-require("lib.claude-tab-state")
+-- Tabpage names and Omnigent-backed CodeCompanion activity indicators.
+require("lib.omnigent-tab-state").setup()
+require("lib.agent-tabline").setup()
 vim.o.tabline = "%!v:lua._tabline()"
 vim.o.showtabline = 2
 

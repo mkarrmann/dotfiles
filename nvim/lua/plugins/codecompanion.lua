@@ -2014,13 +2014,13 @@ local function tab_chat_compact()
   )
 end
 
-local function codecompanion_local_url()
+local function codecompanion_local_dir()
   local checkout = vim.env.CODECOMPANION_NVIM_REPO
     or vim.fn.expand("~/repos/codecompanion.nvim")
   local omnigent_adapter = checkout .. "/lua/codecompanion/adapters/omnigent/init.lua"
   if vim.fn.isdirectory(checkout .. "/.git") == 1
       and vim.fn.filereadable(omnigent_adapter) == 1 then
-    return "file://" .. checkout
+    return checkout
   end
   return nil
 end
@@ -2029,7 +2029,7 @@ return {
   {
     "mkarrmann/codecompanion.nvim", -- fork: adds the native omnigent adapter (see <leader>aM)
     name = "codecompanion.nvim",
-    url = codecompanion_local_url(),
+    dir = codecompanion_local_dir(),
     dependencies = {
       "nvim-lua/plenary.nvim",
       "nvim-treesitter/nvim-treesitter",

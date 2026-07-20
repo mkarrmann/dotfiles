@@ -66,17 +66,6 @@ vim.api.nvim_create_autocmd({ "FocusGained", "TermEnter" }, {
 	end,
 })
 
--- Downgrade "✓" (Claude done, unread) → "~" (seen) when switching to the tab.
-vim.api.nvim_create_autocmd("TabEnter", {
-	callback = function()
-		local ok, state = pcall(vim.api.nvim_tabpage_get_var, 0, "claude_state")
-		if ok and state == "✓" then
-			vim.api.nvim_tabpage_set_var(0, "claude_state", "~")
-			vim.cmd("redrawtabline")
-		end
-	end,
-})
-
 -- Copy every yank to the local clipboard via OSC52 (copy-only).
 local osc52 = require("vim.ui.clipboard.osc52")
 vim.api.nvim_create_autocmd("TextYankPost", {

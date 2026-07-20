@@ -2,6 +2,7 @@
 -- Adds :ClaudeCodeName and :ClaudeCodeAgents commands with keybindings
 
 local agent_session = require("lib.agent-session")
+require("lib.agent-tab-actions")
 
 local next_name_file = vim.fn.expand("~/.claude-next-name")
 
