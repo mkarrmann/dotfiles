@@ -81,6 +81,24 @@ get_screen_width() {
     'ObjC.import("AppKit"); $.NSScreen.mainScreen.frame.size.width' 2>/dev/null || echo 0
 }
 
+# Idempotently set the accordion column to (100 - SIDEBAR_PERCENT)% of the main
+# screen width via an ABSOLUTE resize (no +/-). A fixed +delta nudge computed on
+# one monitor does not survive a move to a different-size monitor, so on a
+# monitor change the split silently overflows; an absolute target self-corrects
+# to whatever monitor the workspace currently lives on. Works on hidden
+# workspaces (no focus needed) and is safe to call on an already-correct layout.
+enforce_split() {
+  local first_accordion="$1"
+  [[ -n "$first_accordion" ]] || return 0
+  local accordion_percent=$((100 - SIDEBAR_PERCENT))
+  [[ "$accordion_percent" -ne 50 ]] || return 0
+  local screen_width
+  screen_width=$(get_screen_width)
+  [[ "$screen_width" -gt 0 ]] || return 0
+  local target=$(( screen_width * accordion_percent / 100 ))
+  aerospace resize --window-id "$first_accordion" width "$target" 2>/dev/null || true
+}
+
 workspace_fingerprint() {
   local windows="$1"
   echo "$windows" | jq -r '.[] | "\(.["window-id"]):\(.["app-name"])"' | sort | md5 -q
@@ -308,7 +326,8 @@ arrange_workspace_once() {
   fi
 
   if layout_already_correct "$ws" "$sidebar_ids" "$accordion_ids"; then
-    echo "  [$ws] sidebar+accordion already correct → marker only"
+    echo "  [$ws] sidebar+accordion already correct → enforcing split + marker"
+    enforce_split "$(echo "$accordion_ids" | head -1)"
     echo "$fingerprint" > "$marker_file"
     return 0
   fi
@@ -496,17 +515,8 @@ arrange_workspace_once() {
     aerospace layout h_tiles 2>/dev/null || true
   fi
 
-  # Resize from the default 50/50 to the configured split.
-  local accordion_percent=$((100 - SIDEBAR_PERCENT))
-  if [[ "$accordion_percent" -ne 50 ]]; then
-    local screen_width
-    screen_width=$(get_screen_width)
-    if [[ "$screen_width" -gt 0 ]]; then
-      local delta=$(( screen_width * (accordion_percent - 50) / 100 ))
-      aerospace focus --window-id "$first_accordion" 2>/dev/null
-      aerospace resize width "+$delta" 2>/dev/null || true
-    fi
-  fi
+  # Set the sidebar/accordion split for the current monitor.
+  enforce_split "$first_accordion"
 
   if layout_already_correct "$ws" "$sidebar_ids" "$accordion_ids"; then
     echo "$fingerprint" > "$marker_file"
