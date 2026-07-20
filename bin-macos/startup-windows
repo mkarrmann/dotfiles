@@ -42,15 +42,15 @@ aerospace() {
 }
 
 # ── Args ─────────────────────────────────────────────────────────────
-ORCHEST_MODE_FLAG=""
+ORCHEST_MODE_FLAG="--prod"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --orchest-prod) ORCHEST_MODE_FLAG="--prod"; shift ;;
     --orchest-dev)  ORCHEST_MODE_FLAG="--dev";  shift ;;
     -h|--help)
-      echo "Usage: startup-windows [--orchest-dev|--orchest-prod]"
-      echo "  --orchest-dev   (default) launch Orchest via 'pnpm dev' with HMR"
-      echo "  --orchest-prod  launch built Orchest from apps/desktop/out/ (lower memory)"
+      echo "Usage: startup-windows [--orchest-prod|--orchest-dev]"
+      echo "  --orchest-prod  (default) launch built Orchest from apps/desktop/out/ (lower memory)"
+      echo "  --orchest-dev   launch Orchest via 'pnpm dev' with HMR"
       exit 0
       ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
