@@ -30,11 +30,22 @@ EnvironmentFile=%h/dotfiles/omnigent_config/topology.env
 Environment=THRIFT_TLS_CL_CERT_PATH=/var/facebook/credentials/%u/x509/%u.pem
 Environment=THRIFT_TLS_CL_KEY_PATH=/var/facebook/credentials/%u/x509/%u.pem
 Environment=CODEX_MANAGED_CONFIG_PATH=/dev/null
+# HACK(omnigent-sdk-codex-cwd): force the dotfiles launcher so it can chdir to
+# OMNIGENT_RUNNER_WORKSPACE. Remove HARNESS_CODEX_PATH and its passthrough-list
+# entry once Omnigent sets HARNESS_CODEX_CWD from the session runtime cwd. See
+# docs/omnigent-codecompanion-adapter.md, "Temporary SDK Codex workarounds".
+Environment=HARNESS_CODEX_PATH=%h/bin/codex
+# Temporary tool-observability workaround, independent of the cwd hack: native
+# Codex tools are invisible to Omnigent's transcript and progress watchdog.
+# These are supported operator knobs; remove them once native Codex tool events
+# are forwarded as harness progress and durable session items.
+Environment=HARNESS_CODEX_DISABLE_NATIVE_TOOLS=1
+Environment=HARNESS_TURN_TIMEOUT_S=1800
 Environment=XDG_RUNTIME_DIR=%t
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
 # The host filters its environment before launching runners. Forward only the
 # non-secret paths/selectors required by Meta's Claude and Codex launchers.
-Environment=OMNIGENT_RUNNER_ENV_PASSTHROUGH=THRIFT_TLS_CL_CERT_PATH,THRIFT_TLS_CL_KEY_PATH,CODEX_MANAGED_CONFIG_PATH,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS
+Environment=OMNIGENT_RUNNER_ENV_PASSTHROUGH=THRIFT_TLS_CL_CERT_PATH,THRIFT_TLS_CL_KEY_PATH,CODEX_MANAGED_CONFIG_PATH,HARNESS_CODEX_PATH,HARNESS_CODEX_DISABLE_NATIVE_TOOLS,HARNESS_TURN_TIMEOUT_S,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS
 ExecStart=%h/bin/omnigent-host-run
 Restart=always
 RestartSec=5

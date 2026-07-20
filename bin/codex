@@ -15,6 +15,25 @@ fi
 
 args=("$@")
 if [[ "${1:-}" == "app-server" ]]; then
+  # HACK(omnigent-sdk-codex-cwd): Omnigent's managed-host runner resolves the
+  # session workspace, but its built-in codex spawn-env builder drops that cwd
+  # and serializes the raw `os_env.cwd: .`. Start app-server in the runner
+  # workspace so Codex's relative thread/start cwd resolves correctly. Remove
+  # this block, its env passthrough, and HARNESS_CODEX_PATH after Omnigent sets
+  # HARNESS_CODEX_CWD from the per-session runtime cwd. See
+  # docs/omnigent-codecompanion-adapter.md, "Temporary SDK Codex workarounds".
+  if [[ -n "${OMNIGENT_RUNNER_WORKSPACE:-}" ]]; then
+    if [[ "${OMNIGENT_RUNNER_WORKSPACE}" != /* ]]; then
+      echo "OMNIGENT_RUNNER_WORKSPACE must be absolute: ${OMNIGENT_RUNNER_WORKSPACE}" >&2
+      exit 2
+    fi
+    if [[ ! -d "${OMNIGENT_RUNNER_WORKSPACE}" ]]; then
+      echo "Omnigent runner workspace is not a directory: ${OMNIGENT_RUNNER_WORKSPACE}" >&2
+      exit 2
+    fi
+    cd -P -- "${OMNIGENT_RUNNER_WORKSPACE}"
+  fi
+
   shift
   config_args=()
   app_server_args=()
@@ -44,6 +63,15 @@ if [[ "${1:-}" == "app-server" ]]; then
   args=("${config_args[@]}" app-server "${app_server_args[@]}")
 fi
 
+# Test seam for HACK(omnigent-sdk-codex-cwd); production leaves this unset.
+# Remove it with the workspace workaround and tests.
+if [[ -n "${OMNIGENT_CODEX_REAL_PATH:-}" ]]; then
+  if [[ ! -x "${OMNIGENT_CODEX_REAL_PATH}" ]]; then
+    echo "OMNIGENT_CODEX_REAL_PATH is not executable: ${OMNIGENT_CODEX_REAL_PATH}" >&2
+    exit 127
+  fi
+  exec "${OMNIGENT_CODEX_REAL_PATH}" ${args[@]+"${args[@]}"}
+fi
 if [[ -x /usr/local/bin/codex ]]; then
   exec /usr/local/bin/codex ${args[@]+"${args[@]}"}
 fi

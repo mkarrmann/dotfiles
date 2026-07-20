@@ -31,6 +31,12 @@ os_env:
   cwd: .
   sandbox:
     type: none
+    # HACK(omnigent-sdk-codex-cwd): CodexExecutor scrubs the app-server env, so
+    # pass the non-secret runner workspace to ~/bin/codex. Remove this entry
+    # when Omnigent natively maps the session runtime cwd to HARNESS_CODEX_CWD.
+    # See docs/omnigent-codecompanion-adapter.md.
+    env_passthrough:
+      - OMNIGENT_RUNNER_WORKSPACE
 
 # Same blast-radius guardrail polly/debby use: the catastrophic set (force-push,
 # rm -rf /, hard-reset to a remote ref) is denied outright, while everything
