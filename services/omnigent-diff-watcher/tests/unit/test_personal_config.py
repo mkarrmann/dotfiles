@@ -161,3 +161,8 @@ def test_agent_ensure_reconciles_existing_bundle_content() -> None:
     assert 'server.get("name") == "diff_watch"' in script
     assert 'server.get("command") == "omnigent-diff-watch-mcp"' in script
     assert "quiesce-check --json" in script
+
+
+def test_init_restarts_only_an_active_watcher_after_sync() -> None:
+    script = (DOTFILES / "init.sh").read_text()
+    assert "systemctl --user try-restart omnigent-diff-watcher.service" in script

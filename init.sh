@@ -456,6 +456,10 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   # candidate may temporarily lack a delegated Persistent Storage credential,
   # and its last validated route must remain usable while reconciliation waits.
   systemctl --user try-restart omnigent-client-proxy.service 2>/dev/null || true
+  # A code pull updates the watcher's venv and sources in place. Restart only
+  # when it is already active so the owner loads the new code; try-restart is a
+  # no-op on the standby, whose gate and reconciler keep it stopped.
+  systemctl --user try-restart omnigent-diff-watcher.service 2>/dev/null || true
 
   # Pre-create state dirs: systemd opens StandardOutput=append: BEFORE creating
   # StateDirectory=, so a unit's very first start fails 209/STDOUT if the dir is
