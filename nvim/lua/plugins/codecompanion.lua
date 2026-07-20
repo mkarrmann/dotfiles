@@ -3117,7 +3117,7 @@ Placement guidance (overrides the base prompt where they conflict):
         function QueueSlash:get_trigger_characters() return { "/" } end
         function QueueSlash:get_keyword_pattern() return [[/\%(\w\|-\)\+]] end
         function QueueSlash:complete(params, callback)
-          local items = require("codecompanion.providers.completion").slash_commands("chat")
+          local items = require("lib.codecompanion-queue").slash_commands()
           local kind = cmp.lsp.CompletionItemKind.Function
           vim.iter(items):map(function(item)
             item.kind = kind
@@ -3126,12 +3126,7 @@ Placement guidance (overrides the base prompt where they conflict):
           callback({ items = items, isIncomplete = false })
         end
         function QueueSlash:execute(item, callback)
-          vim.api.nvim_set_current_line("")
-          local chat_bufnr = require("lib.codecompanion-queue").chat_bufnr()
-          local chat = chat_bufnr and require("codecompanion").buf_get_chat(chat_bufnr)
-          if chat then
-            require("codecompanion.interactions.chat.slash_commands").run(item, chat)
-          end
+          require("lib.codecompanion-queue").execute_slash(item)
           callback(item)
         end
 

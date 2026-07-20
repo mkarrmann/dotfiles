@@ -49,6 +49,15 @@ local function tab_for_chat(chat_bufnr)
   return t
 end
 
+local function tab_for_input(input_bufnr)
+  input_bufnr = input_bufnr or vim.api.nvim_get_current_buf()
+  local ok, input_tab = pcall(function() return vim.b[input_bufnr].cc_input_tab end)
+  if ok and input_tab and vim.api.nvim_tabpage_is_valid(input_tab) then
+    return input_tab
+  end
+  return vim.api.nvim_get_current_tabpage()
+end
+
 local function any_visible()
   for _, s in pairs(states) do
     if s.status_winnr and vim.api.nvim_win_is_valid(s.status_winnr) then
@@ -253,6 +262,39 @@ local function history_next(t)
   end
 end
 
+local function slash_commands_for_chat(chat)
+  if not chat then return {} end
+  return require("codecompanion.providers.completion").slash_commands("chat", {
+    bufnr = chat.bufnr,
+    chat = chat,
+    adapter = chat.adapter,
+  })
+end
+
+local function find_slash_command(chat, text)
+  return vim.iter(slash_commands_for_chat(chat)):find(function(item)
+    return item.label == text
+  end)
+end
+
+local function execute_slash_command(s, chat, item, text)
+  if not (s and chat and item) then return false end
+  item = vim.deepcopy(item)
+  item.context = chat.buffer_context or item.context
+  push_history(text or item.label)
+  clear_draft_buf(s)
+  local restore_lock = vim.api.nvim_buf_is_valid(chat.bufnr) and not vim.bo[chat.bufnr].modifiable
+  local ok, err = xpcall(function()
+    require("codecompanion.interactions.chat.slash_commands").run(item, chat)
+  end, debug.traceback)
+  if restore_lock and vim.api.nvim_buf_is_valid(chat.bufnr) then
+    vim.bo[chat.bufnr].modified = false
+    vim.bo[chat.bufnr].modifiable = false
+  end
+  if not ok then error(err) end
+  return true
+end
+
 -- Append `text` to the chat buffer as a user message and call `chat:submit()`.
 --
 -- parser.messages walks captures from `chat.header_line - 1` (0-indexed),
@@ -374,6 +416,12 @@ local function send(t)
       end
       sync_queue_ui(s)
     end
+    return
+  end
+
+  local slash_command = find_slash_command(chat, text)
+  if slash_command then
+    execute_slash_command(s, chat, slash_command, text)
     return
   end
 
@@ -782,16 +830,21 @@ end
 -- via the input buffer the user is typing in (which knows its owning tab),
 -- falling back to the current tab's chat.
 function M.chat_bufnr()
-  local cur_buf = vim.api.nvim_get_current_buf()
-  local t
-  local ok, input_tab = pcall(function() return vim.b[cur_buf].cc_input_tab end)
-  if ok and input_tab and vim.api.nvim_tabpage_is_valid(input_tab) then
-    t = input_tab
-  else
-    t = vim.api.nvim_get_current_tabpage()
-  end
+  local t = tab_for_input()
   local s = states[t]
   return s and s.chat_bufnr or nil
+end
+
+function M.slash_commands()
+  local s = states[tab_for_input()]
+  local chat = s and s.chat_bufnr and require("codecompanion").buf_get_chat(s.chat_bufnr)
+  return slash_commands_for_chat(chat)
+end
+
+function M.execute_slash(item)
+  local s = states[tab_for_input()]
+  local chat = s and s.chat_bufnr and require("codecompanion").buf_get_chat(s.chat_bufnr)
+  return execute_slash_command(s, chat, item)
 end
 
 -- Lifecycle hooks driven by `User CodeCompanionRequestStarted/Finished`
