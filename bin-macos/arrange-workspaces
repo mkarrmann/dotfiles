@@ -22,7 +22,7 @@ set -euo pipefail
 #     '%{window-id} %{app-name} | parent=%{window-parent-container-layout} | root=%{workspace-root-container-layout}'
 
 SIDEBAR_TITLE_PATTERN="Orchest \\["
-SIDEBAR_PERCENT=20
+SIDEBAR_PERCENT=12
 MARKER_DIR="/tmp/aerospace-arrange-markers"
 ARRANGE_ATTEMPTS="${ARRANGE_ATTEMPTS:-5}"
 ARRANGE_RETRY_SLEEP="${ARRANGE_RETRY_SLEEP:-1}"
