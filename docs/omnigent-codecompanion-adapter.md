@@ -141,8 +141,8 @@ The current built-in headless harnesses fall into three groups:
   `copilot`. Installed 0.5.1 produces no corresponding `HARNESS_*_CWD` for all
   four while serializing `os_env.cwd` as `.`.
 - **Already recover the workspace:** `pi` and `kimi` receive `cwd` in their
-  spawn-env builder; `qwen`, `goose`, and generic `acp` explicitly fall back to
-  `OMNIGENT_RUNNER_WORKSPACE` inside their harness wrapper.
+  spawn-env builder; `qwen`, `goose`, `hermes`, and generic `acp` explicitly
+  fall back to `OMNIGENT_RUNNER_WORKSPACE` inside their harness wrapper.
 - **Not the same cwd contract:** native terminal harnesses launch directly in
   the runner workspace. `openai-agents` and `antigravity` do not expose the
   same workspace-backed CLI/native-tool surface.
