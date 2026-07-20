@@ -128,6 +128,39 @@ if [ "${#managed_dirs[@]}" -eq 0 ]; then
   exit 0
 fi
 
+# Snapshot the durable builtin rows around registration. The API summary is
+# intentionally lossy (it does not expose prompts, os_env, policies, etc.), so
+# checking for one known MCP server cannot tell whether an arbitrary bundle
+# edit reached the live process cache. bundle_location is content-addressed and
+# version increments on replacement, making the DB row the authoritative
+# change detector on the hub that owns this database.
+agent_bundle_state() {
+  python3 - "$DATA_DIR/chat.db" "${managed_names[@]}" <<'PY'
+import sqlite3
+import sys
+
+db, *names = sys.argv[1:]
+if not names:
+    raise SystemExit(0)
+placeholders = ",".join("?" for _ in names)
+with sqlite3.connect(db) as conn:
+    try:
+        rows = conn.execute(
+            f"SELECT name, version, bundle_location FROM agents "
+            f"WHERE kind = 1 AND name IN ({placeholders}) ORDER BY name",
+            names,
+        )
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):
+            raise SystemExit(0)
+        raise
+    for name, version, location in rows:
+        print(f"{name}\t{version}\t{location}")
+PY
+}
+
+bundle_state_before="$(agent_bundle_state)"
+
 log "reconciling builtins (${managed_names[*]}) on a throwaway port…"
 db="sqlite:///$DATA_DIR/chat.db"
 art="$DATA_DIR/artifacts"
@@ -176,6 +209,12 @@ log "seed server reconciled ${managed_names[*]} into chat.db"
 cleanup
 trap - EXIT
 
+bundle_state_after="$(agent_bundle_state)"
+bundles_changed=false
+if [ "$bundle_state_before" != "$bundle_state_after" ]; then
+  bundles_changed=true
+fi
+
 # Existing agent rows can remain stale in the running server's in-memory cache
 # after the content-addressed database row is updated. Restart only when that
 # happens and only after the normal hub quiescence guard confirms no turn is
@@ -190,7 +229,7 @@ if [ "$live_reachable" = true ]; then
   for name in "${managed_names[@]}"; do
     has_current_agent "$live_url" "$name" || live_current=false
   done
-  if [ "$live_current" != true ] \
+  if { [ "$bundles_changed" = true ] || [ "$live_current" != true ]; } \
       && systemctl --user is-active --quiet omnigent-server.service; then
     if [ ! -x "$DOTFILES/bin/omnigent-hub" ] \
         || ! "$DOTFILES/bin/omnigent-hub" quiesce-check --json >/dev/null; then
