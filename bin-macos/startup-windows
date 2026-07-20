@@ -119,6 +119,15 @@ CHROME_APP="Google Chrome"
 CHROME_INVALID_TITLE_PATTERN="^Who.s using Chrome\\?$"
 claimed_chrome_ids=""
 chrome_restore_settled=false
+
+# Workspace 11 hosts a fixed 2x2 "dashboard" laid out by arrange-ws11. Its two
+# Chrome windows (internalfb Calendar + Google Chat) must be claimed BEFORE the
+# generic Chrome distribution below, or they get handed to ws 1-8 / swept to Z.
+WS11_WORKSPACE=11
+WS11_CAL_URL="https://www.internalfb.com/calendar"
+WS11_CHAT_URL="https://chat.google.com/u/0/app/home"
+WS11_CAL_TITLE_RE='^Calendar\b'
+WS11_CHAT_TITLE_RE='^Chat\b'
 OMNIGENT_PORT="${OMNIGENT_PORT:-$(omnigent-server-url --port)}"
 OMNIGENT_PRIMARY_FQDN="${OMNIGENT_PRIMARY_FQDN:-$(omnigent-server-url --primary)}"
 OMNIGENT_STANDBY_FQDN="${OMNIGENT_STANDBY_FQDN:-$(omnigent-server-url --standby)}"
@@ -433,6 +442,56 @@ close_invalid_chrome_windows_on_workspace() {
   done
 }
 
+find_chrome_by_title() {
+  local re="$1"
+  aerospace list-windows --all --json 2>/dev/null \
+    | jq -r --arg app "$CHROME_APP" --arg re "$re" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" \
+      '[.[] | select(
+        ."app-name" == $app and
+        ((.["window-title"] // "") | test($re)) and
+        ((.["window-title"] // "") | test($invalid) | not)
+      )] | first | .["window-id"] // empty'
+}
+
+# Reserve (claim + relocate) the two workspace-11 dashboard Chrome windows
+# before the generic Chrome distribution runs. Reuses a matching restored
+# window if present; otherwise opens the URL. Claiming keeps them out of the
+# ws 1-8 pool and the surplus->Z sweep. arrange-ws11 does the actual layout.
+reserve_ws11_chrome() {
+  if [[ "$chrome_restore_settled" != true ]] && \
+     osascript -e 'application "Google Chrome" is running' 2>/dev/null | grep -q 'true'; then
+    echo "[ws11] waiting for Chrome session restore to settle..."
+    wait_for_window_settle "$CHROME_APP" 2 20 || true
+    chrome_restore_settled=true
+    SNAPSHOT=$(snapshot_windows)
+  fi
+
+  local spec title_re url wid tries
+  for spec in "${WS11_CAL_TITLE_RE}|${WS11_CAL_URL}" "${WS11_CHAT_TITLE_RE}|${WS11_CHAT_URL}"; do
+    title_re="${spec%%|*}"; url="${spec#*|}"
+    wid=$(find_chrome_by_title "$title_re")
+    if [[ -z "$wid" ]] || chrome_id_is_claimed "$wid"; then
+      echo "[ws11] opening dashboard Chrome window: $url"
+      open -na "$CHROME_APP" --args --profile-directory=Default --new-window "$url" 2>/dev/null || true
+      wid=""
+      for tries in $(seq 1 30); do
+        sleep 0.5
+        wid=$(find_chrome_by_title "$title_re")
+        [[ -n "$wid" ]] && ! chrome_id_is_claimed "$wid" && break
+        wid=""
+      done
+    fi
+    if [[ -n "$wid" ]]; then
+      claim_chrome_window "$wid"
+      aerospace move-node-to-workspace --window-id "$wid" "$WS11_WORKSPACE" 2>/dev/null || true
+      echo "[ws11] reserved Chrome window $wid ($title_re) for workspace $WS11_WORKSPACE"
+    else
+      echo "WARNING: [ws11] could not reserve Chrome window for $title_re" >&2
+    fi
+    SNAPSHOT=$(snapshot_windows)
+  done
+}
+
 # Poll until every WORKSPACES entry has at least one matching window
 # present anywhere. wait_for_new_window in the main loop has a 10s
 # timeout, but app windows can take longer to appear and titles may still
@@ -569,6 +628,9 @@ failures=0
 if ! curl -sf "http://127.0.0.1:${OMNIGENT_PORT}/health" >/dev/null 2>&1; then
   echo "Omnigent proxy is not healthy yet at http://127.0.0.1:${OMNIGENT_PORT}; startup will repair its candidate forwards" >&2
 fi
+
+# Reserve the ws-11 dashboard Chrome windows before generic Chrome distribution.
+reserve_ws11_chrome
 
 for i in "${!WORKSPACES[@]}"; do
   IFS='|' read -r ws type title rest <<< "${WORKSPACES[$i]}"
@@ -817,6 +879,13 @@ ARRANGE_ATTEMPTS=8 ARRANGE_RETRY_SLEEP=1 arrange-workspaces --force $(managed_wo
 
 # If auto-accordion is re-enabled, it should do a full rebuild for any window
 # that appears after this point, so no drain sleep is needed here.
+
+# Build the workspace-11 dashboard (2x2 grid) and pin it to the external
+# secondary monitor. Not a managed workspace, so arrange-workspaces skips it.
+arrange-ws11 || {
+  echo "WARNING: arrange-ws11 did not converge" >&2
+  ((failures++)) || true
+}
 
 # Focus workspace 1
 aerospace workspace 1 2>/dev/null || true
