@@ -9,17 +9,21 @@
 # This is the generic sibling of omnigent-dvsc-ensure: dvsc needs an extra
 # acp: config merge (its harness is acp:dvsc-core), so it keeps its own script;
 # claude/codex are pure executor.type=omnigent builtins that only need the
-# agent-store seed, which this script does for all of them in ONE throwaway
-# server boot.
+# agent-store reconciliation, which this script does for all of them in ONE
+# throwaway server boot. Omnigent's ``--agent`` registration is content-aware:
+# it preserves the stable agent row and updates its bundle only when the
+# materialized content hash changes.
 #
 # Idempotent and portable: safe to re-run, and self-skips where omnigent isn't
 # installed or this host isn't the active Linux hub. Wired into init.sh.
 #
 # The managed `omnigent server start` has no `--agent` hook, so — exactly like
 # omnigent-dvsc-ensure — we register by briefly booting a throwaway server (a
-# free port, the SAME chat.db) with one `--agent` per missing spec; it writes
-# the builtin rows + bundles, then exits. The active server reads the new rows
-# without a restart. Clients, the standby, and macOS never open a local chat.db.
+# free port, the SAME chat.db) with one `--agent` per tracked spec; it writes
+# changed builtin bundles in place, then exits. When a running server still has
+# the old parsed bundle cached, this script restarts it only after the hub
+# quiescence check passes. Clients, the standby, and macOS never open a local
+# chat.db.
 #
 # Env overrides: OMNIGENT_BIN, DOTFILES_DIR, OMNIGENT_DATA_DIR,
 # OMNIGENT_SERVER_URL.
@@ -69,8 +73,10 @@ if ! "$DOTFILES/bin/omnigent-server-url" --is-hub >/dev/null 2>&1; then
   exit 0
 fi
 
-# True iff GET <url>/v1/agents lists an agent named "$2".
-has_agent() {
+# True iff GET <url>/v1/agents exposes the watcher MCP surface for agent "$2".
+# The API summary omits individual tool names, but name + transport + command
+# distinguishes this bundle from the stale pre-watcher registration.
+has_current_agent() {
   local url="$1" name="$2"
   [ -n "$url" ] || return 1
   curl -sf --noproxy '*' --max-time 5 "$url/v1/agents?limit=1000" 2>/dev/null \
@@ -80,7 +86,15 @@ try:
     d=json.load(sys.stdin)
 except Exception:
     sys.exit(1)
-sys.exit(0 if any(a.get("name")==name for a in (d.get("data") or [])) else 1)'
+for agent in d.get("data") or []:
+    if agent.get("name") != name:
+        continue
+    for server in agent.get("mcp_servers") or []:
+        if (server.get("name") == "diff_watch"
+                and server.get("transport") == "stdio"
+                and server.get("command") == "omnigent-diff-watch-mcp"):
+            sys.exit(0)
+sys.exit(1)'
 }
 
 # The HA server is systemd-managed, so `omnigent server status` may not know its
@@ -93,29 +107,28 @@ if [ -z "$live_url" ]; then
   live_url="$SERVER_URL"
 fi
 
-# Collect the spec dirs for agents that aren't registered yet.
-missing_dirs=()
-missing_names=()
+# Reconcile every tracked spec, even when its name is already registered.
+# Existence alone does not imply that the stored content-addressed bundle is
+# current. The Omnigent CLI's registration path performs the hash comparison
+# and updates the existing row in place without disturbing session history.
+managed_dirs=()
+managed_names=()
 for name in "${AGENT_NAMES[@]}"; do
   spec_dir="$AGENTS_DIR/$name"
   if [ ! -d "$spec_dir" ]; then
     log "agent spec missing at $spec_dir; skipping $name"
     continue
   fi
-  if [ -n "$live_url" ] && has_agent "$live_url" "$name"; then
-    log "$name agent already registered ✓ ($live_url)"
-    continue
-  fi
-  missing_dirs+=("$spec_dir")
-  missing_names+=("$name")
+  managed_dirs+=("$spec_dir")
+  managed_names+=("$name")
 done
 
-if [ "${#missing_dirs[@]}" -eq 0 ]; then
-  log "all builtin agents present ✓"
+if [ "${#managed_dirs[@]}" -eq 0 ]; then
+  log "no tracked agent specs found; skipping"
   exit 0
 fi
 
-log "registering builtins (${missing_names[*]}) on a throwaway port…"
+log "reconciling builtins (${managed_names[*]}) on a throwaway port…"
 db="sqlite:///$DATA_DIR/chat.db"
 art="$DATA_DIR/artifacts"
 seed_port="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
@@ -123,7 +136,7 @@ seed_url="http://127.0.0.1:$seed_port"
 seed_log="$(mktemp -t omnigent-agents-seed.XXXXXX.log)"
 
 agent_flags=()
-for d in "${missing_dirs[@]}"; do
+for d in "${managed_dirs[@]}"; do
   agent_flags+=(--agent "$d")
 done
 
@@ -140,45 +153,71 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Wait for the seed server to boot and confirm it registered every missing agent.
+# Wait for the seed server to boot and confirm it reconciled every managed agent.
 registered=false
 for _ in $(seq 1 60); do
   if ! kill -0 "$seed_pid" 2>/dev/null; then
     log "seed server exited early; log follows:"; tail -n 20 "$seed_log" >&2; exit 1
   fi
   all=true
-  for name in "${missing_names[@]}"; do
-    has_agent "$seed_url" "$name" || { all=false; break; }
+  for name in "${managed_names[@]}"; do
+    has_current_agent "$seed_url" "$name" || { all=false; break; }
   done
   if [ "$all" = true ]; then registered=true; break; fi
   sleep 1
 done
 if [ "$registered" != true ]; then
-  log "timed out waiting for seed server to register ${missing_names[*]}; log follows:"
+  log "timed out waiting for seed server to reconcile ${managed_names[*]}; log follows:"
   tail -n 20 "$seed_log" >&2
   exit 1
 fi
-log "seed server registered ${missing_names[*]} into chat.db"
+log "seed server reconciled ${managed_names[*]} into chat.db"
 
 cleanup
 trap - EXIT
 
-# Verify the running server (if any) now sees them via its live DB query.
-if [ -n "$live_url" ]; then
-  for name in "${missing_names[@]}"; do
-    ok=false
-    for _ in $(seq 1 10); do
-      if has_agent "$live_url" "$name"; then ok=true; break; fi
-      sleep 1
-    done
-    if [ "$ok" = true ]; then
-      log "$name registered ✓ (visible on running server $live_url)"
-    else
-      log "$name written to chat.db but not yet visible on $live_url — restart it with 'omnigent server stop && omnigent server start' if it doesn't appear"
-    fi
+# Existing agent rows can remain stale in the running server's in-memory cache
+# after the content-addressed database row is updated. Restart only when that
+# happens and only after the normal hub quiescence guard confirms no turn is
+# active. A fresh registration is visible immediately and needs no restart.
+live_reachable=false
+if [ -n "$live_url" ] \
+    && curl -sf --noproxy '*' --max-time 5 "$live_url/health" >/dev/null 2>&1; then
+  live_reachable=true
+fi
+if [ "$live_reachable" = true ]; then
+  live_current=true
+  for name in "${managed_names[@]}"; do
+    has_current_agent "$live_url" "$name" || live_current=false
   done
+  if [ "$live_current" != true ] \
+      && systemctl --user is-active --quiet omnigent-server.service; then
+    if [ ! -x "$DOTFILES/bin/omnigent-hub" ] \
+        || ! "$DOTFILES/bin/omnigent-hub" quiesce-check --json >/dev/null; then
+      log "agent bundles updated, but the active server is busy; rerun init.sh after current turns finish"
+      exit 1
+    fi
+    log "restarting quiescent server to load changed agent bundles and policies…"
+    systemctl --user restart omnigent-server.service
+    systemctl --user try-restart omnigent-diff-watcher.service 2>/dev/null || true
+  fi
+
+  live_current=false
+  for _ in $(seq 1 30); do
+    all=true
+    for name in "${managed_names[@]}"; do
+      has_current_agent "$live_url" "$name" || { all=false; break; }
+    done
+    if [ "$all" = true ]; then live_current=true; break; fi
+    sleep 1
+  done
+  if [ "$live_current" != true ]; then
+    log "agent bundles were written to chat.db but the live server still exposes stale definitions"
+    exit 1
+  fi
+  log "${managed_names[*]} agent bundles current ✓ ($live_url)"
 else
-  log "registered ${missing_names[*]} ✓ into chat.db (no server currently running; they'll appear when omnigent starts)"
+  log "reconciled ${managed_names[*]} ✓ into chat.db (no server currently running; they'll appear when omnigent starts)"
 fi
 
 # Success: drop the seed log. Failure paths above exit before here, leaving it

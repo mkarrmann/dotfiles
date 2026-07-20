@@ -150,3 +150,14 @@ def test_service_and_mcp_runtime_are_source_control_wired() -> None:
     wrapper = DOTFILES / "bin/omnigent-diff-watch-mcp"
     assert wrapper.stat().st_mode & 0o111
     assert "services/omnigent-diff-watcher/.venv" in wrapper.read_text()
+
+
+def test_agent_ensure_reconciles_existing_bundle_content() -> None:
+    script = (DOTFILES / "bin/omnigent-agents-ensure").read_text()
+    assert 'managed_dirs+=("$spec_dir")' in script
+    assert 'for d in "${managed_dirs[@]}"' in script
+    assert 'has_agent "$live_url"' not in script
+    assert 'has_current_agent "$live_url"' in script
+    assert 'server.get("name") == "diff_watch"' in script
+    assert 'server.get("command") == "omnigent-diff-watch-mcp"' in script
+    assert "quiesce-check --json" in script
