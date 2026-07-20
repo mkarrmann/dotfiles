@@ -330,6 +330,7 @@ def _parse_comments_result(
                         item.get("updated_at")
                         or item.get("date_modified")
                         or item.get("created_at")
+                        or item.get("created")
                     ),
                     content_fingerprint=_fingerprint(" ".join(content.split())),
                 )

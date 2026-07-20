@@ -56,6 +56,32 @@ async def test_nonzero_exit_and_malformed_json_are_redacted() -> None:
 
 
 @pytest.mark.asyncio
+async def test_known_meta_oauth_warning_before_valid_json_is_tolerated() -> None:
+    payload = await run_json_command(
+        (
+            sys.executable,
+            "-c",
+            (
+                "print('Warning: OAuth token is expired or invalid. Run jf auth'); "
+                'print(\'[{\\"id\\": \\"comment-1\\"}]\')'
+            ),
+        ),
+        env={"PATH": os.environ["PATH"]},
+    )
+    assert payload == [{"id": "comment-1"}]
+
+
+@pytest.mark.asyncio
+async def test_unknown_stdout_preamble_remains_malformed() -> None:
+    with pytest.raises(SourceCommandError) as exc_info:
+        await run_json_command(
+            (sys.executable, "-c", "print('unexpected warning'); print('[]')"),
+            env={"PATH": os.environ["PATH"]},
+        )
+    assert exc_info.value.category is SourceCommandErrorCategory.MALFORMED
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("stderr", "category"),
     (

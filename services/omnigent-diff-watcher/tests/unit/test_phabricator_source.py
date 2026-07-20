@@ -142,6 +142,28 @@ async def test_adapter_uses_fixed_read_only_commands_and_filters_comments() -> N
 
 
 @pytest.mark.asyncio
+async def test_adapter_accepts_current_meta_comments_shape() -> None:
+    current_shape = [
+        {
+            "id": "comment-current-cli",
+            "author": "reviewer-synthetic",
+            "content": "Current CLI comment",
+            "created": "2026-07-19T12:02:00-07:00",
+            "phabricator_version": "123456789",
+            "resolved": "",
+            "source": "user",
+        }
+    ]
+    snapshot = await PhabricatorReviewSource(
+        runner=RecordingRunner(current_shape, ci(failed=0))
+    ).snapshot("D90000001", None)
+
+    assert snapshot.comments.status == "ok"
+    assert [item.external_id for item in snapshot.comments.items] == ["comment-current-cli"]
+    assert snapshot.comments.items[0].updated_at.isoformat() == "2026-07-19T12:02:00-07:00"
+
+
+@pytest.mark.asyncio
 async def test_comment_and_ci_fail_independently() -> None:
     failure = SourceCommandError(SourceCommandErrorCategory.TIMEOUT, "safe timeout")
     comments_failed = await PhabricatorReviewSource(

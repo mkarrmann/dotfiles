@@ -14,6 +14,7 @@ from .source_models import DiffSnapshot
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_OUTPUT_LIMIT_BYTES = 1024 * 1024
 _STDERR_LIMIT_BYTES = 16 * 1024
+_META_OAUTH_WARNING_PREFIX = b"Warning: OAuth token is expired or invalid."
 
 
 class SourceCommandErrorCategory(StrEnum):
@@ -143,9 +144,23 @@ async def run_json_command(
             summary,
         )
     try:
-        return json.loads(stdout)
+        return _decode_json_output(stdout)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise SourceCommandError(
             SourceCommandErrorCategory.MALFORMED,
             "review source returned invalid JSON",
         ) from exc
+
+
+def _decode_json_output(stdout: bytes) -> object:
+    """Decode JSON, tolerating only Meta CLI's known stdout auth warning."""
+    try:
+        return json.loads(stdout)
+    except (json.JSONDecodeError, UnicodeDecodeError) as original:
+        lines = stdout.splitlines()
+        if len(lines) < 2 or not lines[0].startswith(_META_OAUTH_WARNING_PREFIX):
+            raise
+        try:
+            return json.loads(b"\n".join(lines[1:]))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise original from None
