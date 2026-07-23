@@ -96,6 +96,13 @@ enforce_split() {
   screen_width=$(get_screen_width)
   [[ "$screen_width" -gt 0 ]] || return 0
   local target=$(( screen_width * accordion_percent / 100 ))
+  # Orchest windows won't shrink below ~300px. On narrow monitors the sidebar's
+  # (100 - accordion_percent)% slice falls below that floor, so the sidebar keeps
+  # its minimum while the absolute accordion target overflows and overlaps it.
+  # Cap the accordion so the remainder always covers the sidebar minimum.
+  local min_sidebar=300
+  local max_accordion=$(( screen_width - min_sidebar ))
+  [[ "$target" -gt "$max_accordion" ]] && target="$max_accordion"
   aerospace resize --window-id "$first_accordion" width "$target" 2>/dev/null || true
 }
 
