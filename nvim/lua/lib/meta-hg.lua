@@ -3534,6 +3534,47 @@ local function setup_line_blame()
     end
     CONFIG.line_blame.enable = not CONFIG.line_blame.enable
   end, { desc = "Toggle display of line blame" })
+
+  -- The diff shown in the ghost text is virtual text, so the cursor can never
+  -- land on it to yank it. Resolve the diff for the cursor line and copy its
+  -- URL to the clipboard instead -- the only way to grab it over SSH.
+  ---@param bufnr integer
+  ---@param lnum integer 1-indexed
+  ---@return string? diff phabdiff id (e.g. "D12345") or nil
+  local function diff_for_line(bufnr, lnum)
+    local cached = (cache[vim.fn.expand("%")] or {})[lnum]
+    if cached then
+      return cached:match("D%d+")
+    end
+    -- cache miss (blame disabled or not yet loaded): query hg directly
+    local filepath = vim.api.nvim_buf_get_name(bufnr)
+    local out = vim
+      .system(
+        { "hg", "blame", "-r", "wdir()", "--phabdiff", "-q", filepath },
+        { text = true, cwd = repo_root_of(filepath) }
+      )
+      :wait()
+    if out.code ~= 0 then
+      return nil
+    end
+    local line = vim.split(vim.trim(out.stdout), "\n")[lnum]
+    return line and line:match("D%d+")
+  end
+
+  vim.api.nvim_create_user_command("HgLineBlameCopyDiff", function()
+    local bufnr = vim.api.nvim_get_current_buf()
+    local lnum = vim.api.nvim_win_get_cursor(0)[1]
+    local diff = diff_for_line(bufnr, lnum)
+    if not diff then
+      vim.notify(
+        "No diff for this line (uncommitted or not tracked)",
+        vim.log.levels.WARN
+      )
+      return
+    end
+    vim.fn.setreg("+", diff)
+    vim.notify("Copied " .. diff, vim.log.levels.INFO)
+  end, { desc = "Copy the diff number for the line under the cursor to clipboard" })
 end
 
 local function hg_diff_snacks_picker(opts)

@@ -246,6 +246,9 @@ vim.api.nvim_create_autocmd("User", {
 		end, { desc = "Side-by-side diff of all uncommitted changes" })
 
 		vim.keymap.set("n", "<leader>hb", "<CMD>HgBlame<CR>", { desc = "Hg blame" })
+		vim.keymap.set("n", "<leader>hB", "<CMD>HgLineBlameToggle<CR>", { desc = "Hg toggle inline blame" })
+		vim.keymap.set("n", "<leader>ho", "<CMD>HgLineBlameCopyDiff<CR>", { desc = "Hg copy diff number for line" })
+		vim.keymap.set("n", "<leader>hh", "<CMD>HgHistory<CR>", { desc = "Hg file history" })
 		vim.keymap.set("n", "<leader>hd", "<CMD>HgDiffSplit<CR>", { desc = "Hg diff split" })
 		vim.keymap.set("n", "<leader>hD", "<CMD>HgDiffSplitWorkingSet<CR>", { desc = "Hg diff split (working set)" })
 		vim.keymap.set("n", "<leader>hs", "<CMD>HgSsl<CR>", { desc = "Hg smartlog" })
