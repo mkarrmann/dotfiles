@@ -43,9 +43,14 @@ Environment=HARNESS_CODEX_DISABLE_NATIVE_TOOLS=1
 Environment=HARNESS_TURN_TIMEOUT_S=1800
 Environment=XDG_RUNTIME_DIR=%t
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+# TEMPORARY DIAGNOSTIC (harness/SDK visibility): DEBUG surfaces the claude CLI
+# stderr (claude_sdk_executor logs it at DEBUG only) into the runner-conv logs,
+# so a turn that ends without an assistant answer is diagnosable. Noisy — revert
+# to INFO (or drop this line) once the silent-turn cause is captured.
+Environment=OMNIGENT_LOG_LEVEL=DEBUG
 # The host filters its environment before launching runners. Forward only the
 # non-secret paths/selectors required by Meta's Claude and Codex launchers.
-Environment=OMNIGENT_RUNNER_ENV_PASSTHROUGH=THRIFT_TLS_CL_CERT_PATH,THRIFT_TLS_CL_KEY_PATH,CODEX_MANAGED_CONFIG_PATH,HARNESS_CODEX_PATH,HARNESS_CODEX_DISABLE_NATIVE_TOOLS,HARNESS_TURN_TIMEOUT_S,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS
+Environment=OMNIGENT_RUNNER_ENV_PASSTHROUGH=THRIFT_TLS_CL_CERT_PATH,THRIFT_TLS_CL_KEY_PATH,CODEX_MANAGED_CONFIG_PATH,HARNESS_CODEX_PATH,HARNESS_CODEX_DISABLE_NATIVE_TOOLS,HARNESS_TURN_TIMEOUT_S,OMNIGENT_LOG_LEVEL,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS
 ExecStart=%h/bin/omnigent-host-run
 Restart=always
 RestartSec=5
