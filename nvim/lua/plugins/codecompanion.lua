@@ -1032,6 +1032,30 @@ local OMNIGENT_MODELS = {
 -- rather than "no override". claude-sdk's own default is fine, so it stays nil.
 local OMNIGENT_MODEL_DEFAULT = { codex = "gpt-5.5" }
 
+-- Per-model input context windows (vendor model id -> tokens), keyed exactly as
+-- OMNIGENT_MODELS above. Wired into the omnigent adapter `opts.context_windows`
+-- and consumed by the fork's chat/omnigent/render.lua:enrich_usage, where it
+-- takes precedence over the server-reported window. WHY: omnigent's server
+-- resolves the window from an external model catalog fetched over the internet;
+-- on a devserver with no direct egress that fetch fails and every model
+-- collapses to a conservative 128k default, mislabeling the context meter (e.g.
+-- 229.9k/128.0k => 179%). These values mirror the catalog exactly (pulled via
+-- `with-proxy` from omnigent.llms.context_window.get_model_context_window), so
+-- the meter reads what the server would report WITH egress -- but offline, from
+-- local config, with zero per-turn network. Update when adding a model to
+-- OMNIGENT_MODELS; an unlisted model simply falls back to the server value.
+local OMNIGENT_CONTEXT_WINDOWS = {
+  ["claude-opus-4-8"]   = 1128000,
+  ["claude-opus-4-7"]   = 1128000,
+  ["claude-sonnet-4-6"] = 1064000,
+  ["claude-haiku-4-5"]  = 264000,
+  ["gpt-5.5"]           = 1178000,
+  ["gpt-5.3-codex"]     = 144384,
+  ["gpt-5.6-sol"]       = 1178000,
+  ["gpt-5.6-terra"]     = 1178000,
+  ["gpt-5.6-luna"]      = 1178000,
+}
+
 -- dvsc (the `acp:dvsc-core` agent) runs Meta's dm-core, which speaks its OWN
 -- model ids (dot-notation, e.g. `claude-opus-4.8`) — NOT omnigent's vendor ids.
 -- Reuse the curated `DVSC_MODELS` catalog (already scoped to this user's
@@ -2544,6 +2568,11 @@ return {
                   -- stream-first replay safe).
                   background_updates = true,
                   stream_heartbeat_timeout = 45000,
+                  -- Per-model context windows (see OMNIGENT_CONTEXT_WINDOWS):
+                  -- render.lua:enrich_usage prefers these over the server's
+                  -- catalog-default window so the meter is correct offline.
+                  -- Keyed by the active model_override / model id.
+                  context_windows = OMNIGENT_CONTEXT_WINDOWS,
                 },
               })
             end,
