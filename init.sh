@@ -62,6 +62,13 @@ fi
 "$DOTFILES_DIR/bin/omnigent-dvsc-ensure" \
     || echo "WARNING: omnigent-dvsc-ensure failed (dvsc agent may not appear in the picker)" >&2
 
+# Omnigent: propagate shared, machine-agnostic client preferences into
+# ~/.omnigent/config.yaml. Runs here as well as in sync.sh so a fresh
+# bootstrap (where the stage-1 sync ran before omnigent was installed and
+# self-skipped) still applies them once the install above completes.
+"$DOTFILES_DIR/bin/omnigent-config-ensure" \
+    || echo "WARNING: omnigent-config-ensure failed (shared prefs not applied)" >&2
+
 # Omnigent: register the direct-harness builtin agents (claude-sdk, codex) so
 # they show in the CodeCompanion omnigent picker (<leader>aM / <leader>aA)
 # alongside polly/debby/dvsc. The picker's model/effort steps key off each

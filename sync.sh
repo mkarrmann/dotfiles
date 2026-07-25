@@ -377,6 +377,14 @@ sync_link_subdirs "$DOTFILES_DIR/agent_config/skills/meta-powertools-vendored" "
 "$DOTFILES_DIR/agent_config/sync-mcps" all || \
   echo "WARNING: agent_config/sync-mcps failed" >&2
 
+# Omnigent: propagate shared, machine-agnostic client preferences
+# (omnigent_config/config.shared.yaml) into this machine's live
+# ~/.omnigent/config.yaml. Deep-merges only the declared keys, preserving
+# machine-specific host:/server:/acp:. Self-skips before omnigent is
+# installed (fresh bootstrap re-runs it from init.sh stage 2).
+"$DOTFILES_DIR/bin/omnigent-config-ensure" || \
+  echo "WARNING: omnigent-config-ensure failed (shared prefs not applied)" >&2
+
 # Ghostty
 mkdir -p "$HOME/.config/ghostty"
 link_one "$DOTFILES_DIR/ghostty_config" "$HOME/.config/ghostty/config"

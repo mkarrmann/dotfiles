@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# omnigent-config-ensure — propagate shared, machine-agnostic Omnigent client
+# preferences (omnigent_config/config.shared.yaml) into this machine's live
+# ~/.omnigent/config.yaml.
+#
+# The config.yaml is a machine-LOCAL file: the host daemon writes host: (host_id
+# + hostname), omnigent-host-ensure / omnigent-dvsc-ensure reconcile the per-host
+# server: URL, and omnigent-dvsc-ensure merges the acp: dvsc-core entry. So we
+# cannot symlink a shared file over it. Instead we deep-merge ONLY the keys
+# declared in config.shared.yaml, preserving every machine-specific key. This is
+# the YAML analogue of the settings.json jq-merge in sync.sh.
+#
+# Idempotent and portable: safe to re-run, and self-skips where omnigent (its
+# bundled pyyaml) isn't installed. Wired into sync.sh and init.sh.
+#
+# Env overrides: DOTFILES_DIR, OMNIGENT_DATA_DIR / OMNIGENT_CONFIG_HOME,
+# OMNIGENT_PY.
+set -euo pipefail
+
+if [[ $# -ne 0 ]]; then
+  echo "usage: omnigent-config-ensure" >&2
+  exit 2
+fi
+
+log() { printf '[config-ensure] %s\n' "$*"; }
+
+DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
+SHARED="$DOTFILES/omnigent_config/config.shared.yaml"
+DATA_DIR="${OMNIGENT_DATA_DIR:-${OMNIGENT_CONFIG_HOME:-$HOME/.omnigent}}"
+CONFIG="$DATA_DIR/config.yaml"
+
+# omnigent is installed as a prebuilt uv *tool*; use its interpreter for the YAML
+# merge since it is guaranteed to have pyyaml (the system python3 may not).
+_tools_dir="$(uv tool dir 2>/dev/null || echo "$HOME/.local/share/uv/tools")"
+OMNIGENT_PY="${OMNIGENT_PY:-$_tools_dir/omnigent/bin/python3}"
+
+if [[ ! -f "$SHARED" ]]; then
+  log "shared config not found at $SHARED; skipping"
+  exit 0
+fi
+if [[ ! -x "$OMNIGENT_PY" ]]; then
+  log "omnigent tool python not found at $OMNIGENT_PY; skipping"
+  exit 0
+fi
+
+"$OMNIGENT_PY" - "$SHARED" "$CONFIG" <<'PY'
+import os
+import sys
+
+import yaml
+
+shared_path, config_path = sys.argv[1], sys.argv[2]
+
+with open(shared_path) as f:
+    shared = yaml.safe_load(f) or {}
+if not isinstance(shared, dict):
+    print("[config-ensure] shared config is not a mapping; skipping")
+    raise SystemExit(0)
+
+cfg = {}
+if os.path.exists(config_path):
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f) or {}
+if not isinstance(cfg, dict):
+    cfg = {}
+
+
+def deep_merge(base, overlay, path=""):
+    """Merge overlay INTO base in place; return True if base changed.
+
+    Nested mappings are merged recursively (so a shared runner.idle_timeout_s
+    does not clobber a machine-local runner.* sibling); every other value is
+    overwritten by the shared value. Existing key order is preserved.
+    """
+    changed = False
+    for key, val in overlay.items():
+        here = f"{path}.{key}" if path else key
+        if isinstance(val, dict) and isinstance(base.get(key), dict):
+            if deep_merge(base[key], val, here):
+                changed = True
+        elif base.get(key) != val or key not in base:
+            base[key] = val
+            changed = True
+            print(f"[config-ensure] config.yaml: set {here} = {val!r}")
+    return changed
+
+
+changed = deep_merge(cfg, shared)
+if not changed:
+    print("[config-ensure] config.yaml: shared preferences already applied")
+    raise SystemExit(0)
+
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
+with open(config_path, "w") as f:
+    yaml.safe_dump(cfg, f, sort_keys=False, default_flow_style=False)
+print("[config-ensure] config.yaml: shared preferences reconciled")
+PY

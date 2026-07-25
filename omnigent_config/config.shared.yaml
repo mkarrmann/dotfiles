@@ -1,0 +1,27 @@
+# Shared, machine-agnostic Omnigent client preferences.
+#
+# These keys are deep-merged into each machine's live ~/.omnigent/config.yaml by
+# bin/omnigent-config-ensure (run from sync.sh and init.sh). Only the keys
+# declared here are touched; every machine-specific key is preserved:
+#
+#   host:    written by the omnigent host daemon (host_id, hostname) -- per machine.
+#   server:  reconciled per host by omnigent-host-ensure / omnigent-dvsc-ensure.
+#   acp:     the dvsc-core agent entry is merged by omnigent-dvsc-ensure.
+#
+# So put ONLY portable user preferences here. To change a preference everywhere,
+# edit this file and run sync.sh (or bin/omnigent-config-ensure directly) on
+# each machine.
+
+runner:
+  # Idle window before a host-runner self-terminates when no agent turn is
+  # active. Omnigent's default is 3600 (1h); keepalive pings and open
+  # observer/SSE streams do NOT count as activity, so the default reaps a
+  # runner during a lull and surfaces "background turn failed" warnings in the
+  # CodeCompanion chat (resume is lossless -- the transcript is durable -- but
+  # the warnings are noisy and the first resumed turn pays a cold prompt cache).
+  # 0 disables the watchdog entirely (idle runners then linger, holding their
+  # claude subprocess memory until the host/parent dies).
+  idle_timeout_s: 14400
+
+tui:
+  theme: dark
