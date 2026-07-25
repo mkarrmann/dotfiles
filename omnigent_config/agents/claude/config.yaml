@@ -26,7 +26,24 @@ os_env:
   type: caller_process
   cwd: .
   sandbox:
+    # No confinement for the structured file tools -- match the reach the shell
+    # already has. WHY: omnigent's claude-sdk harness exposes ONLY its own
+    # sys_os_read/write/edit/shell MCP tools (native Edit/Write/Bash are
+    # disabled, tools=["Skill"]), and sys_os_edit/write are confined to the
+    # session's environment root (the launching cwd, e.g. an fbsource checkout).
+    # That forced every out-of-tree edit (~/dotfiles, ~/repos/*) to fall back to
+    # sys_os_shell -- which ALSO defeated the CodeCompanion diff tab's edit
+    # capture. A write_paths grant lifts that confinement: on omnigent >= 0.6.0
+    # the grant is honored even under sandbox.type=none
+    # (os_env._assert_within_reach), and a write grant admits reads too, so "/"
+    # lets the structured tools reach any path -- deliberately as unconfined as
+    # codex already is (sandbox.type=none => codex "danger-full-access"). Narrow
+    # to ["/home/mkarrmann"] (or "~") to stay unconfined only within $HOME.
+    # REQUIRES omnigent >= 0.6.0 (pinned in topology.env); on 0.5.1 the grant is
+    # a silent no-op (confinement was cwd-only there, ignoring grants).
     type: none
+    write_paths:
+      - /
 
 # Same blast-radius guardrail polly/debby use: the catastrophic set (force-push,
 # rm -rf /, hard-reset to a remote ref) is denied outright, while everything

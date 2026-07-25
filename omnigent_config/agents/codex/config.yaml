@@ -30,6 +30,12 @@ os_env:
   type: caller_process
   cwd: .
   sandbox:
+    # Intentionally NO write_paths grant here. codex maps sandbox.type=none to
+    # its own "danger-full-access" mode (codex_executor._sandbox_mode), so
+    # codex's native file tools are ALREADY fully unconfined -- no grant needed.
+    # Adding write_paths would flip codex to the MORE-confined "workspace-write"
+    # mode, the opposite of what we want. (write_paths is a claude-sdk/sys_os_*
+    # concept; codex uses its own sandbox model.)
     type: none
     # HACK(omnigent-sdk-codex-cwd): CodexExecutor scrubs the app-server env, so
     # pass the non-secret runner workspace to ~/bin/codex. Remove this entry
