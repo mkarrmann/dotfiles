@@ -2592,6 +2592,11 @@ return {
             provider = has_snacks and "snacks" or "telescope",
           },
           chat = {
+            -- Per-message timestamps on role headers (fork feature): virtual
+            -- text only, never edits the buffer. See config.lua defaults +
+            -- ui/init.lua:render_timestamps.
+            show_timestamps = true,
+            timestamp_format = "%H:%M:%S",
             window = {
               layout = "vertical",
               position = "right",
