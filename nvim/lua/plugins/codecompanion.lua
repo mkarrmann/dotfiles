@@ -1263,7 +1263,14 @@ local function omnigent_continue()
     local rows = scoped and sessions_lib.filter_by_workspace(list, cwd) or list
     local items = {}
     for _, s in ipairs(rows) do
-      items[#items + 1] = { session = s, label = sessions_lib.format_summary(s, { now = now }) }
+      -- Append the full session id so the picker's fuzzy matcher can find a
+      -- session by id; format_summary only surfaces the id for untitled ones.
+      local label = sessions_lib.format_summary(s, { now = now })
+      local sid = s.id or ""
+      if sid ~= "" then
+        label = label .. "  " .. sid
+      end
+      items[#items + 1] = { session = s, label = label }
     end
     return items
   end
@@ -1276,13 +1283,14 @@ local function omnigent_continue()
         vim.log.levels.WARN
       )
     end
-    local scope_txt = is_scoped and cwd or "ALL workspaces"
+    local scope_txt = is_scoped and ("this cwd (" .. cwd .. ")") or "ALL workspaces"
+    local hint = "  ·  <A-c> (Alt+c) toggle scope"
     vim.ui.select(items, {
-      prompt = "Resume Omnigent session · " .. scope_txt,
+      prompt = "Resume Omnigent · " .. scope_txt .. hint,
       format_item = function(item) return item.label end,
       snacks = {
         source = "omnigent_continue",
-        title = "Resume Omnigent · " .. scope_txt,
+        title = "Resume Omnigent · " .. scope_txt .. hint,
         win = { input = { keys = {
           ["<a-c>"] = { "toggle_scope", mode = { "i", "n" } },
         } } },
