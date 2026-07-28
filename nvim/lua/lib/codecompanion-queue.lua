@@ -1,7 +1,6 @@
 -- Per-tab CodeCompanion input/queue UI.
 --
--- Mirrors the per-tab invariant enforced for claudecode.nvim terminals
--- (see `claude-per-tab-terminal.lua`): each tabpage owns at most one chat,
+-- Enforces a per-tab invariant: each tabpage owns at most one chat,
 -- and the chat's input box, status line, queued draft, and timing all
 -- belong to that same tab.
 --

@@ -92,8 +92,8 @@ end
 -- the scrollbind group and scrolls along with the diff. Scrolling one
 -- diff pane then yanks unrelated windows along with it.
 --
--- All our diff setups (lib/diff-opts.apply, lib/claude-diff.lua,
--- lib/meta-hg.lua) explicitly set scrollbind/cursorbind on their
+-- All our diff setups (lib/diff-opts.apply, lib/meta-hg.lua)
+-- explicitly set scrollbind/cursorbind on their
 -- intended windows AFTER creating them, so stripping the inherited
 -- values on WinNew does not break them. Vim's builtin `:diffsplit`
 -- and `:diffthis` also re-enable these via `diff=true`'s implied

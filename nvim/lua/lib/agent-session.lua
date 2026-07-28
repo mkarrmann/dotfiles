@@ -1,8 +1,6 @@
 local M = {}
 
 local LAST_SESSION_FILE = vim.fn.expand("~/.claude-last-session")
-local CODEX_INDEX_PATH = vim.fn.expand("~/.codex/agents.tsv")
-local UUID_PATTERN = "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$"
 
 local function trim(value)
 	return (tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", ""))
@@ -51,14 +49,6 @@ local function resolve_agents_dir()
 	return vim.fn.expand("~/.claude")
 end
 
-function M.resolve_local_agents_file()
-	if vim.env.CLAUDE_AGENTS_FILE then
-		return vim.env.CLAUDE_AGENTS_FILE
-	end
-	local hostname = vim.fn.hostname():match("^([^%.]+)")
-	return resolve_agents_dir() .. "/AGENTS-" .. hostname .. ".md"
-end
-
 function M.resolve_all_agents_files()
 	if vim.env.CLAUDE_AGENTS_FILE then
 		local p = vim.env.CLAUDE_AGENTS_FILE
@@ -74,10 +64,6 @@ function M.resolve_all_agents_files()
 		table.insert(files, legacy)
 	end
 	return files
-end
-
-function M.resolve_agents_file()
-	return M.resolve_local_agents_file()
 end
 
 function M.get_session_id()
@@ -150,215 +136,12 @@ function M.lookup_agent_by_sid(sid)
 	return nil
 end
 
-function M.resolve_cwd_for_sid(sid)
-	sid = trim(sid):lower()
-	if sid == "" then
-		return nil
-	end
-	local projects_dir = vim.fn.expand("~/.claude/projects")
-	local dirs = vim.fn.glob(projects_dir .. "/*", true, true)
-	for _, dir in ipairs(dirs) do
-		local jsonl = dir .. "/" .. sid .. ".jsonl"
-		if vim.fn.filereadable(jsonl) == 1 then
-			local f = io.open(jsonl, "r")
-			if f then
-				local first_line = f:read("*l")
-				f:close()
-				if first_line then
-					local ok, data = pcall(vim.json.decode, first_line)
-					if ok and type(data) == "table" and type(data.cwd) == "string" then
-						return data.cwd
-					end
-				end
-			end
-		end
-	end
-	return nil
-end
-
 function M.get_current_agent()
 	local sid = M.get_session_id()
 	if not sid or sid == "" then
 		return nil
 	end
 	return M.lookup_agent_by_sid(sid)
-end
-
-local function ensure_parent_dir(path)
-	local parent = vim.fn.fnamemodify(path, ":h")
-	if parent and parent ~= "" then
-		vim.fn.mkdir(parent, "p")
-	end
-end
-
-local function parse_codex_entry(line)
-	local name, sid, cwd, updated = line:match("^([^\t]+)\t([^\t]+)\t([^\t]*)\t([^\t]+)$")
-	if not name or not sid then
-		return nil
-	end
-	return {
-		name = trim(name),
-		sid = trim(sid):lower(),
-		cwd = trim(cwd),
-		updated = tonumber(updated) or 0,
-	}
-end
-
-local function read_codex_entries()
-	ensure_parent_dir(CODEX_INDEX_PATH)
-	local entries = {}
-	local f = io.open(CODEX_INDEX_PATH, "r")
-	if not f then
-		return entries
-	end
-	for line in f:lines() do
-		local entry = parse_codex_entry(line)
-		if entry then
-			table.insert(entries, entry)
-		end
-	end
-	f:close()
-	return entries
-end
-
-local function write_codex_entries(entries)
-	ensure_parent_dir(CODEX_INDEX_PATH)
-	table.sort(entries, function(a, b)
-		return (a.updated or 0) > (b.updated or 0)
-	end)
-	local f = io.open(CODEX_INDEX_PATH, "w")
-	if not f then
-		return false
-	end
-	for _, entry in ipairs(entries) do
-		f:write(("%s\t%s\t%s\t%d\n"):format(
-			entry.name,
-			entry.sid,
-			entry.cwd or "",
-			entry.updated or os.time()
-		))
-	end
-	f:close()
-	return true
-end
-
-local function codex_sid_from_path(path)
-	if not path or path == "" then
-		return nil
-	end
-	local sid = path:match("(%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x)%.jsonl$")
-	return sid and sid:lower() or nil
-end
-
-function M.is_uuid(value)
-	return trim(value):lower():match(UUID_PATTERN) ~= nil
-end
-
-function M.rename_current_tab(name)
-	name = trim(name)
-	if name == "" then
-		return false
-	end
-	vim.api.nvim_tabpage_set_var(0, "tab_name", name)
-	vim.cmd("redrawtabline")
-	return true
-end
-
-function M.latest_codex_sid()
-	local session_glob = vim.fn.expand("~/.codex/sessions/**/*.jsonl")
-	local files = vim.fn.glob(session_glob, true, true)
-	if type(files) ~= "table" or #files == 0 then
-		return nil
-	end
-
-	local latest_path = nil
-	local latest_mtime = -1
-	for _, path in ipairs(files) do
-		local mtime = vim.fn.getftime(path)
-		if tonumber(mtime) and mtime > latest_mtime then
-			latest_mtime = mtime
-			latest_path = path
-		end
-	end
-	return codex_sid_from_path(latest_path)
-end
-
-function M.upsert_codex_session(name, sid, cwd)
-	name = trim(name)
-	sid = trim(sid):lower()
-	cwd = trim(cwd)
-	if name == "" or sid == "" or not M.is_uuid(sid) then
-		return false
-	end
-
-	local entries = read_codex_entries()
-	local next_entries = {}
-	for _, entry in ipairs(entries) do
-		if entry.name ~= name and entry.sid ~= sid then
-			table.insert(next_entries, entry)
-		end
-	end
-	table.insert(next_entries, {
-		name = name,
-		sid = sid,
-		cwd = cwd,
-		updated = os.time(),
-	})
-	return write_codex_entries(next_entries)
-end
-
-function M.codex_sid_for_name(name)
-	name = trim(name)
-	if name == "" then
-		return nil
-	end
-	for _, entry in ipairs(read_codex_entries()) do
-		if entry.name == name then
-			return entry.sid, entry.cwd
-		end
-	end
-	return nil
-end
-
-function M.codex_name_for_sid(sid)
-	sid = trim(sid):lower()
-	if sid == "" then
-		return nil
-	end
-	for _, entry in ipairs(read_codex_entries()) do
-		if entry.sid == sid then
-			return entry.name, entry.cwd
-		end
-	end
-	return nil
-end
-
-function M.list_codex_sessions()
-	return read_codex_entries()
-end
-
-function M.capture_new_codex_sid(name, cwd, baseline_sid, opts)
-	opts = opts or {}
-	local max_attempts = tonumber(opts.max_attempts) or 8
-	local delay_ms = tonumber(opts.delay_ms) or 700
-	local attempts = 0
-
-	local function poll()
-		attempts = attempts + 1
-		local sid = M.latest_codex_sid()
-		if sid and sid ~= baseline_sid then
-			M.upsert_codex_session(name, sid, cwd)
-			if type(opts.on_captured) == "function" then
-				opts.on_captured(sid)
-			end
-			return
-		end
-		if attempts < max_attempts then
-			vim.defer_fn(poll, delay_ms)
-		end
-	end
-
-	vim.defer_fn(poll, delay_ms)
 end
 
 return M
