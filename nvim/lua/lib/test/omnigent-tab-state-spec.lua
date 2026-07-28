@@ -222,6 +222,51 @@ function M.run()
 		tab_state._set_chat_resolver(nil)
 	end
 
+	-- Background title refresh (session -> tab): a rename made elsewhere is
+	-- pulled in on focus, throttled per session.
+	do
+		local get_calls = 0
+		local fake_session = {
+			session_id = "conv_refresh",
+			title = "local-old",
+			set_config = function()
+				return true, nil
+			end,
+			client = {
+				request_async = function(_, _, _, _, cb)
+					get_calls = get_calls + 1
+					cb({ title = "web-renamed" }, nil)
+				end,
+			},
+		}
+		local rbuf = vim.api.nvim_create_buf(false, true)
+		tab_state._set_chat_resolver(function(bufnr)
+			if bufnr == rbuf then
+				return { omnigent_session = fake_session }
+			end
+			return nil
+		end)
+
+		vim.cmd("tabnew")
+		local rtab = vim.api.nvim_get_current_tabpage()
+		vim.api.nvim_tabpage_set_var(rtab, "codecompanion_chat_bufnr", rbuf)
+		vim.api.nvim_tabpage_set_var(rtab, "tab_name", "local-old")
+
+		tab_state.refresh_title(rtab)
+		local ok_r, tn_r = pcall(vim.api.nvim_tabpage_get_var, rtab, "tab_name")
+		eq(ok_r and tn_r, "web-renamed", "external title drift is adopted on refresh")
+		eq(fake_session.title, "web-renamed", "refresh updates the cached title")
+		eq(get_calls, 1, "refresh issued one GET")
+
+		-- throttle: an immediate second refresh does not hit the server again.
+		tab_state.refresh_title(rtab)
+		eq(get_calls, 1, "throttle suppresses a rapid second poll")
+
+		vim.api.nvim_set_current_tabpage(rtab)
+		vim.cmd("tabclose")
+		tab_state._set_chat_resolver(nil)
+	end
+
 	print("omnigent-tab-state-spec: all checks passed")
 end
 

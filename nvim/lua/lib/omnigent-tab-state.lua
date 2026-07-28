@@ -3,6 +3,13 @@ local M = {}
 local STATE_VAR = "agent_status"
 local setup_done = false
 
+-- Background refresh of the durable session title (session -> tab). `title` never
+-- streams over SSE, so a rename made elsewhere (web UI, the agent itself) is only
+-- pulled in when a tab is focused. Throttled per session to keep rapid tab
+-- cycling from spamming the local server.
+local POLL_THROTTLE_MS = 3000
+local last_poll = {}
+
 local terminal_kinds = {
 	turn_completed = true,
 	turn_failed = true,
@@ -188,6 +195,44 @@ function M.reconcile_title(tab, session)
 	end
 end
 
+---Pull the durable session title from the server and adopt it if it drifted
+---(session -> tab). Closes the gap that `title` isn't carried over SSE: a rename
+---made in another client shows up on focus. Async (never blocks the UI) and
+---best-effort; only a title that differs from our cached value is adopted, so it
+---can't clobber an in-flight local rename or fire redundant writes.
+---@param tab? integer
+function M.refresh_title(tab)
+	tab = tab or vim.api.nvim_get_current_tabpage()
+	local session = omnigent_session_for_tab(tab)
+	if not session then
+		return
+	end
+	local client = session.client
+	if not client or type(client.request_async) ~= "function" then
+		return
+	end
+	local sid = session.session_id
+	local now = (vim.uv or vim.loop).now()
+	if last_poll[sid] and (now - last_poll[sid]) < POLL_THROTTLE_MS then
+		return
+	end
+	last_poll[sid] = now
+	client:request_async("get", "/v1/sessions/" .. sid, {}, function(snap, err)
+		if err or type(snap) ~= "table" then
+			return
+		end
+		local title = type(snap.title) == "string" and snap.title ~= "" and snap.title or nil
+		if not title or title == session.title then
+			return
+		end
+		session.title = title
+		if valid_tab(tab) and tab_name(tab) ~= title then
+			pcall(vim.api.nvim_tabpage_set_var, tab, "tab_name", title)
+			redraw()
+		end
+	end)
+end
+
 function M.attach(data)
 	data = data or {}
 	local tab = tab_for_chat(data.bufnr)
@@ -351,6 +396,16 @@ function M.setup()
 				state.unread = false
 				write_state(tab, state)
 			end
+			M.refresh_title(tab)
+		end,
+	})
+
+	-- Coming back to nvim (e.g. after renaming a session in the web UI) refreshes
+	-- the focused tab's title.
+	vim.api.nvim_create_autocmd("FocusGained", {
+		group = group,
+		callback = function()
+			M.refresh_title()
 		end,
 	})
 end
