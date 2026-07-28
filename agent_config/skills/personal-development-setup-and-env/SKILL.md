@@ -80,7 +80,7 @@ On non-Meta machines (where only `init.sh` runs), neither file is symlinked — 
 
 **Framework:** LazyVim (Neovim distribution on lazy.nvim)
 
-**Portable plugins** (in dotfiles): telescope, nvim-cmp, treesitter, flash, lualine, undotree, tmux-navigator, claudecode.nvim, midnight/catppuccin themes
+**Portable plugins** (in dotfiles): telescope, nvim-cmp, treesitter, flash, lualine, undotree, tmux-navigator, codecompanion.nvim, midnight/catppuccin themes
 
 **Meta plugins** (in dotfiles `nvim/local/plugins/meta.lua`, symlinked by `meta_init.sh`, cond-guarded): meta.nvim (detected at `/usr/share/fb-editor-support/nvim` on Linux or `/usr/local/share/fb-editor-support/nvim` on Mac), none-ls
 

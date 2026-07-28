@@ -31,7 +31,7 @@
 
 local M = {}
 
-local NS = vim.api.nvim_create_namespace("acp_broker_cc_timing")
+local NS = vim.api.nvim_create_namespace("codecompanion_cc_timing")
 
 -- _pending[bufnr] = { id, start_ns, streamed = bool, llm_index = number? }
 -- Tracks the in-flight request so RequestFinished can attach a duration to

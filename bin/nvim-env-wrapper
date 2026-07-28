@@ -19,7 +19,7 @@ if [[ "$http_proxy" == *"fwdproxy"* ]] || [[ -n "$THRIFT_TLS_CL_CERT_PATH" ]]; t
     # 2026-03). THRIFT_TLS_CL_CERT_PATH is intentionally kept — it's a
     # system-level var needed by clicat and the Claude Code native binary.
     # If neovim segfaults again, check whether THRIFT_TLS_CL_CERT_PATH needs
-    # to be unset here too (and re-add a fallback in claude-nvim-wrapper.sh).
+    # to be unset here too.
     unset CLAUDE_CODE_CLIENT_CERT
     unset CODEX_OTEL_CLIENT_CERT
     unset OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE
