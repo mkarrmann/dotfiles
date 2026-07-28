@@ -1243,6 +1243,72 @@ local function _omnigent_open_chat_with_session(session_id)
   return true
 end
 
+-- Fork the current tab's omnigent session into a new, independently-runnable
+-- session, then open it in a NEW tab (the source chat stays put). Mirrors the Web
+-- UI's "Fork from here": POST /fork deep-copies the transcript, then a runner is
+-- launched on the SOURCE's host in a fresh git worktree (isolating the fork's
+-- working dir and, for a native harness, carrying the source's transcript, which
+-- the host clones at boot -- hence the same-host requirement).
+--
+-- Tested path is the SDK harness (e.g. `polly`). A native fork (claude-native-ui
+-- / codex-native-ui) forks server-side correctly, but its terminal-first
+-- rendering inside a CC chat buffer is unproven -- treat it as experimental.
+local function _omnigent_fork_current()
+  local bufnr = vim.t.codecompanion_chat_bufnr
+  local chat = bufnr
+    and vim.api.nvim_buf_is_valid(bufnr)
+    and require("codecompanion").buf_get_chat(bufnr)
+  if not chat then
+    return vim.notify("omnigent: no CodeCompanion chat in this tab to fork", vim.log.levels.WARN)
+  end
+  if not (chat.adapter and chat.adapter.type == "omnigent") then
+    return vim.notify("omnigent: fork only works on an Omnigent chat", vim.log.levels.WARN)
+  end
+  local source_id = chat.omnigent_session_id
+  if not source_id then
+    return vim.notify(
+      "omnigent: this chat has no durable session yet -- send a turn before forking",
+      vim.log.levels.WARN
+    )
+  end
+
+  local client = _omnigent_client()
+  -- Authoritative host_id / workspace for the launch: the snapshot, not the live
+  -- runtime (which may be nil before the first turn / ensure_session).
+  local snap, gerr = client:get_session(source_id)
+  if not snap then
+    return vim.notify(
+      "omnigent: could not load source session: " .. (gerr and gerr.message or "?"),
+      vim.log.levels.ERROR
+    )
+  end
+
+  local Session = require("codecompanion.omnigent.session")
+  local branch = "cc-fork-" .. os.date("%m%d-%H%M%S")
+  local fork, ferr = Session.fork(client, {
+    session_id = source_id,
+    host_id = snap.host_id,
+    workspace = snap.workspace,
+  }, { branch_name = branch }) -- base_branch nil => branch from the source's HEAD
+
+  if not fork then
+    local msg = "omnigent: fork failed: " .. (ferr and ferr.message or "?")
+    if ferr and ferr.fork_session_id then
+      -- The copy landed but the runner didn't; the session exists unbound.
+      msg = msg .. " (created unbound session " .. ferr.fork_session_id .. "; resume it to retry a runner)"
+    end
+    return vim.notify(msg, vim.log.levels.ERROR)
+  end
+
+  -- Fork + launch succeeded: open it in a fresh tab so the source is untouched.
+  vim.cmd("tabnew")
+  if not _omnigent_open_chat_with_session(fork.id) then
+    vim.cmd("tabclose") -- open_chat_with_session already notified; drop the empty tab
+    return
+  end
+  vim.notify("omnigent: forked into " .. fork.id .. " (branch " .. branch .. ")", vim.log.levels.INFO)
+end
+
 -- Server-backed omnigent session picker. cwd-scoped by default (<A-c> toggles to
 -- all workspaces), recency-sorted, archived filtered out.
 local function omnigent_continue()
@@ -3459,6 +3525,7 @@ Placement guidance (overrides the base prompt where they conflict):
       { "<leader>aM", function() tab_chat_set_adapter("omnigent",         { clear = true }) end, desc = "CodeCompanion Chat (Omnigent, remembered agent+model+effort)" },
       { "<leader>aA", function() tab_chat_set_adapter("omnigent",         { clear = true, force_pick = true }) end, desc = "CodeCompanion Chat (Omnigent, pick agent+model+effort)" },
       { "<leader>amc", function() omnigent_continue() end, desc = "Omnigent: resume durable session (cwd-scoped)" },
+      { "<leader>amf", function() _omnigent_fork_current() end, desc = "Omnigent: fork this session into a new worktree + tab" },
       { "<leader>ak", tab_chat_compact, desc = "CodeCompanion: compact current chat (dvsc RPC or agent /compact)" },
       { "<leader>aZ", function() tab_chat_full_refresh() end, desc = "CodeCompanion: full refresh (close + reopen, pick agent + model + config)" },
       { "<leader>ao", tab_chat_pick_option, desc = "CodeCompanion: change live session option (ACP config, or Omnigent model/effort)" },
