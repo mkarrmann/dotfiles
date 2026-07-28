@@ -27,9 +27,14 @@ function _G._claude_focus_tab_by_handle(tab_handle)
 end
 
 function _G._nvim_rename_current_tab(name)
-	vim.api.nvim_tabpage_set_var(0, "tab_name", name)
+	local tab = vim.api.nvim_get_current_tabpage()
+	vim.api.nvim_tabpage_set_var(tab, "tab_name", name)
 	vim.schedule(function()
 		vim.cmd("redrawtabline")
+	end)
+	-- For an omnigent chat tab, mirror the name to the durable session title (no-op otherwise).
+	pcall(function()
+		require("lib.omnigent-tab-state").push_title(tab)
 	end)
 end
 

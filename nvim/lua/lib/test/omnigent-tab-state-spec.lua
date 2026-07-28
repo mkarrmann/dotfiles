@@ -172,6 +172,56 @@ function M.run()
 		active_response_id = "resp_after_close",
 	}))
 	eq(handled_closed_tab, true, "events for a closed owner tab are ignored")
+
+	-- Two-way tab-name <-> omnigent session-title integration.
+	do
+		local set_calls = {}
+		local fake_session = {
+			session_id = "conv_title",
+			title = nil,
+			set_config = function(self, key, value)
+				set_calls[#set_calls + 1] = { key = key, value = value }
+				self.title = self.title -- no-op; push_title owns the local update
+				return true, nil -- pretend the PATCH succeeded
+			end,
+		}
+		local title_buf = vim.api.nvim_create_buf(false, true)
+		tab_state._set_chat_resolver(function(bufnr)
+			if bufnr == title_buf then
+				return { omnigent_session = fake_session }
+			end
+			return nil
+		end)
+
+		vim.cmd("tabnew")
+		local title_tab = vim.api.nvim_get_current_tabpage()
+		vim.api.nvim_tabpage_set_var(title_tab, "codecompanion_chat_bufnr", title_buf)
+
+		-- tab -> session: a fresh session (no title) adopts the user-named tab.
+		vim.api.nvim_tabpage_set_var(title_tab, "tab_name", "auth-work")
+		tab_state.reconcile_title(title_tab, fake_session)
+		vim.wait(200, function()
+			return #set_calls > 0
+		end)
+		eq(set_calls, { { key = "title", value = "auth-work" } }, "fresh session adopts tab name as title")
+		eq(fake_session.title, "auth-work", "push updates the local title on success")
+
+		-- idempotent: no redundant PATCH when the title already matches the tab.
+		tab_state.push_title(title_tab, fake_session)
+		vim.wait(50)
+		eq(#set_calls, 1, "no redundant PATCH when title already matches")
+
+		-- session -> tab: a resumed session with a title overwrites the tab name.
+		fake_session.title = "resumed-topic"
+		tab_state.reconcile_title(title_tab, fake_session)
+		local ok_tn, tn = pcall(vim.api.nvim_tabpage_get_var, title_tab, "tab_name")
+		eq(ok_tn and tn, "resumed-topic", "durable title wins on resume (session -> tab)")
+
+		vim.api.nvim_set_current_tabpage(title_tab)
+		vim.cmd("tabclose")
+		tab_state._set_chat_resolver(nil)
+	end
+
 	print("omnigent-tab-state-spec: all checks passed")
 end
 

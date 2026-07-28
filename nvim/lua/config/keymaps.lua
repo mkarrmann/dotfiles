@@ -419,10 +419,13 @@ vim.keymap.set("n", "<leader><tab>h", "<cmd>tabprevious<cr>", { desc = "Previous
 vim.keymap.set("n", "<leader><tab>l", "<cmd>tabnext<cr>", { desc = "Next Tab" })
 
 vim.keymap.set("n", "<leader><tab>r", function()
+	local tab = vim.api.nvim_get_current_tabpage()
 	vim.ui.input({ prompt = "Tab name: " }, function(name)
 		if name then
-			vim.t.tab_name = name
+			vim.api.nvim_tabpage_set_var(tab, "tab_name", name)
 			vim.cmd("redrawtabline")
+			-- For an omnigent chat tab, mirror the name to the durable session title.
+			require("lib.omnigent-tab-state").push_title(tab)
 		end
 	end)
 end, { desc = "Rename tab" })

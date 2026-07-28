@@ -66,13 +66,57 @@ local function initial_state(session_id)
 	}
 end
 
-local function session_snapshot(bufnr)
+-- Resolve a CodeCompanion chat from its buffer. Overridable for tests via
+-- M._set_chat_resolver (the real path requires the plugin, which is absent in
+-- headless unit runs).
+local default_chat_resolver = function(bufnr)
+	if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+		return nil
+	end
 	local ok, codecompanion = pcall(require, "codecompanion")
 	if not ok then
 		return nil
 	end
-	local chat = codecompanion.buf_get_chat(bufnr)
+	local cok, chat = pcall(codecompanion.buf_get_chat, bufnr)
+	return cok and chat or nil
+end
+
+local chat_resolver = default_chat_resolver
+
+function M._set_chat_resolver(fn)
+	chat_resolver = fn or default_chat_resolver
+end
+
+local function chat_for_tab(tab)
+	if not valid_tab(tab) then
+		return nil
+	end
+	local ok, bufnr = pcall(vim.api.nvim_tabpage_get_var, tab, "codecompanion_chat_bufnr")
+	return ok and chat_resolver(bufnr) or nil
+end
+
+local function session_snapshot(bufnr)
+	local chat = chat_resolver(bufnr)
 	return chat and chat.omnigent_session or nil
+end
+
+local function tab_name(tab)
+	local ok, name = pcall(vim.api.nvim_tabpage_get_var, tab, "tab_name")
+	if ok and type(name) == "string" and name ~= "" then
+		return name
+	end
+	return nil
+end
+
+-- Only omnigent chats carry a durable, PATCHable `title` (the session name);
+-- other tab owners (claude terminals, diff tabs, plain edits) do not.
+local function omnigent_session_for_tab(tab)
+	local chat = chat_for_tab(tab)
+	local session = chat and chat.omnigent_session
+	if session and session.session_id and type(session.set_config) == "function" then
+		return session
+	end
+	return nil
 end
 
 function M.state(tab)
@@ -85,6 +129,63 @@ function M.clear(tab)
 	end
 	pcall(vim.api.nvim_tabpage_del_var, tab, STATE_VAR)
 	redraw()
+end
+
+---Push the tab's display name up to the durable omnigent session `title`
+---(tab -> session). No-op for tabs that don't own an omnigent chat. Deferred and
+---best-effort: the PATCH is a blocking REST call, so it runs off the current
+---keymap/autocmd callback.
+---@param tab? integer
+---@param session? table Pre-resolved omnigent session (else looked up from the tab).
+function M.push_title(tab, session)
+	tab = tab or vim.api.nvim_get_current_tabpage()
+	session = session or omnigent_session_for_tab(tab)
+	if not session or not session.session_id or type(session.set_config) ~= "function" then
+		return
+	end
+	local name = tab_name(tab)
+	if not name or session.title == name then
+		return
+	end
+	vim.schedule(function()
+		-- Re-check under the (possibly changed) latest state before the network call.
+		if not valid_tab(tab) or tab_name(tab) ~= name or session.title == name then
+			return
+		end
+		local ok, err = session:set_config("title", name)
+		if ok then
+			session.title = name
+		elseif err then
+			vim.notify(
+				"Omnigent: couldn't sync tab name to session title: " .. (err.message or "unknown error"),
+				vim.log.levels.WARN
+			)
+		end
+	end)
+end
+
+---Reconcile a tab's name with its omnigent session title on attach/restore.
+---Precedence: a durable title (resumed/forked session) wins and is adopted as
+---the tab name (session -> tab); otherwise a name the user gave the tab seeds the
+---title (tab -> session). The equality checks make both directions idempotent so
+---they can't ping-pong.
+---@param tab? integer
+---@param session? table Pre-resolved omnigent session (else looked up from the tab).
+function M.reconcile_title(tab, session)
+	tab = tab or vim.api.nvim_get_current_tabpage()
+	session = session or omnigent_session_for_tab(tab)
+	if not session or not session.session_id then
+		return
+	end
+	local title = type(session.title) == "string" and session.title ~= "" and session.title or nil
+	if title then
+		if tab_name(tab) ~= title then
+			pcall(vim.api.nvim_tabpage_set_var, tab, "tab_name", title)
+			redraw()
+		end
+	elseif tab_name(tab) then
+		M.push_title(tab, session)
+	end
 end
 
 function M.attach(data)
@@ -110,6 +211,7 @@ function M.attach(data)
 		end
 	end
 	write_state(tab, state)
+	M.reconcile_title(tab, session)
 end
 
 function M.handle_lifecycle(data)
