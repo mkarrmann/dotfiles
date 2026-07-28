@@ -128,11 +128,14 @@ focus_verified() {
   [[ "$actual" == "$wid" ]]
 }
 
-# Move any window on $ws that fails focus_verified to workspace Z.
-# Returns the number of windows swept (via stdout).
+# Move any non-Orchest window on $ws that fails focus_verified to workspace Z.
+# Orchest windows are part of the workspace contract: quarantining one makes
+# its observed desktopWorkspaceId become Z and causes future opens to target Z.
+# Return failure instead so the outer retry can try again without corrupting
+# that binding. Returns the number of windows swept (via stdout).
 sweep_unfocusable() {
   local ws="$1" windows_json="$2"
-  local swept=0 wid
+  local swept=0 wid app title
   aerospace workspace "$ws" 2>/dev/null || true
   for wid in $(echo "$windows_json" | jq -r '.[]["window-id"]'); do
     if ! focus_verified "$wid"; then
@@ -142,9 +145,18 @@ sweep_unfocusable() {
       sleep 0.5
     fi
     if ! focus_verified "$wid"; then
-      echo "  [$ws] sweeping unfocusable window $wid → Z" >&2
-      aerospace move-node-to-workspace --window-id "$wid" Z 2>/dev/null || true
-      swept=$(( swept + 1 ))
+      app=$(echo "$windows_json" | jq -r --argjson wid "$wid" \
+        '.[] | select(.["window-id"] == $wid) | .["app-name"] // ""')
+      title=$(echo "$windows_json" | jq -r --argjson wid "$wid" \
+        '.[] | select(.["window-id"] == $wid) | .["window-title"] // ""')
+      if [[ "$app" == "Orchest" || "$title" == *"Orchest ["* ]]; then
+        echo "  [$ws] Orchest window $wid is temporarily unfocusable; preserving it and retrying" >&2
+        return 1
+      else
+        echo "  [$ws] sweeping unfocusable window $wid → Z" >&2
+        aerospace move-node-to-workspace --window-id "$wid" Z 2>/dev/null || true
+        swept=$(( swept + 1 ))
+      fi
     fi
   done
   echo "$swept"
@@ -287,7 +299,9 @@ arrange_workspace_once() {
   # were swept, re-read the window list, re-check the early-exit, and
   # re-compute the fingerprint (it's what we'll write to the marker).
   local swept
-  swept=$(sweep_unfocusable "$ws" "$windows")
+  if ! swept=$(sweep_unfocusable "$ws" "$windows"); then
+    return 1
+  fi
   if [[ "$swept" -gt 0 ]]; then
     windows=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null) || return 0
     total=$(echo "$windows" | jq 'length')

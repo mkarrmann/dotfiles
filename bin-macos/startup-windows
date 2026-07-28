@@ -877,6 +877,30 @@ ARRANGE_ATTEMPTS=8 ARRANGE_RETRY_SLEEP=1 arrange-workspaces --force $(managed_wo
   ((failures++)) || true
 }
 
+# A successful layout must still contain every Orchest sidebar. If an
+# AeroSpace mutation raced the layout pass, repair the placements, rebuild the
+# affected trees, and verify again. This also heals stale desktopWorkspaceId
+# values learned while an Orchest window was temporarily on Z.
+if ! orchest-open-workspaces --verify-only; then
+  echo "[Orchest] final placement verification failed; repairing and rebuilding layouts..."
+  if orchest-open-workspaces --reconcile-only; then
+    # managed_workspaces intentionally expands to separate arguments.
+    # shellcheck disable=SC2046
+    ARRANGE_ATTEMPTS=8 ARRANGE_RETRY_SLEEP=1 arrange-workspaces --force $(managed_workspaces) || {
+      echo "WARNING: arrange-workspaces did not converge after Orchest repair" >&2
+      ((failures++)) || true
+    }
+  else
+    echo "WARNING: final Orchest placement repair failed" >&2
+    ((failures++)) || true
+  fi
+
+  if ! orchest-open-workspaces --verify-only; then
+    echo "WARNING: final Orchest placement verification still failed" >&2
+    ((failures++)) || true
+  fi
+fi
+
 # If auto-accordion is re-enabled, it should do a full rebuild for any window
 # that appears after this point, so no drain sleep is needed here.
 

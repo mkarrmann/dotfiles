@@ -14,14 +14,19 @@ ORCHEST_DESKTOP_DIR="${ORCHEST_DIR}/apps/desktop"
 ORCHEST_PROD_ENTRY="${ORCHEST_DESKTOP_DIR}/out/main/index.js"
 
 MODE=dev
+ACTION=open
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --prod) MODE=prod; shift ;;
     --dev)  MODE=dev;  shift ;;
+    --reconcile-only) ACTION=reconcile; shift ;;
+    --verify-only)    ACTION=verify; shift ;;
     -h|--help)
-      echo "Usage: orchest-open-workspaces [--dev|--prod]"
+      echo "Usage: orchest-open-workspaces [--dev|--prod] [--reconcile-only|--verify-only]"
       echo "  --dev   (default) launch via 'pnpm dev' with HMR"
       echo "  --prod  launch built Electron app from apps/desktop/out/ (lower memory, no HMR)"
+      echo "  --reconcile-only  repair existing Orchest window placements without opening windows"
+      echo "  --verify-only     verify window placements and persisted desktop bindings"
       exit 0
       ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
@@ -55,6 +60,11 @@ launch_orchest_prod() {
 failures=0
 
 # Launch Orchest if not running
+if ! orchest_is_running && [[ "$ACTION" != "open" ]]; then
+  echo "WARNING: [Orchest] is not running; cannot ${ACTION} workspace placement" >&2
+  exit 1
+fi
+
 if ! orchest_is_running; then
   if [[ "$MODE" == "prod" ]]; then
     if [[ ! -f "$ORCHEST_PROD_ENTRY" ]]; then
@@ -84,68 +94,146 @@ if ! orchest_is_running; then
   fi
 fi
 
-# Ensure workspaces exist and open windows for each managed AeroSpace workspace
-existing_labels=$(orchest_cli workspace list 2>/dev/null || true)
+workspace_json='[]'
 
-for ws in "${ORCHEST_MANAGED_WORKSPACES[@]}"; do
-  label="Workspace ${ws}"
-  if ! echo "$existing_labels" | grep -qwF "$label"; then
-    echo "[Orchest] creating workspace \"${label}\"..."
-    orchest_cli workspace create "$label" 2>/dev/null || {
-      echo "WARNING: [Orchest] failed to create workspace \"${label}\"" >&2
-      ((failures++)) || true
-      continue
-    }
-  fi
-done
+refresh_workspace_json() {
+  local candidate _attempt
+  for _attempt in 1 2 3 4 5; do
+    if candidate=$(orchest_cli workspace list --json 2>/dev/null) && \
+       echo "$candidate" | jq -e 'type == "array"' >/dev/null 2>&1; then
+      workspace_json="$candidate"
+      return 0
+    fi
+    sleep 0.4
+  done
+  echo "WARNING: [Orchest] could not read workspace state" >&2
+  return 1
+}
 
-# Re-fetch workspace list to get IDs for opening
-workspace_lines=$(orchest_cli workspace list 2>/dev/null || true)
-for ws in "${ORCHEST_MANAGED_WORKSPACES[@]}"; do
-  label="Workspace ${ws}"
-  ws_id=$(echo "$workspace_lines" | grep -wF "$label" | head -1 | awk '{print $1}')
-  if [[ -n "$ws_id" ]]; then
-    echo "[Orchest] opening workspace \"${label}\"..."
-    orchest_cli workspace open "$ws_id" 2>/dev/null || {
-      echo "WARNING: [Orchest] failed to open workspace \"${label}\"" >&2
-      ((failures++)) || true
-    }
-  fi
-done
-
-# Wait for all Orchest workspace windows to appear in AeroSpace
-expected=${#ORCHEST_MANAGED_WORKSPACES[@]}
-orchest_aero_windows=""
-for _ in $(seq 1 60); do
-  sleep 0.5
-  orchest_aero_windows=$(aerospace list-windows --all \
-    --format '%{window-id}|%{workspace}|%{window-title}' 2>/dev/null \
-    | grep 'Orchest \[' || true)
-  count=$(echo "$orchest_aero_windows" | grep -c . || true)
-  if [[ "$count" -ge "$expected" ]]; then
-    break
-  fi
-done
-
-# If not all windows matched yet, give titles a few more seconds to settle
-if [[ "$count" -lt "$expected" ]]; then
-  sleep 3
-  orchest_aero_windows=$(aerospace list-windows --all \
-    --format '%{window-id}|%{workspace}|%{window-title}' 2>/dev/null \
-    | grep 'Orchest \[' || true)
+if ! refresh_workspace_json; then
+  exit 1
 fi
-for ws in "${ORCHEST_MANAGED_WORKSPACES[@]}"; do
-  label="Workspace ${ws}"
-  ws_id=$(echo "$workspace_lines" | grep -wF "$label" | head -1 | awk '{print $1}')
-  [[ -z "$ws_id" ]] && continue
-  match=$(echo "$orchest_aero_windows" | grep -F "[$ws_id]" | head -1)
-  [[ -z "$match" ]] && continue
-  IFS='|' read -r aero_wid current_ws _ <<< "$match"
-  if [[ "$current_ws" != "$ws" ]]; then
-    echo "[Orchest] moving \"${label}\" from workspace ${current_ws} to ${ws}..."
-    aerospace move-node-to-workspace --window-id "$aero_wid" "$ws" 2>/dev/null || true
+
+workspace_id_for_slot() {
+  local slot="$1"
+  echo "$workspace_json" | jq -r --arg label "Workspace ${slot}" \
+    '[.[] | select(.label == $label)] | first | .id // empty'
+}
+
+if [[ "$ACTION" == "open" ]]; then
+  # Explicit bindings make first launch deterministic. Existing bindings are
+  # observational and will be repaired after their windows are moved below.
+  for ws in "${ORCHEST_MANAGED_WORKSPACES[@]}"; do
+    label="Workspace ${ws}"
+    if [[ -z "$(workspace_id_for_slot "$ws")" ]]; then
+      echo "[Orchest] creating workspace \"${label}\" on desktop workspace ${ws}..."
+      orchest_cli workspace create --desktop-workspace "$ws" "$label" 2>/dev/null || {
+        echo "WARNING: [Orchest] failed to create workspace \"${label}\"" >&2
+        ((failures++)) || true
+      }
+    fi
+  done
+
+  if ! refresh_workspace_json; then
+    exit 1
   fi
-done
+  for ws in "${ORCHEST_MANAGED_WORKSPACES[@]}"; do
+    label="Workspace ${ws}"
+    ws_id=$(workspace_id_for_slot "$ws")
+    if [[ -n "$ws_id" ]]; then
+      echo "[Orchest] opening workspace \"${label}\"..."
+      orchest_cli workspace open "$ws_id" 2>/dev/null || {
+        echo "WARNING: [Orchest] failed to open workspace \"${label}\"" >&2
+        ((failures++)) || true
+      }
+    else
+      echo "WARNING: [Orchest] workspace \"${label}\" is missing" >&2
+      ((failures++)) || true
+    fi
+  done
+fi
+
+# Verify both sources of truth: AeroSpace's current window location and the
+# desktopWorkspaceId that Orchest learns from its polling provider. Requiring
+# two consecutive good observations prevents an in-flight open/focus request
+# from undoing a placement just after this helper returns.
+reconcile_orchest_placements() {
+  local allow_moves="$1" timeout="$2"
+  local deadline stable_passes=0 all_good ws label ws_id short_id match
+  local aero_wid current_ws persisted_ws
+  deadline=$(($(date +%s) + timeout))
+
+  while [[ $(date +%s) -lt "$deadline" ]]; do
+    if ! refresh_workspace_json; then
+      stable_passes=0
+      sleep 0.75
+      continue
+    fi
+    orchest_aero_windows=$(aerospace list-windows --all \
+      --format '%{window-id}|%{workspace}|%{window-title}' 2>/dev/null \
+      | grep 'Orchest \[' || true)
+    all_good=true
+
+    for ws in "${ORCHEST_MANAGED_WORKSPACES[@]}"; do
+      label="Workspace ${ws}"
+      ws_id=$(workspace_id_for_slot "$ws")
+      if [[ -z "$ws_id" ]]; then
+        echo "WARNING: [Orchest] cannot find \"${label}\"" >&2
+        all_good=false
+        continue
+      fi
+
+      short_id="${ws_id%%-*}"
+      match=$(echo "$orchest_aero_windows" | grep -F "[${short_id}]" | head -1 || true)
+      if [[ -z "$match" ]]; then
+        echo "[Orchest] waiting for \"${label}\" window..."
+        all_good=false
+        continue
+      fi
+
+      IFS='|' read -r aero_wid current_ws _ <<< "$match"
+      persisted_ws=$(echo "$workspace_json" | jq -r --arg id "$ws_id" \
+        '[.[] | select(.id == $id)] | first | .desktopWorkspaceId // empty')
+
+      if [[ "$current_ws" != "$ws" ]]; then
+        all_good=false
+        if [[ "$allow_moves" == true ]]; then
+          echo "[Orchest] moving \"${label}\" from workspace ${current_ws} to ${ws}..."
+          if ! aerospace move-node-to-workspace --window-id "$aero_wid" "$ws" 2>/dev/null; then
+            echo "WARNING: [Orchest] move of window ${aero_wid} failed" >&2
+          fi
+        else
+          echo "[Orchest] \"${label}\" is on workspace ${current_ws}; expected ${ws}" >&2
+        fi
+      elif [[ "$persisted_ws" != "$ws" ]]; then
+        # The provider polls every two seconds; let it observe the corrected
+        # AeroSpace location before declaring the operation complete.
+        [[ "$allow_moves" == true ]] || \
+          echo "[Orchest] \"${label}\" persists desktop binding ${persisted_ws:-none}; expected ${ws}" >&2
+        all_good=false
+      fi
+    done
+
+    if $all_good; then
+      stable_passes=$(( stable_passes + 1 ))
+      if [[ "$stable_passes" -ge 2 ]]; then
+        return 0
+      fi
+    else
+      stable_passes=0
+    fi
+    sleep 0.75
+  done
+
+  echo "WARNING: [Orchest] workspace placement did not converge within ${timeout}s" >&2
+  return 1
+}
+
+case "$ACTION" in
+  open)      reconcile_orchest_placements true 45 || ((failures++)) || true ;;
+  reconcile) reconcile_orchest_placements true 30 || ((failures++)) || true ;;
+  verify)    reconcile_orchest_placements false 6 || ((failures++)) || true ;;
+esac
 
 if [[ "$failures" -gt 0 ]]; then
   echo "[Orchest] done with ${failures} warning(s)."
