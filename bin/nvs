@@ -49,10 +49,9 @@ case "$mode" in
     cmd+=(--cmd "set title titlestring=$name\\ —\\ %t")
     cmd+=(--cmd "lua pcall(require, 'lib.clipboard-relay')")
 
-    # Per-launch identity for acp-broker per-client metadata attribution
-    # (acp-broker docs/RUNBOOK.md §3.3). Subprocesses (CodeCompanion ->
-    # acp-broker-attach-tag) read these to build
-    # ACP_BROKER_CLIENT_METADATA_JSON.
+    # Per-launch session identity. Read by nvim for the session-accent name
+    # (lib/session-accent) and by the omnigent adapter's `orchest.nvim_session`
+    # correlation tag (plugins/codecompanion.lua).
     export NVS_SESSION_NAME="$name"
     export NVS_HOST="$(hostname -s)"
     export NVS_WORKDIR="${workdir:-$PWD}"

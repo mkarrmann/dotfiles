@@ -1,9 +1,7 @@
 #!/bin/bash
-# Wrapper that exec's the dvsc-core-acp ACP server. Mirrors
-# ~/dotfiles/bin/claude-agent-acp's structure so that the broker's
-# `--declare-agent cmd=...` can point at a stable shell entry point
-# regardless of which fbsource checkout currently has the source
-# materialized.
+# Wrapper that exec's the dvsc-core-acp ACP server. A stable shell entry point
+# (used by omnigent via bin/omnigent-dvsc-ensure) that resolves the dist entry
+# regardless of which fbsource checkout currently has the source materialized.
 #
 # Resolution order for the dist entry point:
 #   1. $DVSC_ACP_DIST (explicit override)

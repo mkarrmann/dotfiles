@@ -1,12 +1,13 @@
 #!/bin/bash
-# Mirrors ~/bin/claude-agent-acp; same load-bearing constraints apply:
+# Wrapper that exec's the codex-acp ACP server (the command the CodeCompanion
+# `codex` ACP adapter spawns via PATH). Load-bearing constraints:
 #
 #   1. PATH prepend ~/bin/nosandbox so Meta's codex_cli launcher (which
 #      uses sandbox-exec to start its local auth revproxy) can reach
 #      the network. Without the shim, the proxy can't fetch creds and
 #      codex either hangs or 401s.
 #   2. Stderr is teed to ~/.cache/codex-acp.log so wrapper-side errors
-#      survive the broker swallowing the spawned process's stderr.
+#      survive the ACP client swallowing the spawned process's stderr.
 #
 # codex-acp resolves its underlying codex binary via $CODEX_PATH (default
 # "codex" in PATH); we point it at Meta's installed codex_cli so auth

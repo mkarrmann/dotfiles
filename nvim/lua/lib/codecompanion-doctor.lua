@@ -2,8 +2,8 @@ local M = {}
 
 local LOG_PATH = vim.fn.expand("~/.local/state/nvim/codecompanion.log")
 local PROC_PATTERNS = {
-  "claude-agent-acp/dist/index.js",
-  "claude_code/.*stream-json",
+  "acp-wrapper/dist/index.js", -- devmate + dvsc-core ACP wrappers
+  "codex-acp/dist/index.js",
 }
 
 local function shell_lines(cmd)
@@ -117,7 +117,7 @@ function M.run()
 
   local pids = find_processes()
   if #pids == 0 then
-    section("Processes", "(no claude-agent-acp or claude_code processes running)")
+    section("Processes", "(no ACP agent-wrapper processes running)")
   else
     local body = {}
     for _, pid in ipairs(pids) do
@@ -131,8 +131,8 @@ function M.run()
 
   out[#out + 1] = "## Cleanup commands"
   out[#out + 1] = ""
-  out[#out + 1] = "    pkill -f claude-agent-acp/dist/index.js"
-  out[#out + 1] = "    pkill -f 'claude_code/.*stream-json'"
+  out[#out + 1] = "    pkill -f acp-wrapper/dist/index.js"
+  out[#out + 1] = "    pkill -f codex-acp/dist/index.js"
 
   local buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].buftype = "nofile"
@@ -159,7 +159,7 @@ end
 function M.cleanup_orphans()
   for _, pid in ipairs(descendants(vim.fn.getpid())) do
     local cmd = (shell_lines({ "ps", "-o", "command=", "-p", tostring(pid) })[1]) or ""
-    if cmd:find("claude%-agent%-acp") or cmd:find("claude_code") then
+    if cmd:find("acp%-wrapper") or cmd:find("codex%-acp") then
       vim.fn.system({ "kill", tostring(pid) })
     end
   end

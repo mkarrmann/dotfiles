@@ -1,11 +1,10 @@
--- Reap the ACP connection (broker client connection -> per-session agent +
--- its MCP fleet) whenever a CodeCompanion chat is closed by ANY means, not
--- just the built-in `<C-c>` close action or quitting nvim.
+-- Reap the ACP connection (the per-session agent process + its MCP fleet)
+-- whenever a CodeCompanion chat is closed by ANY means, not just the built-in
+-- `<C-c>` close action or quitting nvim.
 --
 -- Background. CodeCompanion only calls `acp_connection:disconnect()` (which
--- SIGKILLs the `acp-broker-attach-tag` bridge, EOFing the broker connection
--- and triggering the broker's reap-on-session-end) from two places:
--- `Chat:close()` (the `<C-c>` action) and a `VimLeavePre` autocmd. The chat
+-- SIGKILLs the spawned agent process, tearing down its session) from two
+-- places: `Chat:close()` (the `<C-c>` action) and a `VimLeavePre` autocmd. The chat
 -- buffer sets no `bufhidden`, so closing its window/tab (`:tabclose`,
 -- `:close`, `<C-w>c`) leaves the buffer loaded-but-hidden and never fires
 -- `BufUnload` -- so the agent + ~5GB MCP fleet leak until nvim exits.

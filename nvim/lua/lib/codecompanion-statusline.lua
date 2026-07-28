@@ -85,13 +85,6 @@ local function build_segments(state)
 
   local chat = require("codecompanion").buf_get_chat(state.chat_bufnr)
   local adapter_type = chat and chat.adapter and chat.adapter.type
-  local dvsc_sel
-  if chat and chat.adapter and chat.adapter.name == "dvsc_core_broker" then
-    local sel_for_buf = _G.codecompanion_dvsc_selection_for_buf
-    if type(sel_for_buf) == "function" then
-      dvsc_sel = sel_for_buf(state.chat_bufnr)
-    end
-  end
   -- Durable session id across families (acp OR omnigent).
   local acp_session_id
   do
@@ -143,14 +136,6 @@ local function build_segments(state)
   end
   if meta.mode and meta.mode.name then
     right[#right + 1] = { meta.mode.name, "String" }
-  elseif dvsc_sel and dvsc_sel.mode then
-    right[#right + 1] = { dvsc_sel.mode, "String" }
-  end
-  if dvsc_sel and dvsc_sel.model then
-    right[#right + 1] = { dvsc_sel.model, "String" }
-  end
-  if dvsc_sel and dvsc_sel.effort then
-    right[#right + 1] = { "effort:" .. tostring(dvsc_sel.effort), "DiagnosticInfo" }
   end
   local omni_effort = meta.omnigent and meta.omnigent.reasoning_effort
   if type(omni_effort) == "string" and omni_effort ~= "" then

@@ -1,272 +1,3 @@
--- ── dvsc-core-acp via acp-broker: per-launch picker state ─────────────────
---
--- The broker-fronted `dvsc_core_broker` adapter (defined alongside
--- `dvsc_core` below) reads `_dvsc.pending` when CodeCompanion spawns it,
--- bakes that JSON into `ACP_BROKER_CLIENT_METADATA_JSON`, and runs
--- `acp-broker-attach-select-tag` which forwards the metadata through
--- the broker via `_meta/broker/connection/set_metadata`. The broker
--- then stamps `_meta.broker.client.metadata` onto the next `session/new`
--- envelope (see `stamp_broker_client_metadata` in
--- acp-broker/crates/acp-broker/src/client_link.rs — `session/new` only,
--- which matches "selection is fixed at session creation"). The
--- dvsc-core-acp wrapper's `extractDvscSelection` (in `agent.ts`) sources
--- `mode`, `model`, and `llm_config` from `_meta.broker.client.metadata.dvsc`
--- and applies them to the per-session `CreateAgentRequest`. The wrapper is
--- a dumb pass-through for `llm_config` — provider-specific shaping of
--- `reasoning_config` happens here, in this picker.
---
--- `_dvsc.pending` and `_dvsc.launch_queue` remain global because the
--- adapter spawn that consumes them is synchronous in the same tab where
--- the picker ran. The per-tab one-chat invariant (see
--- `tab_chat_open_or_toggle` below) prevents a launch when the tab
--- already owns a chat, so the FIFO never accumulates stale entries.
-local _dvsc = { pending = nil, launch_queue = {}, by_chat_bufnr = {} }
-
-local DVSC_CACHE_PATH = vim.fn.stdpath("data") .. "/dvsc-acp-last-v2.json"
-
--- Per-launch state for the direct claude-agent-acp / codex-acp paths
--- (`<leader>aG` → "Claude direct" / "Codex direct"). Mirrors `_dvsc` but with
--- two channels because the direct agents take their knobs differently than the
--- dvsc-core wrapper (which reads everything from `_meta.broker.client.metadata.dvsc`):
---   * `pending_meta` is deep-merged into the next `session/new` `params._meta`.
---     claude-agent-acp reads its thinking budget from
---     `_meta.claudeCode.options.maxThinkingTokens` at session creation
---     (acp-agent.js) — thinking is NOT a live config option, so it can only be
---     set here. Consumed once by the patched `Connection:send_rpc_request`. The
---     broker preserves client `_meta` siblings when it stamps its own
---     `_meta.broker.client.metadata`, so the merged object reaches the agent.
---   * `pending_apply` carries `{ provider, model, effort? }` applied
---     post-establish via live config options (model for both agents; reasoning
---     effort for codex, which exposes it as a live config option).
--- Single-flight, same per-tab one-chat assumption as `_dvsc.pending`.
-local _direct = { pending_meta = nil, pending_apply = nil }
-
-local DIRECT_CACHE_PATH = vim.fn.stdpath("data") .. "/direct-acp-last.json"
-
--- Claude thinking effort → `maxThinkingTokens`. claude-agent-acp reads this
--- integer at session/new (acp-agent.js:922); there is no per-level enum. The
--- budgets mirror Claude Code's built-in think levels. Keyed lowercase to match
--- `EFFORT_OPTIONS_BY_KIND.anthropic_adaptive`.
-local CLAUDE_EFFORT_TOKENS = {
-  low = 4096,
-  medium = 10000,
-  high = 24000,
-  xhigh = 31999,
-}
-
--- Direct broker adapters that support the model/effort picker, mapped to the
--- DVSC_MODELS provider whose models they can run.
-local DIRECT_ADAPTERS = {
-  claude_broker = { provider = "anthropic" },
-  codex_broker  = { provider = "openai" },
-}
-
-local DVSC_MODES = { "native", "claude", "codex", "metacode" }
-
--- Canonical model catalog. Mirrors Configerator
--- `devmate_vscode/model/model_config.cconf` (v25 as of 2026-06-04). Refresh
--- by re-reading `configerator/source/devmate_vscode/model/model_config.cconf`
--- or by querying `GET /models` on a running dvsc-core (note: the HTTP
--- endpoint strips `supports_adaptive_thinking` — only the .cconf has it).
---
--- Per-harness applicability and `reasoning_config` shape are derived from
--- `provider` and (for Anthropic) `adaptive`, mirroring `getModelsForAgent`
--- and `getDevmateLLMConfig` in dm-core. Each model is also gated by an
--- availability gatekeeper server-side; what's actually usable depends on
--- which gates this user is in.
---
--- IMPORTANT: this list must only contain models the running dm-core actually
--- has in its loaded snapshot. dm-core's `getDevmateLLMConfig` silently
--- *falls back to the default model* (claude-opus-4.6) when an unknown
--- modelId is requested (config.ts:108) — and the wrapper happily forwards
--- the picker's provider-shaped `reasoning_config` (e.g. OpenAI's
--- `{effort: "HIGH"}`) into that wrong-provider config, which the LLM
--- gateway returns empty for, surfacing as `stopReason="refusal"` after a
--- ~60s hang. Models removed from the configerator-source list because they
--- aren't in dm-core's loaded `Loaded model config version 25` snapshot for
--- this user (verify via `[INFO] Registered N dynamic GKs` in
--- `/tmp/dvsc-core-acp-*.log` — missing `devmate_<model>` GK = absent):
---   - gemini-3-flash  (no devmate_gemini_3_flash GK)
---   - metabrain-dogfooding
--- TODO: replace this hardcoded list with a one-time HTTP fetch of dm-core's
--- `GET /models` endpoint when the picker opens, so drift between this file
--- and the user's actual entitlement can't reintroduce the silent-refusal
--- failure mode.
-local DVSC_MODELS = {
-  -- Anthropic
-  { id = "claude-opus-4.8",        provider = "anthropic", adaptive = true  },
-  { id = "claude-opus-4.7-long",   provider = "anthropic", adaptive = true  },
-  { id = "claude-opus-4.6",        provider = "anthropic", adaptive = true  },
-  { id = "claude-opus-4.6-long",   provider = "anthropic", adaptive = true  },
-  { id = "claude-sonnet-5",        provider = "anthropic", adaptive = true  },
-  { id = "claude-sonnet-4.6-long", provider = "anthropic", adaptive = true  },
-  { id = "claude-haiku-4.5",       provider = "anthropic", adaptive = false },
-  -- OpenAI
-  { id = "gpt-5-6", provider = "openai" },
-  { id = "gpt-5-5", provider = "openai" },
-  -- Google (Native only — `getModelsForAgent` has no Google-specific harness)
-  { id = "gemini-3-1-pro", provider = "google" },
-  { id = "gemini-3-flash", provider = "google" },
-  -- Meta
-  { id = "avocado-code-internal-0529", provider = "meta" },
-}
-
-local function _dvsc_lookup_model(model_id)
-  for _, m in ipairs(DVSC_MODELS) do
-    if m.id == model_id then return m end
-  end
-  return nil
-end
-
--- Mirror of `getModelsForAgent` (xplat/vscode/modules/dm-core/src/shared/
--- types/agent-events.ts:117). Native gets all models; Claude gets Anthropic;
--- Codex gets OpenAI; MetaCode gets Meta.
-local function _models_for_mode(mode)
-  local out = {}
-  for _, m in ipairs(DVSC_MODELS) do
-    if mode == "native"
-        or (mode == "claude"   and m.provider == "anthropic")
-        or (mode == "codex"    and m.provider == "openai")
-        or (mode == "metacode" and m.provider == "meta") then
-      table.insert(out, m.id)
-    end
-  end
-  return out
-end
-
--- Models runnable by a direct broker agent, scoped to one provider. Used by the
--- direct (`claude_broker` / `codex_broker`) picker, which has no harness dimension.
-local function _models_for_provider(provider)
-  local out = {}
-  for _, m in ipairs(DVSC_MODELS) do
-    if m.provider == provider then
-      table.insert(out, m.id)
-    end
-  end
-  return out
-end
-
--- `reasoning_config` is a discriminated union shaped by provider in dm-core
--- (xplat/vscode/modules/dm-core/src/shared/types/llm-types.ts). The picker
--- emits the right shape literally — the wrapper just forwards.
---
---   openai             → { effort: "HIGH" }                       (uppercase)
---   google             → { effort: "HIGH" }, server clamps XHIGH→HIGH
---   anthropic_adaptive → { anthropic_effort: { effort: "high" } } (lowercase)
---
--- Non-adaptive Anthropic (Haiku 4.5) and Meta models have no effort knob —
--- the picker skips the prompt and the wrapper sends no `llm_config`,
--- letting dm-core's resolved defaults (e.g. `thinking_budget_tokens=4096`
--- for Haiku) stand.
--- Order matters: `high` first (marked as default in the picker label), then
--- the remaining levels low → medium → xhigh.
-local EFFORT_OPTIONS_BY_KIND = {
-  openai = { "HIGH", "LOW", "MEDIUM", "XHIGH" },
-  google = { "HIGH", "LOW", "MEDIUM" },
-  anthropic_adaptive = { "high", "low", "medium", "xhigh" },
-}
-
-local function _dvsc_reasoning_kind(model)
-  if not model then return nil end
-  local entry = _dvsc_lookup_model(model)
-  if entry then
-    if entry.provider == "openai" then return "openai" end
-    if entry.provider == "google" then return "google" end
-    if entry.provider == "anthropic" and entry.adaptive then return "anthropic_adaptive" end
-    return nil
-  end
-  -- Fallback: prefix-based detection for catalog entries this picker hasn't
-  -- been refreshed with yet. Errs on the side of offering an effort prompt
-  -- (worst case the server ignores or shallow-merge-clobbers); a missing
-  -- catalog entry is a more pressing fix than a stale prompt.
-  local lower = model:lower()
-  if lower:match("^gpt%-")    then return "openai" end
-  if lower:match("^gemini%-") then return "google" end
-  return nil
-end
-
-local function _dvsc_build_reasoning_config(model, effort)
-  local kind = _dvsc_reasoning_kind(model)
-  if not kind or not effort then return nil end
-  if kind == "anthropic_adaptive" then
-    return { anthropic_effort = { effort = effort } }
-  end
-  return { effort = effort }
-end
-
-local function _dvsc_build_llm_config(model, effort)
-  local rc = _dvsc_build_reasoning_config(model, effort)
-  if not rc then return nil end
-  return { model_params = { reasoning_config = rc } }
-end
-
-local function _dvsc_read_cache()
-  local f = io.open(DVSC_CACHE_PATH, "r")
-  if not f then return {} end
-  local body = f:read("*a")
-  f:close()
-  local ok, t = pcall(vim.fn.json_decode, body)
-  return (ok and type(t) == "table") and t or {}
-end
-
-local function _dvsc_write_cache(t)
-  local f = io.open(DVSC_CACHE_PATH, "w")
-  if not f then return end
-  f:write(vim.fn.json_encode(t))
-  f:close()
-end
-
--- Direct-path cache is a dict keyed by provider ("anthropic" / "openai") so a
--- claude selection doesn't clobber a codex one. Each slot is `{ model, effort? }`.
-local function _direct_read_cache()
-  local f = io.open(DIRECT_CACHE_PATH, "r")
-  if not f then return {} end
-  local body = f:read("*a")
-  f:close()
-  local ok, t = pcall(vim.fn.json_decode, body)
-  return (ok and type(t) == "table") and t or {}
-end
-
-local function _direct_write_cache(t)
-  local f = io.open(DIRECT_CACHE_PATH, "w")
-  if not f then return end
-  f:write(vim.fn.json_encode(t))
-  f:close()
-end
-
-local function _dvsc_pick(items, prompt, cb)
-  vim.ui.select(items, { prompt = prompt }, function(choice)
-    if choice ~= nil then cb(choice) end
-  end)
-end
-
--- One-chat-per-tab invariant. Mirrors `claude-per-tab-terminal.lua`:
--- each tabpage owns at most one CodeCompanion chat, stamped on creation
--- via the `CodeCompanionChatOpened` autocmd below as
--- `vim.t.codecompanion_chat_bufnr` and `vim.b[chat_bufnr].cc_tab_owner`.
--- The chat is created in the current tab and never moves.
--- Per-connection client identity stamped onto every broker session via
--- `_meta.broker.client.metadata` (see acp-broker docs/SPEC.md §13.2).
--- The persistence plugin captures the whole object verbatim into
--- `sessions.metadata.broker_client_metadata` (capture.rs:659), so adding
--- keys here is forward-compat — no broker change required to persist
--- additional fields. `extra` lets adapter-specific selectors (e.g. the
--- dvsc-core picker's `{ dvsc = sel }`) merge into the same object.
-local function build_client_metadata(extra)
-  local md = {
-    nvim_session    = vim.env.NVS_SESSION_NAME or "ad-hoc",
-    host            = vim.env.NVS_HOST or vim.fn.hostname(),
-    cwd             = vim.env.NVS_WORKDIR or vim.fn.getcwd(),
-    nvim_pid        = vim.fn.getpid(),
-    nvim_tab_handle = vim.api.nvim_get_current_tabpage(),
-    tab_name        = vim.t.tab_name,
-  }
-  if extra then
-    for k, v in pairs(extra) do md[k] = v end
-  end
-  return vim.json.encode(md)
-end
-
 -- Keep CodeCompanion chat buffers non-modifiable at rest so prompts and
 -- edits can only flow through the per-tab input queue (lib/codecompanion-queue).
 -- CodeCompanion brackets its own streaming writes with unlock/lock, and the
@@ -310,615 +41,11 @@ local function tab_chat_open_or_toggle(opts)
   return true
 end
 
-local function _dvsc_launch_with(mode, model, effort)
-  -- Refuse if the tab already owns a chat — `tab_chat_open_or_toggle`
-  -- would just toggle visibility and the dvsc selection would be lost.
-  -- Skip the launch_queue/pending push so they don't accumulate stale
-  -- entries the next legitimate launch would consume.
-  local existing = vim.t.codecompanion_chat_bufnr
-  if existing and vim.api.nvim_buf_is_valid(existing) then
-    return tab_chat_open_or_toggle({ adapter = "dvsc_core_broker" })
-  end
-  local sel = { mode = mode, model = model }
-  local llm_config = _dvsc_build_llm_config(model, effort)
-  if llm_config then sel.llm_config = llm_config end
-  table.insert(_dvsc.launch_queue, { mode = mode, model = model, effort = effort })
-  -- Stash for the adapter function to consume on next spawn. Racy if you
-  -- start two chats simultaneously; fine for single-user. Stored as a
-  -- Lua table so `build_client_metadata` can merge it with per-launch
-  -- nvim identity rather than overwriting it.
-  _dvsc.pending = { dvsc = sel }
-  tab_chat_open_or_toggle({ adapter = "dvsc_core_broker" })
-end
-
-_G.codecompanion_dvsc_selection_for_buf = function(bufnr)
-  return _dvsc.by_chat_bufnr[bufnr]
-end
-
--- ── Resume / fork against the acp-broker ──────────────────────────────────
---
--- Both flows take a `broker_session_id` (lookup via
---   sqlite3 ~/.local/share/acp-persistence-server/persistence.db \
---     "SELECT broker_session_id, broker_id,
---             json_extract(metadata,'$.broker_client_metadata.nvim_session')
---      FROM sessions ORDER BY started_at DESC LIMIT 20;"
--- ). The last bsid used is cached so the next prompt prefills it.
---
--- Resume:  client sends `session/load(bsid)`; the broker live-joins the
---          existing session (if alive) or replays via the persistence
---          plugin's `try_resume`. Cross-broker resume is rejected — the
---          broker that captured the session is the only one that can
---          resume it (`docs/PROPOSAL-unified-session-id.md` §4.6).
---
--- Fork:    client sends `meta.broker.persistence.fork_saved_session`,
---          which mints a fresh session whose history is replayed into
---          the local broker. Cross-broker capable. The new session's
---          persistence record carries `parent = source_bsid`.
-local BROKER_BSID_CACHE_PATH = vim.fn.stdpath("data") .. "/acp-broker-last-bsid.json"
-
-local function _broker_read_last_bsid()
-  local f = io.open(BROKER_BSID_CACHE_PATH, "r")
-  if not f then return nil end
-  local body = f:read("*a")
-  f:close()
-  local ok, t = pcall(vim.fn.json_decode, body)
-  if not (ok and type(t) == "table" and t.bsid) then return nil end
-  return vim.trim(t.bsid)
-end
-
-local function _broker_write_last_bsid(bsid)
-  local f = io.open(BROKER_BSID_CACHE_PATH, "w")
-  if not f then return end
-  f:write(vim.fn.json_encode({ bsid = vim.trim(bsid) }))
-  f:close()
-end
-
--- Open a chat in the current tab pre-loaded with an existing broker
--- session. Bypasses `tab_chat_open_or_toggle` because the
--- `:CodeCompanionChat` command path doesn't accept `acp_session_id` —
--- the patched `ACPHandler:ensure_connection` (see config below) wires
--- it through, and the patched `Connection:_establish_session` forces
--- `loadSession` capability so the broker actually receives
--- `session/load(bsid)`.
---
--- `cwd_override` (optional) forces the follow-up `session/load` RPC to
--- send a specific cwd instead of `vim.fn.getcwd()`. For broker forks
--- this is the cwd the broker materialized the JSONL under (echoed back
--- in `ForkSavedSessionResponse.cwd`) — see `_broker_fork_saved_session`
--- above. The override is stored on the Connection as `_cwd_override`
--- and consumed by the patched `Connection:_establish_session` below.
-local function _broker_open_chat_with_session(adapter, acp_session_id, cwd_override)
-  local existing = vim.t.codecompanion_chat_bufnr
-  if existing and vim.api.nvim_buf_is_valid(existing) then
-    vim.notify(
-      "Tab already has a CodeCompanion chat; close it before resuming/forking another session.",
-      vim.log.levels.WARN
-    )
-    return false
-  end
-  -- Chat.new() dereferences self.buffer_context unconditionally
-  -- (chat/init.lua:504); it must be a real table, not nil. Mirror what
-  -- the CodeCompanion top-level entry points do (init.lua:170-179) and
-  -- build it from the current buffer via context_utils.
-  local buffer_context = require("codecompanion.utils.context").get(vim.api.nvim_get_current_buf())
-  local chat = require("codecompanion.interactions.chat").new({
-    adapter = adapter,
-    acp_session_id = acp_session_id,
-    buffer_context = buffer_context,
-  })
-
-  -- The patched ACPHandler:ensure_connection (below) pre-sets `session_id`
-  -- on the Connection so the broker treats this as a resume. That makes
-  -- `ACPHandler:ensure_session` early-exit at handler.lua:103-105 — so the
-  -- actual `session/load(bsid)` RPC is never sent and the persistence
-  -- replay events have no consumer (acp/init.lua:631-635 silently drops
-  -- SESSION_UPDATE notifications when `_loading_session` is unset and no
-  -- `_active_prompt` exists). Trigger the proper load explicitly, mirroring
-  -- upstream's /resume slash command at slash_commands/builtin/resume.lua:
-  -- collect updates synchronously during load_session, then hand them to
-  -- `acp.render.restore_session` to repaint the chat buffer.
-  local function try_load(attempts)
-    local conn = chat.acp_connection
-    if conn and conn:is_ready() then
-      if cwd_override then
-        conn._cwd_override = cwd_override
-      end
-      local updates = {}
-      local ok = conn:load_session(acp_session_id, {
-        on_session_update = function(u) table.insert(updates, u) end,
-      })
-      if not ok then
-        vim.notify("acp-broker: load_session failed for " .. acp_session_id, vim.log.levels.ERROR)
-        return
-      end
-      require("codecompanion.interactions.chat.acp.commands").link_buffer_to_session(
-        chat.bufnr, conn.session_id
-      )
-      pcall(function()
-        require("lib.codecompanion-chatinfo").pin(chat.bufnr, conn.session_id)
-      end)
-      require("codecompanion.interactions.chat.acp.render").restore_session(chat, updates)
-      lock_chat_buf(chat.bufnr)
-      require("codecompanion.utils").fire("ACPChatRestored", {
-        bufnr = chat.bufnr,
-        id = chat.id,
-        session_id = conn.session_id,
-      })
-      return
-    end
-    if attempts <= 0 then
-      vim.notify("acp-broker: timed out waiting for ACP connection", vim.log.levels.ERROR)
-      return
-    end
-    vim.defer_fn(function() try_load(attempts - 1) end, 100)
-  end
-  vim.defer_fn(function() try_load(100) end, 50)
-
-  return true
-end
-
--- Issue `meta.broker.persistence.fork_saved_session(bsid)` and return
--- `(new_bsid, resolved_cwd)` (or nil on failure, with a notification).
---
--- `target_cwd = vim.uv.cwd()` instructs the broker to materialize the
--- forked JSONL under the local cwd, so the agent's later
--- `session/load(new_bsid)` finds it. Without this, cross-broker forks
--- would write the JSONL under the source machine's cwd path (which
--- doesn't exist locally) and the resume would silently start fresh.
--- See ralph-loops/fork-cwd-fix/context.md §6 in the broker repo.
---
--- The broker echoes the resolved cwd back in `response.cwd`; callers
--- thread it into `_broker_open_chat_with_session` so the follow-up
--- `session/load` uses the same cwd the JSONL was written under.
-local function _broker_fork_saved_session(adapter, source_bsid)
-  local conn = require("codecompanion.acp").new({ adapter = adapter })
-  if not conn:connect_and_authenticate() then
-    vim.notify("acp-broker: connect failed", vim.log.levels.ERROR)
-    return nil
-  end
-  local resp = conn:send_rpc_request(
-    "meta.broker.persistence.fork_saved_session",
-    { broker_session_id = source_bsid, target_cwd = vim.uv.cwd() }
-  )
-  pcall(function() conn:disconnect() end)
-  if not resp or not resp.broker_session_id then
-    vim.notify("fork failed: " .. vim.inspect(resp), vim.log.levels.ERROR)
-    return nil
-  end
-  return resp.broker_session_id, resp.cwd
-end
-
--- `broker_resume_or_fork` (the aBr/aBf escape hatches) is defined after the I/O
--- adapters below, since it depends on `_broker_this_broker_id`/
--- `_broker_list_sessions` for its pre-flight broker-mismatch check.
-
--- The broker's local WAL mirror. The server-backed picker
--- (`broker_continue`) does NOT read this for its session list — it queries the
--- persistence-server via acp-broker-cli so it sees all brokers. The WAL is used
--- only for (a) reading THIS broker's id (`_broker_this_broker_id`) and (b) the
--- degraded fallback in `_broker_list_sessions` when the CLI/server is
--- unreachable.
-local BROKER_WAL_PATH =
-  vim.fn.expand("~/.local/share/acp-broker/sqlite-persistence/wal.db")
-
--- Adapter for a saved session. dvsc/claude/devmate all speak the claude_code
--- wire shape and resume cleanly through `dvsc_core_broker`; only codex needs
--- `codex_broker`. The agent *kind* is not reliably recoverable for dead
--- sessions (the WAL keeps only `agent_id`; `agent list` names only live
--- agents; lifecycle retains few `agent_spawned` records), so we positively
--- identify codex from the live agent list when possible and otherwise fall
--- back to `dvsc_core_broker`.
-local function _broker_adapter_for(agent_id)
-  if not agent_id or agent_id == "" then return "dvsc_core_broker" end
-  local cli = vim.fn.expand("~/repos/acp-broker/target/release/acp-broker-cli")
-  if vim.fn.executable(cli) == 0 then return "dvsc_core_broker" end
-  local out = vim.fn.systemlist({ cli, "agent", "list" })
-  if vim.v.shell_error ~= 0 then return "dvsc_core_broker" end
-  for _, line in ipairs(out) do
-    local id, name = line:match("^(%S+)%s+%S+%s+%S+%s+(%S+)")
-    if id == agent_id then
-      if name == "codex" then return "codex_broker" end
-      return "dvsc_core_broker"
-    end
-  end
-  return "dvsc_core_broker"
-end
-
--- ── I/O adapters for the server-backed continue picker ─────────────────────
---
--- These are the thin impure edges that feed `lib.acp-broker-sessions` (pure).
--- Design: docs/acp-broker-continue-refactor.md §3.1-3.2.
-
-local _BROKER_CLI = vim.fn.expand("~/repos/acp-broker/target/release/acp-broker-cli")
-local _broker_sessions = require("lib.acp-broker-sessions")
-
--- This broker's id, read once from the local WAL and cached. Used to classify
--- rows as local vs remote. Returns nil if the WAL is unavailable (⇒ every row
--- classifies as remote ⇒ fork, which is the safe cross-broker path).
-local _this_broker_id_cache = nil
-local _this_broker_id_read = false
-local function _broker_this_broker_id()
-  if _this_broker_id_read then return _this_broker_id_cache end
-  _this_broker_id_read = true
-  if vim.fn.executable("sqlite3") == 1 and vim.fn.filereadable(BROKER_WAL_PATH) == 1 then
-    local out = vim.fn.systemlist({
-      "sqlite3", BROKER_WAL_PATH,
-      "SELECT broker_id FROM mirrored_sessions ORDER BY started_at DESC LIMIT 1;",
-    })
-    if vim.v.shell_error == 0 and out[1] and out[1] ~= "" then
-      _this_broker_id_cache = vim.trim(out[1])
-    end
-  end
-  return _this_broker_id_cache
-end
-
--- Live SESSION bsid set on THIS broker, via `session list`. This is the correct
--- liveness signal: a session is resumable via live-join only if it's in the
--- broker's live session registry. Keying off `agent list` is WRONG for dvsc —
--- the dvsc-core agent is a shared long-lived process that multiplexes many
--- sessions, so it stays "alive" even after a specific session crashes, which
--- made crashed sessions look resumable and open blank buffers. Returns {} on
--- failure (⇒ nothing looks live ⇒ everything forks, the safe default).
-local function _broker_live_session_ids()
-  local set = {}
-  if vim.fn.executable(_BROKER_CLI) == 0 then return set end
-  local out = vim.fn.system({ _BROKER_CLI, "session", "list", "--json" })
-  if vim.v.shell_error ~= 0 then return set end
-  local ok, decoded = pcall(vim.fn.json_decode, out)
-  if not ok or type(decoded) ~= "table" or type(decoded.sessions) ~= "table" then
-    return set
-  end
-  for _, s in ipairs(decoded.sessions) do
-    local sid = type(s) == "table" and s.session_id
-    if type(sid) == "string" and sid ~= "" then set[sid] = true end
-  end
-  return set
-end
-
--- List saved sessions across ALL brokers via the persistence-server (through the
--- broker UDS). Returns `(rows, degraded)`: on CLI failure, falls back to the
--- local WAL (this-broker-only) with `degraded = true`. Rows are normalized by
--- `parse_saved_sessions` and already recency-sorted by the server.
-local function _broker_list_sessions()
-  if vim.fn.executable(_BROKER_CLI) == 1 then
-    local out = vim.fn.system({ _BROKER_CLI, "history", "query", "saved-sessions", "--json" })
-    if vim.v.shell_error == 0 and out and out ~= "" then
-      local rows = _broker_sessions.parse_saved_sessions(out)
-      if #rows > 0 then return rows, false end
-    end
-  end
-  -- Fallback: local WAL only.
-  local rows = {}
-  if vim.fn.executable("sqlite3") == 1 and vim.fn.filereadable(BROKER_WAL_PATH) == 1 then
-    local this = _broker_this_broker_id()
-    local out = vim.fn.systemlist({
-      "sqlite3", "-cmd", ".mode json", BROKER_WAL_PATH,
-      "SELECT broker_session_id, cwd, "
-        .. "json_extract(metadata,'$.broker_client_metadata.host') AS host, "
-        .. "json_extract(metadata,'$.broker_client_metadata.dvsc.model') AS model, "
-        .. "json_extract(metadata,'$.broker_client_metadata.dvsc.mode') AS mode "
-        .. "FROM mirrored_sessions ORDER BY started_at DESC;",
-    })
-    local ok, decoded = pcall(vim.fn.json_decode, table.concat(out, "\n"))
-    if ok and type(decoded) == "table" then
-      for _, r in ipairs(decoded) do
-        rows[#rows + 1] = {
-          bsid = r.broker_session_id,
-          broker_id = r.host or this,
-          cwd = r.cwd,
-          model = r.model,
-          mode = r.mode,
-        }
-      end
-    end
-  end
-  return rows, true
-end
-
--- Lazily enrich a single picked row (design §3.2: per-row enrichment is too slow,
--- so this runs only for the chosen row). Reads the session's seq-0 event via
--- `history query load` (cross-broker safe) to get agent_id + started_at.
--- Liveness is keyed off the session's OWN bsid being in the live session
--- registry (`live_sids`), NOT off the agent being alive — see
--- `_broker_live_session_ids`. Returns { agent_id, started_at, live }.
-local function _broker_enrich_pick(bsid, live_sids)
-  local result = { agent_id = nil, started_at = nil, live = false }
-  if (live_sids or {})[bsid] then
-    result.live = true
-  end
-  if vim.fn.executable(_BROKER_CLI) == 0 then return result end
-  -- `load | head -1`: the first line is the seq-0 session/new event. SIGPIPE from
-  -- the early close is fine (we ignore shell_error here since head closing the
-  -- pipe can make the CLI exit non-zero).
-  local out = vim.fn.system(
-    string.format("%s history query load %s 2>/dev/null | head -1",
-      vim.fn.shellescape(_BROKER_CLI), vim.fn.shellescape(bsid))
-  )
-  if not out or out == "" then return result end
-  local ok, ev = pcall(vim.fn.json_decode, out)
-  if not ok or type(ev) ~= "table" then return result end
-  result.agent_id = ev.agent_id
-  result.started_at = ev.ts
-  return result
-end
-
--- Top-level entry points for `<leader>aBr` / `<leader>aBf` (escape hatches; the
--- everyday path is `<leader>aBc` / broker_continue). `action` is `"resume"` or
--- `"fork"`. For `resume`, a pre-flight broker-mismatch check: cross-broker
--- `session/load` is rejected and silently starts fresh (acp/init.lua:386), so if
--- the bsid belongs to another broker we warn and offer to fork instead.
-local function broker_resume_or_fork(action, adapter_name)
-  adapter_name = adapter_name or "dvsc_core_broker"
-  local prompt = (action == "fork" and "Fork bsid: ") or "Resume bsid: "
-  local default = _broker_read_last_bsid() or "bsid_"
-
-  local function do_fork(bsid)
-    local adapter = require("codecompanion.adapters").resolve(adapter_name)
-    local target_bsid, target_cwd = _broker_fork_saved_session(adapter, bsid)
-    if not target_bsid then return end
-    vim.notify("forked " .. bsid .. " -> " .. target_bsid, vim.log.levels.INFO)
-    _broker_write_last_bsid(target_bsid)
-    _broker_open_chat_with_session(adapter_name, target_bsid, target_cwd)
-  end
-
-  vim.ui.input({ prompt = prompt, default = default }, function(bsid)
-    bsid = bsid and vim.trim(bsid)
-    if not bsid or bsid == "" or bsid == "bsid_" then return end
-    _broker_write_last_bsid(bsid)
-
-    if action == "fork" then
-      return do_fork(bsid)
-    end
-
-    -- action == "resume": pre-flight broker-mismatch check.
-    local this = _broker_this_broker_id()
-    local rows = _broker_list_sessions()
-    local owner
-    for _, row in ipairs(rows) do
-      if row.bsid == bsid then
-        owner = row.broker_id
-        break
-      end
-    end
-    if owner and this and owner ~= this then
-      return vim.ui.select({ "Fork instead (recommended)", "Resume anyway (will start fresh)" }, {
-        prompt = string.format("%s belongs to %s, not this broker (%s). Resume can't work.",
-          _broker_sessions.short_bsid(bsid), owner, this),
-      }, function(choice)
-        if not choice then return end
-        if choice:match("^Fork") then
-          do_fork(bsid)
-        else
-          _broker_open_chat_with_session(adapter_name, bsid, nil)
-        end
-      end)
-    end
-    _broker_open_chat_with_session(adapter_name, bsid, nil)
-  end)
-end
-
-
--- ── Smart continue: server-backed, auto-routing resume/fork ────────────────
---
--- Design: docs/acp-broker-continue-refactor.md §3.2-3.3. One command that lists
--- all sessions across brokers, classifies each by (origin, liveness), and routes
--- to resume (local+live), fork (remote), or fork-because-dead (local+dead).
---
--- DESIGN DEVIATION (implementation-time): the doc's `resume_or_fork` action was
--- to attempt resume and catch -32029. That is NOT reliably implementable —
--- codecompanion's `_establish_session` (acp/init.lua:386) swallows a failed
--- `session/load` by falling through to `session/new`, so a doomed resume
--- silently starts fresh and returns success (the very bug we're removing). We
--- instead detect local+dead via the pre-flight liveness check in
--- `_broker_enrich_pick` (agent-not-in-live-set) and fork directly. `route_for`
--- still returns "resume_or_fork" for local+dead; `_broker_apply` treats it as a
--- direct fork with a toast.
-
--- Execute the routed action for an enriched picked row.
-local function _broker_apply(row, enrich)
-  local origin = _broker_sessions.classify_origin(row, _broker_this_broker_id())
-  local action = _broker_sessions.route_for({ origin = origin, live = enrich.live })
-  _broker_write_last_bsid(row.bsid)
-
-  if action == "resume" then
-    _broker_open_chat_with_session(_broker_adapter_for(enrich.agent_id), row.bsid)
-    return
-  end
-
-  -- fork (remote) or resume_or_fork→fork (local+dead): materialize a fresh
-  -- local session from the server-held history and open it.
-  local adapter = (row.model and row.model:match("codex")) and "codex_broker" or "dvsc_core_broker"
-  local why = (origin == "remote")
-    and ("forking cross-broker session from " .. (row.broker_id or "?"))
-    or "original agent has exited; forking to recover context"
-  local target_bsid, target_cwd = _broker_fork_saved_session(
-    require("codecompanion.adapters").resolve(adapter), row.bsid
-  )
-  if not target_bsid then return end
-  vim.notify(
-    string.format("%s\n%s → %s", why, _broker_sessions.short_bsid(row.bsid), _broker_sessions.short_bsid(target_bsid)),
-    vim.log.levels.INFO
-  )
-  _broker_write_last_bsid(target_bsid)
-  _broker_open_chat_with_session(adapter, target_bsid, target_cwd)
-end
-
--- Enrich (if local) then apply. Remote rows skip enrichment (they always fork).
-local function _broker_enrich_and_apply(row, live_sids)
-  local origin = _broker_sessions.classify_origin(row, _broker_this_broker_id())
-  local enrich = { agent_id = nil, started_at = row.started_at, live = false }
-  if origin == "local" then
-    enrich = _broker_enrich_pick(row.bsid, live_sids or _broker_live_session_ids())
-  end
-  _broker_apply(row, enrich)
-end
-
--- Fetch a short preview for a session: full bsid, broker/agent, and the first
--- user prompt text. Cross-broker safe (uses `history query load`). Returns a
--- list of display lines. Best-effort; never errors.
-local function _broker_session_preview(row, enrich)
-  local lines = {
-    "bsid:    " .. (row.bsid or "?"),
-    "broker:  " .. (row.broker_id or "?"),
-    "cwd:     " .. (row.cwd or "?"),
-    "model:   " .. (row.model or "?") .. (row.effort and (" [" .. row.effort .. "]") or ""),
-  }
-  if enrich then
-    lines[#lines + 1] = "agent:   " .. (enrich.agent_id or "?") .. (enrich.live and " (live)" or " (dead)")
-    lines[#lines + 1] = "started: " .. (enrich.started_at or "?")
-  end
-  lines[#lines + 1] = ""
-  -- First user prompt: scan the load stream for the first client→agent
-  -- session/prompt event's last text block.
-  if vim.fn.executable(_BROKER_CLI) == 1 and row.bsid then
-    local out = vim.fn.system(
-      string.format("%s history query load %s 2>/dev/null | head -40",
-        vim.fn.shellescape(_BROKER_CLI), vim.fn.shellescape(row.bsid))
-    )
-    for _, l in ipairs(vim.split(out or "", "\n", { plain = true })) do
-      local ok, ev = pcall(vim.fn.json_decode, l)
-      if ok and type(ev) == "table" and ev.method == "session/prompt"
-        and ev.direction == "client_to_agent" then
-        local prompt = ev.payload and ev.payload.prompt
-        if type(prompt) == "table" then
-          local last_text
-          for _, block in ipairs(prompt) do
-            if type(block) == "table" and block.type == "text" and block.text then
-              last_text = block.text
-            end
-          end
-          if last_text then
-            lines[#lines + 1] = "── first prompt ──"
-            for _, pl in ipairs(vim.split(last_text, "\n", { plain = true })) do
-              lines[#lines + 1] = pl
-            end
-          end
-        end
-        break
-      end
-    end
-  end
-  return lines
-end
-
--- Smart continue entry point. Server-backed list, cwd-filtered by default (toggle
--- to all-cwd with <A-c>), rich auto-routing labels, pick-or-paste, preview + yank.
--- Design §3.3.
-local function broker_continue()
-  local all_rows, degraded = _broker_list_sessions()
-  local this = _broker_this_broker_id()
-  local live_sids = _broker_live_session_ids()
-  local cwd = vim.fn.getcwd()
-
-  -- Precompute origin + display label per row for the current scope.
-  local function build_items(scoped)
-    local rows = scoped and _broker_sessions.filter_by_cwd(all_rows, cwd) or all_rows
-    local items = {}
-    for _, row in ipairs(rows) do
-      local origin = _broker_sessions.classify_origin(row, this)
-      -- Liveness is lazy; at list time we only know origin. Show origin glyph;
-      -- action is "resume" for local (optimistic — refined on pick), "fork" for
-      -- remote (always correct).
-      local action = (origin == "remote") and "fork" or "resume"
-      local label = _broker_sessions.render_label(row, {
-        origin = origin, live = (origin == "local"), action = action, now = os.time(),
-      })
-      items[#items + 1] = { row = row, origin = origin, label = label }
-    end
-    return items
-  end
-
-  local scoped = true
-
-  local function open(is_scoped)
-    local items = build_items(is_scoped)
-    if vim.tbl_isempty(items) then
-      return vim.notify(
-        "No saved broker session for " .. cwd .. " (try <A-c> for all cwds, or <C-x> to paste a bsid)",
-        vim.log.levels.WARN
-      )
-    end
-    local title = degraded and "Continue [DEGRADED: this machine] " or "Continue session "
-    local scope_txt = is_scoped and cwd or "ALL cwds"
-
-    -- Route a chosen row (enrich if local, then apply).
-    local function route(row)
-      _broker_enrich_and_apply(row, live_sids)
-    end
-
-    -- Route a pasted bsid: classify from the full list; unknown ⇒ fork (safe).
-    local function route_bsid(bsid)
-      bsid = vim.trim(bsid)
-      if not _broker_sessions.is_bsid(bsid) then
-        return vim.notify("Not a valid bsid: " .. bsid, vim.log.levels.ERROR)
-      end
-      for _, row in ipairs(all_rows) do
-        if row.bsid == bsid then return route(row) end
-      end
-      route({ bsid = bsid, broker_id = nil })
-    end
-
-    vim.ui.select(items, {
-      prompt = title,
-      format_item = function(item) return item.label end,
-      snacks = {
-        source = "acp_continue",
-        title = title .. "· " .. scope_txt,
-        win = { input = { keys = {
-          ["<c-x>"] = { "paste_bsid", mode = { "i", "n" } },
-          ["<c-y>"] = { "yank_bsid", mode = { "i", "n" } },
-          ["<a-c>"] = { "toggle_cwd", mode = { "i", "n" } },
-        } } },
-        preview = function(ctx)
-          local item = ctx.item and ctx.item.item
-          if not item or not item.row then return false end
-          local lines = _broker_session_preview(item.row, nil)
-          ctx.preview:set_lines(lines)
-          ctx.preview:highlight({ ft = "markdown" })
-          return true
-        end,
-        actions = {
-          paste_bsid = function(picker)
-            local pat = picker.input.filter.pattern
-            if _broker_sessions.is_bsid(pat) then
-              picker:close()
-              vim.schedule(function() route_bsid(pat) end)
-            else
-              vim.notify("Type a full bsid_… in the filter first, then <C-x>", vim.log.levels.WARN)
-            end
-          end,
-          yank_bsid = function(picker)
-            local cur = picker:current()
-            local bsid = cur and cur.item and cur.item.row and cur.item.row.bsid
-            if bsid then
-              vim.fn.setreg("+", bsid)
-              vim.notify("Yanked " .. bsid, vim.log.levels.INFO)
-            end
-          end,
-          toggle_cwd = function(picker)
-            picker:close()
-            vim.schedule(function() open(not is_scoped) end)
-          end,
-        },
-      },
-    }, function(choice)
-      if not choice then return end
-      route(choice.row)
-    end)
-  end
-
-  if degraded then
-    vim.notify("acp-broker: persistence-server unreachable — showing THIS machine only",
-      vim.log.levels.WARN)
-  end
-  open(scoped)
-end
-
 -- ── Omnigent resume ────────────────────────────────────────────────────────
 --
--- The native-omnigent analog of `broker_continue`, but far simpler: omnigent
--- sessions are durable and server-owned, so there is no fork/resume split and no
--- cross-broker classification — a single REST list + `chat:resume_omnigent(id)`
+-- Omnigent sessions are durable and server-owned, so there is no fork/resume
+-- split and no cross-agent classification — a single REST list +
+-- `chat:resume_omnigent(id)`
 -- (which loads the snapshot + durable items and hydrates the buffer without
 -- posting) is the whole flow. The pure list helpers live in the plugin
 -- (`interactions.chat.omnigent.sessions`) and are reused here so formatting stays
@@ -931,9 +58,8 @@ end
 
 -- ── Omnigent agent picker ──────────────────────────────────────────────────
 --
--- Mirrors the dvsc/direct model pickers (`_dvsc_select` / `_direct_select`): a
--- cached last-choice reused on the normal launch, re-prompted on force. Two
--- differences, both because of what omnigent exposes: the catalog is fetched
+-- A cached last-choice reused on the normal launch, re-prompted on force. Two
+-- notable traits, both because of what omnigent exposes: the catalog is fetched
 -- live from the server (GET /v1/agents) rather than hardcoded -- there is no
 -- drift-prone entitlement list to mirror -- and the pick is a triple
 -- {agent, model, effort}: the agent is the session harness (IMMUTABLE after
@@ -944,9 +70,8 @@ end
 -- Other native harnesses remain excluded until their chat forwarding is tested.
 local OMNIGENT_AGENT_CACHE_PATH = vim.fn.stdpath("data") .. "/codecompanion-omnigent-agent.json"
 
--- The launch selection is a triple {agent, model?, effort?} (mirroring how the
--- dvsc picker caches {mode, model, effort}). A nil model/effort means "no
--- override" -- the agent spec's own model/effort applies. Read back by the
+-- The launch selection is a triple {agent, model?, effort?}. A nil model/effort
+-- means "no override" -- the agent spec's own model/effort applies. Read back by the
 -- omnigent adapter at spawn and by <leader>aM's cached-reuse path.
 local function _omnigent_read_selection()
   local f = io.open(OMNIGENT_AGENT_CACHE_PATH, "r")
@@ -992,15 +117,13 @@ end
 -- localizes it to the Databricks gateway or a vendor-direct provider
 -- (omnigent/model_override.py) and validates only charset + family (a
 -- claude-family harness demands an id containing "claude"; codex-family demands
--- "gpt"/"codex"). There is NO models endpoint, so -- unlike the drift-prone
--- hardcoded DVSC_MODELS mirror -- this is just a short curated preset list per
--- family, always paired with a free-text "custom…" escape and a "default" (no
--- override) option, so a missing/renamed id is never a dead end.
+-- "gpt"/"codex"). There is NO models endpoint, so this is just a short curated
+-- preset list per family, always paired with a free-text "custom…" escape and a
+-- "default" (no override) option, so a missing/renamed id is never a dead end.
 --
 -- Reasoning-effort values are the per-provider families from
--- omnigent/reasoning_effort.py. They deliberately differ from the DVSC
--- EFFORT_OPTIONS_BY_KIND: claude has `max`, codex has `none`/`minimal`, and all
--- are lowercase. Listed in omnigent's canonical display order.
+-- omnigent/reasoning_effort.py: claude has `max`, codex has `none`/`minimal`, and
+-- all are lowercase. Listed in omnigent's canonical display order.
 local OMNIGENT_EFFORTS = {
   claude            = { "low", "medium", "high", "xhigh", "max" },
   codex             = { "none", "minimal", "low", "medium", "high", "xhigh" },
@@ -1058,17 +181,27 @@ local OMNIGENT_CONTEXT_WINDOWS = {
 
 -- dvsc (the `acp:dvsc-core` agent) runs Meta's dm-core, which speaks its OWN
 -- model ids (dot-notation, e.g. `claude-opus-4.8`) — NOT omnigent's vendor ids.
--- Reuse the curated `DVSC_MODELS` catalog (already scoped to this user's
--- entitlement, and the single source of truth shared with the broker picker) so
--- the omnigent picker offers exactly what dm-core can run. The picked id rides
--- session/new `model` → the wrapper's top-level-model fallback → dm-core.
--- dvsc keeps no OMNIGENT_MODEL_DEFAULT entry: its "default" means dm-core's own
--- default model (nil override).
-OMNIGENT_MODELS.dvsc = (function()
-  local ids = {}
-  for _, m in ipairs(DVSC_MODELS) do ids[#ids + 1] = m.id end
-  return ids
-end)()
+-- Curated to this user's dm-core entitlement so the omnigent picker offers
+-- exactly what dm-core can run. The picked id rides session/new `model` → the
+-- wrapper's top-level-model fallback → dm-core. Mirrors Configerator
+-- `devmate_vscode/model/model_config.cconf`; must only contain models the
+-- running dm-core actually has in its loaded snapshot (an unknown id silently
+-- falls back to dm-core's default). dvsc keeps no OMNIGENT_MODEL_DEFAULT entry:
+-- its "default" means dm-core's own default model (nil override).
+OMNIGENT_MODELS.dvsc = {
+  "claude-opus-4.8",
+  "claude-opus-4.7-long",
+  "claude-opus-4.6",
+  "claude-opus-4.6-long",
+  "claude-sonnet-5",
+  "claude-sonnet-4.6-long",
+  "claude-haiku-4.5",
+  "gpt-5-6",
+  "gpt-5-5",
+  "gemini-3-1-pro",
+  "gemini-3-flash",
+  "avocado-code-internal-0529",
+}
 
 -- dvsc via the generic ACP harness has no reasoning-effort channel (the `acp`
 -- harness is EffortFamily.NONE and omnigent forwards no effort to it), so the
@@ -1160,8 +293,8 @@ end
 -- reused verbatim (the whole remembered selection, model + effort included). The
 -- chosen model/effort are read back from the cache by the omnigent adapter at
 -- spawn (defaults.model_override / .reasoning_effort) and applied at session
--- create. `cb` is invoked with no args once the selection is cached. Mirrors
--- `_dvsc_select` (harness → model → effort).
+-- create. `cb` is invoked with no args once the selection is cached
+-- (agent → model → effort).
 local function _omnigent_select(force, cb)
   local agents, err = _omnigent_pickable_agents()
   if not agents then
@@ -1206,8 +339,7 @@ local function _omnigent_select(force, cb)
 end
 
 -- Open a fresh chat in the current tab bound to an existing omnigent session and
--- hydrate it. Mirrors `_broker_open_chat_with_session` but without the ACP
--- connection-readiness poll (omnigent load is a synchronous REST round-trip).
+-- hydrate it (omnigent load is a synchronous REST round-trip).
 local function _omnigent_open_chat_with_session(session_id)
   local existing = vim.t.codecompanion_chat_bufnr
   if existing and vim.api.nvim_buf_is_valid(existing) then
@@ -1392,197 +524,10 @@ local function omnigent_continue()
   open(true)
 end
 
--- Pick a dvsc selection (interactive or from cache), then invoke `cb`
--- with `{ mode, model, effort? }`. Extracted from the original
--- `dvsc_pick_and_launch` so the picker can drive both first-time launches
--- and in-place adapter swaps without duplicating the cache+prompt logic.
-local function _dvsc_select(force, cb)
-  local cache = _dvsc_read_cache()
-  if not force and cache.mode and cache.model then
-    local kind = _dvsc_reasoning_kind(cache.model)
-    if kind == nil or cache.effort then
-      return cb(cache)
-    end
-    -- Cache is for a model that needs an effort but lacks one; fall
-    -- through to a fresh pick rather than proceeding with no effort.
-  end
-  _dvsc_pick(DVSC_MODES, "Harness:", function(mode)
-    _dvsc_pick(_models_for_mode(mode), "Model:", function(model)
-      local kind = _dvsc_reasoning_kind(model)
-      if kind == nil then
-        local sel = { mode = mode, model = model }
-        _dvsc_write_cache(sel)
-        return cb(sel)
-      end
-      vim.ui.select(EFFORT_OPTIONS_BY_KIND[kind], {
-        prompt = "Thinking effort:",
-        format_item = function(e)
-          if e:lower() == "high" then return e .. " (default)" end
-          return e
-        end,
-      }, function(effort)
-        if effort == nil then return end
-        local sel = { mode = mode, model = model, effort = effort }
-        _dvsc_write_cache(sel)
-        cb(sel)
-      end)
-    end)
-  end)
-end
-
--- Pick a model (+ thinking/reasoning effort when the model supports it) for a
--- direct broker agent, scoped to `provider`. Mirrors `_dvsc_select` minus the
--- harness dimension, with a per-provider cache slot. Invokes `cb({ model, effort? })`.
--- `force=true` (the `<leader>aG` path) always re-prompts.
-local function _direct_select(provider, force, cb)
-  local cache = _direct_read_cache()
-  local slot = cache[provider]
-  if not force and slot and slot.model then
-    local kind = _dvsc_reasoning_kind(slot.model)
-    if kind == nil or slot.effort then
-      return cb(slot)
-    end
-  end
-  _dvsc_pick(_models_for_provider(provider), "Model:", function(model)
-    local kind = _dvsc_reasoning_kind(model)
-    if kind == nil then
-      local sel = { model = model }
-      cache[provider] = sel
-      _direct_write_cache(cache)
-      return cb(sel)
-    end
-    vim.ui.select(EFFORT_OPTIONS_BY_KIND[kind], {
-      prompt = "Thinking effort:",
-      format_item = function(e)
-        if e:lower() == "high" then return e .. " (default)" end
-        return e
-      end,
-    }, function(effort)
-      if effort == nil then return end
-      local sel = { model = model, effort = effort }
-      cache[provider] = sel
-      _direct_write_cache(cache)
-      cb(sel)
-    end)
-  end)
-end
-
--- Translate a `_direct_select` result for `adapter_name` into the two pending
--- channels. claude thinking effort → `_meta.claudeCode.options.maxThinkingTokens`
--- (creation-time only); model is always applied post-establish via config option.
--- codex applies both model and effort post-establish.
-local function _direct_prime(adapter_name, sel)
-  local provider = DIRECT_ADAPTERS[adapter_name].provider
-  _direct.pending_meta = nil
-  _direct.pending_apply = { provider = provider, model = sel.model, effort = sel.effort }
-  if provider == "anthropic" and sel.effort then
-    local tokens = CLAUDE_EFFORT_TOKENS[sel.effort:lower()]
-    if tokens then
-      _direct.pending_meta = { claudeCode = { options = { maxThinkingTokens = tokens } } }
-    end
-  end
-end
-
--- Apply `_direct.pending_apply` to a freshly launched chat via live config
--- options. Model is set for both agents (with a fuzzy fallback when the
--- hardcoded catalog id doesn't match the agent's advertised value id); reasoning
--- effort is set for codex only (claude thinking rides session/new `_meta`).
--- Polls for connection readiness + non-empty config options, mirroring the
--- `try_load` pattern in `_broker_open_chat_with_session`. The set calls run
--- inside `async_utils.sync` so `send_rpc_request` takes the coroutine-yielding
--- path rather than blocking the editor on `vim.wait`.
-local function _direct_apply_pending(chat)
-  local apply = _direct.pending_apply
-  _direct.pending_apply = nil
-  if not apply or not chat then return end
-
-  local Connection = require("codecompanion.acp")
-  local async_utils = require("codecompanion.utils.async")
-
-  local function resolve_value(opt, wanted)
-    local lw = tostring(wanted):lower()
-    for _, v in ipairs(Connection.flatten_config_options(opt.options or {})) do
-      local name = tostring(v.name or ""):lower()
-      local val = tostring(v.value or ""):lower()
-      if val == lw or name == lw or val:find(lw, 1, true) or name:find(lw, 1, true) then
-        return v.value
-      end
-    end
-    return nil
-  end
-
-  local function run()
-    local conn = chat.acp_connection
-    async_utils.sync(function()
-      if apply.model then
-        local model_opt = conn:_find_config_option("model")
-        if model_opt then
-          conn:set_config_option(model_opt.id, resolve_value(model_opt, apply.model) or apply.model)
-        end
-      end
-      if apply.provider == "openai" and apply.effort then
-        for _, o in ipairs(conn:get_config_options()) do
-          if o.type == "select" and o.id ~= "model" then
-            local hay = ((o.id or "") .. " " .. (o.name or "") .. " " .. (o.category or "")):lower()
-            if hay:find("effort", 1, true) or hay:find("reason", 1, true) or hay:find("think", 1, true) then
-              local v = resolve_value(o, apply.effort)
-              if v then conn:set_config_option(o.id, v) end
-              break
-            end
-          end
-        end
-      end
-    end)()
-    vim.schedule(function() pcall(function() chat:update_metadata() end) end)
-  end
-
-  local function poll(attempts)
-    local conn = chat.acp_connection
-    if conn and conn:is_ready() and #(conn:get_config_options() or {}) > 0 then
-      return run()
-    end
-    if attempts <= 0 then return end
-    vim.defer_fn(function() poll(attempts - 1) end, 100)
-  end
-  vim.defer_fn(function() poll(300) end, 50)
-end
-
-local function dvsc_pick_and_launch(force)
-  _dvsc_select(force, function(sel)
-    _dvsc_launch_with(sel.mode, sel.model, sel.effort)
-  end)
-end
-
 -- Agent-path choices for the top-level picker in `<leader>aG`.
--- `dvsc-core` defers to the existing harness/model/effort flow inside
--- `tab_chat_set_adapter("dvsc_core_broker", …)`. The direct wrappers
--- (`claude_broker` / `codex_broker`) run the provider-scoped `_direct_select`
--- picker (model + effort): the model (both) and reasoning effort (codex) are
--- applied post-establish via live config options, and claude thinking effort is
--- baked into the session/new `_meta` (see `_direct_apply_pending` and the
--- `send_rpc_request` patch below).
 local AGENT_PATHS = {
-  { label = "dvsc-core (native / claude / codex / metacode)", adapter = "dvsc_core_broker" },
-  { label = "Claude (direct via claude-agent-acp)",           adapter = "claude_broker" },
-  { label = "Codex (direct via codex-acp)",                   adapter = "codex_broker" },
   { label = "Omnigent (server-owned session, pick agent+model+effort)", adapter = "omnigent" },
 }
-
--- Prime per-adapter spawn state for adapters that read `_dvsc.pending`
--- or otherwise need bookkeeping aligned with a specific chat bufnr.
--- Called immediately before `Chat:change_adapter` so the new ACP
--- connection's spawn callback sees the right state.
-local function _prime_adapter_state(bufnr, adapter_name, sel)
-  if adapter_name == "dvsc_core_broker" then
-    local pending = { mode = sel.mode, model = sel.model }
-    local llm_config = _dvsc_build_llm_config(sel.model, sel.effort)
-    if llm_config then pending.llm_config = llm_config end
-    _dvsc.pending = { dvsc = pending }
-    _dvsc.by_chat_bufnr[bufnr] = sel
-  else
-    _dvsc.by_chat_bufnr[bufnr] = nil
-  end
-end
 
 -- Switch the current tab's chat to `adapter_name` in-place, reusing the
 -- chat buffer and its sibling queue input/status windows.
@@ -1603,16 +548,12 @@ end
 --     new adapter from a blank chat — usually what you want when
 --     switching agents).
 --
--- For `dvsc_core_broker`, the picker runs through `_dvsc_select`
--- (interactive or cached based on `force_pick`) and primes
--- `_dvsc.pending` + `_dvsc.by_chat_bufnr[bufnr]` before the swap so the
--- new spawn picks up the right mode/model/effort without firing
--- `CodeCompanionChatOpened` (which is what normally consumes
--- `_dvsc.launch_queue`).
+-- For `omnigent`, the picker runs through `_omnigent_select` (interactive
+-- or cached based on `force_pick`) and caches the chosen agent+model+effort
+-- before the swap so the new spawn picks it up.
 --
 -- If no chat exists in the tab, falls through to the normal launch
--- path (`dvsc_pick_and_launch` for the broker, `tab_chat_open_or_toggle`
--- otherwise).
+-- path (`tab_chat_open_or_toggle`).
 --
 -- @param adapter_name string
 -- @param opts? { clear?: boolean, force_pick?: boolean }
@@ -1624,24 +565,9 @@ local function tab_chat_set_adapter(adapter_name, opts)
     and require("codecompanion").buf_get_chat(bufnr)
 
   if not chat then
-    if adapter_name == "dvsc_core_broker" then
-      return dvsc_pick_and_launch(opts.force_pick or false)
-    end
-    if DIRECT_ADAPTERS[adapter_name] and opts.force_pick then
-      return _direct_select(DIRECT_ADAPTERS[adapter_name].provider, opts.force_pick or false, function(sel)
-        _direct_prime(adapter_name, sel)
-        tab_chat_open_or_toggle({ adapter = adapter_name })
-        vim.defer_fn(function()
-          local b = vim.t.codecompanion_chat_bufnr
-          local c = b and vim.api.nvim_buf_is_valid(b) and require("codecompanion").buf_get_chat(b)
-          if c then _direct_apply_pending(c) end
-        end, 50)
-      end)
-    end
     if adapter_name == "omnigent" then
       -- The chosen agent is cached and read back by the omnigent adapter function
-      -- at spawn (like `_dvsc.pending`, but the cache IS the source of truth since
-      -- the selection is just the agent name).
+      -- at spawn — the cache IS the source of truth for the selection.
       return _omnigent_select(opts.force_pick or false, function()
         tab_chat_open_or_toggle({ adapter = "omnigent" })
       end)
@@ -1676,7 +602,7 @@ local function tab_chat_set_adapter(adapter_name, opts)
     end
   end
 
-  local function apply(sel)
+  local function apply()
     if chat.adapter and chat.adapter.type == "acp" and chat.acp_connection then
       pcall(function() chat.acp_connection:disconnect() end)
     end
@@ -1696,24 +622,13 @@ local function tab_chat_set_adapter(adapter_name, opts)
       -- bottom-align onto the now-empty chat.
       pcall(function() require("lib.codecompanion-timing").reset(bufnr) end)
     end
-    _prime_adapter_state(bufnr, adapter_name, sel or {})
     chat:change_adapter(adapter_name)
   end
 
-  if adapter_name == "dvsc_core_broker" then
-    return _dvsc_select(opts.force_pick or false, apply)
-  end
-  if DIRECT_ADAPTERS[adapter_name] and opts.force_pick then
-    return _direct_select(DIRECT_ADAPTERS[adapter_name].provider, opts.force_pick or false, function(sel)
-      _direct_prime(adapter_name, sel)
-      apply(nil)
-      _direct_apply_pending(chat)
-    end)
-  end
   if adapter_name == "omnigent" then
-    return _omnigent_select(opts.force_pick or false, function() apply(nil) end)
+    return _omnigent_select(opts.force_pick or false, function() apply() end)
   end
-  apply(nil)
+  apply()
 end
 
 local function tab_chat_pick_agent_and_set(opts)
@@ -1848,13 +763,10 @@ end
 -- editor while the agent applies the change (e.g. dvsc-core reloading
 -- its model snapshot when mode flips).
 --
--- Limitation: only options the agent actually exposes via
--- `configOptions` are settable live. Anything the dvsc-core-acp
--- wrapper bakes into `_meta.broker.client.metadata.dvsc.llm_config` at
--- session creation (e.g. provider-shaped `reasoning_config` for
--- thinking effort, if not also re-exposed as a SessionConfigOption)
--- requires a session restart — `<leader>aG`/`<leader>aZ` (force-pick +
--- clear) do the full re-prompt, `<leader>ag` reuses the cached selection.
+-- Limitation: only options the agent actually exposes via `configOptions`
+-- are settable live. A direct dvsc_core session launches with dm-core's own
+-- defaults; model/mode are then switchable here if the wrapper re-exposes them
+-- as SessionConfigOptions. `<leader>aZ` (close + reopen) restarts the session.
 local function tab_chat_pick_option()
   local bufnr = vim.t.codecompanion_chat_bufnr
   local chat = bufnr
@@ -1973,7 +885,7 @@ local function start_compaction_spinner(bufnr)
 end
 
 -- True if the chat's live ACP session advertises a slash command named
--- `compact` (e.g. claude-agent-acp forwards Claude Code's `/compact`). This is
+-- `compact` (e.g. devmate / codex forward their own `/compact`). This is
 -- how we detect compaction support for non-dvsc agents.
 local function acp_session_has_compact(chat)
   local conn = chat and chat.acp_connection
@@ -2048,7 +960,7 @@ local function dvsc_compact(chat)
 end
 
 -- Compaction for any ACP agent that advertises a `compact` slash command
--- (claude_code / claude_broker, and codex if it exposes it). We submit
+-- (devmate / claude_code, and codex if it exposes it). We submit
 -- `\compact` through the normal pipeline; ACPHandler:transform_acp_commands
 -- rewrites `\compact` → `/compact` on the wire, the agent runs compaction and
 -- streams its own "Compacting…/Compacting completed." messages — which serve as
@@ -2078,7 +990,7 @@ local function agent_command_compact(chat)
 end
 
 -- Compact the current tab's chat for any agent that supports it.
---   * dvsc (dvsc_core / dvsc_core_broker) → `dm-core/compact` ext RPC.
+--   * dvsc (dvsc_core) → `dm-core/compact` ext RPC.
 --   * any other agent advertising a `compact` slash command → `/compact`.
 -- The full transcript is always retained; the model's compacted context is
 -- never returned to the client (the wrapper drops compaction_delta and the dvsc
@@ -2100,7 +1012,7 @@ local function tab_chat_compact()
   end
 
   local adapter_name = chat.adapter.name
-  if adapter_name == "dvsc_core" or adapter_name == "dvsc_core_broker" then
+  if adapter_name == "dvsc_core" then
     return dvsc_compact(chat)
   end
   if acp_session_has_compact(chat) then
@@ -2181,7 +1093,7 @@ return {
       return {
         interactions = {
           chat = {
-            adapter = "claude_code",
+            adapter = "omnigent",
             slash_commands = {
               ["skill"] = {
                 description = "Load a Claude Code skill",
@@ -2203,85 +1115,10 @@ return {
                   end)
                 end,
               },
-              ["join"] = {
-                description = "Join an existing broker session",
-                callback = function(chat)
-                  local conn = require("codecompanion.acp").new({ adapter = chat.adapter })
-                  if not conn:connect_and_authenticate() then
-                    return vim.notify("Failed to connect to broker", vim.log.levels.ERROR)
-                  end
-                  local sessions = conn:session_list()
-                  pcall(function() conn:disconnect() end)
-                  if vim.tbl_isempty(sessions) then
-                    return vim.notify("No active broker sessions", vim.log.levels.WARN)
-                  end
-                  vim.ui.select(sessions, {
-                    prompt = "Join broker session:",
-                    format_item = function(item) return item.sessionId or "<unknown>" end,
-                  }, function(choice)
-                    if not choice then return end
-                    require("codecompanion.interactions.chat").new({
-                      adapter = chat.adapter,
-                      acp_session_id = choice.sessionId,
-                    })
-                  end)
-                end,
-              },
-              ["resume"] = {
-                description = "Resume a saved session via session/load(bsid)",
-                callback = function(chat)
-                  -- Sends `session/load(bsid)` to the broker. Same-broker
-                  -- semantics: the broker live-joins the in-memory session
-                  -- (if alive) or replays via the persistence plugin's
-                  -- `try_resume`. Cross-broker resume is rejected — the
-                  -- standalone `meta.broker.persistence.resume_saved_session`
-                  -- wire method was deleted (commits 7db4fed/c458043).
-                  -- Use `/fork` instead for cross-broker.
-                  --
-                  -- Look up bsids via:
-                  --   sqlite3 ~/.local/share/acp-persistence-server/persistence.db \
-                  --     "SELECT broker_session_id, broker_id,
-                  --             json_extract(metadata,'$.broker_client_metadata.nvim_session')
-                  --      FROM sessions ORDER BY started_at DESC LIMIT 20;"
-                  local default = _broker_read_last_bsid() or "bsid_"
-                  vim.ui.input({ prompt = "broker_session_id: ", default = default }, function(bsid)
-                    bsid = bsid and vim.trim(bsid)
-                    if not bsid or bsid == "" or bsid == "bsid_" then return end
-                    _broker_write_last_bsid(bsid)
-                    require("codecompanion.interactions.chat").new({
-                      adapter = chat.adapter,
-                      acp_session_id = bsid,
-                    })
-                  end)
-                end,
-              },
-              ["fork"] = {
-                description = "Fork a saved session onto the local broker",
-                callback = function(chat)
-                  -- Calls `meta.broker.persistence.fork_saved_session` —
-                  -- mints a fresh session whose history is replayed into
-                  -- the local broker. Cross-broker capable; the new
-                  -- session's persistence record carries
-                  -- `parent = source_bsid`.
-                  local default = _broker_read_last_bsid() or "bsid_"
-                  vim.ui.input({ prompt = "Fork bsid: ", default = default }, function(bsid)
-                    bsid = bsid and vim.trim(bsid)
-                    if not bsid or bsid == "" or bsid == "bsid_" then return end
-                    _broker_write_last_bsid(bsid)
-                    local new_bsid = _broker_fork_saved_session(chat.adapter, bsid)
-                    if not new_bsid then return end
-                    vim.notify("forked " .. bsid .. " -> " .. new_bsid, vim.log.levels.INFO)
-                    require("codecompanion.interactions.chat").new({
-                      adapter = chat.adapter,
-                      acp_session_id = new_bsid,
-                    })
-                  end)
-                end,
-              },
             },
           },
           inline = { adapter = "ai_gateway" },
-          cmd = { adapter = "claude_code" },
+          cmd = { adapter = "ai_gateway" },
         },
 
         adapters = {
@@ -2359,35 +1196,6 @@ return {
             end,
           },
           acp = {
-            claude_code = function()
-              local broker_socket = vim.env.ACP_BROKER_SOCKET
-                or ((vim.env.XDG_RUNTIME_DIR or "/tmp") .. "/acp-broker.sock")
-              -- Use the -tag wrapper so the broker stamps per-launch
-              -- identity onto every session/new envelope, attributing
-              -- captured sessions to the right nvim/host/cwd in the
-              -- central persistence-server. See acp-broker
-              -- docs/RUNBOOK.md §3.3.
-              local attach_bin = vim.fn.expand("~/.cargo/bin/acp-broker-attach-tag")
-
-              return require("codecompanion.adapters").extend("claude_code", {
-                commands = {
-                  default = { attach_bin },
-                  yolo = { attach_bin },
-                },
-                env = {
-                  CLAUDE_CODE_OAUTH_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN",
-                  ACP_BROKER_SOCKET = broker_socket,
-                  ACP_BROKER_CLIENT_METADATA_JSON = build_client_metadata(),
-                },
-                defaults = {
-                  timeout = 120000,
-                  mode = "bypassPermissions",
-                },
-                handlers = {
-                  auth = function() return true end,
-                },
-              })
-            end,
             codex = function()
               return require("codecompanion.adapters").extend("codex", {
                 env = {},
@@ -2443,134 +1251,6 @@ return {
               return require("codecompanion.adapters").extend("claude_code", {
                 name = "dvsc_core",
                 formatted_name = "Dvsc Core",
-                commands = {
-                  default = { "sh", "-c", launch },
-                  yolo = { "sh", "-c", launch },
-                },
-                env = {},
-                defaults = {
-                  timeout = 120000,
-                },
-                handlers = {
-                  auth = function() return true end,
-                },
-              })
-            end,
-            -- Broker-fronted variant. Spawns `acp-broker-attach-select-tag`,
-            -- which (a) stamps the metadata JSON from
-            -- `ACP_BROKER_CLIENT_METADATA_JSON` onto every envelope via
-            -- `_meta/broker/connection/set_metadata`, and (b) selects the
-            -- broker-registered agent named in `ACP_BROKER_AGENT_NAME` for
-            -- this connection's sessions (falling back to spawning
-            -- `ACP_BROKER_AGENT_CMD` via `_meta/broker/agent/spawn` if the
-            -- name doesn't resolve and the broker has `--allow-agent-spawn`).
-            -- The dvsc-core-acp wrapper picks up `mode`/`model`/`thinking_effort`
-            -- from the stamped client metadata. Drive via
-            -- `dvsc_pick_and_launch` (see `<leader>ag`/`<leader>aG`).
-            dvsc_core_broker = function()
-              local extra = _dvsc.pending or { dvsc = { mode = "native" } }
-              _dvsc.pending = nil
-              local payload = build_client_metadata(extra)
-              local stderr_log = vim.fn.expand("~/.local/state/nvim/dvsc-core-acp.stderr.log")
-              -- Installed into ~/.cargo/bin via `cargo install --path crates/acp-broker`
-              -- in ~/repos/acp-broker.
-              local attach_bin = vim.fn.expand("~/.cargo/bin/acp-broker-attach-select-tag")
-              local agent_cmd = vim.fn.expand("~/bin/dvsc-core-acp")
-              local launch = string.format(
-                "ACP_BROKER_CLIENT_METADATA_JSON=%s ACP_BROKER_AGENT_NAME=%s ACP_BROKER_AGENT_CMD=%s exec %s 2>>%s",
-                vim.fn.shellescape(payload),
-                vim.fn.shellescape("dvsc-core"),
-                vim.fn.shellescape(agent_cmd),
-                vim.fn.shellescape(attach_bin),
-                vim.fn.shellescape(stderr_log)
-              )
-              return require("codecompanion.adapters").extend("claude_code", {
-                name = "dvsc_core_broker",
-                formatted_name = "Dvsc Core (Broker)",
-                commands = {
-                  default = { "sh", "-c", launch },
-                  yolo = { "sh", "-c", launch },
-                },
-                env = {},
-                defaults = {
-                  timeout = 120000,
-                },
-                handlers = {
-                  auth = function() return true end,
-                },
-              })
-            end,
-            -- Broker-fronted direct claude-agent-acp variant. Same wrapper as
-            -- `dvsc_core_broker`, but pinned to `ACP_BROKER_AGENT_NAME=claude`
-            -- so the session is unconditionally routed to the broker's
-            -- claude-agent-acp registration rather than dvsc-core-acp. If the
-            -- claude-agent-acp registration is also the broker's configured
-            -- default, this adapter is observationally identical to letting
-            -- the broker pick — the explicit name selection just makes the
-            -- routing intent legible regardless of which agent currently
-            -- holds the `default = true` slot.
-            --
-            -- Model + thinking effort are chosen via `_direct_select` when
-            -- launched through `<leader>aG`: the model is applied post-establish
-            -- as a live config option, and the thinking budget rides session/new
-            -- `_meta.claudeCode.options.maxThinkingTokens` (the send_rpc_request
-            -- patch below). `<leader>aC` is the plain quick-launch (no picker,
-            -- broker/agent default model + thinking).
-            claude_broker = function()
-              local stderr_log = vim.fn.expand("~/.local/state/nvim/claude-agent-acp.stderr.log")
-              local attach_bin = vim.fn.expand("~/.cargo/bin/acp-broker-attach-select-tag")
-              local agent_cmd = vim.fn.expand("~/bin/claude-agent-acp")
-              local launch = string.format(
-                "ACP_BROKER_CLIENT_METADATA_JSON=%s ACP_BROKER_AGENT_NAME=%s ACP_BROKER_AGENT_CMD=%s exec %s 2>>%s",
-                vim.fn.shellescape(build_client_metadata()),
-                vim.fn.shellescape("claude"),
-                vim.fn.shellescape(agent_cmd),
-                vim.fn.shellescape(attach_bin),
-                vim.fn.shellescape(stderr_log)
-              )
-              return require("codecompanion.adapters").extend("claude_code", {
-                name = "claude_broker",
-                formatted_name = "Claude (Broker)",
-                commands = {
-                  default = { "sh", "-c", launch },
-                  yolo = { "sh", "-c", launch },
-                },
-                env = {},
-                defaults = {
-                  timeout = 120000,
-                },
-                handlers = {
-                  auth = function() return true end,
-                },
-              })
-            end,
-            -- Broker-fronted codex variant. Same wrapper pattern as
-            -- `claude_broker`, pinned to `ACP_BROKER_AGENT_NAME=codex` so
-            -- the session is routed to the broker's codex-acp registration
-            -- (declared in ~/dotfiles/bin-macos/acp-broker-launch). Extends
-            -- the upstream `codex` adapter so capability negotiation,
-            -- prompt shape, and `auth_method` defaults match the codex
-            -- ACP wire protocol; the broker just transports envelopes.
-            -- Model + reasoning effort are chosen via `_direct_select` when
-            -- launched through `<leader>aG` and applied post-establish as live
-            -- config options (codex exposes both — cf. `gpt-5-codex[high]` via
-            -- /acp_session_options). `<leader>aO` is the plain quick-launch
-            -- (no picker, agent default model + effort).
-            codex_broker = function()
-              local stderr_log = vim.fn.expand("~/.local/state/nvim/codex-acp.stderr.log")
-              local attach_bin = vim.fn.expand("~/.cargo/bin/acp-broker-attach-select-tag")
-              local agent_cmd = vim.fn.expand("~/bin/codex-acp")
-              local launch = string.format(
-                "ACP_BROKER_CLIENT_METADATA_JSON=%s ACP_BROKER_AGENT_NAME=%s ACP_BROKER_AGENT_CMD=%s exec %s 2>>%s",
-                vim.fn.shellescape(build_client_metadata()),
-                vim.fn.shellescape("codex"),
-                vim.fn.shellescape(agent_cmd),
-                vim.fn.shellescape(attach_bin),
-                vim.fn.shellescape(stderr_log)
-              )
-              return require("codecompanion.adapters").extend("codex", {
-                name = "codex_broker",
-                formatted_name = "Codex (Broker)",
                 commands = {
                   default = { "sh", "-c", launch },
                   yolo = { "sh", "-c", launch },
@@ -2934,29 +1614,15 @@ Placement guidance (overrides the base prompt where they conflict):
         end)
       end
 
-      -- HACK: ACPHandler:ensure_connection doesn't pass Chat.acp_session_id to
-      -- Connection.new, so /join (session loading) has no effect. Patch it through.
-      local ACPHandler = require("codecompanion.interactions.chat.acp.handler")
-      local orig_ensure_connection = ACPHandler.ensure_connection
-      function ACPHandler:ensure_connection()
-        if not self.chat.acp_connection and self.chat.acp_session_id then
-          self.chat.acp_connection = require("codecompanion.acp").new({
-            adapter = self.chat.adapter,
-            session_id = self.chat.acp_session_id,
-          })
-        end
-        return orig_ensure_connection(self)
-      end
-
       -- HACK: when the agent process dies, Connection:handle_process_exit nils
       -- session_id; the next turn silently mints a fresh session/new while the
       -- chat buffer keeps showing the old transcript — so you keep talking to
       -- what looks like the same agent, but it has none of the prior context.
       -- Surface the swap (toast + inline banner). The last established id is
       -- remembered on the long-lived connection object and is NOT cleared on
-      -- exit, so we can detect replacement. Intentional resume (/join, broker
-      -- fork) uses a fresh connection, so `previous` is nil there and no warning
-      -- fires. Remove once upstream notifies on session replacement.
+      -- exit, so we can detect replacement. A fresh connection has `previous`
+      -- nil, so no warning fires on an intentional resume. Remove once upstream
+      -- notifies on session replacement.
       local orig_ensure_session = ACPHandler.ensure_session
       function ACPHandler:ensure_session()
         local conn = self.chat.acp_connection
@@ -2985,36 +1651,7 @@ Placement guidance (overrides the base prompt where they conflict):
         return ok
       end
 
-      -- HACK: Connection:_establish_session gates session/load on the agent
-      -- advertising loadSession capability. The broker handles session/load
-      -- directly for known sessions (the agent is never consulted), so the
-      -- capability check is irrelevant. Patch it out.
-      --
-      -- Also: when `self._cwd_override` is set (broker fork resume — see
-      -- `_broker_open_chat_with_session` above), force the orig's
-      -- `vim.fn.getcwd()` call to return the override so the `session/load`
-      -- params carry the cwd the broker materialized the JSONL under
-      -- rather than the client's pwd. Without this, a fork issued from a
-      -- client whose pwd differs from the source session's cwd resumes
-      -- against a non-existent JSONL and silently starts fresh.
       local Connection = require("codecompanion.acp")
-      local orig_establish = Connection._establish_session
-      function Connection:_establish_session()
-        if self.session_id and self._agent_info then
-          self._agent_info.agentCapabilities = self._agent_info.agentCapabilities or {}
-          self._agent_info.agentCapabilities.loadSession = true
-        end
-        local override = self._cwd_override
-        if not override then
-          return orig_establish(self)
-        end
-        local orig_getcwd = vim.fn.getcwd
-        vim.fn.getcwd = function() return override end
-        local ok, ret = pcall(orig_establish, self)
-        vim.fn.getcwd = orig_getcwd
-        if not ok then error(ret) end
-        return ret
-      end
 
       -- HACK: Connection:set_config_option updates self._config_options but
       -- never fires the autocmd that per-chat update_metadata listeners are
@@ -3036,27 +1673,6 @@ Placement guidance (overrides the base prompt where they conflict):
           })
         end
         return ok
-      end
-
-      -- HACK: inject per-launch session metadata for the direct
-      -- claude-agent-acp path. CodeCompanion's session/new sends only
-      -- { cwd, mcpServers } (acp/init.lua), but claude-agent-acp reads its
-      -- thinking budget from `_meta.claudeCode.options.maxThinkingTokens` at
-      -- session creation (acp-agent.js) — thinking is NOT a live config option,
-      -- so it can only be set here. The acp-broker preserves client `_meta`
-      -- siblings when it stamps its own `_meta.broker.client.metadata`
-      -- (envelope.rs: stamp_broker_client_metadata_preserves_existing_meta_siblings),
-      -- so the merged object reaches the agent intact. Consumed once per launch.
-      local METHODS = require("codecompanion.acp.methods")
-      local orig_send_rpc_request = Connection.send_rpc_request
-      function Connection:send_rpc_request(method, params)
-        if method == METHODS.SESSION_NEW and _direct.pending_meta then
-          local extra = _direct.pending_meta
-          _direct.pending_meta = nil
-          params = params or {}
-          params._meta = vim.tbl_deep_extend("force", params._meta or {}, extra)
-        end
-        return orig_send_rpc_request(self, method, params)
       end
 
       -- ACP elicitation/create support. The wrapper at
@@ -3438,12 +2054,6 @@ Placement guidance (overrides the base prompt where they conflict):
           pcall(vim.api.nvim_buf_set_var, bufnr, "cc_tab_owner", tab)
           pcall(vim.api.nvim_tabpage_set_var, tab, "codecompanion_chat_bufnr", bufnr)
           vim.schedule(function()
-            local chat = require("codecompanion").buf_get_chat(bufnr)
-            if chat and chat.adapter and chat.adapter.name == "dvsc_core_broker" then
-              _dvsc.by_chat_bufnr[bufnr] = table.remove(_dvsc.launch_queue, 1)
-            else
-              _dvsc.by_chat_bufnr[bufnr] = nil
-            end
             -- Chat.new's open->render leaves the buffer modifiable; re-lock so
             -- it can only be written through the queue (see lock_chat_buf).
             lock_chat_buf(bufnr)
@@ -3458,7 +2068,6 @@ Placement guidance (overrides the base prompt where they conflict):
           vim.schedule(function()
             local bufnr = args.data and args.data.bufnr
             if bufnr then
-              _dvsc.by_chat_bufnr[bufnr] = nil
               require("lib.codecompanion-queue").on_chat_hidden(bufnr)
             end
           end)
@@ -3472,7 +2081,6 @@ Placement guidance (overrides the base prompt where they conflict):
           if not bufnr then return end
           local ok, tab = pcall(function() return vim.b[bufnr].cc_tab_owner end)
           tab = (ok and tab and vim.api.nvim_tabpage_is_valid(tab)) and tab or nil
-          _dvsc.by_chat_bufnr[bufnr] = nil
           pcall(function() require("lib.codecompanion-tool-output").clear(bufnr) end)
           -- Resolve the tab synchronously (above) — CodeCompanion deletes
           -- the chat buffer synchronously right after firing this event, so
@@ -3518,10 +2126,7 @@ Placement guidance (overrides the base prompt where they conflict):
       { "<leader>ad", "<cmd>CodeCompanionDoctor<cr>", desc = "CodeCompanion Doctor" },
       { "<leader>aD", function() tab_chat_set_adapter("devmate",          { clear = true }) end, desc = "CodeCompanion Chat (Devmate, fresh)" },
       { "<leader>aS", function() tab_chat_set_adapter("dvsc_core",        { clear = true }) end, desc = "CodeCompanion Chat (Dvsc Core, fresh)" },
-      { "<leader>ag", function() tab_chat_set_adapter("dvsc_core_broker", { clear = true, force_pick = false }) end, desc = "Dvsc Chat via broker (last config, fresh)" },
-      { "<leader>aG", function() tab_chat_pick_agent_and_set({ clear = true, force_pick = true }) end, desc = "Pick agent (dvsc / direct Claude / direct Codex / omnigent), fresh" },
-      { "<leader>aC", function() tab_chat_set_adapter("claude_broker",    { clear = true }) end, desc = "Claude Chat via broker (direct, fresh)" },
-      { "<leader>aO", function() tab_chat_set_adapter("codex_broker",     { clear = true }) end, desc = "Codex Chat via broker (fresh)" },
+      { "<leader>aG", function() tab_chat_pick_agent_and_set({ clear = true, force_pick = true }) end, desc = "Pick agent (omnigent), fresh" },
       { "<leader>aM", function() tab_chat_set_adapter("omnigent",         { clear = true }) end, desc = "CodeCompanion Chat (Omnigent, remembered agent+model+effort)" },
       { "<leader>aA", function() tab_chat_set_adapter("omnigent",         { clear = true, force_pick = true }) end, desc = "CodeCompanion Chat (Omnigent, pick agent+model+effort)" },
       { "<leader>amc", function() omnigent_continue() end, desc = "Omnigent: resume durable session (cwd-scoped)" },
@@ -3536,23 +2141,6 @@ Placement guidance (overrides the base prompt where they conflict):
             and require("codecompanion").buf_get_chat(bufnr)
           if chat then chat:close() end
         end, desc = "CodeCompanion: close current tab's chat" },
-      -- ACP broker resume/fork by bsid. The `<leader>aB*` namespace (B
-      -- for "broker") avoids collision with `<leader>ar`/`<leader>af`,
-      -- which are owned by claude-agent-manager (Claude Code resume/fork),
-      -- and leaves lowercase `<leader>ab` free (e.g. for "add buffer").
-      -- Defaults to the `dvsc_core_broker` adapter — broker routes by bsid,
-      -- not by adapter, so this works for any claude-code-shaped session
-      -- (dvsc/claude/devmate). Use codex_broker by editing
-      -- `broker_resume_or_fork` for codex sessions.
-      { "<leader>aBr", function() broker_resume_or_fork("resume") end, desc = "ACP broker: resume saved session by bsid (escape hatch)" },
-      { "<leader>aBf", function() broker_resume_or_fork("fork")   end, desc = "ACP broker: fork saved session by bsid (escape hatch)" },
-      -- Smart continue (the everyday key). Server-backed cross-broker list,
-      -- cwd-scoped by default (<A-c> toggles all-cwd), auto-routes each pick to
-      -- resume (local+live) or fork (remote / local+dead). Pick from the list or
-      -- type a full bsid + <C-x>. <C-y> yanks the highlighted bsid. See
-      -- broker_continue and docs/acp-broker-continue-refactor.md.
-      { "<leader>aBc", function() broker_continue() end, desc = "ACP broker: smart continue (list/paste, auto resume/fork)" },
-      { "<leader>aBl", function() broker_continue() end, desc = "ACP broker: smart continue (alias of aBc)" },
     },
   },
 }
