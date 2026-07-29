@@ -21,8 +21,7 @@ key for one agent session on Matt's personal Omnigent server. Sessions are
 **server-owned and durable**: unlike acp-broker `bsid_*` sessions there is no
 fork/resume split and no cross-broker classification to worry about. The whole
 history (messages, tool outputs, resource events, errors) lives on the server
-and is queryable by id. For the acp-broker `bsid_*` world (a *different*
-system), see [[acp-broker-sessions]].
+and is queryable by id.
 
 ## Topology — one hub, dialed over 127.0.0.1:6767
 
@@ -257,7 +256,5 @@ curl -s --noproxy '*' "$BASE/v1/sessions/$CONV" | jq -r '
 
 ## Related
 
-- [[acp-broker-sessions]] — the `bsid_*` acp-broker world (a different
-  persistence system; don't confuse `conv_*` with `bsid_*`).
 - [[personal-development-setup-and-env]] — how dotfiles wires up services like
   this one.
