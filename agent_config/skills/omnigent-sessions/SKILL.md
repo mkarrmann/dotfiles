@@ -18,10 +18,9 @@ description: >-
 
 A `conv_<32hex>` is an **Omnigent conversation (session) id** — the durable
 key for one agent session on Matt's personal Omnigent server. Sessions are
-**server-owned and durable**: unlike acp-broker `bsid_*` sessions there is no
-fork/resume split and no cross-broker classification to worry about. The whole
-history (messages, tool outputs, resource events, errors) lives on the server
-and is queryable by id.
+**server-owned and durable**: there is no fork/resume split to worry about.
+The whole history (messages, tool outputs, resource events, errors) lives on
+the server and is queryable by id.
 
 ## Topology — one hub, dialed over 127.0.0.1:6767
 
