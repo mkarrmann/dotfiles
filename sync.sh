@@ -409,19 +409,19 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
 
   # Launchd jobs. Plists are copied (not symlinked) — launchd's behavior
   # across system upgrades is more predictable when the file is
-  # materialized. See acp-broker docs/RUNBOOK.md §3.2. sync_launchd_plist
-  # only reloads a job when its plist content actually changed.
+  # materialized. sync_launchd_plist only reloads a job when its plist
+  # content actually changed.
   mkdir -p "$HOME/Library/LaunchAgents" \
-           "$HOME/.local/state/acp-broker" \
-           "$HOME/.local/state/persistence-server" \
            "$HOME/.local/state/omnigent-host"
-  sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.persistence-server.plist"
-  sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.acp-broker.plist"
   sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-host.plist"
   # The Omnigent server moved to the HUB devserver (systemd omnigent-server).
   # Retire the old Mac-local server job so it can't bind :6767 and collide with
   # the local failover proxy that exposes the HUB server on Mac localhost.
   retire_launchd_plist "com.mkarrmann.omnigent-server"
+  # ACP-broker and its persistence-server are deprecated (superseded by
+  # omnigent). Retire the old Mac-local jobs on sync.
+  retire_launchd_plist "com.mkarrmann.acp-broker"
+  retire_launchd_plist "com.mkarrmann.persistence-server"
 fi
 
 # Linux-only: systemd --user units. Linger is expected to be enabled
