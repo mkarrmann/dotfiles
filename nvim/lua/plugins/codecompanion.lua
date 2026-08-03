@@ -1986,19 +1986,27 @@ Placement guidance (overrides the base prompt where they conflict):
       -- not unloaded, on :tabclose, so the agent would otherwise leak).
       require("lib.codecompanion-reap").setup()
 
+      -- Inline "Processing…" spinner. Anchored to the buffer the *event* names
+      -- (data.bufnr), never to the focused buffer: RequestStarted is fired
+      -- asynchronously w.r.t. the keypress, so focus may already have moved
+      -- (inline's own set_current_buf, a chat window, a picker...). Keyed by
+      -- request id so overlapping requests don't clobber each other and a
+      -- RequestFinished only tears down its own indicator.
       local ns = vim.api.nvim_create_namespace("codecompanion_inline_indicator")
       local spinner_frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
-      local indicator = {}
+      local indicators = {}
 
-      local function clear()
+      local function clear(key)
+        local indicator = indicators[key]
+        if not indicator then return end
+        indicators[key] = nil
         if indicator.timer then
           indicator.timer:stop()
           indicator.timer:close()
         end
-        if indicator.bufnr and vim.api.nvim_buf_is_valid(indicator.bufnr) then
-          vim.api.nvim_buf_clear_namespace(indicator.bufnr, ns, 0, -1)
+        if indicator.extmark and vim.api.nvim_buf_is_valid(indicator.bufnr) then
+          pcall(vim.api.nvim_buf_del_extmark, indicator.bufnr, ns, indicator.extmark)
         end
-        indicator = {}
       end
 
       vim.api.nvim_create_autocmd("User", {
@@ -2009,27 +2017,39 @@ Placement guidance (overrides the base prompt where they conflict):
             require("lib.codecompanion-queue").on_request_started(data.bufnr, data.id)
           end
 
-          local bufnr = vim.api.nvim_get_current_buf()
+          local bufnr = data.bufnr
+          if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then return end
           if vim.bo[bufnr].filetype == "codecompanion" then return end
           if bufnr == require("lib.codecompanion-queue").bufnr() then return end
 
-          clear()
-          local line = vim.api.nvim_win_get_cursor(0)[1] - 1
-          indicator.bufnr = bufnr
+          local key = tostring(data.id)
+          clear(key)
+
+          -- buffer_context is 1-indexed and only present on inline requests.
+          local ctx = data.buffer_context or {}
+          local line = (ctx.start_line or (ctx.cursor_pos and ctx.cursor_pos[1]) or 1) - 1
+          line = math.max(0, math.min(line, vim.api.nvim_buf_line_count(bufnr) - 1))
+
+          local indicator = { bufnr = bufnr }
+          indicators[key] = indicator
 
           local frame = 0
           indicator.timer = vim.uv.new_timer()
           indicator.timer:start(0, 80, function()
             vim.schedule(function()
+              if indicators[key] ~= indicator then return end
               if not vim.api.nvim_buf_is_valid(bufnr) then
-                clear()
+                clear(key)
                 return
               end
-              pcall(vim.api.nvim_buf_clear_namespace, bufnr, ns, 0, -1)
-              pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, line, 0, {
+              -- Reuse the extmark id so it tracks edits made underneath it
+              -- (inline writes its output into this buffer as it streams).
+              local ok, id = pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, line, 0, {
+                id = indicator.extmark,
                 virt_text = { { spinner_frames[frame + 1] .. " Processing…", "Comment" } },
                 virt_text_pos = "eol",
               })
+              if ok then indicator.extmark = id end
               frame = (frame + 1) % #spinner_frames
             end)
           end)
@@ -2043,7 +2063,7 @@ Placement guidance (overrides the base prompt where they conflict):
           if data.bufnr then
             require("lib.codecompanion-queue").on_request_finished(data.bufnr, data.id, data.status)
           end
-          clear()
+          clear(tostring(data.id))
         end,
       })
 
