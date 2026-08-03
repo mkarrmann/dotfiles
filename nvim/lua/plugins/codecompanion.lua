@@ -168,16 +168,25 @@ local OMNIGENT_MODEL_DEFAULT = { claude = "claude-opus-5", codex = "gpt-5.6-sol"
 -- resolves the window from an external model catalog fetched over the internet;
 -- on a devserver with no direct egress that fetch fails and every model
 -- collapses to a conservative 128k default, mislabeling the context meter (e.g.
--- 229.9k/128.0k => 179%). These values mirror the catalog exactly (pulled via
--- `with-proxy` from omnigent.llms.context_window.get_model_context_window), so
--- the meter reads what the server would report WITH egress -- but offline, from
--- local config, with zero per-turn network. Update when adding a model to
--- OMNIGENT_MODELS; an unlisted model simply falls back to the server value.
+-- 229.9k/128.0k => 179%).
+--
+-- These are the vendors' true INPUT windows, which is deliberately NOT what the
+-- server would report with egress. omnigent's catalog path returns
+-- `max_input + max_output` (`_total` in omnigent/llms/context_window.py) -- a
+-- meter denominator inflated by the whole output budget, e.g. 1,128,000 for
+-- claude-opus-5 whose window is exactly 1M. litellm resolves none of these ids,
+-- so that summing path is the one that runs for them. Prefer a correct meter
+-- over parity with a wrong number; revisit if the upstream `_total` is fixed.
+-- Update when adding a model to OMNIGENT_MODELS; an unlisted model simply falls
+-- back to the server value.
 local OMNIGENT_CONTEXT_WINDOWS = {
-  ["claude-opus-5"]     = 1128000,
-  ["claude-opus-4-8"]   = 1128000,
-  ["claude-sonnet-5"]   = 1064000,
-  ["claude-haiku-4-5"]  = 264000,
+  ["claude-opus-5"]     = 1000000,
+  ["claude-opus-4-8"]   = 1000000,
+  ["claude-sonnet-5"]   = 1000000,
+  ["claude-haiku-4-5"]  = 200000,
+  -- TODO: unverified. Same suspected `max_input + max_output` inflation as the
+  -- Claude rows above, but the true windows for these ids are not confirmed --
+  -- left at the catalog values rather than guessed down.
   ["gpt-5.5"]           = 1178000,
   ["gpt-5.6-sol"]       = 1178000,
   ["gpt-5.6-terra"]     = 1178000,
