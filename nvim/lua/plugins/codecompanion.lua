@@ -144,7 +144,10 @@ local OMNIGENT_EFFORT_ORDER = { "none", "minimal", "low", "medium", "high", "xhi
 -- configured for this host"): the model→host rewrite (azure-codex ->
 -- azure-codex-<model>) only fires for routed slugs. So these MUST be the exact
 -- dotted route ids (NOT gateway-style `gpt-5-5`), and `gpt-5.4` is omitted (its
--- deployment is retired -> 404). Verified working end-to-end: gpt-5.5.
+-- deployment is retired -> 404). Verified working end-to-end via omnigent:
+-- gpt-5.5. gpt-5.6-sol is in daily use through the standalone codex CLI
+-- (codex_config/config.template.toml), so the slug is routed, but its
+-- omnigent app-server path has not been separately exercised.
 local OMNIGENT_MODELS = {
   claude = { "claude-opus-5", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5" },
   codex  = { "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna" },
@@ -152,8 +155,11 @@ local OMNIGENT_MODELS = {
 
 -- Per-family "default" model. Codex's app-server default per-turn model is NOT a
 -- routed slug (-> 421), so "default" for codex must resolve to a routed model
--- rather than "no override". claude-sdk's own default is fine, so it stays nil.
-local OMNIGENT_MODEL_DEFAULT = { codex = "gpt-5.5" }
+-- rather than "no override". claude pins opus-5 by preference rather than
+-- necessity: claude-sdk's own default would work, but it resolves provider-side
+-- (gateway/key/subscription) and is not visible from here, so pinning makes the
+-- launch model explicit and stable instead of silently provider-dependent.
+local OMNIGENT_MODEL_DEFAULT = { claude = "claude-opus-5", codex = "gpt-5.6-sol" }
 
 -- Per-model input context windows (vendor model id -> tokens), keyed exactly as
 -- OMNIGENT_MODELS above. Wired into the omnigent adapter `opts.context_windows`
