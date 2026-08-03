@@ -146,8 +146,8 @@ local OMNIGENT_EFFORT_ORDER = { "none", "minimal", "low", "medium", "high", "xhi
 -- dotted route ids (NOT gateway-style `gpt-5-5`), and `gpt-5.4` is omitted (its
 -- deployment is retired -> 404). Verified working end-to-end: gpt-5.5.
 local OMNIGENT_MODELS = {
-  claude = { "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-7" },
-  codex  = { "gpt-5.5", "gpt-5.3-codex", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna" },
+  claude = { "claude-opus-5", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5" },
+  codex  = { "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna" },
 }
 
 -- Per-family "default" model. Codex's app-server default per-turn model is NOT a
@@ -168,12 +168,11 @@ local OMNIGENT_MODEL_DEFAULT = { codex = "gpt-5.5" }
 -- local config, with zero per-turn network. Update when adding a model to
 -- OMNIGENT_MODELS; an unlisted model simply falls back to the server value.
 local OMNIGENT_CONTEXT_WINDOWS = {
+  ["claude-opus-5"]     = 1128000,
   ["claude-opus-4-8"]   = 1128000,
-  ["claude-opus-4-7"]   = 1128000,
-  ["claude-sonnet-4-6"] = 1064000,
+  ["claude-sonnet-5"]   = 1064000,
   ["claude-haiku-4-5"]  = 264000,
   ["gpt-5.5"]           = 1178000,
-  ["gpt-5.3-codex"]     = 144384,
   ["gpt-5.6-sol"]       = 1178000,
   ["gpt-5.6-terra"]     = 1178000,
   ["gpt-5.6-luna"]      = 1178000,
@@ -189,18 +188,13 @@ local OMNIGENT_CONTEXT_WINDOWS = {
 -- falls back to dm-core's default). dvsc keeps no OMNIGENT_MODEL_DEFAULT entry:
 -- its "default" means dm-core's own default model (nil override).
 OMNIGENT_MODELS.dvsc = {
+  "claude-opus-5",
   "claude-opus-4.8",
-  "claude-opus-4.7-long",
-  "claude-opus-4.6",
-  "claude-opus-4.6-long",
   "claude-sonnet-5",
-  "claude-sonnet-4.6-long",
   "claude-haiku-4.5",
   "gpt-5-6",
   "gpt-5-5",
-  "gemini-3-1-pro",
-  "gemini-3-flash",
-  "avocado-code-internal-0529",
+  "avocado-code-internal-2.0",
 }
 
 -- dvsc via the generic ACP harness has no reasoning-effort channel (the `acp`
