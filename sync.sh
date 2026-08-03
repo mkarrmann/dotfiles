@@ -340,15 +340,20 @@ tmp=$(jq '
   && echo "configured statusLine and hooks in $CLAUDE_SETTINGS"
 
 # Codex
-mkdir -p "$HOME/.codex/rules" "$HOME/.codex/skills"
+# Codex resolves its home as $CODEX_HOME, falling back to ~/.codex
+# (codex-rs/utils/home-dir/src/lib.rs). Mirror that precedence so a machine
+# that relocates CODEX_HOME is still configured, and so a set-but-missing
+# CODEX_HOME gets created here rather than failing Codex's own startup check.
+codex_home="${CODEX_HOME:-$HOME/.codex}"
+mkdir -p "$codex_home/rules" "$codex_home/skills"
 
 # Portable Codex template + machine-local overrides (config.local.toml)
-codex_config="$HOME/.codex/config.toml"
+codex_config="$codex_home/config.toml"
 codex_existed=$([[ -f "$codex_config" ]] && echo true || echo false)
 sed "s|__HOME__|$HOME|g" "$DOTFILES_DIR/codex_config/config.template.toml" > "$codex_config"
-if [[ -f "$HOME/.codex/config.local.toml" ]]; then
+if [[ -f "$codex_home/config.local.toml" ]]; then
   echo "" >> "$codex_config"
-  cat "$HOME/.codex/config.local.toml" >> "$codex_config"
+  cat "$codex_home/config.local.toml" >> "$codex_config"
 fi
 # Ensure dotfiles repo is trusted by default unless explicitly set in local overrides.
 if ! grep -Fqx "[projects.\"$HOME/dotfiles\"]" "$codex_config"; then
@@ -362,13 +367,39 @@ else
   echo "generated $codex_config"
 fi
 
-# Shared development rules
-link_one "$DOTFILES_DIR/agent_config/global-development-preferences.md" "$HOME/.codex/rules/global-development-preferences.md"
+# Shared development rules. Codex loads global instructions from
+# $codex_home/AGENTS.override.md then $codex_home/AGENTS.md, upstream and at
+# Meta alike (codex-rs/codex-home/src/instructions/mod.rs). AGENTS.override.md
+# is left free as a machine-local escape hatch that wins over this link.
+link_one "$DOTFILES_DIR/agent_config/global-development-preferences.md" "$codex_home/AGENTS.md"
+# $codex_home/rules is the exec-policy store: the loader keeps only entries
+# whose extension is `rules` (codex-rs/core/src/exec_policy.rs), so the .md we
+# used to link there was silently ignored rather than read as instructions.
+codex_retired_rule="$codex_home/rules/global-development-preferences.md"
+if [[ -L "$codex_retired_rule" ]]; then
+  rm "$codex_retired_rule"
+  echo "removed stale link $codex_retired_rule"
+fi
 # Shared skills
-sync_link_subdirs "$DOTFILES_DIR/agent_config/skills" "$HOME/.codex/skills" "SKILL.md"
-sync_link_subdirs "$DOTFILES_DIR/agent_config/skills/meta-powertools-vendored" "$HOME/.codex/skills" "SKILL.md"
+sync_link_subdirs "$DOTFILES_DIR/agent_config/skills" "$codex_home/skills" "SKILL.md"
+sync_link_subdirs "$DOTFILES_DIR/agent_config/skills/meta-powertools-vendored" "$codex_home/skills" "SKILL.md"
 
 # default.rules is machine-specific — managed by Codex itself
+
+# Metacode
+# Metacode's global config dir is OPENCODE_CONFIG_DIR, else <xdg-config>/opencode
+# (packages/core/src/global.ts, via the xdg-basedir package — plain XDG on every
+# platform, macOS included). Mirror that precedence so a relocated config dir is
+# still configured.
+opencode_config="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}"
+mkdir -p "$opencode_config"
+
+# Shared development rules. Metacode reads AGENTS.md from that dir as its global
+# instructions, so the same canonical file backs all three agents.
+link_one "$DOTFILES_DIR/agent_config/global-development-preferences.md" "$opencode_config/AGENTS.md"
+
+# Skills are wired by sync-mcps below (Metacode loads them from
+# opencode.json skills.paths, not from symlinks).
 
 # Cross-agent MCP wiring: copies plugins/custom-mcps/mcps/*.json into each
 # agent's native config (Claude settings.json, Codex config.toml, Metacode
