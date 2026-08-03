@@ -1337,6 +1337,25 @@ return {
           log_level = "DEBUG",
         },
 
+        -- Every agent behind the omnigent adapter discovers the same rules
+        -- natively: the Claude harness walks CLAUDE.md (resolving @-includes
+        -- and merging user/project/local), Codex reads ~/.codex/AGENTS.md, and
+        -- Metacode reads ~/.config/opencode/AGENTS.md -- all three symlinked
+        -- from agent_config/global-development-preferences.md by sync.sh.
+        -- Autoloading them here would send a second, lower-precedence copy as
+        -- user-turn text. This gates rules autoload on every chat-construction
+        -- path (CodeCompanion.chat, the chat buffer, Inline:to_chat) and
+        -- nothing else: `/rules` calls rules.new():make() directly, and
+        -- prompt-library items naming a group pass an explicit rules_name,
+        -- so both bypass the gate at rules/helpers.lua:101.
+        rules = {
+          opts = {
+            chat = {
+              enabled = false,
+            },
+          },
+        },
+
         extensions = {
           spinner = {},
         },
