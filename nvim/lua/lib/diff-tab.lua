@@ -431,6 +431,7 @@ function Manager:add_file(session_id, file_path, opts)
 		return
 	end
 	opts = opts or {}
+	local include_in_turn = opts.include_in_turn ~= false
 	local state = self:get_state(session_id)
 	local data = state.file_data[file_path]
 	local is_new_file = data == nil
@@ -448,7 +449,7 @@ function Manager:add_file(session_id, file_path, opts)
 		set_keymaps(data.after_buf, self, session_id)
 	end
 
-	if not data.turn_buf or not vim.api.nvim_buf_is_valid(data.turn_buf) then
+	if include_in_turn and (not data.turn_buf or not vim.api.nvim_buf_is_valid(data.turn_buf)) then
 		data.turn_buf = self:make_scratch_buf(opts.turn_before_lines or {}, file_path, "turn-before")
 		set_keymaps(data.turn_buf, self, session_id)
 	end
@@ -462,18 +463,24 @@ function Manager:add_file(session_id, file_path, opts)
 		table.insert(state.files, file_path)
 	end
 
-	local in_turn = false
-	for _, f in ipairs(state.turn_files) do
-		if f == file_path then
-			in_turn = true
-			break
+	if include_in_turn then
+		local in_turn = false
+		for _, f in ipairs(state.turn_files) do
+			if f == file_path then
+				in_turn = true
+				break
+			end
 		end
-	end
-	if not in_turn then
-		table.insert(state.turn_files, file_path)
+		if not in_turn then
+			table.insert(state.turn_files, file_path)
+		end
 	end
 
 	if state.diff_tab and vim.api.nvim_tabpage_is_valid(state.diff_tab) then
+		if not include_in_turn and state.mode == "turn" and #state.turn_files == 0 then
+			state.mode = "session"
+			state.index = 1
+		end
 		local file_list = get_file_list(state)
 		local current_file = file_list[state.index]
 		if current_file == file_path then
@@ -514,18 +521,27 @@ function Manager:new_turn(session_id)
 		return
 	end
 
+	local state = self._sessions[session_id]
+	if not state then
+		return
+	end
+
+	local old_turn_bufs = {}
+	for _, data in pairs(state.file_data) do
+		if data.turn_buf then
+			table.insert(old_turn_bufs, data.turn_buf)
+		end
+		data.turn_buf = nil
+	end
+	state.turn_files = {}
+
 	vim.schedule(function()
-		local state = self._sessions[session_id]
-		if not state then
+		for _, buf in ipairs(old_turn_bufs) do
+			delete_buf(buf)
+		end
+		if self._sessions[session_id] ~= state or #state.turn_files > 0 then
 			return
 		end
-
-		for _, data in pairs(state.file_data) do
-			delete_buf(data.turn_buf)
-			data.turn_buf = nil
-		end
-		state.turn_files = {}
-
 		if
 			state.diff_tab
 			and vim.api.nvim_tabpage_is_valid(state.diff_tab)
@@ -552,12 +568,14 @@ function Manager:cleanup(session_id)
 		return
 	end
 
-	vim.schedule(function()
-		local state = self._sessions[session_id]
-		if not state then
-			return
-		end
+	local state = self._sessions[session_id]
+	if not state then
+		return
+	end
+	self._sessions[session_id] = nil
+	pcall(vim.api.nvim_del_augroup_by_name, self.opts.name .. "_" .. session_id)
 
+	vim.schedule(function()
 		if state.diff_tab and vim.api.nvim_tabpage_is_valid(state.diff_tab) then
 			close_diff_tab(state)
 		end
@@ -567,9 +585,6 @@ function Manager:cleanup(session_id)
 			delete_buf(data.turn_buf)
 			delete_buf(data.session_buf)
 		end
-
-		self._sessions[session_id] = nil
-		pcall(vim.api.nvim_del_augroup_by_name, self.opts.name .. "_" .. session_id)
 	end)
 end
 

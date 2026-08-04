@@ -108,6 +108,32 @@ function M.run()
 		end
 	end
 
+	mgr:add_file("sess1", "/tmp/late.lua", {
+		after_lines = { "late" },
+		turn_before_lines = {},
+		session_before_lines = {},
+		include_in_turn = false,
+	})
+	assert_list_eq(
+		state.files,
+		{ "/tmp/test1.lua", "/tmp/test2.lua", "/tmp/late.lua" },
+		"late result added to session files"
+	)
+	assert_list_eq(state.turn_files, {}, "late result excluded from current turn")
+	if state.file_data["/tmp/late.lua"].turn_buf ~= nil then
+		error("late result created a turn-before buffer for the current turn")
+	end
+
+	mgr:add_file("reused", "/tmp/old.lua", { after_lines = { "old" } })
+	mgr:cleanup("reused")
+	mgr:add_file("reused", "/tmp/new.lua", { after_lines = { "new" } })
+	vim.wait(200)
+	local reused = mgr._sessions["reused"]
+	if not reused or reused.files[1] ~= "/tmp/new.lua" then
+		error("cleanup from an old session deleted state for a reused session id")
+	end
+	mgr:cleanup("reused")
+
 	mgr:cleanup("sess1")
 	vim.wait(200, function()
 		return mgr._sessions["sess1"] == nil

@@ -123,6 +123,102 @@ local function test_omnigent_live_flush()
 	print("OK omnigent live flush")
 end
 
+-- A new request may start while the previous request's async VCS reconciliation
+-- is still resolving its committed baseline. The completed turn must still land
+-- in session history without being attributed to the new turn.
+local function test_reconciliation_survives_next_turn()
+	if vim.fn.executable("git") ~= 1 then
+		print("SKIP reconciliation race (git unavailable)")
+		return
+	end
+	local cc_diff = require("lib.codecompanion-diff")
+	local root = vim.fn.tempname()
+	vim.fn.mkdir(root, "p")
+	sys({ "git", "init", "-q" }, root)
+	local file = root .. "/race.txt"
+	write_file(file, "before\n")
+	sys({ "git", "add", "race.txt" }, root)
+	sys({ "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init" }, root)
+
+	local chat = vim.api.nvim_create_buf(false, true)
+	vim.api.nvim_exec_autocmds("User", { pattern = "CodeCompanionRequestStarted", data = { bufnr = chat } })
+	write_file(file, "after\n")
+	vim.api.nvim_exec_autocmds("User", {
+		pattern = "CodeCompanionOmnigentToolCall",
+		data = {
+			bufnr = chat,
+			item = { name = "Edit", arguments = vim.json.encode({ file_path = file }) },
+		},
+	})
+
+	-- RequestFinished starts async baseline/status reads. Starting the next request
+	-- synchronously guarantees its lifecycle event runs before those callbacks.
+	vim.api.nvim_exec_autocmds("User", { pattern = "CodeCompanionRequestFinished", data = { bufnr = chat } })
+	vim.api.nvim_exec_autocmds("User", { pattern = "CodeCompanionRequestStarted", data = { bufnr = chat } })
+	vim.t.codecompanion_chat_bufnr = chat
+	cc_diff.toggle()
+
+	local ok = vim.wait(2000, function()
+		return find_scratch("after", file) ~= nil
+	end)
+	if not ok then
+		error("completed turn was discarded when the next turn started")
+	end
+	if find_scratch("turn-before", file) ~= nil then
+		error("completed turn was incorrectly attributed to the new turn")
+	end
+	if find_scratch("session-before", file) == nil then
+		error("completed turn has no session baseline")
+	end
+	local visible = vim.api.nvim_buf_get_name(vim.api.nvim_get_current_buf())
+	if not visible:find(file, 1, true) then
+		error("open empty diff did not switch to the completed turn's session diff: " .. visible)
+	end
+
+	cc_diff.cleanup(chat)
+	vim.wait(200, function()
+		return find_scratch("after", file) == nil
+	end)
+	vim.fn.delete(root, "rf")
+	print("OK reconciliation survives next turn")
+end
+
+local function test_cleanup_cancels_reconciliation()
+	if vim.fn.executable("git") ~= 1 then
+		print("SKIP reconciliation cleanup (git unavailable)")
+		return
+	end
+	local cc_diff = require("lib.codecompanion-diff")
+	local root = vim.fn.tempname()
+	vim.fn.mkdir(root, "p")
+	sys({ "git", "init", "-q" }, root)
+	local file = root .. "/closed.txt"
+	write_file(file, "before\n")
+	sys({ "git", "add", "closed.txt" }, root)
+	sys({ "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init" }, root)
+
+	local chat = vim.api.nvim_create_buf(false, true)
+	vim.api.nvim_exec_autocmds("User", { pattern = "CodeCompanionRequestStarted", data = { bufnr = chat } })
+	write_file(file, "after\n")
+	vim.api.nvim_exec_autocmds("User", {
+		pattern = "CodeCompanionOmnigentToolCall",
+		data = {
+			bufnr = chat,
+			item = { name = "Edit", arguments = vim.json.encode({ file_path = file }) },
+		},
+	})
+	vim.api.nvim_exec_autocmds("User", { pattern = "CodeCompanionRequestFinished", data = { bufnr = chat } })
+	cc_diff.cleanup(chat)
+	vim.wait(500)
+	if find_scratch("after", file) ~= nil then
+		error("closed chat was resurrected by late reconciliation")
+	end
+
+	vim.api.nvim_buf_delete(chat, { force = true })
+	vim.fn.delete(root, "rf")
+	print("OK cleanup cancels reconciliation")
+end
+
 function M.run()
 	local cc_diff = require("lib.codecompanion-diff")
 
@@ -154,6 +250,8 @@ function M.run()
 	end
 
 	test_omnigent_live_flush()
+	test_reconciliation_survives_next_turn()
+	test_cleanup_cancels_reconciliation()
 
 	print("codecompanion-diff-spec: all checks passed")
 end

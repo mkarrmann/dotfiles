@@ -111,8 +111,11 @@ local _turn_repos = {}
 -- [chat_bufnr] = { ready=bool, root=string|nil, files={[abspath]=lines} }
 local _turn_snapshot = {}
 -- [chat_bufnr] = int  bumped each turn; lets in-flight async reconciles detect
--- that a newer turn started and drop their now-stale records.
+-- whether a completed turn's late result belongs in the current-turn view.
 local _turn_epoch = {}
+-- [chat_bufnr] = unique table. Replaced after cleanup so callbacks from a closed
+-- session cannot write into a later chat that reuses the same buffer number.
+local _session_generation = {}
 -- [dir] = { root=string, vcs="sl"|"git" } | false   path→repo resolution cache
 local _repo_cache = {}
 -- [chat_bufnr] = { [abspath]=true }  files referenced by this session's tool
@@ -130,6 +133,28 @@ local _turn_before_cache = {}
 -- (by which point the agent has serially executed this call's write) and again at
 -- turn end. Lets omnigent edits show live instead of only at turn end.
 local _pending_flush = {}
+
+local function capture_turn(chat_bufnr)
+	local epoch = _turn_epoch[chat_bufnr]
+	local generation = _session_generation[chat_bufnr]
+	if not epoch or not generation then
+		return nil
+	end
+	return {
+		epoch = epoch,
+		generation = generation,
+		repos = _turn_repos[chat_bufnr],
+		paths = _turn_paths[chat_bufnr],
+		snapshot = _turn_snapshot[chat_bufnr],
+		before_cache = _turn_before_cache[chat_bufnr],
+	}
+end
+
+local function turn_session_is_valid(chat_bufnr, turn)
+	return turn
+		and _session_generation[chat_bufnr] == turn.generation
+		and vim.api.nvim_buf_is_valid(chat_bufnr)
+end
 
 local function path_exists(p)
 	return uv.fs_stat(p) ~= nil
@@ -373,17 +398,13 @@ end
 -- the result. cwd-repo files dirty at turn start use the exact snapshot; all
 -- others use the committed parent (which IS their turn-start state when they were
 -- clean). cb(before_lines) always runs on the main loop.
-local function resolve_baseline(chat_bufnr, repo, abs, rel, cb)
-	local cache = _turn_before_cache[chat_bufnr]
-	if not cache then
-		cache = {}
-		_turn_before_cache[chat_bufnr] = cache
-	end
+local function resolve_baseline(turn, repo, abs, rel, cb)
+	local cache = turn.before_cache
 	if cache[abs] ~= nil then
 		cb(cache[abs])
 		return
 	end
-	local snap = _turn_snapshot[chat_bufnr]
+	local snap = turn.snapshot
 	local snapped = (snap and snap.ready and repo.root == snap.root) and snap.files[abs] or nil
 	if snapped ~= nil then
 		cache[abs] = snapped
@@ -402,12 +423,12 @@ end
 -- Record one VCS file's turn diff: baseline via resolve_baseline, "after" from
 -- current disk (a missing file reads as {}, i.e. a deletion). No-op changes are
 -- skipped. Safe to call repeatedly and from both the live and turn-end paths:
--- add_file keeps the first baseline and only refreshes "after". Drops stragglers
--- whose turn advanced (epoch) or whose chat closed while an async cat was in
--- flight.
-local function record_vcs_diff(chat_bufnr, repo, abs, rel, epoch)
-	resolve_baseline(chat_bufnr, repo, abs, rel, function(before)
-		if _turn_epoch[chat_bufnr] ~= epoch or not vim.api.nvim_buf_is_valid(chat_bufnr) then
+-- add_file keeps the first baseline and only refreshes "after". Results from a
+-- completed turn remain in session history but do not enter a newer turn's view;
+-- results for a closed chat are discarded.
+local function record_vcs_diff(chat_bufnr, repo, abs, rel, turn)
+	resolve_baseline(turn, repo, abs, rel, function(before)
+		if not turn_session_is_valid(chat_bufnr, turn) then
 			return
 		end
 		local after = read_disk_bounded(abs)
@@ -415,7 +436,9 @@ local function record_vcs_diff(chat_bufnr, repo, abs, rel, epoch)
 			return -- too large to diff
 		end
 		if not lines_equal(before, after) then
-			pcall(M.record_write, chat_bufnr, abs, before, after)
+			pcall(M.record_write, chat_bufnr, abs, before, after, {
+				include_in_turn = _turn_epoch[chat_bufnr] == turn.epoch,
+			})
 		end
 	end)
 end
@@ -471,15 +494,19 @@ local function reconcile_turn(chat_bufnr)
 	if not vim.system or not chat_bufnr or not vim.api.nvim_buf_is_valid(chat_bufnr) then
 		return
 	end
-	local repos = _turn_repos[chat_bufnr]
+	local turn = capture_turn(chat_bufnr)
+	local repos = turn and turn.repos
 	if not repos then
 		return
 	end
-	local epoch = _turn_epoch[chat_bufnr]
+	local scoped = turn.paths
 
 	for root, vcs in pairs(repos) do
 		local repo = { root = root, vcs = vcs }
 		vcs_status(repo, function(files)
+			if not turn_session_is_valid(chat_bufnr, turn) then
+				return
+			end
 			if #files > MAX_RECONCILE_FILES then
 				vim.notify(
 					("[codecompanion-diff] %s: %d changed files, diffing first %d"):format(
@@ -496,13 +523,12 @@ local function reconcile_turn(chat_bufnr)
 			-- record_vcs_diff skips files VCS lists that didn't actually change
 			-- (pre-existing dirty/untracked noise) and dedupes against live-recorded
 			-- edits via add_file's set-if-nil baseline.
-			local scoped = _turn_paths[chat_bufnr]
 			for i, f in ipairs(files) do
 				if i > MAX_RECONCILE_FILES then
 					break
 				end
 				if scoped and scoped[f.abs] then
-					record_vcs_diff(chat_bufnr, repo, f.abs, f.rel, epoch)
+					record_vcs_diff(chat_bufnr, repo, f.abs, f.rel, turn)
 				end
 			end
 		end)
@@ -555,11 +581,14 @@ local function flush_pending(chat_bufnr)
 	if not list or not chat_bufnr or not vim.api.nvim_buf_is_valid(chat_bufnr) then
 		return
 	end
-	local epoch = _turn_epoch[chat_bufnr]
+	local turn = capture_turn(chat_bufnr)
+	if not turn then
+		return
+	end
 	for _, e in ipairs(list) do
 		local rel = repo_rel(e.root, e.abs)
 		if rel then
-			record_vcs_diff(chat_bufnr, { root = e.root, vcs = e.vcs }, e.abs, rel, epoch)
+			record_vcs_diff(chat_bufnr, { root = e.root, vcs = e.vcs }, e.abs, rel, turn)
 		end
 	end
 end
@@ -582,15 +611,26 @@ local function chat_bufnr_for_connection(conn)
 	return nil
 end
 
-function M.record_write(chat_bufnr, path, before_lines, after_lines)
+function M.record_write(chat_bufnr, path, before_lines, after_lines, opts)
 	if not chat_bufnr or not path then
 		return
 	end
 	path = vim.fn.fnamemodify(path, ":p")
+	opts = opts or {}
 	mgr:add_file(chat_bufnr, path, {
 		after_lines = after_lines or before_lines or {},
 		turn_before_lines = before_lines,
 		session_before_lines = before_lines,
+		include_in_turn = opts.include_in_turn,
+	})
+end
+
+local function record_turn_write(chat_bufnr, turn, path, before_lines, after_lines)
+	if not turn_session_is_valid(chat_bufnr, turn) then
+		return
+	end
+	M.record_write(chat_bufnr, path, before_lines, after_lines, {
+		include_in_turn = _turn_epoch[chat_bufnr] == turn.epoch,
 	})
 end
 
@@ -605,6 +645,7 @@ function M.cleanup(chat_bufnr)
 	_pending_flush[chat_bufnr] = nil
 	_turn_snapshot[chat_bufnr] = nil
 	_turn_epoch[chat_bufnr] = nil
+	_session_generation[chat_bufnr] = nil
 	mgr:cleanup(chat_bufnr)
 end
 
@@ -617,9 +658,10 @@ function M.new_turn(chat_bufnr)
 	_disk_before[chat_bufnr] = nil
 	_turn_repos[chat_bufnr] = nil
 	_turn_paths[chat_bufnr] = nil
-	_turn_before_cache[chat_bufnr] = nil
 	_pending_flush[chat_bufnr] = nil
 	_turn_snapshot[chat_bufnr] = nil
+	_turn_before_cache[chat_bufnr] = {}
+	_session_generation[chat_bufnr] = _session_generation[chat_bufnr] or {}
 	_turn_epoch[chat_bufnr] = (_turn_epoch[chat_bufnr] or 0) + 1
 	-- Re-resolve repo roots each turn so a repo created/removed mid-session isn't
 	-- served stale; intra-turn memoization (the hot path) is preserved.
@@ -647,6 +689,7 @@ local function record_from_tool_call(chat_bufnr, tool_call)
 	-- Note any repo this tool call touched (incl. read/execute), so the turn-end
 	-- VCS reconciliation pass knows where to look for shell-driven edits.
 	pcall(collect_repos_from_tool_call, chat_bufnr, tool_call)
+	local turn = capture_turn(chat_bufnr)
 
 	local diffs = find_diffs(tool_call)
 	if #diffs > 0 then
@@ -655,7 +698,7 @@ local function record_from_tool_call(chat_bufnr, tool_call)
 			local before = vim.split(d.oldText or "", "\n", { plain = true })
 			local after = vim.split(d.newText or "", "\n", { plain = true })
 			vim.schedule(function()
-				pcall(M.record_write, chat_bufnr, path, before, after)
+				pcall(record_turn_write, chat_bufnr, turn, path, before, after)
 			end)
 		end
 		return
@@ -692,7 +735,7 @@ local function record_from_tool_call(chat_bufnr, tool_call)
 	store[path] = nil
 	local after = read_file_lines(path) or {}
 	vim.schedule(function()
-		pcall(M.record_write, chat_bufnr, path, before, after)
+		pcall(record_turn_write, chat_bufnr, turn, path, before, after)
 	end)
 end
 
@@ -708,18 +751,19 @@ function M.setup()
 	if acp_ok and type(Connection) == "table" and type(Connection.handle_fs_write_file_request) == "function" then
 		local orig_fs_write = Connection.handle_fs_write_file_request
 		function Connection:handle_fs_write_file_request(id, params)
-			local chat_bufnr, before_lines
+			local chat_bufnr, before_lines, turn
 			if type(params) == "table" and type(params.path) == "string" then
 				chat_bufnr = chat_bufnr_for_connection(self)
 				if chat_bufnr then
 					before_lines = read_file_lines(params.path) or {}
+					turn = capture_turn(chat_bufnr)
 				end
 			end
 			local result = orig_fs_write(self, id, params)
 			if chat_bufnr and type(params.content) == "string" then
 				local after_lines = vim.split(params.content, "\n", { plain = true })
 				vim.schedule(function()
-					pcall(M.record_write, chat_bufnr, params.path, before_lines, after_lines)
+					pcall(record_turn_write, chat_bufnr, turn, params.path, before_lines, after_lines)
 				end)
 			end
 			return result
@@ -764,8 +808,9 @@ function M.setup()
 			if chat_bufnr and path and opts and opts.from_lines then
 				local from_lines = opts.from_lines
 				local to_lines = opts.to_lines
+				local turn = capture_turn(chat_bufnr)
 				vim.schedule(function()
-					pcall(M.record_write, chat_bufnr, path, from_lines, to_lines)
+					pcall(record_turn_write, chat_bufnr, turn, path, from_lines, to_lines)
 				end)
 			end
 			return orig_review(opts)
