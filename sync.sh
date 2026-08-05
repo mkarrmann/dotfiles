@@ -11,19 +11,41 @@ set -uo pipefail
 
 DOTFILES_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-SKIPPED_FILES=()
+CONFLICTS=()
+SKILL_ISSUES=()
 
 link_one() {
   local src="$1"
   local dst="$2"
+  local want="${src%/}"
 
   if [[ ! -e "$src" ]]; then
     echo "ERROR: source missing: $src" >&2
     exit 1
   fi
 
-  if [[ -e "$dst" || -L "$dst" ]]; then
-    SKIPPED_FILES+=("$dst")
+  if [[ -L "$dst" ]]; then
+    local have
+    have="$(readlink "$dst")"
+    if [[ "$have" == "$want" || "$have" == "$want/" ]]; then
+      return 0
+    fi
+    CONFLICTS+=("$dst -> $have (expected $want)")
+    return 0
+  fi
+
+  # A real file/dir at the destination shadows the dotfiles copy: the dotfiles
+  # version is not what gets loaded, so edits to it silently have no effect.
+  # Report whether the two agree, since that decides whether the shadow can just
+  # be deleted or has local content that must be merged first.
+  if [[ -e "$dst" ]]; then
+    local kind="file"
+    [[ -d "$dst" ]] && kind="directory"
+    if diff -rq "$want" "$dst" >/dev/null 2>&1; then
+      CONFLICTS+=("$dst — real $kind shadowing $want [identical; safe to replace]")
+    else
+      CONFLICTS+=("$dst — real $kind shadowing $want [CONTENT DIFFERS; merge first]")
+    fi
     return 0
   fi
 
@@ -138,6 +160,97 @@ sync_link_subdirs() {
   shopt -u nullglob
 }
 
+# --- Skill scoping ----------------------------------------------------------
+#
+# Meta-specific skills are linked into each ~/checkoutN/.claude/skills instead
+# of ~/.claude/skills, so they are only advertised while cwd is inside a Meta
+# checkout. Both Claude Code and Omnigent walk the ancestor .claude/skills chain
+# upward from cwd (verified 2026-08-04), so a skill linked at ~/checkoutN is
+# visible from ~/checkoutN/fbsource and ~/checkoutN/configerator alike.
+#
+# A single global directory advertised ~70 Meta skills in every tree, including
+# unrelated ones such as ~/repos/*. Beyond some list length the harness renders
+# skills as bare names without their descriptions, which is what makes the
+# relevant skill impossible to spot. Skills listed in skills-global.list stay
+# global; everything else, including all of meta-powertools-vendored, is scoped.
+
+SKILLS_SRC="$DOTFILES_DIR/agent_config/skills"
+SKILLS_VENDORED="$SKILLS_SRC/meta-powertools-vendored"
+SKILLS_GLOBAL_LIST="$DOTFILES_DIR/agent_config/skills-global.list"
+
+skill_scope() {
+  if [[ -f "$SKILLS_GLOBAL_LIST" ]] && grep -qxF -- "$1" "$SKILLS_GLOBAL_LIST"; then
+    echo global
+  else
+    echo meta
+  fi
+}
+
+skill_dirs() {
+  local d
+  shopt -s nullglob
+  for d in "$SKILLS_SRC"/*/ "$SKILLS_VENDORED"/*/; do
+    [[ "$(basename "$d")" == "meta-powertools-vendored" ]] && continue
+    [[ -e "${d}SKILL.md" ]] || continue
+    printf '%s\n' "$d"
+  done
+  shopt -u nullglob
+}
+
+link_skills_scoped() {
+  local dst_parent="${1%/}"
+  local scope="$2"
+  local src name dst target
+  mkdir -p "$dst_parent"
+
+  # Drop links this script previously created that no longer belong here:
+  # source deleted, or the skill moved between global and meta scope.
+  shopt -s nullglob
+  for dst in "$dst_parent"/*; do
+    [[ -L "$dst" ]] || continue
+    target="$(readlink "$dst")"
+    [[ "$target" == "$SKILLS_SRC/"* ]] || continue
+    name="$(basename "$dst")"
+    if [[ ! -e "${target%/}/SKILL.md" ]] || [[ "$(skill_scope "$name")" != "$scope" ]]; then
+      rm "$dst"
+      echo "removed skill link $dst"
+    fi
+  done
+  shopt -u nullglob
+
+  while IFS= read -r src; do
+    name="$(basename "$src")"
+    [[ "$(skill_scope "$name")" == "$scope" ]] || continue
+    link_one "$src" "$dst_parent/$name"
+  done < <(skill_dirs)
+}
+
+# Claude Code derives a missing `name` from the directory name, but Omnigent
+# requires it and drops the skill with only a stderr warning, so treat both
+# fields as mandatory rather than letting a skill vanish from one harness.
+validate_skill_frontmatter() {
+  local d name fm
+  shopt -s nullglob
+  for d in "$SKILLS_SRC"/*/ "$SKILLS_VENDORED"/*/; do
+    name="$(basename "$d")"
+    [[ "$name" == "meta-powertools-vendored" ]] && continue
+    if [[ ! -e "${d}SKILL.md" ]]; then
+      SKILL_ISSUES+=("$name: no SKILL.md (directory is not a loadable skill)")
+      continue
+    fi
+    if [[ "$(head -n1 "${d}SKILL.md")" != "---" ]]; then
+      SKILL_ISSUES+=("$name: SKILL.md has no YAML frontmatter (loads in neither harness)")
+      continue
+    fi
+    fm="$(awk 'NR>1 && $0=="---"{exit} NR>1' "${d}SKILL.md")"
+    grep -qE '^name:' <<<"$fm" ||
+      SKILL_ISSUES+=("$name: frontmatter missing 'name:' (Omnigent silently drops it)")
+    grep -qE '^description:' <<<"$fm" ||
+      SKILL_ISSUES+=("$name: frontmatter missing 'description:' (no trigger text for the model)")
+  done
+  shopt -u nullglob
+}
+
 # Top-level dotfiles
 for f in \
   .shell_env \
@@ -202,10 +315,52 @@ sync_link_dir "$DOTFILES_DIR/claude_config/agent-manager" "$HOME/.claude/agent-m
 link_one "$DOTFILES_DIR/claude_config/obsidian-vault.conf" "$HOME/.claude/obsidian-vault.conf"
 # Hooks
 sync_link_dir "$DOTFILES_DIR/claude_config/hooks" "$HOME/.claude/hooks" "*"
-# Skills (shared between Claude Code and Codex)
-mkdir -p "$HOME/.claude/skills"
-sync_link_subdirs "$DOTFILES_DIR/agent_config/skills" "$HOME/.claude/skills" "SKILL.md"
-sync_link_subdirs "$DOTFILES_DIR/agent_config/skills/meta-powertools-vendored" "$HOME/.claude/skills" "SKILL.md"
+# Skills
+validate_skill_frontmatter
+link_skills_scoped "$HOME/.claude/skills" global
+# A workspace root is any real directory directly under $HOME that holds an
+# fbsource or configerator checkout: ~/checkoutN, plus older layouts such as
+# ~/local/configerator. Detecting them beats globbing checkout* so a checkout
+# outside the naming convention still gets its skills.
+#
+# Symlinked candidates count: ~/local is a symlink to the devserver data volume
+# and holds real checkouts. Roots are deduplicated by resolved path so a
+# workspace reachable under two names is only linked once, and the links are
+# created under the resolved path because cwd resolution is physical.
+#
+# $HOME itself is never a candidate (the glob starts one level down), so the
+# ~/fbsource and ~/configerator convenience symlinks cannot promote every
+# directory on the machine into a Meta workspace.
+declare -A seen_ws=()
+shopt -s nullglob
+for ws in "$HOME"/*/; do
+  [[ -d "${ws}fbsource" || -d "${ws}configerator" ]] || continue
+  # A repo checkout is never a workspace root, even though the configerator
+  # checkout does contain a directory called configerator/. Linking into one
+  # would drop 56 untracked symlinks inside a source repo.
+  [[ -e "${ws}.hg" || -e "${ws}.sl" || -e "${ws}.git" ]] && continue
+  ws_real="$(readlink -f "${ws%/}")"
+  [[ -n "${seen_ws[$ws_real]:-}" ]] && continue
+  seen_ws[$ws_real]=1
+  link_skills_scoped "$ws_real/.claude/skills" meta
+done
+shopt -u nullglob
+
+# Skills hand-linked into ~/.claude/skills from inside a repo checkout pin every
+# workspace to whichever checkout the link happens to name (often indirectly, via
+# the ~/fbsource convenience symlink) and duplicate the harness's own
+# ancestor-scoped discovery, which already finds them when cwd is in the owning
+# subtree. Match on the resolved path so the indirection does not hide them.
+shopt -s nullglob
+for dst in "$HOME"/.claude/skills/*; do
+  [[ -L "$dst" ]] || continue
+  skill_target="$(readlink -f "$dst")"
+  if [[ "$skill_target" == */fbsource/* || "$skill_target" == */configerator/* ]]; then
+    rm "$dst"
+    echo "removed checkout-pinned skill link $dst -> $skill_target"
+  fi
+done
+shopt -u nullglob
 # Ensure settings.json has the statusline command configured (preserving other settings)
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 if [[ ! -f "$CLAUDE_SETTINGS" ]]; then
@@ -550,10 +705,28 @@ else
   echo "generated $nori_config"
 fi
 
-if [[ ${#SKIPPED_FILES[@]} -gt 0 ]]; then
-  echo ""
-  echo "Skipped (already exist):"
-  for f in "${SKIPPED_FILES[@]}"; do
-    echo "  $f"
-  done
+if [[ ${#SKILL_ISSUES[@]} -gt 0 ]]; then
+  {
+    echo ""
+    echo "SKILL PROBLEMS (${#SKILL_ISSUES[@]}) — these skills will not load correctly:"
+    for f in "${SKILL_ISSUES[@]}"; do
+      echo "  $f"
+    done
+  } >&2
+fi
+
+# Shadows are silent by nature: the dotfiles copy still exists and still looks
+# authoritative, so without this report an edit there can go nowhere for months.
+if [[ ${#CONFLICTS[@]} -gt 0 ]]; then
+  {
+    echo ""
+    echo "SHADOWED (${#CONFLICTS[@]}) — destination is not the dotfiles symlink, so the"
+    echo "dotfiles copy is NOT what gets loaded and edits to it have no effect:"
+    for f in "${CONFLICTS[@]}"; do
+      echo "  $f"
+    done
+    echo ""
+    echo "To resolve an [identical] entry:  rm <dest> && ./sync.sh"
+    echo "For [CONTENT DIFFERS], copy anything worth keeping into the dotfiles source first."
+  } >&2
 fi

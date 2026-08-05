@@ -12,7 +12,9 @@ Running `init.sh` (designed to be re-run; idempotent) handles:
 
 1. **Symlinks** every `skills/*/SKILL.md` and every
    `skills/meta-powertools-vendored/*/SKILL.md` subdir into
-   `~/.claude/skills/` and `~/.codex/skills/`.
+   `~/.codex/skills/`, and — for Claude — into either
+   `~/.claude/skills/` or `~/checkoutN/.claude/skills/` depending on
+   `skills-global.list` (see "Skills" below).
 2. **Generates** `~/.codex/config.toml` from
    `codex_config/config.template.toml` + `~/.codex/config.local.toml`.
 3. **MCPs** — calls `agent_config/sync-mcps all`, which writes the 7
@@ -28,6 +30,39 @@ Running `init.sh` (designed to be re-run; idempotent) handles:
    to install everything in `plugins.list` on every agent.
 
 So: pull dotfiles → run `init.sh` → every devserver lines up.
+
+## Skills: scoping and the listing budget
+
+Claude Code and Omnigent both walk the ancestor `.claude/skills/` chain
+upward from cwd, so a skill need not live in `~/.claude/skills` to be
+found. `sync.sh` uses that to scope by workspace:
+
+- Names in `skills-global.list` → `~/.claude/skills/`, advertised
+  everywhere including non-Meta trees such as `~/repos/*`.
+- Everything else, including all of `skills/meta-powertools-vendored/`,
+  → `~/checkoutN/.claude/skills/`, advertised only while cwd is inside a
+  Meta checkout. Workspace roots are detected as any `$HOME/*` directory
+  containing an `fbsource/` or `configerator/` checkout, so a relocated
+  or extra checkout is picked up without editing the script.
+
+Keep the global list short: each entry costs context in every unrelated
+session.
+
+Skills belonging to a specific fbsource subtree (Sapphire, Presto, …)
+are deliberately **not** linked here. They ship in that subtree's own
+`.claude/skills/`, and the harness finds them from inside it; hoisting
+them to global advertised them in every unrelated tree and pinned them
+to one checkout.
+
+### Frontmatter is mandatory
+
+Every `SKILL.md` needs YAML frontmatter with both `name:` and
+`description:`. Claude Code derives a missing `name` from the directory
+name, but Omnigent rejects the skill and only warns on stderr, so it
+silently loads in one harness and not the other. `sync.sh` validates
+this and reports `SKILL PROBLEMS` on stderr, alongside `SHADOWED`
+entries where a real file at the destination is masking the dotfiles
+copy.
 
 ## Day-to-day workflow
 
@@ -48,8 +83,8 @@ fresh on its own — no manual step.
   (~49k chars of skill descriptions). The valuable MCPs are vendored
   at `plugins/custom-mcps/mcps/` and rewired by `sync-mcps`. The
   valuable skills are vendored at `skills/meta-powertools-vendored/`
-  and symlinked by `init.sh`. See that dir's `TODO.md` for the
-  staleness problem.
+  and symlinked by `init.sh` (checkout-scoped — see "Skills" above).
+  See that dir's `TODO.md` for the staleness problem.
 - Codex re-serializes `~/.codex/config.toml` at runtime and strips
   comments — that's why `sync-mcps` identifies its managed blocks by
   table *name* (`[mcp_servers.<known-name>]`) rather than by a marker

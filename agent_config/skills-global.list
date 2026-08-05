@@ -1,0 +1,14 @@
+# Skills that stay in ~/.claude/skills and are therefore advertised in every
+# directory, including non-Meta trees such as ~/repos/*.
+#
+# Everything else in agent_config/skills/ — including all of
+# meta-powertools-vendored/ — is linked only into ~/checkoutN/.claude/skills and
+# is advertised only while cwd is inside a Meta checkout. See sync.sh.
+#
+# Add a name here only if the skill is genuinely useful outside a Meta checkout;
+# each entry costs a line of context in every unrelated session.
+
+neovim-meta
+omnigent-sessions
+personal-development-setup-and-env
+screenshot-workflow
