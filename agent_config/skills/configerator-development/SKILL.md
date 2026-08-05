@@ -1,6 +1,6 @@
 ---
 name: configerator-development
-description: Use when working in Meta's configerator repository — editing .cinc/.cconf/.mcconf files, running conf build, arc lint, arc f, conf submit, debugging build failures, understanding configerator's Python dialect, import system, export system, validators, materialized configs, or CI (configerator-build-and-diff, configerator-lint). Also use when encountering configerator-specific errors like "No module named", mutation lint failures, or formatting issues in config files.
+description: Use when working in Meta's configerator repository — editing .cinc/.cconf/.mcconf files, running conf build, arc lint, arc f, conf submit, debugging build failures, understanding configerator's Python dialect, import system, export system, validators, materialized configs, or CI (configerator-build-and-diff, configerator-lint). Also use when encountering configerator-specific errors like "No module named", mutation lint failures, or formatting issues in config files. Also use before touching any file under fbcode/configerator/ in an fbsource checkout (thrift mirrors, generated structs) — those are generated, not source, and must never be hand-edited.
 ---
 
 # Configerator Development
@@ -15,6 +15,7 @@ Configerator is Meta's configuration management system. It is **NOT standard Pyt
 2. **No stacked diffs.** Each diff is tested in isolation against master. Squash into one commit or land sequentially.
 3. **`conf submit`, not `jf submit`.** `conf submit` attaches the mutation ID from `conf build`, letting CI skip expensive rebuilds.
 4. **Both source AND materialized configs must be committed.** `conf build` generates `.materialized_JSON` files that must be included in the diff.
+5. **Never hand-edit `fbcode/configerator/`.** Everything under `fbcode/configerator/` in an fbsource checkout is generated from configerator master — it is not source. Never hand-edit it and never include such changes in a diff. Local edits are acceptable only for temporary testing and must be reverted before submitting. To change one of these files, land the change in the configerator repo and let the generated copy follow.
 
 ## File Types
 
@@ -152,6 +153,7 @@ Test validators with `.ctest` files. Do NOT import `.cconf` in `.ctest` — shar
 | Assuming standard Python linting | Check `source/.flake8` — F401/F403/F821 suppressed |
 | `rstrip("suffix")` | Use `removesuffix("suffix")` — `rstrip` strips char set |
 | Importing `.cconf` for shared code | Use `.cinc` instead (`.cconf` triggers validation) |
+| Hand-editing files under `fbcode/configerator/` | Never do this — the files are generated from configerator master. Land the configerator change first; local edits are for temporary testing only and must never appear in a diff |
 | Using `find`/`grep -R` on repo root | Use `cbgs "string"` / `cbgr "regex"` (BigGrep) |
 | Standard Python debugger workflow | Use `configerator -j 1 file.cconf` with `breakpoint()` |
 
