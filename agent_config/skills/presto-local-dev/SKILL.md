@@ -1,3 +1,8 @@
+---
+name: presto-local-dev
+description: Use when running Presto locally on a devserver for development or testing — starting/stopping the Java coordinator, the Java gateway, or the C++ Prestissimo native worker as detached processes, generating local config into etc-local/, or debugging a local Presto instance. Does NOT cover building from source (see presto-build) or cluster deployment (see presto-deploy).
+---
+
 # Presto Local Dev
 
 ## Overview
