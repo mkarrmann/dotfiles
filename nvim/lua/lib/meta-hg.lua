@@ -113,6 +113,44 @@ local SSL_STATE = {
   repo_root = nil,
 }
 
+--- Debounce `fn` by `delay` ms.
+---
+--- Local copy of `meta_util.debounce`, which races: its cleanup re-reads the
+--- shared `timer` upvalue from inside a `vim.schedule_wrap`ped callback, so a
+--- call arriving between a timer firing and its callback running makes that
+--- callback stop/close the *successor* timer (dropping a pending update) and
+--- nil out the upvalue, erroring the next callback with "attempt to index
+--- upvalue 'timer'". Here each callback owns the handle it was started with.
+---@param fn function
+---@param delay number
+---@return function
+local function debounce(fn, delay)
+  local timer = nil
+  return function(...)
+    local args = { ... }
+    if timer and not timer:is_closing() then
+      timer:stop()
+      timer:close()
+    end
+    local this = vim.uv.new_timer()
+    timer = this
+    this:start(
+      delay,
+      0,
+      vim.schedule_wrap(function()
+        if not this:is_closing() then
+          this:stop()
+          this:close()
+        end
+        if timer == this then
+          timer = nil
+        end
+        fn(unpack(args))
+      end)
+    )
+  end
+end
+
 --- Nearest ancestor of `path` containing a `.hg` dir, or nil. `path` may be a
 --- file or directory (absolute or relative to nvim's cwd).
 ---@param path string?
@@ -3271,7 +3309,7 @@ local function setup_hg_signcolumn()
     "TextChangedI",
   }, {
     pattern = "*",
-    callback = meta_util.debounce(function(arg)
+    callback = debounce(function(arg)
       if vim.api.nvim_buf_is_valid(arg.buf) then
         sign_util.infer_signs(arg.buf)
       end
@@ -3413,7 +3451,7 @@ local function setup_line_blame()
           return
         end
 
-        local handle_cursor_moved = meta_util.debounce(
+        local handle_cursor_moved = debounce(
           function(cursor_moved_arg)
             -- clear all extmarks
             vim.api.nvim_buf_clear_namespace(
