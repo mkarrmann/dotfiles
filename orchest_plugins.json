@@ -35,37 +35,6 @@
       }
     },
     {
-      "id": "orchest-acp-bridge",
-      "module": "/Users/mkarrmann/dev/orchest/packages/plugin-acp-bridge/dist/index.js",
-      "config": {
-        "serverHost": "127.0.0.1",
-        "serverPort": 7847,
-        "clientId": "orchest-local",
-        "attribution": {
-          "byNvimSession": {
-            "CCO-checkout1": "2",
-            "FTW-checkout1": "3",
-            "CCO-checkout2": "4",
-            "FTW-checkout2": "5",
-            "CCO-checkout3": "6",
-            "FTW-checkout3": "7",
-            "CCO-checkout4": "8"
-          },
-          "byCwd": {
-            "/home/mkarrmann/checkout1": "3",
-            "/home/mkarrmann/checkout1/fbsource": "3",
-            "/home/mkarrmann/checkout1/configerator": "3",
-            "/home/mkarrmann/checkout2": "5",
-            "/home/mkarrmann/checkout2/fbsource": "5",
-            "/home/mkarrmann/checkout2/configerator": "5",
-            "/home/mkarrmann/checkout3": "7",
-            "/home/mkarrmann/checkout3/fbsource": "7",
-            "/home/mkarrmann/checkout3/configerator": "7"
-          }
-        }
-      }
-    },
-    {
       "id": "orchest-omnigent-bridge",
       "module": "/Users/mkarrmann/dev/orchest/packages/plugin-omnigent-bridge/dist/index.js",
       "config": {
@@ -107,6 +76,39 @@
       "policy": {
         "attention": { "maxLevel": "flash" },
         "notification": { "rateLimitPerMinute": 10 }
+      }
+    }
+  ],
+  "disabledPlugins": [
+    {
+      "id": "orchest-acp-bridge",
+      "module": "/Users/mkarrmann/dev/orchest/packages/plugin-acp-bridge/dist/index.js",
+      "config": {
+        "serverHost": "127.0.0.1",
+        "serverPort": 7847,
+        "clientId": "orchest-local",
+        "attribution": {
+          "byNvimSession": {
+            "CCO-checkout1": "2",
+            "FTW-checkout1": "3",
+            "CCO-checkout2": "4",
+            "FTW-checkout2": "5",
+            "CCO-checkout3": "6",
+            "FTW-checkout3": "7",
+            "CCO-checkout4": "8"
+          },
+          "byCwd": {
+            "/home/mkarrmann/checkout1": "3",
+            "/home/mkarrmann/checkout1/fbsource": "3",
+            "/home/mkarrmann/checkout1/configerator": "3",
+            "/home/mkarrmann/checkout2": "5",
+            "/home/mkarrmann/checkout2/fbsource": "5",
+            "/home/mkarrmann/checkout2/configerator": "5",
+            "/home/mkarrmann/checkout3": "7",
+            "/home/mkarrmann/checkout3/fbsource": "7",
+            "/home/mkarrmann/checkout3/configerator": "7"
+          }
+        }
       }
     }
   ]
