@@ -84,9 +84,10 @@ trap 'exit 143' TERM
 
 # ── Workspace definitions ────────────────────────────────────────────
 # Format: ws|type|title|title_match|...
-#   ghostty: ws|ghostty|title|title_match|workdir|command
-#   cmux:    ws|cmux|title|title_match
-#   chrome:  ws|chrome|title
+#   ghostty:  ws|ghostty|title|title_match|workdir|command
+#   cmux:     ws|cmux|title|title_match
+#   chrome:   ws|chrome|title
+#   omnigent: ws|omnigent|title
 # title_match is a regex used to find existing windows in AeroSpace.
 # ws is the AeroSpace workspace to place the window in.
 # Multiple entries can share a workspace (accordion layout toggles between them).
@@ -94,23 +95,31 @@ trap 'exit 143' TERM
 WORKSPACES=(
   "1|ghostty|Local MacOS|^Local MacOS$|~|while true; do nvim --cmd 'set title titlestring=Local\\ MacOS'; sleep 0.5; done"
   "1|chrome|Chrome: ws1"
+  "1|omnigent|Omnigent: ws1"
   "T|ghostty|FTW: tunnels|FTW.*tunnels|~|nvs-tunnels devvm36111.ftw0.facebook.com FTW-main1 FTW-checkout1:~/checkout1/fbsource FTW-checkout2:~/checkout2/fbsource FTW-checkout3:~/checkout3/fbsource"
   "T|ghostty|CCO: tunnels|CCO.*tunnels|~|nvs-tunnels devvm20365.cco0.facebook.com CCO-main1 CCO-checkout1:~/checkout1/fbsource CCO-checkout2:~/checkout2/fbsource CCO-checkout3:~/checkout3/fbsource CCO-checkout4:~/checkout4/fbsource"
   "T|ghostty|Omnigent: tunnel|Omnigent.*tunnel|~|omnigent-tunnel"
   "2|ghostty|CCO: checkout1|CCO.*checkout1\\b|~|nvs CCO-checkout1"
   "2|chrome|Chrome: ws2"
+  "2|omnigent|Omnigent: ws2"
   "3|ghostty|FTW: checkout1|FTW.*checkout1\\b|~|nvs FTW-checkout1"
   "3|chrome|Chrome: ws3"
+  "3|omnigent|Omnigent: ws3"
   "4|ghostty|CCO: checkout2|CCO.*checkout2\\b|~|nvs CCO-checkout2"
   "4|chrome|Chrome: ws4"
+  "4|omnigent|Omnigent: ws4"
   "5|ghostty|FTW: checkout2|FTW.*checkout2\\b|~|nvs FTW-checkout2"
   "5|chrome|Chrome: ws5"
+  "5|omnigent|Omnigent: ws5"
   "6|ghostty|CCO: checkout3|CCO.*checkout3\\b|~|nvs CCO-checkout3"
   "6|chrome|Chrome: ws6"
+  "6|omnigent|Omnigent: ws6"
   "7|ghostty|FTW: checkout3|FTW.*checkout3\\b|~|nvs FTW-checkout3"
   "7|chrome|Chrome: ws7"
+  "7|omnigent|Omnigent: ws7"
   "8|ghostty|CCO: checkout4|CCO.*checkout4\\b|~|nvs CCO-checkout4"
   "8|chrome|Chrome: ws8"
+  "8|omnigent|Omnigent: ws8"
 )
 
 SWEEP_WORKSPACE="Z"
@@ -119,6 +128,12 @@ CHROME_APP="Google Chrome"
 CHROME_INVALID_TITLE_PATTERN="^Who.s using Chrome\\?$"
 claimed_chrome_ids=""
 chrome_restore_settled=false
+
+# Omnigent window titles are conversation names, so they carry no stable
+# workspace identity. Claim windows by ID like Chrome rather than by title.
+OMNIGENT_APP="Omnigent"
+claimed_omnigent_ids=""
+omnigent_restore_settled=false
 
 # Workspace 11 hosts a fixed 2x2 "dashboard" laid out by arrange-ws11. Its two
 # Chrome windows (internalfb Calendar + Google Chat) must be claimed BEFORE the
@@ -163,6 +178,40 @@ create_cmux_window() {
     return 0
   fi
   open -a cmux
+}
+
+# `open -n` is a no-op for Omnigent: its Electron single-instance lock hands the
+# launch to the running app, which does not open a window for it. The Server ▸
+# New Window menu item is the only window-creation entry point.
+create_omnigent_window() {
+  osascript \
+    -e 'tell application "System Events" to tell process "Omnigent"' \
+    -e '  click menu item "New Window" of menu 1 of menu bar item "Server" of menu bar 1' \
+    -e 'end tell' >/dev/null 2>&1
+}
+
+omnigent_app_is_running() {
+  osascript -e 'application "Omnigent" is running' 2>/dev/null | grep -q 'true'
+}
+
+ensure_omnigent_running() {
+  if ! omnigent_app_is_running; then
+    echo "[Omnigent] launching app..."
+    open -a "$OMNIGENT_APP" || return 1
+    for _ in $(seq 1 40); do
+      sleep 0.5
+      if omnigent_app_is_running; then
+        break
+      fi
+    done
+    omnigent_app_is_running || return 1
+  fi
+
+  if [[ "$omnigent_restore_settled" != true ]]; then
+    wait_for_window_settle "$OMNIGENT_APP" 2 20 || true
+    omnigent_restore_settled=true
+    SNAPSHOT=$(snapshot_windows)
+  fi
 }
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -415,6 +464,45 @@ workspace_has_claimed_chrome_window() {
         ((.["window-title"] // "") | test($invalid) | not)
       ) | .["window-id"]'); do
     chrome_id_is_claimed "$wid" && return 0
+  done
+  return 1
+}
+
+omnigent_id_is_claimed() {
+  local wid="$1"
+  [[ -n "$claimed_omnigent_ids" ]] && echo "$claimed_omnigent_ids" | grep -qx "$wid"
+}
+
+claim_omnigent_window() {
+  local wid="$1"
+  omnigent_id_is_claimed "$wid" || claimed_omnigent_ids="${claimed_omnigent_ids}${claimed_omnigent_ids:+$'\n'}${wid}"
+}
+
+omnigent_window_ids() {
+  local ws="${1:-}"
+  if [[ -n "$ws" ]]; then
+    aerospace list-windows --workspace "$ws" --json 2>/dev/null
+  else
+    aerospace list-windows --all --json 2>/dev/null
+  fi | jq -r --arg app "$OMNIGENT_APP" \
+    '.[] | select(."app-name" == $app) | .["window-id"]' | sort -n
+}
+
+find_unclaimed_omnigent_window() {
+  local ws="${1:-}" wid
+  for wid in $(omnigent_window_ids "$ws"); do
+    if ! omnigent_id_is_claimed "$wid"; then
+      echo "$wid"
+      return 0
+    fi
+  done
+  return 1
+}
+
+workspace_has_claimed_omnigent_window() {
+  local ws="$1" wid
+  for wid in $(omnigent_window_ids "$ws"); do
+    omnigent_id_is_claimed "$wid" && return 0
   done
   return 1
 }
@@ -756,6 +844,44 @@ for i in "${!WORKSPACES[@]}"; do
         SNAPSHOT=$(snapshot_windows)
       fi
       ;;
+    omnigent)
+      app_name="$OMNIGENT_APP"
+
+      if ! ensure_omnigent_running; then
+        echo "WARNING: [$title] Omnigent app did not start, skipping" >&2
+        ((failures++)) || true
+        continue
+      fi
+
+      existing=$(find_unclaimed_omnigent_window "$ws") || true
+      if [[ -z "$existing" ]]; then
+        existing=$(find_unclaimed_omnigent_window) || true
+      fi
+      if [[ -n "$existing" ]]; then
+        echo "[$title] assigning existing Omnigent window $existing to workspace $ws..."
+        aerospace move-node-to-workspace --window-id "$existing" "$ws" 2>/dev/null || true
+        claim_omnigent_window "$existing"
+      else
+        echo "[$title] creating on workspace $ws..."
+        before_snapshot="$SNAPSHOT"
+        create_omnigent_window || {
+          echo "WARNING: [$title] creation failed, skipping" >&2
+          ((failures++)) || true
+          continue
+        }
+        # No focused-window fallback here: Omnigent windows are claimed by ID,
+        # so misidentifying one pins the wrong window to this workspace for the
+        # rest of the run.
+        if window_id=$(wait_for_new_window "$app_name" "$before_snapshot"); then
+          aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || true
+          claim_omnigent_window "$window_id"
+        else
+          echo "WARNING: [$title] could not find new Omnigent window" >&2
+          ((failures++)) || true
+        fi
+        SNAPSHOT=$(snapshot_windows)
+      fi
+      ;;
   esac
 done
 
@@ -788,6 +914,30 @@ extra_chrome_ids=$(aerospace list-windows --all --json 2>/dev/null \
 for wid in $extra_chrome_ids; do
   chrome_id_is_claimed "$wid" && continue
   echo "Sweeping surplus restored Chrome window $wid to $SWEEP_WORKSPACE..."
+  aerospace move-node-to-workspace --window-id "$wid" "$SWEEP_WORKSPACE" 2>/dev/null || true
+done
+
+# Same two-step for Omnigent: fill slots whose window arrived after its
+# wait_for_new_window timed out, then sweep the surplus off managed workspaces.
+for entry in "${WORKSPACES[@]}"; do
+  IFS='|' read -r ws type _title _rest <<< "$entry"
+  [[ "$type" == "omnigent" ]] || continue
+  workspace_has_claimed_omnigent_window "$ws" && continue
+
+  existing=$(find_unclaimed_omnigent_window "$ws") || true
+  if [[ -z "$existing" ]]; then
+    existing=$(find_unclaimed_omnigent_window) || true
+    if [[ -n "$existing" ]]; then
+      echo "[Omnigent reconciliation] assigning window $existing to workspace $ws..."
+      aerospace move-node-to-workspace --window-id "$existing" "$ws" 2>/dev/null || true
+    fi
+  fi
+  [[ -z "$existing" ]] || claim_omnigent_window "$existing"
+done
+
+for wid in $(omnigent_window_ids); do
+  omnigent_id_is_claimed "$wid" && continue
+  echo "Sweeping surplus Omnigent window $wid to $SWEEP_WORKSPACE..."
   aerospace move-node-to-workspace --window-id "$wid" "$SWEEP_WORKSPACE" 2>/dev/null || true
 done
 
@@ -850,11 +1000,12 @@ close_invalid_chrome_windows_on_workspace "$SWEEP_WORKSPACE"
 # Sweep stray windows: move unrecognized windows off managed workspaces to Z
 for ws in $(managed_workspaces); do
   stray_ids=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
-    | jq -r --arg chrome "$CHROME_APP" \
+    | jq -r --arg chrome "$CHROME_APP" --arg omnigent "$OMNIGENT_APP" \
       '[.[] | select(
         ."app-name" != "Ghostty" and
         ."app-name" != "cmux" and
         ."app-name" != $chrome and
+        ."app-name" != $omnigent and
         (.["window-title"] | test("Orchest \\[") | not)
       )] | .[]["window-id"]') || true
   for wid in $stray_ids; do
