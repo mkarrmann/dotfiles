@@ -369,6 +369,25 @@ fi
 tmp=$(jq '
   .permissions.defaultMode = "bypassPermissions" |
   .model = "claude-opus-5[1m]" |
+  # Claude Code budgets the skill listing at
+  #   skillListingBudgetFraction * context_tokens * chars_per_token(3)
+  # and when the listing exceeds it, drops EVERY evictable description
+  # rather than truncating -- leaving a bare name list with no trigger
+  # text. The default 0.01 yields only 6,000 chars against a 200k
+  # window, which the bundled skills alone overrun.
+  #
+  # Note the window is 1e6 only when the model id literally contains
+  # "[1m]"; anything that strips that suffix (Omnigent passes
+  # --model claude-opus-5) falls back to 200k. So size this for the
+  # 200k case: measured listing is ~39,500 chars, needing >= 0.066.
+  # 0.10 gives 60,000 chars, ~50% headroom for new skills.
+  #
+  # This is a cap, not a reservation: the real per-turn cost is the
+  # listing itself (~39.5KB, ~13k tokens), unchanged by raising it.
+  # Leave skillListingMaxDescChars at its 1536 default -- the longest
+  # description today is 1135 (dataviz), so nothing is truncated.
+  .skillListingBudgetFraction = 0.10 |
+  del(.skillListingMaxDescChars) |
   .env |= ((. // {}) + {
     "DISABLE_AUTOUPDATER": "1",
     "MCP_TIMEOUT": "120000",

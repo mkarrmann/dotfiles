@@ -54,6 +54,34 @@ are deliberately **not** linked here. They ship in that subtree's own
 them to global advertised them in every unrelated tree and pinned them
 to one checkout.
 
+### Why `skillListingBudgetFraction` is set
+
+Claude Code renders the skill listing under a byte budget:
+
+    budget = skillListingBudgetFraction * context_tokens * 3
+
+When the listing exceeds it, descriptions are **not** truncated — every
+evictable one is dropped, leaving a bare name list with no trigger text,
+which makes skills effectively undiscoverable. Claude Code's own bundled
+skills are exempt from eviction and so consume the budget first.
+
+The 1M window is selected only when the model id literally contains
+`[1m]` (the check is `/\[1m\]/i`). Anything that strips that suffix —
+Omnigent spawns `--model claude-opus-5` — falls back to 200k, where the
+`0.01` default yields just 6,000 chars; the bundled skills alone overrun
+that. `sync.sh` therefore sets `0.10` (60,000 chars at 200k) against a
+measured ~39,500-char listing.
+
+The fraction is a cap, not a reservation: raising it costs nothing by
+itself, but the listing it permits is real per-turn context (~39.5KB,
+~13k tokens). To shrink the listing itself, drop unused plugins via
+`drop-plugins.list` (plugin skills ignore `skillOverrides`), then set
+`skillOverrides: {"<name>": "user-invocable-only"}` for non-plugin
+skills that never need advertising.
+
+`skillListingMaxDescChars` is left at its 1536 default — the longest
+description today is 1,135 chars, so nothing is truncated.
+
 ### Frontmatter is mandatory
 
 Every `SKILL.md` needs YAML frontmatter with both `name:` and
