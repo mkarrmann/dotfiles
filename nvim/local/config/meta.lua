@@ -275,9 +275,13 @@ vim.api.nvim_create_autocmd("User", {
 
 		local telescope_ok2, telescope = pcall(require, "telescope")
 		if telescope_ok2 then
+			-- TODO: lua/plugins/meta-lsp.lua also binds <leader>p (with a non-arc-root
+			-- fallback to the LazyVim files picker); this VeryLazy mapping shadows it.
+			local myles = require("lib.myles")
+			myles.setup()
 			vim.keymap.set("n", "<leader>p", function()
-				telescope.extensions.myles.myles({})
-			end)
+				myles.pick()
+			end, { desc = "Find files (Myles)" })
 			vim.keymap.set("n", "<leader>sg", function()
 				telescope.extensions.biggrep.s({})
 			end)
