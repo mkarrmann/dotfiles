@@ -25,10 +25,17 @@ link_one() {
   fi
 
   if [[ -L "$dst" ]]; then
-    local have
+    local have have_resolved want_resolved
     have="$(readlink "$dst")"
     if [[ "$have" == "$want" || "$have" == "$want/" ]]; then
       return 0
+    fi
+    if [[ -e "$dst" ]]; then
+      have_resolved="$(readlink -f "$dst")"
+      want_resolved="$(readlink -f "$want")"
+      if [[ "$have_resolved" == "$want_resolved" ]]; then
+        return 0
+      fi
     fi
     CONFLICTS+=("$dst -> $have (expected $want)")
     return 0
@@ -57,12 +64,16 @@ sync_link_dir() {
   local src_dir="$1"
   local dst_dir="$2"
   local pattern="$3"
+  local priority_dir="${4:-}"
   local target
 
   mkdir -p "$dst_dir"
 
   shopt -s nullglob
   for src in "$src_dir"/$pattern; do
+    if [[ -n "$priority_dir" && -e "$priority_dir/$(basename "$src")" ]]; then
+      continue
+    fi
     link_one "$src" "$dst_dir/$(basename "$src")"
   done
   shopt -u nullglob
@@ -287,7 +298,7 @@ esac
 if [[ -n "$platform_bin" && -d "$platform_bin" ]]; then
   sync_link_dir "$platform_bin" "$HOME/bin" "*"
 fi
-sync_link_dir "$DOTFILES_DIR/bin" "$HOME/bin" "*"
+sync_link_dir "$DOTFILES_DIR/bin" "$HOME/bin" "*" "$platform_bin"
 
 # wofi
 mkdir -p "$HOME/.config/wofi"
@@ -331,7 +342,7 @@ link_skills_scoped "$HOME/.claude/skills" global
 # $HOME itself is never a candidate (the glob starts one level down), so the
 # ~/fbsource and ~/configerator convenience symlinks cannot promote every
 # directory on the machine into a Meta workspace.
-declare -A seen_ws=()
+seen_ws=""
 shopt -s nullglob
 for ws in "$HOME"/*/; do
   [[ -d "${ws}fbsource" || -d "${ws}configerator" ]] || continue
@@ -340,8 +351,10 @@ for ws in "$HOME"/*/; do
   # would drop 56 untracked symlinks inside a source repo.
   [[ -e "${ws}.hg" || -e "${ws}.sl" || -e "${ws}.git" ]] && continue
   ws_real="$(readlink -f "${ws%/}")"
-  [[ -n "${seen_ws[$ws_real]:-}" ]] && continue
-  seen_ws[$ws_real]=1
+  if printf '%s\n' "$seen_ws" | grep -Fqx -- "$ws_real"; then
+    continue
+  fi
+  seen_ws="${seen_ws}${seen_ws:+$'\n'}${ws_real}"
   link_skills_scoped "$ws_real/.claude/skills" meta
 done
 shopt -u nullglob
