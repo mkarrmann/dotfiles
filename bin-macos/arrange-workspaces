@@ -65,7 +65,7 @@ aerospace() {
 SIDEBAR_TITLE_PATTERN="Orchest \\["
 SIDEBAR_PERCENT=12
 MARKER_DIR="/tmp/aerospace-arrange-markers"
-ARRANGEMENT_LOCK_DIR="/tmp/aerospace-arrangement.lock"
+ARRANGEMENT_LOCK_DIR="${ARRANGEMENT_LOCK_DIR:-/tmp/aerospace-arrangement.lock}"
 ARRANGE_ATTEMPTS="${ARRANGE_ATTEMPTS:-5}"
 ARRANGE_RETRY_SLEEP="${ARRANGE_RETRY_SLEEP:-1}"
 FORCE=false
@@ -661,18 +661,27 @@ arrange_workspace_by_policy() {
 # ── Main ──────────────────────────────────────────────────────────────
 
 # Accept workspace list as args, or default to all non-empty workspaces.
+workspaces=()
 if [[ $# -gt 0 ]]; then
   workspaces=("$@")
 else
-  while IFS= read -r w; do
-    workspaces+=("$w")
-  done < <(
-    aerospace list-workspaces --all --json 2>/dev/null \
-      | jq -r '.[]["workspace"]'
-  )
+  if ! workspace_names=$(aerospace list-workspaces --all --json 2>/dev/null \
+      | jq -r '.[]["workspace"]'); then
+    echo "ERROR: failed to discover AeroSpace workspaces" >&2
+    exit 1
+  fi
+  if [[ -n "$workspace_names" ]]; then
+    while IFS= read -r w; do
+      workspaces+=("$w")
+    done <<< "$workspace_names"
+  fi
 fi
 
 echo "Arranging workspace layouts..."
+if [[ ${#workspaces[@]} -eq 0 ]]; then
+  echo "No workspaces to arrange."
+  exit 0
+fi
 failures=0
 for ws in "${workspaces[@]}"; do
   if ! arrange_workspace_by_policy "$ws"; then
