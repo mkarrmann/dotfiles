@@ -29,7 +29,8 @@ set -uo pipefail
 #     (no Accessibility permission required), matching AeroSpace's
 #     monitor-appkit-nsscreen-screens-id (a 1-based index into NSScreen.screens).
 #
-# Idempotent. Safe to run standalone or from startup-windows.
+# By default, this script only arranges the four existing dashboard windows.
+# Startup passes --ensure-windows to provision any missing windows first.
 
 AEROSPACE_COMMAND_TIMEOUT="${AEROSPACE_COMMAND_TIMEOUT:-8}"
 AEROSPACE_TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
@@ -72,6 +73,19 @@ CAL_TITLE_RE='^Calendar\b'
 CHAT_TITLE_RE='^Chat\b'
 ORCHEST_TITLE_RE='^Orchest$'
 ATTEMPTS="${WS11_ATTEMPTS:-4}"
+ENSURE_WINDOWS=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --ensure-windows) ENSURE_WINDOWS=true; shift ;;
+    -h|--help)
+      echo "Usage: arrange-ws11 [--ensure-windows]"
+      echo "  --ensure-windows  launch missing dashboard windows before arranging"
+      exit 0
+      ;;
+    *) echo "Unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
 
 if [[ -z "$AEROSPACE_BIN" ]]; then echo "ERROR: aerospace CLI not found." >&2; exit 1; fi
 if ! aerospace list-windows --all &>/dev/null; then echo "ERROR: AeroSpace is not running." >&2; exit 1; fi
@@ -203,8 +217,8 @@ flatten_flat() {
 # ── Resolve the four windows ─────────────────────────────────────────
 # Retry title-based resolution first: window titles can be briefly empty
 # right after windows appear (and AeroSpace/AX titles occasionally lag).
-# Only open/launch as a last resort, so a transient blank title never
-# causes a duplicate window to be spawned.
+# Provisioning mode opens or launches missing windows only after these retries,
+# so a transient blank title never causes a duplicate window to be spawned.
 echo "arrange-ws11: resolving windows..."
 CAL=""; OBS=""; CHAT=""; ORCH=""
 for _ in $(seq 1 8); do
@@ -215,10 +229,12 @@ for _ in $(seq 1 8); do
   [[ -n "$CAL" && -n "$CHAT" && -n "$OBS" && -n "$ORCH" ]] && break
   sleep 1
 done
-[[ -z "$CAL"  ]] && CAL=$(ensure_chrome "$CAL_TITLE_RE" "$CAL_URL")
-[[ -z "$CHAT" ]] && CHAT=$(ensure_chrome "$CHAT_TITLE_RE" "$CHAT_URL")
-[[ -z "$OBS"  ]] && OBS=$(ensure_app_window "Obsidian" '.')
-[[ -z "$ORCH" ]] && ORCH=$(ensure_app_window "Orchest" "$ORCHEST_TITLE_RE")
+if [[ "$ENSURE_WINDOWS" == true ]]; then
+  [[ -z "$CAL"  ]] && CAL=$(ensure_chrome "$CAL_TITLE_RE" "$CAL_URL")
+  [[ -z "$CHAT" ]] && CHAT=$(ensure_chrome "$CHAT_TITLE_RE" "$CHAT_URL")
+  [[ -z "$OBS"  ]] && OBS=$(ensure_app_window "Obsidian" '.')
+  [[ -z "$ORCH" ]] && ORCH=$(ensure_app_window "Orchest" "$ORCHEST_TITLE_RE")
+fi
 echo "  cal(TL)=$CAL obs(TR)=$OBS chat(BL)=$CHAT orch(BR)=$ORCH"
 
 missing=0
@@ -227,19 +243,23 @@ for pair in "Calendar $CAL" "Obsidian $OBS" "Chat $CHAT" "Orchest $ORCH"; do
   [[ -z "${2:-}" ]] && { echo "WARNING: [ws11] $1 window not found" >&2; missing=1; }
 done
 
+if [[ "$missing" -ne 0 ]]; then
+  if [[ "$ENSURE_WINDOWS" == true ]]; then
+    echo "arrange-ws11: some windows are still missing; placing those found on workspace $WS" >&2
+    for wid in "$CAL" "$OBS" "$CHAT" "$ORCH"; do
+      [[ -n "$wid" ]] && aerospace move-node-to-workspace --window-id "$wid" "$WS" 2>/dev/null || true
+    done
+  else
+    echo "arrange-ws11: existing-window mode leaves an incomplete dashboard unchanged" >&2
+  fi
+  exit 1
+fi
+
 # ── Place ws 11 on the external secondary monitor ────────────────────
 TARGET_MON=$(select_target_monitor)
 if [[ -n "$TARGET_MON" ]]; then
   echo "arrange-ws11: pinning workspace $WS to monitor $TARGET_MON"
   aerospace move-workspace-to-monitor --workspace "$WS" "$TARGET_MON" 2>/dev/null || true
-fi
-
-if [[ "$missing" -ne 0 ]]; then
-  echo "arrange-ws11: some windows missing; moving what exists to ws $WS and skipping grid" >&2
-  for wid in "$CAL" "$OBS" "$CHAT" "$ORCH"; do
-    [[ -n "$wid" ]] && aerospace move-node-to-workspace --window-id "$wid" "$WS" 2>/dev/null || true
-  done
-  exit 1
 fi
 
 # ── Build the 2×2 (deterministic; verify by geometry when available) ──

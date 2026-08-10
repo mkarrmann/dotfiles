@@ -1055,10 +1055,10 @@ fi
 # If auto-accordion is re-enabled, it should do a full rebuild for any window
 # that appears after this point, so no drain sleep is needed here.
 
-# Build the workspace-11 dashboard (2x2 grid) and pin it to the external
-# secondary monitor. Not a managed workspace, so arrange-workspaces skips it.
-arrange-ws11 || {
-  echo "WARNING: arrange-ws11 did not converge" >&2
+# Provision and arrange the workspace-11 dashboard after the standard workspace
+# and Orchest placement passes have converged.
+arrange-workspaces --ensure-windows 11 || {
+  echo "WARNING: workspace 11 arrangement did not converge" >&2
   ((failures++)) || true
 }
 

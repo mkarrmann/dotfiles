@@ -40,9 +40,11 @@ aerospace() {
   return "$status"
 }
 
-# arrange-workspaces: On each workspace, put Orchest windows as tiles on the
-# left (sidebar) and all other windows in an accordion on the right.
-# If a workspace has no Orchest windows, it stays as a flat accordion.
+# arrange-workspaces owns workspace layout dispatch:
+#   - Standard workspaces: Orchest tiles on the left, accordion on the right.
+#   - Workspace 11: delegated to arrange-ws11.
+#   - Workspace Z: overflow/scaffolding, intentionally left unchanged.
+# Standard workspaces without Orchest windows stay as a flat accordion.
 # Skips workspaces whose window set hasn't changed since last arrangement
 # to preserve manual size adjustments. Use --force to override.
 # Can be run standalone or called from startup-windows.
@@ -63,16 +65,85 @@ aerospace() {
 SIDEBAR_TITLE_PATTERN="Orchest \\["
 SIDEBAR_PERCENT=12
 MARKER_DIR="/tmp/aerospace-arrange-markers"
+ARRANGEMENT_LOCK_DIR="/tmp/aerospace-arrangement.lock"
 ARRANGE_ATTEMPTS="${ARRANGE_ATTEMPTS:-5}"
 ARRANGE_RETRY_SLEEP="${ARRANGE_RETRY_SLEEP:-1}"
 FORCE=false
+ENSURE_WINDOWS=false
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ARRANGE_WS11="$SCRIPT_DIR/arrange-ws11"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --force|-f) FORCE=true; shift ;;
+    --ensure-windows) ENSURE_WINDOWS=true; shift ;;
+    -h|--help)
+      echo "Usage: arrange-workspaces [--force] [--ensure-windows] [workspace ...]"
+      echo "  --force           rebuild standard workspaces even when their marker matches"
+      echo "  --ensure-windows  allow specialized arrangers to provision missing windows"
+      exit 0
+      ;;
+    -*) echo "Unknown option: $1" >&2; exit 2 ;;
     *) break ;;
   esac
 done
+
+if [[ -z "$AEROSPACE_BIN" ]]; then
+  echo "ERROR: aerospace CLI not found." >&2
+  exit 1
+fi
+if [[ ! -x "$ARRANGE_WS11" ]]; then
+  echo "ERROR: workspace 11 arranger not found: $ARRANGE_WS11" >&2
+  exit 1
+fi
+
+acquire_arrangement_lock() {
+  if mkdir "$ARRANGEMENT_LOCK_DIR" 2>/dev/null; then
+    echo "$$" > "$ARRANGEMENT_LOCK_DIR/pid"
+    return 0
+  fi
+
+  local lock_pid
+  lock_pid=$(cat "$ARRANGEMENT_LOCK_DIR/pid" 2>/dev/null || true)
+  if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
+    echo "ERROR: workspace arrangement is already running as PID $lock_pid" >&2
+    return 1
+  fi
+
+  rm -f "$ARRANGEMENT_LOCK_DIR/pid"
+  if ! rmdir "$ARRANGEMENT_LOCK_DIR" 2>/dev/null || ! mkdir "$ARRANGEMENT_LOCK_DIR" 2>/dev/null; then
+    echo "ERROR: could not acquire $ARRANGEMENT_LOCK_DIR" >&2
+    return 1
+  fi
+  echo "$$" > "$ARRANGEMENT_LOCK_DIR/pid"
+}
+
+release_arrangement_lock() {
+  rm -f "$ARRANGEMENT_LOCK_DIR/pid"
+  rmdir "$ARRANGEMENT_LOCK_DIR" 2>/dev/null || true
+}
+
+acquire_arrangement_lock || exit 1
+
+ORIGINAL_FOCUS=$(aerospace list-windows --focused --format '%{window-id}|%{workspace}' 2>/dev/null || true)
+restore_original_focus() {
+  local original_wid original_ws actual_wid
+  IFS='|' read -r original_wid original_ws <<< "$ORIGINAL_FOCUS"
+  if [[ -n "$original_wid" ]]; then
+    aerospace focus --window-id "$original_wid" >/dev/null 2>&1 || true
+    actual_wid=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null || true)
+    [[ "$actual_wid" == "$original_wid" ]] && return 0
+  fi
+  [[ -n "$original_ws" ]] && aerospace workspace "$original_ws" >/dev/null 2>&1 || true
+}
+
+cleanup_arrangement() {
+  restore_original_focus
+  release_arrangement_lock
+}
+trap cleanup_arrangement EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 mkdir -p "$MARKER_DIR"
 
@@ -273,7 +344,7 @@ discover_spatial_order() {
   done
 }
 
-arrange_workspace_once() {
+arrange_standard_workspace_once() {
   local ws="$1"
 
   local windows
@@ -548,12 +619,12 @@ arrange_workspace_once() {
   return 1
 }
 
-arrange_workspace() {
+arrange_standard_workspace() {
   local ws="$1"
   local attempt=1
 
   while [[ "$attempt" -le "$ARRANGE_ATTEMPTS" ]]; do
-    if arrange_workspace_once "$ws"; then
+    if arrange_standard_workspace_once "$ws"; then
       return 0
     fi
 
@@ -568,9 +639,28 @@ arrange_workspace() {
   return 1
 }
 
+arrange_workspace_by_policy() {
+  local ws="$1"
+  case "$ws" in
+    11)
+      if [[ "$ENSURE_WINDOWS" == true ]]; then
+        "$ARRANGE_WS11" --ensure-windows
+      else
+        "$ARRANGE_WS11"
+      fi
+      ;;
+    Z)
+      echo "  [Z] overflow/scaffold workspace has no managed layout; leaving unchanged"
+      ;;
+    *)
+      arrange_standard_workspace "$ws"
+      ;;
+  esac
+}
+
 # ── Main ──────────────────────────────────────────────────────────────
 
-# Accept workspace list as args, or default to all non-empty workspaces
+# Accept workspace list as args, or default to all non-empty workspaces.
 if [[ $# -gt 0 ]]; then
   workspaces=("$@")
 else
@@ -585,7 +675,7 @@ fi
 echo "Arranging workspace layouts..."
 failures=0
 for ws in "${workspaces[@]}"; do
-  if ! arrange_workspace "$ws"; then
+  if ! arrange_workspace_by_policy "$ws"; then
     failures=$(( failures + 1 ))
   fi
 done

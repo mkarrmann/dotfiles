@@ -153,7 +153,8 @@ a Chrome window. Code editing runs through Ghostty-backed `nvs` sessions.
 | Script | Purpose |
 |--------|---------|
 | `startup-windows` | Creates/places all windows on correct AeroSpace workspaces, runs orchest, reconciles late-appearing windows, distributes Chrome session-restored windows, sweeps strays to Z |
-| `arrange-workspaces` | Sets sidebar\|accordion layout per workspace (Orchest 12% left, rest in accordion right). Use `--force` to bypass fingerprint caching. |
+| `arrange-workspaces` | Public layout dispatcher. Standard workspaces use sidebar\|accordion, workspace 11 delegates to its dashboard arranger, and Z is intentionally unchanged. Preserves focus and serializes arrangement runs. |
+| `arrange-ws11` | Workspace-11 dashboard implementation. Arranges existing windows by default; startup uses `--ensure-windows` to provision missing dashboard windows. |
 | `auto-accordion` | Optional AeroSpace `on-window-detected` callback. Currently disabled in `aerospace.toml`; if re-enabled, it is suppressed while the `/tmp/startup-windows.lock` directory exists. |
 
 ### AeroSpace gotchas
