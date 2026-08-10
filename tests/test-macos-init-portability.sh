@@ -10,6 +10,13 @@ fail() {
   exit 1
 }
 
+test_sync_bash_3_compatibility() {
+  if grep -Eq '^[[:space:]]*declare[[:space:]]+-A([[:space:]]|$)' "$ROOT/sync.sh"; then
+    fail "sync.sh still depends on Bash 4 associative arrays"
+  fi
+  /bin/bash -n "$ROOT/sync.sh" || fail "sync.sh is not valid macOS Bash syntax"
+}
+
 test_plugin_bootstrap() {
   local home="$TMP/plugins-home"
   local cfg="$TMP/agent-config"
@@ -105,6 +112,8 @@ EOF
     | read -r _ || fail "client seed skip was not reported"
 }
 
+# TODO: Stub uname to Linux; on macOS this fixture exits through the client-host
+# guard before it can exercise active-hub idempotency.
 test_active_hub_dvsc_idempotency() {
   local home="$TMP/hub-home"
   local dotfiles="$TMP/hub-dotfiles"
@@ -266,6 +275,7 @@ EOF
     || fail "peer reconciler did not apply the discovered route"
 }
 
+test_sync_bash_3_compatibility
 test_plugin_bootstrap
 test_client_dvsc_reconciliation
 test_active_hub_dvsc_idempotency
