@@ -240,6 +240,34 @@ local OMNIGENT_CONTEXT_WINDOWS = {
   -- ["avocado-code-internal-2.0"] = ?,
 }
 
+-- Agent-native slash commands offered on the `\` trigger in an omnigent chat.
+--
+-- CURATED, not discovered: an ACP agent advertises its commands over the wire,
+-- but a CLI harness advertises nothing and omnigent has no endpoint for them. So
+-- this list can drift when a vendor adds or renames a command -- a stale entry
+-- just reaches the CLI and is ignored, and anything missing can still be typed by
+-- hand, so drift is cheap.
+--
+-- These are the agent's OWN commands, reached because the fork rewrites a leading
+-- `\cmd` to `/cmd` on the omnigent submit path. That is the only route past
+-- CodeCompanion's `/` namespace, which otherwise shadows `/help` and `/mcp` with
+-- its own. Only the claude family is populated: codex's app-server slash set has
+-- not been verified through omnigent, and guessing would surface commands that
+-- silently do nothing.
+local OMNIGENT_AGENT_COMMANDS = {
+  claude = {
+    { "compact", "Summarise the conversation and free context" },
+    { "context", "Show context-window usage" },
+    { "cost", "Show token cost for this session" },
+    { "clear", "Clear the conversation history" },
+    { "model", "Show or set the model" },
+    { "status", "Show session and account status" },
+    { "memory", "Edit CLAUDE.md memory files" },
+    { "mcp", "Show MCP server status (the agent's, not CodeCompanion's)" },
+    { "help", "List the agent's own commands" },
+  },
+}
+
 -- dvsc (the `acp:dvsc-core` agent) runs Meta's dm-core, which speaks its OWN
 -- model ids (dot-notation, e.g. `claude-opus-4.8`) — NOT omnigent's vendor ids.
 -- Curated to this user's dm-core entitlement so the omnigent picker offers
@@ -1995,6 +2023,37 @@ Placement guidance (overrides the base prompt where they conflict):
         function QueueAcp:complete(params, callback)
           local chat_bufnr = require("lib.codecompanion-queue").chat_bufnr()
           local chat = chat_bufnr and require("codecompanion").buf_get_chat(chat_bufnr)
+
+          -- Omnigent has no command-advertisement channel (ACP agents publish
+          -- theirs over the wire; a CLI harness publishes nothing), so this is a
+          -- curated list rather than discovery. The fork rewrites a leading `\cmd`
+          -- to `/cmd` on the omnigent submit path, so these reach the agent's own
+          -- CLI -- which is the only way past CodeCompanion's `/` namespace, where
+          -- `/help` and `/mcp` would otherwise run CodeCompanion's versions.
+          if chat and chat.adapter and chat.adapter.type == "omnigent" then
+            -- NOT _omnigent_session_family: that resolves the harness by fetching
+            -- the agent catalog, and this runs on every `\` keystroke. Both fields
+            -- below come from the session snapshot, so this stays pure. Harness
+            -- first, so a dvsc session (dm-core ids contain "claude") isn't offered
+            -- Claude Code's commands.
+            local sess = chat.omnigent_session or {}
+            local family = _omnigent_family_for_harness(sess.harness)
+              or _omnigent_family_for_model(sess.model_override or sess.model)
+            local kind = cmp.lsp.CompletionItemKind.Function
+            local items = vim.iter(OMNIGENT_AGENT_COMMANDS[family] or {})
+              :map(function(cmd)
+                return {
+                  label = acp_trigger .. cmd[1],
+                  detail = cmd[2],
+                  kind = kind,
+                  command = { name = cmd[1] },
+                  context = { bufnr = params.context.bufnr, cursor = params.context.cursor },
+                }
+              end)
+              :totable()
+            return callback({ items = items, isIncomplete = false })
+          end
+
           local conn = chat and chat.acp_connection
           if not conn or not conn.session_id then
             return callback({ items = {}, isIncomplete = false })
