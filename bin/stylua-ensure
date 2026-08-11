@@ -16,10 +16,19 @@
 # crates.io's sparse index (index.crates.io) and tarball CDN (static.crates.io)
 # both are, and a release build takes well under a minute.
 #
+# BUILD FEATURES MATTER. StyLua's non-Lua5.1 dialects (lua52/53/54, luau,
+# luajit) are opt-in cargo features that `cargo install stylua` does NOT enable,
+# while the official release binary -- what stylua-action installs in CI -- does.
+# A default build rejects `syntax = "Lua52"` in the CodeCompanion fork's
+# stylua.toml outright and cannot parse its `goto continue` / `::continue::`
+# blocks, so every format run dies on the config. The version alone therefore
+# does not tell you the install is usable; see the probe below.
+#
 # Override the version for a one-off with STYLUA_VERSION=x.y.z stylua-ensure.
 set -euo pipefail
 
 VERSION="${STYLUA_VERSION:-2.4.1}"
+FEATURES="${STYLUA_FEATURES:-lua54,luau,luajit}" # lua54 pulls in lua53 -> lua52
 
 # init.sh sources ~/.cargo/env before calling this, but support a direct run
 # from a shell that has not.
@@ -34,9 +43,27 @@ if [[ -x "$BIN" ]]; then
   installed="$("$BIN" --version 2>/dev/null | awk '{print $2}')"
 fi
 
-if [[ "$installed" == "$VERSION" ]]; then
-  echo "[stylua] $VERSION already installed"
+# Functional check for the dialect features: feed a trivial program through a
+# config that names a non-default dialect. A build missing the feature exits
+# non-zero on the config parse. Cheap, and it catches the exact breakage a
+# version comparison misses.
+dialects_ok() {
+  local bin="$1" cfg rc
+  [[ -x "$bin" ]] || return 1
+  cfg="$(mktemp)"
+  printf 'syntax = "Lua52"\n' >"$cfg"
+  printf 'return 1\n' | "$bin" --config-path "$cfg" - >/dev/null 2>&1
+  rc=$?
+  rm -f "$cfg"
+  return $rc
+}
+
+if [[ "$installed" == "$VERSION" ]] && dialects_ok "$BIN"; then
+  echo "[stylua] $VERSION already installed (with $FEATURES)"
   exit 0
+fi
+if [[ "$installed" == "$VERSION" ]]; then
+  echo "[stylua] $VERSION installed but missing dialect features; rebuilding"
 fi
 
 if ! command -v cargo >/dev/null 2>&1; then
@@ -45,11 +72,16 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 echo "[stylua] installing $VERSION (was ${installed:-none})"
-cargo install stylua --locked --version "$VERSION"
+cargo install stylua --locked --force --version "$VERSION" --features "$FEATURES"
 
 actual="$("$HOME/.cargo/bin/stylua" --version 2>/dev/null | awk '{print $2}')"
 if [[ "$actual" != "$VERSION" ]]; then
   echo "ERROR: expected stylua $VERSION after install, found ${actual:-nothing}" >&2
   exit 1
 fi
-echo "[stylua] stylua $actual installed"
+if ! dialects_ok "$HOME/.cargo/bin/stylua"; then
+  echo "ERROR: stylua $actual built without the $FEATURES dialects; it will reject" >&2
+  echo "       syntax = \"Lua52\" and fail on goto/label blocks." >&2
+  exit 1
+fi
+echo "[stylua] stylua $actual installed (with $FEATURES)"
