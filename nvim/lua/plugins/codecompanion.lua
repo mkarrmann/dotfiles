@@ -2216,6 +2216,39 @@ Placement guidance (overrides the base prompt where they conflict):
         end,
       })
 
+      -- Re-lock after an out-of-band (background) write.
+      --
+      -- The read-only invariant is enforced at the points CodeCompanion leaves the
+      -- buffer editable at rest -- but those are all foreground paths. A background
+      -- turn ends in the observer's `_restore_input` -> `Chat:reset_input_anchor`,
+      -- which deliberately calls `unlock_buf()` ("leave the buffer input-ready") and
+      -- is followed by no `Chat:reset`. The buffer is therefore left modifiable:
+      -- InsertEnter is still blocked by the FileType autocmd above, but normal-mode
+      -- edits would land. Unlocking is right for stock CodeCompanion and wrong here,
+      -- because our next prompt comes from the queue, which unlocks for its own write.
+      --
+      -- Scheduled, not immediate: these events fire from inside the observer's
+      -- update handling, BEFORE the anchor restore that does the unlocking.
+      --
+      -- Reachable via <leader>ak on a claude-sdk session, whose compaction runs as a
+      -- background turn (the agent's own `/compact`, not a chat submit).
+      vim.api.nvim_create_autocmd("User", {
+        pattern = { "CodeCompanionChatOmnigentBackgroundTurn", "CodeCompanionOmnigentCompaction" },
+        callback = function(args)
+          local bufnr = args.data and args.data.bufnr
+          if not bufnr then return end
+          vim.schedule(function()
+            local chat = vim.api.nvim_buf_is_valid(bufnr)
+              and require("codecompanion").buf_get_chat(bufnr)
+            -- Never re-lock under a live foreground request; its streaming writes
+            -- do their own unlock/lock bracketing.
+            if chat and not chat.current_request then
+              lock_chat_buf(bufnr)
+            end
+          end)
+        end,
+      })
+
       -- Omnigent M4: a background/wakeup turn arrived on an idle chat (the agent
       -- was driven from elsewhere). Toast it so the user notices activity in a
       -- chat they aren't looking at. Fired by the omnigent observer.
