@@ -1050,9 +1050,11 @@ local function agent_command_compact(chat)
 end
 
 -- Compact the current tab's chat for any agent that supports it.
---   * omnigent → a `compact` control event on the durable session, which the
---     server dispatches by harness (terminal agents compact themselves; SDK
---     agents get server-side summarisation, where their spec allows it).
+--   * omnigent → an ordered strategy chain (interactions/chat/omnigent/compaction):
+--     a `compact` control event first, falling back to posting the agent's own
+--     `/compact` when the server refuses it -- which it does for every stock SDK
+--     agent, since those declare no summarisation model. `\compact` typed in the
+--     input reaches the agent directly and is equivalent for a CLI harness.
 --   * dvsc (dvsc_core) → `dm-core/compact` ext RPC.
 --   * any other agent advertising a `compact` slash command → `/compact`.
 -- The full transcript is always retained; the model's compacted context is
