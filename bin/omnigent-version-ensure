@@ -1,26 +1,51 @@
 #!/usr/bin/env bash
-# Install the exact Omnigent release used by both hubs and the Mac client.
+# Keep Omnigent at or above the floor shared by both hubs and the Mac client.
+#
+# A FLOOR, not an exact pin. A host below OMNIGENT_MIN_VERSION is rolled forward
+# to the latest release; a host already at or above it is left where it is, so a
+# deliberate `uv tool install --force omnigent --with litellm` sticks instead of
+# being silently reverted on the next init.sh. Bump OMNIGENT_MIN_VERSION in
+# topology.env to move the whole fleet's floor.
 set -euo pipefail
 
 DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
 TOPOLOGY="${OMNIGENT_TOPOLOGY_FILE:-$DOTFILES/omnigent_config/topology.env}"
-version_override="${OMNIGENT_VERSION:-}"
+min_override="${OMNIGENT_MIN_VERSION:-}"
 if [[ -f "$TOPOLOGY" ]]; then
   # shellcheck disable=SC1090
   source "$TOPOLOGY"
 fi
-version="${version_override:-${OMNIGENT_VERSION:-}}"
-if [[ -z "$version" ]]; then
-  echo "ERROR: OMNIGENT_VERSION is not configured" >&2
+min_version="${min_override:-${OMNIGENT_MIN_VERSION:-}}"
+if [[ -z "$min_version" ]]; then
+  echo "ERROR: OMNIGENT_MIN_VERSION is not configured" >&2
   exit 1
 fi
+
+# True when $1 is a version >= $2. `sort -V` so 0.10.0 orders above 0.9.0, which
+# a string compare gets backwards. An empty $1 (nothing installed) is never
+# satisfied.
+#
+# Prereleases need a nudge: `sort -V` ranks 0.9.0.dev0 ABOVE 0.9.0, but PEP 440
+# puts it below, so a dev build would wrongly clear a floor it predates. `~` is
+# the Debian marker `sort -V` already sorts before everything, so rewriting
+# .dev0 / rc1 / a2 / b3 to ~dev0 etc. gets the real ordering.
+_version_key() {
+  sed -E 's/[._-]?(dev|alpha|beta|rc|a|b)([0-9]*)$/~\1\2/I' <<<"$1"
+}
+version_at_least() {
+  [[ -n "$1" ]] || return 1
+  local have floor
+  have="$(_version_key "$1")"
+  floor="$(_version_key "$2")"
+  [[ "$(printf '%s\n%s\n' "$floor" "$have" | sort -V | head -n1)" == "$floor" ]]
+}
 
 installed=""
 if [[ -x "$HOME/.local/bin/omnigent" ]]; then
   installed="$("$HOME/.local/bin/omnigent" --version 2>/dev/null | awk 'NR == 1 {print $2}')"
 fi
-# `uv tool install` is all-or-nothing, so a host already on the pinned version
-# but missing a `--with` extra would never be repaired by a version comparison
+# `uv tool install` is all-or-nothing, so a host already above the floor but
+# missing a `--with` extra would never be repaired by a version comparison
 # alone. Probe the extra directly. LITELLM_LOCAL_MODEL_COST_MAP keeps the probe
 # from burning a DNS timeout on litellm's github cost-map refresh.
 tool_python="$HOME/.local/share/uv/tools/omnigent/bin/python"
@@ -30,37 +55,52 @@ if [[ -x "$tool_python" ]] &&
   extras_ok=true
 fi
 
-if [[ "$installed" == "$version" && "$extras_ok" == true ]]; then
-  echo "[omnigent-version] omnigent $version already installed"
+if version_at_least "$installed" "$min_version" && [[ "$extras_ok" == true ]]; then
+  echo "[omnigent-version] omnigent $installed satisfies the >= $min_version floor"
   exit 0
 fi
-if [[ "$installed" == "$version" ]]; then
-  echo "[omnigent-version] omnigent $version installed but missing extras; reinstalling"
-fi
 if ! command -v uv >/dev/null 2>&1; then
-  echo "ERROR: uv is required to install omnigent $version" >&2
+  echo "ERROR: uv is required to install omnigent >= $min_version" >&2
   exit 1
+fi
+
+# Default to the newest release that clears the floor. But when the ONLY thing
+# missing is an extra, reinstall the exact version already here -- repairing a
+# dependency must not double as a silent version bump on a host someone
+# deliberately moved ahead.
+target="omnigent>=$min_version"
+action="installing omnigent >= $min_version"
+if version_at_least "$installed" "$min_version"; then
+  target="omnigent==$installed"
+  action="reinstalling omnigent $installed (missing extras)"
+elif [[ -n "$installed" ]]; then
+  action="upgrading omnigent $installed -> >= $min_version"
 fi
 
 # --with litellm: omnigent resolves context windows via, in order, its own tiny
 # registry -> litellm -> the MLflow catalog -> a 128k default. litellm is an
-# OPTIONAL dep it does not ship, and the MLflow catalog is fetched from github,
-# which a devserver cannot reach -- so without this EVERY model collapses to
-# 128k, mis-sizing the REPL context ring and the compaction threshold. litellm
-# carries a bundled offline cost map that knows the real windows (opus-5 and
-# sonnet-5 1M, gpt-5.x 1.05M, haiku 200k), so installing it fixes every model at
-# once instead of us hand-maintaining numbers. Blast radius is one call site
-# (omnigent/llms/context_window.py); nothing else in omnigent imports it.
-# Pair with LITELLM_LOCAL_MODEL_COST_MAP=True (see .shell_env) or litellm burns
-# a DNS timeout per process trying to refresh the map from github.
-command=(uv tool install --force "omnigent==$version" --with litellm)
+# OPTIONAL dep it does not ship, and the MLflow catalog fetch fails here -- so
+# without this EVERY model collapses to 128k, mis-sizing the REPL context ring
+# and the compaction threshold. litellm carries a bundled offline cost map that
+# knows the real windows (opus-5 and sonnet-5 1M, gpt-5.x 1.05M, haiku 200k), so
+# installing it fixes every model at once instead of us hand-maintaining
+# numbers. Blast radius is one call site (omnigent/llms/context_window.py);
+# nothing else in omnigent imports it. Pair with LITELLM_LOCAL_MODEL_COST_MAP=True
+# (see .shell_env) or litellm burns a DNS timeout per process refreshing the map.
+command=(uv tool install --force "$target" --with litellm)
 if command -v with-proxy >/dev/null 2>&1; then
   command=(with-proxy "${command[@]}")
 fi
-echo "[omnigent-version] installing omnigent $version"
+echo "[omnigent-version] $action"
 "${command[@]}"
+
 actual="$("$HOME/.local/bin/omnigent" --version 2>/dev/null | awk 'NR == 1 {print $2}')"
-if [[ "$actual" != "$version" ]]; then
-  echo "ERROR: expected omnigent $version after install, found ${actual:-nothing}" >&2
+if ! version_at_least "$actual" "$min_version"; then
+  echo "ERROR: expected omnigent >= $min_version after install, found ${actual:-nothing}" >&2
   exit 1
 fi
+if ! LITELLM_LOCAL_MODEL_COST_MAP=True "$tool_python" -c "import litellm" >/dev/null 2>&1; then
+  echo "ERROR: omnigent $actual installed but litellm is still missing" >&2
+  exit 1
+fi
+echo "[omnigent-version] omnigent $actual installed"
