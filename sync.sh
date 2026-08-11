@@ -691,6 +691,9 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   mkdir -p "$HOME/.config/environment.d"
   {
     printf 'TIKTOKEN_CACHE_DIR=%s\n' "$DOTFILES_DIR/omnigent_config/tiktoken-cache"
+    # Pin litellm to its bundled offline cost map; the github refresh it tries on
+    # import cannot resolve here (see bin/omnigent-version-ensure).
+    printf 'LITELLM_LOCAL_MODEL_COST_MAP=True\n'
     if [[ -x "$HOME/bin/omnigent-server-url" ]]; then
       printf 'OMNIGENT_URL=%s\n' "$("$HOME/bin/omnigent-server-url" 2>/dev/null || echo http://127.0.0.1:6767)"
     fi

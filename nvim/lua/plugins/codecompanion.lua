@@ -148,8 +148,49 @@ local OMNIGENT_EFFORT_ORDER = { "none", "minimal", "low", "medium", "high", "xhi
 -- gpt-5.5. gpt-5.6-sol is in daily use through the standalone codex CLI
 -- (codex_config/config.template.toml), so the slug is routed, but its
 -- omnigent app-server path has not been separately exercised.
+--
+-- Claude's large-context ids carry a trailing `[1m]` marker. Name every 1M-family
+-- model in that spelling, always: it is the ONE lever that makes the window
+-- correct on every surface at once, because omnigent's own resolver has a
+-- GENERIC rule for it (any claude id ending in `[1m]` -> 1,000,000, no per-model
+-- table) while it can size nothing else here — litellm is not installed and the
+-- MLflow catalog is fetched from github, which a devserver cannot reach, so
+-- every other id collapses to a 128k default. The gateway serves the same model
+-- either way, so the suffix costs nothing and buys a correct ring in the
+-- CodeCompanion meter, the terminal REPL (which reads the server's number, not
+-- OMNIGENT_CONTEXT_WINDOWS), and the runner's compaction budget.
+--
+-- Keyed on FAMILY, not on model id, so a future opus-6 / sonnet-6 is covered by
+-- adding it to CLAUDE_BASE_MODELS and nothing else. haiku is excluded: it is a
+-- small-window model with no 1M variant (the gateway 400s on a `[1m]` id that
+-- does not exist — verified with a nonsense suffix).
+local CLAUDE_1M_SUFFIX = "[1m]"
+local CLAUDE_1M_FAMILIES = { "opus", "sonnet" }
+
+--- Return `id` in its 1M spelling when it names a 1M Claude family.
+--- Idempotent, and a no-op for non-Claude and small-window ids.
+local function claude_1m(id)
+  if id:sub(-#CLAUDE_1M_SUFFIX) == CLAUDE_1M_SUFFIX then
+    return id
+  end
+  for _, family in ipairs(CLAUDE_1M_FAMILIES) do
+    if id:match("^claude%-" .. family .. "[%-%.]") then
+      return id .. CLAUDE_1M_SUFFIX
+    end
+  end
+  return id
+end
+
+-- Bare vendor ids; the picker offers whatever claude_1m() makes of them.
+local CLAUDE_BASE_MODELS = {
+  "claude-opus-5",
+  "claude-opus-4-8",
+  "claude-sonnet-5",
+  "claude-haiku-4-5",
+}
+
 local OMNIGENT_MODELS = {
-  claude = { "claude-opus-5", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5" },
+  claude = vim.tbl_map(claude_1m, CLAUDE_BASE_MODELS),
   codex  = { "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna" },
 }
 
@@ -159,7 +200,7 @@ local OMNIGENT_MODELS = {
 -- necessity: claude-sdk's own default would work, but it resolves provider-side
 -- (gateway/key/subscription) and is not visible from here, so pinning makes the
 -- launch model explicit and stable instead of silently provider-dependent.
-local OMNIGENT_MODEL_DEFAULT = { claude = "claude-opus-5", codex = "gpt-5.6-sol" }
+local OMNIGENT_MODEL_DEFAULT = { claude = claude_1m("claude-opus-5"), codex = "gpt-5.6-sol" }
 
 -- Per-model input context windows (vendor model id -> tokens), keyed exactly as
 -- OMNIGENT_MODELS above. Wired into the omnigent adapter `opts.context_windows`
@@ -171,26 +212,32 @@ local OMNIGENT_MODEL_DEFAULT = { claude = "claude-opus-5", codex = "gpt-5.6-sol"
 -- 229.9k/128.0k => 179%).
 --
 -- These are the vendors' true INPUT windows, which is deliberately NOT what the
--- server would report with egress. omnigent's catalog path returns
--- `max_input + max_output` (`_total` in omnigent/llms/context_window.py) -- a
--- meter denominator inflated by the whole output budget, e.g. 1,128,000 for
--- claude-opus-5 whose window is exactly 1M. litellm resolves none of these ids,
--- so that summing path is the one that runs for them. Prefer a correct meter
--- over parity with a wrong number; revisit if the upstream `_total` is fixed.
--- Update when adding a model to OMNIGENT_MODELS; an unlisted model simply falls
--- back to the server value.
+-- server reports. Verified against the installed omnigent (0.6.0): litellm
+-- resolves none of these ids, and the MLflow catalog entry for claude-opus-5
+-- exists but has max_input_tokens / max_output_tokens / max_tokens all null, so
+-- get_model_context_window falls through to _DEFAULT_CONTEXT_WINDOW = 128_000.
+-- It is NOT the `max_input + max_output` summing path -- that needs non-null
+-- fields. The only ids omnigent sizes correctly unaided are the `[1m]` forms,
+-- via the Anthropic-beta rule in _registry_context_window.
+-- Only ids the SERVER cannot size correctly are listed here; everything else is
+-- deliberately absent so the server's number (now litellm-backed) flows through
+-- and stays current without edits on our side. Vendor ids -- claude-opus-5,
+-- claude-sonnet-5, claude-haiku-4-5, gpt-5.5, gpt-5.6-* -- are all resolved
+-- correctly by litellm's bundled map, so listing them here would only be a
+-- second copy to drift. (The gpt rows previously here claimed 1178000; litellm
+-- says 1050000.)
+--
+-- What survives is dm-core's private vocabulary, which no public registry knows.
+-- litellm does not merely miss these -- it fuzzy-matches `claude-opus-4.8` to
+-- 200000, a confidently wrong answer -- so the override is load-bearing.
 local OMNIGENT_CONTEXT_WINDOWS = {
-  ["claude-opus-5"]     = 1000000,
-  ["claude-opus-4-8"]   = 1000000,
-  ["claude-sonnet-5"]   = 1000000,
-  ["claude-haiku-4-5"]  = 200000,
-  -- TODO: unverified. Same suspected `max_input + max_output` inflation as the
-  -- Claude rows above, but the true windows for these ids are not confirmed --
-  -- left at the catalog values rather than guessed down.
-  ["gpt-5.5"]           = 1178000,
-  ["gpt-5.6-sol"]       = 1178000,
-  ["gpt-5.6-terra"]     = 1178000,
-  ["gpt-5.6-luna"]      = 1178000,
+  ["claude-opus-4.8"] = 1000000, -- dm-core dot spelling; litellm mis-resolves to 200k
+  ["claude-haiku-4.5"] = 200000,
+  ["gpt-5-5"] = 1050000, -- dm-core slug; the vendor id gpt-5.5 resolves fine
+  ["gpt-5-6"] = 1050000,
+  -- TODO: unverified -- no public registry knows this id and dm-core does not
+  -- publish a window. Left at the conservative default rather than guessed.
+  -- ["avocado-code-internal-2.0"] = ?,
 }
 
 -- dvsc (the `acp:dvsc-core` agent) runs Meta's dm-core, which speaks its OWN
@@ -211,6 +258,10 @@ OMNIGENT_MODELS.dvsc = {
   "gpt-5-5",
   "avocado-code-internal-2.0",
 }
+
+-- No derived rows: with litellm installed, the server sizes every vendor id
+-- correctly on its own, and a client-side copy could only drift or override a
+-- correct value with a stale guess.
 
 -- dvsc via the generic ACP harness has no reasoning-effort channel (the `acp`
 -- harness is EffortFamily.NONE and omnigent forwards no effort to it), so the
@@ -999,6 +1050,9 @@ local function agent_command_compact(chat)
 end
 
 -- Compact the current tab's chat for any agent that supports it.
+--   * omnigent → a `compact` control event on the durable session, which the
+--     server dispatches by harness (terminal agents compact themselves; SDK
+--     agents get server-side summarisation, where their spec allows it).
 --   * dvsc (dvsc_core) → `dm-core/compact` ext RPC.
 --   * any other agent advertising a `compact` slash command → `/compact`.
 -- The full transcript is always retained; the model's compacted context is
@@ -1012,6 +1066,18 @@ local function tab_chat_compact()
     and require("codecompanion").buf_get_chat(bufnr)
   if not chat then
     return vim.notify("No CodeCompanion chat in this tab.", vim.log.levels.WARN)
+  end
+  -- Omnigent owns compaction end-to-end in the plugin: the session is durable and
+  -- server-side, so unlike the ACP paths below there is nothing for the editor to
+  -- orchestrate -- guards, the progress indicator, the boundary marker and the
+  -- context-meter refresh all live in interactions/chat/omnigent/compaction.lua.
+  -- The same entry point backs the in-chat `/omnigent_compact`.
+  if chat.adapter and chat.adapter.type == "omnigent" then
+    local ok, err = chat:compact_omnigent()
+    if not ok then
+      vim.notify("Cannot compact: " .. ((err and err.message) or "unknown error"), vim.log.levels.WARN)
+    end
+    return
   end
   if not chat.adapter or chat.adapter.type ~= "acp" or not chat.acp_connection then
     return vim.notify("Current chat has no live ACP connection.", vim.log.levels.WARN)
@@ -2082,7 +2148,7 @@ Placement guidance (overrides the base prompt where they conflict):
 
       vim.api.nvim_create_user_command("CodeCompanionCompact", function()
         tab_chat_compact()
-      end, { desc = "Compact the current CodeCompanion chat (any compaction-capable ACP agent)" })
+      end, { desc = "Compact the current CodeCompanion chat (Omnigent, or any compaction-capable ACP agent)" })
 
       vim.api.nvim_create_autocmd("VimLeavePre", {
         callback = function()
@@ -2179,7 +2245,7 @@ Placement guidance (overrides the base prompt where they conflict):
       { "<leader>aA", function() tab_chat_set_adapter("omnigent",         { clear = true, force_pick = true }) end, desc = "CodeCompanion Chat (Omnigent, pick agent+model+effort)" },
       { "<leader>amc", function() omnigent_continue() end, desc = "Omnigent: resume durable session (cwd-scoped)" },
       { "<leader>amf", function() _omnigent_fork_current() end, desc = "Omnigent: fork this session into a new worktree + tab" },
-      { "<leader>ak", tab_chat_compact, desc = "CodeCompanion: compact current chat (dvsc RPC or agent /compact)" },
+      { "<leader>ak", tab_chat_compact, desc = "CodeCompanion: compact current chat (Omnigent session, dvsc RPC, or agent /compact)" },
       { "<leader>aZ", function() tab_chat_full_refresh() end, desc = "CodeCompanion: full refresh (close + reopen, pick agent + model + config)" },
       { "<leader>ao", tab_chat_pick_option, desc = "CodeCompanion: change live session option (ACP config, or Omnigent model/effort)" },
       { "<leader>aQ", function()

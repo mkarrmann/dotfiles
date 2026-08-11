@@ -48,6 +48,12 @@ if [[ -d "$HOME/dotfiles/omnigent_config/tiktoken-cache" ]]; then
   export TIKTOKEN_CACHE_DIR="$HOME/dotfiles/omnigent_config/tiktoken-cache"
 fi
 
+# litellm is installed alongside omnigent so it can size context windows offline
+# (see bin/omnigent-version-ensure). It refreshes its cost map from github on
+# import, which a devserver cannot resolve -- costing a DNS timeout and a warning
+# per process before it falls back. This pins it to the bundled map up front.
+export LITELLM_LOCAL_MODEL_COST_MAP=True
+
 # Local env (not source-controlled)
 if [[ -f ~/.shell_env.local ]]; then
   source ~/.shell_env.local

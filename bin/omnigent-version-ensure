@@ -19,16 +19,41 @@ installed=""
 if [[ -x "$HOME/.local/bin/omnigent" ]]; then
   installed="$("$HOME/.local/bin/omnigent" --version 2>/dev/null | awk 'NR == 1 {print $2}')"
 fi
-if [[ "$installed" == "$version" ]]; then
+# `uv tool install` is all-or-nothing, so a host already on the pinned version
+# but missing a `--with` extra would never be repaired by a version comparison
+# alone. Probe the extra directly. LITELLM_LOCAL_MODEL_COST_MAP keeps the probe
+# from burning a DNS timeout on litellm's github cost-map refresh.
+tool_python="$HOME/.local/share/uv/tools/omnigent/bin/python"
+extras_ok=false
+if [[ -x "$tool_python" ]] &&
+  LITELLM_LOCAL_MODEL_COST_MAP=True "$tool_python" -c "import litellm" >/dev/null 2>&1; then
+  extras_ok=true
+fi
+
+if [[ "$installed" == "$version" && "$extras_ok" == true ]]; then
   echo "[omnigent-version] omnigent $version already installed"
   exit 0
+fi
+if [[ "$installed" == "$version" ]]; then
+  echo "[omnigent-version] omnigent $version installed but missing extras; reinstalling"
 fi
 if ! command -v uv >/dev/null 2>&1; then
   echo "ERROR: uv is required to install omnigent $version" >&2
   exit 1
 fi
 
-command=(uv tool install --force "omnigent==$version")
+# --with litellm: omnigent resolves context windows via, in order, its own tiny
+# registry -> litellm -> the MLflow catalog -> a 128k default. litellm is an
+# OPTIONAL dep it does not ship, and the MLflow catalog is fetched from github,
+# which a devserver cannot reach -- so without this EVERY model collapses to
+# 128k, mis-sizing the REPL context ring and the compaction threshold. litellm
+# carries a bundled offline cost map that knows the real windows (opus-5 and
+# sonnet-5 1M, gpt-5.x 1.05M, haiku 200k), so installing it fixes every model at
+# once instead of us hand-maintaining numbers. Blast radius is one call site
+# (omnigent/llms/context_window.py); nothing else in omnigent imports it.
+# Pair with LITELLM_LOCAL_MODEL_COST_MAP=True (see .shell_env) or litellm burns
+# a DNS timeout per process trying to refresh the map from github.
+command=(uv tool install --force "omnigent==$version" --with litellm)
 if command -v with-proxy >/dev/null 2>&1; then
   command=(with-proxy "${command[@]}")
 fi

@@ -53,8 +53,13 @@
            See ~/dotfiles/omnigent_config/tiktoken-cache/README.md. -->
       <key>TIKTOKEN_CACHE_DIR</key>
       <string>/Users/mkarrmann/dotfiles/omnigent_config/tiktoken-cache</string>
+      <!-- litellm ships alongside omnigent so context windows resolve offline
+           (see bin/omnigent-version-ensure); pin it to the bundled cost map so
+           it does not try to refresh from github on every import. -->
+      <key>LITELLM_LOCAL_MODEL_COST_MAP</key>
+      <string>True</string>
       <key>OMNIGENT_RUNNER_ENV_PASSTHROUGH</key>
-      <string>TIKTOKEN_CACHE_DIR</string>
+      <string>TIKTOKEN_CACHE_DIR,LITELLM_LOCAL_MODEL_COST_MAP</string>
     </dict>
 
     <key>StandardOutPath</key>

@@ -54,9 +54,12 @@ Environment=OMNIGENT_LOG_LEVEL=DEBUG
 # listed in the passthrough below or the runner never sees it.
 # See omnigent_config/tiktoken-cache/README.md.
 Environment=TIKTOKEN_CACHE_DIR=%h/dotfiles/omnigent_config/tiktoken-cache
+# Same reason as TIKTOKEN_CACHE_DIR above: the runner sizes the compaction
+# budget via litellm, so it needs the offline cost map and the passthrough entry.
+Environment=LITELLM_LOCAL_MODEL_COST_MAP=True
 # The host filters its environment before launching runners. Forward only the
 # non-secret paths/selectors required by Meta's Claude and Codex launchers.
-Environment=OMNIGENT_RUNNER_ENV_PASSTHROUGH=THRIFT_TLS_CL_CERT_PATH,THRIFT_TLS_CL_KEY_PATH,CODEX_MANAGED_CONFIG_PATH,HARNESS_CODEX_PATH,HARNESS_CODEX_DISABLE_NATIVE_TOOLS,HARNESS_TURN_TIMEOUT_S,OMNIGENT_LOG_LEVEL,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS,TIKTOKEN_CACHE_DIR
+Environment=OMNIGENT_RUNNER_ENV_PASSTHROUGH=THRIFT_TLS_CL_CERT_PATH,THRIFT_TLS_CL_KEY_PATH,CODEX_MANAGED_CONFIG_PATH,HARNESS_CODEX_PATH,HARNESS_CODEX_DISABLE_NATIVE_TOOLS,HARNESS_TURN_TIMEOUT_S,OMNIGENT_LOG_LEVEL,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS,TIKTOKEN_CACHE_DIR,LITELLM_LOCAL_MODEL_COST_MAP
 ExecStart=%h/bin/omnigent-host-run
 Restart=always
 RestartSec=5
