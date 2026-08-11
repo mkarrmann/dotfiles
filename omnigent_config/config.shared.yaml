@@ -12,6 +12,21 @@
 # edit this file and run sync.sh (or bin/omnigent-config-ensure directly) on
 # each machine.
 
+providers:
+  # Meta's claude CLI carries its own auth (managed-settings apiKeyHelper ->
+  # clicat CAT, Vertex upstream), so a `subscription` entry is the whole story:
+  # no base_url, no key. Declared EXPLICITLY because omnigent otherwise only
+  # discovers it by ambient detection, which requires CLAUDE_CODE_USE_VERTEX +
+  # ANTHROPIC_VERTEX_PROJECT_ID + CLOUD_ML_REGION (omnigent/onboarding/ambient.py).
+  # Those are exported by the claude wrapper, NOT by a login shell -- so the
+  # omnigent REPL detected nothing and reported "(provider unresolved)" on
+  # /model. Keep the name `vertex-claude` to match the detected entry: same key
+  # means the two collapse instead of racing as two anthropic-family defaults.
+  vertex-claude:
+    kind: subscription
+    cli: claude
+    default: true
+
 runner:
   # Idle window before a host-runner self-terminates when no agent turn is
   # active. Omnigent's default is 3600 (1h); keepalive pings and open
