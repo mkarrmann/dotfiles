@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Install the pinned StyLua (Lua formatter) used by `make format` in the
+# CodeCompanion fork and by any Lua formatting on this machine.
+#
+# PINNED, not a floor. A formatter that drifts between machines reformats files
+# depending on which box you happened to edit from. 2.4.1 is the version
+# JohnnyMorganz/stylua-action pins in ~/repos/codecompanion.nvim's format CI
+# (.github/workflows/format.yml), so a local run agrees with the check that
+# gates the PR.
+#
+# Installed with cargo rather than npm or a release binary, because on a
+# devserver those two do not work:
+#   - /usr/local/bin/npm is a Meta wrapper that refuses direct installs
+#     ("Gem/pip/npm/cpan direct installs are not allowed").
+#   - StyLua's GitHub release assets are not reachable.
+# crates.io's sparse index (index.crates.io) and tarball CDN (static.crates.io)
+# both are, and a release build takes well under a minute.
+#
+# Override the version for a one-off with STYLUA_VERSION=x.y.z stylua-ensure.
+set -euo pipefail
+
+VERSION="${STYLUA_VERSION:-2.4.1}"
+
+# init.sh sources ~/.cargo/env before calling this, but support a direct run
+# from a shell that has not.
+if ! command -v cargo >/dev/null 2>&1 && [[ -f "$HOME/.cargo/env" ]]; then
+  # shellcheck disable=SC1091
+  . "$HOME/.cargo/env"
+fi
+
+BIN="$(command -v stylua 2>/dev/null || echo "$HOME/.cargo/bin/stylua")"
+installed=""
+if [[ -x "$BIN" ]]; then
+  installed="$("$BIN" --version 2>/dev/null | awk '{print $2}')"
+fi
+
+if [[ "$installed" == "$VERSION" ]]; then
+  echo "[stylua] $VERSION already installed"
+  exit 0
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "WARNING: cargo not found; cannot install stylua $VERSION" >&2
+  exit 1
+fi
+
+echo "[stylua] installing $VERSION (was ${installed:-none})"
+cargo install stylua --locked --version "$VERSION"
+
+actual="$("$HOME/.cargo/bin/stylua" --version 2>/dev/null | awk '{print $2}')"
+if [[ "$actual" != "$VERSION" ]]; then
+  echo "ERROR: expected stylua $VERSION after install, found ${actual:-nothing}" >&2
+  exit 1
+fi
+echo "[stylua] stylua $actual installed"

@@ -221,3 +221,10 @@ if ! command -v bob &>/dev/null; then
         echo "WARNING: bob not found and no installer available (need cargo or brew)" >&2
     fi
 fi
+
+# StyLua, pinned to the version the CodeCompanion fork's format CI uses. Unlike
+# bob above this is version-checked rather than presence-checked, because a
+# formatter that drifts between machines rewrites files depending on where you
+# edited. See bin/stylua-ensure.
+"$DOTFILES_DIR/bin/stylua-ensure" \
+    || echo "WARNING: stylua install failed (make format will be unavailable)" >&2
