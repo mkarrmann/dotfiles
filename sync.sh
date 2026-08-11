@@ -679,16 +679,22 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
            "$HOME/.local/state/omnigent-diff-watcher" \
            "$HOME/.local/state/omnigent-hub"
 
-  # Omnigent server URL for systemd --user units (nvs@ nvim -> CodeCompanion,
-  # and omnigent-host). Every client uses loopback: the owner reaches the
+  # Omnigent env for systemd --user units (nvs@ nvim -> CodeCompanion, and
+  # omnigent-host). Every client uses loopback: the owner reaches the
   # server directly and other Linux hosts use omnigent-client-proxy's SSH
   # forward. environment.d is read by the user manager at start.
   # Takes full effect after the next relogin / `systemctl --user daemon-reexec`.
+  #
+  # TIKTOKEN_CACHE_DIR points at the vendored BPE blob — tiktoken's download
+  # host does not resolve here, so Omnigent's count_tokens() fails without it
+  # (see omnigent_config/tiktoken-cache/README.md).
   mkdir -p "$HOME/.config/environment.d"
-  if [[ -x "$HOME/bin/omnigent-server-url" ]]; then
-    printf 'OMNIGENT_URL=%s\n' "$("$HOME/bin/omnigent-server-url" 2>/dev/null || echo http://127.0.0.1:6767)" \
-      > "$HOME/.config/environment.d/omnigent.conf"
-  fi
+  {
+    printf 'TIKTOKEN_CACHE_DIR=%s\n' "$DOTFILES_DIR/omnigent_config/tiktoken-cache"
+    if [[ -x "$HOME/bin/omnigent-server-url" ]]; then
+      printf 'OMNIGENT_URL=%s\n' "$("$HOME/bin/omnigent-server-url" 2>/dev/null || echo http://127.0.0.1:6767)"
+    fi
+  } > "$HOME/.config/environment.d/omnigent.conf"
 
   shopt -s nullglob
   for unit_src in "$DOTFILES_DIR"/systemd/*.service; do

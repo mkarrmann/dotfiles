@@ -44,6 +44,17 @@
       <string>/var/facebook/credentials/mkarrmann/x509/mkarrmann.pem</string>
       <key>THRIFT_TLS_CL_KEY_PATH</key>
       <string>/var/facebook/credentials/mkarrmann/x509/mkarrmann.pem</string>
+      <!-- Vendored tiktoken BPE. tiktoken downloads its encoding on first use;
+           Omnigent's count_tokens() fails closed when that download can't
+           happen, which kills REPL resume and compaction. The runner is what
+           counts tokens and its env is allowlist-filtered, so the name must
+           also ride OMNIGENT_RUNNER_ENV_PASSTHROUGH below (that var unions into
+           the allowlist — it does not replace it).
+           See ~/dotfiles/omnigent_config/tiktoken-cache/README.md. -->
+      <key>TIKTOKEN_CACHE_DIR</key>
+      <string>/Users/mkarrmann/dotfiles/omnigent_config/tiktoken-cache</string>
+      <key>OMNIGENT_RUNNER_ENV_PASSTHROUGH</key>
+      <string>TIKTOKEN_CACHE_DIR</string>
     </dict>
 
     <key>StandardOutPath</key>

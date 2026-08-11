@@ -48,9 +48,15 @@ Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
 # so a turn that ends without an assistant answer is diagnosable. Noisy — revert
 # to INFO (or drop this line) once the silent-turn cause is captured.
 Environment=OMNIGENT_LOG_LEVEL=DEBUG
+# tiktoken's encoding download host does not resolve from a devserver, so point
+# it at the vendored BPE blob. The RUNNER is what calls count_tokens (compaction
+# + /v1/summarize), and runner env is allowlist-filtered, so this must ALSO be
+# listed in the passthrough below or the runner never sees it.
+# See omnigent_config/tiktoken-cache/README.md.
+Environment=TIKTOKEN_CACHE_DIR=%h/dotfiles/omnigent_config/tiktoken-cache
 # The host filters its environment before launching runners. Forward only the
 # non-secret paths/selectors required by Meta's Claude and Codex launchers.
-Environment=OMNIGENT_RUNNER_ENV_PASSTHROUGH=THRIFT_TLS_CL_CERT_PATH,THRIFT_TLS_CL_KEY_PATH,CODEX_MANAGED_CONFIG_PATH,HARNESS_CODEX_PATH,HARNESS_CODEX_DISABLE_NATIVE_TOOLS,HARNESS_TURN_TIMEOUT_S,OMNIGENT_LOG_LEVEL,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS
+Environment=OMNIGENT_RUNNER_ENV_PASSTHROUGH=THRIFT_TLS_CL_CERT_PATH,THRIFT_TLS_CL_KEY_PATH,CODEX_MANAGED_CONFIG_PATH,HARNESS_CODEX_PATH,HARNESS_CODEX_DISABLE_NATIVE_TOOLS,HARNESS_TURN_TIMEOUT_S,OMNIGENT_LOG_LEVEL,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS,TIKTOKEN_CACHE_DIR
 ExecStart=%h/bin/omnigent-host-run
 Restart=always
 RestartSec=5

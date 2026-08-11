@@ -41,6 +41,13 @@ if [[ -z "${OMNIGENT_URL:-}" ]]; then
   fi
 fi
 
+# tiktoken BPE cache — vendored, because openaipublic.blob.core.windows.net does
+# not resolve from a devserver and tiktoken downloads its encoding on first use.
+# Omnigent's count_tokens() dies without it (see the dir's README.md).
+if [[ -d "$HOME/dotfiles/omnigent_config/tiktoken-cache" ]]; then
+  export TIKTOKEN_CACHE_DIR="$HOME/dotfiles/omnigent_config/tiktoken-cache"
+fi
+
 # Local env (not source-controlled)
 if [[ -f ~/.shell_env.local ]]; then
   source ~/.shell_env.local

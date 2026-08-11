@@ -26,6 +26,10 @@ Type=simple
 Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 # Put out-of-tree policy modules on the import path.
 Environment=PYTHONPATH=%h/dotfiles/omnigent_config/policy_modules
+# Vendored tiktoken BPE — its download host does not resolve here, and any
+# server-side token counting fails closed without it.
+# See omnigent_config/tiktoken-cache/README.md.
+Environment=TIKTOKEN_CACHE_DIR=%h/dotfiles/omnigent_config/tiktoken-cache
 EnvironmentFile=%h/dotfiles/omnigent_config/topology.env
 ExecCondition=%h/dotfiles/services/omnigent-hub/.venv/bin/omnigent-hub gate
 # Bind 127.0.0.1 (v4 loopback): serves every local consumer (Orchest,
