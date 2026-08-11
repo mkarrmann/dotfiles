@@ -392,6 +392,25 @@ end
 --                                   box for the next message.
 --  * Empty box + queue paused     → flush the head now (resume; see
 --                                   `on_chat_done`, which pauses on cancel/error).
+-- Is the chat occupied, so a new prompt must queue rather than go out now?
+--
+-- `in_flight_id` only tracks FOREGROUND requests: it is set from
+-- CodeCompanionRequestStarted, which the omnigent handler fires for a user
+-- submit and nothing else. A background turn -- a wakeup, a turn driven from
+-- another client, or the `/compact` the compaction strategy posts on our behalf
+-- -- leaves it nil, so the box looked idle and <C-s> shot a prompt into a
+-- running turn.
+--
+-- The durable session's own status covers all of those uniformly, so prefer it
+-- over instrumenting each event: it is maintained live from `session.status`
+-- and settles when a turn ends, so it cannot get stuck busy. Non-omnigent
+-- adapters have no session and fall back to the foreground flag alone.
+local function chat_busy(s, chat)
+  if s.in_flight_id then return true end
+  local session = chat and chat.omnigent_session
+  return (session and session.busy and session:busy()) or false
+end
+
 local function send(t)
   local s = states[t]
   if not s then return end
@@ -408,7 +427,7 @@ local function send(t)
   local text = get_draft_text(s)
   if not text then
     -- Nothing to send. Resume a paused queue if one is waiting.
-    if not s.in_flight_id and #s.queue > 0 then
+    if not chat_busy(s, chat) and #s.queue > 0 then
       local head = table.remove(s.queue, 1)
       if not submit_to_chat(s.chat_bufnr, head) then
         table.insert(s.queue, 1, head)
@@ -424,7 +443,7 @@ local function send(t)
     return
   end
 
-  if not s.in_flight_id and #s.queue == 0 then
+  if not chat_busy(s, chat) and #s.queue == 0 then
     submit_now(s, text)
     return
   end

@@ -2308,6 +2308,30 @@ Placement guidance (overrides the base prompt where they conflict):
         end,
       })
 
+      -- Flush the queue when a BACKGROUND turn ends.
+      --
+      -- The queue now treats a busy durable session as a reason to queue (see
+      -- `chat_busy` in lib/codecompanion-queue), which means a prompt typed during
+      -- a wakeup -- or during the `/compact` the compaction strategy posts -- lands
+      -- in the FIFO instead of interleaving. But the usual flush trigger,
+      -- CodeCompanionChatDone, only fires for foreground turns, so without this the
+      -- queued message would sit until the next one. This is the background-turn
+      -- counterpart, and it is what makes the queueing above safe.
+      --
+      -- Fires even for a turn that rendered nothing: the observer creates its turn
+      -- on `response.created` and `_finalize` emits this unconditionally once it
+      -- has one -- only the transcript commit is gated on there being text.
+      vim.api.nvim_create_autocmd("User", {
+        pattern = "CodeCompanionChatOmnigentBackgroundTurn",
+        callback = function(args)
+          local bufnr = args.data and args.data.bufnr
+          if not bufnr then return end
+          vim.schedule(function()
+            require("lib.codecompanion-queue").on_chat_done(bufnr)
+          end)
+        end,
+      })
+
       -- Omnigent M4: a background/wakeup turn arrived on an idle chat (the agent
       -- was driven from elsewhere). Toast it so the user notices activity in a
       -- chat they aren't looking at. Fired by the omnigent observer.
