@@ -114,6 +114,36 @@ vim.api.nvim_create_autocmd("WinNew", {
 	end,
 })
 
+-- New tabs open in the global cwd rather than inheriting the current tab's.
+--
+-- Problem: `:tabnew` copies the effective directory AND its locality, so a tab
+-- spawned from a `:tcd`'d project tab is itself pinned to that project. With
+-- scope.nvim isolating buffers per tab that reads as "every tab is its own
+-- project", right up until one unrelated `:cd` collapses them all -- `:cd` is
+-- global and additionally drops the current tab's local dir.
+--
+-- Clearing a local dir has no dedicated command; `:cd <current global>` is the
+-- idiom. It re-sets the global to the value it already holds (a no-op) and
+-- drops the local dir of the current tab/window ONLY -- other tabs keep their
+-- `:tcd` pins.
+--
+-- The guard matters: without it every `:tabnew` would fire a redundant `:cd`,
+-- emitting DirChanged to every plugin listening for it.
+--
+-- Explicit directory changes made after the tab exists still win, so
+-- `lib/meta-hg.lua`'s `tabnew` + `lcd` terminal pattern is unaffected. Window
+-- splits inherit as before; this only touches tab creation.
+vim.api.nvim_create_autocmd("TabNewEntered", {
+	group = vim.api.nvim_create_augroup("tab_cwd_reset", { clear = true }),
+	desc = "Open new tabs in the global cwd instead of inheriting one",
+	callback = function()
+		if vim.fn.haslocaldir(0) == 0 and vim.fn.haslocaldir(-1, 0) == 0 then
+			return -- already on the global cwd; nothing to clear
+		end
+		vim.cmd("cd " .. vim.fn.fnameescape(vim.fn.getcwd(-1, -1)))
+	end,
+})
+
 require("lib.autosave").setup()
 
 pcall(require, "config.local")
