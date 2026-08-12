@@ -37,6 +37,17 @@ os_env:
     # mode, the opposite of what we want. (write_paths is a claude-sdk/sys_os_*
     # concept; codex uses its own sandbox model.)
     type: none
+    # sys_os_* still enforces workspace-scoped filesystem resources even when
+    # Codex's native sandbox is disabled. Skills resolve to their canonical
+    # source directories, so grant the portable and plugin skill roots.
+    read_paths:
+      - ~/dotfiles/agent_config/skills
+      - ~/.codex/plugins/cache
+    # Setting this list replaces Omnigent's default, so retain .venv while
+    # exposing the explicitly granted .codex plugin cache.
+    cwd_allow_hidden:
+      - .venv
+      - .codex
     # HACK(omnigent-sdk-codex-cwd): CodexExecutor scrubs the app-server env, so
     # pass the non-secret runner workspace to ~/bin/codex. Remove this entry
     # when Omnigent natively maps the session runtime cwd to HARNESS_CODEX_CWD.
