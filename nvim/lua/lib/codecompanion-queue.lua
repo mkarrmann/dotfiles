@@ -22,17 +22,25 @@ local M = {}
 --- @field winnr number?         input window
 --- @field status_bufnr number?  status-line buffer
 --- @field status_winnr number?  status-line window
---- @field qview_bufnr number?   read-only queued-message view buffer
---- @field qview_winnr number?   read-only queued-message view window (above input)
 --- @field chat_bufnr number?    the chat buffer this queue feeds
---- @field queue string[]        FIFO of pending message texts, flushed one/turn
+--- @field queue CCQueueEntry[]  FIFO of pending messages, flushed one/turn
 --- @field queued boolean        derived: #queue > 0 (drives statusline/highlight)
+--- @field hold_from number?     derived: index of the first entry being edited;
+---                              it and everything after it are held (queue paused)
 --- @field fullscreen boolean
 --- @field request_start_at number?
 --- @field in_flight_id any      request id of the in-flight prompt, or nil
 --- @field last_finished_status string? "success" | "cancelled" | "error" | ...
 --- @field hist_idx number?      index into shared history while browsing, or nil
 --- @field hist_stash string?    in-progress draft saved when history browse began
+
+--- A single pending message. `text` is the committed value that will be sent;
+--- the buffer holds the user's possibly-uncommitted edit of it.
+--- @class CCQueueEntry
+--- @field id number        monotonic, never reused; names the buffer
+--- @field text string      committed text (what a flush sends)
+--- @field bufnr number?    editable scratch buffer
+--- @field winnr number?    window showing it, while the stack is up
 
 --- @type table<number, CCQueueState>
 local states = {}
@@ -91,115 +99,260 @@ local function clear_draft_buf(s)
   update_ui(s)
 end
 
--- ─── Queued-message view (read-only window above the input box) ────────────
+-- ─── Queued-message entries (one editable buffer + window each) ────────────
 --
--- A single split window pinned directly above the input box that lists the
--- pending queue in flush order (head at top, newest just above the box). It
--- exists only while the queue is non-empty: `sync_qview` opens it on the
--- 0→N transition and closes it on N→0, so an idle chat shows just the input
--- and status lines. This replaces the old floating queue-manager pane.
+-- Each pending message is a real scratch buffer in its own split above the
+-- input box, stacked in flush order (head at top, newest just above the box).
+-- They are ordinary buffers, so the queue is navigated and edited with plain
+-- Neovim motions rather than a bespoke pane.
+--
+-- The windows are *derived* from `s.queue`: closing one with <C-w>c does not
+-- drop the message, it reappears on the next sync. Dropping is always the
+-- explicit <C-d>, so a stray window close can't destroy typed text.
+--
+-- Hold semantics: an entry whose text differs from its committed value is
+-- being edited, and is therefore not eligible to be sent. Since only the head
+-- is ever flushed, "hold entry i and everything queued after it" reduces to the
+-- single rule *flush the head only while the head is clean* -- no separate
+-- hold-point state to keep in sync. Committing (<C-s>) adopts the edit as the
+-- new committed value and, if the chat is idle, resumes the flush immediately
+-- (nothing else would wake it).
 
-local function create_qview_buf()
+local ENTRY_FILETYPE = "codecompanion_queue_entry"
+local ENTRY_MAX_ROWS = 4
+
+-- Monotonic and never reused, so buffer names stay stable and unambiguous as
+-- the queue drains (`:b cc-queue://7` means the same message all its life).
+local next_entry_id = 0
+
+-- Forward declarations: the entry and input keymaps close over handlers
+-- defined further down, once submit/flush exist.
+local commit_entry, drop_entry, focus_newest_entry
+
+local function entry_buf_valid(e)
+  return e and e.bufnr and vim.api.nvim_buf_is_valid(e.bufnr)
+end
+
+local function entry_win_valid(e)
+  return e and e.winnr and vim.api.nvim_win_is_valid(e.winnr)
+end
+
+-- The live buffer contents (what the user sees), which differs from
+-- `e.text` (the last committed value) precisely while the entry is dirty.
+local function entry_buf_text(e)
+  if not entry_buf_valid(e) then return e.text end
+  local lines = vim.api.nvim_buf_get_lines(e.bufnr, 0, -1, false)
+  return vim.trim(table.concat(lines, "\n"))
+end
+
+-- True while the user has uncommitted edits in this entry.
+--
+-- Compares against the committed text rather than reading Neovim's own
+-- 'modified': a 'nofile' buffer never sets that flag, so it is always false
+-- here. Comparing also means undoing back to the original text clears the
+-- hold, which is what the user would expect.
+local function entry_dirty(e)
+  return entry_buf_valid(e) and entry_buf_text(e) ~= e.text
+end
+
+local function write_entry_buf(e, text)
+  if not entry_buf_valid(e) then return end
+  vim.api.nvim_buf_set_lines(e.bufnr, 0, -1, false, vim.split(text or "", "\n"))
+end
+
+local function find_entry(s, id)
+  for i, e in ipairs(s.queue) do
+    if e.id == id then return i, e end
+  end
+end
+
+-- Index of the first entry being edited, or nil. Everything at or after it is
+-- held; everything before it still flows.
+local function hold_index(s)
+  for i, e in ipairs(s.queue) do
+    if entry_dirty(e) then return i end
+  end
+end
+
+local function create_entry_buf(t, entry)
   local buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].bufhidden = "hide"
   vim.bo[buf].swapfile = false
-  vim.bo[buf].filetype = "codecompanion_queue"
-  vim.bo[buf].modifiable = false
+  vim.bo[buf].filetype = ENTRY_FILETYPE
+  pcall(vim.api.nvim_buf_set_name, buf, "cc-queue://" .. entry.id)
+  -- Lets `tab_for_input` resolve this buffer's chat, so the `\`-command cmp
+  -- source works while editing a queued message.
+  vim.b[buf].cc_input_tab = t
+  vim.b[buf].cc_queue_entry_id = entry.id
+
+  local id = entry.id
+  vim.keymap.set({ "n", "i" }, "<C-s>", function() commit_entry(t, id) end,
+    { buffer = buf, desc = "Commit queued message (re-queue it)" })
+  vim.keymap.set({ "n", "i" }, "<C-d>", function() drop_entry(t, id) end,
+    { buffer = buf, desc = "Drop this queued message" })
+
   return buf
 end
 
--- Paint the queue into the view buffer. Each message is prefixed with "» " on
--- its first line; continuation lines of a multi-line message are indented to
--- align under it. A blank line separates messages.
-local function render_qview(s)
-  local buf = s.qview_bufnr
-  if not (buf and vim.api.nvim_buf_is_valid(buf)) then return end
-  local lines = {}
-  for i, msg in ipairs(s.queue) do
-    local msg_lines = vim.split(msg, "\n", { plain = true })
-    for j, ml in ipairs(msg_lines) do
-      lines[#lines + 1] = (j == 1 and "» " or "  ") .. ml
-    end
-    if i < #s.queue then lines[#lines + 1] = "" end
-  end
-  vim.bo[buf].modifiable = true
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.bo[buf].modifiable = false
+local function setup_entry_win(w)
+  vim.wo[w].number = false
+  vim.wo[w].relativenumber = false
+  vim.wo[w].signcolumn = "no"
+  vim.wo[w].winfixbuf = true
+  vim.wo[w].winfixheight = true
+  vim.wo[w].wrap = true
+  vim.wo[w].linebreak = true
+  vim.wo[w].cursorline = false
 end
 
--- Open/close/resize the view to match the queue. No-op if the input window is
--- gone (chat hidden): the view is recreated by the next sync once the input
--- box is back.
-local function sync_qview(s)
-  local has = s.queue and #s.queue > 0
-
-  if not has then
-    if s.qview_winnr and vim.api.nvim_win_is_valid(s.qview_winnr) then
-      pcall(vim.api.nvim_win_close, s.qview_winnr, true)
-    end
-    s.qview_winnr = nil
-    return
-  end
-
-  if not (s.qview_bufnr and vim.api.nvim_buf_is_valid(s.qview_bufnr)) then
-    s.qview_bufnr = create_qview_buf()
-  end
-
-  if not (s.qview_winnr and vim.api.nvim_win_is_valid(s.qview_winnr)) then
-    if not (s.winnr and vim.api.nvim_win_is_valid(s.winnr)) then return end
-    local cur = vim.api.nvim_get_current_win()
-    -- HACK: guard the WinNew redirect autocmd against grabbing this split
-    -- (it fires while `prev` still points at the input window).
-    s.creating_qview = true
-    vim.api.nvim_set_current_win(s.winnr)
-    vim.cmd("aboveleft split")
-    s.creating_qview = false
-    local w = vim.api.nvim_get_current_win()
-    vim.api.nvim_win_set_buf(w, s.qview_bufnr)
-    vim.wo[w].number = false
-    vim.wo[w].relativenumber = false
-    vim.wo[w].signcolumn = "no"
-    vim.wo[w].winfixbuf = true
-    vim.wo[w].statusline = " "
-    vim.wo[w].wrap = true
-    vim.wo[w].linebreak = true
-    vim.wo[w].cursorline = false
-    s.qview_winnr = w
-    if vim.api.nvim_win_is_valid(cur) then
-      vim.api.nvim_set_current_win(cur)
+-- Per-window winbar carries the entry's position and state. It has to be the
+-- winbar rather than the statusline: laststatus=3 means window-local
+-- statuslines are never drawn.
+local function paint_entry_labels(s)
+  local hold = hold_index(s)
+  local n = #s.queue
+  for i, e in ipairs(s.queue) do
+    if entry_win_valid(e) then
+      local label
+      if entry_dirty(e) then
+        label = string.format(
+          "%%#DiagnosticWarn# ✎ %d/%d editing %%#Comment#— <C-s> commit · <C-d> drop%%*",
+          i, n)
+      elseif hold and i > hold then
+        label = string.format("%%#Comment# ⏸ %d/%d held (editing #%d)%%*", i, n, hold)
+      else
+        label = string.format("%%#Comment# » %d/%d queued%%*", i, n)
+      end
+      vim.wo[e.winnr].winbar = label
     end
   end
+end
 
-  render_qview(s)
-
-  local total = math.max(1, vim.api.nvim_buf_line_count(s.qview_bufnr))
-  local cap = math.max(1, math.floor(vim.o.lines / 3))
-  pcall(vim.api.nvim_win_set_height, s.qview_winnr, math.min(total, cap))
+-- Share the vertical budget across the visible entries. Each window costs its
+-- text height plus one row of winbar, so the per-entry share is discounted by
+-- one before clamping to the message's own length.
+local function apply_entry_layout(s)
+  local n = #s.queue
+  if n == 0 then return end
+  local budget = math.max(1, math.floor(vim.o.lines / 3))
+  local share = math.max(1, math.floor(budget / n) - 1)
+  for _, e in ipairs(s.queue) do
+    if entry_win_valid(e) then
+      local want = math.min(vim.api.nvim_buf_line_count(e.bufnr), ENTRY_MAX_ROWS, share)
+      pcall(vim.api.nvim_win_set_height, e.winnr, math.max(1, want))
+    end
+  end
   -- Splitting shrank the input box; restore its height.
   if s.winnr and vim.api.nvim_win_is_valid(s.winnr) then
     pcall(vim.api.nvim_win_set_height, s.winnr, s.fullscreen and vim.o.lines or 8)
   end
 end
 
-local function close_qview(s)
-  if s.qview_winnr and vim.api.nvim_win_is_valid(s.qview_winnr) then
-    pcall(vim.api.nvim_win_close, s.qview_winnr, true)
+-- Give every entry a window, creating only the missing ones so an entry the
+-- user is currently editing is never torn down and rebuilt under the cursor.
+-- A new window is split above the next entry that already has one (falling
+-- back to the input box), which puts it at the right position in the stack
+-- regardless of which entry was missing.
+local function sync_entries(s)
+  if not (s.winnr and vim.api.nvim_win_is_valid(s.winnr)) then
+    for _, e in ipairs(s.queue) do e.winnr = nil end
+    return
   end
-  if s.qview_bufnr and vim.api.nvim_buf_is_valid(s.qview_bufnr) then
-    pcall(vim.api.nvim_buf_delete, s.qview_bufnr, { force = true })
+
+  local cur = vim.api.nvim_get_current_win()
+  for i, e in ipairs(s.queue) do
+    if not entry_win_valid(e) then
+      local anchor = s.winnr
+      for j = i + 1, #s.queue do
+        if entry_win_valid(s.queue[j]) then
+          anchor = s.queue[j].winnr
+          break
+        end
+      end
+      -- HACK: guard the WinNew redirect autocmd against grabbing this split
+      -- (it fires while `prev` still points at one of our own windows).
+      s.creating_entry_win = true
+      vim.api.nvim_set_current_win(anchor)
+      vim.cmd("aboveleft split")
+      s.creating_entry_win = false
+      local w = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_buf(w, e.bufnr)
+      setup_entry_win(w)
+      e.winnr = w
+    end
   end
-  s.qview_winnr = nil
-  s.qview_bufnr = nil
+  if vim.api.nvim_win_is_valid(cur) then
+    vim.api.nvim_set_current_win(cur)
+  end
+
+  apply_entry_layout(s)
+  paint_entry_labels(s)
+end
+
+-- Close every entry window but keep the buffers, so a hidden chat can be
+-- reopened with its queue intact.
+local function close_entry_windows(s)
+  for _, e in ipairs(s.queue or {}) do
+    if entry_win_valid(e) then
+      pcall(vim.api.nvim_win_close, e.winnr, true)
+    end
+    e.winnr = nil
+  end
+end
+
+local function destroy_entry(e)
+  if entry_win_valid(e) then
+    pcall(vim.api.nvim_win_close, e.winnr, true)
+  end
+  if entry_buf_valid(e) then
+    pcall(vim.api.nvim_buf_delete, e.bufnr, { force = true })
+  end
+  e.winnr = nil
+  e.bufnr = nil
+end
+
+local function destroy_entries(s)
+  for _, e in ipairs(s.queue or {}) do
+    destroy_entry(e)
+  end
 end
 
 -- Recompute the derived `queued` flag from the queue and repaint every
 -- surface that reflects queue contents: the input/status highlight, the
--- status line, and the queued-message view.
+-- status line, and the per-entry windows.
 local function sync_queue_ui(s)
   s.queued = s.queue ~= nil and #s.queue > 0
+  s.hold_from = hold_index(s)
   update_ui(s)
-  sync_qview(s)
+  sync_entries(s)
+end
+
+local function push_entry(s, t, text)
+  next_entry_id = next_entry_id + 1
+  local entry = { id = next_entry_id, text = text }
+  entry.bufnr = create_entry_buf(t, entry)
+  write_entry_buf(entry, text)
+  -- Repaint labels + status the moment the entry goes dirty or clean again;
+  -- this is the only signal that pauses the queue, so it must be live.
+  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+    buffer = entry.bufnr,
+    callback = function()
+      local st = states[t]
+      if not st then return end
+      st.hold_from = hold_index(st)
+      paint_entry_labels(st)
+      statusline.refresh(st)
+    end,
+  })
+  s.queue[#s.queue + 1] = entry
+  return entry
+end
+
+local function remove_entry(s, i)
+  local e = table.remove(s.queue, i)
+  if e then destroy_entry(e) end
+  return e
 end
 
 -- Session-scoped prompt history, shared across every tab's input box (like
@@ -385,6 +538,19 @@ local function submit_now(s, text)
   return false
 end
 
+-- Send the head of the queue, if it is eligible. A dirty head means the user
+-- is editing it, which pauses the queue -- and because only the head is ever
+-- flushed, that single check is what keeps everything queued behind an edit
+-- from jumping ahead of it.
+local function flush_head(s)
+  local e = s.queue[1]
+  if not e or entry_dirty(e) then return false end
+  if not submit_to_chat(s.chat_bufnr, e.text) then return false end
+  remove_entry(s, 1)
+  sync_queue_ui(s)
+  return true
+end
+
 -- <C-s> from the input box.
 --
 --  * Idle + empty queue           → submit the draft immediately.
@@ -427,13 +593,7 @@ local function send(t)
   local text = get_draft_text(s)
   if not text then
     -- Nothing to send. Resume a paused queue if one is waiting.
-    if not chat_busy(s, chat) and #s.queue > 0 then
-      local head = table.remove(s.queue, 1)
-      if not submit_to_chat(s.chat_bufnr, head) then
-        table.insert(s.queue, 1, head)
-      end
-      sync_queue_ui(s)
-    end
+    if not chat_busy(s, chat) then flush_head(s) end
     return
   end
 
@@ -448,32 +608,89 @@ local function send(t)
     return
   end
 
-  s.queue[#s.queue + 1] = text
+  push_entry(s, t, text)
   push_history(text)
   clear_draft_buf(s)
   sync_queue_ui(s)
 end
 
--- <C-q> from the input box: pull the most recently queued message back into
--- the input box for editing or discarding, emptying that slot. Re-sending
--- (<C-s>) appends it to the tail again; clearing the box discards it. Refuses
--- when the box already holds a draft so nothing is clobbered.
-local function pull_back(t)
-  local s = states[t]
-  if not s then return end
-  if #s.queue == 0 then
-    vim.notify("No queued message to edit", vim.log.levels.INFO)
-    return
-  end
-  if get_draft_text(s) then
-    vim.notify("Input box isn't empty; send or clear it first", vim.log.levels.WARN)
-    return
-  end
-  set_draft_text(s, table.remove(s.queue))
-  sync_queue_ui(s)
+-- ─── Per-entry actions (bound in the entry buffers) ────────────────────────
+
+local function focus_input(s)
   if s.winnr and vim.api.nvim_win_is_valid(s.winnr) then
     vim.api.nvim_set_current_win(s.winnr)
-    vim.cmd("startinsert")
+  end
+end
+
+-- <C-s> in an entry buffer: adopt the edited text as the message that will be
+-- sent and clear 'modified', which releases this entry and everything held
+-- behind it. An emptied entry is a delete -- the same instinct as clearing the
+-- input box to discard a draft.
+function commit_entry(t, id)
+  local s = states[t]
+  if not s then return end
+  local i, e = find_entry(s, id)
+  if not e then return end
+
+  local text = entry_buf_text(e)
+  if text == "" then
+    remove_entry(s, i)
+    vim.notify("Queued message dropped (empty)", vim.log.levels.INFO)
+    focus_input(s)
+  else
+    e.text = text
+  end
+
+  sync_queue_ui(s)
+  -- Nothing else will wake a queue that paused while the chat sat idle, so
+  -- releasing the last hold has to kick the flush itself.
+  local chat = require("codecompanion").buf_get_chat(s.chat_bufnr)
+  if chat and not chat_busy(s, chat) then flush_head(s) end
+end
+
+-- <C-d> in an entry buffer: drop the message. Deliberately explicit -- closing
+-- the window does not do this, so a stray <C-w>c can't destroy typed text.
+function drop_entry(t, id)
+  local s = states[t]
+  if not s then return end
+  local i = find_entry(s, id)
+  if not i then return end
+  remove_entry(s, i)
+  focus_input(s)
+  sync_queue_ui(s)
+end
+
+-- <C-CR> in an entry buffer: send this message *now*, into the turn that is
+-- already running, instead of waiting its turn in the queue.
+--
+-- Omnigent has no steer flag on the wire -- POSTing a message while a task is
+-- active *is* steering (the server's create-or-steer path hands it to the
+-- active task's inbox), and for claude-sdk the runner live-injects it into the
+-- streaming response. So steering is purely a matter of posting now.
+--
+-- It cannot go through submit_to_chat: Chat:submit refuses outright while
+-- `current_request` is set. We post on the session directly, which has no such
+-- guard. The cost is that the steered text is not written into the chat
+-- transcript -- appending a `## Me` block while the observer is streaming
+-- assistant output into the same buffer would corrupt the render -- so the
+-- message shows up only in the agent's response to it.
+--
+-- Steering deliberately jumps the queue: it is the one action here that breaks
+-- FIFO, which is why it is a different key from commit.
+-- <C-q> from the input box: hop into the most recently queued message. Just a
+-- shortcut -- the entries are ordinary buffers, so any window/buffer motion
+-- reaches them too.
+function focus_newest_entry(t)
+  local s = states[t]
+  if not s then return end
+  local e = s.queue[#s.queue]
+  if not e then
+    vim.notify("No queued messages", vim.log.levels.INFO)
+    return
+  end
+  if not entry_win_valid(e) then sync_entries(s) end
+  if entry_win_valid(e) then
+    vim.api.nvim_set_current_win(e.winnr)
   end
 end
 
@@ -501,8 +718,8 @@ local function create_input_buf(t)
     { buffer = buf, desc = "Send/queue prompt" })
   vim.keymap.set({ "n", "i" }, "<C-g>", function() toggle_fullscreen(t) end,
     { buffer = buf, desc = "Toggle fullscreen" })
-  vim.keymap.set({ "n", "i" }, "<C-q>", function() pull_back(t) end,
-    { buffer = buf, desc = "Pull last queued message back to edit" })
+  vim.keymap.set({ "n", "i" }, "<C-q>", function() focus_newest_entry(t) end,
+    { buffer = buf, desc = "Jump to the newest queued message" })
 
   -- Edge-triggered history navigation: <Up>/<Down> browse prompt history only
   -- at the first/last line, and otherwise fall through to ordinary cursor
@@ -570,7 +787,7 @@ function M.teardown(t)
   tearing_down[t] = true
 
   statusline.stop(s)
-  close_qview(s)
+  destroy_entries(s)
 
   -- Close the chat window(s) in the owning tab. Window close doesn't
   -- delete the chat buffer; that happens below via chat:close().
@@ -630,11 +847,14 @@ vim.api.nvim_create_autocmd("WinClosed", {
     local closed = tonumber(args.match)
     if not closed then return end
     for t, s in pairs(states) do
-      -- The queued-message view comes and goes with the queue; its close is
-      -- never a teardown. Just drop the stale handle.
-      if closed == s.qview_winnr then
-        s.qview_winnr = nil
-        return
+      -- Entry windows come and go with the queue; closing one is never a
+      -- teardown, and it doesn't drop the message either -- the window is
+      -- derived from the queue and returns on the next sync.
+      for _, e in ipairs(s.queue or {}) do
+        if closed == e.winnr then
+          e.winnr = nil
+          return
+        end
       end
       if closed == s.winnr or closed == s.status_winnr then
         M.teardown(t)
@@ -655,9 +875,9 @@ vim.api.nvim_create_autocmd("WinNew", {
     if not s or not s.winnr or not vim.api.nvim_win_is_valid(s.winnr) then
       return
     end
-    -- The queued-message view is deliberately split off the input window; don't
-    -- redirect it into a chat split.
-    if s.creating_qview then return end
+    -- Queued-entry windows are deliberately split off the input window; don't
+    -- redirect them into a chat split.
+    if s.creating_entry_win then return end
     local prev = vim.fn.win_getid(vim.fn.winnr("#"))
     if prev ~= s.winnr and prev ~= s.status_winnr then
       return
@@ -766,8 +986,8 @@ function M.on_chat_opened(chat_bufnr)
   s.status_winnr = status_win
   update_ui(s)
   statusline.start(s)
-  -- Restore the queued-message view if this tab reopened with a pending queue.
-  sync_qview(s)
+  -- Restore the entry windows if this tab reopened with a pending queue.
+  sync_entries(s)
 
   -- HACK: On first open, focus the input box. On subsequent opens (toggle
   -- cycles), restore focus to wherever the user was — CodeCompanion's toggle
@@ -786,7 +1006,9 @@ function M.on_chat_hidden(chat_bufnr)
   local s = states[t]
   if not s or s.chat_bufnr ~= chat_bufnr then return end
   s.fullscreen = false
-  close_qview(s)
+  -- Windows only: the entry buffers (and any uncommitted edits in them) are
+  -- kept so a re-opened chat comes back with its queue intact.
+  close_entry_windows(s)
   -- Null the window handles *before* closing so the WinClosed handler
   -- sees no matching winnr/status_winnr and treats this as a toggle-off,
   -- not a full teardown. The input/status buffers are kept for re-open.
@@ -818,10 +1040,9 @@ function M.on_chat_done(chat_bufnr)
     return
   end
 
-  local text = table.remove(s.queue, 1)
-  if not submit_to_chat(chat_bufnr, text) then
-    table.insert(s.queue, 1, text)
-  end
+  -- No-op when the head is being edited; the queue stays paused until the
+  -- edit is committed or dropped (see flush_head).
+  flush_head(s)
   sync_queue_ui(s)
 end
 

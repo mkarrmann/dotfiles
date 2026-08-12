@@ -39,6 +39,7 @@ local COLORCOLUMN = "79,80,88,100,120"
 local NO_COLORCOLUMN = {
 	codecompanion = true,
 	codecompanion_input = true,
+	codecompanion_queue_entry = true,
 	codecompanion_cli = true,
 }
 

@@ -99,7 +99,12 @@ return {
 			opts.options.disabled_filetypes = opts.options.disabled_filetypes or {}
 			opts.options.disabled_filetypes.winbar = opts.options.disabled_filetypes.winbar or {}
 			opts.options.disabled_filetypes.statusline = opts.options.disabled_filetypes.statusline or {}
-			vim.list_extend(opts.options.disabled_filetypes.winbar, { "codecompanion_input" })
+			-- Queue entries paint their own winbar (position + held state); lualine
+			-- would otherwise overwrite it.
+			vim.list_extend(
+				opts.options.disabled_filetypes.winbar,
+				{ "codecompanion_input", "codecompanion_queue_entry" }
+			)
 			-- Lualine may install a tabs fallback when bufferline is disabled. It
 			-- refreshes that tabline on a timer, so a one-time option reset is not
 			-- enough; remove its tabline sections entirely.

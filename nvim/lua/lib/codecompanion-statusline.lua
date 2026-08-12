@@ -13,6 +13,7 @@
 --   state.chat_bufnr    -- chat we're describing
 --   state.queue         -- FIFO of pending messages; count drives "Queued (N)"
 --   state.queued        -- derived bool (#queue > 0), drives the highlight
+--   state.hold_from     -- index of the first entry being edited, or nil
 --   state.request_start_at  -- os.time() of in-flight request, or nil
 --   state.tick_active   -- internal, set by start()/stop()
 --
@@ -114,6 +115,15 @@ local function build_segments(state)
   local qn = state.queue and #state.queue or 0
   if qn > 0 then
     left[#left + 1] = { string.format(" Queued (%d) ", qn), "DiagnosticWarn" }
+    -- An entry being edited pauses the queue at that point; say so, because
+    -- otherwise a queue that has silently stopped flushing looks identical to
+    -- one that is merely waiting on the turn.
+    if state.hold_from then
+      left[#left + 1] = {
+        string.format("⏸ %d held ", qn - state.hold_from + 1),
+        "DiagnosticHint",
+      }
+    end
   else
     left[#left + 1] = { " Draft ", "Comment" }
   end
