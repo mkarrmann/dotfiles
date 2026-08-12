@@ -179,10 +179,10 @@ function M.run()
 		local fake_session = {
 			session_id = "conv_title",
 			title = nil,
-			set_config = function(self, key, value)
+			set_config_async = function(self, key, value, cb)
 				set_calls[#set_calls + 1] = { key = key, value = value }
 				self.title = self.title -- no-op; push_title owns the local update
-				return true, nil -- pretend the PATCH succeeded
+				cb(true, nil) -- pretend the PATCH succeeded
 			end,
 		}
 		local title_buf = vim.api.nvim_create_buf(false, true)
@@ -229,8 +229,8 @@ function M.run()
 		local fake_session = {
 			session_id = "conv_refresh",
 			title = "local-old",
-			set_config = function()
-				return true, nil
+			set_config_async = function(_, _, _, cb)
+				cb(true, nil)
 			end,
 			client = {
 				request_async = function(_, _, _, _, cb)

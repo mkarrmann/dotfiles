@@ -120,7 +120,7 @@ end
 local function omnigent_session_for_tab(tab)
 	local chat = chat_for_tab(tab)
 	local session = chat and chat.omnigent_session
-	if session and session.session_id and type(session.set_config) == "function" then
+	if session and session.session_id and type(session.set_config_async) == "function" then
 		return session
 	end
 	return nil
@@ -147,7 +147,7 @@ end
 function M.push_title(tab, session)
 	tab = tab or vim.api.nvim_get_current_tabpage()
 	session = session or omnigent_session_for_tab(tab)
-	if not session or not session.session_id or type(session.set_config) ~= "function" then
+	if not session or not session.session_id or type(session.set_config_async) ~= "function" then
 		return
 	end
 	local name = tab_name(tab)
@@ -159,15 +159,18 @@ function M.push_title(tab, session)
 		if not valid_tab(tab) or tab_name(tab) ~= name or session.title == name then
 			return
 		end
-		local ok, err = session:set_config("title", name)
-		if ok then
-			session.title = name
-		elseif err then
-			vim.notify(
-				"Omnigent: couldn't sync tab name to session title: " .. (err.message or "unknown error"),
-				vim.log.levels.WARN
-			)
-		end
+		-- Asynchronous: this fires on every tab rename, and a rename must never
+		-- stall on a PATCH.
+		session:set_config_async("title", name, function(ok, err)
+			if ok then
+				session.title = name
+			elseif err then
+				vim.notify(
+					"Omnigent: couldn't sync tab name to session title: " .. (err.message or "unknown error"),
+					vim.log.levels.WARN
+				)
+			end
+		end)
 	end)
 end
 
