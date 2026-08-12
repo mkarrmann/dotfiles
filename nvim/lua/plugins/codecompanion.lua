@@ -97,17 +97,22 @@ local function _omnigent_is_chat_agent(agent)
 end
 
 -- Live agent catalog, filtered to validated chat-capable harnesses:
--- { { id, name, harness, description }, ... } or nil, err.
-local function _omnigent_pickable_agents()
-  local agents, err = _omnigent_client():list_agents()
-  if not agents then return nil, err end
-  local out = {}
-  for _, a in ipairs(agents) do
-    if a.name and _omnigent_is_chat_agent(a) then
-      out[#out + 1] = { id = a.id, name = a.name, harness = a.harness, description = a.description }
+-- cb({ { id, name, harness, description }, ... }) or cb(nil, err).
+--
+-- Asynchronous, like every omnigent REST call reachable from a keystroke: the
+-- synchronous client transport is plenary's curl on nvim's main thread, so a slow
+-- or wedged server freezes the whole editor for the request budget.
+local function _omnigent_pickable_agents(cb)
+  _omnigent_client():list_agents_async(nil, function(agents, err)
+    if not agents then return cb(nil, err) end
+    local out = {}
+    for _, a in ipairs(agents) do
+      if a.name and _omnigent_is_chat_agent(a) then
+        out[#out + 1] = { id = a.id, name = a.name, harness = a.harness, description = a.description }
+      end
     end
-  end
-  return out
+    cb(out)
+  end)
 end
 
 -- ── Omnigent model + reasoning-effort catalog ──────────────────────────────
@@ -384,50 +389,52 @@ end
 -- create. `cb` is invoked with no args once the selection is cached
 -- (agent → model → effort).
 local function _omnigent_select(force, cb)
-  local agents, err = _omnigent_pickable_agents()
-  if not agents then
-    return vim.notify("omnigent: failed to list agents: " .. (err and err.message or "?"), vim.log.levels.ERROR)
-  end
-  if #agents == 0 then
-    return vim.notify(
-      "omnigent: no validated chat-capable agents are available",
-      vim.log.levels.WARN
-    )
-  end
-  -- Reuse the cached choice only if its exact agent remains chat-capable.
-  if not force then
-    local cached = _omnigent_read_selection()
-    if cached.agent then
-      for _, a in ipairs(agents) do
-        if a.name == cached.agent then return cb() end
+  _omnigent_pickable_agents(function(agents, err)
+    if not agents then
+      return vim.notify("omnigent: failed to list agents: " .. (err and err.message or "?"), vim.log.levels.ERROR)
+    end
+    if #agents == 0 then
+      return vim.notify(
+        "omnigent: no validated chat-capable agents are available",
+        vim.log.levels.WARN
+      )
+    end
+    -- Reuse the cached choice only if its exact agent remains chat-capable.
+    if not force then
+      local cached = _omnigent_read_selection()
+      if cached.agent then
+        for _, a in ipairs(agents) do
+          if a.name == cached.agent then return cb() end
+        end
       end
     end
-  end
-  vim.ui.select(agents, {
-    prompt = "Omnigent agent:",
-    format_item = function(a)
-      if a.name == "codex-native-ui" then
-        return a.name .. "  —  Codex native session (Goal support)"
-      elseif a.name == "claude-native-ui" then
-        return a.name .. "  —  Claude native session (terminal-backed, chat-rendered)"
-      end
-      local detail = (a.description and a.description ~= "") and a.description or a.harness
-      return detail and (a.name .. "  —  " .. detail) or a.name
-    end,
-  }, function(choice)
-    if choice == nil then return end
-    local family = _omnigent_family_for_harness(choice.harness)
-    _omnigent_pick_model(family, true, function(model)
-      _omnigent_pick_effort(family, true, function(effort)
-        _omnigent_write_selection({ agent = choice.name, model = model, effort = effort })
-        cb()
+    vim.ui.select(agents, {
+      prompt = "Omnigent agent:",
+      format_item = function(a)
+        if a.name == "codex-native-ui" then
+          return a.name .. "  —  Codex native session (Goal support)"
+        elseif a.name == "claude-native-ui" then
+          return a.name .. "  —  Claude native session (terminal-backed, chat-rendered)"
+        end
+        local detail = (a.description and a.description ~= "") and a.description or a.harness
+        return detail and (a.name .. "  —  " .. detail) or a.name
+      end,
+    }, function(choice)
+      if choice == nil then return end
+      local family = _omnigent_family_for_harness(choice.harness)
+      _omnigent_pick_model(family, true, function(model)
+        _omnigent_pick_effort(family, true, function(effort)
+          _omnigent_write_selection({ agent = choice.name, model = model, effort = effort })
+          cb()
+        end)
       end)
     end)
   end)
 end
 
 -- Open a fresh chat in the current tab bound to an existing omnigent session and
--- hydrate it (omnigent load is a synchronous REST round-trip).
+-- hydrate it. The load is two REST round-trips, run asynchronously: the buffer
+-- opens empty and fills in when the history arrives.
 local function _omnigent_open_chat_with_session(session_id)
   local existing = vim.t.codecompanion_chat_bufnr
   if existing and vim.api.nvim_buf_is_valid(existing) then
@@ -448,17 +455,18 @@ local function _omnigent_open_chat_with_session(session_id)
     return false
   end
   vim.schedule(function()
-    local ok, err = chat:resume_omnigent()
-    if not ok then
-      vim.notify("omnigent resume failed: " .. (err and err.message or "?"), vim.log.levels.ERROR)
-      return
-    end
-    lock_chat_buf(chat.bufnr)
-    require("codecompanion.utils").fire("OmnigentChatRestored", {
-      bufnr = chat.bufnr,
-      id = chat.id,
-      session_id = session_id,
-    })
+    chat:resume_omnigent(nil, function(ok, err)
+      if not ok then
+        vim.notify("omnigent resume failed: " .. (err and err.message or "?"), vim.log.levels.ERROR)
+        return
+      end
+      lock_chat_buf(chat.bufnr)
+      require("codecompanion.utils").fire("OmnigentChatRestored", {
+        bufnr = chat.bufnr,
+        id = chat.id,
+        session_id = session_id,
+      })
+    end)
   end)
   return true
 end
@@ -493,55 +501,51 @@ local function _omnigent_fork_current()
   end
 
   local client = _omnigent_client()
-  -- Authoritative host_id / workspace for the launch: the snapshot, not the live
-  -- runtime (which may be nil before the first turn / ensure_session).
-  local snap, gerr = client:get_session(source_id)
-  if not snap then
-    return vim.notify(
-      "omnigent: could not load source session: " .. (gerr and gerr.message or "?"),
-      vim.log.levels.ERROR
-    )
-  end
-
   local Session = require("codecompanion.omnigent.session")
   local branch = "cc-fork-" .. os.date("%m%d-%H%M%S")
-  local fork, ferr = Session.fork(client, {
-    session_id = source_id,
-    host_id = snap.host_id,
-    workspace = snap.workspace,
-  }, { branch_name = branch }) -- base_branch nil => branch from the source's HEAD
 
-  if not fork then
-    local msg = "omnigent: fork failed: " .. (ferr and ferr.message or "?")
-    if ferr and ferr.fork_session_id then
-      -- The copy landed but the runner didn't; the session exists unbound.
-      msg = msg .. " (created unbound session " .. ferr.fork_session_id .. "; resume it to retry a runner)"
+  -- Three round-trips (snapshot, fork, launch), all asynchronous: a fork copies
+  -- the whole transcript server-side and then builds a git worktree, so blocking
+  -- on it froze the editor for the slowest omnigent operation there is.
+  --
+  -- Authoritative host_id / workspace for the launch: the snapshot, not the live
+  -- runtime (which may be nil before the first turn / ensure_session).
+  client:get_session_async(source_id, function(snap, gerr)
+    if not snap then
+      return vim.notify(
+        "omnigent: could not load source session: " .. (gerr and gerr.message or "?"),
+        vim.log.levels.ERROR
+      )
     end
-    return vim.notify(msg, vim.log.levels.ERROR)
-  end
 
-  -- Fork + launch succeeded: open it in a fresh tab so the source is untouched.
-  vim.cmd("tabnew")
-  if not _omnigent_open_chat_with_session(fork.id) then
-    vim.cmd("tabclose") -- open_chat_with_session already notified; drop the empty tab
-    return
-  end
-  vim.notify("omnigent: forked into " .. fork.id .. " (branch " .. branch .. ")", vim.log.levels.INFO)
+    Session.fork_async(client, {
+      session_id = source_id,
+      host_id = snap.host_id,
+      workspace = snap.workspace,
+    }, { branch_name = branch }, function(fork, ferr) -- base_branch nil => branch from the source's HEAD
+      if not fork then
+        local msg = "omnigent: fork failed: " .. (ferr and ferr.message or "?")
+        if ferr and ferr.fork_session_id then
+          -- The copy landed but the runner didn't; the session exists unbound.
+          msg = msg .. " (created unbound session " .. ferr.fork_session_id .. "; resume it to retry a runner)"
+        end
+        return vim.notify(msg, vim.log.levels.ERROR)
+      end
+
+      -- Fork + launch succeeded: open it in a fresh tab so the source is untouched.
+      vim.cmd("tabnew")
+      if not _omnigent_open_chat_with_session(fork.id) then
+        vim.cmd("tabclose") -- open_chat_with_session already notified; drop the empty tab
+        return
+      end
+      vim.notify("omnigent: forked into " .. fork.id .. " (branch " .. branch .. ")", vim.log.levels.INFO)
+    end)
+  end)
 end
 
--- Server-backed omnigent session picker. cwd-scoped by default (<A-c> toggles to
--- all workspaces), recency-sorted, archived filtered out.
-local function omnigent_continue()
-  local sessions_lib = require("codecompanion.interactions.chat.omnigent.sessions")
-  local client = _omnigent_client()
-  local list, err = client:list_sessions({ limit = 200 })
-  if not list then
-    return vim.notify("omnigent: failed to list sessions: " .. (err and err.message or "?"), vim.log.levels.ERROR)
-  end
-  list = sessions_lib.by_recency(sessions_lib.active(list))
-  if #list == 0 then
-    return vim.notify("omnigent: no saved sessions", vim.log.levels.INFO)
-  end
+-- Present the fetched session list. Split from the fetch so the fetch can be
+-- asynchronous without burying the whole picker in a callback.
+local function _omnigent_continue_pick(sessions_lib, list)
   local cwd = vim.fn.getcwd()
   local now = os.time()
 
@@ -610,6 +614,24 @@ local function omnigent_continue()
   end
 
   open(true)
+end
+
+-- Server-backed omnigent session picker. cwd-scoped by default (<A-c> toggles to
+-- all workspaces), recency-sorted, archived filtered out. The listing is fetched
+-- asynchronously (up to 200 rows, paginated), so the picker appears when the list
+-- lands rather than the editor freezing until it does.
+local function omnigent_continue()
+  local sessions_lib = require("codecompanion.interactions.chat.omnigent.sessions")
+  _omnigent_client():list_sessions_async({ limit = 200 }, nil, function(list, err)
+    if not list then
+      return vim.notify("omnigent: failed to list sessions: " .. (err and err.message or "?"), vim.log.levels.ERROR)
+    end
+    list = sessions_lib.by_recency(sessions_lib.active(list))
+    if #list == 0 then
+      return vim.notify("omnigent: no saved sessions", vim.log.levels.INFO)
+    end
+    _omnigent_continue_pick(sessions_lib, list)
+  end)
 end
 
 -- Agent-path choices for the top-level picker in `<leader>aG`.
@@ -773,28 +795,29 @@ end
 
 -- Resolve the model/effort family for a live omnigent chat: prefer the current
 -- model's vendor token, else the session agent's harness (looked up by id).
-local function _omnigent_session_family(session)
+local function _omnigent_session_family(session, cb)
   -- Resolve the agent's harness family first. For a "special" harness like
   -- dvsc's ACP wrap it must win over the model-string guess: dm-core ids
   -- (claude-opus-4.8) would otherwise be misread as the "claude" vendor family
   -- and offer the wrong (omnigent vendor) catalog. For vendor harnesses the
   -- model token is the more specific signal, so it still takes precedence.
-  local harness_fam
-  if session.agent_id then
-    local agents = _omnigent_pickable_agents()
-    if agents then
-      for _, a in ipairs(agents) do
-        if a.id == session.agent_id then
-          harness_fam = _omnigent_family_for_harness(a.harness)
-          break
-        end
+  local function decide(harness_fam)
+    if harness_fam == "dvsc" then return cb(harness_fam) end
+    local fam = _omnigent_family_for_model(session.model_override or session.model)
+    if fam then return cb(fam) end
+    cb(harness_fam)
+  end
+  if not session.agent_id then return decide(nil) end
+  _omnigent_pickable_agents(function(agents)
+    local harness_fam
+    for _, a in ipairs(agents or {}) do
+      if a.id == session.agent_id then
+        harness_fam = _omnigent_family_for_harness(a.harness)
+        break
       end
     end
-  end
-  if harness_fam == "dvsc" then return harness_fam end
-  local fam = _omnigent_family_for_model(session.model_override or session.model)
-  if fam then return fam end
-  return harness_fam
+    decide(harness_fam)
+  end)
 end
 
 local function _omnigent_pick_live_option(chat)
@@ -802,37 +825,42 @@ local function _omnigent_pick_live_option(chat)
   if not session or not session.session_id then
     return vim.notify("Omnigent chat has no live session yet.", vim.log.levels.WARN)
   end
-  local family = _omnigent_session_family(session)
-  local items = {
-    { label = "Model  (current: " .. tostring(session.model_override or session.model or "default") .. ")", kind = "model" },
-    { label = "Effort (current: " .. tostring(session.reasoning_effort or "default") .. ")", kind = "effort" },
-  }
-  vim.ui.select(items, {
-    prompt = "Omnigent session:",
-    format_item = function(it) return it.label end,
-  }, function(choice)
-    if choice == nil then return end
-    if choice.kind == "model" then
-      _omnigent_pick_model(family, false, function(model)
-        local ok, perr = session:set_model(model)
-        if ok then
-          pcall(function() chat:update_metadata() end)
-          vim.notify("omnigent model → " .. model, vim.log.levels.INFO)
-        else
-          vim.notify("omnigent: failed to set model: " .. (perr and perr.message or "?"), vim.log.levels.ERROR)
-        end
-      end)
-    else
-      _omnigent_pick_effort(family, false, function(effort)
-        local ok, perr = session:set_config("reasoning_effort", effort)
-        if ok then
-          pcall(function() chat:update_metadata() end)
-          vim.notify("omnigent effort → " .. effort, vim.log.levels.INFO)
-        else
-          vim.notify("omnigent: failed to set effort: " .. (perr and perr.message or "?"), vim.log.levels.ERROR)
-        end
-      end)
-    end
+  _omnigent_session_family(session, function(family)
+    local items = {
+      { label = "Model  (current: " .. tostring(session.model_override or session.model or "default") .. ")", kind = "model" },
+      { label = "Effort (current: " .. tostring(session.reasoning_effort or "default") .. ")", kind = "effort" },
+    }
+    vim.ui.select(items, {
+      prompt = "Omnigent session:",
+      format_item = function(it) return it.label end,
+    }, function(choice)
+      if choice == nil then return end
+      -- The PATCH runs asynchronously; the notify is the only consumer of its
+      -- result, so there is nothing to wait for.
+      if choice.kind == "model" then
+        _omnigent_pick_model(family, false, function(model)
+          session:set_model_async(model, function(ok, perr)
+            if ok then
+              pcall(function() chat:update_metadata() end)
+              vim.notify("omnigent model → " .. model, vim.log.levels.INFO)
+            else
+              vim.notify("omnigent: failed to set model: " .. (perr and perr.message or "?"), vim.log.levels.ERROR)
+            end
+          end)
+        end)
+      else
+        _omnigent_pick_effort(family, false, function(effort)
+          session:set_config_async("reasoning_effort", effort, function(ok, perr)
+            if ok then
+              pcall(function() chat:update_metadata() end)
+              vim.notify("omnigent effort → " .. effort, vim.log.levels.INFO)
+            else
+              vim.notify("omnigent: failed to set effort: " .. (perr and perr.message or "?"), vim.log.levels.ERROR)
+            end
+          end)
+        end)
+      end
+    end)
   end)
 end
 
@@ -2013,7 +2041,12 @@ Placement guidance (overrides the base prompt where they conflict):
         local QueueAcp = {}
         QueueAcp.new = function() return setmetatable({}, { __index = QueueAcp }) end
         function QueueAcp:is_available()
-          return vim.bo.filetype == "codecompanion_input"
+          -- Also in queued-message buffers: `\cmd` is plain text that the
+          -- submit path rewrites, so it is editable anywhere a message is.
+          -- (`/` slash commands are NOT offered there -- those execute against
+          -- the chat immediately and cannot be queued.)
+          local ft = vim.bo.filetype
+          return (ft == "codecompanion_input" or ft == "codecompanion_queue_entry")
             and require("codecompanion.config").interactions.chat.slash_commands.opts.acp.enabled
         end
         function QueueAcp:get_trigger_characters() return { acp_trigger } end
