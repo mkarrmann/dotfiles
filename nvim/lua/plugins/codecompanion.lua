@@ -1,5 +1,5 @@
 -- Keep CodeCompanion chat buffers non-modifiable at rest so prompts and
--- edits can only flow through the per-tab input queue (lib/codecompanion-queue).
+-- edits can only flow through the per-tab input queue (codecompanion.interactions.chat.queue).
 -- CodeCompanion brackets its own streaming writes with unlock/lock, and the
 -- queue does the same for its programmatic submit; every other (manual) edit
 -- hits a read-only buffer. Call this at the points CC leaves the buffer
@@ -725,7 +725,7 @@ local function tab_chat_set_adapter(adapter_name, opts)
     chat.acp_session_id = nil
     -- The current session is being torn down; unpin so the winbar re-pins
     -- to the new adapter's session on first establish.
-    pcall(function() require("lib.codecompanion-chatinfo").reset(bufnr) end)
+    pcall(function() require("codecompanion.interactions.chat.ui.session_pin").reset(bufnr) end)
     if opts.clear then
       chat:clear()
       -- Transcript wiped: drop section timestamps so stale times don't
@@ -1797,7 +1797,7 @@ Placement guidance (overrides the base prompt where they conflict):
           -- winbar shows a stable handle even after involuntary reminting
           -- (first-write-wins; reset on close / adapter-swap-with-clear).
           pcall(function()
-            require("lib.codecompanion-chatinfo").pin(self.chat.bufnr, conn.session_id)
+            require("codecompanion.interactions.chat.ui.session_pin").pin(self.chat.bufnr, conn.session_id)
           end)
         end
         return ok
@@ -1845,7 +1845,7 @@ Placement guidance (overrides the base prompt where they conflict):
       -- discriminators — notably usage_update — fall through with no else
       -- branch and are silently dropped before any consumer can see them.
       -- Tap the method to fire a User autocmd with the raw payload first,
-      -- then delegate. lib/codecompanion-stats consumes this for the
+      -- then delegate. codecompanion.interactions.chat.usage consumes this for the
       -- lualine context-% display.
       -- Upstream fix: prompt_builder.lua should expose an extension point
       -- or fire an autocmd unconditionally. Remove this patch once that lands.
@@ -1971,7 +1971,7 @@ Placement guidance (overrides the base prompt where they conflict):
       -- into directly. We re-lock it there so the buffer is non-modifiable
       -- whenever a turn settles. Streaming writes are unaffected (the builder
       -- unlocks before each write), and the queue unlocks around its own
-      -- programmatic submit (lib/codecompanion-queue).
+      -- programmatic submit (codecompanion.interactions.chat.queue).
       local orig_chat_reset = Chat.reset
       function Chat:reset()
         orig_chat_reset(self)
@@ -2015,7 +2015,7 @@ Placement guidance (overrides the base prompt where they conflict):
         function QueueSlash:get_trigger_characters() return { "/" } end
         function QueueSlash:get_keyword_pattern() return [[/\%(\w\|-\)\+]] end
         function QueueSlash:complete(params, callback)
-          local items = require("lib.codecompanion-queue").slash_commands()
+          local items = require("codecompanion.interactions.chat.queue").slash_commands()
           local kind = cmp.lsp.CompletionItemKind.Function
           vim.iter(items):map(function(item)
             item.kind = kind
@@ -2024,7 +2024,7 @@ Placement guidance (overrides the base prompt where they conflict):
           callback({ items = items, isIncomplete = false })
         end
         function QueueSlash:execute(item, callback)
-          require("lib.codecompanion-queue").execute_slash(item)
+          require("codecompanion.interactions.chat.queue").execute_slash(item)
           callback(item)
         end
 
@@ -2054,7 +2054,7 @@ Placement guidance (overrides the base prompt where they conflict):
           return vim.fn.escape(acp_trigger, [[\]]) .. [[\%(\w\|-\)\+]]
         end
         function QueueAcp:complete(params, callback)
-          local chat_bufnr = require("lib.codecompanion-queue").chat_bufnr()
+          local chat_bufnr = require("codecompanion.interactions.chat.queue").chat_bufnr()
           local chat = chat_bufnr and require("codecompanion").buf_get_chat(chat_bufnr)
 
           -- Omnigent has no command-advertisement channel (ACP agents publish
@@ -2140,15 +2140,19 @@ Placement guidance (overrides the base prompt where they conflict):
       end
 
       require("lib.codecompanion-timing").setup()
-      -- Eager-load so the CodeCompanionACPSessionUpdate listener is registered
-      -- before any chat opens. The module registers its autocmd at load time;
-      -- if loaded lazily via lualine's cc_context (which only fires once a chat
-      -- buffer has both filetype=codecompanion and an active acp session_id),
-      -- the first prompt's usage_update notifications fire before the listener
-      -- exists and are dropped.
-      require("lib.codecompanion-stats")
+      -- Set up eagerly so the usage listeners are registered before any chat
+      -- opens. If this were left to the first lazy require (lualine's
+      -- cc_context, which only fires once a chat buffer has both
+      -- filetype=codecompanion and an active session id), the first prompt's
+      -- usage notifications would fire before the listeners exist and be dropped.
+      require("codecompanion.interactions.chat.usage").setup()
       require("lib.codecompanion-diff").setup()
-      require("lib.codecompanion-chatinfo").setup()
+      require("codecompanion.interactions.chat.ui.session_pin").setup()
+      -- Installs the queue's window-lifecycle autocmds and highlight groups.
+      -- The per-chat wiring (open/hidden/closed/done, request start/finish) is
+      -- driven from the autocmds further down, alongside this config's own
+      -- read-only enforcement and tab-ownership stamping.
+      require("codecompanion.interactions.chat.queue").setup()
       -- Reap the ACP connection (broker agent + MCP fleet) on ANY chat close
       -- -- :tabclose/window-close/:bd, not just <C-c> or nvim exit. See
       -- lib/codecompanion-reap for the rationale (the chat buffer is hidden,
@@ -2183,13 +2187,13 @@ Placement guidance (overrides the base prompt where they conflict):
         callback = function(args)
           local data = args.data or {}
           if data.bufnr then
-            require("lib.codecompanion-queue").on_request_started(data.bufnr, data.id)
+            require("codecompanion.interactions.chat.queue").on_request_started(data.bufnr, data.id)
           end
 
           local bufnr = data.bufnr
           if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then return end
           if vim.bo[bufnr].filetype == "codecompanion" then return end
-          if bufnr == require("lib.codecompanion-queue").bufnr() then return end
+          if bufnr == require("codecompanion.interactions.chat.queue").bufnr() then return end
 
           local key = tostring(data.id)
           clear(key)
@@ -2230,7 +2234,7 @@ Placement guidance (overrides the base prompt where they conflict):
         callback = function(args)
           local data = args.data or {}
           if data.bufnr then
-            require("lib.codecompanion-queue").on_request_finished(data.bufnr, data.id, data.status)
+            require("codecompanion.interactions.chat.queue").on_request_finished(data.bufnr, data.id, data.status)
           end
           clear(tostring(data.id))
         end,
@@ -2265,7 +2269,7 @@ Placement guidance (overrides the base prompt where they conflict):
             -- Chat.new's open->render leaves the buffer modifiable; re-lock so
             -- it can only be written through the queue (see lock_chat_buf).
             lock_chat_buf(bufnr)
-            require("lib.codecompanion-queue").on_chat_opened(bufnr)
+            require("codecompanion.interactions.chat.queue").on_chat_opened(bufnr)
           end)
         end,
       })
@@ -2276,7 +2280,7 @@ Placement guidance (overrides the base prompt where they conflict):
           vim.schedule(function()
             local bufnr = args.data and args.data.bufnr
             if bufnr then
-              require("lib.codecompanion-queue").on_chat_hidden(bufnr)
+              require("codecompanion.interactions.chat.queue").on_chat_hidden(bufnr)
             end
           end)
         end,
@@ -2295,7 +2299,7 @@ Placement guidance (overrides the base prompt where they conflict):
           -- the `cc_tab_owner` stamp is gone by the next tick. Tear down now
           -- (not scheduled) so the whole UI comes down as a unit before any
           -- subsequent relaunch (e.g. <leader>aZ) can reopen into stale state.
-          require("lib.codecompanion-queue").on_chat_closed(bufnr, tab)
+          require("codecompanion.interactions.chat.queue").on_chat_closed(bufnr, tab)
         end,
       })
 
@@ -2303,7 +2307,7 @@ Placement guidance (overrides the base prompt where they conflict):
         pattern = "CodeCompanionChatDone",
         callback = function(args)
           vim.schedule(function()
-            require("lib.codecompanion-queue").on_chat_done(args.data.bufnr)
+            require("codecompanion.interactions.chat.queue").on_chat_done(args.data.bufnr)
           end)
         end,
       })
@@ -2344,7 +2348,7 @@ Placement guidance (overrides the base prompt where they conflict):
       -- Flush the queue when a BACKGROUND turn ends.
       --
       -- The queue now treats a busy durable session as a reason to queue (see
-      -- `chat_busy` in lib/codecompanion-queue), which means a prompt typed during
+      -- `chat_busy` in codecompanion.interactions.chat.queue), which means a prompt typed during
       -- a wakeup -- or during the `/compact` the compaction strategy posts -- lands
       -- in the FIFO instead of interleaving. But the usual flush trigger,
       -- CodeCompanionChatDone, only fires for foreground turns, so without this the
@@ -2360,7 +2364,7 @@ Placement guidance (overrides the base prompt where they conflict):
           local bufnr = args.data and args.data.bufnr
           if not bufnr then return end
           vim.schedule(function()
-            require("lib.codecompanion-queue").on_chat_done(bufnr)
+            require("codecompanion.interactions.chat.queue").on_chat_done(bufnr)
           end)
         end,
       })
@@ -2387,7 +2391,7 @@ Placement guidance (overrides the base prompt where they conflict):
       { "<leader>ah", function() tab_chat_open_or_toggle() end, mode = { "n", "v" }, desc = "CodeCompanion Chat (this tab)" },
       { "<leader>av", "<cmd>CodeCompanion<cr>", mode = { "n", "v" }, desc = "CodeCompanion Inline" },
       { "<leader>aw", function() require("lib.codecompanion-diff").toggle() end, desc = "Toggle CodeCompanion diff tab" },
-      { "<leader>aq", function() require("lib.codecompanion-queue").focus() end, desc = "Focus CodeCompanion Input" },
+      { "<leader>aq", function() require("codecompanion.interactions.chat.queue").focus() end, desc = "Focus CodeCompanion Input" },
       { "<leader>ad", "<cmd>CodeCompanionDoctor<cr>", desc = "CodeCompanion Doctor" },
       { "<leader>aD", function() tab_chat_set_adapter("devmate",          { clear = true }) end, desc = "CodeCompanion Chat (Devmate, fresh)" },
       { "<leader>aS", function() tab_chat_set_adapter("dvsc_core",        { clear = true }) end, desc = "CodeCompanion Chat (Dvsc Core, fresh)" },

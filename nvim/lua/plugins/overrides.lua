@@ -66,19 +66,19 @@ return {
 			local function cc_session_id()
 				local ok, cc = pcall(require, "codecompanion")
 				if not ok then return nil end
-				local ok_q, queue = pcall(require, "lib.codecompanion-queue")
+				local ok_q, queue = pcall(require, "codecompanion.interactions.chat.queue")
 				if not ok_q then return nil end
 				local bufnr = queue.chat_bufnr()
 				if not bufnr then return nil end
 				local chat = cc.buf_get_chat(bufnr)
 				if not chat then return nil end
-				return require("lib.codecompanion-session").session_id(chat)
+				return require("codecompanion.interactions.chat.sessionful").session_id(chat)
 			end
 
 			local function cc_context()
 				local sid = cc_session_id()
 				if not sid then return "" end
-				local pct = require("lib.codecompanion-stats").context_pct(sid)
+				local pct = require("codecompanion.interactions.chat.usage").context_pct(sid)
 				if not pct then
 					return "CC"
 				end
@@ -88,7 +88,7 @@ return {
 			local function cc_context_color()
 				local sid = cc_session_id()
 				if not sid then return nil end
-				local pct = require("lib.codecompanion-stats").context_pct(sid) or 0
+				local pct = require("codecompanion.interactions.chat.usage").context_pct(sid) or 0
 				if pct >= 85 then return { fg = "#ff5555" } end
 				if pct >= 70 then return { fg = "#ff8800" } end
 				if pct >= 50 then return { fg = "#ffcc00" } end

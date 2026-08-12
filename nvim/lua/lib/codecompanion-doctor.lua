@@ -59,7 +59,7 @@ local function tail_log(n)
 end
 
 local function chat_state()
-  local queue = require("lib.codecompanion-queue")
+  local queue = require("codecompanion.interactions.chat.queue")
   local chat_bufnr = queue.chat_bufnr()
   local lines = {}
   if not chat_bufnr then
