@@ -56,6 +56,16 @@ local function _omnigent_client()
   })
 end
 
+local function _omnigent_ensure_codex_tmp_redirect()
+  local helper = vim.fn.expand("~/bin/omnigent-codex-tmp-ensure")
+  if vim.fn.executable(helper) ~= 1 then return end
+  local result = vim.system({ helper, vim.fn.getcwd() }, { text = true }):wait()
+  if result.code ~= 0 then
+    local message = result.stderr ~= "" and result.stderr or result.stdout
+    vim.notify(vim.trim(message or "Codex temp redirect failed"), vim.log.levels.WARN)
+  end
+end
+
 -- ── Omnigent agent picker ──────────────────────────────────────────────────
 --
 -- A cached last-choice reused on the normal launch, re-prompted on force. Two
@@ -444,6 +454,7 @@ local function _omnigent_open_chat_with_session(session_id)
     )
     return false
   end
+  _omnigent_ensure_codex_tmp_redirect()
   local buffer_context = require("codecompanion.utils.context").get(vim.api.nvim_get_current_buf())
   local chat = require("codecompanion.interactions.chat").new({
     adapter = "omnigent",
@@ -679,6 +690,7 @@ local function tab_chat_set_adapter(adapter_name, opts)
       -- The chosen agent is cached and read back by the omnigent adapter function
       -- at spawn — the cache IS the source of truth for the selection.
       return _omnigent_select(opts.force_pick or false, function()
+        _omnigent_ensure_codex_tmp_redirect()
         tab_chat_open_or_toggle({ adapter = "omnigent" })
       end)
     end
@@ -736,7 +748,10 @@ local function tab_chat_set_adapter(adapter_name, opts)
   end
 
   if adapter_name == "omnigent" then
-    return _omnigent_select(opts.force_pick or false, function() apply() end)
+    return _omnigent_select(opts.force_pick or false, function()
+      _omnigent_ensure_codex_tmp_redirect()
+      apply()
+    end)
   end
   apply()
 end

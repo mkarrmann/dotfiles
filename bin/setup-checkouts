@@ -371,8 +371,19 @@ for ws in "${WORKSPACES[@]:1}"; do
   esac
 done
 
-# ── Phase 5: code-workspace symlinks ────────────────────────────────
-log "Phase 5: VS Code workspace symlinks"
+# ── Phase 5: Omnigent Codex runtime redirects ───────────────────────
+log "Phase 5: Omnigent Codex runtime redirects"
+for ws in "${WORKSPACES[@]}"; do
+  for repo in fbsource configerator; do
+    repo_path="$HOME/$ws/$repo"
+    [[ -d "$repo_path" ]] || continue
+    "$HOME/dotfiles/bin/omnigent-codex-tmp-ensure" "$repo_path" ||
+      warn "Codex temp redirect deferred for $repo_path"
+  done
+done
+
+# ── Phase 6: code-workspace symlinks ────────────────────────────────
+log "Phase 6: VS Code workspace symlinks"
 for ws in "${WORKSPACES[@]}"; do
   src="$HOME/dotfiles/$ws.code-workspace"
   dest="$HOME/$ws.code-workspace"
@@ -383,24 +394,24 @@ for ws in "${WORKSPACES[@]}"; do
   ensure_symlink "$src" "$dest" || true
 done
 
-# ── Phase 6: Legacy convenience symlinks ────────────────────────────
-log "Phase 6: Legacy ~/local and ~/<repo> symlinks"
+# ── Phase 7: Legacy convenience symlinks ────────────────────────────
+log "Phase 7: Legacy ~/local and ~/<repo> symlinks"
 run mkdir -p "$HOME/local"
 for repo in fbsource configerator; do
   ensure_symlink "$PRIMARY_DIR/$repo" "$HOME/local/$repo" || true
   ensure_symlink "$HOME/local/$repo" "$HOME/$repo" || true
 done
 
-# ── Phase 7: Verify ─────────────────────────────────────────────────
-log "Phase 7: Verify"
+# ── Phase 8: Verify ─────────────────────────────────────────────────
+log "Phase 8: Verify"
 echo "+ eden list"
 eden list 2>&1 | sed 's/^/    /'
 echo
 echo "+ sl worktree list (from $PRIMARY_FBSOURCE)"
 ( cd "$PRIMARY_FBSOURCE" && sl worktree list 2>&1 | sed 's/^/    /' ) || true
 
-# ── Phase 8: Cleanup ────────────────────────────────────────────────
-log "Phase 8: Cleanup"
+# ── Phase 9: Cleanup ────────────────────────────────────────────────
+log "Phase 9: Cleanup"
 if command -v watchman >/dev/null; then
   run watchman watch-del-all || warn "watchman watch-del-all failed"
 fi

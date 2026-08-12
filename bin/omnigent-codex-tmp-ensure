@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (($# == 0)); then
+  set -- "$PWD"
+fi
+
+if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+  omnigent_runtime="$XDG_RUNTIME_DIR/omnigent"
+else
+  omnigent_runtime="${TMPDIR:-/tmp}/omnigent-${UID}"
+fi
+runtime_root="$omnigent_runtime/codex-tmp"
+mkdir -p "$runtime_root"
+chmod 700 "$omnigent_runtime" "$runtime_root"
+
+status=0
+for candidate in "$@"; do
+  if [[ ! -d "$candidate" ]]; then
+    echo "omnigent-codex-tmp-ensure: not a directory: $candidate" >&2
+    status=1
+    continue
+  fi
+
+  candidate="$(cd -- "$candidate" && pwd -P)"
+  repo=""
+  if command -v sl >/dev/null 2>&1; then
+    repo="$(sl --cwd "$candidate" root \
+      --reason "locate repo for Codex temp redirect - sl help root" 2>/dev/null || true)"
+  fi
+  if [[ -z "$repo" ]] && command -v git >/dev/null 2>&1; then
+    repo="$(git -C "$candidate" rev-parse --show-toplevel 2>/dev/null || true)"
+  fi
+  repo="${repo:-$candidate}"
+
+  checksum="$(printf '%s' "$repo" | cksum | awk '{print $1}')"
+  workspace="$(basename "$(dirname "$repo")")"
+  repository="$(basename "$repo")"
+  target="$runtime_root/${workspace}-${repository}-${checksum}"
+  link="$repo/.codex-tmp"
+  mkdir -p "$target"
+  chmod 700 "$target"
+
+  if [[ -L "$link" ]]; then
+    current_target="$(readlink -f "$link" 2>/dev/null || true)"
+    if [[ "$current_target" == "$(readlink -f "$target")" \
+        || "$current_target" == "$runtime_root/"* ]]; then
+      continue
+    fi
+    echo "omnigent-codex-tmp-ensure: $link points elsewhere; leaving it unchanged" >&2
+    status=1
+    continue
+  fi
+
+  if [[ -e "$link" ]]; then
+    if [[ ! -d "$link" ]]; then
+      echo "omnigent-codex-tmp-ensure: $link is not a directory; leaving it unchanged" >&2
+      status=1
+      continue
+    fi
+
+    shopt -s nullglob dotglob
+    entries=("$link"/*)
+    shopt -u nullglob dotglob
+    if ((${#entries[@]} == 0)); then
+      rmdir "$link"
+    elif ! command -v lsof >/dev/null 2>&1; then
+      echo "omnigent-codex-tmp-ensure: cannot safely migrate nonempty $link without lsof" >&2
+      status=1
+      continue
+    else
+      open_pids="$(lsof -t +D "$link" 2>/dev/null || true)"
+      if [[ -n "$open_pids" ]]; then
+        echo "omnigent-codex-tmp-ensure: $link is active; close its Codex session and retry" >&2
+        status=1
+        continue
+      fi
+      recovered="$target/recovered-$(date +%Y%m%d-%H%M%S)-$$"
+      mv "$link" "$recovered"
+      echo "preserved stale Codex runtime data at $recovered"
+    fi
+  fi
+
+  ln -s "$target" "$link"
+  echo "linked $link -> $target"
+done
+
+exit "$status"

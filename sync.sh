@@ -329,6 +329,22 @@ sync_link_dir "$DOTFILES_DIR/claude_config/hooks" "$HOME/.claude/hooks" "*"
 # Skills
 validate_skill_frontmatter
 link_skills_scoped "$HOME/.claude/skills" global
+# Omnigent currently creates each private Codex home under
+# <session-workspace>/.codex-tmp. Redirect that directory outside Eden so
+# SQLite/WAL and transcript writes do not become repository file-change events.
+# The launch preflight in codecompanion.lua retries active directories after
+# their current session closes.
+HGIGNORE_LOCAL="$HOME/.hgignore-local"
+touch "$HGIGNORE_LOCAL"
+if ! grep -Fqx '.codex-tmp/**' "$HGIGNORE_LOCAL"; then
+  printf '\nsyntax: glob\n.codex-tmp\n.codex-tmp/**\nsyntax: regexp\n' >> "$HGIGNORE_LOCAL"
+  echo "ignored .codex-tmp in $HGIGNORE_LOCAL"
+fi
+touch "$HOME/.hgrc"
+if ! grep -Fqx "ignore.omnigent-codex-tmp = $HGIGNORE_LOCAL" "$HOME/.hgrc"; then
+  printf '\n[ui]\nignore.omnigent-codex-tmp = %s\n' "$HGIGNORE_LOCAL" >> "$HOME/.hgrc"
+  echo "configured Sapling to read $HGIGNORE_LOCAL"
+fi
 # A workspace root is any real directory directly under $HOME that holds an
 # fbsource or configerator checkout: ~/checkoutN, plus older layouts such as
 # ~/local/configerator. Detecting them beats globbing checkout* so a checkout
@@ -356,6 +372,12 @@ for ws in "$HOME"/*/; do
   fi
   seen_ws="${seen_ws}${seen_ws:+$'\n'}${ws_real}"
   link_skills_scoped "$ws_real/.claude/skills" meta
+  for repo_name in fbsource configerator; do
+    repo_path="$ws_real/$repo_name"
+    [[ -d "$repo_path" ]] || continue
+    "$DOTFILES_DIR/bin/omnigent-codex-tmp-ensure" "$repo_path" ||
+      echo "WARNING: Codex temp redirect deferred for $repo_path" >&2
+  done
 done
 shopt -u nullglob
 
