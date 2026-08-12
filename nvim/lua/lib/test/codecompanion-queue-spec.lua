@@ -122,11 +122,20 @@ function M.run()
 	truthy(stack[1].row < stack[2].row and stack[2].row < stack[3].row, "stack is in flush order")
 	truthy(vim.wo[stack[1].win].winbar:match("»"), "queued entry labelled in winbar")
 
+	-- Yellow means "this goes out"; the input box holds the one thing that does
+	-- not, so it must stay plain however full the queue is.
+	truthy(vim.wo[stack[1].win].winhighlight:match("CCQueuedNormal"), "queued entry is tinted")
+	eq(vim.wo[vim.fn.bufwinid(input_buf)].winhighlight, "", "input box is not tinted by a queue")
+
 	-- Edit #2: it and #3 go held, #1 keeps flowing.
 	edit_entry(stack[2].buf, "second EDITED")
 	truthy(vim.wo[stack[2].win].winbar:match("✎"), "edited entry is marked editing")
 	truthy(vim.wo[stack[3].win].winbar:match("⏸"), "entry queued after the edit is held")
 	truthy(vim.wo[stack[1].win].winbar:match("»"), "entry queued before the edit still flows")
+
+	truthy(vim.wo[stack[2].win].winhighlight:match("CCHeldNormal"), "an edited entry is not tinted queued")
+	truthy(vim.wo[stack[3].win].winhighlight:match("CCHeldNormal"), "a held entry is not tinted queued")
+	truthy(vim.wo[stack[1].win].winhighlight:match("CCQueuedNormal"), "the flowing entry stays tinted")
 
 	-- Turn ends: #1 is clean and ahead of the hold point, so it flushes.
 	q.on_request_finished(chat_buf, 1, "success")

@@ -208,25 +208,36 @@ local function setup_entry_win(w)
   vim.wo[w].cursorline = false
 end
 
--- Per-window winbar carries the entry's position and state. It has to be the
--- winbar rather than the statusline: laststatus=3 means window-local
--- statuslines are never drawn.
+-- Per-window winbar carries the entry's position and state, and the window tint
+-- carries the one thing worth reading at a glance: yellow means this message
+-- goes out as things stand, grey means it does not (it is being edited, or held
+-- behind one that is).
+--
+-- It has to be the winbar rather than the statusline: laststatus=3 means
+-- window-local statuslines are never drawn.
+local QUEUED_HL = "Normal:CCQueuedNormal,EndOfBuffer:CCQueuedNormal,WinSeparator:CCQueuedBorder"
+local HELD_HL = "Normal:CCHeldNormal,EndOfBuffer:CCHeldNormal,WinSeparator:CCHeldBorder"
+
 local function paint_entry_labels(s)
   local hold = hold_index(s)
   local n = #s.queue
   for i, e in ipairs(s.queue) do
     if entry_win_valid(e) then
-      local label
+      local label, hl
       if entry_dirty(e) then
         label = string.format(
           "%%#DiagnosticWarn# ✎ %d/%d editing %%#Comment#— <C-s> commit · <C-d> drop · <C-CR> steer%%*",
           i, n)
+        hl = HELD_HL
       elseif hold and i > hold then
         label = string.format("%%#Comment# ⏸ %d/%d held (editing #%d)%%*", i, n, hold)
+        hl = HELD_HL
       else
         label = string.format("%%#Comment# » %d/%d queued%%*", i, n)
+        hl = QUEUED_HL
       end
       vim.wo[e.winnr].winbar = label
+      vim.wo[e.winnr].winhighlight = hl
     end
   end
 end

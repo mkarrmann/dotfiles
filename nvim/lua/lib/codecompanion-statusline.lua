@@ -52,6 +52,14 @@ local function setup_highlights()
 
   vim.api.nvim_set_hl(0, "CCQueuedNormal", { bg = blend(warn_fg, bg, 0.1) })
   vim.api.nvim_set_hl(0, "CCQueuedBorder", { fg = warn_fg })
+
+  -- A queued entry that will NOT be sent as things stand: it is being edited, or
+  -- it is held behind one that is. A neutral grey wash, so "yellow = this goes
+  -- out" stays a reliable read.
+  local comment_hl = vim.api.nvim_get_hl(0, { name = "Comment", link = false })
+  local comment_fg = comment_hl.fg or 0x888888
+  vim.api.nvim_set_hl(0, "CCHeldNormal", { bg = blend(comment_fg, bg, 0.08) })
+  vim.api.nvim_set_hl(0, "CCHeldBorder", { fg = comment_fg })
 end
 
 setup_highlights()
@@ -280,19 +288,20 @@ function M.refresh(state)
   end
 end
 
--- Apply queued-vs-draft window highlighting to both the input and
--- status windows owned by `state`.
+-- Tint the status window while anything is queued, as the at-a-glance summary.
+--
+-- The input box is deliberately NOT tinted: each queued message now has its own
+-- window carrying its own state (see `paint_entry_labels` in the queue module),
+-- and the input box holds the one thing that is *not* queued -- your next draft.
+-- Colouring it on a non-empty queue said the opposite of the truth.
 function M.apply_winhighlight(state)
-  local whl_input, whl_status = "", ""
-  if state.queued then
-    whl_input = "Normal:CCQueuedNormal,EndOfBuffer:CCQueuedNormal,WinSeparator:CCQueuedBorder"
-    whl_status = "Normal:CCQueuedNormal,WinSeparator:CCQueuedBorder"
-  end
   if state.winnr and vim.api.nvim_win_is_valid(state.winnr) then
-    vim.wo[state.winnr].winhighlight = whl_input
+    vim.wo[state.winnr].winhighlight = ""
   end
   if state.status_winnr and vim.api.nvim_win_is_valid(state.status_winnr) then
-    vim.wo[state.status_winnr].winhighlight = whl_status
+    vim.wo[state.status_winnr].winhighlight = state.queued
+      and "Normal:CCQueuedNormal,WinSeparator:CCQueuedBorder"
+      or ""
   end
 end
 
