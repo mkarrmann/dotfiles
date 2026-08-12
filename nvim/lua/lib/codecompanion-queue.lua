@@ -127,7 +127,7 @@ local next_entry_id = 0
 
 -- Forward declarations: the entry and input keymaps close over handlers
 -- defined further down, once submit/flush exist.
-local commit_entry, drop_entry, focus_newest_entry
+local commit_entry, drop_entry, steer_entry, steer_draft, focus_newest_entry
 
 local function entry_buf_valid(e)
   return e and e.bufnr and vim.api.nvim_buf_is_valid(e.bufnr)
@@ -191,6 +191,8 @@ local function create_entry_buf(t, entry)
     { buffer = buf, desc = "Commit queued message (re-queue it)" })
   vim.keymap.set({ "n", "i" }, "<C-d>", function() drop_entry(t, id) end,
     { buffer = buf, desc = "Drop this queued message" })
+  vim.keymap.set({ "n", "i" }, "<C-CR>", function() steer_entry(t, id) end,
+    { buffer = buf, desc = "Steer: send this message into the running turn now" })
 
   return buf
 end
@@ -217,7 +219,7 @@ local function paint_entry_labels(s)
       local label
       if entry_dirty(e) then
         label = string.format(
-          "%%#DiagnosticWarn# ✎ %d/%d editing %%#Comment#— <C-s> commit · <C-d> drop%%*",
+          "%%#DiagnosticWarn# ✎ %d/%d editing %%#Comment#— <C-s> commit · <C-d> drop · <C-CR> steer%%*",
           i, n)
       elseif hold and i > hold then
         label = string.format("%%#Comment# ⏸ %d/%d held (editing #%d)%%*", i, n, hold)
@@ -677,6 +679,59 @@ end
 --
 -- Steering deliberately jumps the queue: it is the one action here that breaks
 -- FIFO, which is why it is a different key from commit.
+-- Hand off to the fork's steer primitive, which owns the omnigent semantics
+-- (posting into the active turn rather than starting a new one, the `\cmd` →
+-- `/cmd` wire rewrite, and writing the message into the transcript so a steer
+-- isn't invisible). Failures render into the chat, so nothing to report here
+-- beyond the refusals this side knows about.
+local function steer_post(s, text)
+  local chat = require("codecompanion").buf_get_chat(s.chat_bufnr)
+  local ok_h, handler = pcall(require, "codecompanion.interactions.chat.omnigent.handler")
+  if not (ok_h and handler.steer) then
+    vim.notify("This CodeCompanion build has no steer support", vim.log.levels.WARN)
+    return false
+  end
+  local ok, err = handler.steer(chat, text)
+  if not ok then
+    vim.notify("Cannot steer: " .. tostring(err), vim.log.levels.WARN)
+    return false
+  end
+  return true
+end
+
+function steer_entry(t, id)
+  local s = states[t]
+  if not s then return end
+  local i, e = find_entry(s, id)
+  if not e then return end
+
+  local text = entry_buf_text(e)
+  if text == "" then
+    vim.notify("Nothing to steer", vim.log.levels.INFO)
+    return
+  end
+  if not steer_post(s, text) then return end
+
+  remove_entry(s, i)
+  focus_input(s)
+  sync_queue_ui(s)
+end
+
+-- <C-CR> from the input box: don't queue this behind the running turn, inject
+-- it. Same trade-off as steering an entry (see steer_entry).
+function steer_draft(t)
+  local s = states[t]
+  if not s then return end
+  local text = get_draft_text(s)
+  if not text then
+    vim.notify("Nothing to steer", vim.log.levels.INFO)
+    return
+  end
+  if not steer_post(s, text) then return end
+  push_history(text)
+  clear_draft_buf(s)
+end
+
 -- <C-q> from the input box: hop into the most recently queued message. Just a
 -- shortcut -- the entries are ordinary buffers, so any window/buffer motion
 -- reaches them too.
@@ -720,6 +775,8 @@ local function create_input_buf(t)
     { buffer = buf, desc = "Toggle fullscreen" })
   vim.keymap.set({ "n", "i" }, "<C-q>", function() focus_newest_entry(t) end,
     { buffer = buf, desc = "Jump to the newest queued message" })
+  vim.keymap.set({ "n", "i" }, "<C-CR>", function() steer_draft(t) end,
+    { buffer = buf, desc = "Steer: send the draft into the running turn now" })
 
   -- Edge-triggered history navigation: <Up>/<Down> browse prompt history only
   -- at the first/last line, and otherwise fall through to ordinary cursor
