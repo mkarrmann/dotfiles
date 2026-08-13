@@ -752,8 +752,63 @@ def resolve_routing_record(config: HubConfig) -> ActiveHubRecord:
     return ActiveHubRecord.from_dict(cache, config.topology)
 
 
+def _reconcile_degraded(config: HubConfig, *, storage_error: str) -> dict[str, Any]:
+    """Keep this devserver usable when shared storage cannot be read.
+
+    A candidate hub resolves ownership from Persistent Storage, so an unreadable
+    mount otherwise vetoes every local action -- including the client tunnel and
+    the execution host, neither of which needs the shared record, because the
+    route they use is already in the local routing cache. Reconcile those from
+    the cache and report the storage failure instead of abandoning the cycle.
+
+    Ownership is deliberately NOT decided here: a stale cache must never promote
+    or demote a hub, so hub services are left exactly as they are.
+    """
+    try:
+        cached = ActiveHubRecord.from_dict(read_json_object(config.routing_cache), config.topology)
+    except (HubRuntimeError, ValidationError, ValueError) as exc:
+        raise HubRuntimeError(
+            f"shared storage is unreadable ({storage_error}) and the local routing cache "
+            f"cannot stand in for it: {exc}"
+        ) from exc
+    if cached.state != "active" or cached.active_hub is None:
+        raise HubRuntimeError(
+            f"shared storage is unreadable ({storage_error}) and the cached route is in "
+            f"transition state at epoch {cached.epoch}"
+        )
+    client: dict[str, str] = {}
+    client_error: str | None = None
+    if cached.active_hub != config.local_fqdn:
+        # A failing tunnel must not veto the host below: they fail independently
+        # and the host is the harder one to notice is missing.
+        try:
+            client = service_action(config, _client_reconcile_action(config, route_changed=False))
+        except HubRuntimeError as exc:
+            client_error = str(exc)
+    host, host_action = _reconcile_host(config, route_changed=False)
+    return {
+        "host": config.local_fqdn,
+        "state": "degraded",
+        "epoch": cached.epoch,
+        "storage_error": storage_error,
+        "client_error": client_error,
+        "route": {
+            "url": f"http://127.0.0.1:{config.topology.port}",
+            "active_hub": cached.active_hub,
+            "changed": False,
+            "source": "routing-cache",
+        },
+        "services": {**client, **host},
+        "host_action": host_action,
+        "host_restarted": host_action == "restart-host",
+    }
+
+
 def reconcile_services(config: HubConfig) -> dict[str, Any]:
-    record = resolve_routing_record(config)
+    try:
+        record = resolve_routing_record(config)
+    except StorageError as exc:
+        return _reconcile_degraded(config, storage_error=str(exc))
     if record.state != "active":
         services = service_action(config, "stop-all")
         config.activation_marker.unlink(missing_ok=True)

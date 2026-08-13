@@ -271,7 +271,13 @@ def main(argv: list[str] | None = None) -> None:
         elif args.command == "route-ensure":
             _emit(reconcile_local_route(config, restart_host=args.restart_host), args.json)
         elif args.command == "reconcile-services":
-            _emit(reconcile_services(config), args.json)
+            outcome = reconcile_services(config)
+            _emit(outcome, args.json)
+            if outcome.get("state") == "degraded":
+                # Local services were reconciled from the routing cache, but the
+                # shared record is unreadable: still fail so the outage stays
+                # visible in the unit state instead of only in the log body.
+                raise SystemExit(1)
         elif args.command == "status":
             remote = RemoteClient(config)
             _emit(HandoffOrchestrator(config, remote).status(), args.json)

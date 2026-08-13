@@ -405,6 +405,81 @@ def test_standby_reconciliation_leaves_a_freshly_started_host_to_register(
     assert result["host_action"] is None
 
 
+def test_unreadable_storage_still_reconciles_tunnel_and_host_from_cache(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    standby = replace(hub_config, local_fqdn="standby.example.com")
+    record = initialize_record_for_test(standby, "primary.example.com")
+    standby.routing_cache.parent.mkdir(parents=True)
+    standby.routing_cache.write_text(json.dumps(record.to_dict()), encoding="utf-8")
+    actions: list[str] = []
+    states = {"omnigent-host.service": "inactive"}
+
+    def unavailable(config: HubConfig) -> ActiveHubRecord:
+        raise StorageError("Persistent Storage did not become readable")
+
+    monkeypatch.setattr("omnigent_hub.runtime.resolve_routing_record", unavailable)
+    monkeypatch.setattr(
+        "omnigent_hub.runtime.systemd_state", lambda unit: states.get(unit, "active")
+    )
+    monkeypatch.setattr("omnigent_hub.runtime.probe_health", lambda config: True)
+
+    def record_action(config: HubConfig, action: str) -> dict[str, str]:
+        actions.append(action)
+        return {}
+
+    monkeypatch.setattr("omnigent_hub.runtime.service_action", record_action)
+
+    result = reconcile_services(standby)
+
+    # A broken mount must not veto the tunnel and host, which need only the cache.
+    assert result["state"] == "degraded"
+    assert actions == ["start-client", "start-host"]
+    assert result["route"]["source"] == "routing-cache"
+    assert "did not become readable" in result["storage_error"]
+    assert result["client_error"] is None
+
+
+def test_unreadable_storage_leaves_hub_services_alone_when_cache_names_this_host(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = initialize_record_for_test(hub_config, "primary.example.com")
+    hub_config.routing_cache.parent.mkdir(parents=True)
+    hub_config.routing_cache.write_text(json.dumps(record.to_dict()), encoding="utf-8")
+    actions: list[str] = []
+
+    def unavailable(config: HubConfig) -> ActiveHubRecord:
+        raise StorageError("Persistent Storage did not become readable")
+
+    monkeypatch.setattr("omnigent_hub.runtime.resolve_routing_record", unavailable)
+    monkeypatch.setattr("omnigent_hub.runtime.systemd_state", lambda unit: "inactive")
+
+    def record_action(config: HubConfig, action: str) -> dict[str, str]:
+        actions.append(action)
+        return {}
+
+    monkeypatch.setattr("omnigent_hub.runtime.service_action", record_action)
+
+    result = reconcile_services(hub_config)
+
+    # Ownership is unprovable without the shared record, so a stale cache must
+    # not promote this host -- but the execution host is safe to assert.
+    assert result["state"] == "degraded"
+    assert actions == ["start-host"]
+
+
+def test_unreadable_storage_and_unusable_cache_still_fails(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unavailable(config: HubConfig) -> ActiveHubRecord:
+        raise StorageError("Persistent Storage did not become readable")
+
+    monkeypatch.setattr("omnigent_hub.runtime.resolve_routing_record", unavailable)
+
+    with pytest.raises(HubRuntimeError, match="cannot stand in for it"):
+        reconcile_services(hub_config)
+
+
 def test_candidate_route_changes_when_activation_changes_without_url_change(
     hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
