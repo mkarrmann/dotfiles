@@ -24,6 +24,8 @@ from omnigent_hub.snapshot import (
 )
 from omnigent_hub.storage import StorageError, publish_record, read_record, write_json_atomic
 
+HOST_REGISTRATION_GRACE_SECONDS = 120.0
+
 
 class HubRuntimeError(RuntimeError):
     pass
@@ -489,6 +491,7 @@ def service_action(config: HubConfig, action: str) -> dict[str, str]:
         "start-timer": (("start", "omnigent-snapshot.timer"),),
         "start-client": (("start", "omnigent-client-proxy.service"),),
         "restart-client": (("restart", "omnigent-client-proxy.service"),),
+        "start-host": (("start", "omnigent-host.service"),),
         "restart-host": (("restart", "omnigent-host.service"),),
     }
     if action not in actions:
@@ -554,6 +557,63 @@ def probe_health(config: HubConfig, *, timeout_seconds: float = 2.0) -> bool:
         return False
 
 
+def unit_active_seconds(unit: str) -> float | None:
+    """How long `unit` has been active, or None when systemd cannot say.
+
+    systemd's monotonic timestamps and time.monotonic() are both CLOCK_MONOTONIC
+    on Linux, so they are directly comparable.
+    """
+    result = subprocess.run(
+        ["systemctl", "--user", "show", unit, "-p", "ActiveEnterTimestampMonotonic", "--value"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    raw = result.stdout.strip()
+    if result.returncode != 0 or not raw.isdigit():
+        return None
+    entered = int(raw) / 1_000_000
+    if entered <= 0:
+        return None
+    return max(0.0, time.monotonic() - entered)
+
+
+def probe_host_registered(config: HubConfig, *, timeout_seconds: float = 15.0) -> bool:
+    """Whether the local execution host is registered and online with the hub."""
+    try:
+        result = subprocess.run(
+            [
+                str(config.omnigent_bin),
+                "host",
+                "status",
+                "--server",
+                f"http://127.0.0.1:{config.topology.port}",
+                "--json",
+            ],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if result.returncode != 0:
+        return False
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return False
+    daemons = payload.get("daemons") if isinstance(payload, dict) else None
+    if not isinstance(daemons, list):
+        return False
+    return any(
+        isinstance(daemon, dict)
+        and daemon.get("process") == "online"
+        and daemon.get("host_status") == "online"
+        for daemon in daemons
+    )
+
+
 def _client_reconcile_action(config: HubConfig, *, route_changed: bool) -> str:
     """Choose how to reconcile the client proxy on a non-hub host.
 
@@ -567,6 +627,39 @@ def _client_reconcile_action(config: HubConfig, *, route_changed: bool) -> str:
     if systemd_state("omnigent-client-proxy.service") == "active" and not probe_health(config):
         return "restart-client"
     return "start-client"
+
+
+def _host_reconcile_action(config: HubConfig, *, route_changed: bool) -> str | None:
+    """Choose how to reconcile the execution host, which runs on every devserver.
+
+    A changed route always restarts to retarget the host at the new hub.
+    Otherwise assert the unit is up: it carries Restart=always, so an inactive
+    unit means something stopped it explicitly and nothing else will ever bring
+    it back. An active unit is still probed -- a host that lost its server
+    connection stays "active" while registering no runners, so sessions land
+    nowhere -- and is restarted when the hub cannot see it online.
+
+    A freshly started host is left alone until the grace window expires:
+    registration takes roughly 45s, well inside the reconcile interval, so
+    probing it any sooner would restart it mid-startup on every cycle forever.
+    """
+    if route_changed:
+        return "restart-host"
+    if systemd_state("omnigent-host.service") != "active":
+        return "start-host"
+    active_seconds = unit_active_seconds("omnigent-host.service")
+    if active_seconds is not None and active_seconds < HOST_REGISTRATION_GRACE_SECONDS:
+        return None
+    if not probe_host_registered(config):
+        return "restart-host"
+    return None
+
+
+def _reconcile_host(config: HubConfig, *, route_changed: bool) -> tuple[dict[str, str], str | None]:
+    action = _host_reconcile_action(config, route_changed=route_changed)
+    if action is None:
+        return {"omnigent-host.service": systemd_state("omnigent-host.service")}, None
+    return service_action(config, action), action
 
 
 def assert_sessions_quiescent(config: HubConfig) -> dict[str, Any]:
@@ -669,6 +762,7 @@ def reconcile_services(config: HubConfig) -> dict[str, Any]:
             "state": record.state,
             "epoch": record.epoch,
             "services": services,
+            "host_action": None,
             "host_restarted": False,
         }
     if record.active_hub != config.local_fqdn:
@@ -677,33 +771,29 @@ def reconcile_services(config: HubConfig) -> dict[str, Any]:
         route = reconcile_local_route(config, restart_host=False)
         client_action = _client_reconcile_action(config, route_changed=bool(route["changed"]))
         client = service_action(config, client_action)
-        host_restarted = False
-        if route["changed"]:
-            service_action(config, "restart-host")
-            host_restarted = True
+        host, host_action = _reconcile_host(config, route_changed=bool(route["changed"]))
         return {
             "host": config.local_fqdn,
             "state": "standby",
             "epoch": record.epoch,
             "route": route,
-            "services": {**services, **client},
-            "host_restarted": host_restarted,
+            "services": {**services, **client, **host},
+            "host_action": host_action,
+            "host_restarted": host_action == "restart-host",
         }
     service_action(config, "stop-client")
     route = reconcile_local_route(config, restart_host=False)
     core = service_action(config, "start-core")
-    host_restarted = False
-    if route["changed"]:
-        service_action(config, "restart-host")
-        host_restarted = True
+    host, host_action = _reconcile_host(config, route_changed=bool(route["changed"]))
     tail = service_action(config, "start-tail")
     return {
         "host": config.local_fqdn,
         "state": "active",
         "epoch": record.epoch,
         "route": route,
-        "services": {**core, **tail},
-        "host_restarted": host_restarted,
+        "services": {**core, **tail, **host},
+        "host_action": host_action,
+        "host_restarted": host_action == "restart-host",
     }
 
 

@@ -111,6 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
             "start-watcher",
             "start-timer",
             "start-client",
+            "start-host",
             "restart-host",
         ),
     )
