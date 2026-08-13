@@ -4,9 +4,11 @@ description: >-
   Use when answering questions about the user's Neovim editor capabilities,
   available commands, source control features, Phabricator integration, or
   what meta.nvim provides. Also use when asked about editor keybindings,
-  diff viewing, blame, smartlog, CI signals, code browsing, or any
-  "can my editor do X" question. Trigger keywords: neovim, nvim, editor,
-  HgSsl, smartlog, phabricator, diff, blame, CI, signals, browse, meta.nvim.
+  repository selection from a checkout root, diff viewing, blame, smartlog,
+  CI signals, code browsing, or any "can my editor do X" question. Trigger
+  keywords: neovim, nvim, editor, checkout, workspace root, Myles, Biggrep,
+  Buck, HgSsl, smartlog, phabricator, diff, blame, CI, signals, browse,
+  meta.nvim.
 ---
 
 # Neovim meta.nvim Reference
@@ -16,6 +18,28 @@ description: >-
 The user's Neovim runs **LazyVim** with Meta's **meta.nvim** system plugin (`/usr/share/fb-editor-support/nvim`). Source control is entirely Mercurial/Sapling-centric — no fugitive, lazygit, or git-focused SCM plugins.
 
 **Key architectural fact:** meta.nvim delegates heavily to `hg`/`sl` CLI commands. Many features (phabstatus, CI signals, blame) come from the Mercurial command output, not from meta.nvim querying APIs independently. When investigating what's available, check what the underlying `hg` command outputs, not just what meta.nvim's Lua code queries.
+
+## Checkout-Root Repository Selection
+
+Checkout Neovim sessions start in `~/checkoutN`, above the sibling `fbsource/` and `configerator/` repositories. Repository-aware commands do not require Neovim's global cwd to be a repository. They resolve context in this order:
+
+1. The current real file's nearest `.hg` repository.
+2. The most recently used repository in the current tab.
+3. Another real file visible in the tab, or the cwd if it is itself in a repository.
+4. A prompt among immediate child directories containing `.hg` (normally `fbsource` and `configerator`).
+
+Use `:MetaRepo` to force a repository selection for the current tab. If no repository can be resolved or discovered, the command reports an error. The resolver passes an explicit cwd to each subprocess; it does not change Neovim's global cwd.
+
+The resolver applies to:
+
+| Tool | Behavior |
+|------|----------|
+| Myles (`<leader>p`) | Uses the current file's directory, or the selected repository root for a virtual buffer. |
+| Biggrep (`<leader>sg`, `<leader>sr`, `:Bgs`, `:Bgf`, `:Bgr`) | Still uses the Biggrep extension; the wrapper only supplies the resolved directory/repository as `cwd`. |
+| Sapling (`<leader>hs`, `:HgSsl`, `:HgSslSplit`, diff helpers, `:SlPull`) | Runs against the resolved Sapling repository. |
+| Buck (`<leader>B{t,T,f,l,b,r,g}` and ownership queries) | Uses the nearest `.buckconfig` root for the active file or selected repository. |
+
+Shell commands remain separate from this editor behavior: agents should explicitly run `sl`, `jf`, `arc`, `buck`, and repository-scoped searches from the intended sibling repository.
 
 ## Source Control — HgSsl (Interactive Smartlog)
 

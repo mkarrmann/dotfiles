@@ -4,9 +4,11 @@ description: >-
   Use when you need to understand the user's development environment, editor
   setup, config architecture, or where to find/place configuration files.
   Also use when creating new config files, skills, or dotfiles and you need
-  to know what should be source-controlled versus local-only. Trigger
-  keywords: dotfiles, config, setup, environment, nvim config, editor,
-  where does X go, source control config.
+  to know what should be source-controlled versus local-only. Also use for
+  questions about checkout roots, paired fbsource/configerator workspaces,
+  or navigating between repositories. Trigger keywords: dotfiles, config,
+  setup, environment, checkout, workspace root, fbsource, configerator,
+  nvim config, editor, where does X go, source control config.
 ---
 
 # Development Environment
@@ -14,6 +16,22 @@ description: >-
 ## Overview
 
 Config is split into **source-controlled** (portable, in `~/dotfiles/`) and **local-only** (machine-specific, created directly in target locations). The `local` override pattern is used consistently: source-controlled config loads first, then silently loads a local override if present.
+
+## Paired Meta Workspaces
+
+Each `~/checkoutN` is the working-directory root for one editor and agent session. It contains two independent repositories:
+
+```
+~/checkoutN/
+├── fbsource/
+└── configerator/
+```
+
+Treat the checkout root as a workspace container, not as a Sapling or Buck root. Resolve repository context from the current file or task, then give repo-specific subprocesses an explicit `cwd` (or run them from that repository) without changing the session's global cwd. If a task is ambiguous and no file establishes context, ask whether it targets `fbsource` or `configerator`.
+
+Before repository-specific work, apply that repository's `AGENTS.md` instructions. Derive sibling paths from the current `~/checkoutN`; never hardcode a checkout number or use bare `~/fbsource` and `~/configerator` paths.
+
+`meta-rg` content searches may use explicit paths such as `fbsource/fbcode/...` or `configerator/source/...` from the checkout root. Run unscoped filename discovery (`meta-rg --files ...`) from the selected repository root so its search scope is unambiguous and efficient.
 
 ## Config Architecture
 
@@ -32,7 +50,7 @@ Config is split into **source-controlled** (portable, in `~/dotfiles/`) and **lo
 ├── codex_config/config.template.toml Templated → ~/.codex/config.toml
 ├── codex_config/config.local.example.toml Example local overrides
 ├── agent_config/
-│   ├── global-development-preferences.md  → ~/.claude/rules/ AND ~/.codex/rules/
+│   ├── global-development-preferences.md  → ~/.claude/rules/ AND ~/.codex/AGENTS.md
 │   └── skills/*/                    → ~/.claude/skills/* (directory symlinks)
 └── bin/*                            → ~/bin/
 ```
@@ -69,7 +87,7 @@ On non-Meta machines (where only `init.sh` runs), neither file is symlinked — 
 |------|----------|-------------------|
 | New portable skill | `~/dotfiles/agent_config/skills/<name>/SKILL.md` | Yes — auto-symlinked by `init.sh` |
 | Meta-specific skill | `~/.claude/skills/<name>/SKILL.md` | No — created directly |
-| Claude rules (shared w/ Codex) | `~/dotfiles/agent_config/global-development-preferences.md` | Yes |
+| Claude/Codex global instructions | `~/dotfiles/agent_config/global-development-preferences.md` | Yes |
 | Meta nvim plugins | `~/dotfiles/nvim/local/plugins/meta.lua` | Yes — symlinked by `meta_init.sh`, cond-guarded |
 | Meta nvim config (LSPs, etc.) | `~/dotfiles/nvim/local/config/meta.lua` | Yes — symlinked by `meta_init.sh`, opt-in via local.lua |
 | Machine-specific nvim config | `~/.config/nvim/lua/config/local.lua` | No — created by `meta_init.sh` or manually |
@@ -128,6 +146,8 @@ The headless server has no terminal, so OSC 52 (the normal clipboard mechanism) 
 ### Session naming
 
 Sessions are named like `FTW-checkout1`, `FTW-main1`, `CCO-checkout1`. Ports are deterministic: `cksum(name) % 1000 + 7000`.
+
+Checkout sessions start in `~/checkoutN`, giving tools access to both sibling repositories. Repository-aware Neovim commands resolve their own execution root; see the `neovim-meta` skill for the selection rules.
 
 ### Workspace layout
 
