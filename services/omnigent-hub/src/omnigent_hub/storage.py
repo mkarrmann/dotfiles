@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -40,6 +41,20 @@ def run_command(argv: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, check=False, text=True, capture_output=True)
 
 
+def force_unmount(mount: Path, runner: CommandRunner) -> bool:
+    """Reclaim a FUSE mountpoint whose server process is gone.
+
+    `persistent-storage remount` cannot clear one of these: its unmount step
+    needs a live manifoldfs to talk to, so a mount abandoned by a crashed
+    manifoldfs stays in the mount table and every remount attempt fails against
+    it forever. Only a direct fusermount call frees the mountpoint.
+    """
+    for flag in ("-u", "-uz"):
+        if runner(["fusermount", flag, str(mount)]).returncode == 0:
+            return True
+    return False
+
+
 def ensure_storage(
     config: HubConfig,
     *,
@@ -55,15 +70,22 @@ def ensure_storage(
     last_error = "Persistent Storage did not become readable"
     while True:
         attempt += 1
-        if os.path.ismount(config.storage_mount) and not force_remount:
+        # Probe readability without gating on os.path.ismount: an abandoned FUSE
+        # mount fails lstat, so ismount reports False even though the stale entry
+        # still holds the mountpoint and silently defeats every mount attempt.
+        # ENOTCONN is the only reliable signal of that state. force_remount skips
+        # the probe on the first attempt only, so a mount that turns out to be
+        # abandoned still escalates on the next pass.
+        if not (force_remount and attempt == 1):
             try:
                 config.storage_mount.stat()
-                return
+                if os.path.ismount(config.storage_mount):
+                    return
             except OSError as exc:
                 last_error = str(exc)
-                action = "remount"
-        else:
-            action = "remount" if os.path.ismount(config.storage_mount) else "mount"
+                if exc.errno == errno.ENOTCONN:
+                    force_unmount(config.storage_mount, runner)
+        action = "remount" if os.path.ismount(config.storage_mount) else "mount"
         argv = ["persistent-storage", action]
         delegated_cat = os.environ.get("OMNIGENT_HA_DELEGATED_CAT")
         if delegated_cat:
