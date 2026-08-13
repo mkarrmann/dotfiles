@@ -1,5 +1,6 @@
 local meta_util = require("meta.util")
 local meta_util_hg = require("meta.util.hg")
+local repo_context = require("lib.repo-context")
 local log_to_scuba = meta_util.log_to_scuba
 ---@class (exact) Hg.commit
 ---@field is_current boolean
@@ -170,7 +171,12 @@ end
 local function buf_repo_root(bufnr)
   local root = repo_root_of(vim.api.nvim_buf_get_name(bufnr or 0))
   if root then
+    repo_context.remember(root)
     return root
+  end
+  local context = repo_context.current()
+  if context then
+    return context.repo_root
   end
   local cwd = vim.uv.cwd() or vim.fn.getcwd()
   return repo_root_of(cwd) or cwd
@@ -3834,13 +3840,21 @@ HgBrowseRevYank        yanks current buffer in phabricator for a current commit
 
     vim.api.nvim_create_user_command(
       "HgSsl",
-      function() HgSsl() end,
+      function()
+        repo_context.with_context(function()
+          HgSsl()
+        end)
+      end,
       { desc = "Interactive smartlog for mercurial" }
     )
 
     vim.api.nvim_create_user_command(
       "HgSslSplit",
-      function() HgSsl({ split = true }) end,
+      function()
+        repo_context.with_context(function()
+          HgSsl({ split = true })
+        end)
+      end,
       { desc = "Interactive smartlog for mercurial (vsplit)" }
     )
 

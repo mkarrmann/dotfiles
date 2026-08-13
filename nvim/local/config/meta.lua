@@ -1,5 +1,7 @@
 -- Apply environment-specific configuration (Meta, etc.)
 require("lib.env").setup()
+local repo_context = require("lib.repo-context")
+repo_context.setup()
 
 -- Meta's bundled parsers are minimal (c, lua, markdown, vim, etc.).
 -- On devservers, set proxy env vars so that curl-based downloads (e.g.
@@ -23,6 +25,7 @@ vim.lsp.enable({
 vim.api.nvim_create_autocmd("User", {
 	pattern = "VeryLazy",
 	once = true,
+	desc = "Configure Meta tooling",
 	callback = function()
 		local meta_hg
 		do
@@ -52,6 +55,7 @@ vim.api.nvim_create_autocmd("User", {
 			})
 		end
 
+		require("lib.meta-buck").setup()
 		local buck_ok, buck = pcall(require, "meta.buck")
 		if buck_ok then
 			buck.setup({
@@ -82,9 +86,14 @@ vim.api.nvim_create_autocmd("User", {
 					if not has_non_library then
 						for name, _ in pairs(targets_map) do
 							local base = name:gsub("%-library$", "")
-							local result = vim.fn.system(string.format("buck2 uquery '%s' --json -a buck.type 2>/dev/null", base))
-							if vim.v.shell_error == 0 then
-								local ok2, decoded = pcall(vim.fn.json_decode, result)
+							local cwd = repo_context.buck_root()
+							local result = cwd
+								and vim.system(
+									{ "buck2", "uquery", base, "--json", "-a", "buck.type" },
+									{ cwd = cwd, text = true }
+								):wait()
+							if result and result.code == 0 then
+								local ok2, decoded = pcall(vim.fn.json_decode, result.stdout)
 								if ok2 and decoded and decoded[base] then
 									local buck_type = decoded[base]["buck.type"] or ""
 									if buck_type:match("_binary$") then
@@ -114,11 +123,20 @@ vim.api.nvim_create_autocmd("User", {
 				return
 			end
 
-			local result = vim.fn.systemlist("hg cat -r .^ " .. vim.fn.shellescape(file))
-			local old_ok = vim.v.shell_error == 0
+			local repo_root = repo_context.repo_root(file)
+			if not repo_root then
+				vim.notify("File is not in a Sapling repository", vim.log.levels.ERROR)
+				return
+			end
+			local result = vim.system({ "hg", "cat", "-r", ".^", file }, { text = true, cwd = repo_root }):wait()
+			local old_ok = result.code == 0
+			local old_lines = {}
+			if old_ok and result.stdout and result.stdout ~= "" then
+				old_lines = vim.split(result.stdout:gsub("\n$", ""), "\n", { plain = true })
+			end
 
 			local tmp = vim.fn.tempname()
-			vim.fn.writefile(old_ok and result or {}, tmp)
+			vim.fn.writefile(old_lines, tmp)
 			local orig_win = vim.api.nvim_get_current_win()
 			vim.cmd("rightbelow vertical diffsplit " .. vim.fn.fnameescape(tmp))
 			local diff_win = vim.api.nvim_get_current_win()
@@ -143,14 +161,16 @@ vim.api.nvim_create_autocmd("User", {
 		vim.api.nvim_create_user_command("HgDiffSplitWorkingSet", function()
 			local diff_session = require("lib.diff-session")
 
-			local cwd = vim.uv.cwd() or vim.fn.getcwd()
-			local repo_root = vim.fs.root(cwd, ".hg")
-			if not repo_root then
-				vim.notify("Not in an hg repo", vim.log.levels.ERROR)
+			local context = repo_context.current()
+			if not context then
+				repo_context.with_context(function()
+					vim.cmd.HgDiffSplitWorkingSet()
+				end)
 				return
 			end
+			local repo_root = context.repo_root
 
-			local out = vim.system({ "hg", "status" }, { text = true }):wait()
+			local out = vim.system({ "hg", "status" }, { text = true, cwd = repo_root }):wait()
 			if out.code ~= 0 then
 				vim.notify("hg status failed", vim.log.levels.ERROR)
 				return
@@ -259,7 +279,15 @@ vim.api.nvim_create_autocmd("User", {
 		vim.keymap.set("n", "<leader>hp", "<CMD>SlPull<CR>", { desc = "Hg pull" })
 
 		vim.api.nvim_create_user_command("SlPull", function()
-			vim.fn.jobstart("sl pull", {
+			local context = repo_context.current()
+			if not context then
+				repo_context.with_context(function()
+					vim.cmd.SlPull()
+				end)
+				return
+			end
+			vim.fn.jobstart({ "sl", "pull" }, {
+				cwd = context.repo_root,
 				on_exit = function(_, code)
 					vim.schedule(function()
 						if code == 0 then
@@ -279,6 +307,28 @@ vim.api.nvim_create_autocmd("User", {
 			-- fallback to the LazyVim files picker); this VeryLazy mapping shadows it.
 			local myles = require("lib.myles")
 			myles.setup()
+			local biggrep = telescope.extensions.biggrep
+			if not biggrep._repo_context_originals then
+				biggrep._repo_context_originals = {}
+				local function wrap_search(name)
+					local original = biggrep[name]
+					biggrep._repo_context_originals[name] = original
+					biggrep[name] = function(opts)
+						local search = biggrep._repo_context_originals[name]
+						opts = opts or {}
+						if opts.cwd then
+							search(opts)
+							return
+						end
+						repo_context.with_context(function(context)
+							search(vim.tbl_deep_extend("force", { cwd = context.workdir }, opts))
+						end)
+					end
+				end
+				for _, name in ipairs({ "s", "r", "f" }) do
+					wrap_search(name)
+				end
+			end
 			vim.keymap.set("n", "<leader>p", function()
 				myles.pick()
 			end, { desc = "Find files (Myles)" })
@@ -291,4 +341,3 @@ vim.api.nvim_create_autocmd("User", {
 		end
 	end,
 })
-

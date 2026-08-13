@@ -8,6 +8,7 @@
 -- and, past a stall threshold, offers an in-picker daemon restart.
 
 local M = {}
+local repo_context = require("lib.repo-context")
 
 local PID_FILE = vim.fn.expand("~/.local/share/myles/pid")
 local TICK_MS = 250
@@ -135,16 +136,36 @@ local function attach_watchdog(prompt_bufnr, map)
 end
 
 function M.pick(opts)
-	opts = vim.tbl_deep_extend("force", opts or {}, {
-		attach_mappings = function(prompt_bufnr, map)
-			attach_watchdog(prompt_bufnr, map)
-			return true
-		end,
-	})
-	require("telescope").extensions.myles.myles(opts)
+	require("telescope").extensions.myles.myles(opts or {})
 end
 
 function M.setup()
+	local extension = require("telescope").extensions.myles
+	if not extension._repo_context_original then
+		extension._repo_context_original = extension.myles
+		extension.myles = function(opts)
+			opts = opts or {}
+			local function pick(cwd)
+				local picker_opts = vim.tbl_deep_extend("force", opts, {
+					cwd = cwd,
+					attach_mappings = function(prompt_bufnr, map)
+						attach_watchdog(prompt_bufnr, map)
+						return true
+					end,
+				})
+				extension._repo_context_original(picker_opts)
+			end
+
+			if opts.cwd then
+				pick(opts.cwd)
+			else
+				repo_context.with_context(function(context)
+					pick(context.workdir)
+				end)
+			end
+		end
+	end
+
 	vim.api.nvim_create_user_command("MylesRestart", function()
 		M.restart()
 	end, { desc = "Restart the Myles daemon" })
