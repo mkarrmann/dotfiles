@@ -376,6 +376,15 @@ for ws in "$HOME"/*/; do
   fi
   seen_ws="${seen_ws}${seen_ws:+$'\n'}${ws_real}"
   link_skills_scoped "$ws_real/.claude/skills" meta
+  # Workspace-layout rules belong to the checkout, not to every machine, so they
+  # live here rather than in global-development-preferences.md. Both names are
+  # needed and neither duplicates the other: Claude Code reads only CLAUDE.md
+  # (and walks up to it from a subdirectory), Codex reads only AGENTS.md (and
+  # only in its own cwd, so it picks this up for sessions started at the
+  # workspace root -- the normal case -- while sessions started inside a repo
+  # get that repo's own AGENTS.md instead).
+  link_one "$DOTFILES_DIR/agent_config/meta-workspace-preferences.md" "$ws_real/CLAUDE.md"
+  link_one "$DOTFILES_DIR/agent_config/meta-workspace-preferences.md" "$ws_real/AGENTS.md"
   for repo_name in fbsource configerator; do
     repo_path="$ws_real/$repo_name"
     [[ -d "$repo_path" ]] || continue

@@ -13,13 +13,6 @@ If the code I'm asking you to create should not exist, then you are responsible 
 
 At the same time, you should value concision, and recognize that occasionally I ask for minor one-off changes, and you should "just do it" instead of wasting my time asking questions.
 
-## Workspace Layout
-
-- Each `~/checkoutN/` is a workspace root containing `fbsource/` and `configerator/` side by side (`~/checkout1/{fbsource,configerator}`, `~/checkout2/{fbsource,configerator}`, etc.). Editor and agent sessions normally start at the workspace root, not inside either repository.
-- Derive sibling repository paths from the current workspace root. NEVER hardcode a specific `~/checkoutN`, and never assume a bare `~/configerator` or `~/fbsource`.
-- Treat `~/checkoutN` as a workspace container, not a source-control or build root. For repository-specific commands such as `sl`, `jf`, `arc`, `buck`, and unscoped file discovery, explicitly use the repository implied by the task or current file by changing that command's working directory or passing a repository path. Do not change the session's global working directory merely to run a command.
-- Confirm the process working directory before accessing checkout-specific files. If it identifies a workspace but not an active repository, use the task and current file to select `fbsource` or `configerator`; ask if the choice is materially ambiguous. If it does not identify a checkout, recover the editor/session workspace or ask rather than guessing.
-
 ## Do's
 
 - DO: Bias toward encoding logic and contracts in a type-safe manner, elegantly leveraging the type system of the programming language. This is used to communicate intent, prove specific correctness criteria, improve readability and reviewability, and prevent future mistakes. Even in languages where the typing is not usually trusted (e.g. Python), rely upon modern tooling and techniques to fully leverage typing.
@@ -28,6 +21,7 @@ At the same time, you should value concision, and recognize that occasionally I 
 - DO: Proactively detect bug, style issues, and poor quality in the existing codebase while you work. HOWEVER, do NOT fix these issues unless it directly contributes to the task. Instead, mark these issues with TODO comments for my later review, and carry on with your work.
 - If a commit is requested, create a new commit for each logical change so review stays easy.
 - DO include full, exact code links AND snippets when referencing code to explain, justify, or prove your answer. This is the ONLY way for me to fully understand what you're saying and be confident you're being honest and correct.
+- DO proactively test your changes, and more broadly prove your changes are safe and correct. If there are limitations to what you can feasibly prove/test, then explicitly and clearly surface that.
 
 ## Do Not's
 
@@ -40,4 +34,3 @@ At the same time, you should value concision, and recognize that occasionally I 
 - DO NOT create PRs, diffs, or commits unless I explicitly ask.
 - DO NOT amend or rebase existing commits unless I explicitly ask.
 - DO NOT speculate about how something works when I ask you to explain something. Instead, prove your answer by providing exact code snippets and links AND accounting for the broader context. Remember sometimes individual code snippets are misleading if other parts of the codebase have surprising or counter-intuitive behavior or assumptions.
-

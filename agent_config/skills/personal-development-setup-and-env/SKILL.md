@@ -27,11 +27,7 @@ Each `~/checkoutN` is the working-directory root for one editor and agent sessio
 └── configerator/
 ```
 
-Treat the checkout root as a workspace container, not as a Sapling or Buck root. Resolve repository context from the current file or task, then give repo-specific subprocesses an explicit `cwd` (or run them from that repository) without changing the session's global cwd. If a task is ambiguous and no file establishes context, ask whether it targets `fbsource` or `configerator`.
-
-Before repository-specific work, apply that repository's `AGENTS.md` instructions. Derive sibling paths from the current `~/checkoutN`; never hardcode a checkout number or use bare `~/fbsource` and `~/configerator` paths.
-
-`meta-rg` content searches may use explicit paths such as `fbsource/fbcode/...` or `configerator/source/...` from the checkout root. Run unscoped filename discovery (`meta-rg --files ...`) from the selected repository root so its search scope is unambiguous and efficient.
+The behavioral rules for working inside one — repository selection, never hardcoding a checkout number, scoping `sl` / `jf` / `arc` / `buck` / `meta-rg` — are **not restated here**. They live in `agent_config/meta-workspace-preferences.md`, which `sync.sh` symlinks to `<workspace>/CLAUDE.md` and `<workspace>/AGENTS.md`, so any agent working in a checkout has already loaded them.
 
 ## Config Architecture
 
@@ -53,7 +49,8 @@ Before repository-specific work, apply that repository's `AGENTS.md` instruction
 ├── codex_config/config.template.toml Templated → ~/.codex/config.toml
 ├── codex_config/config.local.example.toml Example local overrides
 ├── agent_config/
-│   ├── global-development-preferences.md  → 3 sinks; see "Global Agent Rules"
+│   ├── global-development-preferences.md  → 3 global sinks; see "Global Agent Rules"
+│   ├── meta-workspace-preferences.md      → ~/checkoutN/{CLAUDE.md,AGENTS.md}
 │   └── skills/*/                    → ~/.claude/skills/* if listed in skills-global.list,
 │                                      else ~/checkoutN/.claude/skills/* (see agent_config/README.md)
 ├── omnigent_config/                 Omnigent topology, shared client prefs, agent specs
@@ -101,6 +98,15 @@ On non-Meta machines (where only `init.sh` runs), neither file is symlinked — 
 
 `~/.claude/CLAUDE.md` pulls the first in via `@~/.claude/rules/...`.
 
+**Rules are split by scope.** `global-development-preferences.md` holds only machine-agnostic preferences and goes everywhere. Anything specific to the Meta checkout layout lives in `meta-workspace-preferences.md`, which `sync.sh` symlinks into each detected workspace root as both `CLAUDE.md` and `AGENTS.md`. Those two names are not redundant, and each agent still sees the content once:
+
+| At `~/checkoutN/` | `CLAUDE.md` | `AGENTS.md` |
+|---|---|---|
+| Claude Code | read; walks up from subdirectories | ignored |
+| Codex | ignored | read in cwd only; does **not** walk up |
+
+So a session started at the workspace root — the normal case — gets the rules in either agent, while a Codex session started inside `fbsource/` gets that repo's own `AGENTS.md` instead. Machines with no checkout get neither file, which is why this content must not sit in the global file.
+
 Why the two non-obvious paths work (verified empirically 2026-08):
 
 - **Claude Agent SDK under Omnigent.** A spec's `prompt:` becomes a full-replacement `--system-prompt`, which does *not* suppress CLAUDE.md. `skills_filter` defaults to `"all"` → `setting_sources=None` → the SDK emits `--setting-sources=user,project`. Omnigent deliberately omits `--bare`, which would skip CLAUDE.md discovery.
@@ -124,7 +130,8 @@ If a future harness reads none of these, Omnigent's `instructions:` / `prompt:` 
 | What | Location | Source-controlled? |
 |------|----------|-------------------|
 | New portable skill | `~/dotfiles/agent_config/skills/<name>/SKILL.md` | Yes — auto-symlinked by `sync.sh` |
-| Cross-agent rules | `~/dotfiles/agent_config/global-development-preferences.md` | Yes — 3 sinks via `sync.sh` |
+| Cross-agent rules (machine-agnostic) | `~/dotfiles/agent_config/global-development-preferences.md` | Yes — 3 sinks via `sync.sh` |
+| Meta checkout-layout rules | `~/dotfiles/agent_config/meta-workspace-preferences.md` | Yes — → `~/checkoutN/{CLAUDE.md,AGENTS.md}` |
 | tpai rules/skills policy | `~/dotfiles/claude_config/meta-config.toml` | Yes — → `~/.claude/meta/config.toml` |
 | Meta-specific skill | `~/.claude/skills/<name>/SKILL.md` | No — created directly |
 | Meta nvim plugins | `~/dotfiles/nvim/local/plugins/meta.lua` | Yes — symlinked by `meta_init.sh`, cond-guarded |
