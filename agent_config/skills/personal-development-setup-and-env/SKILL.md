@@ -37,23 +37,30 @@ Before repository-specific work, apply that repository's `AGENTS.md` instruction
 
 ```
 ~/dotfiles/                          (git repo, portable across machines)
-├── init.sh                          Symlinks portable config; skip-on-conflict
-├── meta_init.sh                     Symlinks Meta-specific local config templates
+├── sync.sh                          Reflects config: symlinks, generated files, staged units.
+│                                      Idempotent; never restarts running services
+├── init.sh                          Runs sync.sh, then installs, then converges live services
+├── meta_init.sh                     Symlinks Meta-specific nvim local config templates
 ├── .shellrc, .zshrc, .tmux.conf ... Shell/terminal dotfiles → ~/
 ├── nvim_init.lua                    → ~/.config/nvim/init.lua
-├── nvim/lua/{config,plugins,lib}/*.lua  → ~/.config/nvim/lua/... (via init.sh)
+├── nvim/lua/{config,plugins,lib}/*.lua  → ~/.config/nvim/lua/... (via sync.sh)
 ├── nvim/local/{config,plugins}/*.lua    → ~/.config/nvim/lua/... (via meta_init.sh)
 ├── claude_config/
 │   ├── CLAUDE.md                    → ~/.claude/CLAUDE.md
+│   ├── meta-config.toml             → ~/.claude/meta/config.toml (tpai rules/skills policy)
 │   ├── statusline.sh                → ~/.claude/statusline.sh
 │   └── hooks/*                      → ~/.claude/hooks/
 ├── codex_config/config.template.toml Templated → ~/.codex/config.toml
 ├── codex_config/config.local.example.toml Example local overrides
 ├── agent_config/
-│   ├── global-development-preferences.md  → ~/.claude/rules/ AND ~/.codex/AGENTS.md
-│   └── skills/*/                    → ~/.claude/skills/* (directory symlinks)
+│   ├── global-development-preferences.md  → 3 sinks; see "Global Agent Rules"
+│   └── skills/*/                    → ~/.claude/skills/* if listed in skills-global.list,
+│                                      else ~/checkoutN/.claude/skills/* (see agent_config/README.md)
+├── omnigent_config/                 Omnigent topology, shared client prefs, agent specs
 └── bin/*                            → ~/bin/
 ```
+
+**Two entry points, different blast radius.** `sync.sh` only reflects config and is safe to run any time — use it to apply dotfile edits. `init.sh` runs `sync.sh` first, then does network-bound installs, then restarts/reconciles running services. Reach for `init.sh` on a new machine or a deliberate full converge.
 
 ## Local Override Pattern
 
@@ -65,7 +72,8 @@ Every layer uses the same pattern — load portable config, then silently load l
 | Shell | `.shellrc` | `~/.localrc` | `source ~/.localrc` in `.shellrc` |
 | Tmux | `.tmux.conf` | `~/.tmux.conf.local` | `source-file` if exists |
 | Claude | `CLAUDE.md` | `CLAUDE.local.md` | `@~/.claude/CLAUDE.local.md` reference |
-| Codex | `config.template.toml` | `config.local.toml` | Appended by `init.sh` |
+| Codex | `config.template.toml` | `config.local.toml` | Appended by `sync.sh` |
+| Codex instructions | `~/.codex/AGENTS.md` | `~/.codex/AGENTS.override.md` | Loaded first by Codex, wins |
 
 **Rule of thumb:** `local.lua` / `localrc` / etc. are the machine-specific escape hatches — not in dotfiles. Shared config (even Meta-specific) lives in dotfiles under a descriptive name.
 
@@ -81,13 +89,44 @@ Meta-specific Neovim local config templates live in `nvim/local/` (source-contro
 
 On non-Meta machines (where only `init.sh` runs), neither file is symlinked — Meta config is completely absent.
 
+## Global Agent Rules
+
+`agent_config/global-development-preferences.md` is the single canonical file. `sync.sh` symlinks it into each agent's own global-instruction path; no agent reads another's, and each sees it exactly once.
+
+| Sink | Serves |
+|------|--------|
+| `~/.claude/rules/global-development-preferences.md` | Claude Code TUI, Claude Agent SDK, Omnigent `claude-sdk` agents (claude/polly/debby) |
+| `~/.codex/AGENTS.md` | Codex TUI, `codex exec`, codex app-server, Omnigent `codex` agents |
+| `~/.config/opencode/AGENTS.md` | Metacode — **unverified, see below** |
+
+`~/.claude/CLAUDE.md` pulls the first in via `@~/.claude/rules/...`.
+
+Why the two non-obvious paths work (verified empirically 2026-08):
+
+- **Claude Agent SDK under Omnigent.** A spec's `prompt:` becomes a full-replacement `--system-prompt`, which does *not* suppress CLAUDE.md. `skills_filter` defaults to `"all"` → `setting_sources=None` → the SDK emits `--setting-sources=user,project`. Omnigent deliberately omits `--bare`, which would skip CLAUDE.md discovery.
+- **Codex under Omnigent.** The executor redirects `CODEX_HOME` to a per-session private home, but symlinks `AGENTS.md` / `AGENTS.override.md` in from the real `~/.codex` so instructions survive the redirect. Suppressed only by `HARNESS_CODEX_MINIMAL_CONFIG`, which nothing sets.
+
+Traps:
+
+- **`~/.codex/rules/` is not an instructions directory.** It is the exec-policy store, and the loader keeps only `*.rules` entries — a `.md` there is silently ignored. `sync.sh` deletes the stale link.
+- **`~/.claude/rules/` is a Claude-only convention.** Codex and Metacode never read it. Extra `.md` files there reach Claude Code alone; anything cross-agent must go in the canonical file.
+- **`skills: none` on an Omnigent spec also kills the rules.** It forces `setting_sources=[]`, suppressing CLAUDE.md along with the skill listing. No spec sets it today.
+
+Not covered:
+
+- **dvsc / devmate.** Its spec declares no `prompt:`, and the generic ACP harness injects no instructions — dvsc-core owns its prompt end to end. Devmate's own personal-rules channel is `~/.llms/rules/*.md`, which dotfiles does not populate; note that llm-rules would then *also* inject it into Claude Code, double-exposing it.
+- **Metacode.** `metacode run` answered `NONE` when asked to quote a rule, so `~/.config/opencode/AGENTS.md` may be a no-op. Open question.
+
+If a future harness reads none of these, Omnigent's `instructions:` / `prompt:` spec field is the harness-agnostic fallback. They are the same field (the parser prefers `instructions:`, falls back to `prompt:`), it resolves a sibling filename inside the agent dir, and it reaches every executor — the ACP harness folds it into the first user turn. Agent dirs register by path and are content-addressed, so a sibling `AGENTS.md` travels with the bundle and re-registers when it changes.
+
 ## Where Things Go
 
 | What | Location | Source-controlled? |
 |------|----------|-------------------|
-| New portable skill | `~/dotfiles/agent_config/skills/<name>/SKILL.md` | Yes — auto-symlinked by `init.sh` |
+| New portable skill | `~/dotfiles/agent_config/skills/<name>/SKILL.md` | Yes — auto-symlinked by `sync.sh` |
+| Cross-agent rules | `~/dotfiles/agent_config/global-development-preferences.md` | Yes — 3 sinks via `sync.sh` |
+| tpai rules/skills policy | `~/dotfiles/claude_config/meta-config.toml` | Yes — → `~/.claude/meta/config.toml` |
 | Meta-specific skill | `~/.claude/skills/<name>/SKILL.md` | No — created directly |
-| Claude/Codex global instructions | `~/dotfiles/agent_config/global-development-preferences.md` | Yes |
 | Meta nvim plugins | `~/dotfiles/nvim/local/plugins/meta.lua` | Yes — symlinked by `meta_init.sh`, cond-guarded |
 | Meta nvim config (LSPs, etc.) | `~/dotfiles/nvim/local/config/meta.lua` | Yes — symlinked by `meta_init.sh`, opt-in via local.lua |
 | Machine-specific nvim config | `~/.config/nvim/lua/config/local.lua` | No — created by `meta_init.sh` or manually |
@@ -214,5 +253,7 @@ startup-windows
 
 ## Adding a New Skill
 
-1. **Portable:** Create `~/dotfiles/agent_config/skills/<name>/SKILL.md`, then re-run `init.sh` (or manually symlink to `~/.claude/skills/<name>`)
+1. **Portable:** Create `~/dotfiles/agent_config/skills/<name>/SKILL.md`, then run `sync.sh`. It lands in `~/.claude/skills/` only if the name is in `agent_config/skills-global.list`; otherwise it is scoped to `~/checkoutN/.claude/skills/` and advertised only inside a Meta checkout. Keep the global list short — each entry costs context in every unrelated session.
 2. **Local-only:** Create `~/.claude/skills/<name>/SKILL.md` directly
+
+Frontmatter `name:` and `description:` are both mandatory. Claude Code infers a missing `name` from the directory, but Omnigent drops the skill with only a stderr warning — so it silently loads in one harness and not the other. `sync.sh` validates this and reports `SKILL PROBLEMS`.
