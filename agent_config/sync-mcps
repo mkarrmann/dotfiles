@@ -28,6 +28,7 @@ HOME = Path.home()
 CFG = Path(os.environ.get("AGENT_CONFIG_DIR", HOME / "dotfiles" / "agent_config"))
 MCP_DIR = CFG / "plugins" / "custom-mcps" / "mcps"
 VENDORED_SKILLS = CFG / "skills" / "meta-powertools-vendored"
+GLOBAL_RULES = CFG / "global-development-preferences.md"
 
 
 def load_mcps() -> dict:
@@ -75,8 +76,19 @@ def sync_metacode(mcps: dict) -> None:
     if vendored not in paths:
         paths.append(vendored)
 
+    # Metacode does NOT read ~/.config/opencode/AGENTS.md, despite that being the
+    # documented opencode convention: asked to quote a rule from it, it answered
+    # NONE. The `instructions` list is what actually loads global rules -- adding
+    # this entry took its startup banner from "1 rule loaded" to "2 rules loaded"
+    # and the same question to YES. Absolute path, because this file is generated
+    # per machine and $HOME differs between the Mac and the devservers.
+    instructions = data.setdefault("instructions", [])
+    rules = str(GLOBAL_RULES)
+    if rules not in instructions:
+        instructions.append(rules)
+
     path.write_text(json.dumps(data, indent=2) + "\n")
-    print(f"synced {len(mcps)} MCPs + skills.paths into {path}")
+    print(f"synced {len(mcps)} MCPs + skills.paths + instructions into {path}")
 
 
 def _toml_escape(s: str) -> str:

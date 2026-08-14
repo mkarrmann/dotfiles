@@ -616,9 +616,17 @@ sync_link_subdirs "$DOTFILES_DIR/agent_config/skills/meta-powertools-vendored" "
 opencode_config="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}"
 mkdir -p "$opencode_config"
 
-# Shared development rules. Metacode reads AGENTS.md from that dir as its global
-# instructions, so the same canonical file backs all three agents.
-link_one "$DOTFILES_DIR/agent_config/global-development-preferences.md" "$opencode_config/AGENTS.md"
+# Shared development rules are NOT linked here. Despite the documented opencode
+# convention, Metacode does not read $opencode_config/AGENTS.md: asked to quote a
+# rule from it, it answered NONE, and its startup banner stayed at "1 rule
+# loaded". The link was therefore a no-op on every machine since it was added.
+# sync-mcps wires the same canonical file into opencode.json's `instructions`
+# list instead, which does load ("2 rules loaded").
+opencode_retired_rule="$opencode_config/AGENTS.md"
+if [[ -L "$opencode_retired_rule" ]]; then
+  rm "$opencode_retired_rule"
+  echo "removed stale link $opencode_retired_rule"
+fi
 
 # Skills are wired by sync-mcps below (Metacode loads them from
 # opencode.json skills.paths, not from symlinks).

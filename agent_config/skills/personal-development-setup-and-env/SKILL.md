@@ -94,7 +94,7 @@ On non-Meta machines (where only `init.sh` runs), neither file is symlinked — 
 |------|--------|
 | `~/.claude/rules/global-development-preferences.md` | Claude Code TUI, Claude Agent SDK, Omnigent `claude-sdk` agents (claude/polly/debby) |
 | `~/.codex/AGENTS.md` | Codex TUI, `codex exec`, codex app-server, Omnigent `codex` agents |
-| `~/.config/opencode/AGENTS.md` | Metacode — **unverified, see below** |
+| `opencode.json` → `instructions` | Metacode. **Not** `~/.config/opencode/AGENTS.md` — see below |
 
 `~/.claude/CLAUDE.md` pulls the first in via `@~/.claude/rules/...`.
 
@@ -115,13 +115,14 @@ Why the two non-obvious paths work (verified empirically 2026-08):
 Traps:
 
 - **`~/.codex/rules/` is not an instructions directory.** It is the exec-policy store, and the loader keeps only `*.rules` entries — a `.md` there is silently ignored. `sync.sh` deletes the stale link.
+- **Metacode ignores `~/.config/opencode/AGENTS.md`.** Despite that being the documented opencode convention, it loads global rules only from the `instructions` array in `opencode.json`, which `sync-mcps` writes. The old symlink was a no-op on every machine; `sync.sh` now removes it. Metacode's startup banner is the quickest check — it prints `N rules loaded`.
+- **YAML frontmatter is not portable across sinks.** Claude Code strips it (a `name:`/`description:` block never reaches the model); Codex injects it verbatim as instruction text. Rules files are loaded by path, not selected from a listing, so a description buys nothing and costs tokens in Codex. Keep frontmatter for skills only, where it is mandatory.
 - **`~/.claude/rules/` is a Claude-only convention.** Codex and Metacode never read it. Extra `.md` files there reach Claude Code alone; anything cross-agent must go in the canonical file.
 - **`skills: none` on an Omnigent spec also kills the rules.** It forces `setting_sources=[]`, suppressing CLAUDE.md along with the skill listing. No spec sets it today.
 
 Not covered:
 
 - **dvsc / devmate.** Its spec declares no `prompt:`, and the generic ACP harness injects no instructions — dvsc-core owns its prompt end to end. Devmate's own personal-rules channel is `~/.llms/rules/*.md`, which dotfiles does not populate; note that llm-rules would then *also* inject it into Claude Code, double-exposing it.
-- **Metacode.** `metacode run` answered `NONE` when asked to quote a rule, so `~/.config/opencode/AGENTS.md` may be a no-op. Open question.
 
 If a future harness reads none of these, Omnigent's `instructions:` / `prompt:` spec field is the harness-agnostic fallback. They are the same field (the parser prefers `instructions:`, falls back to `prompt:`), it resolves a sibling filename inside the agent dir, and it reaches every executor — the ACP harness folds it into the first user turn. Agent dirs register by path and are content-addressed, so a sibling `AGENTS.md` travels with the bundle and re-registers when it changes.
 
