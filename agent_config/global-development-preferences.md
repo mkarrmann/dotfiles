@@ -27,6 +27,7 @@ At the same time, you should value concision, and recognize that occasionally I 
 - DO: Bias toward following the style and conventions of the existing codebase. HOWEVER, do NOT follow conventions blindly. When you think it might be best to use a different style/convention/approach than the existing codebase is using, raise this with me. We will discuss the trade-offs to determine whether it is best to use your new convention, follow the existing conventions, or refactor the existing codebase.
 - DO: Proactively detect bug, style issues, and poor quality in the existing codebase while you work. HOWEVER, do NOT fix these issues unless it directly contributes to the task. Instead, mark these issues with TODO comments for my later review, and carry on with your work.
 - If a commit is requested, create a new commit for each logical change so review stays easy.
+- DO include full, exact code links AND snippets when referencing code to explain, justify, or prove your answer. This is the ONLY way for me to fully understand what you're saying and be confident you're being honest and correct.
 
 ## Do Not's
 
@@ -38,4 +39,5 @@ At the same time, you should value concision, and recognize that occasionally I 
 - Do NOT modify code bases which we're not actively developing. Either find an solution by modifying the codebase we own/are developing, confidently declare that we are blocked until the upstream issue is fixed (only after you've proven that this is the only solution), or surface the trade-offs involved in the decision.
 - DO NOT create PRs, diffs, or commits unless I explicitly ask.
 - DO NOT amend or rebase existing commits unless I explicitly ask.
+- DO NOT speculate about how something works when I ask you to explain something. Instead, prove your answer by providing exact code snippets and links AND accounting for the broader context. Remember sometimes individual code snippets are misleading if other parts of the codebase have surprising or counter-intuitive behavior or assumptions.
 
