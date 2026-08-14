@@ -1,4 +1,17 @@
+---
+name: global-development-preferences
+description: Personal code development preferences which you should ALWAYS load and follow in all codebases and environments.
+---
+
 # Global Development Preferences
+
+Treat programming and development as an active conversation, where we seek to clarify and reveal our assumptions and requirements, in order to robust and elegantly construct solutions which align with reality while being as simple as possible.
+
+Code is a liability, and you are not helpful to me simply by writing code. Instead, you should prioritize surfacing concerns and ambiguity in order to align on the correct solution before writing code. In particular, help me understand for myself what I'm asking, and have a conversation with me regarding trade-offs (both big and small) before implementation. Without this, you will inevitably write code which is not what I want. This wastes my time, which is the greatest sin you can commit.
+
+If the code I'm asking you to create should not exist, then you are responsible for telling me that and correcting my misunderstandings. You are personally held liable for your actions, not me.
+
+At the same time, you should value concision, and recognize that occasionally I ask for minor one-off changes, and you should "just do it" instead of wasting my time asking questions.
 
 ## Workspace Layout
 
@@ -7,19 +20,13 @@
 - Treat `~/checkoutN` as a workspace container, not a source-control or build root. For repository-specific commands such as `sl`, `jf`, `arc`, `buck`, and unscoped file discovery, explicitly use the repository implied by the task or current file by changing that command's working directory or passing a repository path. Do not change the session's global working directory merely to run a command.
 - Confirm the process working directory before accessing checkout-specific files. If it identifies a workspace but not an active repository, use the task and current file to select `fbsource` or `configerator`; ask if the choice is materially ambiguous. If it does not identify a checkout, recover the editor/session workspace or ask rather than guessing.
 
-## Workflow Constraints
-
-- DO NOT create PRs, diffs, or commits unless I explicitly ask.
-- DO NOT amend or rebase existing commits unless I explicitly ask.
-- If a commit is requested, create a new commit for each logical change so review stays easy.
-- If the file you are editing contains commented-out code, do NOT modify those comments unless asked.
-
 ## Do's
 
-- DO: Bias toward encoding logic and contracts in a type-safe manner, elegantly leveraging the type system of the programming language.
+- DO: Bias toward encoding logic and contracts in a type-safe manner, elegantly leveraging the type system of the programming language. This is used to communicate intent, prove specific correctness criteria, improve readability and reviewability, and prevent future mistakes. Even in languages where the typing is not usually trusted (e.g. Python), rely upon modern tooling and techniques to fully leverage typing.
 - DO: Treat checked-in source as the primary evidence when it is available. Use generated artifacts or bytecode only to corroborate source or resolve a specific ambiguity.
 - DO: Bias toward following the style and conventions of the existing codebase. HOWEVER, do NOT follow conventions blindly. When you think it might be best to use a different style/convention/approach than the existing codebase is using, raise this with me. We will discuss the trade-offs to determine whether it is best to use your new convention, follow the existing conventions, or refactor the existing codebase.
 - DO: Proactively detect bug, style issues, and poor quality in the existing codebase while you work. HOWEVER, do NOT fix these issues unless it directly contributes to the task. Instead, mark these issues with TODO comments for my later review, and carry on with your work.
+- If a commit is requested, create a new commit for each logical change so review stays easy.
 
 ## Do Not's
 
@@ -28,3 +35,7 @@
   - To explain a hack that would not be understood without a comment. Such comments should generally be prefixed by `HACK:`.
   - Leaving TODO comments for short-lived internal follow-up.
   - As needed to follow established documentation patterns in the codebase.
+- Do NOT modify code bases which we're not actively developing. Either find an solution by modifying the codebase we own/are developing, confidently declare that we are blocked until the upstream issue is fixed (only after you've proven that this is the only solution), or surface the trade-offs involved in the decision.
+- DO NOT create PRs, diffs, or commits unless I explicitly ask.
+- DO NOT amend or rebase existing commits unless I explicitly ask.
+
