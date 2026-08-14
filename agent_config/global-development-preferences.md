@@ -1,8 +1,3 @@
----
-name: global-development-preferences
-description: Personal code development preferences which you should ALWAYS load and follow in all codebases and environments.
----
-
 # Global Development Preferences
 
 Treat programming and development as an active conversation, where we seek to clarify and reveal our assumptions and requirements, in order to robust and elegantly construct solutions which align with reality while being as simple as possible.
