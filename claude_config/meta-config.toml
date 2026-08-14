@@ -1,0 +1,23 @@
+# Personal overrides for the Meta tpai rules/skills integration, symlinked to
+# ~/.claude/meta/config.toml by sync.sh. User level: takes precedence over any
+# repo-level <repo>/.llms/3pai/claude.toml. Inert on non-Meta machines, where
+# nothing reads it.
+
+# Claude Code already loads ~/.claude/skills natively, and
+# ~/.llms/skills/claude-templates is a symlink to that very directory, so the
+# tpai integration re-advertised the identical skills a second time as an
+# <available_skills> block. Measured cost of the duplicate: 1094 tokens per
+# session, read from tokens_injected in
+# ~/.claude/meta/rules/claude_code_invocation_*.json, which drops to 0 with this
+# set. The native copy is the better of the two to keep: it is wired to the
+# Skill tool, whereas the tpai copy only instructs the model to Read the
+# SKILL.md path. Confirmed not to disturb metacode, which still discovers its
+# own 91 skills through the same integration.
+#
+# The llm-rules `/blocklist` skill edits ~/.claude/meta/config.toml in place, so
+# its edits land in dotfiles through this symlink. If that skill ever replaces
+# the file rather than writing through it, the link is lost and this config
+# silently stops syncing; sync.sh then reports the resulting real file as a
+# SHADOW.
+[rules.skills]
+policy = "disabled"

@@ -309,7 +309,7 @@ mkdir -p "$HOME/.config/sway"
 link_one "$DOTFILES_DIR/sway_config" "$HOME/.config/sway/config"
 
 # Claude Code
-mkdir -p "$HOME/.claude/projects" "$HOME/.claude/rules" "$HOME/.claude/hooks"
+mkdir -p "$HOME/.claude/projects" "$HOME/.claude/rules" "$HOME/.claude/hooks" "$HOME/.claude/meta"
 link_one "$DOTFILES_DIR/claude_config/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
 link_one "$DOTFILES_DIR/agent_config/global-development-preferences.md" "$HOME/.claude/rules/global-development-preferences.md"
 # Clean up stale optional rule links that no longer exist in dotfiles.
@@ -317,6 +317,10 @@ if [[ -L "$HOME/.claude/rules/personal-style.md" && ! -e "$HOME/.claude/rules/pe
   rm "$HOME/.claude/rules/personal-style.md"
   echo "removed stale link $HOME/.claude/rules/personal-style.md"
 fi
+# Meta tpai rules/skills integration overrides. Kept here rather than left as a
+# machine-local file so every host suppresses the duplicate skill injection; see
+# claude_config/meta-config.toml for the measurement behind it.
+link_one "$DOTFILES_DIR/claude_config/meta-config.toml" "$HOME/.claude/meta/config.toml"
 link_one "$DOTFILES_DIR/claude_config/statusline.sh" "$HOME/.claude/statusline.sh"
 # Agent Manager
 mkdir -p "$HOME/.claude/agent-manager/bin" "$HOME/.claude/statusline.d"
