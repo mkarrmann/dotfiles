@@ -29,6 +29,17 @@ set -uo pipefail
 #     (no Accessibility permission required), matching AeroSpace's
 #     monitor-appkit-nsscreen-screens-id (a 1-based index into NSScreen.screens).
 #
+# Window identity:
+#   Which window fills each slot is decided by id, not by title. A title regex
+#   is ambiguous — '^Calendar\b' matches any Chrome window showing a calendar —
+#   and AeroSpace's ordering of equal titles is not stable between calls, so
+#   resolving the same regex twice can yield two different windows. When
+#   startup-windows reserves the dashboard's Chrome windows it passes their ids
+#   in WS11_CAL_WINDOW_ID / WS11_CHAT_WINDOW_ID (WS11_OBS_WINDOW_ID and
+#   WS11_ORCH_WINDOW_ID are honoured too) and those win outright. Title matching
+#   is only the fallback for a standalone run, and it never takes a Chrome
+#   window off another workspace — it opens a fresh one instead.
+#
 # By default, this script only arranges the four existing dashboard windows.
 # Startup passes --ensure-windows to provision any missing windows first.
 
@@ -92,15 +103,63 @@ if ! aerospace list-windows --all &>/dev/null; then echo "ERROR: AeroSpace is no
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
-# find_id APP TITLE_RE -> first matching window id anywhere (or empty)
-find_id() {
-  aerospace list-windows --all --json 2>/dev/null | jq -r \
-    --arg app "$1" --arg re "$2" \
-    '[.[] | select(."app-name"==$app and ((.["window-title"]//"")|test($re)))]
-       | first | .["window-id"] // empty'
+# Every lookup runs against one of these snapshots. Asking for %{workspace}
+# here is what makes the dashboard lookups workspace-aware without paying for a
+# second CLI round trip per window.
+snapshot() {
+  aerospace list-windows --all --json \
+    --format '%{window-id}%{workspace}%{app-name}%{window-title}' 2>/dev/null
 }
 
-snapshot() { aerospace list-windows --all --json 2>/dev/null; }
+# resolve_window SNAPSHOT APP TITLE_RE [own|any] -> window id (or empty)
+#
+# A title regex is not an identity: '^Calendar\b' matches any Chrome window
+# showing a calendar, not only the dashboard's. Two rules keep that from
+# selecting the wrong one:
+#   - preference. A window already on ws 11 wins, then one parked on the sweep
+#     workspace, then (policy=any only) any remaining match. policy=own refuses
+#     to take a window off a workspace somebody else owns; for the Chrome slots
+#     a freshly opened URL is always a valid substitute, so stealing another
+#     workspace's window is never the right trade.
+#   - determinism. AeroSpace orders list-windows by title and breaks ties
+#     arbitrarily — successive calls reshuffle same-titled windows — so `first`
+#     on its own is not reproducible. Sorting by window id makes two runs, and
+#     this script versus startup-windows, always agree on which window is "the"
+#     Calendar.
+resolve_window() {
+  local snapshot="$1" app="$2" re="$3" policy="${4:-any}"
+  jq -r \
+    --arg app "$app" --arg re "$re" \
+    --arg ws "$WS" --arg sweep "$SWEEP_WORKSPACE" --arg policy "$policy" '
+    [ .[] | select(."app-name" == $app and ((.["window-title"] // "") | test($re))) ]
+    | sort_by(.["window-id"])
+    | (  (map(select(.workspace == $ws))    | first)
+      // (map(select(.workspace == $sweep)) | first)
+      // (if $policy == "any" then first else empty end) )
+    | .["window-id"] // empty
+  ' <<< "$snapshot"
+}
+
+# claimed_window SNAPSHOT ID APP LABEL -> ID when it still exists and belongs to
+# APP. startup-windows hands over the ids it reserved so this script never
+# re-resolves them by title. Window ids die with the app, so a value carried
+# over from a stale environment must not pin the dashboard to a dead window.
+claimed_window() {
+  local snapshot="$1" wid="$2" app="$3" label="$4"
+  [[ -n "$wid" ]] || return 1
+  if [[ ! "$wid" =~ ^[0-9]+$ ]]; then
+    echo "  [ws11] ignoring malformed reserved $label window id '$wid'" >&2
+    return 1
+  fi
+  if jq -e --argjson wid "$wid" --arg app "$app" \
+      'any(.[]; .["window-id"] == $wid and ."app-name" == $app)' \
+      <<< "$snapshot" >/dev/null 2>&1; then
+    echo "$wid"
+    return 0
+  fi
+  echo "  [ws11] reserved $label window $wid is gone; falling back to title match" >&2
+  return 1
+}
 
 # wait for a new window of APP to appear relative to BEFORE_JSON; echo its id
 wait_for_new_window() {
@@ -127,7 +186,7 @@ open_chrome_url() {
 # ensure_chrome TITLE_RE URL -> echo window id (reuse existing or open URL)
 ensure_chrome() {
   local re="$1" url="$2" wid
-  wid=$(find_id "$CHROME_APP" "$re")
+  wid=$(resolve_window "$(snapshot)" "$CHROME_APP" "$re" own)
   if [[ -z "$wid" ]]; then
     echo "[ws11] opening Chrome $url" >&2
     wid=$(open_chrome_url "$url") || return 1
@@ -140,12 +199,13 @@ ensure_chrome() {
 # ensure_app APP_BUNDLE_OR_NAME TITLE_RE -> echo window id (launch if missing)
 ensure_app_window() {
   local app="$1" re="$2" wid before
-  wid=$(find_id "$app" "$re")
+  wid=$(resolve_window "$(snapshot)" "$app" "$re" any)
   if [[ -z "$wid" ]]; then
     echo "[ws11] launching $app" >&2
     before=$(snapshot)
     open -a "$app" 2>/dev/null || true
-    wid=$(wait_for_new_window "$app" "$before") || wid=$(find_id "$app" "$re")
+    wid=$(wait_for_new_window "$app" "$before") \
+      || wid=$(resolve_window "$(snapshot)" "$app" "$re" any)
   fi
   echo "$wid"
 }
@@ -215,17 +275,27 @@ flatten_flat() {
 }
 
 # ── Resolve the four windows ─────────────────────────────────────────
-# Retry title-based resolution first: window titles can be briefly empty
+# Reserved ids win outright: startup-windows already decided which Calendar and
+# Chat windows are the dashboard's, and re-deriving that from titles here is
+# what let a second same-titled window get pulled onto ws 11.
+#
+# Otherwise retry title-based resolution: window titles can be briefly empty
 # right after windows appear (and AeroSpace/AX titles occasionally lag).
 # Provisioning mode opens or launches missing windows only after these retries,
 # so a transient blank title never causes a duplicate window to be spawned.
 echo "arrange-ws11: resolving windows..."
-CAL=""; OBS=""; CHAT=""; ORCH=""
-for _ in $(seq 1 8); do
-  [[ -z "$CAL"  ]] && CAL=$(find_id "$CHROME_APP" "$CAL_TITLE_RE")
-  [[ -z "$CHAT" ]] && CHAT=$(find_id "$CHROME_APP" "$CHAT_TITLE_RE")
-  [[ -z "$OBS"  ]] && OBS=$(find_id "Obsidian" '.')
-  [[ -z "$ORCH" ]] && ORCH=$(find_id "Orchest" "$ORCHEST_TITLE_RE")
+SNAP=$(snapshot)
+CAL=$(claimed_window  "$SNAP" "${WS11_CAL_WINDOW_ID:-}"  "$CHROME_APP" Calendar) || CAL=""
+CHAT=$(claimed_window "$SNAP" "${WS11_CHAT_WINDOW_ID:-}" "$CHROME_APP" Chat)     || CHAT=""
+OBS=$(claimed_window  "$SNAP" "${WS11_OBS_WINDOW_ID:-}"  Obsidian      Obsidian) || OBS=""
+ORCH=$(claimed_window "$SNAP" "${WS11_ORCH_WINDOW_ID:-}" Orchest       Orchest)  || ORCH=""
+
+for attempt in $(seq 1 8); do
+  [[ "$attempt" -gt 1 ]] && SNAP=$(snapshot)
+  [[ -z "$CAL"  ]] && CAL=$(resolve_window  "$SNAP" "$CHROME_APP" "$CAL_TITLE_RE"     own)
+  [[ -z "$CHAT" ]] && CHAT=$(resolve_window "$SNAP" "$CHROME_APP" "$CHAT_TITLE_RE"    own)
+  [[ -z "$OBS"  ]] && OBS=$(resolve_window  "$SNAP" Obsidian      '.'                 any)
+  [[ -z "$ORCH" ]] && ORCH=$(resolve_window "$SNAP" Orchest       "$ORCHEST_TITLE_RE" any)
   [[ -n "$CAL" && -n "$CHAT" && -n "$OBS" && -n "$ORCH" ]] && break
   sleep 1
 done
@@ -242,6 +312,15 @@ for pair in "Calendar $CAL" "Obsidian $OBS" "Chat $CHAT" "Orchest $ORCH"; do
   set -- $pair
   [[ -z "${2:-}" ]] && { echo "WARNING: [ws11] $1 window not found" >&2; missing=1; }
 done
+
+# Two slots resolving to one window would make the grid unbuildable in a way
+# that is hard to read off the failure. Only reachable via bad reserved ids,
+# since the four matchers are mutually exclusive.
+if [[ "$missing" -eq 0 ]] &&
+   [[ "$(printf '%s\n' "$CAL" "$OBS" "$CHAT" "$ORCH" | sort -u | wc -l)" -ne 4 ]]; then
+  echo "WARNING: [ws11] slots collide on one window (cal=$CAL obs=$OBS chat=$CHAT orch=$ORCH)" >&2
+  missing=1
+fi
 
 if [[ "$missing" -ne 0 ]]; then
   if [[ "$ENSURE_WINDOWS" == true ]]; then

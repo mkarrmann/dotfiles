@@ -143,6 +143,10 @@ WS11_CAL_URL="https://www.internalfb.com/calendar"
 WS11_CHAT_URL="https://chat.google.com/u/0/app/home"
 WS11_CAL_TITLE_RE='^Calendar\b'
 WS11_CHAT_TITLE_RE='^Chat\b'
+# Ids reserved by reserve_ws11_chrome, handed to arrange-ws11 so it arranges the
+# windows this script picked instead of re-resolving the titles itself.
+WS11_CAL_WINDOW_ID=""
+WS11_CHAT_WINDOW_ID=""
 OMNIGENT_PORT="${OMNIGENT_PORT:-$(omnigent-server-url --port)}"
 OMNIGENT_PRIMARY_FQDN="${OMNIGENT_PRIMARY_FQDN:-$(omnigent-server-url --primary)}"
 OMNIGENT_STANDBY_FQDN="${OMNIGENT_STANDBY_FQDN:-$(omnigent-server-url --standby)}"
@@ -220,8 +224,12 @@ managed_workspaces() {
   printf '%s\n' "${WORKSPACES[@]}" | cut -d'|' -f1 | sort -u
 }
 
+# %{workspace} is not in the default --json payload. Asking for it costs the
+# same single call and lets workspace-aware lookups run off the snapshot
+# instead of a second query.
 snapshot_windows() {
-  aerospace list-windows --all --json 2>/dev/null
+  aerospace list-windows --all --json \
+    --format '%{window-id}%{workspace}%{app-name}%{window-title}' 2>/dev/null
 }
 
 wait_for_window_settle() {
@@ -251,12 +259,17 @@ wait_for_window_settle() {
   return 1
 }
 
+# AeroSpace orders list-windows by title and breaks ties arbitrarily, so `first`
+# alone picks a different window run to run whenever two titles match. Sorting
+# by window id makes every lookup here reproducible, and makes this script and
+# arrange-ws11 agree on which window a shared title refers to.
 find_window_id() {
   local app_name="$1" title_substr="$2" snapshot="$3"
   echo "$snapshot" | jq -r \
     --arg app "$app_name" \
     --arg title "$title_substr" \
-    '[.[] | select(."app-name" == $app and (.["window-title"] | test($title; "i")))] | first | .["window-id"] // empty'
+    '[.[] | select(."app-name" == $app and (.["window-title"] | test($title; "i")))]
+       | sort_by(.["window-id"]) | first | .["window-id"] // empty'
 }
 
 find_window_id_for_workspace() {
@@ -267,7 +280,8 @@ find_window_id_for_workspace() {
     | jq -r \
       --arg app "$app_name" \
       --arg title "$title_substr" \
-      '[.[] | select(."app-name" == $app and (.["window-title"] | test($title; "i")))] | first | .["window-id"] // empty') || true
+      '[.[] | select(."app-name" == $app and (.["window-title"] | test($title; "i")))]
+         | sort_by(.["window-id"]) | first | .["window-id"] // empty') || true
   if [[ -n "$window_id" ]]; then
     echo "$window_id"
     return 0
@@ -530,15 +544,26 @@ close_invalid_chrome_windows_on_workspace() {
   done
 }
 
+# find_chrome_by_title RE [SNAPSHOT] -> window id (or empty)
+#
+# Prefers a match already on workspace 11 so a re-run keeps the window it
+# reserved last time, then falls back to anywhere. Ties break by window id: the
+# title alone is ambiguous (any Chrome window showing a calendar matches
+# '^Calendar\b') and AeroSpace's ordering of equal titles is not stable.
 find_chrome_by_title() {
-  local re="$1"
-  aerospace list-windows --all --json 2>/dev/null \
-    | jq -r --arg app "$CHROME_APP" --arg re "$re" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" \
-      '[.[] | select(
+  local re="$1" snapshot="${2:-}"
+  [[ -n "$snapshot" ]] || snapshot=$(snapshot_windows)
+  jq -r --arg app "$CHROME_APP" --arg re "$re" \
+        --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --arg ws "$WS11_WORKSPACE" '
+    [ .[] | select(
         ."app-name" == $app and
         ((.["window-title"] // "") | test($re)) and
         ((.["window-title"] // "") | test($invalid) | not)
-      )] | first | .["window-id"] // empty'
+    ) ]
+    | sort_by(.["window-id"])
+    | ((map(select(.workspace == $ws)) | first) // first)
+    | .["window-id"] // empty
+  ' <<< "$snapshot"
 }
 
 # Reserve (claim + relocate) the two workspace-11 dashboard Chrome windows
@@ -554,10 +579,11 @@ reserve_ws11_chrome() {
     SNAPSHOT=$(snapshot_windows)
   fi
 
-  local spec title_re url wid tries
-  for spec in "${WS11_CAL_TITLE_RE}|${WS11_CAL_URL}" "${WS11_CHAT_TITLE_RE}|${WS11_CHAT_URL}"; do
-    title_re="${spec%%|*}"; url="${spec#*|}"
-    wid=$(find_chrome_by_title "$title_re")
+  local spec slot title_re url wid tries
+  for spec in "CAL|${WS11_CAL_TITLE_RE}|${WS11_CAL_URL}" \
+              "CHAT|${WS11_CHAT_TITLE_RE}|${WS11_CHAT_URL}"; do
+    IFS='|' read -r slot title_re url <<< "$spec"
+    wid=$(find_chrome_by_title "$title_re" "$SNAPSHOT")
     if [[ -z "$wid" ]] || chrome_id_is_claimed "$wid"; then
       echo "[ws11] opening dashboard Chrome window: $url"
       open -na "$CHROME_APP" --args --profile-directory=Default --new-window "$url" 2>/dev/null || true
@@ -572,6 +598,13 @@ reserve_ws11_chrome() {
     if [[ -n "$wid" ]]; then
       claim_chrome_window "$wid"
       aerospace move-node-to-workspace --window-id "$wid" "$WS11_WORKSPACE" 2>/dev/null || true
+      # Remember the exact id. arrange-ws11 is a separate process and cannot see
+      # claimed_chrome_ids; without the id it re-derives the window from the
+      # title and can land on a different one, leaving both on workspace 11.
+      case "$slot" in
+        CAL)  WS11_CAL_WINDOW_ID="$wid" ;;
+        CHAT) WS11_CHAT_WINDOW_ID="$wid" ;;
+      esac
       echo "[ws11] reserved Chrome window $wid ($title_re) for workspace $WS11_WORKSPACE"
     else
       echo "WARNING: [ws11] could not reserve Chrome window for $title_re" >&2
@@ -1056,8 +1089,12 @@ fi
 # that appears after this point, so no drain sleep is needed here.
 
 # Provision and arrange the workspace-11 dashboard after the standard workspace
-# and Orchest placement passes have converged.
-arrange-workspaces --ensure-windows 11 || {
+# and Orchest placement passes have converged. The reserved ids travel with the
+# call: arrange-ws11 would otherwise re-resolve '^Calendar\b' / '^Chat\b' from
+# scratch, and any other Chrome window showing a calendar matches just as well.
+WS11_CAL_WINDOW_ID="$WS11_CAL_WINDOW_ID" \
+WS11_CHAT_WINDOW_ID="$WS11_CHAT_WINDOW_ID" \
+  arrange-workspaces --ensure-windows 11 || {
   echo "WARNING: workspace 11 arrangement did not converge" >&2
   ((failures++)) || true
 }
