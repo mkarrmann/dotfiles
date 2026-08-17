@@ -6,10 +6,17 @@ server-side policy engine, so a single ``tool_result`` policy here captures
 metadata regardless of which harness produced it -- no agent cooperation
 required.
 
-The canonical use is stamping a session with the Phabricator diff it created:
-when any tool's output contains ``Differential Revision: .../D12345``, the
-``D12345`` is written to the ``omnigent.diff.number`` session label. The diff
+The canonical use is stamping a session with the Phabricator diffs it created:
+when any tool's output contains ``Differential Revision: <url>/D12345``, the
+``D12345`` is appended to the ``omnigent.diff.number`` session label, which is a
+comma-separated ordered set so one session can own a whole stack. The diff
 watcher also binds its stateless MCP intent tools to the current session here.
+
+The capture pattern deliberately requires the full Phabricator URL rather than a
+bare ``D\\d+``: the label is written from *any* tool's output, so a bare pattern
+latches onto example diff numbers in documentation and skill output. Combined
+with the old first-match-wins rule that silently bound sessions to placeholder
+diffs forever.
 
 Contract (verified against omnigent 0.5.1):
 - Declared as a *factory* in ``POLICY_REGISTRY`` (kind ``factory``); the server
@@ -33,6 +40,7 @@ from typing import Any
 
 _LABEL_VALUE_MAX = 256
 _WATCH_LABEL = "omnigent.diff.watch"
+_DIFF_LABEL = "omnigent.diff.number"
 _WATCH_TOOLS = {
     "diff_watch_subscribe",
     "diff_watch_unsubscribe",
@@ -59,18 +67,43 @@ def _result_text(event: dict) -> str:
     return "\n".join(parts)
 
 
+def _merge_accumulated(current: str | None, found: list[str]) -> str | None:
+    """Append newly seen values to a comma-separated ordered set.
+
+    Order is preserved so the first diff a session created stays first, which
+    keeps the label stable for a stack submitted bottom-up. Oldest entries are
+    dropped when the 256-char label cap would be exceeded, because a session
+    that has produced 20+ diffs cares about the recent ones.
+    """
+    existing = [part for part in (current or "").split(",") if part]
+    merged = list(existing)
+    for value in found:
+        if value not in merged:
+            merged.append(value)
+    if merged == existing:
+        return None
+    while merged and len(",".join(merged)) > _LABEL_VALUE_MAX:
+        merged.pop(0)
+    return ",".join(merged) if merged else None
+
+
 def capture_labels_policy(
     patterns: dict | None = None,
     on_tools: list | None = None,
+    accumulate: list | None = None,
 ) -> Callable[[dict], dict | None]:
     """Build a passive capture evaluator.
 
     :param patterns: Map of ``label_key -> regex``. On a ``tool_result`` whose
         text matches the regex, ``label_key`` is set to capture group 1 (or the
         whole match if the pattern has no groups). A label already present on the
-        session is never overwritten.
+        session is never overwritten unless the key is in ``accumulate``.
     :param on_tools: Optional allowlist of tool names to inspect. When omitted,
         every tool's result is inspected.
+    :param accumulate: Label keys that collect every distinct match as a
+        comma-separated ordered set instead of latching the first one. Needed
+        for diff numbers: one session routinely submits a whole stack, and a
+        single ``jf submit`` prints every diff in it.
     :returns: An arity-1 evaluator ``(event) -> dict | None``.
     """
     compiled = []
@@ -81,6 +114,7 @@ def capture_labels_policy(
             # A bad pattern must not take down policy loading; skip it.
             continue
     tool_filter = set(on_tools) if on_tools else None
+    accumulating = {str(key) for key in (accumulate or [])}
 
     def _evaluate(event: dict) -> dict | None:
         try:
@@ -96,6 +130,14 @@ def capture_labels_policy(
 
             set_labels: dict[str, str] = {}
             for key, rx in compiled:
+                if key in accumulating:
+                    found = [
+                        m.group(1) if m.groups() else m.group(0) for m in rx.finditer(text)
+                    ]
+                    merged = _merge_accumulated(current.get(key), [v for v in found if v])
+                    if merged is not None:
+                        set_labels[key] = merged
+                    continue
                 if key in current:
                     continue
                 m = rx.search(text)
@@ -151,13 +193,15 @@ def diff_watch_preference_policy(event: dict) -> dict | None:
         labels = context.get("labels", {}) if isinstance(context, dict) else {}
         if not isinstance(labels, dict):
             labels = {}
-        diff_id = labels.get("omnigent.diff.number")
+        diff_ids = _diff_ids(labels.get(_DIFF_LABEL))
 
         if tool == "diff_watch_status":
             preference = labels.get(_WATCH_LABEL, "off")
+            listed = ", ".join(diff_ids) if diff_ids else "none"
+            noun = "diffs" if len(diff_ids) != 1 else "diff"
             return {
                 "result": "ALLOW",
-                "data": f"Diff watch: {preference}; associated diff: {diff_id or 'none'}.",
+                "data": f"Diff watch: {preference}; associated {noun}: {listed}.",
             }
         if tool == "diff_watch_unsubscribe":
             return {
@@ -165,7 +209,7 @@ def diff_watch_preference_policy(event: dict) -> dict | None:
                 "set_labels": {_WATCH_LABEL: "off"},
                 "data": "Diff-watch notifications are disabled for this session.",
             }
-        if not isinstance(diff_id, str) or not re.fullmatch(r"D[1-9][0-9]*", diff_id):
+        if not diff_ids:
             return {
                 "result": "ALLOW",
                 "data": "Cannot subscribe: this session has no associated Phabricator diff.",
@@ -192,10 +236,11 @@ def diff_watch_preference_policy(event: dict) -> dict | None:
                 "data": "Cannot subscribe: events must select review_comment or ci_failure.",
             }
         preference = ",".join(events)
+        listed = ", ".join(diff_ids)
         return {
             "result": "ALLOW",
             "set_labels": {_WATCH_LABEL: preference},
-            "data": f"Diff-watch notifications requested for {diff_id}: {preference}.",
+            "data": f"Diff-watch notifications requested for {listed}: {preference}.",
         }
     except Exception:
         return None
@@ -205,6 +250,18 @@ def _watch_tool_name(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     return next((name for name in _WATCH_TOOLS if value.endswith(name)), None)
+
+
+def _diff_ids(value: object) -> list[str]:
+    """Parse the comma-separated diff label into validated, deduped diff ids."""
+    if not isinstance(value, str):
+        return []
+    seen: list[str] = []
+    for part in value.split(","):
+        candidate = part.strip()
+        if re.fullmatch(r"D[1-9][0-9]*", candidate) and candidate not in seen:
+            seen.append(candidate)
+    return seen
 
 
 POLICY_REGISTRY: list[dict[str, Any]] = [
@@ -228,6 +285,14 @@ POLICY_REGISTRY: list[dict[str, Any]] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Optional allowlist of tool names to inspect.",
+                },
+                "accumulate": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Label keys that collect every match as a comma-separated "
+                        "ordered set instead of latching the first one."
+                    ),
                 },
             },
         },

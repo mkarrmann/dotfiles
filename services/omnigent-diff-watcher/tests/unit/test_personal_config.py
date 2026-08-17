@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import yaml
@@ -11,6 +12,7 @@ sys.path.insert(0, str(DOTFILES))
 
 from omnigent_config.policy_modules.capture_diff import (  # type: ignore[import-not-found]  # noqa: E402
     approve_diff_watch_subscription,
+    capture_labels_policy,
     diff_watch_preference_policy,
 )
 
@@ -174,3 +176,115 @@ def test_sync_leaves_hub_owned_watcher_to_reconciliation() -> None:
         "esac", maxsplit=1
     )[0]
     assert "omnigent-diff-watcher.service" in generic_enable_case
+
+
+def test_preference_policy_reports_every_diff_in_a_stack() -> None:
+    event = _tool_event("diff_watch_subscribe")
+    event["context"] = {
+        "labels": {
+            "omnigent.diff.number": "D90000001,D90000002,D90000003",
+            "omnigent.diff.watch": "ci_failure,review_comment",
+        }
+    }
+    subscribe = diff_watch_preference_policy(event)
+    assert subscribe is not None
+    assert subscribe["set_labels"] == {"omnigent.diff.watch": "ci_failure,review_comment"}
+    for diff_id in ("D90000001", "D90000002", "D90000003"):
+        assert diff_id in subscribe["data"]
+
+
+def test_preference_policy_ignores_malformed_entries_in_the_diff_label() -> None:
+    event = _tool_event("diff_watch_status")
+    event["context"] = {
+        "labels": {
+            "omnigent.diff.number": "D90000001,,notadiff,D0,D90000001,D90000002",
+            "omnigent.diff.watch": "ci_failure",
+        }
+    }
+    status = diff_watch_preference_policy(event)
+    assert status is not None
+    # Deduped, D0 and the non-diff token dropped, first-seen order preserved.
+    assert "D90000001, D90000002" in status["data"]
+    assert "notadiff" not in status["data"]
+
+
+def _capture_event(text: str, labels: dict[str, str] | None = None) -> dict[str, object]:
+    return {
+        "type": "tool_result",
+        "target": "Bash",
+        "data": {"result": text},
+        "context": {"labels": labels or {}},
+    }
+
+
+def _diff_capture() -> Callable[[dict[str, object]], dict[str, object] | None]:
+    """Build the evaluator from the real server config, not a local copy."""
+    config = yaml.safe_load((DOTFILES / "omnigent_config/server.yaml").read_text())
+    arguments = config["policies"]["capture_diff"]["function"]["arguments"]
+    evaluator: Callable[[dict[str, object]], dict[str, object] | None] = capture_labels_policy(
+        **arguments
+    )
+    return evaluator
+
+
+def _captured_diffs(result: dict[str, object] | None) -> str:
+    """Extract the diff label a capture evaluator wrote."""
+    assert result is not None
+    labels = result["set_labels"]
+    assert isinstance(labels, dict)
+    value = labels["omnigent.diff.number"]
+    assert isinstance(value, str)
+    return value
+
+
+def _revision(diff_id: str) -> str:
+    return f"Differential Revision: https://phabricator.intern.facebook.com/{diff_id}"
+
+
+def test_capture_accumulates_every_diff_a_single_submit_prints() -> None:
+    evaluate = _diff_capture()
+    result = evaluate(
+        _capture_event("\n".join(_revision(d) for d in ("D115903821", "D115903820", "D115903819")))
+    )
+    assert _captured_diffs(result) == "D115903821,D115903820,D115903819"
+
+
+def test_capture_appends_to_an_existing_stack_without_duplicating() -> None:
+    evaluate = _diff_capture()
+    result = evaluate(
+        _capture_event(
+            "\n".join(_revision(d) for d in ("D115903821", "D116338876")),
+            {"omnigent.diff.number": "D115903821,D115903820"},
+        )
+    )
+    assert _captured_diffs(result) == "D115903821,D115903820,D116338876"
+
+
+def test_capture_abstains_when_the_stack_is_already_complete() -> None:
+    evaluate = _diff_capture()
+    event = _capture_event(_revision("D115903821"), {"omnigent.diff.number": "D115903821"})
+    assert evaluate(event) is None
+
+
+def test_capture_ignores_bare_diff_numbers_in_documentation() -> None:
+    """Regression: a bare ``D\\d+`` pattern bound sessions to doc placeholders.
+
+    The capture policy inspects every tool's output, so example diff numbers in
+    skill and CLI documentation latched onto the label permanently under the old
+    first-match-wins rule.
+    """
+    evaluate = _diff_capture()
+    assert evaluate(_capture_event('  "diff_num": "D12345678",')) is None
+    assert evaluate(_capture_event("Differential Revision: D12345678")) is None
+    assert evaluate(_capture_event("see Differential Revision: D12345 for an example")) is None
+
+
+def test_capture_drops_oldest_entries_at_the_label_cap() -> None:
+    evaluate = _diff_capture()
+    existing = ",".join(f"D9000{index:04d}" for index in range(30))
+    assert len(existing) > 256
+    result = evaluate(_capture_event(_revision("D115903821"), {"omnigent.diff.number": existing}))
+    value = _captured_diffs(result)
+    assert len(value) <= 256
+    assert value.endswith("D115903821")
+    assert not value.startswith("D90000000")
