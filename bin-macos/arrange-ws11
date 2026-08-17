@@ -214,13 +214,20 @@ ensure_app_window() {
   echo "$wid"
 }
 
-# NSScreen width (points) for AeroSpace target monitor id; 0 if unknown
-monitor_width() {
+# monitor_rect MON -> "x y w h" for the target monitor in top-left-origin
+# (Accessibility) coordinates, empty if unknown. AppKit is bottom-left origin
+# while System Events reports window positions top-left origin, so y is flipped
+# against the primary screen's height to make the two comparable in frame_of.
+monitor_rect() {
   local mid="$1" nsid
   nsid=$(aerospace list-monitors --format '%{monitor-id}|%{monitor-appkit-nsscreen-screens-id}' 2>/dev/null \
     | awk -F'|' -v m="$mid" '$1==m{print $2; exit}')
-  [[ -z "$nsid" ]] && { echo 0; return; }
-  osascript -l JavaScript -e "ObjC.import('AppKit');(function(){var s=\$.NSScreen.screens;var i=${nsid}-1;if(i<0||i>=s.count)return 0;return Math.round(s.objectAtIndex(i).frame.size.width);})()" 2>/dev/null || echo 0
+  [[ -z "$nsid" ]] && return 1
+  osascript -l JavaScript -e "ObjC.import('AppKit');(function(){\
+var s=\$.NSScreen.screens;var i=${nsid}-1;if(i<0||i>=s.count)return '';\
+var p=s.objectAtIndex(0).frame,f=s.objectAtIndex(i).frame;\
+return [Math.round(f.origin.x),Math.round(p.size.height-(f.origin.y+f.size.height)),\
+Math.round(f.size.width),Math.round(f.size.height)].join(' ');})()" 2>/dev/null
 }
 
 # target monitor id: external (non-main, non-laptop) > any non-main > main
@@ -345,6 +352,13 @@ if [[ -n "$TARGET_MON" ]]; then
   aerospace move-workspace-to-monitor --workspace "$WS" "$TARGET_MON" 2>/dev/null || true
 fi
 
+# Read once, up front: frame_of needs it to attribute geometry, and the resize
+# step needs the width. Same single osascript call the old monitor_width made.
+MON_X=0; MON_Y=0; MON_W=0; MON_H=0
+if mon_rect=$(monitor_rect "$TARGET_MON") && [[ -n "$mon_rect" ]]; then
+  read -r MON_X MON_Y MON_W MON_H <<< "$mon_rect"
+fi
+
 # ── Build the 2×2 (deterministic; verify by geometry when available) ──
 build_grid() {
   # 1. empty ws 11, then re-insert in a fixed order -> deterministic column.
@@ -395,9 +409,14 @@ build_grid() {
   [[ "$nonrow" -eq 0 ]]
 }
 
-# System Events geometry cache: "title\tx\ty\tw\th" (best-effort; may be empty)
+# System Events geometry cache: "title\tx\ty\tw\th" (best-effort; may be empty),
+# plus the ws-11 id->title map. Both are read once per verification pass;
+# frame_of used to re-query AeroSpace on every lookup, a dozen round trips a pass.
 GEOM=""
+WS_TITLES=""
 refresh_geom() {
+  WS_TITLES=$(aerospace list-windows --workspace "$WS" \
+    --format '%{window-id}|%{window-title}' 2>/dev/null)
   GEOM=$(osascript <<'OSA' 2>/dev/null
 set out to ""
 repeat with appName in {"Google Chrome", "Obsidian", "Orchest"}
@@ -415,28 +434,57 @@ return out
 OSA
 )
 }
-title_of() { aerospace list-windows --workspace "$WS" --format '%{window-id}|%{window-title}' | awk -F'|' -v w="$1" '$1==w{print $2}'; }
-# frame_of ID -> "x y w h" (empty if geometry unavailable)
-frame_of() { local t; t=$(title_of "$1"); awk -F'\t' -v t="$t" '$1==t{print $2,$3,$4,$5; exit}' <<< "$GEOM"; }
+# Titles can contain '|' (diff titles do), so strip only the first field.
+title_of() { awk -F'|' -v w="$1" '$1==w{sub(/^[^|]*\|/, ""); print; exit}' <<< "$WS_TITLES"; }
+
+# frame_of ID -> "x y w h", empty when geometry cannot be pinned to exactly one
+# window. A title is not unique — any other Chrome window showing a calendar
+# carries the same name — and AeroSpace parks every window of a hidden
+# workspace at one shared off-screen point, so a title-only match can silently
+# hand back a different workspace's frame and make this check lie in either
+# direction. Accept only a candidate lying on the dashboard monitor, and only
+# when it is the sole one; otherwise report "unavailable" and let the caller
+# fall back to trusting the deterministic build.
+frame_of() {
+  local t candidates
+  t=$(title_of "$1")
+  [[ -z "$t" ]] && return 0
+  candidates=$(awk -F'\t' -v t="$t" '$1==t{print $2,$3,$4,$5}' <<< "$GEOM")
+  if [[ -n "$candidates" && "$MON_W" -gt 0 ]]; then
+    candidates=$(awk -v mx="$MON_X" -v my="$MON_Y" -v mw="$MON_W" -v mh="$MON_H" \
+      '$1>=mx-1 && $2>=my-1 && $1+$3<=mx+mw+1 && $2+$4<=my+mh+1' <<< "$candidates")
+  fi
+  [[ -z "$candidates" ]] && return 0
+  [[ "$(wc -l <<< "$candidates")" -eq 1 ]] || return 0
+  printf '%s\n' "$candidates"
+}
 
 # verify cells via geometry; returns 0 if CAL=TL OBS=TR CHAT=BL ORCH=BR, 1 if wrong,
 # 2 if geometry unavailable (cannot tell)
 TOL=80
+VC_MINX=0; VC_MINY=0
+cell_of() {
+  set -- $1
+  local c=""
+  [[ ${2} -le $((VC_MINY+TOL)) ]] && c="T" || c="B"
+  [[ ${1} -le $((VC_MINX+TOL)) ]] && c="${c}L" || c="${c}R"
+  echo "$c"
+}
 verify_cells() {
   refresh_geom
   [[ -z "$GEOM" ]] && return 2
-  local minx="" miny="" wid x y
-  for wid in "$CAL" "$OBS" "$CHAT" "$ORCH"; do
-    set -- $(frame_of "$wid"); x="${1:-}"; y="${2:-}"
+  local f_cal f_obs f_chat f_orch f x y
+  f_cal=$(frame_of "$CAL");   f_obs=$(frame_of "$OBS")
+  f_chat=$(frame_of "$CHAT"); f_orch=$(frame_of "$ORCH")
+  VC_MINX=""; VC_MINY=""
+  for f in "$f_cal" "$f_obs" "$f_chat" "$f_orch"; do
+    set -- $f; x="${1:-}"; y="${2:-}"
     [[ -z "$x" ]] && return 2
-    [[ -z "$minx" || $x -lt $minx ]] && minx=$x
-    [[ -z "$miny" || $y -lt $miny ]] && miny=$y
+    [[ -z "$VC_MINX" || $x -lt $VC_MINX ]] && VC_MINX=$x
+    [[ -z "$VC_MINY" || $y -lt $VC_MINY ]] && VC_MINY=$y
   done
-  cell_of() { set -- $(frame_of "$1"); local c=""
-    [[ ${2} -le $((miny+TOL)) ]] && c="T" || c="B"
-    [[ ${1} -le $((minx+TOL)) ]] && c="${c}L" || c="${c}R"; echo "$c"; }
-  [[ "$(cell_of "$CAL")" == "TL" && "$(cell_of "$OBS")" == "TR" \
-     && "$(cell_of "$CHAT")" == "BL" && "$(cell_of "$ORCH")" == "BR" ]]
+  [[ "$(cell_of "$f_cal")" == "TL" && "$(cell_of "$f_obs")" == "TR" \
+     && "$(cell_of "$f_chat")" == "BL" && "$(cell_of "$f_orch")" == "BR" ]]
 }
 
 built=0
@@ -454,7 +502,7 @@ done
 [[ "$built" -ne 1 ]] && { echo "arrange-ws11: grid build did not converge" >&2; exit 1; }
 
 # ── Resize to the configured proportions (width from AppKit) ─────────
-WIDTH=$(monitor_width "$TARGET_MON")
+WIDTH="$MON_W"
 if [[ "$WIDTH" -gt 0 ]]; then
   resize_left() { # LEFT_ID PCT
     local delta=$(( WIDTH * $2 / 100 - WIDTH / 2 )) arg
