@@ -162,12 +162,19 @@ EOF
 
 ### 8. Add Metadata (Optional)
 
-Before submitting, you can attach reviewers, tags, and tasks:
+<!-- LOCAL MODIFICATION (not upstream) — see ../TODO.md before re-vendoring. -->
+> **Never add reviewers or subscribers unless the user explicitly asks.** Deciding who should
+> review is not your job — do not infer it from file history, ownership, oncall metadata, or
+> tooling recommendations. Leave `Reviewers:` and `Subscribers:` empty. Only run the
+> `--add-reviewers` command below when the user has asked for reviewers, and prefer to use the
+> names they give you.
+
+Tags and tasks are fine to attach when they are known:
 
 ```bash
-jf template --add-reviewers username1,username2
 jf template --add-tags tag1,tag2
 jf template --add-tasks TXXXXXXXX
+jf template --add-reviewers username1,username2   # ONLY when explicitly requested
 ```
 
 Note: Phabricator parses the resulting `Reviewers:` line into actual reviewer assignments only if the names resolve. For project-style reviewers (oncalls, teams), the `#` prefix in `meta phabricator.diff add-reviewer --reviewer="#ProjectName"` is more reliable.
@@ -198,7 +205,7 @@ sl fssl
 **Copy from parent:**
 - Prefix tags (keep consistent)
 - Task ID
-- Reviewers
+- Reviewers — only if the parent already has them because the user asked for them; never add reviewers to a child diff on your own initiative (LOCAL MODIFICATION, see ../TODO.md)
 
 Example (IG4A):
 - Parent: `[IG4A][MVVM][Homecoming] Add UiState - T12345`
@@ -215,7 +222,7 @@ Example (IG4A):
   {"content": "Analyze files and detect prefix tags", "status": "pending"},
   {"content": "Explore Phabricator templates for Summary and Test Plan (union of oncalls)", "status": "pending"},
   {"content": "Create commit message with full structure", "status": "pending"},
-  {"content": "Add reviewers, tags, and tasks via jf template", "status": "pending"},
+  {"content": "Add tags and tasks via jf template (reviewers ONLY if the user explicitly asked)", "status": "pending"},
   {"content": "Offer pre-land review (optional)", "status": "pending"},
   {"content": "Submit with jf submit --draft", "status": "pending"}
 ]

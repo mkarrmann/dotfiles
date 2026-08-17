@@ -45,3 +45,18 @@ zero-effort answer if you accept the drift.
 The MCPs in `plugins/custom-mcps/mcps/` have the same problem in
 principle (e.g. the upstream scuba.json gained a smarter dispatcher
 recently). Apply the same approach.
+
+## Local modifications to preserve across a re-vendor
+
+Any refresh that uses `rsync --delete` (option 1 or 3) will silently
+overwrite these. Re-apply them after refreshing; each is marked inline
+with `LOCAL MODIFICATION`.
+
+| Skill | Change | Why |
+|---|---|---|
+| `submitting-diffs/SKILL.md` | Step 8, the parent-diff copy list, and the TodoWrite template no longer tell the agent to attach reviewers; reviewers are gated on an explicit user request. | Upstream presents "add reviewers" as a routine submit step, which overrides the standing rule in `agent_config/global-development-preferences.md` ("DO NOT add reviewers ... unless I explicitly ask") once the skill is loaded mid-task. |
+
+Prefer fixing this upstream in
+`fbcode/claude-templates/components/plugins/meta-powertools/skills/`
+if the behaviour is generally right; keep it local if it is only a
+personal preference. The reviewer gate is a personal preference.
