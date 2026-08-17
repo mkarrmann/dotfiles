@@ -4,6 +4,7 @@ import io
 import json
 import os
 import subprocess
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ import pytest
 from omnigent_hub.config import HubConfig
 from omnigent_hub.models import ActiveHubRecord
 from omnigent_hub.runtime import (
+    RECORD_REFRESH_SECONDS,
     HubRuntimeError,
     activate_transition,
     assert_sessions_quiescent,
@@ -722,6 +724,64 @@ def test_repair_force_start_still_refuses_a_newer_shared_record(
 
     with pytest.raises(HubRuntimeError, match="is not older than forced epoch"):
         repair_force_start(hub_config)
+
+
+def test_active_reconciliation_republishes_a_record_near_retention(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    record = initialize(hub_config, active_hub="primary.example.com")
+    aged = time.time() - (RECORD_REFRESH_SECONDS + 60)
+    os.utime(hub_config.record_path, (aged, aged))
+    _stub_active_reconciliation(monkeypatch, record)
+
+    result = reconcile_services(hub_config)
+
+    assert result["record_refreshed"] is True
+    assert result["record_refresh_error"] is None
+    assert read_shared_record(hub_config) == record
+    assert hub_config.record_path.stat().st_mtime > aged
+
+
+def test_active_reconciliation_leaves_a_fresh_record_untouched(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    record = initialize(hub_config, active_hub="primary.example.com")
+    before = hub_config.record_path.stat().st_mtime
+    _stub_active_reconciliation(monkeypatch, record)
+
+    result = reconcile_services(hub_config)
+
+    assert result["record_refreshed"] is False
+    assert hub_config.record_path.stat().st_mtime == before
+
+
+def test_active_reconciliation_never_mints_a_missing_record(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timer must not turn an expiring force-start into a permanent one."""
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    record = initialize(hub_config, active_hub="primary.example.com")
+    hub_config.record_path.unlink()
+    _stub_active_reconciliation(monkeypatch, record)
+
+    result = reconcile_services(hub_config)
+
+    assert result["record_refreshed"] is False
+    assert not hub_config.record_path.exists()
+
+
+def _stub_active_reconciliation(monkeypatch: pytest.MonkeyPatch, record: ActiveHubRecord) -> None:
+    monkeypatch.setattr("omnigent_hub.runtime.resolve_record", lambda config: record)
+    monkeypatch.setattr(
+        "omnigent_hub.runtime.reconcile_local_route",
+        lambda config, restart_host: {"changed": False, "url": "http://127.0.0.1:6767"},
+    )
+    monkeypatch.setattr("omnigent_hub.runtime.systemd_state", lambda unit: "active")
+    monkeypatch.setattr("omnigent_hub.runtime.unit_active_seconds", lambda unit: 600.0)
+    monkeypatch.setattr("omnigent_hub.runtime.probe_host_registered", lambda config: True)
+    monkeypatch.setattr("omnigent_hub.runtime.service_action", lambda config, action: {})
 
 
 def initialize_record_for_test(config: HubConfig, active_hub: str) -> ActiveHubRecord:

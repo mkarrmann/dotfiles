@@ -25,6 +25,7 @@ from omnigent_hub.snapshot import (
 from omnigent_hub.storage import StorageError, publish_record, read_record, write_json_atomic
 
 HOST_REGISTRATION_GRACE_SECONDS = 120.0
+RECORD_REFRESH_SECONDS = 7 * 24 * 60 * 60
 
 
 class HubRuntimeError(RuntimeError):
@@ -810,6 +811,28 @@ def _reconcile_degraded(config: HubConfig, *, storage_error: str) -> dict[str, A
     }
 
 
+def _refresh_record_ttl(config: HubConfig, record: ActiveHubRecord) -> bool:
+    """Keep the shared record inside its retention window.
+
+    ``storage_root`` is a 30-day retention path, but the record is only rewritten
+    on activation. A deployment that runs a month without a handoff therefore
+    loses the file, and every gate-guarded unit refuses to start on its next
+    restart. Republishing identical bytes refreshes mtime.
+
+    A missing record is deliberately NOT recreated here. Ownership is
+    repair-force-start's decision to make; minting it from a routing cache on a
+    timer would turn an expiring force-start into a permanent one.
+    """
+    try:
+        age = time.time() - config.record_path.stat().st_mtime
+    except OSError:
+        return False
+    if age < RECORD_REFRESH_SECONDS:
+        return False
+    publish_record(config, record)
+    return True
+
+
 def reconcile_services(config: HubConfig) -> dict[str, Any]:
     try:
         record = resolve_routing_record(config)
@@ -847,6 +870,14 @@ def reconcile_services(config: HubConfig) -> dict[str, Any]:
     core = service_action(config, "start-core")
     host, host_action = _reconcile_host(config, route_changed=bool(route["changed"]))
     tail = service_action(config, "start-tail")
+    # A refresh failure must not abandon the cycle: the services above are
+    # already reconciled, and the record has days of retention left to retry in.
+    record_refresh_error: str | None = None
+    try:
+        record_refreshed = _refresh_record_ttl(config, record)
+    except StorageError as exc:
+        record_refreshed = False
+        record_refresh_error = str(exc)
     return {
         "host": config.local_fqdn,
         "state": "active",
@@ -855,6 +886,8 @@ def reconcile_services(config: HubConfig) -> dict[str, Any]:
         "services": {**core, **tail, **host},
         "host_action": host_action,
         "host_restarted": host_action == "restart-host",
+        "record_refreshed": record_refreshed,
+        "record_refresh_error": record_refresh_error,
     }
 
 
