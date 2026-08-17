@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Report how much of Chromium's per-origin socket budget the Omnigent Mac app
+# is holding. All Electron windows share one network context, so the HTTP/1.1
+# limit of 6 sockets to 127.0.0.1:6767 is shared across every open window --
+# not per window. At 6/6 the app silently queues new requests, including
+# message POSTs, and a stalled POST wedges that window's send chain for good.
+# Run on the hub.
+set -uo pipefail
+LOG=$(ls -t ~/.omnigent/logs/server/server-*.log 2>/dev/null | head -1)
+[[ -n "$LOG" ]] || { echo "no server log found" >&2; exit 1; }
+open=0
+while read -r port; do
+  ss -tn 2>/dev/null | awk -v p=":$port\$" '$4 ~ /:6767$/ && $5 ~ p {found=1} END{exit !found}' && open=$((open+1))
+done < <(grep -a 'uvicorn.access' "$LOG" | grep -a 'Mozilla' | grep -a '/stream' \
+         | sed -E 's/.*\| 127\.0\.0\.1:([0-9]+) .*/\1/' | tail -60 | sort -u)
+printf 'app SSE streams open: %d / 6 socket budget\n' "$open"
+if (( open >= 6 )); then
+  echo "AT THE CAP -- new requests are queuing; close a window or restart the app"
+elif (( open >= 5 )); then
+  echo "one socket left; the next window to bind a session will exhaust the pool"
+fi
