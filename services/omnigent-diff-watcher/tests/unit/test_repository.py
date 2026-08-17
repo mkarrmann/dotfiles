@@ -77,7 +77,7 @@ def _new_comment_snapshot(clock: FakeClock) -> DiffSnapshot:
 
 def test_schema_migration_and_newer_schema_rejection(tmp_path: Path) -> None:
     path = tmp_path / "watcher.sqlite3"
-    assert WatcherRepository(path).schema_version() == 1
+    assert WatcherRepository(path).schema_version() == 2
     assert path.stat().st_mode & 0o777 == 0o600
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA user_version=99")
@@ -501,19 +501,30 @@ def test_subscription_resource_constraints_are_transactional(tmp_path: Path) -> 
             next_poll_at=clock.now().timestamp() + 60,
             max_active_diffs=1,
         )
-    with pytest.raises(SubscriptionConstraintError, match="different diff"):
-        repo.subscribe(
-            "session-1",
-            "D90000002",
-            DEFAULT_EVENT_TYPES,
-            second,
-            now=clock.now().timestamp(),
-            next_poll_at=clock.now().timestamp() + 60,
-            max_active_diffs=10,
-        )
-
     assert repo.watch("D90000002") is None
     assert repo.active_diff_count() == 1
+
+
+def test_a_session_may_watch_several_diffs_at_once(tmp_path: Path) -> None:
+    """One session owns a whole stack; each diff gets its own subscription."""
+    repo = _repository(tmp_path)
+    clock = FakeClock()
+    _subscribe(repo, clock)
+    second = fixture("active").model_copy(update={"diff_id": "D90000002"})
+
+    repo.subscribe(
+        "session-1",
+        "D90000002",
+        DEFAULT_EVENT_TYPES,
+        second,
+        now=clock.now().timestamp(),
+        next_poll_at=clock.now().timestamp() + 60,
+        max_active_diffs=10,
+    )
+
+    rows = repo.subscriptions_for_session("session-1")
+    assert sorted(row.diff_id for row in rows) == ["D90000001", "D90000002"]
+    assert repo.active_diff_count() == 2
 
 
 def test_recovered_subscription_forces_one_current_poll(tmp_path: Path) -> None:

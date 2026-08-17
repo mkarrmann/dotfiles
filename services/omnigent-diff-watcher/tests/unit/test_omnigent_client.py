@@ -165,7 +165,7 @@ def test_desired_watch_requires_a_diff_and_valid_preferences() -> None:
                 "omnigent.diff.watch": "ci_failure,review_comment",
             }
         }
-    ) == ("D1", frozenset({"ci_failure", "review_comment"}))
+    ) == (("D1",), frozenset({"ci_failure", "review_comment"}))
     assert (
         desired_watch(
             {
@@ -174,6 +174,37 @@ def test_desired_watch_requires_a_diff_and_valid_preferences() -> None:
                     "omnigent.diff.watch": "unknown",
                 }
             }
+        )
+        is None
+    )
+
+
+def test_desired_watch_returns_every_diff_in_a_stack() -> None:
+    assert desired_watch(
+        {
+            "labels": {
+                "omnigent.diff.number": "D115903821,D115903820,D115903819",
+                "omnigent.diff.watch": "ci_failure",
+            }
+        }
+    ) == (("D115903821", "D115903820", "D115903819"), frozenset({"ci_failure"}))
+
+
+def test_desired_watch_drops_malformed_and_duplicate_diff_entries() -> None:
+    assert desired_watch(
+        {
+            "labels": {
+                "omnigent.diff.number": " D1 ,,junk,D0,D1,D2",
+                "omnigent.diff.watch": "ci_failure",
+            }
+        }
+    ) == (("D1", "D2"), frozenset({"ci_failure"}))
+
+
+def test_desired_watch_is_none_when_no_entry_is_a_valid_diff() -> None:
+    assert (
+        desired_watch(
+            {"labels": {"omnigent.diff.number": "junk,D0", "omnigent.diff.watch": "ci_failure"}}
         )
         is None
     )

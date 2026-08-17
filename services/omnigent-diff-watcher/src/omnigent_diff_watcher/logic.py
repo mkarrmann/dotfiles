@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from datetime import datetime
 
 from .domain import EventKind, NormalizedEvent
@@ -78,13 +79,7 @@ def normalize_snapshot(
     return result
 
 
-def render_batch_summary(
-    batch_id: str,
-    diff_id: str,
-    comment_count: int,
-    ci_count: int,
-) -> str:
-    """Render one concise wake without raw comments, URLs, or CI logs."""
+def _describe_counts(comment_count: int, ci_count: int) -> str:
     parts: list[str] = []
     if comment_count:
         noun = "review comment" if comment_count == 1 else "review comments"
@@ -94,9 +89,35 @@ def render_batch_summary(
         parts.append(f"{ci_count} current-version {noun}")
     if not parts:
         raise ValueError("cannot render an empty watcher batch")
-    joined = parts[0] if len(parts) == 1 else f"{parts[0]} and {parts[1]}"
+    return parts[0] if len(parts) == 1 else f"{parts[0]} and {parts[1]}"
+
+
+def render_batch_summary(
+    batch_id: str,
+    counts_by_diff: Sequence[tuple[str, int, int]],
+) -> str:
+    """Render one concise wake without raw comments, URLs, or CI logs.
+
+    ``counts_by_diff`` is ``(diff_id, comment_count, ci_count)`` per diff, in a
+    stable caller-chosen order. A session watching a stack gets one message
+    covering every affected diff rather than one wake per diff.
+    """
+    described = [
+        (diff_id, _describe_counts(comments, ci_failures))
+        for diff_id, comments, ci_failures in counts_by_diff
+        if comments or ci_failures
+    ]
+    if not described:
+        raise ValueError("cannot render an empty watcher batch")
+    if len(described) == 1:
+        diff_id, joined = described[0]
+        body = f"{diff_id} has {joined}"
+        tail = "the diff"
+    else:
+        body = "; ".join(f"{diff_id} has {joined}" for diff_id, joined in described)
+        tail = "each diff"
     return (
-        f"[Diff watcher {batch_id}] {diff_id} has {joined}. "
+        f"[Diff watcher {batch_id}] {body}. "
         "Load the current diff review and CI "
-        "state, address actionable findings, and update the diff as needed."
+        f"state, address actionable findings, and update {tail} as needed."
     )

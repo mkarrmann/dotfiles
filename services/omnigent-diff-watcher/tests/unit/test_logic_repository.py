@@ -392,7 +392,7 @@ def test_terminal_lifecycle_and_consecutive_missing_retire(tmp_path: Path) -> No
 def test_newer_schema_is_rejected_and_database_uses_wal(tmp_path: Path) -> None:
     path = tmp_path / "watcher.db"
     repository = WatcherRepository(path)
-    assert repository.schema_version() == 1
+    assert repository.schema_version() == 2
     with sqlite3.connect(path) as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         connection.execute("PRAGMA user_version=99")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Mapping
 
 import httpx
@@ -11,6 +12,8 @@ import httpx
 from .domain import EventDeliveryResult, EventDeliveryStatus, SessionSnapshot
 
 _logger = logging.getLogger(__name__)
+
+_DIFF_ID = re.compile(r"D[1-9][0-9]*")
 
 
 class OmnigentAPIError(RuntimeError):
@@ -191,16 +194,36 @@ class OmnigentDeliveryService:
         return EventDeliveryResult(EventDeliveryStatus.DEFERRED)
 
 
-def desired_watch(item: Mapping[str, object]) -> tuple[str, frozenset[str]] | None:
+def desired_watch(item: Mapping[str, object]) -> tuple[tuple[str, ...], frozenset[str]] | None:
+    """Resolve a session's labels into the diffs it wants watched.
+
+    ``omnigent.diff.number`` is a comma-separated ordered set so one session can
+    own a whole stack; the watch preference applies to every diff in it. Returns
+    ``None`` when the session wants no watch at all, which the caller treats as
+    "retire everything for this session".
+    """
     labels = _labels(item.get("labels"))
-    diff_id = labels.get("omnigent.diff.number")
     preference = labels.get("omnigent.diff.watch")
-    if diff_id is None or preference in {None, "", "off"}:
+    if preference in {None, "", "off"}:
+        return None
+    diff_ids = _diff_ids(labels.get("omnigent.diff.number"))
+    if not diff_ids:
         return None
     event_types = frozenset(part for part in preference.split(",") if part)
     if not event_types or event_types - {"review_comment", "ci_failure"}:
         return None
-    return diff_id, event_types
+    return diff_ids, event_types
+
+
+def _diff_ids(value: object) -> tuple[str, ...]:
+    if not isinstance(value, str):
+        return ()
+    seen: list[str] = []
+    for part in value.split(","):
+        candidate = part.strip()
+        if _DIFF_ID.fullmatch(candidate) and candidate not in seen:
+            seen.append(candidate)
+    return tuple(seen)
 
 
 def _labels(value: object) -> dict[str, str]:

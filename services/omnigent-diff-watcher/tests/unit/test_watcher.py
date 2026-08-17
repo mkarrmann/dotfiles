@@ -428,3 +428,107 @@ async def test_terminal_sessions_retire(snapshot: SessionSnapshot, tmp_path: Pat
         is SubscriptionState.RETIRED
     )
     assert len(source.calls) == 1
+
+
+class KeyedReviewSource:
+    """Return a snapshot per diff id, not per call.
+
+    ``FakeReviewSource`` pops a queue in call order, which cannot express "two
+    diffs, each with its own stable state" once a batch refreshes both.
+    """
+
+    def __init__(self, snapshots: dict[str, DiffSnapshot]) -> None:
+        self.snapshots = snapshots
+        self.calls: list[tuple[str, object]] = []
+
+    async def snapshot(self, diff_id: str, previous: object = None) -> DiffSnapshot:
+        self.calls.append((diff_id, previous))
+        return self.snapshots[diff_id]
+
+
+@pytest.mark.asyncio
+async def test_a_stack_going_red_produces_one_wake_naming_every_diff(
+    tmp_path: Path,
+) -> None:
+    """The point of session-scoped batches: one message, not one per diff.
+
+    Per-subscription batching would emit two wakes here, and the second would
+    be throttled behind ``minimum_delivery_interval_seconds``.
+    """
+    clock = FakeClock()
+    delivery = RecordingDeliveryService()
+    source = KeyedReviewSource(
+        {
+            "D90000001": fixture("active"),
+            "D90000002": fixture("active").model_copy(update={"diff_id": "D90000002"}),
+        }
+    )
+    sessions = FakeSessionService(SessionSnapshot("session-1", {}))
+    watcher = _watcher(tmp_path, source, sessions, delivery, clock)  # type: ignore[arg-type]
+
+    await watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
+    await watcher.subscribe("session-1", "D90000002", DEFAULT_EVENT_TYPES)
+
+    # Both diffs now pick up findings.
+    source.snapshots["D90000001"] = _new_snapshot(clock)
+    source.snapshots["D90000002"] = _new_snapshot(clock).model_copy(update={"diff_id": "D90000002"})
+
+    clock.advance(70)
+    await watcher.run_iteration()
+    clock.advance(400)
+    await watcher.run_iteration()
+
+    assert len(delivery.calls) == 1
+    _, _, content = delivery.calls[0]
+    assert "D90000001 has" in content
+    assert "D90000002 has" in content
+    assert "update each diff as needed" in content
+
+
+@pytest.mark.asyncio
+async def test_retiring_one_diff_keeps_the_rest_of_the_stack_wake(
+    tmp_path: Path,
+) -> None:
+    """Landing one diff must not swallow the pending wake for its siblings."""
+    clock = FakeClock()
+    delivery = RecordingDeliveryService()
+    source = KeyedReviewSource(
+        {
+            "D90000001": fixture("active"),
+            "D90000002": fixture("active").model_copy(update={"diff_id": "D90000002"}),
+        }
+    )
+    sessions = FakeSessionService(SessionSnapshot("session-1", {}))
+    watcher = _watcher(tmp_path, source, sessions, delivery, clock)  # type: ignore[arg-type]
+
+    first, _ = await watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
+    await watcher.subscribe("session-1", "D90000002", DEFAULT_EVENT_TYPES)
+    source.snapshots["D90000001"] = _new_snapshot(clock)
+    source.snapshots["D90000002"] = _new_snapshot(clock).model_copy(update={"diff_id": "D90000002"})
+    clock.advance(70)
+    await watcher.run_iteration()
+
+    batch = watcher.repository.open_batch_for(first.id)
+    assert batch is not None
+    assert set(batch.diff_ids) == {"D90000001", "D90000002"}
+
+    watcher.repository.retire_subscription(first.id, "committed", now=clock.now().timestamp())
+
+    remaining = watcher.repository.open_batch_for_session("session-1")
+    assert remaining is not None
+    assert remaining.diff_ids == ("D90000002",)
+
+
+@pytest.mark.asyncio
+async def test_retiring_the_last_diff_cancels_the_session_batch(tmp_path: Path) -> None:
+    clock = FakeClock()
+    source = FakeReviewSource(fixture("active"), _new_snapshot(clock))
+    sessions = FakeSessionService(SessionSnapshot("session-1", {}))
+    watcher = _watcher(tmp_path, source, sessions, RecordingDeliveryService(), clock)
+    only, _ = await watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
+    clock.advance(70)
+    await watcher.run_iteration()
+    assert watcher.repository.open_batch_for_session("session-1") is not None
+
+    watcher.repository.retire_subscription(only.id, "committed", now=clock.now().timestamp())
+    assert watcher.repository.open_batch_for_session("session-1") is None

@@ -62,13 +62,6 @@ class DiffWatcher:
         event_types: frozenset[EventKind],
     ) -> tuple[Subscription, bool]:
         existing = await asyncio.to_thread(self.repository.subscription, session_id, diff_id)
-        existing_for_session = await asyncio.to_thread(self.repository.subscription, session_id)
-        if (
-            existing_for_session is not None
-            and existing_for_session.state is not SubscriptionState.RETIRED
-            and existing_for_session.diff_id != diff_id
-        ):
-            raise SubscriptionError("session already watches a different diff")
         watch = await asyncio.to_thread(self.repository.watch, diff_id)
         if (
             existing is None
@@ -144,7 +137,10 @@ class DiffWatcher:
                 ready_batches.add(batch.batch_id)
         refresh_results: dict[str, bool] = {}
         for diff_id in dict.fromkeys(
-            batch.diff_id for batch in due_before if batch.batch_id in ready_batches
+            diff_id
+            for batch in due_before
+            if batch.batch_id in ready_batches
+            for diff_id in batch.diff_ids
         ):
             watch = await asyncio.to_thread(
                 self.repository.claim_watch,
@@ -174,7 +170,9 @@ class DiffWatcher:
         for batch in await asyncio.to_thread(self.repository.due_batches, now):
             if batch.batch_id not in ready_batches:
                 continue
-            if batch.diff_id in refresh_results and not refresh_results[batch.diff_id]:
+            # Any diff in the batch failing to refresh defers the whole wake:
+            # a stale count for one diff would misreport the stack.
+            if any(refresh_results.get(diff_id) is False for diff_id in batch.diff_ids):
                 await self._defer(batch, now)
                 continue
             await self._flush_batch(batch)
@@ -188,12 +186,7 @@ class DiffWatcher:
     async def _batch_ready_for_refresh(self, batch: Batch, now: float) -> bool:
         session = await self.sessions.get(batch.session_id)
         if session.terminal:
-            await asyncio.to_thread(
-                self.repository.retire_subscription,
-                batch.subscription_id,
-                "session_terminal",
-                now=now,
-            )
+            await self._retire_session(batch.session_id, "session_terminal", now)
             return False
         if not session.reachable:
             await asyncio.to_thread(
@@ -327,12 +320,7 @@ class DiffWatcher:
         now = self.clock.now().timestamp()
         session = await self.sessions.get(batch.session_id)
         if session.terminal:
-            await asyncio.to_thread(
-                self.repository.retire_subscription,
-                batch.subscription_id,
-                "session_terminal",
-                now=now,
-            )
+            await self._retire_session(batch.session_id, "session_terminal", now)
             return
         if not session.reachable:
             await asyncio.to_thread(
@@ -348,24 +336,24 @@ class DiffWatcher:
         if not session.can_accept_input:
             await self._defer(batch, now)
             return
-        subscription = await asyncio.to_thread(
-            self.repository.subscription,
+        live = await asyncio.to_thread(
+            self.repository.subscriptions_for_session,
             batch.session_id,
-            batch.diff_id,
+            states=(SubscriptionState.ACTIVE,),
         )
-        if subscription is None or subscription.state.value == "retired":
+        if not live:
             return
+        deliveries = [row.last_delivery_at for row in live if row.last_delivery_at is not None]
+        last_delivery_at = max(deliveries) if deliveries else None
         if (
-            subscription.last_delivery_at is not None
-            and now < subscription.last_delivery_at + self.config.minimum_delivery_interval_seconds
+            last_delivery_at is not None
+            and now < last_delivery_at + self.config.minimum_delivery_interval_seconds
         ):
             await asyncio.to_thread(
                 self.repository.defer_batch,
                 batch.batch_id,
                 now=now,
-                retry_at=(
-                    subscription.last_delivery_at + self.config.minimum_delivery_interval_seconds
-                ),
+                retry_at=last_delivery_at + self.config.minimum_delivery_interval_seconds,
             )
             return
         prepared = await asyncio.to_thread(
@@ -398,14 +386,23 @@ class DiffWatcher:
                 now=now,
             )
         elif result.status is EventDeliveryStatus.TERMINAL:
-            await asyncio.to_thread(
-                self.repository.retire_subscription,
-                current.subscription_id,
-                "delivery_terminal",
-                now=now,
-            )
+            await self._retire_session(current.session_id, "delivery_terminal", now)
         else:
             await self._defer(current, now)
+
+    async def _retire_session(self, session_id: str, reason: str, now: float) -> None:
+        """Retire every subscription a session owns; batches are session-wide."""
+        for row in await asyncio.to_thread(
+            self.repository.subscriptions_for_session,
+            session_id,
+            states=(SubscriptionState.ACTIVE, SubscriptionState.SUSPENDED),
+        ):
+            await asyncio.to_thread(
+                self.repository.retire_subscription,
+                row.id,
+                reason,
+                now=now,
+            )
 
     async def _defer(self, batch: Batch, now: float) -> None:
         await asyncio.to_thread(

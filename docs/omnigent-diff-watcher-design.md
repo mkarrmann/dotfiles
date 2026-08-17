@@ -1,6 +1,6 @@
 # Omnigent diff watcher sidecar
 
-**Status:** Implemented; staged in `log_only`
+**Status:** Implemented; staged in `log_only`. Multi-diff (v2 schema) shipped.
 
 **Owner:** `mkarrmann`
 
@@ -26,7 +26,9 @@ control surface plus a hub-local sidecar service.
 - Bind opt-in to the authenticated Omnigent session without accepting a session
   ID or diff ID from the model.
 - Wake that same session for new unresolved non-author review comments and new
-  terminal CI failures on its latest diff version.
+  terminal CI failures on the latest version of any diff it owns.
+- Cover a whole stack from one session, with a single wake naming every
+  affected diff rather than one wake per diff.
 - Baseline existing state so subscription never creates historical work.
 - Batch autocorrelated updates for five minutes and send one concise message.
 - Avoid polling dead sessions and terminal diffs, and slow polling with age.
@@ -42,7 +44,6 @@ control surface plus a hub-local sidecar service.
 - Webhooks or a new internal event service.
 - Green or pending CI notifications.
 - Author, automated, draft, deleted, or resolved comment notifications.
-- Multiple diffs owned by one session in the first version.
 - A general Omnigent plugin SDK.
 
 ## 4. Components
@@ -75,8 +76,15 @@ or:
 omnigent.diff.watch=off
 ```
 
-The existing `omnigent.diff.number=D12345` label supplies the diff. Subscribe
-requires an ASK approval policy. Status and unsubscribe do not.
+The `omnigent.diff.number` label supplies the diffs. It is a comma-separated
+ordered set (`D12345,D12346`), appended to as the session creates diffs, so one
+subscribe covers a whole stack; subscriptions are keyed `(session, diff)`.
+Subscribe requires an ASK approval policy. Status and unsubscribe do not.
+
+The capture pattern requires the full Phabricator URL. It is applied to every
+tool's output, so a bare `D\d+` latched onto example diff numbers in docs and
+skill output and — under the original first-match-wins rule — bound sessions to
+placeholder diffs permanently.
 
 This is the trusted identity boundary: the model cannot subscribe another
 session because it never supplies a session ID.

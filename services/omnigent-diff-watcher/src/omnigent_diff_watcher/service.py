@@ -72,30 +72,51 @@ class DiffWatcherService:
             if not isinstance(session_id, str):
                 continue
             desired = desired_watch(item)
-            existing = await asyncio.to_thread(self.repository.subscription, session_id)
+            existing_all = await asyncio.to_thread(
+                self.repository.subscriptions_for_session, session_id
+            )
+            existing_by_diff = {row.diff_id: row for row in existing_all}
             if desired is None:
-                if existing is not None and existing.state is not SubscriptionState.RETIRED:
+                if any(row.state is not SubscriptionState.RETIRED for row in existing_all):
                     await self.watcher.unsubscribe(session_id)
                 continue
-            diff_id, raw_events = desired
+            diff_ids, raw_events = desired
             event_types = frozenset(EventKind(value) for value in raw_events)
-            if (
-                existing is not None
-                and existing.diff_id == diff_id
-                and existing.event_types == event_types
-                and existing.state is not SubscriptionState.RETIRED
-            ):
-                continue
-            if (
-                existing is not None
-                and existing.state is SubscriptionState.RETIRED
-                and existing.retired_reason not in {"unsubscribed", "preference_removed"}
-            ):
-                continue
-            try:
-                await self.watcher.subscribe(session_id, diff_id, event_types)
-            except SubscriptionError as exc:
-                _logger.warning("could not reconcile session=%s: %s", session_id, exc)
+
+            # Retire diffs the session no longer claims, without disturbing the
+            # ones it still does. A stack shrinks as its diffs land.
+            for row in existing_all:
+                if row.diff_id in diff_ids or row.state is SubscriptionState.RETIRED:
+                    continue
+                await asyncio.to_thread(
+                    self.repository.retire_subscription,
+                    row.id,
+                    "preference_removed",
+                    now=time.time(),
+                )
+
+            for diff_id in diff_ids:
+                existing = existing_by_diff.get(diff_id)
+                if (
+                    existing is not None
+                    and existing.event_types == event_types
+                    and existing.state is not SubscriptionState.RETIRED
+                ):
+                    continue
+                if (
+                    existing is not None
+                    and existing.state is SubscriptionState.RETIRED
+                    and existing.retired_reason not in {"unsubscribed", "preference_removed"}
+                ):
+                    continue
+                try:
+                    await self.watcher.subscribe(session_id, diff_id, event_types)
+                except SubscriptionError as exc:
+                    # One unusable diff (terminal, missing, or a stale label
+                    # entry) must not stop the rest of the stack from binding.
+                    _logger.warning(
+                        "could not reconcile session=%s diff=%s: %s", session_id, diff_id, exc
+                    )
 
     def _next_delay(self) -> float:
         now = time.time()

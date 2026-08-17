@@ -20,7 +20,102 @@ from .domain import (
 )
 from .source_models import DiffLifecycle, DiffSnapshot, SourceCursor
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+# The v1 DDL, kept as a constant so the v1 -> v2 migration test exercises the
+# real historical schema instead of a copy that can drift from it.
+V1_SCHEMA = """
+    BEGIN IMMEDIATE;
+    CREATE TABLE watched_diffs (
+        diff_id TEXT PRIMARY KEY,
+        lifecycle TEXT NOT NULL,
+        latest_version_id TEXT,
+        last_activity_at REAL NOT NULL,
+        next_poll_at REAL NOT NULL,
+        comments_cursor TEXT,
+        ci_cursor TEXT,
+        ci_state TEXT NOT NULL,
+        failure_count INTEGER NOT NULL DEFAULT 0,
+        lease_owner TEXT,
+        lease_until REAL,
+        last_success_at REAL,
+        missing_count INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE subscriptions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        diff_id TEXT NOT NULL,
+        event_types TEXT NOT NULL,
+        state TEXT NOT NULL,
+        baseline_at REAL NOT NULL,
+        last_liveness_at REAL NOT NULL,
+        unavailable_since REAL,
+        last_delivery_at REAL,
+        retired_reason TEXT,
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL,
+        UNIQUE(session_id, diff_id),
+        FOREIGN KEY(diff_id) REFERENCES watched_diffs(diff_id)
+    );
+    CREATE INDEX subscriptions_state_diff
+        ON subscriptions(state, diff_id);
+    CREATE TABLE source_events (
+        diff_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        version_id TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        actionable INTEGER NOT NULL,
+        first_seen_at REAL NOT NULL,
+        last_changed_at REAL NOT NULL,
+        last_seen_at REAL NOT NULL,
+        PRIMARY KEY(diff_id, kind, external_id),
+        FOREIGN KEY(diff_id) REFERENCES watched_diffs(diff_id)
+    );
+    CREATE TABLE batches (
+        batch_id TEXT PRIMARY KEY,
+        subscription_id INTEGER NOT NULL,
+        diff_id TEXT NOT NULL,
+        state TEXT NOT NULL,
+        first_event_at REAL NOT NULL,
+        flush_at REAL NOT NULL,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at REAL NOT NULL,
+        summary TEXT,
+        delivered_at REAL,
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL,
+        FOREIGN KEY(subscription_id) REFERENCES subscriptions(id)
+            ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX one_open_batch_per_subscription
+        ON batches(subscription_id)
+        WHERE state IN ('open', 'delivering');
+    CREATE INDEX batches_due
+        ON batches(state, flush_at, next_attempt_at);
+    CREATE TABLE subscription_events (
+        subscription_id INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        handled_at REAL NOT NULL,
+        PRIMARY KEY(subscription_id, kind, external_id, fingerprint),
+        FOREIGN KEY(subscription_id) REFERENCES subscriptions(id)
+            ON DELETE CASCADE
+    );
+    CREATE TABLE batch_events (
+        batch_id TEXT NOT NULL,
+        diff_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        PRIMARY KEY(batch_id, kind, external_id, fingerprint),
+        FOREIGN KEY(batch_id) REFERENCES batches(batch_id)
+            ON DELETE CASCADE
+    );
+    PRAGMA user_version=1;
+    COMMIT;
+"""
 
 
 class NewerSchemaError(RuntimeError):
@@ -57,100 +152,89 @@ class WatcherRepository:
                     f"watcher schema {current} is newer than supported {SCHEMA_VERSION}"
                 )
             if current == 0:
-                connection.executescript(
-                    """
-                    BEGIN IMMEDIATE;
-                    CREATE TABLE watched_diffs (
-                        diff_id TEXT PRIMARY KEY,
-                        lifecycle TEXT NOT NULL,
-                        latest_version_id TEXT,
-                        last_activity_at REAL NOT NULL,
-                        next_poll_at REAL NOT NULL,
-                        comments_cursor TEXT,
-                        ci_cursor TEXT,
-                        ci_state TEXT NOT NULL,
-                        failure_count INTEGER NOT NULL DEFAULT 0,
-                        lease_owner TEXT,
-                        lease_until REAL,
-                        last_success_at REAL,
-                        missing_count INTEGER NOT NULL DEFAULT 0
-                    );
-                    CREATE TABLE subscriptions (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        session_id TEXT NOT NULL,
-                        diff_id TEXT NOT NULL,
-                        event_types TEXT NOT NULL,
-                        state TEXT NOT NULL,
-                        baseline_at REAL NOT NULL,
-                        last_liveness_at REAL NOT NULL,
-                        unavailable_since REAL,
-                        last_delivery_at REAL,
-                        retired_reason TEXT,
-                        created_at REAL NOT NULL,
-                        updated_at REAL NOT NULL,
-                        UNIQUE(session_id, diff_id),
-                        FOREIGN KEY(diff_id) REFERENCES watched_diffs(diff_id)
-                    );
-                    CREATE INDEX subscriptions_state_diff
-                        ON subscriptions(state, diff_id);
-                    CREATE TABLE source_events (
-                        diff_id TEXT NOT NULL,
-                        kind TEXT NOT NULL,
-                        external_id TEXT NOT NULL,
-                        version_id TEXT NOT NULL,
-                        fingerprint TEXT NOT NULL,
-                        actionable INTEGER NOT NULL,
-                        first_seen_at REAL NOT NULL,
-                        last_changed_at REAL NOT NULL,
-                        last_seen_at REAL NOT NULL,
-                        PRIMARY KEY(diff_id, kind, external_id),
-                        FOREIGN KEY(diff_id) REFERENCES watched_diffs(diff_id)
-                    );
-                    CREATE TABLE batches (
-                        batch_id TEXT PRIMARY KEY,
-                        subscription_id INTEGER NOT NULL,
-                        diff_id TEXT NOT NULL,
-                        state TEXT NOT NULL,
-                        first_event_at REAL NOT NULL,
-                        flush_at REAL NOT NULL,
-                        retry_count INTEGER NOT NULL DEFAULT 0,
-                        next_attempt_at REAL NOT NULL,
-                        summary TEXT,
-                        delivered_at REAL,
-                        created_at REAL NOT NULL,
-                        updated_at REAL NOT NULL,
-                        FOREIGN KEY(subscription_id) REFERENCES subscriptions(id)
-                            ON DELETE CASCADE
-                    );
-                    CREATE UNIQUE INDEX one_open_batch_per_subscription
-                        ON batches(subscription_id)
-                        WHERE state IN ('open', 'delivering');
-                    CREATE INDEX batches_due
-                        ON batches(state, flush_at, next_attempt_at);
-                    CREATE TABLE subscription_events (
-                        subscription_id INTEGER NOT NULL,
-                        kind TEXT NOT NULL,
-                        external_id TEXT NOT NULL,
-                        fingerprint TEXT NOT NULL,
-                        handled_at REAL NOT NULL,
-                        PRIMARY KEY(subscription_id, kind, external_id, fingerprint),
-                        FOREIGN KEY(subscription_id) REFERENCES subscriptions(id)
-                            ON DELETE CASCADE
-                    );
-                    CREATE TABLE batch_events (
-                        batch_id TEXT NOT NULL,
-                        diff_id TEXT NOT NULL,
-                        kind TEXT NOT NULL,
-                        external_id TEXT NOT NULL,
-                        fingerprint TEXT NOT NULL,
-                        PRIMARY KEY(batch_id, kind, external_id, fingerprint),
-                        FOREIGN KEY(batch_id) REFERENCES batches(batch_id)
-                            ON DELETE CASCADE
-                    );
-                    PRAGMA user_version=1;
-                    COMMIT;
-                    """
+                connection.executescript(V1_SCHEMA)
+                current = 1
+            if current < 2:
+                self._migrate_to_session_batches()
+
+    def _migrate_to_session_batches(self) -> None:
+        """v1 -> v2: re-key batches from one subscription to one session.
+
+        A session may now watch a whole stack, and one wake should cover all of
+        it rather than firing once per diff. ``batch_events.diff_id`` already
+        carries the per-diff attribution, so the events survive untouched; only
+        the owning key changes. ``diff_id`` also joins the batch_events primary
+        key, since two diffs in one batch can carry the same external id.
+
+        Foreign keys are disabled for the table rebuild (SQLite's documented
+        procedure) and cannot be toggled inside a transaction, so this uses its
+        own connection rather than ``_connect``.
+        """
+        connection = sqlite3.connect(self.path, timeout=10)
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA busy_timeout=10000")
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.executescript(
+                """
+                BEGIN IMMEDIATE;
+                CREATE TABLE batches_v2 (
+                    batch_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    first_event_at REAL NOT NULL,
+                    flush_at REAL NOT NULL,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at REAL NOT NULL,
+                    summary TEXT,
+                    delivered_at REAL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+                INSERT INTO batches_v2
+                    (batch_id, session_id, state, first_event_at, flush_at,
+                     retry_count, next_attempt_at, summary, delivered_at,
+                     created_at, updated_at)
+                SELECT b.batch_id, s.session_id, b.state, b.first_event_at,
+                       b.flush_at, b.retry_count, b.next_attempt_at, b.summary,
+                       b.delivered_at, b.created_at, b.updated_at
+                FROM batches b JOIN subscriptions s ON s.id = b.subscription_id;
+                CREATE TABLE batch_events_v2 (
+                    batch_id TEXT NOT NULL,
+                    diff_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    external_id TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    PRIMARY KEY(batch_id, diff_id, kind, external_id, fingerprint),
+                    FOREIGN KEY(batch_id) REFERENCES batches(batch_id)
+                        ON DELETE CASCADE
+                );
+                INSERT INTO batch_events_v2
+                    (batch_id, diff_id, kind, external_id, fingerprint)
+                SELECT be.batch_id, be.diff_id, be.kind, be.external_id,
+                       be.fingerprint
+                FROM batch_events be
+                WHERE be.batch_id IN (SELECT batch_id FROM batches_v2);
+                DROP TABLE batch_events;
+                DROP TABLE batches;
+                ALTER TABLE batches_v2 RENAME TO batches;
+                ALTER TABLE batch_events_v2 RENAME TO batch_events;
+                CREATE UNIQUE INDEX one_open_batch_per_session
+                    ON batches(session_id)
+                    WHERE state IN ('open', 'delivering');
+                CREATE INDEX batches_due
+                    ON batches(state, flush_at, next_attempt_at);
+                PRAGMA user_version=2;
+                COMMIT;
+                """
+            )
+            violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise RuntimeError(
+                    f"diff-watcher v2 migration left {len(violations)} FK violations"
                 )
+        finally:
+            connection.close()
 
     def schema_version(self) -> int:
         with self._connect() as connection:
@@ -188,13 +272,6 @@ class WatcherRepository:
                 "SELECT * FROM subscriptions WHERE session_id = ? AND diff_id = ?",
                 (session_id, diff_id),
             ).fetchone()
-            conflicting = connection.execute(
-                "SELECT 1 FROM subscriptions WHERE session_id = ? AND diff_id != ? "
-                "AND state != 'retired' LIMIT 1",
-                (session_id, diff_id),
-            ).fetchone()
-            if conflicting is not None:
-                raise SubscriptionConstraintError("session already watches a different diff")
             diff_is_active = connection.execute(
                 "SELECT 1 FROM subscriptions WHERE diff_id = ? AND state != 'retired' LIMIT 1",
                 (diff_id,),
@@ -274,6 +351,25 @@ class WatcherRepository:
             row = connection.execute(sql, params).fetchone()
             return self._subscription(row) if row is not None else None
 
+    def subscriptions_for_session(
+        self,
+        session_id: str,
+        *,
+        states: Iterable[SubscriptionState] | None = None,
+    ) -> list[Subscription]:
+        """Every subscription a session owns; one session may watch a stack."""
+        sql = "SELECT * FROM subscriptions WHERE session_id = ?"
+        params: tuple[object, ...] = (session_id,)
+        if states is not None:
+            values = tuple(state.value for state in states)
+            placeholders = ",".join("?" for _ in values)
+            sql += f" AND state IN ({placeholders})"
+            params = (session_id, *values)
+        sql += " ORDER BY id"
+        with self._connect() as connection:
+            rows = connection.execute(sql, params).fetchall()
+            return [self._subscription(row) for row in rows]
+
     def subscriptions_for_diff(
         self,
         diff_id: str,
@@ -313,10 +409,10 @@ class WatcherRepository:
                 "updated_at = ? WHERE id = ?",
                 [(now, subscription_id) for subscription_id in ids],
             )
-            connection.executemany(
+            connection.execute(
                 "UPDATE batches SET state = 'cancelled', updated_at = ? "
-                "WHERE subscription_id = ? AND state IN ('open', 'delivering')",
-                [(now, subscription_id) for subscription_id in ids],
+                "WHERE session_id = ? AND state IN ('open', 'delivering')",
+                (now, session_id),
             )
             connection.commit()
             return True
@@ -329,11 +425,7 @@ class WatcherRepository:
                 "updated_at = ? WHERE id = ?",
                 (reason, now, subscription_id),
             )
-            connection.execute(
-                "UPDATE batches SET state = 'cancelled', updated_at = ? "
-                "WHERE subscription_id = ? AND state IN ('open', 'delivering')",
-                (now, subscription_id),
-            )
+            self._detach_subscription_from_batches(connection, subscription_id, now)
             connection.commit()
 
     def apply_snapshot(
@@ -418,18 +510,19 @@ class WatcherRepository:
                 ]
                 if not qualifying:
                     continue
-                batch_id = self._open_batch_id(connection, int(subscription["id"]))
+                # Batches are session-scoped: a second diff in the same stack
+                # joins the session's open batch instead of opening its own.
+                batch_id = self._open_batch_id(connection, str(subscription["session_id"]))
                 if batch_id is None:
                     batch_id = f"dwb_{uuid.uuid4().hex}"
                     connection.execute(
                         "INSERT INTO batches "
-                        "(batch_id, subscription_id, diff_id, state, first_event_at, "
+                        "(batch_id, session_id, state, first_event_at, "
                         "flush_at, next_attempt_at, created_at, updated_at) "
-                        "VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?)",
+                        "VALUES (?, ?, 'open', ?, ?, ?, ?, ?)",
                         (
                             batch_id,
-                            int(subscription["id"]),
-                            snapshot.diff_id,
+                            str(subscription["session_id"]),
                             now,
                             now + batch_window_seconds,
                             now + batch_window_seconds,
@@ -439,9 +532,9 @@ class WatcherRepository:
                     )
                 for event in qualifying:
                     connection.execute(
-                        "DELETE FROM batch_events WHERE batch_id = ? AND kind = ? "
-                        "AND external_id = ?",
-                        (batch_id, event["kind"], event["external_id"]),
+                        "DELETE FROM batch_events WHERE batch_id = ? AND diff_id = ? "
+                        "AND kind = ? AND external_id = ?",
+                        (batch_id, snapshot.diff_id, event["kind"], event["external_id"]),
                     )
                     cursor = connection.execute(
                         "INSERT OR IGNORE INTO batch_events "
@@ -533,10 +626,16 @@ class WatcherRepository:
         fingerprint: str,
     ) -> bool:
         row = connection.execute(
+            # The second arm asks "is this already pending in my session's open
+            # batch?". Batches are session-scoped, so it must also match the
+            # event's diff -- otherwise a sibling diff's event would suppress
+            # this one.
             "SELECT 1 FROM subscription_events WHERE subscription_id = ? AND kind = ? "
             "AND external_id = ? AND fingerprint = ? UNION ALL "
             "SELECT 1 FROM batch_events be JOIN batches b ON b.batch_id = be.batch_id "
-            "WHERE b.subscription_id = ? AND b.state IN ('open', 'delivering') "
+            "JOIN subscriptions s ON s.session_id = b.session_id "
+            "WHERE s.id = ? AND be.diff_id = s.diff_id "
+            "AND b.state IN ('open', 'delivering') "
             "AND be.kind = ? "
             "AND be.external_id = ? AND be.fingerprint = ? LIMIT 1",
             (
@@ -553,42 +652,71 @@ class WatcherRepository:
         return row is not None
 
     @staticmethod
-    def _open_batch_id(connection: sqlite3.Connection, subscription_id: int) -> str | None:
+    def _open_batch_id(connection: sqlite3.Connection, session_id: str) -> str | None:
         row = connection.execute(
-            "SELECT batch_id FROM batches WHERE subscription_id = ? "
+            "SELECT batch_id FROM batches WHERE session_id = ? "
             "AND state IN ('open', 'delivering') LIMIT 1",
-            (subscription_id,),
+            (session_id,),
         ).fetchone()
         return str(row[0]) if row is not None else None
+
+    @staticmethod
+    def _batch_diff_ids(connection: sqlite3.Connection, batch_id: str) -> tuple[str, ...]:
+        rows = connection.execute(
+            "SELECT DISTINCT diff_id FROM batch_events WHERE batch_id = ? ORDER BY diff_id",
+            (batch_id,),
+        ).fetchall()
+        return tuple(str(row[0]) for row in rows)
 
     def batch(self, batch_id: str) -> Batch | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT b.*, s.session_id FROM batches b JOIN subscriptions s "
-                "ON s.id = b.subscription_id WHERE b.batch_id = ?",
+                "SELECT * FROM batches WHERE batch_id = ?",
                 (batch_id,),
             ).fetchone()
-            return self._batch(row) if row is not None else None
+            if row is None:
+                return None
+            return self._batch(row, self._batch_diff_ids(connection, batch_id))
 
-    def open_batch_for(self, subscription_id: int) -> Batch | None:
+    def open_batch_for_session(self, session_id: str) -> Batch | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT b.*, s.session_id FROM batches b JOIN subscriptions s "
-                "ON s.id = b.subscription_id WHERE b.subscription_id = ? "
+                "SELECT * FROM batches WHERE session_id = ? "
+                "AND state IN ('open', 'delivering') LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._batch(row, self._batch_diff_ids(connection, str(row["batch_id"])))
+
+    def open_batch_for(self, subscription_id: int) -> Batch | None:
+        """The open batch that would carry this subscription's events.
+
+        Batches are session-scoped, so this is the owning session's batch --
+        it may also carry events for sibling diffs in the same stack.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT b.* FROM batches b JOIN subscriptions s "
+                "ON s.session_id = b.session_id WHERE s.id = ? "
                 "AND b.state IN ('open', 'delivering') LIMIT 1",
                 (subscription_id,),
             ).fetchone()
-            return self._batch(row) if row is not None else None
+            if row is None:
+                return None
+            return self._batch(row, self._batch_diff_ids(connection, str(row["batch_id"])))
 
     def due_batches(self, now: float) -> list[Batch]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT b.*, s.session_id FROM batches b JOIN subscriptions s "
-                "ON s.id = b.subscription_id WHERE b.state IN ('open', 'delivering') "
-                "AND b.flush_at <= ? AND b.next_attempt_at <= ? ORDER BY b.flush_at",
+                "SELECT * FROM batches WHERE state IN ('open', 'delivering') "
+                "AND flush_at <= ? AND next_attempt_at <= ? ORDER BY flush_at",
                 (now, now),
             ).fetchall()
-            return [self._batch(row) for row in rows]
+            return [
+                self._batch(row, self._batch_diff_ids(connection, str(row["batch_id"])))
+                for row in rows
+            ]
 
     def prepare_batch(self, batch_id: str, *, now: float) -> tuple[int, int] | None:
         """Prune stale members, freeze a summary, and mark delivering."""
@@ -604,24 +732,27 @@ class WatcherRepository:
                 (batch_id,),
             )
             row = connection.execute(
-                "SELECT b.diff_id, b.subscription_id, s.last_delivery_at FROM batches b "
-                "JOIN subscriptions s ON s.id = b.subscription_id WHERE b.batch_id = ? "
-                "AND b.state IN ('open', 'delivering')",
+                "SELECT session_id FROM batches WHERE batch_id = ? "
+                "AND state IN ('open', 'delivering')",
                 (batch_id,),
             ).fetchone()
             if row is None:
                 connection.commit()
                 return None
-            counts = {
-                event_row["kind"]: int(event_row["count"])
-                for event_row in connection.execute(
-                    "SELECT kind, COUNT(*) AS count FROM batch_events "
-                    "WHERE batch_id = ? GROUP BY kind",
-                    (batch_id,),
-                ).fetchall()
-            }
-            comments = counts.get(EventKind.REVIEW_COMMENT.value, 0)
-            ci_failures = counts.get(EventKind.CI_FAILURE.value, 0)
+            per_diff: dict[str, dict[str, int]] = {}
+            for event_row in connection.execute(
+                "SELECT diff_id, kind, COUNT(*) AS count FROM batch_events "
+                "WHERE batch_id = ? GROUP BY diff_id, kind ORDER BY diff_id",
+                (batch_id,),
+            ).fetchall():
+                bucket = per_diff.setdefault(str(event_row["diff_id"]), {})
+                bucket[str(event_row["kind"])] = int(event_row["count"])
+            comments = sum(
+                bucket.get(EventKind.REVIEW_COMMENT.value, 0) for bucket in per_diff.values()
+            )
+            ci_failures = sum(
+                bucket.get(EventKind.CI_FAILURE.value, 0) for bucket in per_diff.values()
+            )
             if comments + ci_failures == 0:
                 connection.execute(
                     "UPDATE batches SET state = 'cancelled', updated_at = ? WHERE batch_id = ?",
@@ -631,9 +762,14 @@ class WatcherRepository:
                 return None
             summary = render_batch_summary(
                 batch_id,
-                str(row["diff_id"]),
-                comments,
-                ci_failures,
+                [
+                    (
+                        diff_id,
+                        bucket.get(EventKind.REVIEW_COMMENT.value, 0),
+                        bucket.get(EventKind.CI_FAILURE.value, 0),
+                    )
+                    for diff_id, bucket in per_diff.items()
+                ],
             )
             connection.execute(
                 "UPDATE batches SET state = 'delivering', summary = ?, updated_at = ? "
@@ -656,25 +792,33 @@ class WatcherRepository:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT subscription_id FROM batches WHERE batch_id = ?",
+                "SELECT session_id FROM batches WHERE batch_id = ?",
                 (batch_id,),
             ).fetchone()
             if row is not None:
+                session_id = str(row["session_id"])
+                # Each event is handled by the subscription owning its diff, so
+                # a re-observed finding is suppressed per diff, not per session.
                 connection.execute(
                     "INSERT OR IGNORE INTO subscription_events "
                     "(subscription_id, kind, external_id, fingerprint, handled_at) "
-                    "SELECT ?, kind, external_id, fingerprint, ? FROM batch_events "
-                    "WHERE batch_id = ?",
-                    (int(row["subscription_id"]), now, batch_id),
+                    "SELECT s.id, be.kind, be.external_id, be.fingerprint, ? "
+                    "FROM batch_events be JOIN subscriptions s "
+                    "ON s.session_id = ? AND s.diff_id = be.diff_id "
+                    "WHERE be.batch_id = ?",
+                    (now, session_id, batch_id),
                 )
                 connection.execute(
                     "UPDATE batches SET state = 'delivered', delivered_at = ?, updated_at = ? "
                     "WHERE batch_id = ?",
                     (now, now, batch_id),
                 )
+                # One wake covers the session, so the minimum-interval throttle
+                # advances for every diff it watches.
                 connection.execute(
-                    "UPDATE subscriptions SET last_delivery_at = ?, updated_at = ? WHERE id = ?",
-                    (now, now, int(row["subscription_id"])),
+                    "UPDATE subscriptions SET last_delivery_at = ?, updated_at = ? "
+                    "WHERE session_id = ? AND state != 'retired'",
+                    (now, now, session_id),
                 )
             connection.commit()
 
@@ -1027,10 +1171,37 @@ class WatcherRepository:
             "WHERE id = ?",
             (reason, now, subscription_id),
         )
+        WatcherRepository._detach_subscription_from_batches(connection, subscription_id, now)
+
+    @staticmethod
+    def _detach_subscription_from_batches(
+        connection: sqlite3.Connection,
+        subscription_id: int,
+        now: float,
+    ) -> None:
+        """Drop a retiring subscription's diff from its session's open batch.
+
+        Batches are session-scoped, so retiring one diff of a stack must not
+        cancel the pending wake for its siblings -- only remove its own events,
+        and cancel the batch if that empties it.
+        """
+        row = connection.execute(
+            "SELECT session_id, diff_id FROM subscriptions WHERE id = ?",
+            (subscription_id,),
+        ).fetchone()
+        if row is None:
+            return
+        connection.execute(
+            "DELETE FROM batch_events WHERE diff_id = ? AND batch_id IN "
+            "(SELECT batch_id FROM batches WHERE session_id = ? "
+            "AND state IN ('open', 'delivering'))",
+            (str(row["diff_id"]), str(row["session_id"])),
+        )
         connection.execute(
             "UPDATE batches SET state = 'cancelled', updated_at = ? "
-            "WHERE subscription_id = ? AND state IN ('open', 'delivering')",
-            (now, subscription_id),
+            "WHERE session_id = ? AND state IN ('open', 'delivering') "
+            "AND NOT EXISTS (SELECT 1 FROM batch_events WHERE batch_id = batches.batch_id)",
+            (now, str(row["session_id"])),
         )
 
     @staticmethod
@@ -1052,12 +1223,11 @@ class WatcherRepository:
         )
 
     @staticmethod
-    def _batch(row: sqlite3.Row) -> Batch:
+    def _batch(row: sqlite3.Row, diff_ids: tuple[str, ...]) -> Batch:
         return Batch(
             batch_id=str(row["batch_id"]),
-            subscription_id=int(row["subscription_id"]),
             session_id=str(row["session_id"]),
-            diff_id=str(row["diff_id"]),
+            diff_ids=diff_ids,
             state=BatchState(row["state"]),
             first_event_at=float(row["first_event_at"]),
             flush_at=float(row["flush_at"]),

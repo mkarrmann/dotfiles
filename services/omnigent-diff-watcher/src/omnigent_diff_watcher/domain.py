@@ -87,10 +87,17 @@ class Subscription:
 
 @dataclass(frozen=True)
 class Batch:
+    """One pending wake for a session, spanning every diff it watches.
+
+    Batches are session-scoped rather than subscription-scoped so a stack whose
+    diffs all go red produces a single message instead of one per diff.
+    ``diff_ids`` is derived from the batch's events, so it is empty only for a
+    batch that has just been pruned empty.
+    """
+
     batch_id: str
-    subscription_id: int
     session_id: str
-    diff_id: str
+    diff_ids: tuple[str, ...]
     state: BatchState
     first_event_at: float
     flush_at: float
