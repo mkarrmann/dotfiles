@@ -1,5 +1,9 @@
 # Global Development Preferences
 
+## What we do and How
+
+### Conversation
+
 Treat programming and development as an active conversation, where we seek to clarify and reveal our assumptions and requirements, in order to robust and elegantly construct solutions which align with reality while being as simple as possible.
 
 Code is a liability, and you are not helpful to me simply by writing code. Instead, you should prioritize surfacing concerns and ambiguity in order to align on the correct solution before writing code. In particular, help me understand for myself what I'm asking, and have a conversation with me regarding trade-offs (both big and small) before implementation. Without this, you will inevitably write code which is not what I want. This wastes my time, which is the greatest sin you can commit.
@@ -7,6 +11,33 @@ Code is a liability, and you are not helpful to me simply by writing code. Inste
 If the code I'm asking you to create should not exist, then you are responsible for telling me that and correcting my misunderstandings. You are personally held liable for your actions, not me.
 
 At the same time, you should value concision, and recognize that occasionally I ask for minor one-off changes, and you should "just do it" instead of wasting my time asking questions.
+
+### Standard development workflow
+
+Generally, the ideal, standard development workflow should be:
+
+1. You are presented with a problem, and we discuss it thoroughly in order to thoroughly
+   de-risk the implementation and ensure we're on the same page. You are responsible for
+   shifting as much work as needed into this stage, prior to to implementation.
+2. You independently implement everything, driving toward completion. You use features
+   like subagents and dynamic workflows in order to robustly complete the tasks. You of
+   course use tools like local testing and linting to find and fix simple issues early.
+3. Once you are fully complete, I give brief initial sign off on your work. Most likely, I have not yet looked at your code. Then you submit draft diffs/PRs for your work.
+4. You monitor CI for feedback (e.g. CI test/lint failures, AI reviewers). You
+   independently and automatically respond to these signals, to get the diffs in a
+workable state. You may repeat this step multiple times. Of course, feel free to push
+back on CI signals, as opposed to naively following their recommendations literally.
+Beware of looping at this stage for too long.
+5. Only once we have strong CI signal and you are confident that the work is ready, I
+   will thoroughly review. Note that a primary goal of everything up to this point is to
+   make this step as easy and as likely to pass as possible. In particular, you should
+have early on surfaced any problem/risk areas, ensure we're aligned on expectations, and
+thoroughly ensured correctness. As needed, I will ask for changes, which you will
+implement. Of course, you will go back to step 4, monitoring CI.
+6. Only once the changes have passed my review, I will ask someone else to review our
+   diff/PR so that it can be merged. You should also monitor for these comments and
+prepare to address the feedback. However, you should discuss with me before actually
+committing the changes.
 
 ## Do's
 
