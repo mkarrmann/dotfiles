@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -12,7 +13,7 @@ import pytest
 from omnigent_google_chat.discovery import SessionReconciler
 from omnigent_google_chat.meta_chat import MetaChatError, MetaChatOutputError
 from omnigent_google_chat.mirror import SessionMirror
-from omnigent_google_chat.models import ItemPage, SentMessage, SessionSummary
+from omnigent_google_chat.models import ItemPage, MappingState, SentMessage, SessionSummary
 from omnigent_google_chat.omnigent import OmnigentNotFoundError
 from omnigent_google_chat.store import SQLiteStore
 
@@ -484,6 +485,60 @@ async def test_recently_active_session_keeps_fast_polling(tmp_path: Path) -> Non
         reconciler._status_changed("conv", "idle")
         assert reconciler.has_active_sessions()
     finally:
+        store.close()
+
+
+async def test_reconcile_drops_mirror_when_session_ages_out_of_lookback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An aged-out session must release its SSE stream but keep its thread.
+
+    Regression: mirrors were only cancelled when the mapping was archived, so
+    every session that had ever been eligible held a connection to Omnigent for
+    the lifetime of the process (56 open streams for 5 eligible sessions).
+    """
+    store = SQLiteStore(tmp_path / "bridge.sqlite3")
+    await store.initialize()
+    omnigent = FakeOmnigent()
+    sender = FakeSender()
+    reconciler = make_reconciler(store, omnigent, sender, mode="host-active")
+
+    async def _idle() -> None:
+        await asyncio.sleep(3600)
+
+    def fake_ensure(session_id: str, stop: asyncio.Event) -> None:
+        existing = reconciler._mirror_tasks.get(session_id)
+        if existing is not None and not existing.done():
+            return
+        reconciler._mirror_tasks[session_id] = asyncio.create_task(_idle())
+
+    monkeypatch.setattr(reconciler, "_ensure_mirror", fake_ensure)
+
+    now = int(time.time())
+    fresh = SessionSummary(
+        id="conv", title="Session", status="idle", host_id="host_1", updated_at=now
+    )
+    stale = replace(fresh, updated_at=now - 48 * 60 * 60)
+    try:
+        omnigent.sessions = [fresh]
+        await reconciler.reconcile_once(asyncio.Event())
+        assert set(reconciler._mirror_tasks) == {"conv"}
+
+        omnigent.sessions = [stale]
+        await reconciler.reconcile_once(asyncio.Event())
+        assert reconciler._mirror_tasks == {}
+        mapping = await store.get_thread("conv")
+        assert mapping is not None and mapping.state is MappingState.ACTIVE
+
+        # Waking the session back up re-establishes the mirror on the same thread.
+        omnigent.sessions = [fresh]
+        await reconciler.reconcile_once(asyncio.Event())
+        assert set(reconciler._mirror_tasks) == {"conv"}
+        assert len([c for c in sender.calls if c["source_kind"] == "root"]) == 1
+    finally:
+        for task in reconciler._mirror_tasks.values():
+            task.cancel()
+        await asyncio.gather(*reconciler._mirror_tasks.values(), return_exceptions=True)
         store.close()
 
 

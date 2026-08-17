@@ -108,9 +108,17 @@ class SessionReconciler:
                     self._last_active_at = time.monotonic()
                 self._ensure_mirror(session.id, stop)
 
+        # Drop mirrors that are no longer eligible as well as detached ones. A
+        # session that ages out of the lookback window keeps an ACTIVE mapping
+        # (so its thread is reused if it wakes up), but holding its SSE stream
+        # open costs a connection per session for the lifetime of the process.
         for session_id in list(self._mirror_tasks):
             current_mapping = await self._store.get_thread(session_id)
-            if current_mapping is None or current_mapping.state is not MappingState.ACTIVE:
+            if (
+                current_mapping is None
+                or current_mapping.state is not MappingState.ACTIVE
+                or session_id not in eligible
+            ):
                 self._cancel_mirror(session_id)
 
     def _eligible(self, session: SessionSummary) -> bool:
@@ -137,9 +145,7 @@ class SessionReconciler:
             text=format_root(session),
             thread_name=None,
             mention_unixname=(
-                self._mention_unixname
-                if self._mention_enabled and self._mention_on_root
-                else None
+                self._mention_unixname if self._mention_enabled and self._mention_on_root else None
             ),
         )
         if len(sent) != 1:
