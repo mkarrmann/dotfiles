@@ -336,8 +336,14 @@ def repair_force_start(config: HubConfig) -> ActiveHubRecord:
     forced = read_force_override(config)
     if forced is None:
         raise HubRuntimeError("there is no valid force-start override to repair")
-    shared = read_record(config)
-    if shared.epoch >= forced.epoch and shared != forced:
+    # An absent record is the common repair case, not an error: force-start is
+    # only reachable when the shared record could not be read, and retention can
+    # delete the file outright. publish_record recreates the storage root.
+    try:
+        shared: ActiveHubRecord | None = read_record(config)
+    except StorageError:
+        shared = None
+    if shared is not None and shared.epoch >= forced.epoch and shared != forced:
         raise HubRuntimeError(
             f"shared epoch {shared.epoch} is not older than forced epoch {forced.epoch}"
         )

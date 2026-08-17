@@ -24,11 +24,12 @@ from omnigent_hub.runtime import (
     read_force_override,
     reconcile_local_route,
     reconcile_services,
+    repair_force_start,
     resolve_record,
     resolve_routing_record,
     service_action,
 )
-from omnigent_hub.storage import StorageError
+from omnigent_hub.storage import StorageError, publish_record
 from omnigent_hub.storage import read_record as read_shared_record
 
 
@@ -662,6 +663,65 @@ def install_session_payload(
     monkeypatch.setattr(
         "omnigent_hub.runtime.urllib.request.build_opener", lambda *handlers: FakeOpener()
     )
+
+
+def test_repair_force_start_recreates_a_record_retention_deleted(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    initialize(hub_config, active_hub="primary.example.com")
+
+    def unavailable(config: HubConfig, **kwargs: Any) -> ActiveHubRecord:
+        raise StorageError("unavailable")
+
+    monkeypatch.setattr("omnigent_hub.runtime.read_record", unavailable)
+    forced = force_start(hub_config, reason="test outage")
+
+    # Retention deletes the whole storage root, which is how this fails in
+    # practice; repair must recreate it rather than refuse to read it.
+    hub_config.record_path.unlink()
+    hub_config.storage_root.rmdir()
+    monkeypatch.undo()
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    commands: list[list[str]] = []
+
+    def record_command(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr("omnigent_hub.storage.run_command", record_command)
+
+    repaired = repair_force_start(hub_config)
+
+    # A missing record still escalates to a remount before repair concludes the
+    # file is genuinely gone rather than hidden behind an abandoned mount.
+    assert commands == [["persistent-storage", "remount", "private-30d"]]
+    assert repaired == forced
+    assert read_shared_record(hub_config) == forced
+    assert not (hub_config.local_state_dir / "force-start.json").exists()
+    assert check_gate(hub_config).record == forced
+
+
+def test_repair_force_start_still_refuses_a_newer_shared_record(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    initialize(hub_config, active_hub="primary.example.com")
+
+    def unavailable(config: HubConfig, **kwargs: Any) -> ActiveHubRecord:
+        raise StorageError("unavailable")
+
+    monkeypatch.setattr("omnigent_hub.runtime.read_record", unavailable)
+    forced = force_start(hub_config, reason="test outage")
+    monkeypatch.undo()
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    publish_record(
+        hub_config,
+        replace(forced, epoch=forced.epoch + 1, active_hub="standby.example.com"),
+    )
+
+    with pytest.raises(HubRuntimeError, match="is not older than forced epoch"):
+        repair_force_start(hub_config)
 
 
 def initialize_record_for_test(config: HubConfig, active_hub: str) -> ActiveHubRecord:
