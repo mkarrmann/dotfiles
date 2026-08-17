@@ -1,0 +1,26 @@
+# Authoritative systemd --user unit for Omnigent log rotation.
+# Symlinked into ~/.config/systemd/user/ by ~/dotfiles/sync.sh (Linux block).
+#
+#   systemctl --user start omnigent-logrotate
+#   logrotate -d -s ~/.local/state/omnigent-logrotate/logrotate.status \
+#             ~/dotfiles/omnigent_config/logrotate.conf   # dry run
+#
+# Rotates the logs this repo's units write via StandardOutput=append:, which
+# systemd never rotates on its own. Deliberately NOT gated on hub ownership:
+# rotation is safe and useful on any host that has the files, and a stale
+# 900 MB log on a demoted hub is exactly what we want cleaned up.
+
+[Unit]
+Description=Rotate Omnigent append-mode logs
+ConditionPathExists=%h/dotfiles/omnigent_config/logrotate.conf
+ConditionFileIsExecutable=/usr/sbin/logrotate
+
+[Service]
+Type=oneshot
+# --state keeps rotation bookkeeping in the user's state dir; without it
+# logrotate would try /var/lib/logrotate and fail unprivileged.
+ExecStart=/usr/sbin/logrotate --state %S/omnigent-logrotate/logrotate.status %h/dotfiles/omnigent_config/logrotate.conf
+StateDirectory=omnigent-logrotate
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=full

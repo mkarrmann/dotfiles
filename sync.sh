@@ -751,7 +751,7 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
     # Timer activation owns this oneshot; starting it during every dotfiles
     # reconciliation would create an unnecessary extra archive.
     case "$unit_name" in
-      omnigent-server.service|omnigent-prodnet.service|omnigent-client-proxy.service|omnigent-google-chat.service|omnigent-diff-watcher.service|omnigent-snapshot.service|omnigent-hub-reconcile.service)
+      omnigent-server.service|omnigent-prodnet.service|omnigent-client-proxy.service|omnigent-google-chat.service|omnigent-diff-watcher.service|omnigent-snapshot.service|omnigent-hub-reconcile.service|omnigent-logrotate.service)
         continue
         ;;
     esac
@@ -771,6 +771,11 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   # runs on its own schedule and is triggered eagerly by init.sh.
   systemctl --user enable --now omnigent-hub-reconcile.timer 2>/dev/null \
     || echo "WARNING: failed to enable omnigent-hub-reconcile.timer" >&2
+
+  # Log rotation runs everywhere, not just on the hub: systemd never rotates a
+  # StandardOutput=append: file, and a demoted hub keeps whatever it had.
+  systemctl --user enable --now omnigent-logrotate.timer 2>/dev/null \
+    || echo "WARNING: failed to enable omnigent-logrotate.timer" >&2
 fi
 
 # Nori

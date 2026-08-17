@@ -1,0 +1,11 @@
+[Unit]
+Description=Rotate Omnigent append-mode logs hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=5m
+Unit=omnigent-logrotate.service
+
+[Install]
+WantedBy=timers.target
