@@ -205,10 +205,18 @@ async def _notify_restart_ambiguities(
 
 
 def _configure_logging(level: str) -> None:
+    resolved = getattr(logging, level.upper(), logging.INFO)
     logging.basicConfig(
-        level=getattr(logging, level.upper(), logging.INFO),
+        level=resolved,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    # httpx logs a line per request at INFO. The bridge polls Omnigent on a
+    # fixed interval and holds an SSE stream per mirrored session, so at the
+    # root level that alone accounted for most of the log volume. Keep it at
+    # WARNING unless the operator explicitly asked for DEBUG.
+    if resolved > logging.DEBUG:
+        for noisy in ("httpx", "httpcore"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def _install_signal_handlers(stop: asyncio.Event) -> None:

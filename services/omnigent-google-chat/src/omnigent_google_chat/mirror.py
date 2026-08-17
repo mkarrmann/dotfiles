@@ -15,6 +15,10 @@ from omnigent_google_chat.text import format_user_item, item_id, item_role, item
 _STREAM_END = object()
 
 
+class _StreamEnded(OmnigentError):
+    """The SSE stream closed cleanly — an ordinary reconnect, not a fault."""
+
+
 class SessionMirror:
     def __init__(
         self,
@@ -56,14 +60,17 @@ class SessionMirror:
                 return
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
                 failures += 1
                 delay = min(2 ** min(failures, 6), 60) + random.uniform(0, 0.5)
+                # Every mirror re-raises on a clean stream end, so a server
+                # restart emits one of these per mirrored session. A stack
+                # trace there is pure noise; keep it for genuine faults.
                 self._logger.warning(
                     "Session mirror disconnected session_id=%s; retrying in %.1fs",
                     self.session_id,
                     delay,
-                    exc_info=True,
+                    exc_info=not isinstance(exc, _StreamEnded),
                 )
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=delay)
@@ -80,7 +87,7 @@ class SessionMirror:
             while not stop.is_set():
                 event = await queue.get()
                 if event is _STREAM_END:
-                    raise OmnigentError("Omnigent SSE stream ended")
+                    raise _StreamEnded("Omnigent SSE stream ended")
                 if isinstance(event, BaseException):
                     raise event
                 if not isinstance(event, dict):

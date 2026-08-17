@@ -18,6 +18,12 @@ from omnigent_google_chat.omnigent import (
 from omnigent_google_chat.store import SQLiteStore
 from omnigent_google_chat.text import BRIDGE_PREFIX, format_status, normalize_input, text_sha256
 
+# Rejections that are the normal steady state rather than anomalies: the poller
+# re-reads the whole space, so it sees the bridge's own bot output every cycle.
+_REASON_NOT_HUMAN = "message is not authored by the allowlisted human"
+_REASON_BRIDGE_OUTPUT = "message is bridge output"
+_EXPECTED_REJECTIONS = frozenset({_REASON_NOT_HUMAN, _REASON_BRIDGE_OUTPUT})
+
 
 class InboundProcessor:
     def __init__(
@@ -91,11 +97,11 @@ class InboundProcessor:
         if message.space_name != self._space_name:
             return "message belongs to an unconfigured space"
         if message.actor_id == self._meta_bot_actor_id or message.actor_type.upper() != "HUMAN":
-            return "message is not authored by the allowlisted human"
+            return _REASON_NOT_HUMAN
         if message.actor_id != self._allowed_actor_id:
             return "message actor is not allowlisted"
         if await self._store.is_outbound_message(message.name):
-            return "message is bridge output"
+            return _REASON_BRIDGE_OUTPUT
         if _is_forwarded_or_cross_posted(message.raw):
             return "forwarded or cross-posted messages are not accepted"
         mapping = await self._store.get_thread_by_name(message.thread_name)
@@ -253,7 +259,13 @@ class InboundProcessor:
 
     async def _reject(self, message: GoogleChatMessage, reason: str) -> None:
         await self._store.set_inbound_state(message.name, InboundState.REJECTED, error=reason)
-        self._logger.warning("Rejected Google Chat input name=%s reason=%s", message.name, reason)
+        # Every poll re-reads the bridge's own posts, so the expected reasons
+        # fire constantly and would bury a genuine one (an unauthorised human,
+        # a bad space) that an operator actually needs to see.
+        level = logging.DEBUG if reason in _EXPECTED_REJECTIONS else logging.WARNING
+        self._logger.log(
+            level, "Rejected Google Chat input name=%s reason=%s", message.name, reason
+        )
 
     async def _notice(
         self,
