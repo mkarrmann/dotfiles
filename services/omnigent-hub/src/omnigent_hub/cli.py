@@ -24,6 +24,7 @@ from omnigent_hub.runtime import (
     force_start,
     initialize,
     local_status,
+    reconcile_host,
     reconcile_local_route,
     reconcile_services,
     repair_force_start,
@@ -325,10 +326,10 @@ def main(argv: list[str] | None = None) -> None:
         elif args.command == "abort-transition":
             _require_yes(parser, args.yes, "abort-transition")
             activation = abort_transition(config)
-            reconcile_local_route(config, restart_host=False)
+            route = reconcile_local_route(config, restart_host=False)
             service_action(config, "stop-client")
             service_action(config, "start-core")
-            service_action(config, "restart-host")
+            reconcile_host(config, route_changed=bool(route["changed"]))
             service_action(config, "start-tail")
             _emit(activation.to_dict(), args.json)
         elif args.command == "force-start":
@@ -336,10 +337,10 @@ def main(argv: list[str] | None = None) -> None:
             if not args.other_hub_confirmed_stopped:
                 parser.error("force-start requires --other-hub-confirmed-stopped")
             activation = force_start(config, reason=args.reason)
-            reconcile_local_route(config, restart_host=False)
+            route = reconcile_local_route(config, restart_host=False)
             service_action(config, "stop-client")
             service_action(config, "start-core")
-            service_action(config, "restart-host")
+            reconcile_host(config, route_changed=bool(route["changed"]))
             service_action(config, "start-bridge")
             service_action(config, "start-watcher")
             _emit(activation.to_dict(), args.json)

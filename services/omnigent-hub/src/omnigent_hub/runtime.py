@@ -662,7 +662,7 @@ def _host_reconcile_action(config: HubConfig, *, route_changed: bool) -> str | N
     return None
 
 
-def _reconcile_host(config: HubConfig, *, route_changed: bool) -> tuple[dict[str, str], str | None]:
+def reconcile_host(config: HubConfig, *, route_changed: bool) -> tuple[dict[str, str], str | None]:
     action = _host_reconcile_action(config, route_changed=route_changed)
     if action is None:
         return {"omnigent-host.service": systemd_state("omnigent-host.service")}, None
@@ -792,7 +792,7 @@ def _reconcile_degraded(config: HubConfig, *, storage_error: str) -> dict[str, A
             client = service_action(config, _client_reconcile_action(config, route_changed=False))
         except HubRuntimeError as exc:
             client_error = str(exc)
-    host, host_action = _reconcile_host(config, route_changed=False)
+    host, host_action = reconcile_host(config, route_changed=False)
     return {
         "host": config.local_fqdn,
         "state": "degraded",
@@ -855,7 +855,7 @@ def reconcile_services(config: HubConfig) -> dict[str, Any]:
         route = reconcile_local_route(config, restart_host=False)
         client_action = _client_reconcile_action(config, route_changed=bool(route["changed"]))
         client = service_action(config, client_action)
-        host, host_action = _reconcile_host(config, route_changed=bool(route["changed"]))
+        host, host_action = reconcile_host(config, route_changed=bool(route["changed"]))
         return {
             "host": config.local_fqdn,
             "state": "standby",
@@ -868,7 +868,7 @@ def reconcile_services(config: HubConfig) -> dict[str, Any]:
     service_action(config, "stop-client")
     route = reconcile_local_route(config, restart_host=False)
     core = service_action(config, "start-core")
-    host, host_action = _reconcile_host(config, route_changed=bool(route["changed"]))
+    host, host_action = reconcile_host(config, route_changed=bool(route["changed"]))
     tail = service_action(config, "start-tail")
     # A refresh failure must not abandon the cycle: the services above are
     # already reconciled, and the record has days of retention left to retry in.
