@@ -55,8 +55,11 @@ vim.api.nvim_create_autocmd("User", {
 			})
 		end
 
-		require("lib.meta-buck").setup()
-		local buck_ok, buck = pcall(require, "meta.buck")
+		local buck_ok, buck
+		if meta_ok then
+			require("lib.meta-buck").setup()
+			buck_ok, buck = pcall(require, "meta.buck")
+		end
 		if buck_ok then
 			buck.setup({
 				keybindings = {
@@ -302,7 +305,7 @@ vim.api.nvim_create_autocmd("User", {
 		end, { desc = "Run sl pull" })
 
 		local telescope_ok2, telescope = pcall(require, "telescope")
-		if telescope_ok2 then
+		if meta_ok and telescope_ok2 then
 			-- TODO: lua/plugins/meta-lsp.lua also binds <leader>p (with a non-arc-root
 			-- fallback to the LazyVim files picker); this VeryLazy mapping shadows it.
 			local myles = require("lib.myles")
