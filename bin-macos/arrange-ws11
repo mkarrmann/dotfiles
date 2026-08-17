@@ -30,6 +30,10 @@ set -uo pipefail
 #     monitor-appkit-nsscreen-screens-id (a 1-based index into NSScreen.screens).
 #
 # Window identity:
+#   Workspace 11 holds exactly these four windows. Anything else found there is
+#   evicted to the sweep workspace, because ws 11 is deliberately absent from
+#   startup-windows' managed_workspaces and none of its stray sweeps reach here.
+#
 #   Which window fills each slot is decided by id, not by title. A title regex
 #   is ambiguous — '^Calendar\b' matches any Chrome window showing a calendar —
 #   and AeroSpace's ordering of equal titles is not stable between calls, so
@@ -343,9 +347,24 @@ fi
 
 # ── Build the 2×2 (deterministic; verify by geometry when available) ──
 build_grid() {
-  # 1. empty ws 11, then re-insert in a fixed order -> deterministic column
-  local wid
-  for wid in "$CAL" "$OBS" "$CHAT" "$ORCH"; do
+  # 1. empty ws 11, then re-insert in a fixed order -> deterministic column.
+  #    Evacuating *every* current resident, not just the four, is what enforces
+  #    the exact-four contract: ws 11 is absent from startup-windows'
+  #    managed_workspaces, so none of its stray sweeps ever look here and
+  #    anything that drifted in would otherwise stay forever.
+  local wid residents foreign evacuate
+  residents=$(aerospace list-windows --workspace "$WS" --format '%{window-id}' 2>/dev/null)
+  # residents is an intentional whitespace-delimited id list.
+  # shellcheck disable=SC2086
+  foreign=$(comm -23 \
+    <(printf '%s\n' $residents | sort -u) \
+    <(printf '%s\n' "$CAL" "$OBS" "$CHAT" "$ORCH" | sort -u))
+  for wid in $foreign; do
+    echo "  evicting foreign window $wid from workspace $WS to $SWEEP_WORKSPACE"
+  done
+  # shellcheck disable=SC2086
+  evacuate=$(printf '%s\n' $residents "$CAL" "$OBS" "$CHAT" "$ORCH" | awk 'NF && !seen[$0]++')
+  for wid in $evacuate; do
     aerospace move-node-to-workspace --window-id "$wid" "$SWEEP_WORKSPACE" 2>/dev/null || true
   done
   sleep 0.3
@@ -360,10 +379,19 @@ build_grid() {
   aerospace join-with down 2>/dev/null || true; sleep 0.3
   focus_verified "$CHAT" "$WS" || return 1
   aerospace join-with down 2>/dev/null || true; sleep 0.3
-  # all four should now be under h_tiles rows
-  local nonrow
-  nonrow=$(aerospace list-windows --workspace "$WS" --format '%{window-parent-container-layout}' \
-    | awk '$0!="h_tiles"{c++} END{print c+0}')
+  # ws 11 must now hold exactly the four dashboard windows, all under h_tiles
+  # rows. One query answers both; a late arrival that slipped in during the
+  # build fails membership here and the next attempt evicts it.
+  local rows nonrow actual expected
+  rows=$(aerospace list-windows --workspace "$WS" \
+    --format '%{window-id}|%{window-parent-container-layout}' 2>/dev/null)
+  nonrow=$(awk -F'|' 'NF && $2!="h_tiles"{c++} END{print c+0}' <<< "$rows")
+  actual=$(awk -F'|' 'NF{print $1}' <<< "$rows" | sort -n | tr '\n' ' ')
+  expected=$(printf '%s\n' "$CAL" "$OBS" "$CHAT" "$ORCH" | sort -n | tr '\n' ' ')
+  if [[ "$actual" != "$expected" ]]; then
+    echo "  workspace $WS holds [${actual% }], expected [${expected% }]" >&2
+    return 1
+  fi
   [[ "$nonrow" -eq 0 ]]
 }
 
