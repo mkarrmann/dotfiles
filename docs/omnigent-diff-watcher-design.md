@@ -1,6 +1,6 @@
 # Omnigent diff watcher sidecar
 
-**Status:** Implemented; staged in `log_only`. Multi-diff (v2 schema) shipped.
+**Status:** Implemented; delivery enabled. Multi-diff (v2 schema) shipped.
 
 **Owner:** `mkarrmann`
 

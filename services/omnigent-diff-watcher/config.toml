@@ -1,5 +1,5 @@
 database_path = "~/.omnigent/diff-watcher.sqlite3"
-delivery_mode = "log_only"
+delivery_mode = "enabled"
 delivery_session_allowlist = []
 reconcile_interval_seconds = 15
 scheduler_error_retry_seconds = 30

@@ -7,13 +7,22 @@ import pytest
 from omnigent_diff_watcher.settings import ServiceSettings
 
 
-def test_loads_checked_in_safe_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_loads_checked_in_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OMNIGENT_URL", raising=False)
     settings = ServiceSettings.load(Path(__file__).resolve().parents[2] / "config.toml")
     assert settings.server_url == "http://127.0.0.1:6767"
-    assert settings.delivery_mode == "log_only"
+    # Delivery is live. Subscription is still opt-in per session and gated by an
+    # ASK approval policy, so this does not wake anything unasked.
+    assert settings.delivery_mode == "enabled"
+    # Empty means no restriction -- the gate is `if self._allowlist and ...`.
     assert settings.delivery_session_allowlist == frozenset()
     assert settings.watcher.batch_window_seconds == 300
+
+
+def test_log_only_mode_is_still_supported(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text('delivery_mode = "log_only"\n')
+    assert ServiceSettings.load(config).delivery_mode == "log_only"
 
 
 def test_environment_server_url_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
