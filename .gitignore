@@ -1,2 +1,6 @@
 **/*local.json
 __pycache__/
+# One-off telemetry dumps that land in the repo root; the one that prompted
+# this was 93MB. Nothing here generates them, so this is purely a guard: a
+# stray `git add -A` would otherwise put one in history permanently.
+hot_event_source_*.json
