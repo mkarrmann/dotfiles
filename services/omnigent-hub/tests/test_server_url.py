@@ -64,8 +64,7 @@ def test_static_candidates_do_not_require_cache(tmp_path: Path) -> None:
     assert result.stdout.splitlines() == ["primary.example.com", "standby.example.com"]
 
 
-def test_transition_cache_fails_closed(tmp_path: Path) -> None:
-    run_script(tmp_path, host="peer.facebook.com")
+def _fence_cache(tmp_path: Path) -> None:
     cache = tmp_path / "active-hub.json"
     value = json.loads(cache.read_text(encoding="utf-8"))
     value.update(
@@ -77,18 +76,54 @@ def test_transition_cache_fails_closed(tmp_path: Path) -> None:
         }
     )
     cache.write_text(json.dumps(value), encoding="utf-8")
-    result = run_script_with_existing(tmp_path, host="peer.facebook.com")
+
+
+def test_transition_cache_fails_closed(tmp_path: Path) -> None:
+    run_script(tmp_path, host="peer.facebook.com")
+    _fence_cache(tmp_path)
+    result = run_script_with_existing(tmp_path, host="peer.facebook.com", system="Linux")
     assert result.returncode == 1
     assert "fenced by transition transition-4" in result.stderr
 
 
-def run_script_with_existing(tmp_path: Path, *, host: str) -> subprocess.CompletedProcess[str]:
+def test_transition_cache_does_not_fence_the_mac(tmp_path: Path) -> None:
+    # The Darwin branch returns the loopback URL before consulting the routing
+    # cache, deliberately: the Mac reaches whichever hub is live through
+    # mac_proxy's existing ET forwards, so a handoff in progress is not a
+    # reason to fail its clients. Pinned here so the divergence from
+    # test_transition_cache_fails_closed stays intentional.
+    run_script(tmp_path, host="peer.facebook.com")
+    _fence_cache(tmp_path)
+    result = run_script_with_existing(tmp_path, host="peer.facebook.com", system="Darwin")
+    assert result.returncode == 0
+    assert result.stdout.strip() == "http://127.0.0.1:6767"
+
+
+def run_script_with_existing(
+    tmp_path: Path, *, host: str, system: str
+) -> subprocess.CompletedProcess[str]:
+    # The script branches on `uname -s`, so the platform is stubbed rather than
+    # inherited. Otherwise each behaviour is only reachable on the OS that
+    # exhibits it, and the other silently goes untested -- which is how the
+    # Darwin path came to have no coverage at all.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    fake_uname = bin_dir / "uname"
+    fake_uname.write_text(
+        '#!/bin/sh\nif [ "$1" = "-s" ]; then echo '
+        + system
+        + '; else exec /usr/bin/uname "$@"; fi\n',
+        encoding="utf-8",
+    )
+    fake_uname.chmod(0o755)
+
     env = os.environ.copy()
     env.update(
         {
             "OMNIGENT_TOPOLOGY_FILE": str(tmp_path / "topology.env"),
             "OMNIGENT_HA_ROUTING_CACHE": str(tmp_path / "active-hub.json"),
             "OMNIGENT_LOCAL_FQDN": host,
+            "PATH": f"{bin_dir}:{env['PATH']}",
         }
     )
     return subprocess.run([str(SCRIPT)], env=env, text=True, capture_output=True)
