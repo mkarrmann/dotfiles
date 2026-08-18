@@ -329,7 +329,13 @@ def main(argv: list[str] | None = None) -> None:
             route = reconcile_local_route(config, restart_host=False)
             service_action(config, "stop-client")
             service_action(config, "start-core")
-            reconcile_host(config, route_changed=bool(route["changed"]))
+            # Operator-initiated and gated behind --yes: restart an unregistered
+            # host on this single probe rather than deferring to the reconcile
+            # timer's consecutive-failure threshold, which would leave this
+            # command silently doing nothing about the host it was run to fix.
+            reconcile_host(
+                config, route_changed=bool(route["changed"]), require_repeated_failure=False
+            )
             service_action(config, "start-tail")
             _emit(activation.to_dict(), args.json)
         elif args.command == "force-start":
@@ -340,7 +346,13 @@ def main(argv: list[str] | None = None) -> None:
             route = reconcile_local_route(config, restart_host=False)
             service_action(config, "stop-client")
             service_action(config, "start-core")
-            reconcile_host(config, route_changed=bool(route["changed"]))
+            # Operator-initiated and gated behind --yes: restart an unregistered
+            # host on this single probe rather than deferring to the reconcile
+            # timer's consecutive-failure threshold, which would leave this
+            # command silently doing nothing about the host it was run to fix.
+            reconcile_host(
+                config, route_changed=bool(route["changed"]), require_repeated_failure=False
+            )
             service_action(config, "start-bridge")
             service_action(config, "start-watcher")
             _emit(activation.to_dict(), args.json)

@@ -27,6 +27,33 @@ from omnigent_hub.storage import StorageError, publish_record, read_record, writ
 HOST_REGISTRATION_GRACE_SECONDS = 120.0
 RECORD_REFRESH_SECONDS = 7 * 24 * 60 * 60
 
+# Consecutive failed registration probes before the execution host is restarted.
+#
+# Restarting the host kills every runner on the box -- the host is their parent
+# -- so every in-flight session dies with it, surfacing as
+# ``runner_disconnected``. That price is worth paying for a host that is truly
+# wedged, and not worth paying for one that is about to fix itself: the host's
+# own reconnect loop backs off to a 10s cap and retries indefinitely, so a
+# blipped link recovers well inside a single 60s reconcile interval.
+#
+# One sample is also a weak signal. ``probe_host_registered`` reports False for
+# a slow or failed CLI invocation, a 15s timeout, and unparseable output, none
+# of which mean the host is gone.
+#
+# Three strikes at the 60s cadence still restarts a genuinely wedged host
+# within roughly three minutes.
+HOST_PROBE_FAILURE_RESTART_THRESHOLD = 3
+
+# A streak older than this is treated as over. Without it the count is
+# "failures ever", not "failures in a row": two isolated blips days apart would
+# combine with a third to restart a healthy host.
+HOST_PROBE_FAILURE_WINDOW_SECONDS = 300.0
+
+
+def _now() -> float:
+    """Wall clock, isolated so tests can age a streak without sleeping."""
+    return time.time()
+
 
 class HubRuntimeError(RuntimeError):
     pass
@@ -636,7 +663,46 @@ def _client_reconcile_action(config: HubConfig, *, route_changed: bool) -> str:
     return "start-client"
 
 
-def _host_reconcile_action(config: HubConfig, *, route_changed: bool) -> str | None:
+def _clear_host_probe_failures(config: HubConfig) -> None:
+    """Forget the current failure streak."""
+    config.host_probe_failures.unlink(missing_ok=True)
+
+
+def _record_host_probe_failure(config: HubConfig) -> int:
+    """Add one failure to the streak and return its new length.
+
+    Unreadable or malformed state restarts the streak at 1 rather than raising:
+    this decides whether to keep a host alive, and a corrupt counter must not
+    take down the reconcile cycle.
+    """
+    now = _now()
+    previous = 0
+    try:
+        payload = json.loads(config.host_probe_failures.read_text(encoding="utf-8"))
+        last_at = float(payload["last_failure_at"])
+        if now - last_at <= HOST_PROBE_FAILURE_WINDOW_SECONDS:
+            previous = int(payload["consecutive_failures"])
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+        previous = 0
+
+    count = max(previous, 0) + 1
+    try:
+        write_json_atomic(
+            config.host_probe_failures,
+            {"consecutive_failures": count, "last_failure_at": now},
+        )
+    except OSError:
+        # An unwritable state dir must not stop reconciliation. The streak
+        # cannot advance, so the host is never restarted on this path -- the
+        # safe direction, since the alternative is killing live sessions on a
+        # signal we failed to record.
+        pass
+    return count
+
+
+def _host_reconcile_action(
+    config: HubConfig, *, route_changed: bool, require_repeated_failure: bool
+) -> str | None:
     """Choose how to reconcile the execution host, which runs on every devserver.
 
     A changed route always restarts to retarget the host at the new hub.
@@ -649,21 +715,40 @@ def _host_reconcile_action(config: HubConfig, *, route_changed: bool) -> str | N
     A freshly started host is left alone until the grace window expires:
     registration takes roughly 45s, well inside the reconcile interval, so
     probing it any sooner would restart it mid-startup on every cycle forever.
+
+    On the reconcile timer an unregistered host is restarted only after
+    :data:`HOST_PROBE_FAILURE_RESTART_THRESHOLD` consecutive probes agree,
+    because the restart kills every runner on the box and a single probe is not
+    evidence enough to spend live sessions on. Operator commands pass
+    ``require_repeated_failure=False``: they are one-shot and gated behind
+    ``--yes``, so deferring would leave the command silently doing nothing
+    about the host it was run to fix.
     """
     if route_changed:
+        _clear_host_probe_failures(config)
         return "restart-host"
     if systemd_state("omnigent-host.service") != "active":
+        _clear_host_probe_failures(config)
         return "start-host"
     active_seconds = unit_active_seconds("omnigent-host.service")
     if active_seconds is not None and active_seconds < HOST_REGISTRATION_GRACE_SECONDS:
         return None
-    if not probe_host_registered(config):
-        return "restart-host"
-    return None
+    if probe_host_registered(config):
+        _clear_host_probe_failures(config)
+        return None
+    if require_repeated_failure:
+        if _record_host_probe_failure(config) < HOST_PROBE_FAILURE_RESTART_THRESHOLD:
+            return None
+    _clear_host_probe_failures(config)
+    return "restart-host"
 
 
-def reconcile_host(config: HubConfig, *, route_changed: bool) -> tuple[dict[str, str], str | None]:
-    action = _host_reconcile_action(config, route_changed=route_changed)
+def reconcile_host(
+    config: HubConfig, *, route_changed: bool, require_repeated_failure: bool = True
+) -> tuple[dict[str, str], str | None]:
+    action = _host_reconcile_action(
+        config, route_changed=route_changed, require_repeated_failure=require_repeated_failure
+    )
     if action is None:
         return {"omnigent-host.service": systemd_state("omnigent-host.service")}, None
     return service_action(config, action), action

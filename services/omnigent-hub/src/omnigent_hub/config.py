@@ -55,6 +55,16 @@ class HubConfig:
     def backup_status(self) -> Path:
         return self.local_state_dir / "backup-status.json"
 
+    @property
+    def host_probe_failures(self) -> Path:
+        """Consecutive failed host-registration probes, across reconcile runs.
+
+        The reconciler is a timer-driven process, so the streak cannot live in
+        memory. Local state, not shared storage: it describes this machine's
+        view of its own host and means nothing to the other candidate.
+        """
+        return self.local_state_dir / "host-probe-failures.json"
+
 
 def load_config(environ: dict[str, str] | None = None) -> HubConfig:
     env = os.environ if environ is None else environ
