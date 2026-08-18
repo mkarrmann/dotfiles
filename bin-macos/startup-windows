@@ -148,6 +148,7 @@ WS11_CHAT_TITLE_RE='^Chat\b'
 WS11_CAL_WINDOW_ID=""
 WS11_CHAT_WINDOW_ID=""
 OMNIGENT_PORT="${OMNIGENT_PORT:-$(omnigent-server-url --port)}"
+OMNIGENT_TLS_PORT="${OMNIGENT_TLS_PORT:-$(omnigent-server-url --tls-port)}"
 OMNIGENT_PRIMARY_FQDN="${OMNIGENT_PRIMARY_FQDN:-$(omnigent-server-url --primary)}"
 OMNIGENT_STANDBY_FQDN="${OMNIGENT_STANDBY_FQDN:-$(omnigent-server-url --standby)}"
 OMNIGENT_PRIMARY_TUNNEL_PORT="${OMNIGENT_PRIMARY_TUNNEL_PORT:-$(omnigent-server-url --primary-tunnel-port)}"
@@ -748,6 +749,14 @@ failures=0
 # nvs-tunnels supply its candidate-specific upstream forwards.
 if ! curl -sf "http://127.0.0.1:${OMNIGENT_PORT}/health" >/dev/null 2>&1; then
   echo "Omnigent proxy is not healthy yet at http://127.0.0.1:${OMNIGENT_PORT}; startup will repair its candidate forwards" >&2
+fi
+
+# The desktop app connects through the TLS front door, not OMNIGENT_PORT, so it
+# needs its own probe: the plain-HTTP check above passes even when this is down.
+# Deliberately not `-k` — an untrusted CA fails the app exactly like an outage,
+# so the probe has to exercise the same trust path Chromium will.
+if ! curl -sf "https://localhost:${OMNIGENT_TLS_PORT}/health" >/dev/null 2>&1; then
+  echo "Omnigent TLS front door is not healthy at https://localhost:${OMNIGENT_TLS_PORT}; the app will fail to connect (check: launchctl print gui/\$UID/com.mkarrmann.omnigent-tls, and 'caddy trust' for the local CA)" >&2
 fi
 
 # Reserve the ws-11 dashboard Chrome windows before generic Chrome distribution.
