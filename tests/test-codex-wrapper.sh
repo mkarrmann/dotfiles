@@ -7,7 +7,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 WRAPPER="$ROOT/bin/codex"
-TMP="$(mktemp -d)"
+# Resolved physically, like ROOT above. The wrapper enters the workspace with
+# `cd -P`, so the cwd it reports is the physical path; on macOS mktemp hands
+# back /var/... while /var is a symlink to /private/var, and the exact-match
+# assertion below compares the two.
+TMP="$(cd -- "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 
 # The production wrapper ultimately execs /usr/local/bin/codex. Exercise its
