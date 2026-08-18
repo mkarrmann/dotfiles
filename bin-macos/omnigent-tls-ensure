@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Make sure the Omnigent TLS front door can actually serve: caddy installed,
+# and its local CA trusted by the system so Chromium accepts the certificate.
+#
+# Without this a fresh Mac gets a launchd job that starts, binds, and serves a
+# certificate nothing trusts -- the desktop app then fails to connect at all,
+# which looks exactly like the hub being down. See
+# services/omnigent-tls/Caddyfile for why the front door exists.
+#
+# Trust is NOT performed by default. Installing a root into the System keychain
+# needs sudo, and init.sh runs unattended at login where a password prompt
+# would hang the whole bootstrap. So the default run reports what is missing
+# and exits 0; pass --trust to actually install it, interactively.
+#
+#   omnigent-tls-ensure            # check + install caddy, report trust state
+#   omnigent-tls-ensure --trust    # also trust the CA (prompts for sudo)
+#
+# `caddy trust` is deliberately not used: the Caddyfile sets `admin off`, and
+# that subcommand reads the CA over the admin API. The `security` invocation
+# below is what it would run on macOS anyway.
+set -uo pipefail
+
+[[ "$(uname -s)" == "Darwin" ]] || exit 0
+
+TRUST=0
+[[ "${1:-}" == "--trust" ]] && TRUST=1
+
+CADDY_BIN="${CADDY_BIN:-/opt/homebrew/bin/caddy}"
+ROOT_CRT="$HOME/Library/Application Support/Caddy/pki/authorities/local/root.crt"
+SYSTEM_KEYCHAIN=/Library/Keychains/System.keychain
+
+if [[ ! -x "$CADDY_BIN" ]] && ! command -v caddy &>/dev/null; then
+  if command -v brew &>/dev/null; then
+    brew install caddy || { echo "WARNING: caddy install failed" >&2; exit 1; }
+  else
+    echo "WARNING: caddy not installed and brew unavailable" >&2
+    exit 1
+  fi
+fi
+
+# The CA is minted lazily the first time caddy serves, so on a brand new
+# machine this runs before the root exists. That is not an error: launchd
+# starts the job, the root appears, and the next run can trust it.
+if [[ ! -f "$ROOT_CRT" ]]; then
+  echo "omnigent-tls: caddy present; local CA not minted yet (starts with the launchd job)"
+  echo "  once it is running: omnigent-tls-ensure --trust"
+  exit 0
+fi
+
+cn=$(openssl x509 -in "$ROOT_CRT" -noout -subject 2>/dev/null | sed -E 's/.*CN[[:space:]]*=[[:space:]]*//')
+if [[ -n "$cn" ]] && security find-certificate -c "$cn" "$SYSTEM_KEYCHAIN" &>/dev/null; then
+  echo "omnigent-tls: CA already trusted ($cn)"
+  exit 0
+fi
+
+if (( TRUST )); then
+  echo "omnigent-tls: trusting local CA ($cn) -- sudo required"
+  sudo security add-trusted-cert -d -r trustRoot -k "$SYSTEM_KEYCHAIN" "$ROOT_CRT" \
+    || { echo "WARNING: failed to trust the Omnigent local CA" >&2; exit 1; }
+  echo "omnigent-tls: trusted"
+else
+  echo "WARNING: Omnigent local CA is not trusted; the desktop app cannot connect" >&2
+  echo "  run: omnigent-tls-ensure --trust" >&2
+fi

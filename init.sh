@@ -169,6 +169,13 @@ if ! command -v nori &>/dev/null; then
         || echo "WARNING: nori install failed" >&2
 fi
 
+# Omnigent TLS front door (macOS only; self-skips elsewhere). Installs caddy
+# and reports whether its local CA is trusted -- it deliberately does not TRUST
+# it here, since that needs sudo and this script runs unattended at login.
+# See bin-macos/omnigent-tls-ensure.
+"$DOTFILES_DIR/bin-macos/omnigent-tls-ensure" \
+    || echo "WARNING: omnigent-tls-ensure failed (desktop app may not connect)" >&2
+
 if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
     KEEP_ZSHRC=yes sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
     echo "installed oh-my-zsh"
