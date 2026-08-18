@@ -46,6 +46,14 @@ plugin-one
   plugin-two  
 EOF
   : > "$cfg/plugins.list"
+  # bootstrap-plugins takes its fast path only when the stamp is strictly newer
+  # than both canon files, and bash's -nt compares whole seconds. When the
+  # fixture writes the canon and runs twice inside one second, the second run
+  # takes the slow path and the fast-path assertion below fails -- about half
+  # the time on this machine. Backdate the canon instead of sleeping a second.
+  # In production the stamp is re-touched on every slow run, so a same-second
+  # collision there costs one extra run and then self-corrects.
+  touch -t 202001010000 "$cfg/drop-plugins.list" "$cfg/plugins.list"
   printf '{"plugins":{"plugin-one@market":{}}}\n' \
     > "$home/.claude/plugins/installed_plugins.json"
   cat > "$cfg/sync" <<EOF
