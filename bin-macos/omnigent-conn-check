@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Report which transport the Omnigent desktop app is actually using, and how
+# much of its connection budget it is holding.
+#
+# This is the Mac-side counterpart to bin/omnigent-stream-check, and the only
+# one of the two that can tell you WHICH transport is live. The hub sees the
+# same `Host: 127.0.0.1:6767` whether the app came through the TLS front door
+# or straight to mac_proxy, so it cannot distinguish a healthy h2 client from
+# one that has been rolled back onto plain http and is about to deadlock.
+#
+# What the numbers mean. Every window opens one long-lived updates WebSocket,
+# which lives in Chromium's WebSocket pool (limit 255) and is never the
+# problem. Everything else -- conversation streams, REST, message POSTs --
+# shares the per-origin HTTP pool. On h2 that is ONE multiplexed connection no
+# matter how many streams are live. On HTTP/1.1 it is capped at 6, and since
+# each conversation stream holds one for its whole life, the app wedges: new
+# requests queue behind streams that never end, and only restarting the app
+# clears it. So `non-websocket` near 1 is healthy and near 6 is the failure.
+#
+# Live-stream count is measured as caddy's upstream connections to mac_proxy,
+# which is streams plus whatever requests are in flight -- an upper bound, not
+# an exact stream count.
+set -uo pipefail
+
+TLS_PORT="${OMNIGENT_TLS_PORT:-$(omnigent-server-url --tls-port)}"
+PORT="${OMNIGENT_PORT:-$(omnigent-server-url --port)}"
+SETTINGS="$HOME/Library/Application Support/Omnigent/settings.json"
+
+established_count() { # pid, port
+  [[ -n "$1" ]] || { echo 0; return; }
+  /usr/sbin/lsof -nP -iTCP -sTCP:ESTABLISHED -a -p "$1" 2>/dev/null \
+    | grep -c "\->.*:$2\b"
+}
+
+# Match the app's own network process precisely. A loose pattern picks up other
+# Electron apps' network services, and an instance that is still shutting down
+# after a restart, both of which report zero connections and read as "fine".
+net_pid=$(pgrep -f "Omnigent Helper.app.*utility-sub-type=network.mojom.NetworkService" | head -1)
+caddy_pid=$(pgrep -f "caddy run --config" | head -1)
+
+if [[ -z "$net_pid" ]]; then
+  echo "Omnigent is not running"
+  exit 0
+fi
+
+server_url=$(python3 -c '
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("server_url", "") or "(unset)")
+except Exception:
+    print("(unreadable)")
+' "$SETTINGS")
+
+windows=$(/usr/bin/osascript -e 'tell application "System Events" to count windows of process "Omnigent"' 2>/dev/null || echo 0)
+tls_conns=$(established_count "$net_pid" "$TLS_PORT")
+plain_conns=$(established_count "$net_pid" "$PORT")
+streams=$(established_count "$caddy_pid" "$PORT")
+
+echo "server_url: $server_url"
+echo "windows:    $windows"
+
+if (( tls_conns > 0 && plain_conns == 0 )); then
+  non_ws=$(( tls_conns - windows ))
+  (( non_ws < 0 )) && non_ws=0
+  echo "transport:  HTTP/2 via TLS front door (:$TLS_PORT)"
+  echo "app conns:  $tls_conns  (~$windows websocket + $non_ws non-websocket)"
+  echo "streams:    ~$streams live (budget 30)"
+  if (( non_ws > 2 )); then
+    echo "WARNING: more non-websocket connections than h2 multiplexing should need."
+    echo "         Check that the app is really on h2 and not falling back."
+  fi
+elif (( plain_conns > 0 )); then
+  non_ws=$(( plain_conns - windows ))
+  (( non_ws < 0 )) && non_ws=0
+  echo "transport:  PLAIN HTTP direct to mac_proxy (:$PORT) -- 6-socket cap applies"
+  echo "app conns:  $plain_conns  (~$windows websocket + $non_ws non-websocket)"
+  if (( non_ws >= 6 )); then
+    echo "AT THE CAP -- requests are queuing behind conversation streams and will"
+    echo "not recover on their own; restart the app, then repoint it at"
+    echo "https://localhost:$TLS_PORT (Server > Change Server...)"
+  elif (( windows > 3 )); then
+    echo "WARNING: more than 3 windows on HTTP/1.1 will reach the cap and wedge."
+  fi
+else
+  echo "transport:  no established connections to :$TLS_PORT or :$PORT"
+  echo "            (app may still be starting, or the hub is unreachable)"
+fi

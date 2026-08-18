@@ -1,21 +1,50 @@
 #!/usr/bin/env bash
-# Report how much of Chromium's per-origin socket budget the Omnigent Mac app
-# is holding. All Electron windows share one network context, so the HTTP/1.1
-# limit of 6 sockets to 127.0.0.1:6767 is shared across every open window --
-# not per window. At 6/6 the app silently queues new requests, including
-# message POSTs, and a stalled POST wedges that window's send chain for good.
+# Report how many live conversation streams the Omnigent Mac app is holding,
+# against the budget its transport allows.
+#
+# The app sizes that budget from the navigation's negotiated ALPN id
+# (`maxLiveConversations`): 30 on a multiplexed transport, 3 on HTTP/1.1. It
+# reaches the hub through the local caddy TLS front door
+# (services/omnigent-tls/Caddyfile), which gives it h2, so 30 is the number.
+#
+# This previously counted sockets against Chromium's 6-per-origin HTTP/1.1
+# limit. That limit is what deadlocked the app before the front door existed:
+# SSE streams held every socket in the shared pool and ordinary requests --
+# message POSTs included -- queued behind them forever, recoverable only by
+# restarting the app. On h2 there is no such pool; every stream multiplexes
+# onto one connection. So the condition worth warning about is no longer a
+# wedge, it is budget pressure: past 30 the app evicts an LRU background
+# stream to make room, which degrades liveness rather than hanging.
+#
+# One thing this cannot see: it identifies app traffic by User-Agent, and the
+# hub receives the same `Host: 127.0.0.1:6767` either way, so it cannot tell
+# whether the app is on the TLS origin or has been rolled back to the plain
+# one. On plain http the real ceiling is 6 sockets, not 30, and this would
+# report "18 / 30" while the app is wedged. Run bin-macos/omnigent-conn-check
+# on the Mac to settle which transport is actually live.
+#
 # Run on the hub.
 set -uo pipefail
+
+BUDGET="${OMNIGENT_STREAM_BUDGET:-30}"
+
 LOG=$(ls -t ~/.omnigent/logs/server/server-*.log 2>/dev/null | head -1)
 [[ -n "$LOG" ]] || { echo "no server log found" >&2; exit 1; }
+
+# Correlate recently-logged /stream requests with sockets that are still up: a
+# finished stream leaves its access-log line behind but no connection. The tail
+# bound has to exceed the budget by a wide margin or a full complement of live
+# streams would fall out of the window and be undercounted.
 open=0
 while read -r port; do
   ss -tn 2>/dev/null | awk -v p=":$port\$" '$4 ~ /:6767$/ && $5 ~ p {found=1} END{exit !found}' && open=$((open+1))
 done < <(grep -a 'uvicorn.access' "$LOG" | grep -a 'Mozilla' | grep -a '/stream' \
-         | sed -E 's/.*\| 127\.0\.0\.1:([0-9]+) .*/\1/' | tail -60 | sort -u)
-printf 'app SSE streams open: %d / 6 socket budget\n' "$open"
-if (( open >= 6 )); then
-  echo "AT THE CAP -- new requests are queuing; close a window or restart the app"
-elif (( open >= 5 )); then
-  echo "one socket left; the next window to bind a session will exhaust the pool"
+         | sed -E 's/.*\| 127\.0\.0\.1:([0-9]+) .*/\1/' | tail -200 | sort -u)
+
+printf 'app conversation streams open: %d / %d budget\n' "$open" "$BUDGET"
+if (( open >= BUDGET )); then
+  echo "AT THE BUDGET -- the app is evicting background streams to open new ones;"
+  echo "backgrounded conversations stop live-tailing until some windows close"
+elif (( open >= BUDGET - 3 )); then
+  echo "within 3 of the budget; the next few conversations will start evicting"
 fi
