@@ -91,6 +91,10 @@ PY
 
 # macOS clients always use the stable local proxy. Its existing CCO/FTW ET
 # forwards handle reachability, so normal client resolution needs no hub cache.
+# TODO: this returns before read_cache, so the transition fail-closed guard
+# never runs on Darwin. tests/test_server_url.py::test_transition_cache_fails_closed
+# asserts that it does and fails whenever the suite runs on the Mac. Either
+# scope that test to Linux or fence Darwin too.
 if [[ "$(uname -s)" == "Darwin" && -z "${1:-}" ]]; then
   echo "http://127.0.0.1:${port}"
   exit 0
