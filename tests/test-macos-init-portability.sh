@@ -10,6 +10,22 @@ fail() {
   exit 1
 }
 
+# Several scripts under test do their work only on the active Linux hub and
+# return early everywhere else. Run from a Mac they exit through that guard
+# before reaching anything a fixture asserts, so the platform is stubbed for
+# the cases that need it rather than the whole suite being unrunnable here.
+stub_linux_uname() {
+  cat > "$1/uname" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == -s ]]; then
+  echo Linux
+else
+  exec /usr/bin/uname "$@"
+fi
+EOF
+  chmod +x "$1/uname"
+}
+
 test_sync_bash_3_compatibility() {
   if grep -Eq '^[[:space:]]*declare[[:space:]]+-A([[:space:]]|$)' "$ROOT/sync.sh"; then
     fail "sync.sh still depends on Bash 4 associative arrays"
@@ -112,8 +128,6 @@ EOF
     | read -r _ || fail "client seed skip was not reported"
 }
 
-# TODO: Stub uname to Linux; on macOS this fixture exits through the client-host
-# guard before it can exercise active-hub idempotency.
 test_active_hub_dvsc_idempotency() {
   local home="$TMP/hub-home"
   local dotfiles="$TMP/hub-dotfiles"
@@ -149,6 +163,7 @@ echo http://127.0.0.1:6767
 EOF
   chmod +x "$fake_bin/python" "$fake_bin/omnigent" "$fake_bin/curl" \
     "$dotfiles/bin/omnigent-server-url"
+  stub_linux_uname "$fake_bin"
 
   HOME="$home" DOTFILES_DIR="$dotfiles" OMNIGENT_BIN="$fake_bin/omnigent" \
     OMNIGENT_PY="$fake_bin/python" PATH="$fake_bin:/usr/bin:/bin" \
@@ -196,6 +211,7 @@ echo "tmux \$*" >> "$TMP/legacy-actions.log"
 EOF
   chmod +x "$dotfiles/bin/omnigent-server-url" "$fake_bin/systemctl" \
     "$fake_bin/omnigent" "$fake_bin/tmux"
+  stub_linux_uname "$fake_bin"
 
   HOME="$home" DOTFILES_DIR="$dotfiles" OMNIGENT_BIN="$fake_bin/omnigent" \
     OMNIGENT_LOCAL_FQDN=standby.example.com PATH="$fake_bin:/usr/bin:/bin" \
@@ -218,12 +234,61 @@ test_standby_onboard_health_check() {
   local fake_bin="$TMP/health-bin"
   mkdir -p "$home" "$dotfiles/bin" "$fake_bin"
 
-  cat > "$dotfiles/bin/omnigent-server-url" <<'EOF'
+  # onboard-check proves the host WebSocket with real urllib requests against
+  # the resolved server URL -- `curl` and `systemctl` stubs do not cover it.
+  # Serve those endpoints locally on an ephemeral port, or the fixture reaches
+  # whatever hub is actually live on 127.0.0.1:6767 and asserts against real
+  # state.
+  local port_file="$TMP/health-port"
+  python3 - "$port_file" <<'PY' &
+import http.server, json, socketserver, sys
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        if self.path.startswith("/v1/hosts/"):
+            body = {"data": []}
+        elif self.path.startswith("/v1/hosts"):
+            body = {
+                "hosts": [
+                    {"name": "standby.example.com", "status": "online", "host_id": "h1"}
+                ]
+            }
+        else:
+            body = {"status": "ok"}
+        raw = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+# TCPServer does not set SO_REUSEADDR (unlike HTTPServer), which makes bind
+# fail intermittently when the suite is run back to back and the previous
+# port is still winding down.
+socketserver.TCPServer.allow_reuse_address = True
+server = socketserver.TCPServer(("127.0.0.1", 0), Handler)
+with open(sys.argv[1], "w") as handle:
+    handle.write(str(server.server_address[1]))
+server.serve_forever()
+PY
+  local stub_pid=$!
+  local waited=0
+  while [[ ! -s "$port_file" ]]; do
+    sleep 0.1
+    waited=$((waited + 1))
+    (( waited > 100 )) && fail "onboard-check stub server did not start"
+  done
+  local stub_url="http://127.0.0.1:$(cat "$port_file")"
+
+  cat > "$dotfiles/bin/omnigent-server-url" <<EOF
 #!/usr/bin/env bash
-if [[ "${1:-}" == --is-candidate ]]; then
+if [[ "\${1:-}" == --is-candidate ]]; then
   exit 0
 fi
-echo http://127.0.0.1:6767
+echo $stub_url
 EOF
   cat > "$fake_bin/omnigent-hub" <<'EOF'
 #!/usr/bin/env bash
@@ -241,10 +306,15 @@ exit 0
 EOF
   chmod +x "$dotfiles/bin/omnigent-server-url" "$fake_bin/omnigent-hub" \
     "$fake_bin/curl" "$fake_bin/systemctl"
+  stub_linux_uname "$fake_bin"
 
   HOME="$home" DOTFILES_DIR="$dotfiles" OMNIGENT_HUB_BIN="$fake_bin/omnigent-hub" \
     OMNIGENT_LOCAL_FQDN=standby.example.com PATH="$fake_bin:/usr/bin:/bin" \
-    bash "$ROOT/bin/omnigent-onboard-check" > "$TMP/health-output.log"
+    bash "$ROOT/bin/omnigent-onboard-check" > "$TMP/health-output.log" \
+    || { kill "$stub_pid" 2>/dev/null; fail "onboard-check exited non-zero"; }
+  kill "$stub_pid" 2>/dev/null || true
+  wait "$stub_pid" 2>/dev/null || true
+
   sed -n '/healthy on standby.example.com/p' "$TMP/health-output.log" | sed -n '1p' \
     | read -r _ || fail "standby onboarding health check did not pass"
 }
@@ -271,7 +341,7 @@ EOF
 
   [[ "$(sed -n '1p' "$TMP/peer-actions.log")" == 'discover --json' ]] \
     || fail "peer reconciler did not discover through candidates first"
-  [[ "$(sed -n '2p' "$TMP/peer-actions.log")" == 'route-ensure --restart-host --json' ]] \
+  [[ "$(sed -n '2p' "$TMP/peer-actions.log")" == 'reconcile-services --json' ]] \
     || fail "peer reconciler did not apply the discovered route"
 }
 
