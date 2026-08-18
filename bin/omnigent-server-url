@@ -9,6 +9,7 @@ ROUTING_CACHE="${OMNIGENT_HA_ROUTING_CACHE:-$HOME/.config/omnigent/active-hub.js
 primary_override="${OMNIGENT_PRIMARY_FQDN:-}"
 standby_override="${OMNIGENT_STANDBY_FQDN:-}"
 port_override="${OMNIGENT_PORT:-}"
+tls_port_override="${OMNIGENT_TLS_PORT:-}"
 primary_tunnel_port_override="${OMNIGENT_PRIMARY_TUNNEL_PORT:-}"
 standby_tunnel_port_override="${OMNIGENT_STANDBY_TUNNEL_PORT:-}"
 if [[ -f "$TOPOLOGY" ]]; then
@@ -18,6 +19,7 @@ fi
 primary="${primary_override:-${OMNIGENT_PRIMARY_FQDN:-devvm20365.cco0.facebook.com}}"
 standby="${standby_override:-${OMNIGENT_STANDBY_FQDN:-devvm36111.ftw0.facebook.com}}"
 port="${port_override:-${OMNIGENT_PORT:-6767}}"
+tls_port="${tls_port_override:-${OMNIGENT_TLS_PORT:-6443}}"
 primary_tunnel_port="${primary_tunnel_port_override:-${OMNIGENT_PRIMARY_TUNNEL_PORT:-16767}}"
 standby_tunnel_port="${standby_tunnel_port_override:-${OMNIGENT_STANDBY_TUNNEL_PORT:-26767}}"
 host="${OMNIGENT_LOCAL_FQDN:-$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo unknown)}"
@@ -37,6 +39,10 @@ case "${1:-}" in
     ;;
   --port)
     echo "$port"
+    exit 0
+    ;;
+  --tls-port)
+    echo "$tls_port"
     exit 0
     ;;
   --primary-tunnel-port)
@@ -116,7 +122,7 @@ case "${1:-}" in
     echo "http://127.0.0.1:${port}"
     ;;
   *)
-    echo "usage: omnigent-server-url [--hub|--primary|--standby|--candidates|--port|--primary-tunnel-port|--standby-tunnel-port|--epoch|--activation-id|--is-hub|--is-candidate]" >&2
+    echo "usage: omnigent-server-url [--hub|--primary|--standby|--candidates|--port|--tls-port|--primary-tunnel-port|--standby-tunnel-port|--epoch|--activation-id|--is-hub|--is-candidate]" >&2
     exit 2
     ;;
 esac
