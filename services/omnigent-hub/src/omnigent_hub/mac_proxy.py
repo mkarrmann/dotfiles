@@ -3,11 +3,28 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final
 
 _BUFFER_SIZE: Final = 64 * 1024
 _HEALTH_REQUEST: Final = b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+
+# How long a candidate's health verdict is reused before it is probed again.
+#
+# Every client connection used to cost two upstream connections: one to probe
+# /health, then the real one. That was invisible while the desktop app could
+# hold at most 6 connections, but it now negotiates HTTP/2 and opens up to 30
+# conversation streams, so the probe traffic became the larger half of ~50
+# tunnel connects.
+#
+# The window is deliberately short. A stale verdict only matters when a
+# candidate dies within it AND its tunnel still accepts TCP -- a real case,
+# since an ET forward accepts locally whether or not the far end is up, which
+# is why the probe exists at all. One second bounds that misroute while still
+# collapsing a burst of stream opens onto a single probe.
+_HEALTH_TTL: Final = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,10 +35,21 @@ class Candidate:
 
 
 class MacProxy:
-    def __init__(self, candidates: tuple[Candidate, ...], *, connect_timeout: float = 3.0) -> None:
+    def __init__(
+        self,
+        candidates: tuple[Candidate, ...],
+        *,
+        connect_timeout: float = 3.0,
+        health_ttl: float = _HEALTH_TTL,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._candidates = candidates
         self._connect_timeout = connect_timeout
+        self._health_ttl = health_ttl
+        self._clock = clock
         self._last_candidate: str | None = None
+        self._health_cache: dict[str, tuple[float, bool]] = {}
+        self._health_locks: dict[str, asyncio.Lock] = {}
 
     async def handle(
         self,
@@ -67,11 +95,40 @@ class MacProxy:
                     timeout=self._connect_timeout,
                 )
             except (TimeoutError, OSError):
+                # The probe said healthy but the real connection did not land.
+                # Drop the verdict so the next caller re-probes instead of
+                # trusting it for the rest of the window.
+                self._health_cache.pop(candidate.name, None)
                 continue
             return candidate, reader, writer
         return None
 
     async def _healthy(self, candidate: Candidate) -> bool:
+        cached = self._cached_health(candidate)
+        if cached is not None:
+            return cached
+
+        # Single-flight per candidate: a burst of stream opens all miss the
+        # cache at once, and without this each one probes.
+        lock = self._health_locks.setdefault(candidate.name, asyncio.Lock())
+        async with lock:
+            cached = self._cached_health(candidate)
+            if cached is not None:
+                return cached
+            healthy = await self._probe(candidate)
+            self._health_cache[candidate.name] = (self._clock(), healthy)
+            return healthy
+
+    def _cached_health(self, candidate: Candidate) -> bool | None:
+        entry = self._health_cache.get(candidate.name)
+        if entry is None:
+            return None
+        recorded_at, healthy = entry
+        if self._clock() - recorded_at >= self._health_ttl:
+            return None
+        return healthy
+
+    async def _probe(self, candidate: Candidate) -> bool:
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(candidate.host, candidate.port),
