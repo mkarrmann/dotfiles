@@ -12,6 +12,21 @@
 # This listener exists purely to give the app an h2 origin. `mac_proxy` keeps
 # serving plain HTTP on OMNIGENT_PORT for the CLI and every dotfiles health
 # probe, so rollback is just re-pointing the app back at http://127.0.0.1:6767.
+#
+# `admin off` below is deliberate -- the admin API is a full reconfiguration
+# endpoint on loopback, and this machine runs a lot of local agents. It costs
+# the two caddy subcommands that talk to it, so use these instead:
+#
+#   trust the local CA (what `caddy trust` would do):
+#     sudo security add-trusted-cert -d -r trustRoot \
+#       -k /Library/Keychains/System.keychain \
+#       ~/Library/Application\ Support/Caddy/pki/authorities/local/root.crt
+#
+#   apply an edit to this file (what `caddy reload` would do):
+#     launchctl kickstart -k gui/$UID/com.mkarrmann.omnigent-tls
+#
+# Re-trust is only needed if caddy regenerates its CA -- a wiped data
+# directory, or root expiry in 2036.
 {
 	admin off
 	auto_https disable_redirects
