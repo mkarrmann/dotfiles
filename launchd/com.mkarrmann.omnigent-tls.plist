@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  TLS + HTTP/2 front door that the Omnigent desktop app connects through.
+
+  Rationale lives in ~/dotfiles/services/omnigent-tls/Caddyfile: an HTTP/1.1
+  origin limits the app to 3 concurrent conversation streams and deadlocks its
+  connection pool past that, and Chromium only negotiates h2 over TLS.
+
+  This does NOT replace the plain-HTTP listener. mac_proxy still owns
+  OMNIGENT_PORT for the CLI and every dotfiles health probe; this job only adds
+  :6443. Rolling back is re-pointing the app, not undoing this unit.
+
+  KeepAlive (not StartInterval) because caddy is a long-running daemon rather
+  than an idempotent ensure-script like omnigent-host-ensure.
+
+  Activation is automatic via ~/dotfiles/init.sh.
+
+  Quick verify:
+    launchctl print gui/$UID/com.mkarrmann.omnigent-tls | head
+    curl --http2 -s https://localhost:6443/health   # expects {"status":"ok"}
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.mkarrmann.omnigent-tls</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/opt/homebrew/bin/caddy</string>
+      <string>run</string>
+      <string>--config</string>
+      <string>/Users/mkarrmann/dotfiles/services/omnigent-tls/Caddyfile</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+      <!-- Caddy keeps its local CA under the data directory, which it derives
+           from HOME. The root trusted by `caddy trust` must be the same one
+           this job serves from, so HOME is pinned rather than inherited.
+           Note this is deliberately NOT `brew services start caddy`, which
+           repoints HOME at /opt/homebrew/var/lib and would serve a different,
+           untrusted CA. -->
+      <key>HOME</key>
+      <string>/Users/mkarrmann</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/mkarrmann/.local/state/omnigent-tls/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mkarrmann/.local/state/omnigent-tls/stderr.log</string>
+  </dict>
+</plist>

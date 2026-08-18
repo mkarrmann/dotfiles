@@ -673,8 +673,10 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   # materialized. sync_launchd_plist only reloads a job when its plist
   # content actually changed.
   mkdir -p "$HOME/Library/LaunchAgents" \
-           "$HOME/.local/state/omnigent-host"
+           "$HOME/.local/state/omnigent-host" \
+           "$HOME/.local/state/omnigent-tls"
   sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-host.plist"
+  sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-tls.plist"
   # The Omnigent server moved to the HUB devserver (systemd omnigent-server).
   # Retire the old Mac-local server job so it can't bind :6767 and collide with
   # the local failover proxy that exposes the HUB server on Mac localhost.

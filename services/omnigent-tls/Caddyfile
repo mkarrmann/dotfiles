@@ -1,0 +1,41 @@
+# TLS + HTTP/2 front door for the Omnigent desktop app.
+#
+# The app's web layer picks its live-stream budget from the navigation's
+# negotiated ALPN id (`getConnectionProtocol` -> `maxLiveConversations`):
+# HTTP/1.1 allows 3 concurrent conversation streams origin-wide, HTTP/2 allows
+# 30. Chromium caps HTTP/1.1 at 6 sockets per origin and an SSE stream holds one
+# for its whole life, so with more than ~3 Omnigent windows the app opens more
+# streams than the pool can hold and every other fetch deadlocks behind them —
+# recoverable only by restarting the app. Chromium never negotiates cleartext
+# h2, so lifting that ceiling requires TLS.
+#
+# This listener exists purely to give the app an h2 origin. `mac_proxy` keeps
+# serving plain HTTP on OMNIGENT_PORT for the CLI and every dotfiles health
+# probe, so rollback is just re-pointing the app back at http://127.0.0.1:6767.
+{
+	admin off
+	auto_https disable_redirects
+
+	# h3 would also satisfy the app's multiplexed check, but QUIC adds a
+	# transport that can fail independently of TCP. h2 is all this needs.
+	servers {
+		protocols h1 h2
+	}
+}
+
+# Port mirrors OMNIGENT_TLS_PORT in omnigent_config/topology.env, the same way
+# mac_proxy mirrors the tunnel-port defaults. topology.env is authoritative for
+# the shell side; change both together.
+localhost:6443, 127.0.0.1:6443 {
+	tls internal
+
+	reverse_proxy 127.0.0.1:6767 {
+		# SSE and the updates WebSocket must not sit in a proxy buffer.
+		flush_interval -1
+
+		# The hub currently sees `Host: 127.0.0.1:6767` from the app. Keep that
+		# exact value so introducing this hop cannot change server-side routing
+		# or any absolute URL the hub builds from Host.
+		header_up Host {upstream_hostport}
+	}
+}
