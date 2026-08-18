@@ -14,6 +14,12 @@ set -euo pipefail
 # If a non-systemd nvim is currently bound to the session's port (legacy
 # from the pre-systemd watchdog era), it is killed first so the new
 # systemd-owned process can bind.
+#
+# WORKDIR only takes effect at unit start, so editing it while a server is
+# live is a no-op until the next restart. That staleness is silent and has
+# bitten before, so we compare against the live server and warn. We never
+# restart automatically: that would discard the session's buffers, terminals
+# and in-flight chats.
 
 session="${1:?usage: nvs-setup SESSION [WORKDIR]}"
 workdir="${2:-}"
@@ -23,13 +29,31 @@ env_file="$env_dir/$session.env"
 unit="nvs@${session}.service"
 port=$(printf '%s' "$session" | cksum | awk '{ print 7000 + ($1 % 1000) }')
 
+# Sampled before `enable --now` below: a unit we start ourselves is fresh by
+# definition, and its argv may not have exec'd past the bin/nvs wrapper yet.
+was_active=false
+if systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+  was_active=true
+fi
+
 mkdir -p "$env_dir"
+expanded=""
 if [[ -n "$workdir" ]]; then
   expanded="${workdir/#\~/$HOME}"
   printf 'WORKDIR=%s\n' "$expanded" > "$env_file"
 else
   : > "$env_file"
 fi
+
+# Where the live server actually is. bin/nvs bakes WORKDIR into argv as a
+# `cd <dir>` element at launch, so the running argv -- not the env file -- is
+# the source of truth.
+running_workdir() {
+  local pid
+  pid="$(systemctl --user show -p MainPID --value "$unit" 2>/dev/null || true)"
+  [[ -n "$pid" && "$pid" != 0 && -r "/proc/$pid/cmdline" ]] || return 0
+  tr '\0' '\n' <"/proc/$pid/cmdline" 2>/dev/null | awk 'sub(/^cd /, "") { print; exit }'
+}
 
 # Force-migrate any nvim squatting the port that isn't already this unit.
 legacy_pid=$(pgrep -f "nvim --headless --listen localhost:$port" | head -1 || true)
@@ -51,3 +75,11 @@ fi
 
 systemctl --user enable --now "$unit"
 echo "nvs-setup: $unit → $(systemctl --user is-active "$unit") (port $port)"
+
+if [[ "$was_active" == true ]]; then
+  live="$(running_workdir || true)"
+  if [[ "$live" != "$expanded" ]]; then
+    echo "nvs-setup: WARNING: $unit is live in ${live:-\$HOME} but configured for ${expanded:-\$HOME};" \
+      "run 'nvs-restart $session' to apply (discards that session's buffers and terminals)" >&2
+  fi
+fi
