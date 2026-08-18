@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,12 @@ def settings(**overrides: object) -> Settings:
         "OMNIGENT_GCHAT_MENTION_UNIXNAME": "mkarrmann",
         "OMNIGENT_GCHAT_HOST_ID": "host_1",
         "OMNIGENT_GCHAT_DATABASE": "/tmp/test-gchat.sqlite3",
+        # META_CLI defaults to /usr/local/bin/meta, which exists on a devserver
+        # and not on a Mac. Left at the default, validate_daemon_gate() fails on
+        # the executable check before reaching whatever a test is actually
+        # asserting. Any real executable makes these hermetic; the check itself
+        # is covered by test_daemon_gate_rejects_a_non_executable_meta_cli.
+        "META_CLI": sys.executable,
     }
     values.update(overrides)
     return Settings.model_validate(values)
@@ -41,6 +48,17 @@ def test_settings_require_phase_zero_for_daemon() -> None:
         settings().validate_daemon_gate()
     validated = settings(OMNIGENT_GCHAT_PHASE0_VALIDATED=True)
     validated.validate_daemon_gate()
+
+
+def test_daemon_gate_rejects_a_non_executable_meta_cli(tmp_path: Path) -> None:
+    not_executable = tmp_path / "meta"
+    not_executable.write_text("", encoding="utf-8")
+    gated = settings(
+        OMNIGENT_GCHAT_PHASE0_VALIDATED=True,
+        META_CLI=str(not_executable),
+    )
+    with pytest.raises(ValueError, match="META_CLI is not executable"):
+        gated.validate_daemon_gate()
 
 
 def test_all_host_scope_does_not_require_one_host_id() -> None:
