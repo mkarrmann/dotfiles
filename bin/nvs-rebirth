@@ -41,7 +41,7 @@ discover() {
           port = a[2]
         }
         if ($i ~ /^titlestring=/) {
-          # titlestring=FTW-main1\\ —\\ %t  →  capture FTW-main1
+          # titlestring=FTW-checkout1\\ —\\ %t  →  capture FTW-checkout1
           sub(/^titlestring=/, "", $i)
           gsub(/\\.*$/, "", $i)
           name = $i

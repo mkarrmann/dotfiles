@@ -192,7 +192,7 @@ The headless server has no terminal, so OSC 52 (the normal clipboard mechanism) 
 
 ### Session naming
 
-Sessions are named like `FTW-checkout1`, `FTW-main1`, `CCO-checkout1`. Ports are deterministic: `cksum(name) % 1000 + 7000`.
+Sessions are named `<DEVSERVER>-checkoutN`, e.g. `FTW-checkout1`, `CCO-checkout1`. Ports are deterministic: `cksum(name) % 1000 + 7000`.
 
 Checkout sessions start in `~/checkoutN`, giving tools access to both sibling repositories. Repository-aware Neovim commands resolve their own execution root; see the `neovim-meta` skill for the selection rules.
 

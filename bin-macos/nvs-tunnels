@@ -15,7 +15,7 @@ set -euo pipefail
 # outage beyond ET's tolerance, Duo expiry). Duo re-auth may be required.
 #
 # Usage: nvs-tunnels HOST SESSION[:WORKDIR] [SESSION[:WORKDIR] ...]
-# Example: nvs-tunnels devvm36111.ftw0.facebook.com FTW-main1 FTW-main:~/main
+# Example: nvs-tunnels devvm36111.ftw0.facebook.com FTW-checkout1:~/checkout1
 
 NVS_CLIP_PORT="${NVS_CLIP_PORT:-8765}"
 PERSISTENCE_PORT="${PERSISTENCE_PORT:-7847}"
@@ -37,7 +37,7 @@ nvs_port() {
   printf '%s' "$1" | cksum | awk '{ print 7000 + ($1 % 1000) }'
 }
 
-# Derive tunnel label from first session's prefix (e.g. "FTW" from "FTW-main1")
+# Derive tunnel label from first session's prefix (e.g. "FTW" from "FTW-checkout1")
 first_session="${1%%:*}"
 prefix="${first_session%%-*}"
 tunnel_label="${prefix}: tunnels"

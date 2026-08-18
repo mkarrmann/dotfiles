@@ -11,11 +11,9 @@ local M = {}
 -- Curated accents. FTW = cool hues, CCO = warm hues; checkout number shifts
 -- the hue within each family. Hand-tune freely.
 M.accents = {
-	["FTW-main1"] = "#06b6d4", -- cyan
 	["FTW-checkout1"] = "#38bdf8", -- sky
 	["FTW-checkout2"] = "#3b82f6", -- blue
 	["FTW-checkout3"] = "#8b5cf6", -- violet
-	["CCO-main1"] = "#eab308", -- yellow
 	["CCO-checkout1"] = "#f59e0b", -- amber
 	["CCO-checkout2"] = "#f97316", -- orange
 	["CCO-checkout3"] = "#ef4444", -- red

@@ -2,15 +2,17 @@
 # Symlinked into ~/.config/systemd/user/ by ~/dotfiles/init.sh (Linux block).
 # Instance name (%i) is the session name (e.g. nvs@FTW-checkout1.service).
 #
-# Lifecycle is normally driven by `nvs --server-only` (called by nvs-tunnels
-# over ET). It writes ~/.config/nvs/<session>.env, then `enable --now`s this
-# unit. Once enabled, the unit also auto-starts at devvm boot.
+# Lifecycle is normally driven by nvs-setup, which init.sh runs for every
+# line in ~/.config/nvs/sessions. It writes ~/.config/nvs/<session>.env, then
+# `enable --now`s this unit. Once enabled, the unit also auto-starts at devvm
+# boot. (nvs-tunnels no longer has a hand in this: it forwards ports and
+# leaves the servers to systemd.)
 #
 # Manual ops:
-#   systemctl --user enable --now nvs@FTW-main1
-#   systemctl --user restart nvs@FTW-main1
-#   systemctl --user disable --now nvs@FTW-main1
-#   journalctl --user -u nvs@FTW-main1 -e
+#   systemctl --user enable --now nvs@FTW-checkout1
+#   systemctl --user restart nvs@FTW-checkout1
+#   systemctl --user disable --now nvs@FTW-checkout1
+#   journalctl --user -u nvs@FTW-checkout1 -e
 #
 # Per-instance config (optional WORKDIR for nvim's startup cwd):
 #   ~/.config/nvs/<session>.env  →  WORKDIR=/absolute/path
