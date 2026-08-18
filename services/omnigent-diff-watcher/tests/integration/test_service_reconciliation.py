@@ -5,6 +5,7 @@ from pathlib import Path
 from omnigent_diff_watcher.domain import SessionSnapshot, SubscriptionState, WatcherConfig
 from omnigent_diff_watcher.service import DiffWatcherService
 from omnigent_diff_watcher.settings import ServiceSettings
+from omnigent_diff_watcher.source_models import ReviewSourceError, SourceErrorCategory
 from tests.support import FakeReviewSource, fixture
 
 
@@ -155,5 +156,36 @@ async def test_an_unusable_diff_does_not_block_the_rest_of_the_stack(tmp_path: P
     await service.reconcile_subscriptions()
     by_diff = {r.diff_id: r for r in service.repository.subscriptions_for_session("conv_stack")}
     assert "D90000004" not in by_diff
+    assert by_diff["D90000002"].state is SubscriptionState.ACTIVE
+    await client.close()
+
+
+async def test_a_diff_the_source_cannot_read_does_not_block_the_rest(tmp_path: Path) -> None:
+    """An unreadable diff must be isolated the same way a terminal one is.
+
+    A label entry naming a diff that does not resolve fails inside the review
+    source rather than in subscribe's own validation, so it arrives as a
+    ReviewSourceError. Reconciliation must survive it: the whole scheduler
+    iteration -- every other session included -- rides on this loop.
+    """
+    client = FakeOmnigentClient()
+    client.sessions = [
+        {
+            "id": "conv_stack",
+            "labels": {
+                "omnigent.diff.number": "D12345678,D90000002",
+                "omnigent.diff.watch": "ci_failure",
+            },
+        }
+    ]
+    service = DiffWatcherService(_settings(tmp_path), client=client)  # type: ignore[arg-type]
+    service.watcher.source = FakeReviewSource(
+        ReviewSourceError(SourceErrorCategory.MALFORMED),
+        fixture("active").model_copy(update={"diff_id": "D90000002"}),
+    )
+
+    await service.reconcile_subscriptions()
+    by_diff = {r.diff_id: r for r in service.repository.subscriptions_for_session("conv_stack")}
+    assert "D12345678" not in by_diff
     assert by_diff["D90000002"].state is SubscriptionState.ACTIVE
     await client.close()

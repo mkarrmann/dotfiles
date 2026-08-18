@@ -23,10 +23,13 @@ from .source_models import (
     DiffLifecycle,
     DiffSnapshot,
     ReviewComment,
+    ReviewSourceError,
     SourceCursor,
     SourceErrorCategory,
     SourceFailure,
 )
+
+__all__ = ["PhabricatorReviewSource", "ReviewSourceError"]
 
 _DIFF_ID = re.compile(r"^D[1-9][0-9]*$")
 _SAFE_ENV_NAMES = (
@@ -57,14 +60,6 @@ _CI_QUERY = """query ($version_id: ID!) {
 }"""
 
 JsonRunner = Callable[[Sequence[str]], Awaitable[object]]
-
-
-class ReviewSourceError(RuntimeError):
-    """Redacted top-level source error safe for scheduler logs."""
-
-    def __init__(self, category: SourceErrorCategory) -> None:
-        super().__init__(f"review source failed ({category.value})")
-        self.category = category
 
 
 class PhabricatorReviewSource:

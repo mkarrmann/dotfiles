@@ -23,7 +23,7 @@ from .domain import (
 )
 from .logic import deterministic_jitter, failure_poll_delay, successful_poll_delay
 from .repository import SubscriptionConstraintError, WatcherRepository
-from .source_models import DiffLifecycle, DiffSnapshot
+from .source_models import DiffLifecycle, DiffSnapshot, ReviewSourceError
 
 _logger = logging.getLogger(__name__)
 
@@ -75,7 +75,13 @@ class DiffWatcher:
         session = await self.sessions.get(session_id)
         if session.terminal:
             raise SubscriptionError("session is closed or no longer exists")
-        snapshot = await self.source.snapshot(diff_id, None)
+        try:
+            snapshot = await self.source.snapshot(diff_id, None)
+        except ReviewSourceError as exc:
+            # A diff id that does not resolve fails here rather than in the
+            # validation below, so without this every other failure mode would
+            # be reported as SubscriptionError and this one alone would escape.
+            raise SubscriptionError(f"could not read the diff: {exc}") from exc
         if snapshot.lifecycle.terminal:
             raise SubscriptionError("diff is terminal or missing")
         if EventKind.REVIEW_COMMENT in event_types and snapshot.comments.status != "ok":

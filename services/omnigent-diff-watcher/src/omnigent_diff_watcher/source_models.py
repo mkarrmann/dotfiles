@@ -45,6 +45,19 @@ class SourceErrorCategory(StrEnum):
     MISSING = "missing"
 
 
+class ReviewSourceError(RuntimeError):
+    """Redacted top-level source error safe for scheduler logs.
+
+    Part of the source contract rather than of any one implementation, so the
+    watcher can handle a source that cannot be read without depending on a
+    concrete source module.
+    """
+
+    def __init__(self, category: SourceErrorCategory) -> None:
+        super().__init__(f"review source failed ({category.value})")
+        self.category = category
+
+
 class SourceFailure(_StrictModel):
     category: SourceErrorCategory
     retryable: bool

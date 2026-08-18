@@ -122,6 +122,13 @@ class SessionSnapshot:
 
 
 class ReviewSource(Protocol):
+    """Reads a diff's current review and CI state.
+
+    ``snapshot`` raises ``source_models.ReviewSourceError`` when the diff
+    cannot be read at all, which callers must distinguish from a snapshot that
+    reports per-section failures.
+    """
+
     async def snapshot(
         self,
         diff_id: str,
