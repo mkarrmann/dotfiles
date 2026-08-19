@@ -56,9 +56,13 @@ control surface plus a hub-local sidecar service.
 - `diff_watch_unsubscribe()`
 - `diff_watch_status()`
 
-Claude and Codex agent YAML declare this server with the existing inline
-`type: mcp` format. The tools are deliberately stateless and accept no session
-or diff identity. Omnigent namespaces them under the `diff_watch` server.
+Claude and headless Codex agent YAML declare this server with the existing
+inline `type: mcp` format. Native Codex registers the same server in the
+source-controlled Codex config with `--native-codex`; that mode derives the
+owner-only bridge directory from `CODEX_HOME`, posts the tool result through
+the authenticated loopback Omnigent policy relay, and returns the policy's
+authoritative response. The tools accept no session or diff identity.
+Omnigent/Codex namespace them under the `diff_watch` server.
 
 ### 4.2 Policy-bound preferences
 

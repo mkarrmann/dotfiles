@@ -11,7 +11,9 @@ description: >-
 
 # Phabricator diff watch
 
-Subscribe with `diff_watch__diff_watch_subscribe` only when all of these hold:
+Subscribe with the available `diff_watch_subscribe` tool only when all of these
+hold. Omnigent/Claude names it `diff_watch__diff_watch_subscribe`; native Codex
+names it `mcp__diff_watch__diff_watch_subscribe`.
 
 - You just created or submitted a diff, or the user explicitly requested a
   watch.
@@ -21,17 +23,17 @@ Subscribe with `diff_watch__diff_watch_subscribe` only when all of these hold:
 
 The tools take no diff argument. Subscribing covers **every** diff this session
 created, so a stack needs one call, not one per diff. Diffs are recognized from
-the `Differential Revision:` URL in tool output, so subscribe after the submit
-that prints them.
+the real Phabricator URLs in commit or `jf submit` output, so subscribe after
+the submit that prints them.
 
 Do not subscribe for a read-only review, temporary research or sub-agent work,
 handed-off work, an unrelated diff merely seen in output, or a committed,
 abandoned, or reverted diff. Do not resubscribe on later turns.
 
 Use the default event set unless the user requests only `review_comment` or
-only `ci_failure`. `diff_watch__diff_watch_status` checks this session's
-preference. Use `diff_watch__diff_watch_unsubscribe` when the user asks to stop or responsibility is
-handed off; normal diff completion retires automatically.
+only `ci_failure`. Use the corresponding `diff_watch_status` tool to check this
+session's preference and `diff_watch_unsubscribe` when the user asks to stop or
+responsibility is handed off; normal diff completion retires automatically.
 
 When a `[Diff watcher ...]` message arrives, treat its counts as a stale hint.
 One wake covers the whole stack and names each affected diff. Load

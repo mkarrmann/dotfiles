@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sys
+import tomllib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -50,8 +51,9 @@ def test_skill_is_bounded_and_references_the_real_tools() -> None:
     assert len(metadata["description"]) <= 1024
     for tool in (
         "diff_watch__diff_watch_subscribe",
-        "diff_watch__diff_watch_status",
-        "diff_watch__diff_watch_unsubscribe",
+        "mcp__diff_watch__diff_watch_subscribe",
+        "diff_watch_status",
+        "diff_watch_unsubscribe",
     ):
         assert tool in body
     assert "[[diff-comments]]" in body
@@ -85,6 +87,15 @@ def test_personal_agent_specs_use_supported_stdio_mcp_tools() -> None:
                 "diff_watch_status",
             ],
         }
+
+
+def test_native_codex_config_registers_the_diff_watch_mcp() -> None:
+    config = tomllib.loads((DOTFILES / "codex_config/config.template.toml").read_text())
+    assert config["mcp_servers"]["diff_watch"] == {
+        "command": "omnigent-diff-watch-mcp",
+        "args": ["--native-codex"],
+        "env_vars": ["CODEX_HOME"],
+    }
 
 
 def test_sync_updates_canonical_codex_home_from_a_native_session() -> None:
@@ -123,6 +134,17 @@ def test_subscription_policy_asks_for_namespaced_subscribe_only() -> None:
         )
         is None
     )
+    native_subscribe = approve_diff_watch_subscription(
+        {
+            "type": "tool_call",
+            "target": "",
+            "data": {
+                "name": "mcp__diff_watch__diff_watch_subscribe",
+                "arguments": {},
+            },
+        }
+    )
+    assert native_subscribe is not None and native_subscribe["result"] == "ASK"
 
 
 def test_preference_policy_binds_subscribe_status_and_unsubscribe_to_labels() -> None:
