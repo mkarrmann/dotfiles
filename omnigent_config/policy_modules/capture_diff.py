@@ -51,20 +51,26 @@ _WATCH_TOOLS = {
 def _result_text(event: dict) -> str:
     """Best-effort flatten of a tool_result payload to searchable text.
 
-    The ``tool_result`` payload shape varies by harness/tool, so rather than
-    assume ``data["result"]`` we stringify the whole ``data`` plus the original
-    request. The ``Differential Revision:`` line survives either way.
+    The ``tool_result`` payload shape varies by harness/tool, so the whole
+    ``data`` is stringified when the ``result`` key is absent. A diff
+    announcement survives either way.
+
+    The REQUEST is deliberately not searched. It used to be, as a second
+    fallback, but a request is the command -- not its output -- and the only
+    diff URLs appearing in a command are ones being *written*: a drafted
+    ``sl commit -m "...Differential Revision: <url>..."``, documentation, or a
+    test fixture. Observed: verifying this very policy with a fixture holding
+    ``Differential Revision: https://.../D99999999`` bound that nonexistent
+    diff to the live session. Every real announcement -- jf submit, conf
+    submit, and ``sl log`` of a landed commit -- arrives as output.
+
+    This matters beyond a stray subscription: the label is a capped set that
+    evicts oldest-first, so a false capture can push out a real diff.
     """
-    parts = []
     data = event.get("data")
     if isinstance(data, dict) and "result" in data:
-        parts.append(str(data.get("result")))
-    else:
-        parts.append(str(data))
-    req = event.get("request_data")
-    if req is not None:
-        parts.append(str(req))
-    return "\n".join(parts)
+        return str(data.get("result"))
+    return str(data)
 
 
 def _merge_accumulated(current: str | None, found: list[str]) -> str | None:

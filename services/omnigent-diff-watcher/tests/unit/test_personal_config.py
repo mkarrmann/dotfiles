@@ -398,6 +398,40 @@ def test_capture_accepts_the_conf_submit_result_line() -> None:
     assert _captured_diffs(result) == "D116561641"
 
 
+def test_capture_ignores_a_diff_url_in_the_command_itself() -> None:
+    """A diff URL in the request is being written, not announced.
+
+    Regression: verifying this policy with a fixture containing a
+    `Differential Revision:` line bound D99999999 -- a diff that does not
+    exist -- to the live session, because the request used to be searched
+    alongside the output. Drafted commit messages and docs hit the same path,
+    and since the label is a capped evict-oldest set, a false capture can
+    displace a real diff.
+    """
+    evaluate = _diff_capture()
+    event = _capture_event("1 files updated\n")
+    event["request_data"] = {
+        "name": "Bash",
+        "arguments": {
+            "command": 'sl commit -m "Differential Revision: '
+            'https://www.internalfb.com/D99999999"'
+        },
+    }
+    assert evaluate(event) is None
+
+
+def test_capture_still_reads_results_under_a_nonstandard_payload_shape() -> None:
+    """Dropping the request must not cost the data-shape fallback."""
+    evaluate = _diff_capture()
+    event: dict[str, object] = {
+        "type": "tool_result",
+        "target": "Bash",
+        "data": {"stdout": "Review your change here: https://www.internalfb.com/diff/D42"},
+        "context": {"labels": {}},
+    }
+    assert _captured_diffs(evaluate(event)) == "D42"
+
+
 def test_capture_ignores_diff_urls_in_documentation() -> None:
     """A full diff URL with no submit marker must not bind the session.
 
