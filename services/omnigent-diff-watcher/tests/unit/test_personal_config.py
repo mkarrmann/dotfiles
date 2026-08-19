@@ -101,6 +101,23 @@ def test_native_codex_config_registers_the_diff_watch_mcp() -> None:
     }
 
 
+def test_native_claude_mcp_definition_is_claude_scoped() -> None:
+    """Claude gets diff_watch; Codex must not get it from here as well.
+
+    Codex is registered through codex_config/config.template.toml, and a
+    second copy emitted into the same ~/.codex/config.toml would be a
+    duplicate [mcp_servers.diff_watch] table.
+    """
+    spec = json.loads(
+        (DOTFILES / "agent_config/plugins/custom-mcps/mcps/diff-watch.json").read_text()
+    )
+    assert spec["agents"] == ["claude"]
+    assert spec["mcpServers"]["diff_watch"]["args"] == ["--native-claude"]
+    # Absolute, because ~/dotfiles/bin is not on the PATH of an MCP server
+    # spawned by Claude Code.
+    assert spec["mcpServers"]["diff_watch"]["command"].startswith("~/dotfiles/bin/")
+
+
 def _run_sync_mcps(target: str, home: Path) -> str:
     result = subprocess.run(
         [sys.executable, str(DOTFILES / "agent_config/sync-mcps"), target],
@@ -127,18 +144,32 @@ def test_sync_mcps_writes_where_claude_code_actually_reads(tmp_path: Path) -> No
     (tmp_path / ".claude").mkdir()
     (tmp_path / ".claude.json").write_text(json.dumps({"projects": {"keep": 1}}))
     (tmp_path / ".claude" / "settings.json").write_text(
-        json.dumps({"model": "keep-me", "mcpServers": {"scuba": {"command": "stale"}}})
+        json.dumps({"model": "keep-me", "mcpServers": {"diff_watch": {"command": "stale"}}})
     )
 
     _run_sync_mcps("claude", tmp_path)
 
     user_scope = json.loads((tmp_path / ".claude.json").read_text())
-    assert "scuba" in user_scope["mcpServers"]
+    assert "diff_watch" in user_scope["mcpServers"]
+    assert user_scope["mcpServers"]["diff_watch"]["args"] == ["--native-claude"]
     assert user_scope["projects"] == {"keep": 1}, "unrelated state must survive"
 
     settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
     assert "mcpServers" not in settings, "the ignored key must be retracted"
     assert settings["model"] == "keep-me"
+
+
+def test_sync_mcps_keeps_diff_watch_out_of_the_codex_config(tmp_path: Path) -> None:
+    """Codex already registers diff_watch via its template; a second copy
+    would produce a duplicate [mcp_servers.diff_watch] table."""
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "config.toml").write_text('model = "keep"\n')
+
+    _run_sync_mcps("codex", tmp_path)
+
+    config = tomllib.loads((tmp_path / ".codex" / "config.toml").read_text())
+    assert "diff_watch" not in config["mcp_servers"]
+    assert config["mcp_servers"], "the unrestricted MCPs still sync to codex"
 
 
 def test_sync_mcps_drops_unexpanded_env_refs(tmp_path: Path) -> None:

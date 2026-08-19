@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Literal
 from urllib.parse import quote, urlparse
@@ -14,17 +15,66 @@ from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("diff-watch", log_level="ERROR")
 EventName = Literal["review_comment", "ci_failure"]
-_NATIVE_CODEX_MODE = False
+
+# ``None`` outside a native harness (the streamed SDK harnesses get the policy's
+# rewritten result for free); otherwise the harness whose bridge layout applies.
+_NATIVE_MODE: str | None = None
+_NATIVE_HARNESS = {"codex": "codex-native", "claude": "claude-native"}
+_NOT_NATIVE = "diff watch requires an Omnigent native {} session"
+
+
+def _codex_bridge_dir() -> Path:
+    codex_home = os.environ.get("CODEX_HOME")
+    if not codex_home:
+        raise RuntimeError(_NOT_NATIVE.format("Codex"))
+    path = Path(codex_home).expanduser()
+    if path.name != "codex-home" or path.parent.parent.name != "codex-native":
+        raise RuntimeError(_NOT_NATIVE.format("Codex"))
+    return path.parent
+
+
+def _claude_bridge_dir() -> Path:
+    """Locate this session's Claude bridge directory.
+
+    Unlike Codex -- where ``CODEX_HOME`` points into the bridge directory --
+    the Claude bridge passes its path only as ``--bridge-dir`` to Omnigent's
+    own MCP server, so a separately-registered server cannot read it from the
+    environment. What Claude Code *does* export to every MCP server it spawns
+    is ``CLAUDE_CODE_SESSION_ID``, and the bridge records that same id in
+    ``state.json``. Match on it rather than guessing: several bridge
+    directories coexist, one per concurrent session.
+
+    Identity therefore still comes from the harness and an owner-only (0700)
+    directory, never from the model -- the trust boundary is unchanged.
+    """
+    claude_session = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not claude_session or not os.environ.get("OMNIGENT_URL"):
+        raise RuntimeError(_NOT_NATIVE.format("Claude"))
+    # Both roots: Omnigent builds this path from the system temp dir, but the
+    # agent process does not necessarily share our TMPDIR, so "/tmp" is kept
+    # as a second candidate rather than assumed to be the same directory.
+    roots = dict.fromkeys([tempfile.gettempdir(), "/tmp"])
+    for root in roots:
+        base = Path(root) / f"omnigent-{os.getuid()}" / "claude-native"
+        if not base.is_dir():
+            continue
+        for candidate in sorted(base.iterdir()):
+            state = _read_json_object(candidate / "state.json")
+            seen = state.get("seen_claude_session_ids")
+            if state.get("claude_session_id") == claude_session or (
+                isinstance(seen, list) and claude_session in seen
+            ):
+                return candidate
+    raise RuntimeError(
+        "no Omnigent Claude bridge directory matches this session "
+        f"({claude_session}); the session may predate the bridge"
+    )
 
 
 def _native_bridge_dir() -> Path:
-    codex_home = os.environ.get("CODEX_HOME")
-    if not codex_home:
-        raise RuntimeError("diff watch requires an Omnigent native Codex session")
-    path = Path(codex_home).expanduser()
-    if path.name != "codex-home" or path.parent.parent.name != "codex-native":
-        raise RuntimeError("diff watch requires an Omnigent native Codex session")
-    return path.parent
+    if _NATIVE_MODE == "claude":
+        return _claude_bridge_dir()
+    return _codex_bridge_dir()
 
 
 def _read_json_object(path: Path) -> dict[str, object]:
@@ -48,6 +98,37 @@ def _loopback_url(value: object) -> str | None:
     return value.rstrip("/")
 
 
+def _server_endpoint(
+    hook: dict[str, object], session_id: object
+) -> tuple[str, dict[str, str]] | None:
+    """Build the direct ``/policies/evaluate`` endpoint from a hook file."""
+    server_url = _loopback_url(hook.get("ap_server_url"))
+    if not server_url or not isinstance(session_id, str) or not session_id:
+        return None
+    headers: dict[str, str] = {}
+    raw_headers = hook.get("ap_auth_headers")
+    if isinstance(raw_headers, dict):
+        headers = {str(k): str(v) for k, v in raw_headers.items()}
+    component = quote(session_id, safe="")
+    return (f"{server_url}/v1/sessions/{component}/policies/evaluate", headers)
+
+
+def _claude_policy_endpoints(bridge_dir: Path) -> list[tuple[str, dict[str, str]]]:
+    """Policy endpoints for a native Claude session.
+
+    The Claude bridge has no ``tool_relay.json`` -- it advertises the Omnigent
+    server directly in ``permission_hook.json`` -- so there is a single
+    endpoint and nothing to fall back to. The session id lives in
+    ``bridge.json``; ``state.json`` here holds the *Claude* session id, which
+    is a different identifier and must not be used as the Omnigent one.
+    """
+    hook = _read_json_object(bridge_dir / "permission_hook.json")
+    bridge = _read_json_object(bridge_dir / "bridge.json")
+    session_id = bridge.get("active_session_id") or bridge.get("conversation_id")
+    endpoint = _server_endpoint(hook, session_id)
+    return [endpoint] if endpoint else []
+
+
 def _policy_endpoints(bridge_dir: Path) -> list[tuple[str, dict[str, str]]]:
     """Return ``(url, headers)`` policy endpoints in precedence order.
 
@@ -56,6 +137,9 @@ def _policy_endpoints(bridge_dir: Path) -> list[tuple[str, dict[str, str]]]:
     kept as a fallback: the relay advertisement is per-runner and goes stale
     when a runner restarts, while ``policy_hook.json`` is rewritten each time.
     """
+    if _NATIVE_MODE == "claude":
+        return _claude_policy_endpoints(bridge_dir)
+
     relay = _read_json_object(bridge_dir / "tool_relay.json")
     state = _read_json_object(bridge_dir / "state.json")
     hook = _read_json_object(bridge_dir / "policy_hook.json")
@@ -70,14 +154,9 @@ def _policy_endpoints(bridge_dir: Path) -> list[tuple[str, dict[str, str]]]:
             (f"{relay_url}/policies/evaluate", {"Authorization": f"Bearer {relay_token}"})
         )
 
-    server_url = _loopback_url(hook.get("ap_server_url"))
-    if server_url and isinstance(session_id, str) and session_id:
-        headers: dict[str, str] = {}
-        raw_headers = hook.get("ap_auth_headers")
-        if isinstance(raw_headers, dict):
-            headers = {str(k): str(v) for k, v in raw_headers.items()}
-        component = quote(session_id, safe="")
-        endpoints.append((f"{server_url}/v1/sessions/{component}/policies/evaluate", headers))
+    direct = _server_endpoint(hook, session_id)
+    if direct:
+        endpoints.append(direct)
 
     return endpoints
 
@@ -87,7 +166,7 @@ def _native_policy_result(
     arguments: dict[str, object],
     intent_result: str,
 ) -> str:
-    if not _NATIVE_CODEX_MODE:
+    if _NATIVE_MODE is None:
         return intent_result
 
     endpoints = _policy_endpoints(_native_bridge_dir())
@@ -99,7 +178,7 @@ def _native_policy_result(
             "type": "PHASE_TOOL_RESULT",
             "target": "",
             "data": {"result": intent_result},
-            "context": {"harness": "codex-native"},
+            "context": {"harness": _NATIVE_HARNESS[_NATIVE_MODE]},
             "request_data": {
                 "name": f"mcp__diff_watch__{tool_name}",
                 "arguments": arguments,
@@ -170,10 +249,20 @@ def diff_watch_status() -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--native-codex", action="store_true")
+    # A native harness runs the vendor TUI, which does not hand the policy's
+    # rewritten tool result back to the model, so the server must make the
+    # policy round trip itself and return the policy's own answer. The two
+    # flags are kept separate rather than folded into one --native because the
+    # bridge layouts differ; they are mutually exclusive.
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--native-codex", action="store_true")
+    mode.add_argument("--native-claude", action="store_true")
     args = parser.parse_args()
-    global _NATIVE_CODEX_MODE
-    _NATIVE_CODEX_MODE = args.native_codex
+    global _NATIVE_MODE
+    if args.native_codex:
+        _NATIVE_MODE = "codex"
+    elif args.native_claude:
+        _NATIVE_MODE = "claude"
     mcp.run(transport="stdio")
 
 

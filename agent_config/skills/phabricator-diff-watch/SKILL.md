@@ -12,8 +12,14 @@ description: >-
 # Phabricator diff watch
 
 Subscribe with the available `diff_watch_subscribe` tool only when all of these
-hold. Omnigent/Claude names it `diff_watch__diff_watch_subscribe`; native Codex
-names it `mcp__diff_watch__diff_watch_subscribe`.
+hold. The harnesses namespace it differently: the Omnigent SDK harnesses use
+`diff_watch__diff_watch_subscribe`, and the native ones (Claude Code and Codex)
+use `mcp__diff_watch__diff_watch_subscribe`. Match on the suffix.
+
+If none of those tools exists, say so instead of improvising. Do NOT write the
+`omnigent.diff.*` session labels by hand: it skips the approval the subscribe
+tool is gated on, and a missing tool means this harness is not registered yet —
+which is a bug to report, not to work around.
 
 - You just created or submitted a diff, or the user explicitly requested a
   watch.

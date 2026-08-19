@@ -8,10 +8,11 @@ changes.
 ## Architecture
 
 - `omnigent-diff-watch-mcp` exposes subscribe, unsubscribe, and status intent
-  tools through the agent's normal stdio MCP configuration. Native Codex
-  launches it with `--native-codex`, which sends each result through the
-  session's authenticated local Omnigent policy relay and returns the
-  authoritative policy response.
+  tools through the agent's normal stdio MCP configuration. A native harness
+  launches it with `--native-codex` or `--native-claude`, which sends each
+  result through the session's authenticated local Omnigent policy endpoint
+  and returns the authoritative policy response; the streamed SDK harnesses
+  get that rewrite for free and need no flag.
 - `capture_diff.py` binds those tool results to the authenticated session by
   updating `omnigent.diff.watch`.
 - The hub-only service reconciles session labels through `GET /v1/sessions`,

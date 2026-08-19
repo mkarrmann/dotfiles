@@ -57,12 +57,39 @@ control surface plus a hub-local sidecar service.
 - `diff_watch_status()`
 
 Claude and headless Codex agent YAML declare this server with the existing
-inline `type: mcp` format. Native Codex registers the same server in the
-source-controlled Codex config with `--native-codex`; that mode derives the
-owner-only bridge directory from `CODEX_HOME`, posts the tool result through
-the authenticated loopback Omnigent policy relay, and returns the policy's
-authoritative response. The tools accept no session or diff identity.
-Omnigent/Codex namespace them under the `diff_watch` server.
+inline `type: mcp` format. Those bind tools for the streamed SDK harnesses
+only: a native session boots the vendor TUI and takes its tool surface from
+that vendor's own config, so every native harness needs its own registration.
+
+| Harness | Registered in | Flag | Bridge found via |
+|---|---|---|---|
+| SDK Claude / Codex | `omnigent_config/agents/*/config.yaml` | none | n/a; policy rewrites the result |
+| Native Codex | `codex_config/config.template.toml` | `--native-codex` | `CODEX_HOME` |
+| Native Claude | `agent_config/plugins/custom-mcps/mcps/diff-watch.json` -> `~/.claude.json` | `--native-claude` | `CLAUDE_CODE_SESSION_ID` -> `state.json` |
+
+The native modes exist because the vendor TUIs do not hand the policy's
+rewritten result back to the model, so the server makes the policy round trip
+itself and returns the authoritative response.
+
+Claude's bridge directory cannot be read from the environment the way Codex's
+can -- it is passed only as `--bridge-dir` to Omnigent's own MCP server. What
+Claude Code does export to every MCP server it spawns is
+`CLAUDE_CODE_SESSION_ID`, and the bridge records that same id in `state.json`,
+so the directory is found by matching on it. Several bridges coexist, one per
+concurrent session, so the match must be on identity and not on "the only
+directory present". Note `state.json` holds the *Claude* session id while
+`bridge.json` holds the *Omnigent* one; the policy call is addressed with the
+latter.
+
+The tools still accept no session or diff identity and the bridge directory is
+owner-only, so the trust boundary is unchanged in every mode. Native harnesses
+namespace the tools `mcp__diff_watch__*` and the SDK harnesses
+`diff_watch__*`; the approval policy matches on suffix, so both are gated.
+
+Registration location matters as much as registration: `~/.claude/settings.json`
+accepts an `mcpServers` key and ignores it. Servers written there never reach
+`claude mcp list`, no tool is advertised, and nothing reports the absence. The
+user scope Claude Code reads is top-level `mcpServers` in `~/.claude.json`.
 
 ### 4.2 Policy-bound preferences
 

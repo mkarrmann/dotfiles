@@ -1,0 +1,11 @@
+{
+  "description": "Subscribe the current Omnigent session to CI-failure and review-comment notifications on the Phabricator diffs it created.",
+  "agents": ["claude"],
+  "mcpServers": {
+    "diff_watch": {
+      "type": "stdio",
+      "command": "~/dotfiles/bin/omnigent-diff-watch-mcp",
+      "args": ["--native-claude"]
+    }
+  }
+}

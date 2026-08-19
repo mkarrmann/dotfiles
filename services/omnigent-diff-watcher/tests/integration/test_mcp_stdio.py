@@ -116,6 +116,96 @@ async def test_native_codex_stdio_server_returns_policy_bound_status(tmp_path: P
     assert request_data["name"] == "mcp__diff_watch__diff_watch_status"
 
 
+def _claude_bridge(tmp_path: Path, claude_session: str, omni_session: str) -> Path:
+    """Build a Claude bridge directory the way the Omnigent bridge lays it out."""
+    bridge = tmp_path / f"omnigent-{os.getuid()}/claude-native/{omni_session}"
+    bridge.mkdir(parents=True)
+    # state.json holds the CLAUDE session id; bridge.json holds the OMNIGENT
+    # one. Conflating them would address the policy call to a nonexistent
+    # session, so the fixture keeps them deliberately different.
+    (bridge / "state.json").write_text(json.dumps({"claude_session_id": claude_session}))
+    (bridge / "bridge.json").write_text(json.dumps({"active_session_id": omni_session}))
+    return bridge
+
+
+async def test_native_claude_stdio_server_returns_policy_bound_status(
+    tmp_path: Path,
+) -> None:
+    """Claude native resolves its bridge from CLAUDE_CODE_SESSION_ID.
+
+    Unlike Codex there is no CODEX_HOME pointing into the bridge directory --
+    Claude's is passed only as --bridge-dir to Omnigent's own MCP server, so a
+    separately-registered server has to match on the session id Claude Code
+    exports to every MCP process it spawns. Several bridges coexist, so the
+    fixture includes a decoy to prove the match is on identity, not on "the
+    only directory present".
+    """
+    _claude_bridge(tmp_path, "decoy-claude-session", "conv_decoy")
+    bridge = _claude_bridge(tmp_path, "claude-abc", "conv_live")
+
+    with _policy_relay("Diff watch: ci_failure; associated diff: D116561995.") as (
+        server,
+        requests,
+    ):
+        host = str(server.server_address[0])
+        port = int(server.server_address[1])
+        (bridge / "permission_hook.json").write_text(
+            json.dumps({"ap_server_url": f"http://{host}:{port}", "ap_auth_headers": {}})
+        )
+        parameters = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "omnigent_diff_watcher.mcp_server", "--native-claude"],
+            env={
+                **os.environ,
+                "TMPDIR": str(tmp_path),
+                "CLAUDE_CODE_SESSION_ID": "claude-abc",
+                "OMNIGENT_URL": "http://127.0.0.1:6767",
+            },
+        )
+        async with (
+            stdio_client(parameters) as (reader, writer),
+            ClientSession(reader, writer) as session,
+        ):
+            await session.initialize()
+            result = await session.call_tool("diff_watch_status", {})
+
+    assert result.isError is False
+    content = result.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "Diff watch: ci_failure; associated diff: D116561995."
+    # Addressed by the Omnigent session id from bridge.json, not the Claude one.
+    assert requests[0]["_path"] == "/v1/sessions/conv_live/policies/evaluate"
+    event = requests[0]["event"]
+    assert isinstance(event, dict)
+    assert event["context"] == {"harness": "claude-native"}
+
+
+async def test_native_claude_without_a_matching_bridge_is_refused(tmp_path: Path) -> None:
+    """An unrecognised session must fail, never fall through to another bridge."""
+    _claude_bridge(tmp_path, "someone-elses-session", "conv_other")
+    parameters = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "omnigent_diff_watcher.mcp_server", "--native-claude"],
+        env={
+            **os.environ,
+            "TMPDIR": str(tmp_path),
+            "CLAUDE_CODE_SESSION_ID": "claude-unknown",
+            "OMNIGENT_URL": "http://127.0.0.1:6767",
+        },
+    )
+    async with (
+        stdio_client(parameters) as (reader, writer),
+        ClientSession(reader, writer) as session,
+    ):
+        await session.initialize()
+        result = await session.call_tool("diff_watch_status", {})
+
+    assert result.isError is True
+    content = result.content[0]
+    assert isinstance(content, TextContent)
+    assert "no Omnigent Claude bridge directory matches" in content.text
+
+
 def _closed_loopback_port() -> int:
     """Return a loopback port with nothing listening on it."""
     probe = socket.socket()

@@ -35,11 +35,26 @@ GLOBAL_RULES = CFG / "global-development-preferences.md"
 
 
 def load_mcps() -> dict:
+    """Map server name -> spec, carrying a private ``_agents`` allowlist.
+
+    An MCP file may set a top-level ``"agents": [...]`` to restrict itself to
+    some agents. Needed because a server can already be registered for one
+    agent by another mechanism -- diff_watch is written into Codex's
+    config.template.toml -- and emitting it twice into the same
+    ``~/.codex/config.toml`` would produce a duplicate ``[mcp_servers.*]``
+    table.
+    """
     out = {}
     for p in sorted(MCP_DIR.glob("*.json")):
         data = json.loads(p.read_text())
+        agents = data.get("agents")
         for name, spec in data.get("mcpServers", {}).items():
             spec = dict(spec)
+            # These files are source; the configs they generate are per
+            # machine, so a `~`-relative command is expanded here rather than
+            # left to an agent that will not expand it.
+            if isinstance(spec.get("command"), str):
+                spec["command"] = os.path.expanduser(spec["command"])
             # Drop env entries left as unresolved ${VAR} refs. No agent
             # expands them: Codex passes them through verbatim and Claude
             # reports "Missing environment variables" on every `mcp list`.
@@ -53,8 +68,19 @@ def load_mcps() -> dict:
                 spec["env"] = env
             else:
                 spec.pop("env", None)
+            if agents is not None:
+                spec["_agents"] = list(agents)
             out[name] = spec
     return out
+
+
+def for_agent(mcps: dict, agent: str) -> dict:
+    """Drop entries an MCP file restricts to other agents."""
+    return {
+        name: {k: v for k, v in spec.items() if k != "_agents"}
+        for name, spec in mcps.items()
+        if spec.get("_agents") is None or agent in spec["_agents"]
+    }
 
 
 def _write_json_atomic(path: Path, data: dict) -> None:
@@ -211,11 +237,11 @@ def main() -> int:
         print(f"no MCPs found under {MCP_DIR}", file=sys.stderr)
         return 1
     if target in ("all", "claude"):
-        sync_claude(mcps)
+        sync_claude(for_agent(mcps, "claude"))
     if target in ("all", "codex"):
-        sync_codex(mcps)
+        sync_codex(for_agent(mcps, "codex"))
     if target in ("all", "metacode"):
-        sync_metacode(mcps)
+        sync_metacode(for_agent(mcps, "metacode"))
     return 0
 
 
