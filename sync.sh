@@ -567,6 +567,12 @@ tmp=$(jq '
 # that relocates CODEX_HOME is still configured, and so a set-but-missing
 # CODEX_HOME gets created here rather than failing Codex's own startup check.
 codex_home="${CODEX_HOME:-$HOME/.codex}"
+# Omnigent native sessions redirect CODEX_HOME to an ephemeral per-session
+# copy. Dotfiles reflection must update the canonical home that future native
+# sessions copy from, not only the already-running session's private config.
+case "$codex_home" in
+  "$HOME"/.omnigent/codex-native/*/codex-home) codex_home="$HOME/.codex" ;;
+esac
 mkdir -p "$codex_home/rules" "$codex_home/skills"
 
 # Portable Codex template + machine-local overrides (config.local.toml)

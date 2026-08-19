@@ -87,6 +87,12 @@ def test_personal_agent_specs_use_supported_stdio_mcp_tools() -> None:
         }
 
 
+def test_sync_updates_canonical_codex_home_from_a_native_session() -> None:
+    script = (DOTFILES / "sync.sh").read_text()
+    assert '"$HOME"/.omnigent/codex-native/*/codex-home)' in script
+    assert 'codex_home="$HOME/.codex"' in script
+
+
 def test_server_config_uses_only_existing_policy_extension_surface() -> None:
     config = yaml.safe_load((DOTFILES / "omnigent_config/server.yaml").read_text())
     assert "server_plugins" not in config
