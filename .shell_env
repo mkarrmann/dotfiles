@@ -59,5 +59,30 @@ if [[ -f ~/.shell_env.local ]]; then
   source ~/.shell_env.local
 fi
 
+# Every prepend above is unconditional, and this file is re-sourced at each
+# shell nesting level (.zshenv, .zprofile, .shellrc), so entries would otherwise
+# compound without bound. Collapse to the first occurrence, which preserves the
+# precedence established above. Split by hand: zsh does not word-split $PATH on
+# IFS, and `read` stops at a newline.
+_path_dedupe() {
+  local remaining="$PATH" deduped="" entry
+  while [ -n "$remaining" ]; do
+    entry="${remaining%%:*}"
+    if [ "$entry" = "$remaining" ]; then
+      remaining=""
+    else
+      remaining="${remaining#*:}"
+    fi
+    [ -n "$entry" ] || continue
+    case ":$deduped:" in
+      *":$entry:"*) ;;
+      *) deduped="${deduped:+$deduped:}$entry" ;;
+    esac
+  done
+  export PATH="$deduped"
+}
+_path_dedupe
+unset -f _path_dedupe
+
 export CLAUDE_CODE_NO_FLICKER=0
 
