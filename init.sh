@@ -144,10 +144,10 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   fi
 
   # Per-session nvim daemons (nvs@SESSION.service instances).
-  # ~/.config/nvs/sessions is machine-local (not source-controlled, same as
-  # ~/.localrc). Lines: `SESSION_NAME [WORKDIR]`. Comments with #, blank ok.
-  nvs_sessions="$HOME/.config/nvs/sessions"
-  if [[ -f "$nvs_sessions" ]]; then
+  # The list is host-scoped, because ~/.config/nvs is dotsync2-managed and so
+  # is identical on every devserver; see bin/nvs-sessions-file for which file
+  # wins. Lines: `SESSION_NAME [WORKDIR]`. Comments with #, blank ok.
+  if nvs_sessions="$("$DOTFILES_DIR/bin/nvs-sessions-file")"; then
     while IFS= read -r line || [[ -n "$line" ]]; do
       line="${line%%#*}"
       # shellcheck disable=SC2086

@@ -196,6 +196,10 @@ Sessions are named `<DEVSERVER>-checkoutN`, e.g. `FTW-checkout1`, `CCO-checkout1
 
 Checkout sessions start in `~/checkoutN`, giving tools access to both sibling repositories. Repository-aware Neovim commands resolve their own execution root; see the `neovim-meta` skill for the selection rules.
 
+**`~/.config/nvs` is dotsync2-managed, not machine-local.** The blanket `".config"` include in `dotsync2 paths list` sweeps it up, so every devserver sees the same directory — deleting a file here deletes it everywhere. The per-session `.env` files tolerate that because their names carry the host prefix. The session list cannot, so it is host-scoped: `sessions.<short hostname>` (e.g. `sessions.devvm20365`), resolved by `bin/nvs-sessions-file` with unsuffixed `sessions` as the fallback. Declaring another host's sessions spawns headless servers nothing connects to.
+
+`WORKDIR` is read only at unit start, so editing it while a server is live does nothing until `nvs-restart SESSION`; `nvs-setup` warns when a live server has drifted from its config.
+
 ### Workspace layout
 
 CCO and FTW checkouts are interleaved (CCO on even slots, FTW on odd). FTW

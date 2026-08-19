@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Print the nvs session-list file that applies to this host; exit 1 if there
+# is none. Run it to see which list is actually in effect.
+#
+# ~/.config/nvs is dotsync2-managed -- swept in by the blanket ".config"
+# include in `dotsync2 paths list` -- so every devserver sees the same
+# directory. That is fine for the per-session .env files, whose names are
+# already host-disjoint (CCO-checkout1 vs FTW-checkout1). `sessions` was the
+# exception: a single filename whose contents have to differ per host.
+# Sharing it means each devserver declares the other's sessions and spawns
+# headless servers nothing ever connects to, which is how five FTW-* servers
+# ended up running on the CCO devvm.
+#
+# So the list is host-scoped: sessions.<short hostname>, e.g.
+# sessions.devvm20365. Unsuffixed `sessions` stays as the fallback for a host
+# that has not been given a list of its own.
+
+dir="$HOME/.config/nvs"
+
+for candidate in "$dir/sessions.$(hostname -s)" "$dir/sessions"; do
+  if [[ -f "$candidate" ]]; then
+    printf '%s\n' "$candidate"
+    exit 0
+  fi
+done
+
+exit 1
