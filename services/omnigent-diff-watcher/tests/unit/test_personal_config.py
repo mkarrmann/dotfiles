@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
 import re
+import subprocess
 import sys
 import tomllib
 from collections.abc import Callable
@@ -96,6 +99,59 @@ def test_native_codex_config_registers_the_diff_watch_mcp() -> None:
         "args": ["--native-codex"],
         "env_vars": ["CODEX_HOME"],
     }
+
+
+def _run_sync_mcps(target: str, home: Path) -> str:
+    result = subprocess.run(
+        [sys.executable, str(DOTFILES / "agent_config/sync-mcps"), target],
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "AGENT_CONFIG_DIR": str(DOTFILES / "agent_config"),
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
+def test_sync_mcps_writes_where_claude_code_actually_reads(tmp_path: Path) -> None:
+    """The registration must land in ~/.claude.json, not settings.json.
+
+    settings.json accepts an mcpServers key and ignores it: nothing appears in
+    `claude mcp list`, no tool is advertised, and no error is raised anywhere.
+    Targeting it left the whole bundle -- diff_watch included -- silently
+    inert on every Claude session, which is the failure this pins.
+    """
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude.json").write_text(json.dumps({"projects": {"keep": 1}}))
+    (tmp_path / ".claude" / "settings.json").write_text(
+        json.dumps({"model": "keep-me", "mcpServers": {"scuba": {"command": "stale"}}})
+    )
+
+    _run_sync_mcps("claude", tmp_path)
+
+    user_scope = json.loads((tmp_path / ".claude.json").read_text())
+    assert "scuba" in user_scope["mcpServers"]
+    assert user_scope["projects"] == {"keep": 1}, "unrelated state must survive"
+
+    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    assert "mcpServers" not in settings, "the ignored key must be retracted"
+    assert settings["model"] == "keep-me"
+
+
+def test_sync_mcps_drops_unexpanded_env_refs(tmp_path: Path) -> None:
+    """A literal ${VAR} value makes Claude Code report a missing env var."""
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude.json").write_text("{}")
+
+    _run_sync_mcps("claude", tmp_path)
+
+    servers = json.loads((tmp_path / ".claude.json").read_text())["mcpServers"]
+    for name, spec in servers.items():
+        for key, value in (spec.get("env") or {}).items():
+            assert not value.startswith("${"), f"{name}.{key} is an unexpanded ref"
 
 
 def test_sync_updates_canonical_codex_home_from_a_native_session() -> None:

@@ -3,9 +3,12 @@
 agent's native config. Idempotent — safe to re-run.
 
 Targets:
-  - Claude:   ~/.claude/settings.json            .mcpServers.<name>
+  - Claude:   ~/.claude.json                     .mcpServers.<name>
   - Codex:    ~/.codex/config.toml              [mcp_servers.<name>]
   - Metacode: ~/.config/opencode/opencode.json   .mcp.<name>
+
+Claude's target is ~/.claude.json, NOT ~/.claude/settings.json. settings.json
+accepts an mcpServers key and silently ignores it -- see sync_claude.
 
 Devmate inherits from Claude via DOTSYNC_DEVSERVER — no separate config.
 
@@ -36,21 +39,74 @@ def load_mcps() -> dict:
     for p in sorted(MCP_DIR.glob("*.json")):
         data = json.loads(p.read_text())
         for name, spec in data.get("mcpServers", {}).items():
+            spec = dict(spec)
+            # Drop env entries left as unresolved ${VAR} refs. No agent
+            # expands them: Codex passes them through verbatim and Claude
+            # reports "Missing environment variables" on every `mcp list`.
+            # The MCP process inherits the spawning environment regardless.
+            env = {
+                k: v
+                for k, v in (spec.get("env") or {}).items()
+                if not (isinstance(v, str) and v.startswith("${") and v.endswith("}"))
+            }
+            if env:
+                spec["env"] = env
+            else:
+                spec.pop("env", None)
             out[name] = spec
     return out
 
 
+def _write_json_atomic(path: Path, data: dict) -> None:
+    """Replace *path* in one step.
+
+    ~/.claude.json is owned by Claude Code and rewritten by every live
+    session, so a partial write would corrupt unrelated project state.
+    """
+    tmp = path.with_name(f"{path.name}.sync-mcps.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    os.replace(tmp, path)
+
+
 def sync_claude(mcps: dict) -> None:
-    path = HOME / ".claude" / "settings.json"
+    """Register user-scope MCP servers where Claude Code actually reads them.
+
+    ``~/.claude/settings.json`` accepts an ``mcpServers`` key and does nothing
+    with it: servers written there never appear in `claude mcp list`, their
+    tools are never advertised, and nothing reports the absence. The user
+    scope Claude Code does read is top-level ``mcpServers`` in
+    ``~/.claude.json`` -- what `claude mcp add --scope user` writes. This
+    script targeted the former, which left the whole bundle inert on every
+    Claude and Devmate session.
+    """
+    path = HOME / ".claude.json"
     if not path.exists():
         print(f"skip claude: {path} not found")
         return
     data = json.loads(path.read_text())
     servers = data.setdefault("mcpServers", {})
-    for name, spec in mcps.items():
-        servers[name] = spec
-    path.write_text(json.dumps(data, indent=2) + "\n")
-    print(f"synced {len(mcps)} MCPs into {path}")
+    if all(servers.get(name) == spec for name, spec in mcps.items()):
+        print(f"claude already current ({len(mcps)} MCPs in {path})")
+    else:
+        servers.update(mcps)
+        _write_json_atomic(path, data)
+        print(f"synced {len(mcps)} MCPs into {path}")
+
+    # Retract the misdirected copies, so the dead key cannot be mistaken for a
+    # live registration by whoever next greps for one of these names.
+    stale = HOME / ".claude" / "settings.json"
+    if not stale.exists():
+        return
+    settings = json.loads(stale.read_text())
+    leftover = settings.get("mcpServers")
+    if not isinstance(leftover, dict) or not leftover:
+        return
+    for name in mcps:
+        leftover.pop(name, None)
+    if not leftover:
+        settings.pop("mcpServers", None)
+    _write_json_atomic(stale, settings)
+    print(f"removed ignored mcpServers entries from {stale}")
 
 
 def sync_metacode(mcps: dict) -> None:
@@ -101,13 +157,8 @@ def _emit_toml_block(name: str, spec: dict) -> str:
     args = spec.get("args") or []
     if args:
         lines.append("args = [" + ", ".join(_toml_escape(a) for a in args) + "]")
-    # Drop env entries whose values are unresolved ${VAR} refs — codex does not
-    # expand them, and the MCP process inherits the spawning shell's env anyway.
-    env = {
-        k: v
-        for k, v in (spec.get("env") or {}).items()
-        if not (isinstance(v, str) and v.startswith("${") and v.endswith("}"))
-    }
+    # Unresolved ${VAR} env refs are already dropped by load_mcps.
+    env = spec.get("env") or {}
     if env:
         lines.append("")
         lines.append(f"[mcp_servers.{name}.env]")
