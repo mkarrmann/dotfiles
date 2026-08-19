@@ -25,12 +25,20 @@ if [[ "$http_proxy" == *"fwdproxy"* ]] || [[ -n "$THRIFT_TLS_CL_CERT_PATH" ]]; t
     unset OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE
 fi
 
-# Find the real nvim, skipping this wrapper's own directory to avoid recursion
+# Find the real nvim, skipping this wrapper's own directory to avoid recursion.
+# PATH is split by hand rather than with `read`, which stops at the first
+# newline and would silently hide every entry past a corrupted one.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REAL_NVIM=""
-IFS=: read -ra _path_dirs <<< "$PATH"
-for _dir in "${_path_dirs[@]}"; do
-    [[ "$_dir" == "$SCRIPT_DIR" ]] && continue
+_remaining="$PATH"
+while [[ -n "$_remaining" ]]; do
+    _dir="${_remaining%%:*}"
+    if [[ "$_dir" == "$_remaining" ]]; then
+        _remaining=""
+    else
+        _remaining="${_remaining#*:}"
+    fi
+    [[ -n "$_dir" && "$_dir" != "$SCRIPT_DIR" ]] || continue
     if [[ -x "$_dir/nvim" ]]; then
         REAL_NVIM="$_dir/nvim"
         break
