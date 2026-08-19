@@ -228,6 +228,29 @@ curl -s --noproxy '*' "$BASE/v1/sessions/$CONV" | jq -r '
    They should all name the same checkout. Do not infer the checkout from an
    agent's project notes when any of these disagree.
 
+4. **Stranded native-Codex app-server:** a `codex-native-ui` session whose
+   label reads `omnigent.last_task_error_code: native_terminal_start_failed`,
+   with `thread-store conflict: thread <id> already has an active writer` in
+   the runner log, is not broken data — an app-server from a previous runner
+   is still alive and holding the thread's flock. Meta's `codex` launcher
+   re-execs into a transient systemd scope under `3pai_sandbox.slice`, which
+   leaves `omnigent-host.service`'s cgroup, so restarting the host strands it
+   (reparented to `systemd --user`, still executing its turn with nowhere to
+   send the output). `omnigent-host` now reaps these at ExecStartPre and
+   ExecStopPost; to inspect or clear one by hand:
+
+   ```bash
+   omnigent-codex-orphans list                    # every scope, ORPHAN vs owned
+   omnigent-codex-orphans reap --dry-run          # what the host hooks would stop
+   omnigent-codex-orphans reap --session "$CONV"  # clear one session's lock
+   ```
+
+   Stop the *scope*, never the pid — the scope's own `KillMode=control-group`
+   takes the whole subtree (`codex.real`, `fast_mux`, `codex-code-mode-host`,
+   the bridge MCP), and `reap` does that for you. Everything the orphan
+   finished is already durable in its rollout JSONL, so a resume after the
+   reap inherits it; only the in-flight turn is lost.
+
 ## Agents (harnesses)
 
 `GET /v1/agents` lists the registered agents. Two families:
