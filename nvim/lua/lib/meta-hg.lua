@@ -1245,6 +1245,9 @@ vim.api.nvim_create_autocmd("TabClosed", {
 ---@class (exact) Hg.ssl_command
 ---@field desc string
 ---@field action fun(commit: Hg.commit, bufnr: number)
+---@field readonly ?boolean Neither mutates the repo nor depends on buffer
+--- contents beyond the commit already resolved from the cursor, so it may run
+--- while the panel is refreshing (see `ssl_action`).
 
 local HgChanges -- forward declaration; defined after HgStatus
 
@@ -1253,6 +1256,7 @@ local HgChanges -- forward declaration; defined after HgStatus
 local SSL_COMMANDS = {
   show = {
     desc = "Show commit message and changes",
+    readonly = true,
     action = function(commit, bufnr)
       local cmd =
         { "hg", "show", "--color=always", commit.hash, "|", "less", "-R" }
@@ -1268,6 +1272,7 @@ local SSL_COMMANDS = {
   },
   diff_split = {
     desc = "View file diffs (side-by-side split, cycle with ]f/[f)",
+    readonly = true,
     action = function(commit)
       local repo_root = SSL_STATE.repo_root or buf_repo_root()
       local template = '{files % "{file}\\n"}'
@@ -1478,6 +1483,7 @@ local SSL_COMMANDS = {
   },
   open_in_phabricator = {
     desc = "Open in phabricator",
+    readonly = true,
     action = function(commit)
       meta_util.open_url("https://www.internalfb.com/diff/" .. commit.diff)
     end,
@@ -1531,6 +1537,7 @@ local SSL_COMMANDS = {
   },
   author_internal_profile = {
     desc = "View author's internal profile",
+    readonly = true,
     action = function(commit)
       meta_util.open_url(
         "https://www.internalfb.com/intern/bunny/?q=ip+" .. commit.author
@@ -1775,7 +1782,7 @@ local function HgSsl(opts)
 
   local function ssl_action(name, guard)
     return function()
-      if SSL_STATE.blocked then
+      if SSL_STATE.blocked and not SSL_COMMANDS[name].readonly then
         vim.notify("SSL is updating, please wait...", vim.log.levels.WARN)
         return
       end
