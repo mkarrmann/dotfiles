@@ -1,8 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
-from omnigent_hub.client_proxy import LoopbackForwarder, _health_ok, build_ssh_command
+import pytest
+
+from omnigent_hub import client_proxy
+from omnigent_hub.client_proxy import (
+    FrontSocketDead,
+    LoopbackForwarder,
+    _health_ok,
+    build_ssh_command,
+    watch_front_socket,
+)
 
 
 def test_build_ssh_command_is_hardened() -> None:
@@ -36,6 +46,86 @@ def test_health_ok_distinguishes_200_from_503() -> None:
     healthy, unhealthy = asyncio.run(_probe_both())
     assert healthy is True
     assert unhealthy is False
+
+
+def test_front_watchdog_keeps_watching_a_live_listener() -> None:
+    assert asyncio.run(_watch_live_listener()) == "watching"
+
+
+def test_front_watchdog_raises_when_the_listener_is_gone() -> None:
+    assert asyncio.run(_watch_closed_port()) == "dead"
+
+
+def test_front_watchdog_tolerates_a_dead_backend() -> None:
+    # A hub outage leaves the listener accepting and the backend refusing.
+    # Restarting on that would defeat the point of owning the socket.
+    assert asyncio.run(_watch_listener_without_backend()) == "watching"
+
+
+def test_run_surfaces_a_dead_front_socket(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A dead listener must reach the exit path, not just log inside the task."""
+
+    async def _die(port: int, **_kwargs: object) -> None:
+        raise FrontSocketDead(f"127.0.0.1:{port} refused")
+
+    monkeypatch.setattr(client_proxy, "watch_front_socket", _die)
+    free_port = asyncio.run(_closed_port())
+    with pytest.raises(FrontSocketDead):
+        asyncio.run(
+            client_proxy.run(
+                hub="hub.invalid",
+                server_port=free_port,
+                backend_port=asyncio.run(_closed_port()),
+                ssh_bin="/bin/true",
+                log=lambda _message: None,
+            )
+        )
+
+
+async def _watch_live_listener() -> str:
+    server = await asyncio.start_server(_close_immediately, "127.0.0.1", 0)
+    try:
+        return await _watchdog_outcome(int(server.sockets[0].getsockname()[1]))
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def _watch_closed_port() -> str:
+    return await _watchdog_outcome(await _closed_port())
+
+
+async def _watch_listener_without_backend() -> str:
+    forwarder = LoopbackForwarder(await _closed_port(), attempts=1, delay=0.0)
+    front = await asyncio.start_server(forwarder.handle, "127.0.0.1", 0)
+    try:
+        return await _watchdog_outcome(int(front.sockets[0].getsockname()[1]))
+    finally:
+        front.close()
+        await front.wait_closed()
+
+
+async def _watchdog_outcome(port: int, *, seconds: float = 0.2) -> str:
+    task = asyncio.create_task(
+        watch_front_socket(port, interval=0.01, grace=0.0, threshold=2, log=lambda _message: None)
+    )
+    await asyncio.sleep(seconds)
+    if not task.done():
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        return "watching"
+    try:
+        await task
+    except FrontSocketDead:
+        return "dead"
+    return "stopped"
+
+
+async def _close_immediately(_reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    writer.close()
+    with contextlib.suppress(OSError):
+        await writer.wait_closed()
 
 
 async def _relay_roundtrip() -> bytes:

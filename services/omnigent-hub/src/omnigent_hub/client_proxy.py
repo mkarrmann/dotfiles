@@ -23,6 +23,12 @@ This module decouples the two concerns:
   tunnel promptly on exit, and -- critically -- actively probes the backend's
   ``/health`` and kills a tunnel whose transport is alive but whose forwarding
   is dead, forcing a fresh connection instead of waiting out SSH keepalives.
+* A second watchdog probes the *front* socket, because the guarantee above is
+  only as good as something checking it. A process that stays alive with a
+  dead listener is invisible to systemd (the unit reads "active") and every
+  consumer gets ``ECONNREFUSED``; that state has been observed lasting until
+  the next reconcile cycle noticed it, minutes later. Exiting instead hands
+  the repair to ``Restart=always``, which rebinds in seconds.
 
 Stdlib only, mirroring :mod:`omnigent_hub.mac_proxy`.
 """
@@ -51,7 +57,19 @@ _HEALTH_INTERVAL: Final = 5.0
 _HEALTH_GRACE: Final = 10.0
 _HEALTH_FAILURE_THRESHOLD: Final = 3
 
+# Front-socket supervision cadence. The grace is long because
+# `serve_forwarder` retries a failed bind every 5s -- most often because the
+# previous instance has not released the port yet -- and a watchdog that fires
+# during a normal restart would loop the service instead of healing it.
+_FRONT_INTERVAL: Final = 5.0
+_FRONT_GRACE: Final = 30.0
+_FRONT_FAILURE_THRESHOLD: Final = 3
+
 Logger = Callable[[str], None]
+
+
+class FrontSocketDead(RuntimeError):
+    """The loopback listener this service exists to provide stopped accepting."""
 
 
 def _log(message: str) -> None:
@@ -227,6 +245,50 @@ async def _reap_when_unhealthy(
         await asyncio.sleep(interval)
 
 
+async def _accepts_connections(port: int, *, timeout: float = 3.0) -> bool:
+    """Whether 127.0.0.1:port still accepts a TCP connection.
+
+    Deliberately stops at the accept: the backend is *allowed* to be down --
+    surviving that is the forwarder's entire purpose -- so reading a response
+    here would turn every hub outage into a restart of the one component built
+    to outlast it.
+    """
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection("127.0.0.1", port), timeout=timeout
+        )
+    except (TimeoutError, OSError):
+        return False
+    writer.close()
+    with contextlib.suppress(OSError):
+        await writer.wait_closed()
+    return True
+
+
+async def watch_front_socket(
+    port: int,
+    *,
+    interval: float = _FRONT_INTERVAL,
+    grace: float = _FRONT_GRACE,
+    threshold: int = _FRONT_FAILURE_THRESHOLD,
+    log: Logger = _log,
+) -> None:
+    """Raise :class:`FrontSocketDead` once the loopback listener stops serving."""
+    await asyncio.sleep(grace)
+    failures = 0
+    while True:
+        if await _accepts_connections(port):
+            failures = 0
+        else:
+            failures += 1
+            if failures >= threshold:
+                raise FrontSocketDead(
+                    f"127.0.0.1:{port} refused {threshold} consecutive connections"
+                )
+            log(f"front socket 127.0.0.1:{port} unreachable ({failures}/{threshold})")
+        await asyncio.sleep(interval)
+
+
 async def supervise_ssh(
     *,
     hub: str,
@@ -299,6 +361,7 @@ async def run(
                 log=log,
             )
         ),
+        asyncio.create_task(watch_front_socket(server_port, log=log)),
     ]
     done, pending = await asyncio.wait(
         [*tasks, asyncio.create_task(_wait_and_cancel(stop, tasks))],
@@ -306,9 +369,19 @@ async def run(
     )
     for task in pending:
         task.cancel()
+    # Drain every task before surfacing a failure: the SSH child is only reaped
+    # by supervise_ssh's own cleanup, so re-raising mid-loop would leave it
+    # running until the cgroup is torn down.
+    failure: BaseException | None = None
     for task in done | pending:
-        with contextlib.suppress(asyncio.CancelledError):
+        try:
             await task
+        except asyncio.CancelledError:
+            continue
+        except Exception as exc:
+            failure = failure or exc
+    if failure is not None:
+        raise failure
 
 
 async def _wait_and_cancel(stop: asyncio.Event, tasks: list[asyncio.Task[None]]) -> None:
@@ -345,7 +418,7 @@ def main(argv: list[str] | None = None) -> None:
         help="ssh executable",
     )
     args = parser.parse_args(argv)
-    with contextlib.suppress(KeyboardInterrupt):
+    try:
         asyncio.run(
             run(
                 hub=args.hub,
@@ -354,6 +427,11 @@ def main(argv: list[str] | None = None) -> None:
                 ssh_bin=args.ssh_bin,
             )
         )
+    except KeyboardInterrupt:
+        pass
+    except FrontSocketDead as exc:
+        _log(f"{exc}; exiting so systemd rebinds the endpoint")
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":
