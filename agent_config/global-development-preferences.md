@@ -18,10 +18,18 @@ Generally, the ideal, standard development workflow should be:
 
 1. You are presented with a problem, and we discuss it thoroughly in order to thoroughly
    de-risk the implementation and ensure we're on the same page. You are responsible for
-   shifting as much work as needed into this stage, prior to to implementation.
+   shifting as much work as needed into this stage, prior to to implementation. At this
+   stage, be concise-yet-thorough. Assume I have the minimum amount of context which
+could allow me to ask the question I asked. Therefore, you should concisely provide
+background knowledge. Bias toward providing code snippets to explain how things work and
+what you plan to do.
 2. You independently implement everything, driving toward completion. You use features
    like subagents and dynamic workflows in order to robustly complete the tasks. You of
    course use tools like local testing and linting to find and fix simple issues early.
+   In particular, you should generally locally run basic end-to-end smoke tests in order
+   to ensure that your changes work as expected. You are responsible for ensuring that
+the entire end-to-end experience works well, and catching any issues which aren't likely
+caught by typical CI tests.
 3. Once you are fully complete, I give brief initial sign off on your work. Most likely, I have not yet looked at your code. Then you submit draft diffs/PRs for your work.
 4. You monitor CI for feedback (e.g. CI test/lint failures, AI reviewers). You
    independently and automatically respond to these signals, to get the diffs in a
@@ -38,6 +46,8 @@ implement. Of course, you will go back to step 4, monitoring CI.
    diff/PR so that it can be merged. You should also monitor for these comments and
 prepare to address the feedback. However, you should discuss with me before actually
 committing the changes.
+
+Frequently remind yourself which step you are at by explicitly mentioning it out loud.
 
 ## Do's
 
