@@ -381,6 +381,39 @@ def test_capture_accepts_current_jf_submit_result_lines() -> None:
     assert _captured_diffs(result) == "D116563979,D116338876,D115903819"
 
 
+def test_capture_accepts_the_conf_submit_result_line() -> None:
+    """Configerator submits through `conf submit`, not `jf submit`.
+
+    It announces the diff as "Review your change here:", which matches neither
+    the commit-message form nor jf's created/updated/skipped lines, so every
+    configerator diff went uncaptured and its session got no CI watching.
+    """
+    evaluate = _diff_capture()
+    result = evaluate(
+        _capture_event(
+            "[22.3s] Creating code review for mutation 6298091012\n"
+            "Review your change here: https://www.internalfb.com/diff/D116561641\n"
+        )
+    )
+    assert _captured_diffs(result) == "D116561641"
+
+
+def test_capture_ignores_diff_urls_in_documentation() -> None:
+    """A full diff URL with no submit marker must not bind the session.
+
+    This is why the marker cannot be dropped in favour of matching the URL
+    alone: `https://.../diff/D<n>` occurs in checked-in skill docs and in
+    installed plugin references, which agents read routinely.
+    """
+    evaluate = _diff_capture()
+    for prose in (
+        "For example, see https://www.internalfb.com/diff/D12345678 for a stack.",
+        "Reviewed at https://www.internalfb.com/diff/D999 by the oncall.",
+        "| D116561641 | https://www.internalfb.com/diff/D116561641 | landed |",
+    ):
+        assert evaluate(_capture_event(prose)) is None, prose
+
+
 def test_capture_appends_to_an_existing_stack_without_duplicating() -> None:
     evaluate = _diff_capture()
     result = evaluate(

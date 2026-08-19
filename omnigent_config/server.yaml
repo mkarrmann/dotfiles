@@ -32,11 +32,21 @@ policies:
       arguments:
         patterns:
           # Phabricator diffs created by any tool -> omnigent.diff.number.
-          # The full URL is required on purpose: this pattern is applied to every
-          # tool's output, and a bare `D\d+` latches onto example diff numbers in
-          # docs and skill output. Accept both the commit-message form and the
-          # created/updated/skipped result lines emitted by current jf submit.
-          omnigent.diff.number: '(?:Differential Revision:|(?:created|updated|skipped):)\s*https?://\S*?/(D[1-9][0-9]*)\b'
+          #
+          # The leading marker is an allowlist of submit-success wordings and it
+          # is load-bearing: every submit path must be listed here or its diffs
+          # are never captured, and that session silently gets no CI or review
+          # watching. Currently:
+          #   Differential Revision:      commit message, so any later sl log
+          #   created:/updated:/skipped:  jf submit
+          #   Review your change here:    conf submit (configerator)
+          #
+          # Neither half of the pattern is sufficient on its own. A bare `D\d+`
+          # latches onto example diff numbers in prose. A bare URL is no better:
+          # `https://.../diff/D<n>` appears in checked-in skill docs and in
+          # several installed plugin references, any of which an agent may read
+          # through a tool whose output this policy sees.
+          omnigent.diff.number: '(?:Differential Revision:|Review your change here:|(?:created|updated|skipped):)\s*https?://\S*?/(D[1-9][0-9]*)\b'
         # One session routinely owns a whole stack, and a single `jf submit`
         # prints every diff in it, so this label is a comma-separated set.
         accumulate:
