@@ -29,7 +29,10 @@ what you plan to do.
    In particular, you should generally locally run basic end-to-end smoke tests in order
    to ensure that your changes work as expected. You are responsible for ensuring that
 the entire end-to-end experience works well, and catching any issues which aren't likely
-caught by typical CI tests.
+caught by typical CI tests. Also ensure you document *how* ran your end-to-end tests,
+and try to ensure that I can easily verify that you ran your tests and it had the
+intended effect (e.g. figure out how to find logs corresponding to your testing which
+prove what you're testing)
 3. Once you are fully complete, I give brief initial sign off on your work. Most likely, I have not yet looked at your code. Then you submit draft diffs/PRs for your work.
 4. You monitor CI for feedback (e.g. CI test/lint failures, AI reviewers). You
    independently and automatically respond to these signals, to get the diffs in a
