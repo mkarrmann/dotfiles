@@ -1,0 +1,456 @@
+#!/usr/bin/env python3
+"""
+Find and stop native-Codex app-servers that outlived their Omnigent runner.
+
+Meta's ``codex`` launcher re-execs the real binary into a transient systemd
+scope under ``3pai_sandbox.slice``. That moves the process out of
+``omnigent-host.service``'s cgroup while leaving it in the host's *process*
+tree. systemd kills a unit by cgroup, so restarting omnigent-host kills the
+runner and the ``codex`` shim but not the app-server: it reparents to
+``systemd --user`` and keeps its flock on
+``<CODEX_HOME>/thread-writer-locks/<thread>.lock``. Every later resume of that
+session then fails with ``thread-store conflict: thread <id> already has an
+active writer``, and Omnigent marks the session
+``native_terminal_start_failed``. Meanwhile the orphan keeps running its turn
+with nowhere to send the output.
+
+The process group survives even though the cgroup does not, so a scope is
+always reachable by unit name derived from ``/proc/<pid>/cgroup``. Stopping
+the scope (rather than signalling one pid) takes the whole subtree with it:
+``codex.real``, ``fast_mux``, ``codex-code-mode-host`` and the bridge MCP.
+
+omnigent-host.service calls ``reap`` at ExecStopPost (kill promptly, so an
+orphan cannot keep burning tokens headless) and at ExecStartPre (backstop for
+the stops that never run: SIGKILL, OOM, a crashed manager). Orphan detection
+is exact at both points -- the main process is gone by ExecStopPost and the
+new one has not started by ExecStartPre, and the only thing that can talk to
+an app-server is a runner, which is always a child of the host. That is why
+the hooks use the default orphan-only reap instead of ``--all``: it needs no
+special casing at the boundary and still refuses to kill a session launched
+outside the host.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+from collections.abc import Iterator
+from dataclasses import dataclass
+from pathlib import Path
+
+# Test seams; production leaves all three unset.
+_PROC = Path(os.environ.get("OMNIGENT_CODEX_ORPHANS_PROC") or "/proc")
+_CODEX_NATIVE_DIR = Path(
+    os.environ.get("OMNIGENT_CODEX_NATIVE_DIR")
+    or Path.home() / ".omnigent" / "codex-native"
+)
+_SYSTEMCTL = os.environ.get("OMNIGENT_CODEX_ORPHANS_SYSTEMCTL") or "systemctl"
+
+# Signals go to the real kernel, so they are only ever safe when the pids came
+# from the real /proc. A test pointing the scanner at a synthetic tree must not
+# be able to SIGKILL whatever happens to own that pid number on this machine.
+_REAL_PROC = _PROC == Path("/proc")
+
+_HOST_UNIT = "omnigent-host.service"
+_BRIDGE_HASH_RE = re.compile(r"codex-native/([0-9a-f]{32})")
+_DEFAULT_KILL_TIMEOUT_S = 10.0
+_CLOCK_TICKS = os.sysconf("SC_CLK_TCK")
+
+
+@dataclass(frozen=True)
+class Process:
+    """One ``/proc`` entry that belongs to a native-Codex session."""
+
+    pid: int
+    ppid: int
+    # Leaf of the cgroup v2 path, e.g. "run-p502842-i545594303.scope" for a
+    # sandboxed app-server or "omnigent-host.service" for anything still
+    # inside the host unit.
+    cgroup_leaf: str
+    argv: tuple[str, ...]
+    started: float
+
+    @property
+    def is_app_server(self) -> bool:
+        return "app-server" in self.argv
+
+    @property
+    def bridge_hashes(self) -> frozenset[str]:
+        return frozenset(_BRIDGE_HASH_RE.findall(" ".join(self.argv)))
+
+
+@dataclass(frozen=True)
+class Scope:
+    """A transient systemd scope holding one session's Codex subtree."""
+
+    unit: str
+    processes: tuple[Process, ...]
+    session_ids: tuple[str, ...]
+    bridge_dirs: tuple[Path, ...]
+    orphaned: bool
+    locks: tuple[str, ...]
+    last_write: float | None
+
+    @property
+    def pids(self) -> tuple[int, ...]:
+        return tuple(p.pid for p in self.processes)
+
+    @property
+    def started(self) -> float:
+        return min(p.started for p in self.processes)
+
+
+def _read_text(path: Path) -> str | None:
+    try:
+        return path.read_text(errors="replace")
+    except OSError:
+        return None
+
+
+def _boot_time() -> float:
+    """Wall-clock epoch of boot, from ``/proc/stat``'s ``btime``."""
+    for line in (_read_text(_PROC / "stat") or "").splitlines():
+        if line.startswith("btime "):
+            return float(line.split()[1])
+    return 0.0
+
+
+def _start_time(pid: int, boot_time: float) -> float | None:
+    """
+    Process start as a wall-clock epoch.
+
+    ``/proc/<pid>``'s own ctime looks like the answer but is not: the kernel
+    refreshes it (reparenting bumps it), so an orphan reads as young. Field 22
+    of ``/proc/<pid>/stat`` is the real start, in clock ticks since boot. The
+    comm field can contain spaces and parens, so everything is parsed after
+    the final ``)``.
+    """
+    raw = _read_text(_PROC / str(pid) / "stat")
+    if raw is None or ")" not in raw:
+        return None
+    fields = raw[raw.rindex(")") + 1 :].split()
+    # fields[0] is state (stat field 3), so field 22 lands at index 19.
+    if len(fields) < 20:
+        return None
+    try:
+        return boot_time + int(fields[19]) / _CLOCK_TICKS
+    except ValueError:
+        return None
+
+
+def _iter_pids() -> Iterator[int]:
+    try:
+        entries = sorted(_PROC.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry.name.isdigit():
+            yield int(entry.name)
+
+
+def _read_process(pid: int, boot_time: float) -> Process | None:
+    raw = _read_text(_PROC / str(pid) / "cmdline")
+    if not raw:
+        return None
+    argv = tuple(part for part in raw.split("\0") if part)
+    cgroup = _read_text(_PROC / str(pid) / "cgroup")
+    status = _read_text(_PROC / str(pid) / "status")
+    started = _start_time(pid, boot_time)
+    if cgroup is None or status is None or started is None:
+        return None
+    ppid = 0
+    for line in status.splitlines():
+        if line.startswith("PPid:"):
+            ppid = int(line.split()[1])
+            break
+    # cgroup v2 always writes a single "0::<path>" line.
+    leaf = cgroup.strip().rsplit("/", 1)[-1]
+    return Process(pid=pid, ppid=ppid, cgroup_leaf=leaf, argv=argv, started=started)
+
+
+def _session_id(bridge_dir: Path) -> str | None:
+    raw = _read_text(bridge_dir / "tool_relay.json")
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw).get("session_id")
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _open_paths(pid: int) -> list[Path]:
+    fd_dir = _PROC / str(pid) / "fd"
+    try:
+        entries = list(fd_dir.iterdir())
+    except OSError:
+        return []
+    paths: list[Path] = []
+    for entry in entries:
+        try:
+            paths.append(Path(os.readlink(entry)))
+        except OSError:
+            continue
+    return paths
+
+
+def _held_locks_and_activity(
+    processes: tuple[Process, ...],
+) -> tuple[tuple[str, ...], float | None]:
+    """Thread-writer locks the subtree holds, and its newest rollout write."""
+    locks: set[str] = set()
+    last_write: float | None = None
+    for process in processes:
+        for path in _open_paths(process.pid):
+            if path.parent.name == "thread-writer-locks" and path.suffix == ".lock":
+                locks.add(path.stem)
+            elif path.name.startswith("rollout-") and path.suffix == ".jsonl":
+                try:
+                    mtime = path.stat().st_mtime
+                except OSError:
+                    continue
+                if last_write is None or mtime > last_write:
+                    last_write = mtime
+    return tuple(sorted(locks)), last_write
+
+
+def scan() -> list[Scope]:
+    """Group every sandboxed native-Codex process by its transient scope."""
+    boot_time = _boot_time()
+    processes = {
+        process.pid: process
+        for process in (_read_process(pid, boot_time) for pid in _iter_pids())
+        if process is not None
+    }
+    host_pids = {
+        pid
+        for pid, process in processes.items()
+        if process.cgroup_leaf == _HOST_UNIT
+    }
+    marker = f"{_CODEX_NATIVE_DIR}/"
+
+    by_scope: dict[str, list[Process]] = {}
+    for process in processes.values():
+        if not process.cgroup_leaf.endswith(".scope"):
+            # Still inside omnigent-host.service (or another unit): systemd's
+            # own cgroup kill reaches it, so it is not ours to reap.
+            continue
+        if not any(marker in arg for arg in process.argv):
+            continue
+        by_scope.setdefault(process.cgroup_leaf, []).append(process)
+
+    scopes: list[Scope] = []
+    for unit, members in sorted(by_scope.items()):
+        if not any(member.is_app_server for member in members):
+            # Short-lived probes such as `codex --version` share the marker but
+            # hold no thread lock; only a running app-server can wedge a resume.
+            continue
+        members.sort(key=lambda process: process.pid)
+        hashes = sorted({h for member in members for h in member.bridge_hashes})
+        bridge_dirs = tuple(_CODEX_NATIVE_DIR / h for h in hashes)
+        session_ids = tuple(
+            session_id
+            for session_id in (_session_id(bridge) for bridge in bridge_dirs)
+            if session_id is not None
+        )
+        locks, last_write = _held_locks_and_activity(tuple(members))
+        scopes.append(
+            Scope(
+                unit=unit,
+                processes=tuple(members),
+                session_ids=session_ids,
+                bridge_dirs=bridge_dirs,
+                orphaned=not _has_live_owner(members, processes, host_pids),
+                locks=locks,
+                last_write=last_write,
+            )
+        )
+    scopes.sort(key=lambda scope: scope.started)
+    return scopes
+
+
+def _has_live_owner(
+    members: list[Process],
+    processes: dict[int, Process],
+    host_pids: set[int],
+) -> bool:
+    """True when some member still has a running omnigent-host ancestor."""
+    for member in members:
+        pid = member.ppid
+        seen: set[int] = set()
+        while pid > 1 and pid not in seen:
+            if pid in host_pids:
+                return True
+            seen.add(pid)
+            parent = processes.get(pid)
+            if parent is None:
+                break
+            pid = parent.ppid
+    return False
+
+
+def _alive(pid: int) -> bool:
+    return (_PROC / str(pid)).exists()
+
+
+def _stop_scope(scope: Scope, *, timeout: float) -> bool:
+    """Stop one scope, escalating to SIGKILL. True when nothing survives."""
+    result = subprocess.run(
+        [_SYSTEMCTL, "--user", "stop", scope.unit],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        print(f"  systemctl stop {scope.unit} failed: {detail}", file=sys.stderr)
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not any(_alive(pid) for pid in scope.pids):
+            return True
+        time.sleep(0.2)
+
+    # The whole point of this tool is that a cgroup stop can miss these, so
+    # never trust it: signal whatever is left by pid.
+    survivors = [pid for pid in scope.pids if _alive(pid)]
+    if not survivors:
+        # Died between the last poll and the deadline.
+        return True
+    if not _REAL_PROC:
+        print(
+            f"  {scope.unit}: refusing to signal {survivors} "
+            f"(scanning {_PROC}, not /proc)",
+            file=sys.stderr,
+        )
+        return False
+    for pid in survivors:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            continue
+    time.sleep(0.5)
+    remaining = [pid for pid in survivors if _alive(pid)]
+    if remaining:
+        print(f"  {scope.unit}: still alive after SIGKILL: {remaining}", file=sys.stderr)
+        return False
+    print(f"  {scope.unit}: SIGKILLed {survivors} after stop timeout")
+    return True
+
+
+def _age(timestamp: float) -> str:
+    seconds = max(0, int(time.time() - timestamp))
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{seconds:02d}s"
+    return f"{seconds}s"
+
+
+def _describe(scope: Scope) -> str:
+    sessions = ",".join(scope.session_ids) or "unknown-session"
+    state = "ORPHAN" if scope.orphaned else "owned"
+    parts = [
+        f"{state:6} {scope.unit}",
+        f"session={sessions}",
+        f"pids={','.join(str(pid) for pid in scope.pids)}",
+        f"age={_age(scope.started)}",
+    ]
+    if scope.locks:
+        parts.append(f"locks={','.join(scope.locks)}")
+    if scope.last_write is not None:
+        parts.append(f"last_write={_age(scope.last_write)}-ago")
+    return "  ".join(parts)
+
+
+def _as_dict(scope: Scope) -> dict[str, object]:
+    return {
+        "unit": scope.unit,
+        "orphaned": scope.orphaned,
+        "session_ids": list(scope.session_ids),
+        "bridge_dirs": [str(path) for path in scope.bridge_dirs],
+        "pids": list(scope.pids),
+        "started": scope.started,
+        "locks": list(scope.locks),
+        "last_write": scope.last_write,
+    }
+
+
+def _select(scopes: list[Scope], *, all_scopes: bool, session: str | None) -> list[Scope]:
+    selected = scopes if all_scopes else [scope for scope in scopes if scope.orphaned]
+    if session is not None:
+        selected = [scope for scope in selected if session in scope.session_ids]
+    return selected
+
+
+def _cmd_list(args: argparse.Namespace) -> int:
+    scopes = scan()
+    if args.json:
+        print(json.dumps([_as_dict(scope) for scope in scopes], indent=2))
+        return 0
+    if not scopes:
+        print("no native-Codex scopes found")
+        return 0
+    for scope in scopes:
+        print(_describe(scope))
+    orphans = sum(1 for scope in scopes if scope.orphaned)
+    print(f"{len(scopes)} scope(s), {orphans} orphaned")
+    return 0
+
+
+def _cmd_reap(args: argparse.Namespace) -> int:
+    selected = _select(scan(), all_scopes=args.all, session=args.session)
+    if not selected:
+        print("no native-Codex scopes to reap")
+        return 0
+    failures = 0
+    for scope in selected:
+        print(f"reaping {_describe(scope)}")
+        if args.dry_run:
+            continue
+        if not _stop_scope(scope, timeout=args.timeout):
+            failures += 1
+    return 1 if failures else 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="omnigent-codex-orphans",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    lister = sub.add_parser("list", help="Show every sandboxed native-Codex scope.")
+    lister.add_argument("--json", action="store_true", help="Emit JSON.")
+    lister.set_defaults(func=_cmd_list)
+
+    reaper = sub.add_parser("reap", help="Stop orphaned native-Codex scopes.")
+    reaper.add_argument(
+        "--all",
+        action="store_true",
+        help="Also stop scopes a running omnigent-host still owns.",
+    )
+    reaper.add_argument("--session", help="Limit to one Omnigent session id.")
+    reaper.add_argument("--dry-run", action="store_true", help="Report only.")
+    reaper.add_argument(
+        "--timeout",
+        type=float,
+        default=_DEFAULT_KILL_TIMEOUT_S,
+        help="Seconds to wait after `systemctl stop` before SIGKILL.",
+    )
+    reaper.set_defaults(func=_cmd_reap)
+
+    args = parser.parse_args(argv)
+    return int(args.func(args))
+
+
+if __name__ == "__main__":
+    sys.exit(main())
