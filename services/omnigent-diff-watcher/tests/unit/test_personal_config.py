@@ -255,6 +255,23 @@ def test_capture_accumulates_every_diff_a_single_submit_prints() -> None:
     assert _captured_diffs(result) == "D115903821,D115903820,D115903819"
 
 
+def test_capture_accepts_current_jf_submit_result_lines() -> None:
+    evaluate = _diff_capture()
+    result = evaluate(
+        _capture_event(
+            "\n".join(
+                (
+                    "      - created: https://www.internalfb.com/diff/D116563979 "
+                    "with draft version 416630625",
+                    "      - updated: https://www.internalfb.com/diff/D116338876",
+                    "      - skipped: https://www.internalfb.com/diff/D115903819",
+                )
+            )
+        )
+    )
+    assert _captured_diffs(result) == "D116563979,D116338876,D115903819"
+
+
 def test_capture_appends_to_an_existing_stack_without_duplicating() -> None:
     evaluate = _diff_capture()
     result = evaluate(

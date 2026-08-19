@@ -81,7 +81,9 @@ ordered set (`D12345,D12346`), appended to as the session creates diffs, so one
 subscribe covers a whole stack; subscriptions are keyed `(session, diff)`.
 Subscribe requires an ASK approval policy. Status and unsubscribe do not.
 
-The capture pattern requires the full Phabricator URL. It is applied to every
+The capture pattern requires a real Phabricator URL following either the
+`Differential Revision:` commit-message prefix or a current `jf submit`
+`created:` / `updated:` / `skipped:` result prefix. It is applied to every
 tool's output, so a bare `D\d+` latched onto example diff numbers in docs and
 skill output and — under the original first-match-wins rule — bound sessions to
 placeholder diffs permanently.

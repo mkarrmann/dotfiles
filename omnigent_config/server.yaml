@@ -34,8 +34,9 @@ policies:
           # Phabricator diffs created by any tool -> omnigent.diff.number.
           # The full URL is required on purpose: this pattern is applied to every
           # tool's output, and a bare `D\d+` latches onto example diff numbers in
-          # docs and skill output. Only a real submit/commit emits the URL form.
-          omnigent.diff.number: 'Differential Revision:\s*https?://\S*?/(D[1-9][0-9]*)\b'
+          # docs and skill output. Accept both the commit-message form and the
+          # created/updated/skipped result lines emitted by current jf submit.
+          omnigent.diff.number: '(?:Differential Revision:|(?:created|updated|skipped):)\s*https?://\S*?/(D[1-9][0-9]*)\b'
         # One session routinely owns a whole stack, and a single `jf submit`
         # prints every diff in it, so this label is a comma-separated set.
         accumulate:
