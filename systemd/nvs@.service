@@ -33,6 +33,18 @@ EnvironmentFile=-%h/.config/nvs/%i.env
 ExecStart=%h/bin/nvs --launch %i
 Restart=always
 RestartSec=5
+
+# nvim treats SIGTERM as a deadly signal: it preserves swap files and exits 1.
+# Every deliberate `systemctl stop` / `disable --now` / nvs-restart therefore
+# left the unit in `failed`, so `systemctl --user --failed` accumulated dead
+# sessions and stopped being a place a real failure would stand out.
+#
+# Safe because Restart=always ignores the success/failure distinction entirely
+# -- a crashed server still comes back in RestartSec, and the start rate limit
+# still counts starts. This only changes how a stopped session is *reported*:
+# `inactive (dead)` rather than `failed`.
+SuccessExitStatus=1
+
 StateDirectory=nvim-sessions
 StandardOutput=append:%S/nvim-sessions/%i.log
 StandardError=append:%S/nvim-sessions/%i.log
