@@ -60,7 +60,19 @@ Environment=LITELLM_LOCAL_MODEL_COST_MAP=True
 # The host filters its environment before launching runners. Forward only the
 # non-secret paths/selectors required by Meta's Claude and Codex launchers.
 Environment=OMNIGENT_RUNNER_ENV_PASSTHROUGH=THRIFT_TLS_CL_CERT_PATH,THRIFT_TLS_CL_KEY_PATH,CODEX_MANAGED_CONFIG_PATH,HARNESS_CODEX_PATH,HARNESS_CODEX_DISABLE_NATIVE_TOOLS,HARNESS_TURN_TIMEOUT_S,OMNIGENT_LOG_LEVEL,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS,TIKTOKEN_CACHE_DIR,LITELLM_LOCAL_MODEL_COST_MAP
+# Meta's codex launcher re-execs the real binary into a transient systemd scope
+# under 3pai_sandbox.slice, which leaves this unit's cgroup. systemd kills a
+# unit by cgroup, so a restart kills the runner but strands the Codex
+# app-server: it keeps the flock on its thread and every later resume of that
+# session fails with "thread-store conflict ... already has an active writer".
+# ExecStopPost kills promptly so an orphan cannot keep running its turn
+# headless; ExecStartPre is the backstop for the stops that never run (SIGKILL,
+# OOM, a crashed manager). Both are '-' prefixed: reaping must never be able to
+# block the host from starting or stopping. The stop hook takes the shorter
+# grace period because ExecStartPre will catch anything it leaves behind.
+ExecStartPre=-%h/dotfiles/bin/omnigent-codex-orphans reap
 ExecStart=%h/bin/omnigent-host-run
+ExecStopPost=-%h/dotfiles/bin/omnigent-codex-orphans reap --timeout 5
 Restart=always
 RestartSec=5
 StateDirectory=omnigent-host
