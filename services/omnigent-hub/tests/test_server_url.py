@@ -2,13 +2,36 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 SCRIPT = Path(__file__).parents[3] / "bin/omnigent-server-url"
 
+# fbcode's /usr/local/bin/python3 prints this at every startup. read_cache
+# shells out to `python3`, so this is the exact noise that once became the hub
+# FQDN for every Linux client.
+JEMALLOC_NOISE = "<jemalloc>: Invalid conf pair: experimental_infallible_new:true"
 
-def run_script(tmp_path: Path, *args: str, host: str) -> subprocess.CompletedProcess[str]:
+
+def _install_noisy_python(tmp_path: Path, *, stream: str) -> Path:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    shim = bin_dir / "python3"
+    redirect = " 1>&2" if stream == "stderr" else ""
+    shim.write_text(
+        f"#!/bin/sh\necho '{JEMALLOC_NOISE}'{redirect}\n"
+        f'exec {shlex.quote(sys.executable)} "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    return bin_dir
+
+
+def run_script(
+    tmp_path: Path, *args: str, host: str, noise: str | None = None
+) -> subprocess.CompletedProcess[str]:
     topology = tmp_path / "topology.env"
     topology.write_text(
         "OMNIGENT_PRIMARY_FQDN=primary.example.com\n"
@@ -37,6 +60,9 @@ def run_script(tmp_path: Path, *args: str, host: str) -> subprocess.CompletedPro
             "OMNIGENT_LOCAL_FQDN": host,
         }
     )
+    if noise is not None:
+        bin_dir = _install_noisy_python(tmp_path, stream=noise)
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
     return subprocess.run([str(SCRIPT), *args], env=env, text=True, capture_output=True)
 
 
@@ -62,6 +88,43 @@ def test_static_candidates_do_not_require_cache(tmp_path: Path) -> None:
     result = run_script(tmp_path, "--candidates", host="peer.facebook.com")
     assert result.returncode == 0
     assert result.stdout.splitlines() == ["primary.example.com", "standby.example.com"]
+
+
+def test_stderr_noise_does_not_leak_into_the_hub_name(tmp_path: Path) -> None:
+    # Regression: read_cache used to be captured with `2>&1`, and the `read`
+    # that parses it consumes only the first line. A single line of interpreter
+    # noise on stderr therefore replaced the hub FQDN, and omnigent-client-proxy
+    # spent weeks dialling a host named after a jemalloc warning.
+    for flag, expected in (
+        ("--hub", "standby.example.com"),
+        ("--epoch", "3"),
+        ("--activation-id", "activation-3"),
+    ):
+        result = run_script(tmp_path, flag, host="peer.facebook.com", noise="stderr")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == expected
+        assert JEMALLOC_NOISE not in result.stdout
+
+
+def test_stderr_noise_does_not_break_is_hub(tmp_path: Path) -> None:
+    # omnigent-agents-ensure, omnigent-dvsc-ensure, omnigent-google-chat-ensure
+    # and omnigent-retire-legacy-standby all branch on this exit status, and the
+    # last of them stops a running server when it reads false. Pin both answers.
+    on_hub = run_script(tmp_path, "--is-hub", host="standby.example.com", noise="stderr")
+    assert on_hub.returncode == 0, on_hub.stderr
+    off_hub = run_script(tmp_path, "--is-hub", host="primary.example.com", noise="stderr")
+    assert off_hub.returncode == 1
+
+
+def test_stdout_noise_fails_closed(tmp_path: Path) -> None:
+    # Separating the streams cannot catch noise written to stdout, so the hub
+    # name is validated against the configured candidates as well. Failing
+    # closed is deliberate: the client proxy restarts forever and recovers,
+    # while a proxy pointed at a bogus host never does.
+    result = run_script(tmp_path, "--hub", host="peer.facebook.com", noise="stdout")
+    assert result.returncode == 1
+    assert "unexpected hub" in result.stderr
+    assert JEMALLOC_NOISE not in result.stdout
 
 
 def _fence_cache(tmp_path: Path) -> None:

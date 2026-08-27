@@ -101,11 +101,31 @@ if [[ "$(uname -s)" == "Darwin" && -z "${1:-}" ]]; then
   exit 0
 fi
 
-if ! cache_value="$(read_cache 2>&1)"; then
-  echo "ERROR: $cache_value" >&2
+# Payload and diagnostics must stay on separate streams. `2>&1` merged them,
+# and `read` below consumes only the first line, so any interpreter noise on
+# stderr became the hub name. fbcode's python3 started emitting `<jemalloc>:
+# Invalid conf pair: ...` at every startup and silently turned that warning
+# into the hub FQDN for every Linux client.
+cache_err="$(mktemp "${TMPDIR:-/tmp}/omnigent-server-url.XXXXXX")"
+trap 'rm -f "$cache_err"' EXIT
+if ! cache_value="$(read_cache 2>"$cache_err")"; then
+  echo "ERROR: $(cat "$cache_err")" >&2
   exit 1
 fi
 IFS=$'\t' read -r active_hub epoch activation_id <<< "$cache_value"
+
+# read_cache already rejects a hub that is not a configured candidate, so this
+# only fires when the payload is corrupted after it -- noise on stdout, which
+# stream separation cannot catch. Fail closed: a client with no route retries
+# (omnigent-client-proxy.service sets Restart=always and no start limit),
+# whereas a client pointed at a bogus host never recovers on its own.
+case "$active_hub" in
+  "$primary" | "$standby") ;;
+  *)
+    echo "ERROR: routing cache resolved unexpected hub '$active_hub'" >&2
+    exit 1
+    ;;
+esac
 
 case "${1:-}" in
   --hub)
