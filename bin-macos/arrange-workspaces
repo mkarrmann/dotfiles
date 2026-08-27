@@ -63,6 +63,15 @@ aerospace() {
 #     '%{window-id} %{app-name} | parent=%{window-parent-container-layout} | root=%{workspace-root-container-layout}'
 
 SIDEBAR_TITLE_PATTERN="Orchest \\["
+# Windows that must never take part in a layout, matched by title because
+# AeroSpace's own classification of them is not stable. Omnigent's update
+# overlay (desktop 0.10.0, web/electron/src/update_overlay.js) is a 344x1
+# transparent child window created resizable:false: AeroSpace usually floats it,
+# but `layout tiling` sometimes succeeds and then the accordion holds an
+# invisible pane the user has to cycle past. Leaving them in place is not an
+# option either — an overlay does NOT follow its parent across workspaces, so
+# they pile up on whichever workspace was focused when they were created.
+NON_LAYOUT_TITLE_PATTERN="^Omnigent Update$"
 SIDEBAR_PERCENT=12
 MARKER_DIR="/tmp/aerospace-arrange-markers"
 ARRANGEMENT_LOCK_DIR="${ARRANGEMENT_LOCK_DIR:-/tmp/aerospace-arrangement.lock}"
@@ -233,6 +242,56 @@ sweep_unfocusable() {
   echo "$swept"
 }
 
+# Move NON_LAYOUT_TITLE_PATTERN windows off $ws. Returns 0 if any were moved.
+evict_non_layout_windows() {
+  local ws="$1" windows_json="$2" wid moved=1
+  for wid in $(echo "$windows_json" | jq -r --arg pat "$NON_LAYOUT_TITLE_PATTERN" \
+      '[.[] | select((.["window-title"] // "") | test($pat))] | .[]["window-id"]'); do
+    echo "  [$ws] evicting non-layout window $wid → Z"
+    aerospace move-node-to-workspace --window-id "$wid" Z 2>/dev/null || true
+    moved=0
+  done
+  return "$moved"
+}
+
+# Bring every floating window on $ws into the tiling tree, then echo the ids
+# AeroSpace still refuses to tile.
+#
+# AeroSpace floats what it cannot resize, and `layout tiling` is a silent no-op
+# on such a window — Omnigent's per-window update overlay is created
+# resizable:false, so it never leaves `floating`. Such a window can never
+# satisfy layout_tree_correct, so leaving it in the layout sets burns every
+# retry and strands the workspace half-built; it also defeats
+# `focus --boundaries-action stop` (see discover_spatial_order). The caller
+# drops what this reports rather than fighting it.
+untileable_ids() {
+  local ws="$1" windows_json="$2"
+  local wid ids parents attempted=false
+
+  ids=$(echo "$windows_json" | jq -r '.[]["window-id"]')
+  aerospace workspace "$ws" 2>/dev/null || true
+
+  parents=$(aerospace list-windows --workspace "$ws" \
+    --format '%{window-id}|%{window-parent-container-layout}' 2>/dev/null)
+  for wid in $ids; do
+    [[ "$(awk -F'|' -v w="$wid" '$1==w {print $2; exit}' <<< "$parents")" == "floating" ]] || continue
+    echo "    unfloating window $wid" >&2
+    aerospace focus --window-id "$wid" 2>/dev/null || true
+    aerospace layout tiling 2>/dev/null || true
+    attempted=true
+  done
+  $attempted || return 0
+
+  parents=$(aerospace list-windows --workspace "$ws" \
+    --format '%{window-id}|%{window-parent-container-layout}' 2>/dev/null)
+  for wid in $ids; do
+    if [[ "$(awk -F'|' -v w="$wid" '$1==w {print $2; exit}' <<< "$parents")" == "floating" ]]; then
+      echo "$wid"
+    fi
+  done
+  return 0
+}
+
 # Check whether $ws is already in the desired tree shape. Returns 0 if
 # correct, 1 otherwise.
 #
@@ -289,7 +348,7 @@ layout_order_correct() {
 
   aerospace workspace "$ws" 2>/dev/null || true
   focus_verified "$first_sidebar" || return 1
-  discover_spatial_order
+  discover_spatial_order "$ws"
 
   local seen_accordion=false wid
   for wid in "${_spatial[@]}"; do
@@ -309,31 +368,47 @@ layout_already_correct() {
     layout_order_correct "$ws" "$sidebar_ids" "$accordion_ids"
 }
 
-# Walk left-to-right from the currently focused window to discover
-# the full spatial order. Results stored in global _spatial array.
+# Walk left-to-right from the currently focused window to discover the full
+# spatial order of workspace $1. Results stored in global _spatial array.
 #
-# Two terminator conditions, both needed:
+# Three terminator conditions, all needed:
 #   1. n == p — focus held at boundary (works when --boundaries-action stop
 #      engages cleanly).
-#   2. n already seen — focus cycled back. AeroSpace's `stop` action does
-#      not always engage if a phantom/unfocusable window survived the
-#      sweep_unfocusable pass. Cycle detection is the final backstop.
+#   2. focus left the workspace. AeroSpace's `stop` action does not always
+#      engage when an untileable floating window survived the unfloat pass:
+#      focus wraps onto a NEIGHBOURING workspace, and every join-with/move the
+#      caller issues afterwards then mutates that workspace's tree instead of
+#      this one. Observed with Omnigent's update overlay, which flattened
+#      already-correct neighbours on each failed attempt. Step back onto the
+#      last in-workspace window and stop.
+#   3. n already seen — focus cycled back. Final backstop.
 discover_spatial_order() {
+  local ws="$1"
   _spatial=()
-  local p n seen
+  local p n n_ws seen w
   # Walk to leftmost
   while true; do
     p=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
     aerospace focus --boundaries-action stop left 2>/dev/null
-    n=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+    IFS='|' read -r n n_ws <<< "$(aerospace list-windows --focused \
+      --format '%{window-id}|%{workspace}' 2>/dev/null)"
+    if [[ "$n_ws" != "$ws" ]]; then
+      aerospace focus --window-id "$p" 2>/dev/null
+      break
+    fi
     [[ "$n" == "$p" ]] && break
   done
   _spatial+=("$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)")
-  # Walk right collecting; break on stop OR cycle
+  # Walk right collecting; break on stop, workspace exit, OR cycle
   while true; do
     p=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
     aerospace focus --boundaries-action stop right 2>/dev/null
-    n=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null)
+    IFS='|' read -r n n_ws <<< "$(aerospace list-windows --focused \
+      --format '%{window-id}|%{workspace}' 2>/dev/null)"
+    if [[ "$n_ws" != "$ws" ]]; then
+      aerospace focus --window-id "$p" 2>/dev/null
+      break
+    fi
     [[ "$n" == "$p" ]] && break
     seen=false
     for w in "${_spatial[@]}"; do
@@ -349,6 +424,13 @@ arrange_standard_workspace_once() {
 
   local windows
   windows=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null) || return 0
+
+  # Before anything reads the window set — including the fingerprint, which must
+  # not churn every time an overlay appears or disappears.
+  if evict_non_layout_windows "$ws" "$windows"; then
+    windows=$(aerospace list-windows --workspace "$ws" --json 2>/dev/null) || return 0
+  fi
+
   local total
   total=$(echo "$windows" | jq 'length')
 
@@ -378,6 +460,21 @@ arrange_standard_workspace_once() {
     total=$(echo "$windows" | jq 'length')
     [[ "$total" -lt 2 ]] && return 0
     fingerprint=$(workspace_fingerprint "$windows")
+  fi
+
+  # Drop what AeroSpace will not tile. The fingerprint deliberately keeps
+  # covering these ids: it is compared against the unfiltered window list by the
+  # early-exit check above, so filtering it here would never match again.
+  local untileable skip_json
+  untileable=$(untileable_ids "$ws" "$windows")
+  if [[ -n "$untileable" ]]; then
+    echo "  [$ws] untileable window(s) excluded from layout: $(echo $untileable | tr '\n' ' ')"
+    skip_json=$(printf '%s\n' "$untileable" \
+      | jq -R -s 'split("\n") | map(select(. != "") | tonumber)')
+    windows=$(echo "$windows" | jq --argjson skip "$skip_json" \
+      '[.[] | select(.["window-id"] | IN($skip[]) | not)]')
+    total=$(echo "$windows" | jq 'length')
+    [[ "$total" -lt 2 ]] && return 0
   fi
 
   local sidebar_ids accordion_ids
@@ -430,20 +527,6 @@ arrange_standard_workspace_once() {
 
   aerospace workspace "$ws" 2>/dev/null
 
-  # Unfloat any floating windows so they participate in the tiling tree
-  local all_ids
-  all_ids=$(echo "$windows" | jq -r '.[]["window-id"]')
-  for wid in $all_ids; do
-    local parent_layout
-    parent_layout=$(aerospace list-windows --all --format '%{window-id}|%{window-parent-container-layout}' 2>/dev/null \
-      | grep "^${wid}|" | cut -d'|' -f2)
-    if [[ "$parent_layout" == "floating" ]]; then
-      echo "    unfloating window $wid"
-      aerospace focus --window-id "$wid" 2>/dev/null
-      aerospace layout tiling 2>/dev/null || true
-    fi
-  done
-
   aerospace flatten-workspace-tree 2>/dev/null || true
 
   echo "    after flatten: $(aerospace list-windows --workspace "$ws" --format '%{window-id}:%{window-parent-container-layout}' 2>/dev/null | tr '\n' ' ')"
@@ -452,7 +535,7 @@ arrange_standard_workspace_once() {
   # Set to tiles horizontal immediately so move/join commands behave correctly.
   local first_sidebar
   first_sidebar=$(echo "$sidebar_ids" | head -1)
-  aerospace focus --window-id "$first_sidebar" 2>/dev/null
+  focus_verified "$first_sidebar" || return 1
   # Use h_tiles directly — `layout tiles horizontal` cycles through args
   # rather than setting both, so it leaves a v_accordion root as v_tiles.
   aerospace layout h_tiles 2>/dev/null || true
@@ -470,8 +553,8 @@ arrange_standard_workspace_once() {
   local swap_iter=0
   local swap_overflow=false
   while true; do
-    aerospace focus --window-id "$first_sidebar" 2>/dev/null
-    discover_spatial_order
+    focus_verified "$first_sidebar" || return 1
+    discover_spatial_order "$ws"
     echo "    swap scan: ${_spatial[*]}"
 
     local did_swap=false
@@ -485,7 +568,7 @@ arrange_standard_workspace_once() {
         fi
         swap_iter=$(( swap_iter + 1 ))
         echo "    swapping $cur right (past sidebar $nxt)"
-        aerospace focus --window-id "$cur" 2>/dev/null
+        focus_verified "$cur" || return 1
         aerospace move right 2>/dev/null || true
         did_swap=true
         break
@@ -499,14 +582,18 @@ arrange_standard_workspace_once() {
     return 1
   fi
 
-  # Final spatial discovery after sorting
-  aerospace focus --window-id "$first_sidebar" 2>/dev/null
-  discover_spatial_order
+  # Final spatial discovery after sorting. Membership is positive (in
+  # accordion_ids) rather than "not a sidebar": the walk can surface ids this
+  # pass does not own — an excluded untileable window, or a neighbour picked up
+  # before discover_spatial_order's workspace guard stops it — and moving one of
+  # those would rearrange something we were never asked to touch.
+  focus_verified "$first_sidebar" || return 1
+  discover_spatial_order "$ws"
   echo "    final spatial: ${_spatial[*]}"
 
   local spatial_accordion=()
   for wid in "${_spatial[@]}"; do
-    if ! echo "$sidebar_ids" | grep -qx "$wid"; then
+    if echo "$accordion_ids" | grep -qx "$wid"; then
       spatial_accordion+=("$wid")
     fi
   done
@@ -523,7 +610,7 @@ arrange_standard_workspace_once() {
 
     echo "    join-with: focusing $rightmost, join-with left"
     # Create initial 2-child container from the rightmost pair
-    aerospace focus --window-id "$rightmost" 2>/dev/null
+    focus_verified "$rightmost" || return 1
     aerospace join-with left 2>/dev/null || true
 
     echo "    after join-with: $(aerospace list-windows --workspace "$ws" --format '%{window-id}:%{window-parent-container-layout}' 2>/dev/null | tr '\n' ' ')"
@@ -550,7 +637,7 @@ arrange_standard_workspace_once() {
 
     # Move preceding windows into the accordion (right-to-left)
     for (( i = spatial_count - 3; i >= 0; i-- )); do
-      aerospace focus --window-id "${spatial_accordion[$i]}" 2>/dev/null || continue
+      focus_verified "${spatial_accordion[$i]}" || continue
       aerospace move right 2>/dev/null || true
     done
   elif [[ "$spatial_count" -eq 1 ]]; then
@@ -561,17 +648,29 @@ arrange_standard_workspace_once() {
     # Instead: borrow a window from Z, join it with the accordion window
     # (scaffold lands rightmost, so join-with left pairs them), set to
     # accordion, then return the scaffold. The sidebar never moves.
+    # Evicted overlays live on Z, and one of those is the last thing that can
+    # serve as a scaffold: it may refuse to join and would bail the whole pass.
+    # Titles can contain '|' (diff titles do), so strip the two fixed fields
+    # rather than splitting on the last one.
     local scaffold_wid
     scaffold_wid=$(aerospace list-windows --workspace Z \
-      --format '%{window-id}|%{window-parent-container-layout}' 2>/dev/null \
-      | grep -v '|floating$' | head -1 | cut -d'|' -f1)
+      --format '%{window-id}|%{window-parent-container-layout}|%{window-title}' 2>/dev/null \
+      | awk -F'|' -v skip="$NON_LAYOUT_TITLE_PATTERN" '
+          $2 == "floating" { next }
+          { title = $0; sub(/^[^|]*\|[^|]*\|/, "", title) }
+          title ~ skip { next }
+          { print $1; exit }')
 
     if [[ -n "$scaffold_wid" ]]; then
       echo "    scaffold: borrowing $scaffold_wid from Z"
       aerospace move-node-to-workspace --window-id "$scaffold_wid" "$ws" 2>/dev/null || true
 
       # Scaffold lands rightmost: [..., accordion, scaffold]
-      aerospace focus --window-id "$scaffold_wid" 2>/dev/null
+      if ! focus_verified "$scaffold_wid"; then
+        echo "  [$ws] could not focus scaffold $scaffold_wid; returning it and bailing"
+        aerospace move-node-to-workspace --window-id "$scaffold_wid" Z 2>/dev/null || true
+        return 1
+      fi
       aerospace join-with left 2>/dev/null || true
 
       # Verify the scaffold actually joined. If parent is still h_tiles,
@@ -599,7 +698,7 @@ arrange_standard_workspace_once() {
 
   # Group sidebar windows so root has exactly 2 children → even split
   if [[ "$sidebar_count" -gt 1 ]]; then
-    aerospace focus --window-id "$first_sidebar" 2>/dev/null
+    focus_verified "$first_sidebar" || return 1
     for _ in $(seq 1 $((sidebar_count - 1))); do
       aerospace join-with right 2>/dev/null || true
     done
