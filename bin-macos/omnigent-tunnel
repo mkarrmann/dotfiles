@@ -15,5 +15,10 @@ export OMNIGENT_PORT="${OMNIGENT_PORT:-$("$SERVER_URL_BIN" --port)}"
 export OMNIGENT_PRIMARY_TUNNEL_PORT="${OMNIGENT_PRIMARY_TUNNEL_PORT:-$("$SERVER_URL_BIN" --primary-tunnel-port)}"
 export OMNIGENT_STANDBY_TUNNEL_PORT="${OMNIGENT_STANDBY_TUNNEL_PORT:-$("$SERVER_URL_BIN" --standby-tunnel-port)}"
 
-printf '\033]0;%s\007' "Omnigent: tunnel"
+# Only title a real terminal. Under launchd (the normal case since
+# com.mkarrmann.omnigent-tunnel took ownership of the port) stdout is a log
+# file, and the escape would be written into it as literal bytes.
+if [[ -t 1 ]]; then
+  printf '\033]0;%s\007' "Omnigent: tunnel"
+fi
 exec "$PYTHON" -m omnigent_hub.mac_proxy

@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Authoritative owner of OMNIGENT_PORT (127.0.0.1:6767) on the Mac.
+
+  mac_proxy is what every local Omnigent consumer dials: the CLI and
+  $OMNIGENT_URL directly, and the desktop app indirectly, since the TLS front
+  door on :6443 reverse proxies to it. It picks a live hub from the CCO and FTW
+  ET forwards (see services/omnigent-hub/src/omnigent_hub/mac_proxy.py), so it
+  is the single point through which the Mac reaches the devserver hub at all.
+
+  It used to run in a Ghostty window on AeroSpace workspace T, which meant
+  nothing restarted it. That was the whole bug: `omnigent stop` and
+  `omnigent update` both report it as "an untracked server on :6767" and kill
+  it -- it binds the port a local server would, so from the CLI's side it is
+  indistinguishable from one. On 2026-08-27 that took the Mac off Omnigent
+  three times in one afternoon, each time silently: the app just 502s, because
+  caddy is healthy and its upstream is not.
+
+  KeepAlive is the fix. A kill is now a sub-second gap rather than an outage
+  that lasts until a human notices. It also makes the port single-owner: with
+  no window creating a second copy, there is never a race over who binds.
+
+  Note the failure is NOT visible as a crash loop -- mac_proxy retries the bind
+  internally every 5s rather than exiting -- so a stray second copy shows up as
+  "address already in use" in this job's log, not as launchd respawning.
+
+  Activation is automatic via ~/dotfiles/init.sh (sync.sh syncs the plist).
+
+  Quick verify:
+    launchctl print gui/$UID/com.mkarrmann.omnigent-tunnel | head
+    curl -s --noproxy '*' http://127.0.0.1:6767/health   # expects {"status":"ok"}
+    # and that it self-heals:
+    pkill -f 'omnigent_hub.mac_proxy'; sleep 3; curl -s --noproxy '*' http://127.0.0.1:6767/health
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.mkarrmann.omnigent-tunnel</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/mkarrmann/bin/omnigent-tunnel</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <!-- KeepAlive (not StartInterval) because this is a long-running daemon,
+         like omnigent-tls and unlike the idempotent omnigent-host-ensure. -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <!-- omnigent-tunnel resolves ports via ~/bin/omnigent-server-url, which
+           shells out to `hostname`. launchd does not inherit the interactive
+           shell's PATH, so both directories are named explicitly. -->
+      <key>PATH</key>
+      <string>/Users/mkarrmann/bin:/Users/mkarrmann/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+      <!-- Pinned rather than inherited: omnigent-tunnel derives both the hub
+           venv (DOTFILES_DIR) and the server-url helper from HOME. -->
+      <key>HOME</key>
+      <string>/Users/mkarrmann</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/mkarrmann/.local/state/omnigent-tunnel/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mkarrmann/.local/state/omnigent-tunnel/stderr.log</string>
+  </dict>
+</plist>

@@ -98,7 +98,9 @@ WORKSPACES=(
   "1|omnigent|Omnigent: ws1"
   "T|ghostty|FTW: tunnels|FTW.*tunnels|~|nvs-tunnels devvm36111.ftw0.facebook.com FTW-checkout1:~/checkout1 FTW-checkout2:~/checkout2 FTW-checkout3:~/checkout3"
   "T|ghostty|CCO: tunnels|CCO.*tunnels|~|nvs-tunnels devvm20365.cco0.facebook.com CCO-checkout1:~/checkout1 CCO-checkout2:~/checkout2 CCO-checkout3:~/checkout3 CCO-checkout4:~/checkout4"
-  "T|ghostty|Omnigent: tunnel|Omnigent.*tunnel|~|omnigent-tunnel"
+  # No "Omnigent: tunnel" entry: mac_proxy is owned by the launchd job
+  # com.mkarrmann.omnigent-tunnel so that a kill self-heals in seconds.
+  # retire_omnigent_tunnel_window below closes any window left from before.
   "2|ghostty|CCO: checkout1|CCO.*checkout1\\b|~|nvs CCO-checkout1"
   "2|chrome|Chrome: ws2"
   "2|omnigent|Omnigent: ws2"
@@ -349,30 +351,6 @@ tunnel_command_is_current() {
   echo "$cmds" | grep -F -- "-t " | grep -F -- "$expected" >/dev/null
 }
 
-omnigent_local_proxy_running() {
-  # macOS truncates `ps comm` to the first 16 characters of the executable
-  # path, which is typically just "/Users/mkarrmann" for the venv Python.
-  # Match the structured argv fields instead.
-  ps -axo pid=,args= | awk '
-    $2 ~ /(^|\/)python([0-9.]*)?$/ &&
-    $3 == "-m" &&
-    $4 == "omnigent_hub.mac_proxy" { found = 1 }
-    END { exit(found ? 0 : 1) }
-  '
-}
-
-stop_legacy_omnigent_tunnel() {
-  local pids
-  pids=$(ps -axo pid,command | awk -v port="$OMNIGENT_PORT" '
-    (index($0, "omnigent-tunnel") ||
-     (index($0, "x2ssh -et ") && index($0, "-t " port ":" port)) ||
-     index($0, "omnigent-hub watch-activation")) { print $1 }
-  ') || true
-  # pids is an intentional whitespace-delimited list produced by awk.
-  # shellcheck disable=SC2086
-  [[ -z "$pids" ]] || kill $pids 2>/dev/null || true
-}
-
 stop_tunnel_processes_for_host() {
   local host="$1"
   local pids
@@ -393,16 +371,45 @@ stop_tunnel_processes_for_host() {
   kill $pids 2>/dev/null || true
 }
 
+# mac_proxy is owned by the launchd job com.mkarrmann.omnigent-tunnel. Any copy
+# started some other way -- the retired workspace-T Ghostty window, or a manual
+# `omnigent-tunnel` -- is an active competitor for OMNIGENT_PORT: whichever
+# copy binds first wins and the loser spins on "address already in use"
+# indefinitely, because mac_proxy retries the bind rather than exiting. So the
+# port has to have exactly one owner, and it has to be the supervised one.
+#
+# ppid is the discriminator: launchd reparents its child to 1. Refuse to act
+# when the job is not loaded, so this never leaves the Mac with no proxy at all
+# on a machine where sync.sh has not run yet.
+#
+# omnigent-tunnel exec's into python, so the retired window's own process IS
+# mac_proxy -- killing it closes the Ghostty window with it.
+retire_unsupervised_mac_proxy() {
+  local pids
+  launchctl print "gui/$UID/com.mkarrmann.omnigent-tunnel" >/dev/null 2>&1 || {
+    echo "WARNING: com.mkarrmann.omnigent-tunnel is not loaded; leaving the unsupervised proxy alone (run $HOME/dotfiles/sync.sh)" >&2
+    return 0
+  }
+
+  # Also catches the pre-mac_proxy dedicated ET forward (`x2ssh -et ... -t
+  # 6767:6767`), which binds the same port and would deadlock the job just as
+  # effectively. macOS truncates `ps comm` to 16 characters, which for the venv
+  # interpreter is just "/Users/mkarrmann", so match structured argv fields.
+  pids=$(ps -axo pid=,ppid=,args= | awk -v port="$OMNIGENT_PORT" '
+    $3 ~ /(^|\/)python([0-9.]*)?$/ && $4 == "-m" && $5 == "omnigent_hub.mac_proxy" && $2 != 1 { print $1; next }
+    index($0, "x2ssh -et ") && index($0, "-t " port ":" port) { print $1 }
+  ') || true
+  [[ -n "$pids" ]] || return 0
+
+  echo "retiring unsupervised mac_proxy (launchd owns :${OMNIGENT_PORT} now): $(echo "$pids" | tr '\n' ' ')"
+  # pids is an intentional whitespace-delimited list produced by awk.
+  # shellcheck disable=SC2086
+  kill $pids 2>/dev/null || true
+}
+
 close_stale_tunnel_window_if_needed() {
   local wid="$1" title="$2" cmd="$3"
   local _nvs host _rest
-
-  if [[ "$cmd" == "omnigent-tunnel" ]] && ! omnigent_local_proxy_running; then
-    echo "[$title] replacing dedicated ET tunnel with local failover proxy..."
-    close_window_id "$wid" "legacy Omnigent tunnel"
-    stop_legacy_omnigent_tunnel
-    return 0
-  fi
 
   [[ "$cmd" == nvs-tunnels\ * ]] || return 1
   read -r _nvs host _rest <<< "$cmd"
@@ -775,9 +782,12 @@ SNAPSHOT=$(snapshot_windows)
 failures=0
 
 # The local Omnigent proxy exposes the hub on Mac loopback. The CCO and FTW
-# nvs-tunnels supply its candidate-specific upstream forwards.
+# nvs-tunnels supply its candidate-specific upstream forwards. Retire any
+# unsupervised copy first, so the probe below reports on the launchd-owned one
+# rather than on whichever copy happened to win the port.
+retire_unsupervised_mac_proxy
 if ! curl -sf "http://127.0.0.1:${OMNIGENT_PORT}/health" >/dev/null 2>&1; then
-  echo "Omnigent proxy is not healthy yet at http://127.0.0.1:${OMNIGENT_PORT}; startup will repair its candidate forwards" >&2
+  echo "Omnigent proxy is not healthy at http://127.0.0.1:${OMNIGENT_PORT} (check: launchctl print gui/\$UID/com.mkarrmann.omnigent-tunnel, and ~/.local/state/omnigent-tunnel/stderr.log); the nvs-tunnels windows below supply its upstream forwards" >&2
 fi
 
 # The desktop app connects through the TLS front door, not OMNIGENT_PORT, so it
