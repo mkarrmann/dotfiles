@@ -28,9 +28,20 @@ not a pin**:
    ```bash
    cd ~/dotfiles && git pull && ./init.sh
    systemctl --user daemon-reload
-   systemctl --user restart omnigent-host        # + omnigent-server on the hub
    ```
-   macOS: `launchctl kickstart -k gui/$UID/com.mkarrmann.omnigent-host`
+   **The host daemon restart is automatic.** `omnigent-version-ensure` does it
+   whenever it actually writes the package — `try-restart` on Linux, stop plus
+   `launchctl kickstart -k` on macOS — and does nothing on a converge that
+   installs nothing. It has to: a daemon keeps running the code it started
+   with, and its runners fork from a zygote holding old modules in memory, so
+   after an in-place upgrade a fork mixes those with the new code on disk and
+   dies. That is not a broken install and does not read like one — see the
+   2026-08-27 entry under "Known upstream bugs".
+
+   **`omnigent-server` on the hub is still manual**, deliberately: a release
+   can migrate `chat.db`, so step 2's backup must happen first.
+   `omnigent-version-ensure` prints the exact commands when it sees a running
+   server on pre-upgrade code.
 4. Verify (from `/` — `python -c` puts cwd on `sys.path`, so running this inside
    an omnigent checkout tests the wrong copy):
    ```bash
@@ -77,6 +88,32 @@ These are things upstream has broken or could break, none of which fail loudly:
   silently loses both.
 - **Provider block** — `providers.vertex-claude` in `config.shared.yaml` must
   still parse (`kind: subscription`).
+
+## Stale daemons after an in-place upgrade (2026-08-27)
+
+One upgrade produced three separate outages, none of which looked like an
+upgrade problem. `uv tool install --force` replaces the package tree under
+every already-running process; the daemons keep their imported modules, and
+runners fork from a zygote inside them. A fork then mixes old in-memory modules
+with new on-disk ones:
+
+- Mac, daemon 3 days old — `ValueError: runner fork request requires a cwd`
+- FTW, daemon 8 days old — `ImportError: cannot import name
+  'RUNNER_SLICE_KEY_ENV_VAR' from 'omnigent.runner.identity'`
+
+Both read as a corrupt install. Neither was: the symbol was present on disk and
+every file came from the same install. The tell is a traceback whose frames
+point at docstrings and comments — old compiled line numbers rendered against
+new source.
+
+CCO escaped only because its daemon happened to restart 13 minutes after the
+upgrade. Now handled automatically by `omnigent-version-ensure`; the note here
+is for reading old logs and for recognising the shape if it appears elsewhere.
+
+Related trap, fixed the same day: `omnigent stop` terms the host's tmux pane
+but the session outlives it, and `tmux has-session` still succeeds — so
+`omnigent-host-ensure` saw a session, declined to start one, and left the host
+offline permanently. It now requires a pane that is not dead.
 
 ## Known upstream bugs (unfixed as of 0.9.0)
 

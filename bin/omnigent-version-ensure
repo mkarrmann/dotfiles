@@ -40,6 +40,64 @@ version_at_least() {
   [[ "$(printf '%s\n%s\n' "$floor" "$have" | sort -V | head -n1)" == "$floor" ]]
 }
 
+# A host daemon keeps running the code it started with, and runners fork from a
+# zygote inside it -- so once the package is replaced underneath it, a fork
+# mixes old in-memory modules with new on-disk ones and dies before it can log
+# anything useful. One upgrade on 2026-08-27 produced three separate outages
+# this way: "ValueError: runner fork request requires a cwd" on the Mac, and
+# "ImportError: cannot import name 'RUNNER_SLICE_KEY_ENV_VAR'" on FTW, whose
+# daemon was 8 days old. Both read as a broken install and neither was one.
+#
+# docs/omnigent-upgrades.md always said to restart the host afterwards; nothing
+# enforced it, and the machine that skipped it looked fine until the next
+# session refused to start. Only ever called on the install path below.
+restart_host_daemon() {
+  case "$(uname -s)" in
+    Linux)
+      command -v systemctl >/dev/null 2>&1 || return 0
+      # try-restart, matching init.sh: reload a daemon that is running, stay a
+      # no-op on a machine that does not run one.
+      if systemctl --user try-restart omnigent-host.service 2>/dev/null; then
+        echo "[omnigent-version] restarted omnigent-host.service onto the new code"
+      else
+        echo "WARNING: could not restart omnigent-host.service; it is still running pre-upgrade code" >&2
+      fi
+      ;;
+    Darwin)
+      launchctl print "gui/$UID/com.mkarrmann.omnigent-host" >/dev/null 2>&1 || return 0
+      # kickstart alone is not enough: it re-runs omnigent-host-ensure, which
+      # finds the daemon online and exits without replacing it. Stop the daemon
+      # first so the ensure script rebuilds it -- it treats the dead tmux pane
+      # left behind here as absent and recreates the session.
+      "$HOME/.local/bin/omnigent" host stop --daemon-only --force >/dev/null 2>&1 || true
+      if launchctl kickstart -k "gui/$UID/com.mkarrmann.omnigent-host" >/dev/null 2>&1; then
+        echo "[omnigent-version] restarted com.mkarrmann.omnigent-host onto the new code"
+      else
+        echo "WARNING: could not kickstart com.mkarrmann.omnigent-host; it is still running pre-upgrade code" >&2
+      fi
+      ;;
+  esac
+}
+
+# The hub server is deliberately NOT restarted here. A release can migrate
+# chat.db, and docs/omnigent-upgrades.md requires backing it up first, so
+# bouncing it unattended would skip a step that exists to protect the database
+# the whole fleet shares. Say so instead of doing it.
+warn_if_hub_server_stale() {
+  local version="$1"
+  [[ "$(uname -s)" == Linux ]] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl --user is-active --quiet omnigent-server.service 2>/dev/null || return 0
+  cat >&2 <<EOF
+WARNING: omnigent-server.service is still running pre-upgrade code and is NOT
+         restarted automatically -- a release can migrate chat.db. Back it up
+         first (docs/omnigent-upgrades.md):
+           systemctl --user stop omnigent-server
+           cp ~/.omnigent/chat.db ~/.omnigent/chat.db.pre-${version}
+           systemctl --user start omnigent-server
+EOF
+}
+
 installed=""
 if [[ -x "$HOME/.local/bin/omnigent" ]]; then
   installed="$("$HOME/.local/bin/omnigent" --version 2>/dev/null | awk 'NR == 1 {print $2}')"
@@ -104,3 +162,9 @@ if ! LITELLM_LOCAL_MODEL_COST_MAP=True "$tool_python" -c "import litellm" >/dev/
   exit 1
 fi
 echo "[omnigent-version] omnigent $actual installed"
+
+# Only reached when the package was actually written. The early "satisfies the
+# floor" exit above returns before this, so a converge that changes nothing
+# never disturbs a running daemon.
+restart_host_daemon
+warn_if_hub_server_stale "$actual"
