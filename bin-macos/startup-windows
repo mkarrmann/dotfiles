@@ -407,6 +407,22 @@ retire_unsupervised_mac_proxy() {
   kill $pids 2>/dev/null || true
 }
 
+# Ghostty outlives the command it was given, so killing the proxy above leaves
+# an idle "Omnigent: tunnel" window behind. With the workspace-T entry gone it
+# is no longer a managed window, and the stray sweep would only relocate it to
+# Z rather than close it -- so close it here, by title, wherever it ended up.
+close_retired_omnigent_tunnel_windows() {
+  local snapshot wid
+  snapshot=$(snapshot_windows)
+  while IFS= read -r wid; do
+    [[ -n "$wid" ]] || continue
+    close_window_id "$wid" "retired Omnigent tunnel" || true
+  done < <(printf '%s' "$snapshot" | jq -r '
+    .[] | select(."app-name" == "Ghostty")
+        | select(."window-title" | test("Omnigent.*tunnel"; "i"))
+        | ."window-id"')
+}
+
 close_stale_tunnel_window_if_needed() {
   local wid="$1" title="$2" cmd="$3"
   local _nvs host _rest
@@ -786,6 +802,7 @@ failures=0
 # unsupervised copy first, so the probe below reports on the launchd-owned one
 # rather than on whichever copy happened to win the port.
 retire_unsupervised_mac_proxy
+close_retired_omnigent_tunnel_windows
 if ! curl -sf "http://127.0.0.1:${OMNIGENT_PORT}/health" >/dev/null 2>&1; then
   echo "Omnigent proxy is not healthy at http://127.0.0.1:${OMNIGENT_PORT} (check: launchctl print gui/\$UID/com.mkarrmann.omnigent-tunnel, and ~/.local/state/omnigent-tunnel/stderr.log); the nvs-tunnels windows below supply its upstream forwards" >&2
 fi
