@@ -759,6 +759,16 @@ if ! curl -sf "https://localhost:${OMNIGENT_TLS_PORT}/health" >/dev/null 2>&1; t
   echo "Omnigent TLS front door is not healthy at https://localhost:${OMNIGENT_TLS_PORT}; the app will fail to connect (check: launchctl print gui/\$UID/com.mkarrmann.omnigent-tls, and 'caddy trust' for the local CA)" >&2
 fi
 
+# The app updates itself every six hours, so this should never fire. That is
+# the point: the last time it went stale nothing said so for two months. Only
+# exit 1 means "definitely behind" -- an unreachable feed exits 2 and stays
+# quiet, so an offline login does not cry wolf.
+omnigent_app_check_rc=0
+OMNIGENT_APP_CURL_TIMEOUT=5 omnigent-app-ensure --check >/dev/null 2>&1 || omnigent_app_check_rc=$?
+if [[ "$omnigent_app_check_rc" == 1 ]]; then
+  echo "Omnigent desktop app is out of date and its own updater has not taken it; run 'omnigent-app-ensure --install'" >&2
+fi
+
 # Reserve the ws-11 dashboard Chrome windows before generic Chrome distribution.
 reserve_ws11_chrome
 

@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+# Report or repair the version of the Omnigent desktop app in /Applications.
+#
+# The app normally updates itself: since "Automatic Desktop Updates" (#2275,
+# 2026-07-15) it runs electron-updater against the generic feed below, checking
+# at launch and every six hours. This script exists for the two cases that
+# updater cannot cover:
+#
+#   1. Bootstrap. A Mac with no app, or -- as happened here -- an app downloaded
+#      BEFORE #2275 landed, whose bundle contains no updater code at all and so
+#      can never notice it is stale. That copy sat at 0.1.0 for two months while
+#      0.10.0 shipped, and nothing anywhere said so.
+#   2. Alarm. If the updater ever breaks again, the failure mode is silence.
+#      `--check` gives startup-windows something to fail loudly on.
+#
+# Deliberately NOT wired to auto-install: replacing a running app underneath
+# live windows at login is hostile, and the in-app updater already asks first.
+set -euo pipefail
+
+FEED_BASE="${OMNIGENT_APP_FEED:-https://omnigent.ai/_desktop/updates/}"
+APP="${OMNIGENT_APP_PATH:-/Applications/Omnigent.app}"
+CURL_TIMEOUT="${OMNIGENT_APP_CURL_TIMEOUT:-20}"
+
+usage() {
+  cat >&2 <<'EOF'
+usage: omnigent-app-ensure [--check|--install]
+
+  (no args)  Report installed vs available; warn on stderr when behind.
+  --check    Exit 0 up to date, 1 behind, 2 undetermined. No output.
+  --install  Download, verify, and replace the app. Quits it first.
+EOF
+  exit 2
+}
+
+# `sort -V` ranks 0.9.0.dev0 above 0.9.0; PEP 440 and semver both put it below.
+# `~` is the Debian pre-release marker `sort -V` already orders before anything,
+# so rewriting dev/rc/alpha/beta suffixes to ~dev0 etc. restores the real order.
+# Mirrors bin/omnigent-version-ensure; kept inline because every script in bin/
+# is standalone by convention.
+_version_key() {
+  sed -E 's/[._-]?(dev|alpha|beta|rc|a|b)([0-9]*)$/~\1\2/I' <<<"$1"
+}
+version_at_least() {
+  [[ -n "$1" ]] || return 1
+  local have floor
+  have="$(_version_key "$1")"
+  floor="$(_version_key "$2")"
+  [[ "$(printf '%s\n%s\n' "$floor" "$have" | sort -V | head -n1)" == "$floor" ]]
+}
+
+installed_version() {
+  [[ -d "$APP" ]] || return 1
+  # electron-builder writes package.json's version here, and it is the same
+  # string electron-updater compares against, so read it rather than unpacking
+  # app.asar for a value that must agree by construction.
+  /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+    "$APP/Contents/Info.plist" 2>/dev/null
+}
+
+fetch_feed() {
+  curl -fsSL --noproxy '*' -m "$CURL_TIMEOUT" "${FEED_BASE}latest-mac.yml"
+}
+
+feed_version() {
+  awk '/^version:/ { print $2; exit }' <<<"$1"
+}
+
+# Pair each `- url:` with the `sha512:` that follows it, then pick the dmg for
+# this arch. The trailing top-level sha512 has no pending url and is skipped.
+feed_dmg() {
+  local feed="$1" arch="$2"
+  awk -v want="-${arch}.dmg" '
+    /^[[:space:]]*-[[:space:]]*url:/ { url = $3; next }
+    /^[[:space:]]*sha512:/ && url != "" {
+      if (index(url, want) == length(url) - length(want) + 1) { print url, $2; exit }
+      url = ""
+    }
+  ' <<<"$feed"
+}
+
+app_is_running() {
+  pgrep -x "Omnigent" >/dev/null 2>&1
+}
+
+mode="report"
+case "${1-}" in
+  "") ;;
+  --check) mode="check" ;;
+  --install) mode="install" ;;
+  *) usage ;;
+esac
+[[ $# -le 1 ]] || usage
+
+have="$(installed_version || true)"
+
+if ! feed="$(fetch_feed 2>/dev/null)"; then
+  [[ "$mode" == "check" ]] && exit 2
+  echo "ERROR: cannot reach the Omnigent update feed at $FEED_BASE" >&2
+  exit 2
+fi
+want="$(feed_version "$feed")"
+if [[ -z "$want" ]]; then
+  [[ "$mode" == "check" ]] && exit 2
+  echo "ERROR: update feed did not advertise a version" >&2
+  exit 2
+fi
+
+if [[ -n "$have" ]] && version_at_least "$have" "$want"; then
+  [[ "$mode" == "check" ]] && exit 0
+  echo "[omnigent-app] Omnigent.app $have is current (feed: $want)"
+  exit 0
+fi
+
+if [[ "$mode" == "check" ]]; then
+  exit 1
+fi
+
+if [[ "$mode" == "report" ]]; then
+  echo "[omnigent-app] Omnigent.app ${have:-not installed} is behind the feed's $want" >&2
+  echo "[omnigent-app] run 'omnigent-app-ensure --install' to update" >&2
+  exit 0
+fi
+
+arch="$(uname -m)"
+read -r dmg_name dmg_sha <<<"$(feed_dmg "$feed" "$arch")"
+if [[ -z "${dmg_name:-}" || -z "${dmg_sha:-}" ]]; then
+  echo "ERROR: feed has no ${arch} dmg for $want" >&2
+  exit 1
+fi
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/omnigent-app.XXXXXX")"
+mount=""
+backup=""
+cleanup() {
+  [[ -n "$mount" ]] && hdiutil detach "$mount" -quiet 2>/dev/null || true
+  # Only reached with $backup set if the swap failed partway; put the old app
+  # back rather than leaving the Mac with no Omnigent at all.
+  if [[ -n "$backup" && -d "$backup" && ! -d "$APP" ]]; then
+    echo "[omnigent-app] restoring previous app after a failed install" >&2
+    mv "$backup" "$APP" || true
+  fi
+  rm -rf "$work"
+}
+trap cleanup EXIT
+
+dmg="$work/$dmg_name"
+echo "[omnigent-app] downloading $dmg_name (${have:-none} -> $want)"
+curl -fL --noproxy '*' -m 600 --progress-bar -o "$dmg" "${FEED_BASE}${dmg_name}"
+
+echo "[omnigent-app] verifying sha512"
+actual_sha="$(openssl dgst -sha512 -binary "$dmg" | base64)"
+if [[ "$actual_sha" != "$dmg_sha" ]]; then
+  echo "ERROR: sha512 mismatch for $dmg_name" >&2
+  echo "  expected: $dmg_sha" >&2
+  echo "  actual:   $actual_sha" >&2
+  exit 1
+fi
+
+relaunch=false
+if app_is_running; then
+  relaunch=true
+  echo "[omnigent-app] quitting Omnigent (sessions live on the hub; nothing is lost)"
+  osascript -e 'quit app "Omnigent"' >/dev/null 2>&1 || true
+  for _ in $(seq 1 30); do
+    app_is_running || break
+    sleep 1
+  done
+  if app_is_running; then
+    echo "ERROR: Omnigent did not quit; refusing to replace a running app" >&2
+    exit 1
+  fi
+fi
+
+mount="$work/mnt"
+mkdir -p "$mount"
+hdiutil attach "$dmg" -nobrowse -quiet -mountpoint "$mount"
+[[ -d "$mount/Omnigent.app" ]] || {
+  echo "ERROR: $dmg_name does not contain Omnigent.app" >&2
+  exit 1
+}
+
+if [[ -d "$APP" ]]; then
+  backup="$work/Omnigent.app.previous"
+  mv "$APP" "$backup"
+fi
+cp -R "$mount/Omnigent.app" "$APP"
+backup=""
+
+new="$(installed_version || echo unknown)"
+if ! version_at_least "$new" "$want"; then
+  echo "ERROR: installed $new after replacing, expected >= $want" >&2
+  exit 1
+fi
+# Gatekeeper rejects a broken bundle at launch with a dialog and no log; check
+# here so a bad copy surfaces as a script failure instead.
+if ! codesign --verify --deep --strict "$APP" 2>/dev/null; then
+  echo "WARNING: code signature did not verify on the installed app" >&2
+fi
+echo "[omnigent-app] installed Omnigent.app $new"
+
+if [[ "$relaunch" == true ]]; then
+  echo "[omnigent-app] relaunching"
+  open -a "$APP"
+fi
+echo "[omnigent-app] this build self-updates; re-run only if that ever stops working"
