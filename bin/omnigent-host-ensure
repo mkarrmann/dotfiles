@@ -97,13 +97,29 @@ else
   tmux_bin=""
 fi
 
+# `has-session` succeeds for a session whose pane has exited, and the session
+# outlives the daemon when the pane dies. That combination is unrecoverable
+# without this check: `omnigent stop` terms the pane, this script then sees the
+# surviving session, declines to start anything, and reports "did not report
+# online" on every 60s StartInterval forever. Observed 2026-08-27, when the Mac
+# host stayed offline until the empty session was killed by hand. Require a
+# pane that is actually alive.
+tmux_session_alive() {
+  "$tmux_bin" has-session -t "$session_name" 2>/dev/null || return 1
+  local live
+  live="$("$tmux_bin" list-panes -t "$session_name" -F '#{pane_dead}' 2>/dev/null | grep -cv '^1$' || true)"
+  [[ "${live:-0}" -gt 0 ]]
+}
+
 if [[ -n "$tmux_bin" ]]; then
-  if "$tmux_bin" has-session -t "$session_name" 2>/dev/null && daemon_identity_mismatch; then
+  if tmux_session_alive && daemon_identity_mismatch; then
     echo "[Omnigent] replacing host daemon with mismatched identity"
     "$OMNIGENT_BIN" host stop --server "$OMNIGENT_URL" --daemon-only --force >/dev/null 2>&1 || true
     "$tmux_bin" kill-session -t "$session_name" 2>/dev/null || true
   fi
-  if ! "$tmux_bin" has-session -t "$session_name" 2>/dev/null; then
+  if ! tmux_session_alive; then
+    # Clear a dead-pane session first: new-session fails on a duplicate name.
+    "$tmux_bin" kill-session -t "$session_name" 2>/dev/null || true
     "$tmux_bin" new-session -d -s "$session_name" "exec '$OMNIGENT_BIN' host --server '$OMNIGENT_URL' --non-interactive"
   fi
   launcher="tmux session $session_name"
