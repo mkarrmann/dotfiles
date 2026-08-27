@@ -131,7 +131,20 @@ chrome_restore_settled=false
 
 # Omnigent window titles are conversation names, so they carry no stable
 # workspace identity. Claim windows by ID like Chrome rather than by title.
+#
+# The updater overlay is the one window that must be matched by title. Since
+# desktop 0.10.0 every shell window gets a 344x1 transparent child window titled
+# "Omnigent Update" (electron/src/update_overlay.js), deliberately kept shown
+# even when the card is empty so its ResizeObserver stays alive. Overlays are
+# created one window id after their parent, so ascending-id slot filling handed
+# every second workspace an invisible 1px window instead of a chat window — and
+# a workspace whose Omnigent slot is an overlay cannot be laid out at all.
+#
+# Getting them off the managed workspaces is arrange-workspaces' job
+# (NON_LAYOUT_TITLE_PATTERN); an overlay does not follow its parent across
+# workspaces, so nothing here can keep one next to the window it belongs to.
 OMNIGENT_APP="Omnigent"
+OMNIGENT_INVALID_TITLE_PATTERN="^Omnigent Update$"
 claimed_omnigent_ids=""
 omnigent_restore_settled=false
 
@@ -404,20 +417,33 @@ close_stale_tunnel_window_if_needed() {
   stop_tunnel_processes_for_host "$host"
 }
 
+# window_ids_for_app SNAPSHOT APP EXCLUDE_TITLE_RE -> ascending window ids
+# An empty EXCLUDE_TITLE_RE excludes nothing.
+window_ids_for_app() {
+  local snapshot="$1" app_name="$2" exclude_title_re="$3"
+  echo "$snapshot" | jq -r \
+    --arg app "$app_name" --arg excl "$exclude_title_re" \
+    '[.[] | select(
+       ."app-name" == $app and
+       ($excl == "" or ((.["window-title"] // "") | test($excl) | not))
+     )] | .[]["window-id"]' | sort -n
+}
+
+# wait_for_new_window APP BEFORE_SNAPSHOT [EXCLUDE_TITLE_RE] -> new window id
+#
+# EXCLUDE_TITLE_RE drops windows that belong to APP but can never satisfy a
+# workspace slot, so a helper window created alongside the real one is not
+# mistaken for it (Omnigent's update overlay appears one id after its parent).
 wait_for_new_window() {
-  local app_name="$1" before_snapshot="$2"
+  local app_name="$1" before_snapshot="$2" exclude_title_re="${3:-}"
   local before_ids
-  before_ids=$(echo "$before_snapshot" | jq -r \
-    --arg app "$app_name" \
-    '[.[] | select(."app-name" == $app)] | .[]["window-id"]' | sort -n)
+  before_ids=$(window_ids_for_app "$before_snapshot" "$app_name" "$exclude_title_re")
 
   for _ in $(seq 1 20); do
     sleep 0.5
     local current_snapshot current_ids new_id
     current_snapshot=$(snapshot_windows)
-    current_ids=$(echo "$current_snapshot" | jq -r \
-      --arg app "$app_name" \
-      '[.[] | select(."app-name" == $app)] | .[]["window-id"]' | sort -n)
+    current_ids=$(window_ids_for_app "$current_snapshot" "$app_name" "$exclude_title_re")
     new_id=$(comm -23 <(echo "$current_ids") <(echo "$before_ids") | head -1)
     if [[ -n "$new_id" ]]; then
       echo "$new_id"
@@ -499,8 +525,11 @@ omnigent_window_ids() {
     aerospace list-windows --workspace "$ws" --json 2>/dev/null
   else
     aerospace list-windows --all --json 2>/dev/null
-  fi | jq -r --arg app "$OMNIGENT_APP" \
-    '.[] | select(."app-name" == $app) | .["window-id"]' | sort -n
+  fi | jq -r --arg app "$OMNIGENT_APP" --arg invalid "$OMNIGENT_INVALID_TITLE_PATTERN" \
+    '.[] | select(
+      ."app-name" == $app and
+      ((.["window-title"] // "") | test($invalid) | not)
+    ) | .["window-id"]' | sort -n
 }
 
 find_unclaimed_omnigent_window() {
@@ -924,7 +953,8 @@ for i in "${!WORKSPACES[@]}"; do
         # No focused-window fallback here: Omnigent windows are claimed by ID,
         # so misidentifying one pins the wrong window to this workspace for the
         # rest of the run.
-        if window_id=$(wait_for_new_window "$app_name" "$before_snapshot"); then
+        if window_id=$(wait_for_new_window "$app_name" "$before_snapshot" \
+            "$OMNIGENT_INVALID_TITLE_PATTERN"); then
           aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || true
           claim_omnigent_window "$window_id"
         else
