@@ -8,6 +8,7 @@ import pytest
 
 from omnigent_diff_watcher.domain import (
     DEFAULT_EVENT_TYPES,
+    EventKind,
     SubscriptionState,
 )
 from omnigent_diff_watcher.logic import (
@@ -20,6 +21,8 @@ from omnigent_diff_watcher.repository import (
     WatcherRepository,
 )
 from omnigent_diff_watcher.source_models import (
+    AIReviewFinding,
+    AIReviewSnapshot,
     CIAggregateState,
     CIFailure,
     CISnapshot,
@@ -27,6 +30,8 @@ from omnigent_diff_watcher.source_models import (
     DiffLifecycle,
     DiffSnapshot,
     ReviewComment,
+    SourceErrorCategory,
+    SourceFailure,
 )
 
 FIXTURES = Path(__file__).parents[1] / "fixtures"
@@ -49,11 +54,19 @@ def ci_snapshot(
     return CISnapshot(status="ok", cursor=cursor, aggregate=state, failures=failures)
 
 
+def ai_snapshot(
+    *findings: AIReviewFinding,
+    cursor: str = "ai-next",
+) -> AIReviewSnapshot:
+    return AIReviewSnapshot(status="ok", cursor=cursor, items=findings)
+
+
 def updated(
     base: DiffSnapshot,
     *,
     comments: CommentsSnapshot | None = None,
     ci: CISnapshot | None = None,
+    ai_reviews: AIReviewSnapshot | None = None,
     lifecycle: DiffLifecycle | None = None,
     latest_version_id: str | None = None,
     observed_at: datetime | None = None,
@@ -65,6 +78,8 @@ def updated(
         values["comments"] = comments
     if ci is not None:
         values["ci"] = ci
+    if ai_reviews is not None:
+        values["ai_reviews"] = ai_reviews
     if lifecycle is not None:
         values["lifecycle"] = lifecycle
     if latest_version_id is not None:
@@ -201,7 +216,7 @@ def test_new_comment_and_material_edit_each_qualify_once(tmp_path: Path) -> None
         == 1
     )
     assert repository.open_batch_for(subscription_id).flush_at == original_flush  # type: ignore[union-attr]
-    assert repository.prepare_batch(batch.batch_id, now=1300) == (1, 0)
+    assert repository.prepare_batch(batch.batch_id, now=1300) == {EventKind.REVIEW_COMMENT: 1}
 
 
 def test_resolution_before_flush_drops_empty_batch(tmp_path: Path) -> None:
@@ -294,6 +309,40 @@ def test_current_failure_qualifies_once_and_new_version_invalidates_old(
         next_poll_at=1180,
         batch_window_seconds=300,
     )
+    # The stale failure is gone; what is left is the new version reaching
+    # green, which is worth a wake in its own right.
+    assert repository.prepare_batch(batch.batch_id, now=1400) == {EventKind.CI_GREEN: 1}
+
+
+def test_a_superseded_failure_leaves_nothing_behind(tmp_path: Path) -> None:
+    """Same invalidation, with the new version still running.
+
+    Isolates the stale-failure drop from the green event that would otherwise
+    repopulate the batch.
+    """
+    repository = WatcherRepository(tmp_path / "watcher.db")
+    base = load_snapshot("green.json")
+    subscription_id = subscribe(repository, base)
+    failure = CIFailure(external_id="signal-a", fingerprint="sha256:" + "d" * 64)
+    repository.apply_snapshot(
+        updated(base, ci=ci_snapshot(CIAggregateState.FAILING, failure)),
+        now=1100,
+        next_poll_at=1160,
+        batch_window_seconds=300,
+    )
+    batch = repository.open_batch_for(subscription_id)
+    assert batch is not None
+
+    repository.apply_snapshot(
+        updated(
+            base,
+            latest_version_id="version-green-10",
+            ci=ci_snapshot(CIAggregateState.PENDING),
+        ),
+        now=1120,
+        next_poll_at=1180,
+        batch_window_seconds=300,
+    )
     assert repository.prepare_batch(batch.batch_id, now=1400) is None
 
 
@@ -324,7 +373,10 @@ def test_comment_and_ci_correlate_into_one_batch(tmp_path: Path) -> None:
     )
     batch = repository.open_batch_for(subscription_id)
     assert batch is not None
-    assert repository.prepare_batch(batch.batch_id, now=1400) == (1, 1)
+    assert repository.prepare_batch(batch.batch_id, now=1400) == {
+        EventKind.REVIEW_COMMENT: 1,
+        EventKind.CI_FAILURE: 1,
+    }
     assert "1 unresolved review comment and 1 current-version CI failure" in (
         repository.batch(batch.batch_id).summary or ""  # type: ignore[union-attr]
     )
@@ -398,3 +450,132 @@ def test_newer_schema_is_rejected_and_database_uses_wal(tmp_path: Path) -> None:
         connection.execute("PRAGMA user_version=99")
     with pytest.raises(NewerSchemaError):
         WatcherRepository(path)
+
+
+def test_ci_reaching_green_wakes_once_per_version(tmp_path: Path) -> None:
+    """The point of the event is "it finished", not "it is still finished"."""
+    repository = WatcherRepository(tmp_path / "watcher.db")
+    base = load_snapshot("active.json")
+    subscribe(repository, base)
+
+    green = updated(base, ci=ci_snapshot(CIAggregateState.PASSED))
+    assert (
+        repository.apply_snapshot(green, now=1100, next_poll_at=1160, batch_window_seconds=300) == 1
+    )
+    assert (
+        repository.apply_snapshot(green, now=1110, next_poll_at=1170, batch_window_seconds=300) == 0
+    )
+
+    next_version = updated(
+        base,
+        latest_version_id="version-active-8",
+        ci=ci_snapshot(CIAggregateState.PASSED, cursor="ci-next-2"),
+    )
+    assert (
+        repository.apply_snapshot(
+            next_version, now=1120, next_poll_at=1180, batch_window_seconds=300
+        )
+        == 1
+    )
+
+
+def test_a_still_running_build_is_not_reported_as_green(tmp_path: Path) -> None:
+    repository = WatcherRepository(tmp_path / "watcher.db")
+    base = load_snapshot("active.json")
+    subscription_id = subscribe(repository, base)
+    repository.apply_snapshot(
+        updated(base, ci=ci_snapshot(CIAggregateState.PENDING)),
+        now=1100,
+        next_poll_at=1160,
+        batch_window_seconds=300,
+    )
+    assert repository.open_batch_for(subscription_id) is None
+
+
+def test_an_automated_review_finding_reaches_the_wake(tmp_path: Path) -> None:
+    repository = WatcherRepository(tmp_path / "watcher.db")
+    base = load_snapshot("active.json")
+    subscription_id = subscribe(repository, base)
+    finding = AIReviewFinding(
+        external_id="review:radar",
+        fingerprint="sha256:" + "c" * 64,
+    )
+    assert (
+        repository.apply_snapshot(
+            updated(base, ai_reviews=ai_snapshot(finding)),
+            now=1100,
+            next_poll_at=1160,
+            batch_window_seconds=300,
+        )
+        == 1
+    )
+    batch = repository.open_batch_for(subscription_id)
+    assert batch is not None
+    assert repository.prepare_batch(batch.batch_id, now=1400) == {EventKind.AI_REVIEW: 1}
+    assert "1 unresolved automated-review finding" in (
+        repository.batch(batch.batch_id).summary or ""  # type: ignore[union-attr]
+    )
+
+
+def test_a_reviewer_revising_its_finding_wakes_again(tmp_path: Path) -> None:
+    repository = WatcherRepository(tmp_path / "watcher.db")
+    base = load_snapshot("active.json")
+    subscribe(repository, base)
+    finding = AIReviewFinding(
+        external_id="review:radar",
+        fingerprint="sha256:" + "c" * 64,
+    )
+    repository.apply_snapshot(
+        updated(base, ai_reviews=ai_snapshot(finding)),
+        now=1100,
+        next_poll_at=1160,
+        batch_window_seconds=300,
+    )
+    revised = finding.model_copy(update={"fingerprint": "sha256:" + "d" * 64})
+    assert (
+        repository.apply_snapshot(
+            updated(base, ai_reviews=ai_snapshot(revised, cursor="ai-next-2")),
+            now=1120,
+            next_poll_at=1180,
+            batch_window_seconds=300,
+        )
+        == 1
+    )
+
+
+def test_an_unreadable_reviewer_feed_does_not_resolve_known_findings(
+    tmp_path: Path,
+) -> None:
+    repository = WatcherRepository(tmp_path / "watcher.db")
+    base = load_snapshot("active.json")
+    subscription_id = subscribe(repository, base)
+    finding = AIReviewFinding(
+        external_id="review:radar",
+        fingerprint="sha256:" + "c" * 64,
+    )
+    repository.apply_snapshot(
+        updated(base, ai_reviews=ai_snapshot(finding)),
+        now=1100,
+        next_poll_at=1160,
+        batch_window_seconds=300,
+    )
+    batch = repository.open_batch_for(subscription_id)
+    assert batch is not None
+
+    repository.apply_snapshot(
+        updated(
+            base,
+            ai_reviews=AIReviewSnapshot(
+                status="error",
+                error=SourceFailure(
+                    category=SourceErrorCategory.TIMEOUT,
+                    retryable=True,
+                    summary="automated review read timed out",
+                ),
+            ),
+        ),
+        now=1120,
+        next_poll_at=1180,
+        batch_window_seconds=300,
+    )
+    assert repository.prepare_batch(batch.batch_id, now=1400) == {EventKind.AI_REVIEW: 1}

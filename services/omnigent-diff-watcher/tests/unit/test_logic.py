@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from omnigent_diff_watcher.domain import EventKind
 from omnigent_diff_watcher.logic import (
     deterministic_jitter,
     failure_poll_delay,
@@ -51,7 +52,10 @@ def test_failure_backoff_sequence_and_cap() -> None:
 
 
 def test_summary_is_concise_and_contains_no_raw_detail() -> None:
-    summary = render_batch_summary("dwb_test", [("D90000001", 2, 1)])
+    summary = render_batch_summary(
+        "dwb_test",
+        [("D90000001", {EventKind.REVIEW_COMMENT: 2, EventKind.CI_FAILURE: 1})],
+    )
     assert summary.startswith("[Diff watcher dwb_test] D90000001")
     assert "2 unresolved review comments" in summary
     assert "1 current-version CI failure" in summary
@@ -63,7 +67,10 @@ def test_summary_covers_every_affected_diff_in_one_wake() -> None:
     """A stack going red is one wake, not one per diff."""
     summary = render_batch_summary(
         "dwb_test",
-        [("D115903821", 0, 2), ("D115903819", 1, 0)],
+        [
+            ("D115903821", {EventKind.CI_FAILURE: 2}),
+            ("D115903819", {EventKind.REVIEW_COMMENT: 1}),
+        ],
     )
     assert "D115903821 has 2 current-version CI failures" in summary
     assert "D115903819 has 1 unresolved review comment" in summary
@@ -71,10 +78,46 @@ def test_summary_covers_every_affected_diff_in_one_wake() -> None:
     assert "http" not in summary
 
 
+def test_summary_names_automated_review_findings_distinctly() -> None:
+    """An automated finding must not read as a human comment or a CI failure."""
+    summary = render_batch_summary(
+        "dwb_test",
+        [("D115903819", {EventKind.AI_REVIEW: 2})],
+    )
+    assert "2 unresolved automated-review findings" in summary
+    assert "review comment" not in summary
+    assert "CI failure" not in summary
+
+
+def test_summary_reports_a_green_run_without_inventing_a_count() -> None:
+    summary = render_batch_summary("dwb_test", [("D115903819", {EventKind.CI_GREEN: 1})])
+    assert "D115903819 has CI green" in summary
+    assert "1 CI green" not in summary
+
+
+def test_summary_joins_three_kinds_readably() -> None:
+    summary = render_batch_summary(
+        "dwb_test",
+        [
+            (
+                "D115903819",
+                {
+                    EventKind.REVIEW_COMMENT: 1,
+                    EventKind.AI_REVIEW: 1,
+                    EventKind.CI_GREEN: 1,
+                },
+            )
+        ],
+    )
+    assert (
+        "1 unresolved review comment, 1 unresolved automated-review finding and CI green" in summary
+    )
+
+
 def test_summary_skips_diffs_with_no_findings() -> None:
     summary = render_batch_summary(
         "dwb_test",
-        [("D115903821", 0, 1), ("D115903820", 0, 0)],
+        [("D115903821", {EventKind.CI_FAILURE: 1}), ("D115903820", {})],
     )
     assert "D115903820" not in summary
     assert "update the diff as needed" in summary
@@ -82,6 +125,6 @@ def test_summary_skips_diffs_with_no_findings() -> None:
 
 def test_summary_rejects_an_entirely_empty_batch() -> None:
     with pytest.raises(ValueError):
-        render_batch_summary("dwb_test", [("D1", 0, 0)])
+        render_batch_summary("dwb_test", [("D1", {EventKind.CI_FAILURE: 0})])
     with pytest.raises(ValueError):
         render_batch_summary("dwb_test", [])

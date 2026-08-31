@@ -9,7 +9,7 @@ from collections.abc import Mapping
 
 import httpx
 
-from .domain import EventDeliveryResult, EventDeliveryStatus, SessionSnapshot
+from .domain import EventDeliveryResult, EventDeliveryStatus, EventKind, SessionSnapshot
 
 _logger = logging.getLogger(__name__)
 
@@ -210,7 +210,7 @@ def desired_watch(item: Mapping[str, object]) -> tuple[tuple[str, ...], frozense
     if not diff_ids:
         return None
     event_types = frozenset(part for part in preference.split(",") if part)
-    if not event_types or event_types - {"review_comment", "ci_failure"}:
+    if not event_types or event_types - {kind.value for kind in EventKind}:
         return None
     return diff_ids, event_types
 

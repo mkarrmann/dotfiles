@@ -16,6 +16,8 @@ from .source_command import (
     run_json_command,
 )
 from .source_models import (
+    AIReviewFinding,
+    AIReviewSnapshot,
     CIAggregateState,
     CIFailure,
     CISnapshot,
@@ -27,6 +29,9 @@ from .source_models import (
     SourceCursor,
     SourceErrorCategory,
     SourceFailure,
+)
+from .source_models import (
+    fingerprint as _fingerprint,
 )
 
 __all__ = ["PhabricatorReviewSource", "ReviewSourceError"]
@@ -48,6 +53,9 @@ _SAFE_ENV_NAMES = (
     "KRB5CCNAME",
     "X509_USER_PROXY",
 )
+# `reviews` is grouped server-side because automated reviewers report at
+# WARNING, where they would otherwise sit behind hundreds of coverage warnings
+# in a flat, paginated signal list.
 _CI_QUERY = """query ($version_id: ID!) {
   signalview_signals(phabricator_version_fbid: $version_id) {
     all: signals(filters: {}) { count }
@@ -56,8 +64,24 @@ _CI_QUERY = """query ($version_id: ID!) {
       nodes { name status slp_functional_type }
     }
     pending: signals(filters: {status: [PENDING]}) { count }
+    reviews: signals_by_functional_type_or_provider(statuses: [FAILED, WARNING]) {
+      nodes {
+        group_data {
+          ... on XFBSignalviewFunctionalTypeGroupData { functional_type }
+        }
+        signals(first: 50) {
+          nodes {
+            ... on SignalviewSignal { name status slp_functional_type }
+          }
+        }
+      }
+    }
   }
 }"""
+
+_REVIEW_INSIGHTS_GROUP = "REVIEW_INSIGHTS"
+_ARCTIC_ACTIONABLE_INSIGHT = "spotlight"
+_ARCTIC_UNRESOLVED = "unresolved"
 
 JsonRunner = Callable[[Sequence[str]], Awaitable[object]]
 
@@ -106,18 +130,19 @@ class PhabricatorReviewSource:
                 summary="diff was not found",
             )
             return DiffSnapshot(
-                schema_version=1,
+                schema_version=2,
                 diff_id=diff_id,
                 lifecycle=DiffLifecycle.MISSING,
                 last_activity_at=metadata.last_activity_at,
                 observed_at=observed_at,
                 comments=CommentsSnapshot(status="error", error=failure),
                 ci=CISnapshot(status="error", error=failure),
+                ai_reviews=AIReviewSnapshot(status="error", error=failure),
             )
 
         if metadata.lifecycle.terminal:
             return DiffSnapshot(
-                schema_version=1,
+                schema_version=2,
                 diff_id=diff_id,
                 lifecycle=metadata.lifecycle,
                 author_id=metadata.author_id,
@@ -132,6 +157,10 @@ class PhabricatorReviewSource:
                     status="ok",
                     cursor=_fingerprint("terminal-ci"),
                     aggregate=CIAggregateState.SKIPPED,
+                ),
+                ai_reviews=AIReviewSnapshot(
+                    status="ok",
+                    cursor=_fingerprint("terminal-ai-reviews"),
                 ),
             )
 
@@ -163,9 +192,22 @@ class PhabricatorReviewSource:
                 )
             )
         )
-        comments_result, ci_result = await asyncio.gather(
+        arctic_task = asyncio.create_task(
+            self._run(
+                (
+                    "meta",
+                    "phabricator.diff",
+                    "arctic",
+                    f"--number={diff_id}",
+                    f"--insight-type={_ARCTIC_ACTIONABLE_INSIGHT}",
+                    "--output=json",
+                )
+            )
+        )
+        comments_result, ci_result, arctic_result = await asyncio.gather(
             comments_task,
             ci_task,
+            arctic_task,
             return_exceptions=True,
         )
         comments = _parse_comments_result(
@@ -173,9 +215,15 @@ class PhabricatorReviewSource:
             author_id=metadata.author_id or "",
             version_id=metadata.latest_version_id or "",
         )
-        ci = _parse_ci_result(ci_result, metadata.latest_version_id or "")
+        version_id = metadata.latest_version_id or ""
+        ci, signal_reviews = _parse_ci_result(ci_result, version_id)
+        ai_reviews = _merge_ai_reviews(
+            signal_reviews,
+            _parse_arctic_result(arctic_result),
+            version_id,
+        )
         return DiffSnapshot(
-            schema_version=1,
+            schema_version=2,
             diff_id=diff_id,
             lifecycle=metadata.lifecycle,
             author_id=metadata.author_id,
@@ -184,6 +232,7 @@ class PhabricatorReviewSource:
             observed_at=observed_at,
             comments=comments,
             ci=ci,
+            ai_reviews=ai_reviews,
         )
 
 
@@ -366,9 +415,19 @@ def _comment_actionable(item: dict[str, object], author_id: str) -> bool:
     return comment_author is not None and comment_author != author_id
 
 
-def _parse_ci_result(result: object, version_id: str) -> CISnapshot:
+def _parse_ci_result(
+    result: object,
+    version_id: str,
+) -> tuple[CISnapshot, tuple[AIReviewFinding, ...] | None]:
+    """Return the CI snapshot plus any automated-review findings it carried.
+
+    The findings ride along on the CI response rather than being fetched
+    separately because they are signals on the same version. ``None`` means the
+    response could not be read, which the caller must distinguish from "read
+    fine, no findings".
+    """
     if isinstance(result, BaseException):
-        return CISnapshot(status="error", error=_component_failure(result))
+        return CISnapshot(status="error", error=_component_failure(result)), None
     try:
         payload = _object(result, "CI")
         nested = payload.get("data")
@@ -381,11 +440,11 @@ def _parse_ci_result(result: object, version_id: str) -> CISnapshot:
         raw_failures = failed_box.get("nodes", [])
         if not isinstance(raw_failures, list):
             raise TypeError("failed signal nodes must be a list")
-        if pending > 0:
-            aggregate = CIAggregateState.PENDING
-            failures: tuple[CIFailure, ...] = ()
-        elif _count(failed_box) > 0:
-            aggregate = CIAggregateState.FAILING
+        # Failures are surfaced as soon as they are known. Waiting for the run
+        # to settle would hide them for as long as the diff's slowest signal,
+        # which on a wide test selection is most of the run.
+        failures: tuple[CIFailure, ...] = ()
+        if _count(failed_box) > 0:
             normalized: dict[str, CIFailure] = {}
             for raw in raw_failures:
                 identity = _signal_identity(raw)
@@ -400,33 +459,168 @@ def _parse_ci_result(result: object, version_id: str) -> CISnapshot:
                     fingerprint=_fingerprint(f"{version_id}:failed:{_count(failed_box)}"),
                 )
             failures = tuple(normalized[key] for key in sorted(normalized))
+        if pending > 0:
+            aggregate = CIAggregateState.PENDING
+        elif failures:
+            aggregate = CIAggregateState.FAILING
         elif total > 0:
             aggregate = CIAggregateState.PASSED
-            failures = ()
         else:
             aggregate = CIAggregateState.UNKNOWN
-            failures = ()
+        # Scoped narrowly: a reviewer feed this adapter cannot read degrades to
+        # "unknown reviews", never to a CI snapshot that hides failures.
+        try:
+            reviews = _parse_review_signals(signals.get("reviews"), version_id)
+        except (TypeError, ValueError, KeyError):
+            reviews = None
         cursor = _fingerprint(
             json.dumps(
                 [aggregate.value, version_id, [item.fingerprint for item in failures]],
                 separators=(",", ":"),
             )
         )
-        return CISnapshot(
-            status="ok",
-            cursor=cursor,
-            aggregate=aggregate,
-            failures=failures,
+        return (
+            CISnapshot(
+                status="ok",
+                cursor=cursor,
+                aggregate=aggregate,
+                failures=failures,
+            ),
+            reviews,
         )
     except (TypeError, ValueError, KeyError):
-        return CISnapshot(
+        return (
+            CISnapshot(
+                status="error",
+                error=SourceFailure(
+                    category=SourceErrorCategory.MALFORMED,
+                    retryable=True,
+                    summary="CI response was malformed",
+                ),
+            ),
+            None,
+        )
+
+
+def _parse_review_signals(
+    value: object,
+    version_id: str,
+) -> tuple[AIReviewFinding, ...] | None:
+    """Pull automated-reviewer signals out of the grouped signal response.
+
+    Only FAILED and WARNING statuses are requested, so a reviewer that ran and
+    found nothing (INFO or PASSED) contributes no findings.
+    """
+    if value is None:
+        return None
+    groups = _object(value, "review signal groups").get("nodes", [])
+    if not isinstance(groups, list):
+        raise TypeError("review signal groups must be a list")
+    findings: dict[str, AIReviewFinding] = {}
+    for group in groups:
+        item = _object(group, "review signal group")
+        group_data = item.get("group_data")
+        functional_type = (
+            _optional_string(_object(group_data, "group data").get("functional_type"))
+            if isinstance(group_data, dict)
+            else None
+        )
+        if functional_type != _REVIEW_INSIGHTS_GROUP:
+            continue
+        nodes = _object(item.get("signals"), "review signals").get("nodes", [])
+        if not isinstance(nodes, list):
+            raise TypeError("review signal nodes must be a list")
+        for raw in nodes:
+            signal = _object(raw, "review signal")
+            name = _optional_string(signal.get("name"))
+            if name is None:
+                continue
+            status = _optional_string(signal.get("status")) or ""
+            external_id = "review:" + hashlib.sha256(name.encode()).hexdigest()[:32]
+            findings[external_id] = AIReviewFinding(
+                external_id=external_id,
+                fingerprint=_fingerprint(f"{version_id}:{name}:{status}"),
+            )
+    return tuple(findings[key] for key in sorted(findings))
+
+
+def _parse_arctic_result(result: object) -> tuple[AIReviewFinding, ...] | None:
+    """Normalize Arctic spotlight findings, dropping ones already dealt with.
+
+    Arctic reports per diff rather than per version and carries no stable
+    identifier, so identity is derived from the finding's own location and
+    title.
+    """
+    if isinstance(result, BaseException):
+        return None
+    if not isinstance(result, list):
+        return None
+    findings: dict[str, AIReviewFinding] = {}
+    for raw in result:
+        if not isinstance(raw, dict):
+            return None
+        item = {str(key): value for key, value in raw.items()}
+        resolution = (_optional_string(item.get("resolution")) or "").lower()
+        if resolution and resolution != _ARCTIC_UNRESOLVED:
+            continue
+        title = _optional_string(item.get("title"))
+        if title is None:
+            continue
+        identity = "\0".join(
+            (
+                _optional_string(item.get("insight_type")) or "",
+                title,
+                _optional_string(item.get("file")) or "",
+                _optional_string(item.get("lines")) or "",
+            )
+        )
+        external_id = "arctic:" + hashlib.sha256(identity.encode()).hexdigest()[:32]
+        findings[external_id] = AIReviewFinding(
+            external_id=external_id,
+            fingerprint=_fingerprint(
+                "\0".join(
+                    (
+                        identity,
+                        _optional_string(item.get("severity")) or "",
+                        _optional_string(item.get("details")) or "",
+                    )
+                )
+            ),
+        )
+    return tuple(findings[key] for key in sorted(findings))
+
+
+def _merge_ai_reviews(
+    signal_reviews: tuple[AIReviewFinding, ...] | None,
+    arctic_reviews: tuple[AIReviewFinding, ...] | None,
+    version_id: str,
+) -> AIReviewSnapshot:
+    """Combine the two reviewer feeds, holding state if either could not be read.
+
+    Advancing on a partial read would mark the unread feed's findings resolved,
+    so a single failing feed suppresses the component exactly as a failing
+    comment or CI read does.
+    """
+    if signal_reviews is None or arctic_reviews is None:
+        return AIReviewSnapshot(
             status="error",
             error=SourceFailure(
                 category=SourceErrorCategory.MALFORMED,
                 retryable=True,
-                summary="CI response was malformed",
+                summary="automated review response was malformed",
             ),
         )
+    items = tuple(sorted(signal_reviews + arctic_reviews, key=lambda item: item.external_id))
+    return AIReviewSnapshot(
+        status="ok",
+        cursor=_fingerprint(
+            json.dumps(
+                [version_id, [item.fingerprint for item in items]],
+                separators=(",", ":"),
+            )
+        ),
+        items=items,
+    )
 
 
 def _component_failure(error: BaseException) -> SourceFailure:
@@ -518,7 +712,3 @@ def _datetime(value: object) -> datetime:
     if isinstance(value, str):
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     raise TypeError("timestamp is missing or malformed")
-
-
-def _fingerprint(value: str) -> str:
-    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()

@@ -14,7 +14,15 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("diff-watch", log_level="ERROR")
-EventName = Literal["review_comment", "ci_failure"]
+# Spelled out rather than derived from EventKind so the published tool schema
+# stays a literal; tests pin the two together.
+EventName = Literal["review_comment", "ci_failure", "ai_review", "ci_green"]
+_ALL_EVENTS: tuple[EventName, ...] = (
+    "review_comment",
+    "ci_failure",
+    "ai_review",
+    "ci_green",
+)
 
 # ``None`` outside a native harness (the streamed SDK harnesses get the policy's
 # rewritten result for free); otherwise the harness whose bridge layout applies.
@@ -216,7 +224,7 @@ def diff_watch_subscribe(
     events: list[EventName] | None = None,
 ) -> str:
     """Opt the current Omnigent session into diff review and CI notifications."""
-    selected = sorted(set(["review_comment", "ci_failure"] if events is None else events))
+    selected = sorted(set(_ALL_EVENTS if events is None else events))
     if not selected:
         raise ValueError("at least one event type is required")
     arguments: dict[str, object] = {} if events is None else {"events": events}

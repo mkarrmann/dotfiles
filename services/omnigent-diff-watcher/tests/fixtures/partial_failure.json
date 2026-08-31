@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "diff_id": "D90000006",
   "lifecycle": "active",
   "author_id": "user-author",
@@ -16,6 +16,14 @@
     "cursor": null,
     "aggregate": "unknown",
     "failures": [],
+    "error": {
+      "category": "unavailable",
+      "retryable": true,
+      "summary": "CI query is temporarily unavailable"
+    }
+  },
+  "ai_reviews": {
+    "status": "error",
     "error": {
       "category": "unavailable",
       "retryable": true,

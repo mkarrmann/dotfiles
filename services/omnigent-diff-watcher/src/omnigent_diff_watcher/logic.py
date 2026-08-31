@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 
 from .domain import EventKind, NormalizedEvent
-from .source_models import CIAggregateState, DiffSnapshot
+from .source_models import CIAggregateState, DiffSnapshot, fingerprint
 
 _FAILURE_DELAYS = (60.0, 120.0, 300.0, 900.0, 1800.0)
 
@@ -61,51 +61,96 @@ def normalize_snapshot(
             if item.version_id == snapshot.latest_version_id
         )
     if snapshot.ci.status == "ok":
-        result[EventKind.CI_FAILURE] = (
-            tuple(
+        version_id = snapshot.latest_version_id or ""
+        result[EventKind.CI_FAILURE] = tuple(
+            NormalizedEvent(
+                diff_id=snapshot.diff_id,
+                kind=EventKind.CI_FAILURE,
+                external_id=item.external_id,
+                version_id=version_id,
+                fingerprint=item.fingerprint,
+                changed_at=snapshot.observed_at,
+            )
+            for item in snapshot.ci.failures
+        )
+        # One event per version rather than per poll: the external ID and the
+        # fingerprint are both version-scoped, so re-observing a green run
+        # deduplicates instead of waking the session again.
+        result[EventKind.CI_GREEN] = (
+            (
                 NormalizedEvent(
                     diff_id=snapshot.diff_id,
-                    kind=EventKind.CI_FAILURE,
-                    external_id=item.external_id,
-                    version_id=snapshot.latest_version_id or "",
-                    fingerprint=item.fingerprint,
+                    kind=EventKind.CI_GREEN,
+                    external_id=f"green:{version_id}",
+                    version_id=version_id,
+                    fingerprint=fingerprint(f"{version_id}:{snapshot.ci.aggregate.value}"),
                     changed_at=snapshot.observed_at,
-                )
-                for item in snapshot.ci.failures
+                ),
             )
-            if snapshot.ci.aggregate is CIAggregateState.FAILING
+            if snapshot.ci.green
             else ()
+        )
+    if snapshot.ai_reviews.status == "ok":
+        result[EventKind.AI_REVIEW] = tuple(
+            NormalizedEvent(
+                diff_id=snapshot.diff_id,
+                kind=EventKind.AI_REVIEW,
+                external_id=item.external_id,
+                version_id=snapshot.latest_version_id or "",
+                fingerprint=item.fingerprint,
+                changed_at=snapshot.observed_at,
+            )
+            for item in snapshot.ai_reviews.items
         )
     return result
 
 
-def _describe_counts(comment_count: int, ci_count: int) -> str:
-    parts: list[str] = []
-    if comment_count:
-        noun = "review comment" if comment_count == 1 else "review comments"
-        parts.append(f"{comment_count} unresolved {noun}")
-    if ci_count:
-        noun = "CI failure" if ci_count == 1 else "CI failures"
-        parts.append(f"{ci_count} current-version {noun}")
+# Rendered in this order so a wake leads with what needs action. Each entry is
+# (singular, plural); CI_GREEN is a state report rather than a count, so it
+# renders through a separate branch below.
+_KIND_NOUNS: dict[EventKind, tuple[str, str]] = {
+    EventKind.REVIEW_COMMENT: ("unresolved review comment", "unresolved review comments"),
+    EventKind.CI_FAILURE: ("current-version CI failure", "current-version CI failures"),
+    EventKind.AI_REVIEW: (
+        "unresolved automated-review finding",
+        "unresolved automated-review findings",
+    ),
+}
+
+
+def _join(parts: Sequence[str]) -> str:
+    if len(parts) == 1:
+        return parts[0]
+    return f"{', '.join(parts[:-1])} and {parts[-1]}"
+
+
+def _describe_counts(counts: Mapping[EventKind, int]) -> str:
+    parts = [
+        f"{count} {nouns[0] if count == 1 else nouns[1]}"
+        for kind, nouns in _KIND_NOUNS.items()
+        if (count := counts.get(kind, 0))
+    ]
+    if counts.get(EventKind.CI_GREEN, 0):
+        parts.append("CI green")
     if not parts:
         raise ValueError("cannot render an empty watcher batch")
-    return parts[0] if len(parts) == 1 else f"{parts[0]} and {parts[1]}"
+    return _join(parts)
 
 
 def render_batch_summary(
     batch_id: str,
-    counts_by_diff: Sequence[tuple[str, int, int]],
+    counts_by_diff: Sequence[tuple[str, Mapping[EventKind, int]]],
 ) -> str:
     """Render one concise wake without raw comments, URLs, or CI logs.
 
-    ``counts_by_diff`` is ``(diff_id, comment_count, ci_count)`` per diff, in a
-    stable caller-chosen order. A session watching a stack gets one message
-    covering every affected diff rather than one wake per diff.
+    ``counts_by_diff`` is ``(diff_id, counts_by_kind)`` per diff, in a stable
+    caller-chosen order. A session watching a stack gets one message covering
+    every affected diff rather than one wake per diff.
     """
     described = [
-        (diff_id, _describe_counts(comments, ci_failures))
-        for diff_id, comments, ci_failures in counts_by_diff
-        if comments or ci_failures
+        (diff_id, _describe_counts(counts))
+        for diff_id, counts in counts_by_diff
+        if any(counts.values())
     ]
     if not described:
         raise ValueError("cannot render an empty watcher batch")

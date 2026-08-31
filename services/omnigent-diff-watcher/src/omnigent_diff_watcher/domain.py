@@ -14,6 +14,8 @@ from .source_models import DiffSnapshot, SourceCursor
 class EventKind(StrEnum):
     REVIEW_COMMENT = "review_comment"
     CI_FAILURE = "ci_failure"
+    AI_REVIEW = "ai_review"
+    CI_GREEN = "ci_green"
 
 
 class SubscriptionState(StrEnum):
@@ -185,7 +187,7 @@ class WatcherConfig:
             raise ValueError("poll interval override must be positive")
 
 
-DEFAULT_EVENT_TYPES = frozenset({EventKind.REVIEW_COMMENT, EventKind.CI_FAILURE})
+DEFAULT_EVENT_TYPES = frozenset(EventKind)
 
 
 def parse_event_types(values: Sequence[str] | None) -> frozenset[EventKind]:

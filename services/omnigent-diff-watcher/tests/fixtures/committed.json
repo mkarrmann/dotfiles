@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "diff_id": "D90000004",
   "lifecycle": "committed",
   "author_id": "user-author",
@@ -16,5 +16,10 @@
     "cursor": "ci-committed-1",
     "aggregate": "passed",
     "failures": []
+  },
+  "ai_reviews": {
+    "status": "ok",
+    "cursor": "ai-committed-1",
+    "items": []
   }
 }

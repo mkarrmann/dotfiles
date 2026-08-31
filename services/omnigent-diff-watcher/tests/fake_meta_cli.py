@@ -37,8 +37,48 @@ def main() -> int:
                     ],
                 },
                 "pending": {"count": 0},
+                "reviews": {
+                    "nodes": [
+                        {
+                            "group_data": {"functional_type": "REVIEW_INSIGHTS"},
+                            "signals": {
+                                "nodes": [
+                                    {
+                                        "name": "RADAR Reviewer",
+                                        "status": "WARNING",
+                                        "slp_functional_type": "REVIEW_INSIGHTS",
+                                    }
+                                ]
+                            },
+                        },
+                        {
+                            "group_data": {"functional_type": "TEST"},
+                            "signals": {
+                                "nodes": [
+                                    {
+                                        "name": "pkg:thing_needed_coverage",
+                                        "status": "WARNING",
+                                        "slp_functional_type": "TEST",
+                                    }
+                                ]
+                            },
+                        },
+                    ]
+                },
             }
         }
+    elif executable == "meta" and args[:2] == ["phabricator.diff", "arctic"]:
+        payload = [
+            {
+                "insight_type": "spotlight",
+                "title": "synthetic spotlight finding",
+                "severity": "warning",
+                "file": "src/synthetic.cpp",
+                "lines": "1-2",
+                "resolution": "unresolved",
+                "details": "synthetic detail",
+            }
+        ]
     elif executable == "meta" and args[:2] == ["phabricator.diff", "comments"]:
         payload = [
             {

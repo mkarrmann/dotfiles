@@ -182,7 +182,10 @@ def test_first_event_fixes_flush_and_comment_ci_share_batch(tmp_path: Path) -> N
     )
     assert repo.open_batch_for(subscription.id).flush_at == original_flush  # type: ignore[union-attr]
     clock.advance(300)
-    assert repo.prepare_batch(batch.batch_id, now=clock.now().timestamp()) == (1, 1)
+    assert repo.prepare_batch(batch.batch_id, now=clock.now().timestamp()) == {
+        EventKind.REVIEW_COMMENT: 1,
+        EventKind.CI_FAILURE: 1,
+    }
     prepared = repo.batch(batch.batch_id)
     assert prepared is not None
     assert "review comment" in (prepared.summary or "")

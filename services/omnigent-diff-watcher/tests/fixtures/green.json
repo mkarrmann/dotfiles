@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "diff_id": "D90000003",
   "lifecycle": "active",
   "author_id": "user-author",
@@ -16,5 +16,10 @@
     "cursor": "ci-green-1",
     "aggregate": "passed",
     "failures": []
+  },
+  "ai_reviews": {
+    "status": "ok",
+    "cursor": "ai-green-1",
+    "items": []
   }
 }

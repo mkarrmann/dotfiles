@@ -8,6 +8,7 @@ import pytest
 from omnigent_diff_watcher.domain import (
     DEFAULT_EVENT_TYPES,
     BatchState,
+    EventKind,
     SessionSnapshot,
 )
 from omnigent_diff_watcher.repository import (
@@ -54,7 +55,9 @@ def test_restart_recovers_open_delivering_and_delivered_batches(tmp_path: Path) 
     restarted = WatcherRepository(path)
     assert restarted.open_batch_for(subscription.id) == open_batch
     clock.advance(6)
-    assert restarted.prepare_batch(open_batch.batch_id, now=clock.now().timestamp()) == (1, 0)
+    assert restarted.prepare_batch(open_batch.batch_id, now=clock.now().timestamp()) == {
+        EventKind.REVIEW_COMMENT: 1
+    }
 
     restarted_again = WatcherRepository(path)
     delivering = restarted_again.batch(open_batch.batch_id)

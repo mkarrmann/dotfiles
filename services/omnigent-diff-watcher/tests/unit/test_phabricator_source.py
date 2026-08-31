@@ -66,7 +66,35 @@ def comments() -> list[dict[str, object]]:
     ]
 
 
-def ci(*, pending: int = 0, failed: int = 1) -> dict[str, object]:
+def review_group(*names: str, status: str = "WARNING") -> dict[str, object]:
+    return {
+        "group_data": {"functional_type": "REVIEW_INSIGHTS"},
+        "signals": {
+            "nodes": [
+                {"name": name, "status": status, "slp_functional_type": "REVIEW_INSIGHTS"}
+                for name in names
+            ]
+        },
+    }
+
+
+def noise_group(*names: str) -> dict[str, object]:
+    return {
+        "group_data": {"functional_type": "TEST"},
+        "signals": {
+            "nodes": [
+                {"name": name, "status": "WARNING", "slp_functional_type": "TEST"} for name in names
+            ]
+        },
+    }
+
+
+def ci(
+    *,
+    pending: int = 0,
+    failed: int = 1,
+    review_groups: Sequence[dict[str, object]] = (),
+) -> dict[str, object]:
     nodes = (
         [
             {
@@ -83,15 +111,43 @@ def ci(*, pending: int = 0, failed: int = 1) -> dict[str, object]:
             "all": {"count": max(1, pending + failed)},
             "failed": {"count": failed, "nodes": nodes},
             "pending": {"count": pending},
+            "reviews": {"nodes": list(review_groups)},
         }
     }
 
 
+def arctic(
+    *,
+    title: str = "unset optional dereference",
+    resolution: str = "unresolved",
+) -> list[dict[str, object]]:
+    return [
+        {
+            "insight_type": "spotlight",
+            "title": title,
+            "severity": "warning",
+            "file": "src/thing.cpp",
+            "lines": "10-12",
+            "resolution": resolution,
+            "details": "detail text",
+        }
+    ]
+
+
 class RecordingRunner:
-    def __init__(self, comments_result: object, ci_result: object) -> None:
+    def __init__(
+        self,
+        comments_result: object,
+        ci_result: object,
+        arctic_result: object = None,
+    ) -> None:
         self.comments_result = comments_result
         self.ci_result = ci_result
+        self.arctic_result: object = [] if arctic_result is None else arctic_result
         self.calls: list[tuple[str, ...]] = []
+
+    def call_for(self, *prefix: str) -> tuple[str, ...]:
+        return next(call for call in self.calls if call[: len(prefix)] == prefix)
 
     async def __call__(self, argv: Sequence[str]) -> object:
         call = tuple(argv)
@@ -102,6 +158,10 @@ class RecordingRunner:
             if isinstance(self.comments_result, Exception):
                 raise self.comments_result
             return self.comments_result
+        if call[:3] == ("meta", "phabricator.diff", "arctic"):
+            if isinstance(self.arctic_result, Exception):
+                raise self.arctic_result
+            return self.arctic_result
         if call[:2] == ("jf", "graphql"):
             if isinstance(self.ci_result, Exception):
                 raise self.ci_result
@@ -182,12 +242,122 @@ async def test_comment_and_ci_fail_independently() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pending_precedes_failure_until_ci_is_terminal() -> None:
+async def test_failures_surface_while_the_rest_of_the_run_is_still_pending() -> None:
+    """A wide test selection almost always has something pending.
+
+    Holding failures until the whole run settles would therefore hide them for
+    most of the run, which is exactly when they are worth knowing about.
+    """
     snapshot = await PhabricatorReviewSource(
         runner=RecordingRunner([], ci(pending=2, failed=1))
     ).snapshot("D90000001", None)
     assert snapshot.ci.aggregate is CIAggregateState.PENDING
+    assert len(snapshot.ci.failures) == 1
+    assert not snapshot.ci.green
+
+
+async def test_a_pending_run_reports_no_failures_when_none_have_landed() -> None:
+    snapshot = await PhabricatorReviewSource(
+        runner=RecordingRunner([], ci(pending=2, failed=0))
+    ).snapshot("D90000001", None)
+    assert snapshot.ci.aggregate is CIAggregateState.PENDING
     assert snapshot.ci.failures == ()
+    assert not snapshot.ci.green
+
+
+async def test_only_a_clean_finished_run_counts_as_green() -> None:
+    """A red run already reports itself through failures.
+
+    Treating it as a completion event as well would wake a session twice for
+    one outcome.
+    """
+    passed = await PhabricatorReviewSource(
+        runner=RecordingRunner([], ci(pending=0, failed=0))
+    ).snapshot("D90000001", None)
+    assert passed.ci.aggregate is CIAggregateState.PASSED
+    assert passed.ci.green
+
+    failing = await PhabricatorReviewSource(
+        runner=RecordingRunner([], ci(pending=0, failed=1))
+    ).snapshot("D90000001", None)
+    assert failing.ci.aggregate is CIAggregateState.FAILING
+    assert not failing.ci.green
+
+
+@pytest.mark.asyncio
+async def test_automated_reviewer_findings_are_collected_from_both_feeds() -> None:
+    """RADAR reports at WARNING and Arctic never reaches signalview at all.
+
+    Neither reaches the human comment stream, which filters automated authors,
+    so both have to be read explicitly.
+    """
+    runner = RecordingRunner(
+        [],
+        ci(failed=0, review_groups=[review_group("RADAR Reviewer")]),
+        arctic(),
+    )
+    snapshot = await PhabricatorReviewSource(runner=runner).snapshot("D90000001", None)
+
+    assert snapshot.ai_reviews.status == "ok"
+    prefixes = sorted(item.external_id.split(":")[0] for item in snapshot.ai_reviews.items)
+    assert prefixes == ["arctic", "review"]
+    assert runner.call_for("meta", "phabricator.diff", "arctic") == (
+        "meta",
+        "phabricator.diff",
+        "arctic",
+        "--number=D90000001",
+        "--insight-type=spotlight",
+        "--output=json",
+    )
+
+
+@pytest.mark.asyncio
+async def test_coverage_warnings_are_not_mistaken_for_automated_review() -> None:
+    """The signal list is mostly warning-level noise; only the group matters."""
+    snapshot = await PhabricatorReviewSource(
+        runner=RecordingRunner(
+            [],
+            ci(failed=0, review_groups=[noise_group("pkg:thing_needed_coverage")]),
+        )
+    ).snapshot("D90000001", None)
+    assert snapshot.ai_reviews.items == ()
+
+
+@pytest.mark.asyncio
+async def test_arctic_findings_the_author_already_handled_are_dropped() -> None:
+    snapshot = await PhabricatorReviewSource(
+        runner=RecordingRunner([], ci(failed=0), arctic(resolution="confirmed_addressed"))
+    ).snapshot("D90000001", None)
+    assert snapshot.ai_reviews.items == ()
+
+
+@pytest.mark.asyncio
+async def test_a_reviewer_finding_changes_identity_when_its_verdict_changes() -> None:
+    async def fingerprints(status: str) -> str:
+        snapshot = await PhabricatorReviewSource(
+            runner=RecordingRunner(
+                [],
+                ci(failed=0, review_groups=[review_group("RADAR Reviewer", status=status)]),
+            )
+        ).snapshot("D90000001", None)
+        return snapshot.ai_reviews.items[0].fingerprint
+
+    assert await fingerprints("WARNING") != await fingerprints("FAILED")
+
+
+@pytest.mark.asyncio
+async def test_one_unreadable_reviewer_feed_holds_the_whole_component() -> None:
+    """Advancing on a partial read would mark the unread feed's findings gone."""
+    snapshot = await PhabricatorReviewSource(
+        runner=RecordingRunner(
+            [],
+            ci(failed=0, review_groups=[review_group("RADAR Reviewer")]),
+            SourceCommandError(SourceCommandErrorCategory.TIMEOUT, "safe timeout"),
+        )
+    ).snapshot("D90000001", None)
+    assert snapshot.ai_reviews.status == "error"
+    assert snapshot.ai_reviews.items == ()
+    assert snapshot.ci.status == "ok"
 
 
 @pytest.mark.asyncio
@@ -222,6 +392,10 @@ async def test_terminal_diff_skips_comment_and_ci_queries() -> None:
     assert snapshot.lifecycle is DiffLifecycle.COMMITTED
     assert snapshot.comments.items == ()
     assert snapshot.ci.aggregate is CIAggregateState.SKIPPED
+    assert snapshot.ai_reviews.items == ()
+    # A landed diff is not a run that reached a verdict, so it must not wake a
+    # session with "CI settled".
+    assert not snapshot.ci.green
     assert calls == [("jf", "diff-properties", "D90000001")]
 
 

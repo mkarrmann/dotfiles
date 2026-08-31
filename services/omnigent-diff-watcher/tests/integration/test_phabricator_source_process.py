@@ -39,3 +39,9 @@ async def test_real_process_adapter_with_fake_jf_and_meta(tmp_path: Path) -> Non
     assert [comment.external_id for comment in snapshot.comments.items] == ["comment-synthetic"]
     assert snapshot.ci.aggregate is CIAggregateState.FAILING
     assert snapshot.ci.failures[0].external_id.startswith("signal:")
+    # Both reviewer feeds cross the real subprocess boundary, and the
+    # warning-level coverage signal sitting alongside them does not.
+    assert sorted(item.external_id.split(":")[0] for item in snapshot.ai_reviews.items) == [
+        "arctic",
+        "review",
+    ]

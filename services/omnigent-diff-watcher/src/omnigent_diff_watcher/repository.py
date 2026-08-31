@@ -463,8 +463,14 @@ class WatcherRepository:
             if previous_version and previous_version != snapshot.latest_version_id:
                 connection.execute(
                     "UPDATE source_events SET actionable = 0, last_seen_at = ? "
-                    "WHERE diff_id = ? AND kind = 'ci_failure' AND version_id != ?",
-                    (now, snapshot.diff_id, snapshot.latest_version_id or ""),
+                    "WHERE diff_id = ? AND kind IN (?, ?) AND version_id != ?",
+                    (
+                        now,
+                        snapshot.diff_id,
+                        EventKind.CI_FAILURE.value,
+                        EventKind.CI_GREEN.value,
+                        snapshot.latest_version_id or "",
+                    ),
                 )
 
             terminal_reason: str | None = None
@@ -718,7 +724,7 @@ class WatcherRepository:
                 for row in rows
             ]
 
-    def prepare_batch(self, batch_id: str, *, now: float) -> tuple[int, int] | None:
+    def prepare_batch(self, batch_id: str, *, now: float) -> dict[EventKind, int] | None:
         """Prune stale members, freeze a summary, and mark delivering."""
         from .logic import render_batch_summary
 
@@ -739,21 +745,25 @@ class WatcherRepository:
             if row is None:
                 connection.commit()
                 return None
-            per_diff: dict[str, dict[str, int]] = {}
+            per_diff: dict[str, dict[EventKind, int]] = {}
             for event_row in connection.execute(
                 "SELECT diff_id, kind, COUNT(*) AS count FROM batch_events "
                 "WHERE batch_id = ? GROUP BY diff_id, kind ORDER BY diff_id",
                 (batch_id,),
             ).fetchall():
+                # A kind written by a newer build is ignored rather than fatal,
+                # so a downgrade cannot wedge batch delivery.
+                try:
+                    kind = EventKind(str(event_row["kind"]))
+                except ValueError:
+                    continue
                 bucket = per_diff.setdefault(str(event_row["diff_id"]), {})
-                bucket[str(event_row["kind"])] = int(event_row["count"])
-            comments = sum(
-                bucket.get(EventKind.REVIEW_COMMENT.value, 0) for bucket in per_diff.values()
-            )
-            ci_failures = sum(
-                bucket.get(EventKind.CI_FAILURE.value, 0) for bucket in per_diff.values()
-            )
-            if comments + ci_failures == 0:
+                bucket[kind] = int(event_row["count"])
+            totals: dict[EventKind, int] = {}
+            for bucket in per_diff.values():
+                for kind, count in bucket.items():
+                    totals[kind] = totals.get(kind, 0) + count
+            if not any(totals.values()):
                 connection.execute(
                     "UPDATE batches SET state = 'cancelled', updated_at = ? WHERE batch_id = ?",
                     (now, batch_id),
@@ -762,14 +772,7 @@ class WatcherRepository:
                 return None
             summary = render_batch_summary(
                 batch_id,
-                [
-                    (
-                        diff_id,
-                        bucket.get(EventKind.REVIEW_COMMENT.value, 0),
-                        bucket.get(EventKind.CI_FAILURE.value, 0),
-                    )
-                    for diff_id, bucket in per_diff.items()
-                ],
+                [(diff_id, bucket) for diff_id, bucket in per_diff.items()],
             )
             connection.execute(
                 "UPDATE batches SET state = 'delivering', summary = ?, updated_at = ? "
@@ -777,7 +780,7 @@ class WatcherRepository:
                 (summary, now, batch_id),
             )
             connection.commit()
-            return comments, ci_failures
+            return totals
 
     def defer_batch(self, batch_id: str, *, now: float, retry_at: float) -> None:
         with self._connect() as connection:

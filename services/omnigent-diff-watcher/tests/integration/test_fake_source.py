@@ -11,6 +11,7 @@ from omnigent_diff_watcher.source_command import (
     SourceCommandErrorCategory,
     run_snapshot_command,
 )
+from omnigent_diff_watcher.source_models import SCHEMA_VERSION
 
 TESTS = Path(__file__).parents[1]
 FIXTURES = TESTS / "fixtures"
@@ -42,7 +43,7 @@ async def test_fixture_crosses_real_subprocess_boundary(fixture_name: str) -> No
         env={"PATH": os.environ["PATH"]},
     )
 
-    assert snapshot.schema_version == 1
+    assert snapshot.schema_version == SCHEMA_VERSION
 
 
 @pytest.mark.asyncio

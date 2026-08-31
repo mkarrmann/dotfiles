@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "diff_id": "D90000002",
   "lifecycle": "active",
   "author_id": "user-author",
@@ -38,5 +38,10 @@
         "fingerprint": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
       }
     ]
+  },
+  "ai_reviews": {
+    "status": "ok",
+    "cursor": "ai-failing-1",
+    "items": []
   }
 }
