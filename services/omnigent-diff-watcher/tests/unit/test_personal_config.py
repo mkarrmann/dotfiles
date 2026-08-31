@@ -413,8 +413,7 @@ def test_capture_ignores_a_diff_url_in_the_command_itself() -> None:
     event["request_data"] = {
         "name": "Bash",
         "arguments": {
-            "command": 'sl commit -m "Differential Revision: '
-            'https://www.internalfb.com/D99999999"'
+            "command": 'sl commit -m "Differential Revision: https://www.internalfb.com/D99999999"'
         },
     }
     assert evaluate(event) is None
