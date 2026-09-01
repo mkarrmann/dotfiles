@@ -22,6 +22,10 @@ vim.lsp.enable({
 	"ids@meta",
 })
 
+-- pyrefly@meta cannot report type errors in the IDE (fbcode/pyrefly.toml sets
+-- disable-type-errors-in-ide), so recover them from the CLI on save.
+require("lib.pyrefly-check").setup()
+
 vim.api.nvim_create_autocmd("User", {
 	pattern = "VeryLazy",
 	once = true,
