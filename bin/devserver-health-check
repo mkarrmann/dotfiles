@@ -101,19 +101,71 @@ else
 fi
 echo ""
 
-# --- Orphaned Neovim instances ---
+# --- Orphaned editor helpers ---
+#
+# Language servers and editor extensions exist only to serve an editor, so one
+# with no nvim among its ancestors is garbage. Testing `ppid == 1` misses them
+# on this box: systemd --user and the Omnigent host daemon are both subreapers,
+# so orphans get adopted rather than reparented to init. That gap let 13
+# abandoned code-compose-ls processes (~8 GB) sit here while this check happily
+# reported "no orphaned Neovim instances".
+#
+# Buck2's .cpplsp/.pyrelsp daemons are deliberately excluded: they live outside
+# the nvim share dir and are designed to outlive any one editor.
 echo "--- Orphaned Processes ---"
-orphaned_nvim=$(ps -eo pid,ppid,rss,lstart,args 2>/dev/null | awk '$2 == 1 && /nvim --embed/ {print}' || true)
-if [[ -n "$orphaned_nvim" ]]; then
-    while read -r pid ppid rss lstart_rest; do
-        rss_mb=$((rss / 1024))
-        warn "Orphaned nvim PID ${pid} (${rss_mb} MB, started: ${lstart_rest})"
-        if $FIX_MODE; then
-            kill "$pid" 2>/dev/null && fix "Killed orphaned nvim ${pid}" || warn "Failed to kill ${pid}"
+
+# Never fails, and yields "" for a pid that has already exited -- important
+# under `set -o pipefail`, where a dead pid would otherwise abort the script.
+ps_field() {
+    ps -o "$1"= -p "$2" 2>/dev/null | tr -d ' ' || true
+}
+
+ancestor_has_nvim() {
+    local pid=$1 hops=0 parent comm
+    while (( hops < 40 )); do
+        parent=$(ps_field ppid "$pid")
+        if [[ -z "$parent" ]] || (( parent <= 1 )); then
+            return 1
         fi
-    done <<< "$orphaned_nvim"
-else
-    ok "No orphaned Neovim instances"
+        comm=$(ps_field comm "$parent")
+        if [[ "$comm" == "nvim" ]]; then
+            return 0
+        fi
+        pid=$parent
+        hops=$((hops + 1))
+    done
+    return 1
+}
+
+# The search path goes through the environment, not argv: passed as `awk -v`, it
+# appears in awk's own command line and the process listing matches itself.
+nvim_share="${HOME}/.local/share/nvim/"
+editor_helpers=$(NVIM_SHARE="$nvim_share" ps -eo pid=,ppid=,rss=,args= 2>/dev/null \
+    | NVIM_SHARE="$nvim_share" awk 'index($0, ENVIRON["NVIM_SHARE"]) > 0 || /nvim --embed/ { print }' || true)
+
+orphan_found=false
+while read -r pid ppid rss args; do
+    if [[ -z "${pid:-}" ]]; then
+        continue
+    fi
+    # Skip anything that exited between the snapshot and now; taking the
+    # snapshot itself spawns short-lived children.
+    if [[ -z "$(ps_field ppid "$pid")" ]]; then
+        continue
+    fi
+    if ancestor_has_nvim "$pid"; then
+        continue
+    fi
+    orphan_found=true
+    parent_comm=$(ps_field comm "$ppid")
+    warn "Orphaned editor helper PID ${pid} ($((rss / 1024)) MB, adopted by ${parent_comm:-unknown}): $(echo "$args" | head -c 60)"
+    if $FIX_MODE; then
+        kill "$pid" 2>/dev/null && fix "Killed orphaned helper ${pid}" || warn "Failed to kill ${pid}"
+    fi
+done <<< "$editor_helpers"
+
+if ! $orphan_found; then
+    ok "No orphaned editor helpers"
 fi
 echo ""
 
