@@ -69,7 +69,13 @@ function M.parse(output, root, target)
 		if level and SEVERITY[level] then
 			local abs = file:sub(1, 1) == "/" and file or (root .. "/" .. file)
 			if vim.fs.normalize(abs) == vim.fs.normalize(target) then
+				-- The rule is reported as a trailing `[rule]`. Lift it into
+				-- `code` and drop it from the text, or the float renders it
+				-- twice (Neovim appends `code` itself).
 				local rule = message:match("%[([%w%-]+)%]%s*$")
+				if rule then
+					message = message:gsub("%s*%[[%w%-]+%]%s*$", "")
+				end
 				out[#out + 1] = {
 					lnum = math.max(0, tonumber(lnum) - 1),
 					col = math.max(0, tonumber(col_start) - 1),

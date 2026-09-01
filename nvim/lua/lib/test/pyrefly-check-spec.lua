@@ -40,6 +40,9 @@ function M.run()
 		assert_eq(d[1].severity, vim.diagnostic.severity.ERROR, "ERROR maps to ERROR")
 		assert_eq(d[1].code, "missing-import", "rule extracted from trailing brackets")
 		assert_eq(d[1].source, "pyrefly-check", "source tagged so it is distinguishable from the LSP")
+		-- Neovim appends `code` in the float, so it must not remain in the text.
+		assert_eq(d[1].message, "Cannot find module `docutils`", "trailing [rule] stripped from message")
+		assert_eq(d[1].message:match("%[") == nil, true, "no bracketed rule left in message")
 
 		assert_eq(d[3].severity, vim.diagnostic.severity.WARN, "WARN maps to WARN")
 		assert_eq(d[4].lnum, 8, "absolute-path finding is matched too")
