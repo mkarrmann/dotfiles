@@ -21,6 +21,20 @@ return {
 			trim_scope = "outer",
 			separator = "─",
 		},
+		config = function(_, opts)
+			require("treesitter-context").setup(opts)
+			-- Failure means the plugin's internals moved under the HACK in
+			-- lib.tscontext-perf: typing latency regresses to ~45ms/keystroke in
+			-- large Python buffers. Say so rather than degrading silently.
+			if not require("lib.tscontext-perf").setup() then
+				vim.notify(
+					"lib.tscontext-perf: could not adopt treesitter-context's DiagnosticChanged "
+						.. "subscription; the typing-latency workaround is INACTIVE. See "
+						.. "docs/nvim-typing-latency-investigation.md",
+					vim.log.levels.WARN
+				)
+			end
+		end,
 	},
 	{
 		"lukas-reineke/indent-blankline.nvim",
