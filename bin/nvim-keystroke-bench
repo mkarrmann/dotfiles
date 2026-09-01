@@ -1,0 +1,349 @@
+#!/usr/bin/env python3
+"""Measure Neovim's server-side keystroke latency, with the real config loaded.
+
+Answers "is editing this file slow, and is it Neovim or the network?". It runs
+entirely on the machine hosting the Neovim server, so the number it reports is
+main-loop blocking only -- no tunnel, no terminal, no RTT. Add your Mac->devvm
+round trip to get what you actually feel.
+
+It attaches a real UI over msgpack-RPC (redraw work only happens when a UI is
+attached), then per sample sends `nvim_input` immediately followed by
+`nvim_eval('1')` and times the reply. Neovim handles those in order, so that
+reply bounds "keystroke processed and redraw generated".
+
+SAFETY: this types into a buffer, and lib/autosave.lua writes on TextChanged --
+an earlier ad-hoc version of this script committed 200 stray 'x' characters to a
+real checkout. So it always starts its OWN throwaway server (never touches a
+live nvs session), disables autosave per buffer, undoes its typing, and clears
+'modified'. It never writes to disk.
+
+Usage:
+  nvim-keystroke-bench FILE [FILE...]
+  nvim-keystroke-bench --compare FILE      # A/B the lib.tscontext-perf HACK
+  nvim-keystroke-bench --samples 300 FILE
+
+See docs/nvim-typing-latency-investigation.md for what these numbers meant once.
+"""
+
+import argparse
+import os
+import socket
+import struct
+import subprocess
+import sys
+import time
+
+# ---------------------------------------------------------------- msgpack ---
+# Hand-rolled: devservers have neither msgpack nor pynvim, and this tool needs
+# to run without a package install.
+
+
+def enc(o):
+    if o is None:
+        return b"\xc0"
+    if o is True:
+        return b"\xc3"
+    if o is False:
+        return b"\xc2"
+    if isinstance(o, int):
+        if 0 <= o < 128:
+            return struct.pack("B", o)
+        if -32 <= o < 0:
+            return struct.pack("b", o)
+        if 0 <= o < 256:
+            return b"\xcc" + struct.pack("B", o)
+        if 0 <= o < 65536:
+            return b"\xcd" + struct.pack(">H", o)
+        if 0 <= o < 2**32:
+            return b"\xce" + struct.pack(">I", o)
+        return b"\xd3" + struct.pack(">q", o)
+    if isinstance(o, str):
+        b = o.encode()
+        n = len(b)
+        if n < 32:
+            return struct.pack("B", 0xA0 | n) + b
+        if n < 256:
+            return b"\xd9" + struct.pack("B", n) + b
+        return b"\xda" + struct.pack(">H", n) + b
+    if isinstance(o, (list, tuple)):
+        n = len(o)
+        h = struct.pack("B", 0x90 | n) if n < 16 else b"\xdc" + struct.pack(">H", n)
+        return h + b"".join(enc(x) for x in o)
+    if isinstance(o, dict):
+        n = len(o)
+        h = struct.pack("B", 0x80 | n) if n < 16 else b"\xde" + struct.pack(">H", n)
+        return h + b"".join(enc(k) + enc(v) for k, v in o.items())
+    raise TypeError(type(o))
+
+
+class Dec:
+    def __init__(self):
+        self.buf = bytearray()
+
+    def feed(self, b):
+        self.buf += b
+
+    def _rd(self, i, n):
+        if i + n > len(self.buf):
+            raise IndexError
+        return bytes(self.buf[i : i + n]), i + n
+
+    def _val(self, i):
+        (c,), i = self._rd(i, 1)
+        if c <= 0x7F:
+            return c, i
+        if c >= 0xE0:
+            return c - 256, i
+        if 0xA0 <= c <= 0xBF:
+            b, i = self._rd(i, c & 0x1F)
+            return b.decode("utf-8", "replace"), i
+        if 0x90 <= c <= 0x9F:
+            return self._seq(i, c & 0x0F, list)
+        if 0x80 <= c <= 0x8F:
+            return self._seq(i, c & 0x0F, dict)
+        if c == 0xC0:
+            return None, i
+        if c == 0xC2:
+            return False, i
+        if c == 0xC3:
+            return True, i
+        if c in (0xC4, 0xD9, 0xC5, 0xDA, 0xC6, 0xDB):
+            width = {0xC4: 1, 0xD9: 1, 0xC5: 2, 0xDA: 2, 0xC6: 4, 0xDB: 4}[c]
+            r, i = self._rd(i, width)
+            b, i = self._rd(i, int.from_bytes(r, "big"))
+            return (b if c in (0xC4, 0xC5, 0xC6) else b.decode("utf-8", "replace")), i
+        if c == 0xCA:
+            r, i = self._rd(i, 4)
+            return struct.unpack(">f", r)[0], i
+        if c == 0xCB:
+            r, i = self._rd(i, 8)
+            return struct.unpack(">d", r)[0], i
+        if 0xCC <= c <= 0xCF:
+            r, i = self._rd(i, 1 << (c - 0xCC))
+            return int.from_bytes(r, "big"), i
+        if 0xD0 <= c <= 0xD3:
+            r, i = self._rd(i, 1 << (c - 0xD0))
+            return int.from_bytes(r, "big", signed=True), i
+        if c in (0xDC, 0xDD):
+            r, i = self._rd(i, 2 if c == 0xDC else 4)
+            return self._seq(i, int.from_bytes(r, "big"), list)
+        if c in (0xDE, 0xDF):
+            r, i = self._rd(i, 2 if c == 0xDE else 4)
+            return self._seq(i, int.from_bytes(r, "big"), dict)
+        if 0xD4 <= c <= 0xD8:  # fixext
+            _, i = self._rd(i, 1 + (1 << (c - 0xD4)))
+            return None, i
+        if c in (0xC7, 0xC8, 0xC9):
+            r, i = self._rd(i, 1 << (c - 0xC7))
+            _, i = self._rd(i, 1 + int.from_bytes(r, "big"))
+            return None, i
+        raise ValueError("bad msgpack byte %#x" % c)
+
+    def _seq(self, i, n, kind):
+        if kind is list:
+            out = []
+            for _ in range(n):
+                v, i = self._val(i)
+                out.append(v)
+            return out, i
+        out = {}
+        for _ in range(n):
+            k, i = self._val(i)
+            v, i = self._val(i)
+            out[k] = v
+        return out, i
+
+    def next(self):
+        if not self.buf:
+            return None
+        try:
+            v, i = self._val(0)
+        except (IndexError, struct.error):
+            return None
+        del self.buf[:i]
+        return v
+
+
+# ------------------------------------------------------------------- rpc ---
+
+
+class Nvim:
+    def __init__(self, port):
+        self.s = socket.create_connection(("localhost", port), timeout=30)
+        self.s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.d = Dec()
+        self.mid = 0
+
+    def _drain(self, mid):
+        while True:
+            o = self.d.next()
+            if o is None:
+                return None
+            if o[0] == 1 and o[1] == mid:
+                if o[2] is not None:
+                    raise RuntimeError("%s" % (o[2],))
+                return (o[3],)
+
+    def req(self, method, *params, timeout=60):
+        self.mid += 1
+        mid = self.mid
+        self.s.sendall(enc([0, mid, method, list(params)]))
+        end = time.perf_counter() + timeout
+        while time.perf_counter() < end:
+            got = self._drain(mid)
+            if got is not None:
+                return got[0]
+            self.s.settimeout(0.25)
+            try:
+                b = self.s.recv(1 << 20)
+            except socket.timeout:
+                continue
+            if not b:
+                raise ConnectionError("nvim closed the connection")
+            self.d.feed(b)
+        raise TimeoutError(method)
+
+    def lua(self, src, *args):
+        return self.req("nvim_exec_lua", src, list(args))
+
+    def key(self, k):
+        """Time one keypress through to the main loop being free again."""
+        t0 = time.perf_counter()
+        self.mid += 1
+        self.s.sendall(enc([0, self.mid, "nvim_input", [k]]))
+        self.req("nvim_eval", "1")
+        return (time.perf_counter() - t0) * 1000
+
+
+# ------------------------------------------------------------------ bench ---
+
+
+def stats(label, xs):
+    xs = sorted(x for x in xs if x == x)
+    if not xs:
+        print("%-34s no samples" % label)
+        return
+    q = lambda p: xs[min(len(xs) - 1, int(len(xs) * p))]
+    print(
+        "%-34s n=%-4d min=%6.2f p50=%6.2f p95=%6.2f max=%6.2f ms"
+        % (label, len(xs), xs[0], q(0.5), q(0.95), xs[-1])
+    )
+
+
+def free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def workdir_for(path):
+    d = os.path.dirname(os.path.abspath(path))
+    while d != "/":
+        for marker in (".hg", ".git", ".sl"):
+            if os.path.exists(os.path.join(d, marker)):
+                return os.path.dirname(d) or d
+        d = os.path.dirname(d)
+    return os.path.dirname(os.path.abspath(path))
+
+
+def measure(nv, path, samples, settle):
+    nv.req("nvim_command", "edit " + path)
+    # Never let autosave write our synthetic keystrokes to disk.
+    nv.lua("vim.b.autosave_enabled = false")
+    time.sleep(settle)
+
+    nlines = nv.req("nvim_eval", "line('$')")
+    clients = nv.lua(
+        "local t={} for _,c in ipairs(vim.lsp.get_clients({bufnr=0})) do t[#t+1]=c.name end "
+        "return table.concat(t, ' ')"
+    )
+    # Queried per-file, not at startup: treesitter-context is lazy-loaded, so
+    # its config (which installs the HACK) has not run until a buffer exists.
+    hack = nv.lua(
+        "local ok,m = pcall(require,'lib.tscontext-perf') "
+        "return (ok and m._state().patched) and 1 or 0"
+    )
+    print(
+        "  %s  lines=%s  hack=%s  lsp=[%s]"
+        % (os.path.basename(path), nlines, "on" if hack == 1 else "off", clients)
+    )
+
+    # Park somewhere nested so the sticky context header is actually rendering.
+    line = nv.lua(
+        "local ls=vim.api.nvim_buf_get_lines(0,0,-1,false) "
+        "for i=math.floor(#ls/4),#ls do local l=ls[i] "
+        "if l and not l:match('^%s*$') and #(l:match('^%s*'))>=4 then return i end end return 1"
+    )
+    nv.req("nvim_command", "normal! %dG" % line)
+    nv.req("nvim_command", "normal! zt")
+    time.sleep(1.5)
+
+    nv.req("nvim_input", "A")
+    time.sleep(0.4)
+    xs = [nv.key("x") for _ in range(samples)]
+    nv.req("nvim_input", "<Esc>")
+    time.sleep(0.8)
+    nv.req("nvim_command", "silent! undo")
+    nv.lua("vim.bo.modified = false")
+    time.sleep(0.5)
+    return xs
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("files", nargs="+")
+    ap.add_argument("--samples", type=int, default=150)
+    ap.add_argument("--settle", type=float, default=10.0, help="seconds to let LSP warm up")
+    ap.add_argument("--workdir", help="cwd for the throwaway server (default: checkout root)")
+    ap.add_argument(
+        "--compare",
+        action="store_true",
+        help="also measure with the lib.tscontext-perf HACK torn down",
+    )
+    args = ap.parse_args()
+
+    for f in args.files:
+        if not os.path.isfile(f):
+            sys.exit("no such file: %s" % f)
+
+    port = free_port()
+    cwd = args.workdir or workdir_for(args.files[0])
+    print("throwaway nvim on port %d, cwd %s" % (port, cwd))
+    proc = subprocess.Popen(
+        ["nvim", "--headless", "--listen", "127.0.0.1:%d" % port, "--cmd", "cd " + cwd],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        nv = None
+        for _ in range(120):
+            time.sleep(0.5)
+            try:
+                nv = Nvim(port)
+                break
+            except OSError:
+                continue
+        if nv is None:
+            sys.exit("nvim server never came up on port %d" % port)
+
+        nv.req("nvim_ui_attach", 200, 50, {"ext_linegrid": True, "rgb": True})
+
+        for f in args.files:
+            stats("  keystroke", measure(nv, os.path.abspath(f), args.samples, args.settle))
+
+        if args.compare:
+            restored = nv.lua("return require('lib.tscontext-perf').teardown() and 1 or 0")
+            print("\nHACK torn down (%s); re-measuring:" % ("ok" if restored else "was inactive"))
+            for f in args.files:
+                stats("  keystroke (no hack)", measure(nv, os.path.abspath(f), args.samples, 2.0))
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+main()
