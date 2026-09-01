@@ -3464,6 +3464,13 @@ local function setup_line_blame()
           return
         end
 
+        -- Refresh events revisit the same buffer, so replace its handlers
+        -- instead of accumulating another pair on every event.
+        vim.api.nvim_clear_autocmds({
+          group = LINE_BLAME_GROUP,
+          buffer = arg.buf,
+        })
+
         local handle_cursor_moved = debounce(
           function(cursor_moved_arg)
             -- clear all extmarks
