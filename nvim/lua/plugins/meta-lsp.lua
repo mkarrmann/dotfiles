@@ -24,6 +24,11 @@ return {
 				meta.null_ls.diagnostics.arclint,
 				meta.null_ls.formatting.arclint,
 			})
+
+			-- arclint's formatter registers for every filetype but refuses to run
+			-- in fbsource, which leaves none-ls holding LazyVim's primary format
+			-- slot and doing nothing. Give linttool the slot where it attaches.
+			require("lib.meta-format").setup()
 		end,
 	},
 
