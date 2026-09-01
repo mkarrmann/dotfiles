@@ -42,12 +42,24 @@ else
     ok "Memory ${mem_pct}% used ($(( avail_mem_kb / 1024 )) MB available)"
 fi
 
-if (( swap_used_kb > 1048576 )); then
-    err "Swap: $(( swap_used_kb / 1024 )) MB in use (>1 GB indicates memory pressure)"
-elif (( swap_used_kb > 0 )); then
-    warn "Swap: $(( swap_used_kb / 1024 )) MB in use"
+# Swap *occupancy* is not a health signal. Linux parks cold anonymous pages in
+# swap to keep the page cache hot, so any long-uptime box accumulates gigabytes
+# with nothing stalling -- this devserver sat at 35 GB swapped with 0 pages/s
+# faulting back in. What matters is whether tasks are *waiting* on memory, which
+# is exactly what PSI reports. Occupancy is printed for context only.
+if [[ -r /proc/pressure/memory ]]; then
+    psi_pct=$(awk '/^some/ { split($3, a, "="); print a[2]; exit }' /proc/pressure/memory)
+    psi_x100=$(awk '/^some/ { split($3, a, "="); printf "%d", a[2] * 100; exit }' /proc/pressure/memory)
+    if (( psi_x100 > 3000 )); then
+        err "Memory pressure: ${psi_pct}% of the last 60s stalled on memory"
+    elif (( psi_x100 > 1000 )); then
+        warn "Memory pressure: ${psi_pct}% of the last 60s stalled on memory"
+    else
+        ok "No memory pressure (PSI some avg60=${psi_pct}%)"
+    fi
+    info "Swap: $(( swap_used_kb / 1024 )) MB in use (occupancy, not a pressure signal)"
 else
-    ok "Swap: not in use"
+    info "Swap: $(( swap_used_kb / 1024 )) MB in use (kernel has no PSI; cannot assess pressure)"
 fi
 echo ""
 
