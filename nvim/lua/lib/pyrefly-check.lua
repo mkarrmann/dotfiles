@@ -30,6 +30,7 @@ M.TIMEOUT_MS = 120000
 M.enabled = true
 
 local running = {}
+local pending = {}
 local warned = false
 
 ---@param path string
@@ -50,41 +51,45 @@ function M.resolve(path)
 end
 
 local SEVERITY = {
-	ERROR = vim.diagnostic.severity.ERROR,
-	WARN = vim.diagnostic.severity.WARN,
-	WARNING = vim.diagnostic.severity.WARN,
-	INFO = vim.diagnostic.severity.INFO,
+	error = vim.diagnostic.severity.ERROR,
+	warn = vim.diagnostic.severity.WARN,
+	warning = vim.diagnostic.severity.WARN,
+	info = vim.diagnostic.severity.INFO,
+	hint = vim.diagnostic.severity.HINT,
 }
 
--- `ERROR fbcode/a/b.py:30:1-27: Cannot find module `x` [missing-import]`
----@param output string
+-- `--output-format json` on stdout:
+--   {"errors":[{"line","column","stop_line","stop_column","path","name",
+--               "description","severity"}, ...]}
+-- Positions are 1-based with an exclusive stop; Neovim wants 0-based.
+---@param stdout string
 ---@param root string
 ---@param target string absolute path of the buffer being checked
 ---@return vim.Diagnostic[]
-function M.parse(output, root, target)
+function M.parse(stdout, root, target)
+	if stdout == nil or stdout == "" then
+		return {}
+	end
+	local ok, decoded = pcall(vim.json.decode, stdout)
+	if not ok or type(decoded) ~= "table" or type(decoded.errors) ~= "table" then
+		return {}
+	end
+
 	local out = {}
-	for line in (output or ""):gmatch("[^\n]+") do
-		local level, file, lnum, col_start, col_end, message =
-			line:match("^(%u+)%s+(.-):(%d+):(%d+)%-(%d+):%s*(.+)$")
-		if level and SEVERITY[level] then
-			local abs = file:sub(1, 1) == "/" and file or (root .. "/" .. file)
+	for _, e in ipairs(decoded.errors) do
+		local path = e.path
+		if type(path) == "string" then
+			local abs = path:sub(1, 1) == "/" and path or (root .. "/" .. path)
 			if vim.fs.normalize(abs) == vim.fs.normalize(target) then
-				-- The rule is reported as a trailing `[rule]`. Lift it into
-				-- `code` and drop it from the text, or the float renders it
-				-- twice (Neovim appends `code` itself).
-				local rule = message:match("%[([%w%-]+)%]%s*$")
-				if rule then
-					message = message:gsub("%s*%[[%w%-]+%]%s*$", "")
-				end
 				out[#out + 1] = {
-					lnum = math.max(0, tonumber(lnum) - 1),
-					col = math.max(0, tonumber(col_start) - 1),
-					end_lnum = math.max(0, tonumber(lnum) - 1),
-					end_col = math.max(0, tonumber(col_end)),
-					severity = SEVERITY[level],
+					lnum = math.max(0, (tonumber(e.line) or 1) - 1),
+					col = math.max(0, (tonumber(e.column) or 1) - 1),
+					end_lnum = math.max(0, (tonumber(e.stop_line) or e.line or 1) - 1),
+					end_col = math.max(0, (tonumber(e.stop_column) or 1) - 1),
+					severity = SEVERITY[tostring(e.severity):lower()] or vim.diagnostic.severity.ERROR,
 					source = "pyrefly-check",
-					code = rule,
-					message = message,
+					code = e.name,
+					message = e.description or e.concise_description or "pyrefly error",
 				}
 			end
 		end
@@ -112,26 +117,35 @@ function M.check(bufnr, opts)
 		end
 		return
 	end
-	-- One in flight per buffer; a later write supersedes nothing, it just waits
-	-- for the next save rather than piling up Buck queries.
+	-- One check in flight per buffer, so rapid saves don't pile up Buck queries.
+	-- A save that arrives mid-check is remembered rather than dropped: dropping
+	-- it would leave the previous run's diagnostics on screen with no indication
+	-- they describe superseded content.
 	if running[bufnr] then
+		pending[bufnr] = true
 		return
 	end
 	running[bufnr] = true
 
 	vim.system(
-		{ binary, "check", path, "--output-format", "min-text" },
+		{ binary, "check", path, "--output-format", "json" },
 		{ cwd = root, text = true, timeout = M.TIMEOUT_MS },
 		vim.schedule_wrap(function(res)
 			running[bufnr] = nil
 			if not vim.api.nvim_buf_is_valid(bufnr) then
+				pending[bufnr] = nil
 				return
 			end
-			local combined = (res.stdout or "") .. "\n" .. (res.stderr or "")
-			local diags = M.parse(combined, root, path)
+			-- JSON goes to stdout; the binary's INFO chatter goes to stderr
+			-- and must not be fed to the decoder.
+			local diags = M.parse(res.stdout, root, path)
 			vim.diagnostic.set(M.NS, bufnr, diags)
 			if opts.notify then
 				vim.notify(string.format("pyrefly-check: %d finding(s)", #diags), vim.log.levels.INFO)
+			end
+			if pending[bufnr] then
+				pending[bufnr] = nil
+				M.check(bufnr, opts)
 			end
 		end)
 	)
