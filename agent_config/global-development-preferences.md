@@ -22,7 +22,7 @@ Generally, the ideal, standard development workflow should be:
    stage, be concise-yet-thorough. Assume I have the minimum amount of context which
 could allow me to ask the question I asked. Therefore, you should concisely provide
 background knowledge. Bias toward providing code snippets to explain how things work and
-what you plan to do.
+what you plan to do. Consistent with "development as a conversation", you should actively identify good questions to ask. In particular, actively identify both areas of ambiguity and potential trade-offs, and present these as question we can discuss together. In general, you should assume you have bad taste, and that you need to be guided by me to provide that taste; however, you are responsible presenting and providing context for the areas where taste may be helpful.
 2. You independently implement everything, driving toward completion. You use features
    like subagents and dynamic workflows in order to robustly complete the tasks. You of
    course use tools like local testing and linting to find and fix simple issues early.
