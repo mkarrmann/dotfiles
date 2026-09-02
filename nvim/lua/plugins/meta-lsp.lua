@@ -8,16 +8,9 @@ return {
 			local meta = require("meta")
 			meta.setup()
 
-			vim.lsp.enable({
-				"cppls@meta",
-				"pyrefly@meta",
-				"thriftlsp@meta",
-				"rust-analyzer@meta",
-				"linttool@meta",
-				"buck2@meta",
-				"ids@meta",
-				"hhvm",
-			})
+			-- Which servers are enabled lives in local/config/meta.lua, which
+			-- runs on every Meta machine. Enabling them here too meant two
+			-- lists that had already drifted apart.
 
 			local null_ls = require("null-ls")
 			null_ls.register({

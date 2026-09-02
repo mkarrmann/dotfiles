@@ -14,12 +14,25 @@ end
 
 vim.g.obsidian_vault = require("lib.agent-session").resolve_vault_root()
 
+-- Canonical list of enabled Meta language servers.
+--
+-- This used to be split across here and plugins/meta-lsp.lua, with the two
+-- lists disagreeing (thriftlsp, rust-analyzer and hhvm existed only there), so
+-- editing either one looked authoritative while the union was what actually
+-- ran. It lives here because this file is required from config/local.lua on
+-- every Meta machine, whereas the plugin spec is gated on the Linux meta.nvim
+-- path and never loads on a Mac.
+--
+-- hhvm resolves from nvim-lspconfig; the rest from meta.nvim's lsp/ directory.
 vim.lsp.enable({
-	"cppls@meta",
-	"pyrefly@meta",
 	"buck2@meta",
-	"linttool@meta",
+	"cppls@meta",
+	"hhvm",
 	"ids@meta",
+	"linttool@meta",
+	"pyrefly@meta",
+	"rust-analyzer@meta",
+	"thriftlsp@meta",
 })
 
 -- pyrefly@meta cannot report type errors in the IDE (fbcode/pyrefly.toml sets
