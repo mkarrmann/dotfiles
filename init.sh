@@ -69,6 +69,12 @@ fi
 "$DOTFILES_DIR/bin/omnigent-config-ensure" \
     || echo "WARNING: omnigent-config-ensure failed (shared prefs not applied)" >&2
 
+# Omnigent: shim the managed-Codex login probe. Runs here as well as in sync.sh
+# for the same reason as config-ensure above — the stage-1 sync self-skips when
+# omnigent is not yet installed, and the dismissal half needs its interpreter.
+"$DOTFILES_DIR/bin/omnigent-codex-login-ensure" \
+    || echo "WARNING: omnigent-codex-login-ensure failed (codex-native first turns may fail)" >&2
+
 # Omnigent: register the direct-harness builtin agents (claude-sdk, codex) so
 # they show in the CodeCompanion omnigent picker (<leader>aM / <leader>aA)
 # alongside polly/debby/dvsc. The picker's model/effort steps key off each

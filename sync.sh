@@ -662,6 +662,13 @@ fi
 "$DOTFILES_DIR/bin/omnigent-config-ensure" || \
   echo "WARNING: omnigent-config-ensure failed (shared prefs not applied)" >&2
 
+# Omnigent: make a managed Codex install (Meta's AI Gateway, mTLS, no auth.json)
+# read as logged in, so a codex-native session created with a first prompt does
+# not fail that turn against a thread that was about to start. Self-skips off
+# managed installs and never touches a real Codex login.
+"$DOTFILES_DIR/bin/omnigent-codex-login-ensure" || \
+  echo "WARNING: omnigent-codex-login-ensure failed (codex-native first turns may fail)" >&2
+
 # Ghostty
 mkdir -p "$HOME/.config/ghostty"
 link_one "$DOTFILES_DIR/ghostty_config" "$HOME/.config/ghostty/config"

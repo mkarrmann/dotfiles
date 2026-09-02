@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# omnigent-codex-login-ensure — make Omnigent see a managed Codex install as
+# logged in, so host-spawned codex-native sessions don't fail their first turn.
+#
+# THE BUG (omnigent >= 0.12, github.com/mkarrmann/omnigent):
+# Omnigent decides whether Codex can run purely by reading $CODEX_HOME/auth.json
+# (`_codex_login_usable`, codex_native_app_server.py). Meta's Codex authenticates
+# through the AI Gateway via an mTLS client cert wired by /etc/codex/*.toml plus
+# launcher-injected -c flags, and never writes auth.json — so the probe reports
+# "not signed in" on a perfectly working install.
+#
+# That verdict is not merely cosmetic. `_codex_discover_thread_and_forward`
+# (runner/native/orchestration.py) pre-records a terminal startup error BEFORE
+# waiting for the TUI, and `codex_native_executor.run_turn` checks for that
+# marker before its first sleep. A session created WITH a first prompt attached
+# (the Mac app always; `omnigent codex --prompt` too) dispatches its turn ~15ms
+# after terminal creation, while thread/started lands ~700ms-1.4s later — so the
+# turn dies against a thread that was about to come up. Reproduced and fixed
+# end-to-end on devvm20365, 2026-09-02.
+#
+# THE SHIM: give the probe the one thing it reads.
+#   1. A placeholder $CODEX_HOME/auth.json. Inert on the wire: the managed
+#      `responses` provider declares env_key="OPENAI_API_KEY", but auth is mTLS
+#      (model_providers.responses.tls.client-certificate-env) and the bearer is
+#      ignored — verified by running codex with a deliberately invalid
+#      OPENAI_API_KEY in the environment (higher precedence than auth.json) and
+#      getting a normal completion back.
+#   2. `dismissed_detections: [codex]` in ~/.omnigent/config.yaml. Without it the
+#      placeholder makes Omnigent detect a ChatGPT *subscription* and pin
+#      -c model_provider="openai" (_resolve_subscription_launch), which
+#      contradicts the managed model_provider = "responses". Dismissing the
+#      detection restores an override-free launch: login_required=False,
+#      config_overrides=[] — byte-identical to the unshimmed launch except the
+#      boolean that causes the bug.
+#
+# Both halves are applied together or not at all: the dismissal alone would
+# suppress a real ChatGPT login. Runs only on a managed install, never clobbers
+# a genuine auth.json, and is idempotent. Wired into sync.sh and init.sh.
+#
+# Remove this shim once Omnigent recognizes managed Codex credentials — it
+# already does the equivalent for Claude Code (ambient.py reads
+# /etc/claude-code/managed-settings.json) and codex_native.py:145 names the
+# missing seam. Deleting auth.json and the dismissed_detections key reverts it.
+#
+# Env overrides: DOTFILES_DIR, OMNIGENT_DATA_DIR / OMNIGENT_CONFIG_HOME,
+# CODEX_HOME, OMNIGENT_PY.
+set -euo pipefail
+
+if [[ $# -ne 0 ]]; then
+  echo "usage: omnigent-codex-login-ensure" >&2
+  exit 2
+fi
+
+log() { printf '[codex-login-ensure] %s\n' "$*"; }
+
+# Marks the placeholder as ours, so a real `codex login` written later is left
+# alone (and never silently dismissed as a provider).
+SENTINEL="placeholder-managed-gateway-auth-omnigent-codex-login-ensure"
+
+DATA_DIR="${OMNIGENT_DATA_DIR:-${OMNIGENT_CONFIG_HOME:-$HOME/.omnigent}}"
+CONFIG="$DATA_DIR/config.yaml"
+
+# Only managed installs need the shim: a plain Codex really does keep its
+# credential in auth.json, where Omnigent's probe would find it unaided.
+managed_config=""
+for candidate in /etc/codex/managed_config.toml /etc/codex/managed_config_corp.toml; do
+  if [[ -r "$candidate" ]] && grep -Eq '^[[:space:]]*model_provider[[:space:]]*=' "$candidate"; then
+    managed_config="$candidate"
+    break
+  fi
+done
+if [[ -z "$managed_config" ]]; then
+  log "no managed Codex config pins a model_provider; skipping (not a managed install)"
+  exit 0
+fi
+
+# Mirror sync.sh: honour a relocated CODEX_HOME, but never write into the
+# ephemeral per-session home an Omnigent native session exports.
+codex_home="${CODEX_HOME:-$HOME/.codex}"
+case "$codex_home" in
+  "$HOME"/.omnigent/codex-native/*/codex-home) codex_home="$HOME/.codex" ;;
+esac
+AUTH="$codex_home/auth.json"
+
+if [[ -e "$AUTH" ]] && ! grep -Fq "$SENTINEL" "$AUTH" 2>/dev/null; then
+  log "$AUTH exists and is not our placeholder; leaving a real Codex login alone"
+  exit 0
+fi
+
+if [[ -f "$AUTH" ]]; then
+  log "auth.json placeholder already present"
+else
+  mkdir -p "$codex_home"
+  umask 077
+  printf '{"OPENAI_API_KEY": "%s"}\n' "$SENTINEL" > "$AUTH"
+  chmod 600 "$AUTH"
+  log "wrote auth.json placeholder ($managed_config supplies the real credential)"
+fi
+
+# omnigent ships as a prebuilt uv *tool*; use its interpreter for the YAML edit
+# since it is guaranteed to have pyyaml (the system python3 may not).
+_tools_dir="$(uv tool dir 2>/dev/null || echo "$HOME/.local/share/uv/tools")"
+OMNIGENT_PY="${OMNIGENT_PY:-$_tools_dir/omnigent/bin/python3}"
+if [[ ! -x "$OMNIGENT_PY" ]]; then
+  log "omnigent tool python not found at $OMNIGENT_PY; skipping dismissal"
+  exit 0
+fi
+
+"$OMNIGENT_PY" - "$CONFIG" <<'PY'
+import os
+import sys
+
+import yaml
+
+config_path = sys.argv[1]
+
+cfg = {}
+if os.path.exists(config_path):
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f) or {}
+if not isinstance(cfg, dict):
+    cfg = {}
+
+# Union, not replace: a machine may have dismissed other detections through
+# `omnigent setup`, and this shim owns only the "codex" entry.
+raw = cfg.get("dismissed_detections")
+current = [n for n in raw if isinstance(n, str)] if isinstance(raw, list) else []
+if "codex" in current:
+    print("[codex-login-ensure] config.yaml: codex detection already dismissed")
+    raise SystemExit(0)
+
+cfg["dismissed_detections"] = sorted({*current, "codex"})
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
+with open(config_path, "w") as f:
+    yaml.safe_dump(cfg, f, sort_keys=False, default_flow_style=False)
+print("[codex-login-ensure] config.yaml: dismissed the synthesized 'codex' subscription")
+PY
