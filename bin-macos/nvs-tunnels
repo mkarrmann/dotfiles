@@ -21,6 +21,10 @@ NVS_CLIP_PORT="${NVS_CLIP_PORT:-8765}"
 PERSISTENCE_PORT="${PERSISTENCE_PORT:-7847}"
 ORCHEST_REMOTE_PORT="${ORCHEST_REMOTE_PORT:-13100}"
 ORCHEST_LOCAL_PORT="${ORCHEST_LOCAL_PORT:-3100}"
+NVS_TUNNEL_BOOTSTRAP_LOCK_DIR="${NVS_TUNNEL_BOOTSTRAP_LOCK_DIR:-/tmp/nvs-tunnel-bootstrap.lock}"
+NVS_TUNNEL_MONITOR_INTERVAL="${NVS_TUNNEL_MONITOR_INTERVAL:-1}"
+NVS_TUNNEL_RETRY_DELAY="${NVS_TUNNEL_RETRY_DELAY:-5}"
+NVS_TUNNEL_MAX_ATTEMPTS="${NVS_TUNNEL_MAX_ATTEMPTS:-0}"
 OMNIGENT_PORT="${OMNIGENT_PORT:-$(omnigent-server-url --port)}"
 OMNIGENT_PRIMARY_FQDN="${OMNIGENT_PRIMARY_FQDN:-$(omnigent-server-url --primary)}"
 OMNIGENT_STANDBY_FQDN="${OMNIGENT_STANDBY_FQDN:-$(omnigent-server-url --standby)}"
@@ -81,19 +85,112 @@ fi
 # authenticated connection. This preserves cold-boot recovery without a
 # separate Mac discovery login; failure stays non-fatal because the hub startup
 # gate remains fail-closed and the next ET reconnect retries it.
-remote_cmd="(\$HOME/bin/omnigent-hub cache-routing --force-remount --json >/dev/null 2>&1 || true) & nvs-status${session_names}; exec sleep infinity"
+ready_marker="NVS tunnel ready."
+remote_cmd="printf '${ready_marker}\\n'; (\$HOME/bin/omnigent-hub cache-routing --force-remount --json >/dev/null 2>&1 || true) & nvs-status${session_names}; exec sleep infinity"
 
 # Start clipboard listener if not already running
 nvs-clip-listen &
 disown
 
+bootstrap_lock_held=false
+et_pid=""
+attempt_log=""
+
+release_bootstrap_lock() {
+  if [[ "$bootstrap_lock_held" == true ]]; then
+    rm -f "$NVS_TUNNEL_BOOTSTRAP_LOCK_DIR/pid"
+    rmdir "$NVS_TUNNEL_BOOTSTRAP_LOCK_DIR" 2>/dev/null || true
+    bootstrap_lock_held=false
+  fi
+}
+
+acquire_bootstrap_lock() {
+  local owner_pid="" missing_owner_checks=0 announced=false
+
+  while ! mkdir "$NVS_TUNNEL_BOOTSTRAP_LOCK_DIR" 2>/dev/null; do
+    owner_pid=$(cat "$NVS_TUNNEL_BOOTSTRAP_LOCK_DIR/pid" 2>/dev/null || true)
+    if [[ -n "$owner_pid" ]] && ! kill -0 "$owner_pid" 2>/dev/null; then
+      rm -f "$NVS_TUNNEL_BOOTSTRAP_LOCK_DIR/pid"
+      rmdir "$NVS_TUNNEL_BOOTSTRAP_LOCK_DIR" 2>/dev/null || true
+      continue
+    fi
+    if [[ -z "$owner_pid" ]]; then
+      missing_owner_checks=$((missing_owner_checks + 1))
+      if [[ "$missing_owner_checks" -ge 5 ]]; then
+        rmdir "$NVS_TUNNEL_BOOTSTRAP_LOCK_DIR" 2>/dev/null || true
+        missing_owner_checks=0
+        continue
+      fi
+    else
+      missing_owner_checks=0
+    fi
+    if [[ "$announced" == false ]]; then
+      echo "Waiting for the other NVS tunnel to finish authentication..."
+      announced=true
+    fi
+    sleep "$NVS_TUNNEL_MONITOR_INTERVAL"
+  done
+
+  printf '%s\n' "$$" > "$NVS_TUNNEL_BOOTSTRAP_LOCK_DIR/pid"
+  bootstrap_lock_held=true
+}
+
+descendant_pids() {
+  local root_pid="$1"
+  ps -axo pid=,ppid= | awk -v root="$root_pid" '
+    { pids[NR] = $1; parents[$1] = $2 }
+    END {
+      descendants[root] = 1
+      for (pass = 1; pass <= NR; pass++) {
+        for (i = 1; i <= NR; i++) {
+          if (descendants[parents[pids[i]]]) descendants[pids[i]] = 1
+        }
+      }
+      for (i = NR; i >= 1; i--) {
+        if (pids[i] != root && descendants[pids[i]]) print pids[i]
+      }
+    }
+  '
+}
+
+terminate_et_attempt() {
+  local descendants
+  [[ -n "$et_pid" ]] || return 0
+
+  descendants=$(descendant_pids "$et_pid")
+  if [[ -n "$descendants" ]]; then
+    # descendants is an intentional whitespace-delimited PID list from awk.
+    # shellcheck disable=SC2086
+    kill $descendants 2>/dev/null || true
+  fi
+  kill "$et_pid" 2>/dev/null || true
+  wait "$et_pid" 2>/dev/null || true
+  et_pid=""
+}
+
+cleanup() {
+  terminate_et_attempt
+  release_bootstrap_lock
+  [[ -z "$attempt_log" ]] || rm -f "$attempt_log"
+}
+
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap cleanup EXIT
+
 # Reconnect loop — ET handles transient network issues, but if the session
 # itself terminates (devvm restart, Duo expiry, prolonged outage), we retry.
 # Duo re-auth is interactive, so the user sees the prompt in this window.
+attempt_number=0
 while true; do
+  attempt_number=$((attempt_number + 1))
+  acquire_bootstrap_lock
+
   echo ""
   echo "Connecting to $host (Duo auth may be required)..."
   echo ""
+
+  attempt_log=$(mktemp "${TMPDIR:-/tmp}/nvs-tunnels.XXXXXX")
 
   # ET requires reverse tunnels to be merged into a single -r flag
   # (comma-separated), not passed as multiple -r flags. Same shape as
@@ -101,19 +198,43 @@ while true; do
   NVS_TUNNEL_BOOTSTRAP=v3 x2ssh -et "$host" \
     -t "$tunnel_spec" \
     -r "$NVS_CLIP_PORT:$NVS_CLIP_PORT,$PERSISTENCE_PORT:$PERSISTENCE_PORT,$ORCHEST_REMOTE_PORT:$ORCHEST_LOCAL_PORT" \
-    -c "zsh -lc '${remote_cmd}'" &
+    -c "zsh -lc '${remote_cmd}'" > >(tee "$attempt_log") 2>&1 &
   et_pid=$!
 
-  # Periodically reset the window title so AeroSpace can identify this window,
-  # even if ET/remote shell overrides it.
-  while kill -0 "$et_pid" 2>/dev/null; do
+  attempt_failed=false
+  attempt_ready=false
+  while true; do
+    if [[ "$attempt_ready" == false ]] && grep -Fq "$ready_marker" "$attempt_log"; then
+      attempt_ready=true
+      release_bootstrap_lock
+    fi
+
+    if grep -Eq 'Client is not registered|Error starting ET process through ssh|Error initializing connection' "$attempt_log"; then
+      attempt_failed=true
+      echo "ET bootstrap failed; terminating this attempt so it can retry."
+      terminate_et_attempt
+      break
+    fi
+
+    kill -0 "$et_pid" 2>/dev/null || break
     printf '\033]0;%s\007' "$tunnel_label"
-    sleep 10
+    sleep "$NVS_TUNNEL_MONITOR_INTERVAL"
   done
 
-  wait "$et_pid" 2>/dev/null || true
+  if [[ -n "$et_pid" ]]; then
+    wait "$et_pid" 2>/dev/null || true
+    et_pid=""
+  fi
+  release_bootstrap_lock
+  rm -f "$attempt_log"
+  attempt_log=""
+
+  if [[ "$NVS_TUNNEL_MAX_ATTEMPTS" -gt 0 && "$attempt_number" -ge "$NVS_TUNNEL_MAX_ATTEMPTS" ]]; then
+    [[ "$attempt_failed" == false ]] || exit 1
+    exit 0
+  fi
 
   echo ""
-  echo "ET session terminated. Reconnecting in 5s..."
-  sleep 5
+  echo "ET session terminated. Reconnecting in ${NVS_TUNNEL_RETRY_DELAY}s..."
+  sleep "$NVS_TUNNEL_RETRY_DELAY"
 done
