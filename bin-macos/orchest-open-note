@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+session_name="${1:?usage: orchest-open-note NVS_SESSION NOTE_ID}"
+note_id="${2:?usage: orchest-open-note NVS_SESSION NOTE_ID}"
+
+if [[ ! "$session_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+  echo "orchest-open-note: invalid NVS session name" >&2
+  exit 2
+fi
+if [[ ! "$note_id" =~ ^note_[0-9a-f]+$ ]] || [[ ${#note_id} -ne 37 ]]; then
+  echo "orchest-open-note: invalid note ID" >&2
+  exit 2
+fi
+
+port=$(printf '%s' "$session_name" | cksum | awk '{ print 7000 + ($1 % 1000) }')
+expression="luaeval(\"require('lib.scratch-notes').open_by_id(_A)\", \"$note_id\")"
+
+result=$(nvim --server "localhost:$port" --remote-expr "$expression") || {
+  echo "orchest-open-note: Neovim session '$session_name' is unavailable" >&2
+  exit 1
+}
+
+case "$result" in
+  true|v:true|1) ;;
+  *)
+    echo "orchest-open-note: note '$note_id' was not opened" >&2
+    exit 1
+    ;;
+esac

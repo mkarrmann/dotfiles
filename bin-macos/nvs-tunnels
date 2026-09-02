@@ -7,7 +7,7 @@ set -euo pipefail
 # Sets up:
 #   - Forward tunnels (-t) for each nvim session's RPC port
 #   - One candidate-specific Omnigent forward reused by the Mac proxy
-#   - Reverse tunnels (-r) for clipboard relay and ACP persistence
+#   - Reverse tunnels (-r) for clipboard relay, ACP persistence, and Orchest integration
 #   - Remote headless nvim servers via nvs --server-only
 #   - Local clipboard listener (nvs-clip-listen) for receiving yanked text
 #
@@ -19,6 +19,8 @@ set -euo pipefail
 
 NVS_CLIP_PORT="${NVS_CLIP_PORT:-8765}"
 PERSISTENCE_PORT="${PERSISTENCE_PORT:-7847}"
+ORCHEST_REMOTE_PORT="${ORCHEST_REMOTE_PORT:-13100}"
+ORCHEST_LOCAL_PORT="${ORCHEST_LOCAL_PORT:-3100}"
 OMNIGENT_PORT="${OMNIGENT_PORT:-$(omnigent-server-url --port)}"
 OMNIGENT_PRIMARY_FQDN="${OMNIGENT_PRIMARY_FQDN:-$(omnigent-server-url --primary)}"
 OMNIGENT_STANDBY_FQDN="${OMNIGENT_STANDBY_FQDN:-$(omnigent-server-url --standby)}"
@@ -98,7 +100,7 @@ while true; do
   # the -t forward-tunnel spec built above.
   NVS_TUNNEL_BOOTSTRAP=v3 x2ssh -et "$host" \
     -t "$tunnel_spec" \
-    -r "$NVS_CLIP_PORT:$NVS_CLIP_PORT,$PERSISTENCE_PORT:$PERSISTENCE_PORT" \
+    -r "$NVS_CLIP_PORT:$NVS_CLIP_PORT,$PERSISTENCE_PORT:$PERSISTENCE_PORT,$ORCHEST_REMOTE_PORT:$ORCHEST_LOCAL_PORT" \
     -c "zsh -lc '${remote_cmd}'" &
   et_pid=$!
 

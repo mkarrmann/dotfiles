@@ -35,6 +35,28 @@
       }
     },
     {
+      "id": "obsidian-notes",
+      "module": "/Users/mkarrmann/dev/orchest/packages/plugin-obsidian-notes/dist/index.js",
+      "config": {
+        "attribution": {
+          "byNvimSession": {
+            "CCO-checkout1": "2",
+            "FTW-checkout1": "3",
+            "CCO-checkout2": "4",
+            "FTW-checkout2": "5",
+            "CCO-checkout3": "6",
+            "FTW-checkout3": "7",
+            "CCO-checkout4": "8"
+          }
+        },
+        "openNoteCommand": "/Users/mkarrmann/bin/orchest-open-note"
+      },
+      "policy": {
+        "attention": { "maxLevel": "badge" },
+        "notification": { "rateLimitPerMinute": 5 }
+      }
+    },
+    {
       "id": "orchest-omnigent-bridge",
       "module": "/Users/mkarrmann/dev/orchest/packages/plugin-omnigent-bridge/dist/index.js",
       "config": {

@@ -62,11 +62,12 @@ case "$mode" in
     cmd+=(--cmd "lua pcall(require, 'lib.clipboard-relay')")
 
     # Per-launch session identity. Read by nvim for the session-accent name
-    # (lib/session-accent) and by the omnigent adapter's `orchest.nvim_session`
-    # correlation tag (plugins/codecompanion.lua).
+    # (lib/session-accent), task-note attribution, and the omnigent adapter's
+    # `orchest.nvim_session` correlation tag (plugins/codecompanion.lua).
     export NVS_SESSION_NAME="$name"
     export NVS_HOST="$(hostname -s)"
     export NVS_WORKDIR="${workdir:-$PWD}"
+    export ORCHEST_INTEGRATION_URL="${ORCHEST_INTEGRATION_URL:-http://127.0.0.1:13100}"
 
     exec "${cmd[@]}"
     ;;
