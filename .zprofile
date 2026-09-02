@@ -6,7 +6,4 @@ if [[ -f ~/.shell_env ]]; then
   source ~/.shell_env
 fi
 
-# Source zshrc to pull in all interactive shell configuration.
-if [[ -f ~/.zshrc ]]; then
-  source ~/.zshrc
-fi
+# Interactive login shells source ~/.zshrc automatically after ~/.zprofile.
