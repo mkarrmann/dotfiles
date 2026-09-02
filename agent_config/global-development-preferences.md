@@ -59,6 +59,33 @@ committing the changes.
 
 Frequently remind yourself which step you are at by explicitly mentioning it out loud.
 
+## Live Environment Safety — Hard Gate
+
+Implementation authorization covers source-code changes and isolated tests only. It never authorizes deployment, installation, synchronization, activation, or mutation of the live development environment.
+
+Unless I explicitly request the exact live operation, NEVER:
+
+- kill, signal, restart, replace, or reconfigure existing processes;
+- touch tunnels, SSH/ET sessions, editors, terminal windows, daemons, launch agents, or GUI applications;
+- reload configuration into a running process;
+- run sync/install/deploy/startup scripts;
+- modify remote machines or persistent runtime state;
+- treat a process or window as stale and clean it up.
+
+Existing processes, connections, editor sessions, and unsaved state are inviolable—even when they prevent verification.
+
+If live activation or verification would be useful:
+
+1. Stop before making any change.
+2. Describe the exact commands, targets, expected disruption, and rollback limitations.
+3. Wait for explicit textual authorization.
+4. A tool approval dialog does NOT count as authorization.
+5. Approval for one action does not authorize adjacent actions.
+
+“Implement,” “finish,” “get working,” “test end-to-end,” and “verify” do not imply permission to perform live rollout. Configuration changes should take effect on the next natural restart unless I explicitly request activation.
+
+Never modify or terminate a process that the agent did not start during the current turn.
+
 ## Do's
 
 - DO: Bias toward encoding logic and contracts in a type-safe manner, elegantly leveraging the type system of the programming language. This is used to communicate intent, prove specific correctness criteria, improve readability and reviewability, and prevent future mistakes. Even in languages where the typing is not usually trusted (e.g. Python), rely upon modern tooling and techniques to fully leverage typing.
