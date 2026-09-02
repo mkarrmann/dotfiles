@@ -3,6 +3,7 @@
 # ~/.codex/config.toml from this template.
 model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
+service_tier = "fast"
 
 # Native Codex sessions run their own MCP surface rather than the tools from
 # the Omnigent agent spec. Register the stateless intent server here; the
