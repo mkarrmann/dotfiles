@@ -27,11 +27,14 @@ set -euo pipefail
 VERSION="${MARKSMAN_VERSION:-2024-12-18}"
 BIN="${MARKSMAN_BIN:-$HOME/.local/bin/marksman}"
 
+# Candidate asset names, tried in order. Upstream has published macOS both as
+# per-arch files and as a single universal `marksman-macos`, so rather than pin
+# one guess we take the first that downloads.
 case "$(uname -s)/$(uname -m)" in
-  Linux/x86_64)   asset="marksman-linux-x64" ;;
-  Linux/aarch64)  asset="marksman-linux-arm64" ;;
-  Darwin/arm64)   asset="marksman-macos-arm64" ;;
-  Darwin/x86_64)  asset="marksman-macos-x64" ;;
+  Linux/x86_64)   assets=(marksman-linux-x64) ;;
+  Linux/aarch64)  assets=(marksman-linux-arm64) ;;
+  Darwin/arm64)   assets=(marksman-macos-arm64 marksman-macos) ;;
+  Darwin/x86_64)  assets=(marksman-macos-x64 marksman-macos) ;;
   *)
     echo "[marksman] unsupported platform $(uname -s)/$(uname -m); skipping" >&2
     exit 0
@@ -49,8 +52,7 @@ if [[ "$installed" == "$VERSION" ]]; then
   exit 0
 fi
 
-url="https://github.com/artempyanykh/marksman/releases/download/${VERSION}/${asset}"
-echo "[marksman] installing $VERSION (was ${installed:-none}) from $url"
+echo "[marksman] installing $VERSION (was ${installed:-none})"
 
 mkdir -p "$(dirname "$BIN")"
 tmp="$(mktemp "${TMPDIR:-/tmp}/marksman.XXXXXX")"
@@ -58,12 +60,23 @@ trap 'rm -f "$tmp"' EXIT
 
 # --fail so an HTML error page is not written out as if it were the binary:
 # a plain `curl -sSL -o` can exit 0 having produced nothing usable.
-if ! curl -sSLf -o "$tmp" "$url"; then
-  echo "WARNING: could not download marksman from $url" >&2
-  echo "         (GitHub release assets are not reachable from every host here;" >&2
-  echo "          nvim leaves marksman disabled when the binary is absent)" >&2
+got=""
+for asset in "${assets[@]}"; do
+  url="https://github.com/artempyanykh/marksman/releases/download/${VERSION}/${asset}"
+  if curl -sSLf -o "$tmp" "$url"; then
+    got="$url"
+    break
+  fi
+  echo "[marksman] not available: $asset" >&2
+done
+
+if [[ -z "$got" ]]; then
+  echo "WARNING: could not download marksman $VERSION for $(uname -s)/$(uname -m)" >&2
+  echo "         tried: ${assets[*]}" >&2
+  echo "         (nvim leaves marksman disabled when the binary is absent)" >&2
   exit 1
 fi
+echo "[marksman] downloaded $got"
 
 # Size guard: the real binary is tens of MB, an error page is bytes.
 size="$(wc -c <"$tmp")"
