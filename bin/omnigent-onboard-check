@@ -95,4 +95,33 @@ else
   systemctl --user is-active --quiet omnigent-client-proxy.service
 fi
 
+# The managed-Codex login shim (bin/omnigent-codex-login-ensure) is invisible at
+# run time: it writes two config facts and is never consulted again. If either
+# omnigent internal it keys on drifts -- the auth.json credential parser or the
+# `dismissed_detections` name -- it stops applying SILENTLY, and the only
+# symptom is a codex-native session created with a first prompt failing that
+# turn. Assert the invariant it exists to hold, so drift surfaces at converge
+# time instead. Gated on the same managed-install condition as the shim, since
+# on a plain Codex install there is nothing to shim and nothing to assert.
+if grep -Eqs '^[[:space:]]*model_provider[[:space:]]*=' \
+    /etc/codex/managed_config.toml /etc/codex/managed_config_corp.toml; then
+  _tools_dir="$(uv tool dir 2>/dev/null || echo "$HOME/.local/share/uv/tools")"
+  "${OMNIGENT_PY:-$_tools_dir/omnigent/bin/python3}" - <<'PY'
+from omnigent.codex_native_app_server import resolve_native_codex_launch
+
+# What the shim buys: Codex reads as logged in (so no startup error is
+# pre-recorded to race thread/started) with no provider override pinned (so the
+# managed model_provider = "responses" still routes).
+launch = resolve_native_codex_launch(model=None)
+if launch.login_required or launch.config_overrides:
+    raise SystemExit(
+        "managed-Codex login shim is not holding: "
+        f"login_required={launch.login_required}, "
+        f"config_overrides={launch.config_overrides} (expected False, []). "
+        "Re-run bin/omnigent-codex-login-ensure; if that does not fix it, "
+        "omnigent's launch routing has changed -- see the shim's header."
+    )
+PY
+fi
+
 echo "[omnigent-onboard] healthy on $local_fqdn via $url"
