@@ -37,6 +37,19 @@ return {
 		end,
 	},
 	{
+		-- The markdown extra imported in config/lazy.lua registers marksman, whose
+		-- binary Mason fetches from GitHub releases. fwdproxy returns 403 for those,
+		-- so it can never install here and vim.lsp rejects the config on every
+		-- startup: 'invalid "marksman" config: cmd: expected ... executable'.
+		-- The rest of the extra (render-markdown, markdownlint, preview, conform)
+		-- is unaffected; only the language server is dropped.
+		"neovim/nvim-lspconfig",
+		opts = {
+			servers = { marksman = { enabled = false } },
+		},
+	},
+
+	{
 		"lukas-reineke/indent-blankline.nvim",
 		opts = {
 			indent = { char = "▏" },
