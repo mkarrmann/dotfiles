@@ -41,6 +41,18 @@ case "$mode" in
     printf '%s [launch] pid=%s ppid=%s parent=%q port=%s workdir=%q\n' \
       "$(date -Iseconds)" "$$" "$PPID" "$parent_cmd" "$port" "${workdir:-}" >> "$log"
 
+    # Neovim never rotates lsp.log, and a language server's stderr is written
+    # there at ERROR level regardless of vim.lsp.log level -- so pyrefly's and
+    # arc's INFO chatter accumulate at roughly 4MB/day even while idle (1807 of
+    # a sampled 2000 lines were INFO). Left alone it reached 70MB and buried the
+    # occasional real error. Truncate at server start rather than rotate; this
+    # log is only ever useful for the session you are debugging.
+    lsp_log="${XDG_STATE_HOME:-$HOME/.local/state}/nvim/lsp.log"
+    if [[ -f "$lsp_log" ]] && (( $(stat -c%s "$lsp_log" 2>/dev/null || echo 0) > 52428800 )); then
+      : > "$lsp_log"
+      printf '%s [launch] truncated lsp.log (exceeded 50MB)\n' "$(date -Iseconds)" >> "$log"
+    fi
+
     cmd=(nvim --headless --listen "localhost:$port")
     if [[ -n "$workdir" ]]; then
       expanded="${workdir/#\~/$HOME}"
