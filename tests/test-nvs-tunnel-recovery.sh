@@ -29,6 +29,7 @@ EOF
 cat > "$TMP/bin/x2ssh" <<'EOF'
 #!/usr/bin/env bash
 host="$2"
+printf '%s\n' "$*" >> "$FAKE_ARGS"
 case "$FAKE_MODE" in
   retry)
     count=$(cat "$FAKE_COUNT" 2>/dev/null || echo 0)
@@ -39,14 +40,14 @@ case "$FAKE_MODE" in
       echo "Error connecting to server: 3: Client is not registered"
       while true; do sleep 1; done
     fi
-    echo "NVS tunnel ready."
+    echo "NVS_TUNNEL_READY"
     ;;
   serialize)
     echo "$host" >> "$FAKE_ENTRIES"
     if [[ "$host" == primary.example.com ]]; then
       while [[ ! -e "$FAKE_RELEASE" ]]; do sleep 0.05; done
     fi
-    echo "NVS tunnel ready."
+    echo "NVS_TUNNEL_READY"
     ;;
   *) exit 2 ;;
 esac
@@ -67,6 +68,7 @@ echo "1. a stuck registration attempt is terminated and retried"
 export FAKE_MODE=retry
 export FAKE_COUNT="$TMP/count"
 export FAKE_TERMINATED="$TMP/terminated"
+export FAKE_ARGS="$TMP/args"
 if ! run_tunnels 2 primary.example.com TEST-checkout1 > "$TMP/retry.out" 2>&1; then
   fail "nvs-tunnels did not recover from the simulated registration failure"
 fi
@@ -78,6 +80,8 @@ grep -Fq "ET bootstrap failed; terminating this attempt so it can retry." "$TMP/
   || fail "retry reason was not reported"
 [[ ! -e "$TMP/bootstrap.lock" ]] \
   || fail "bootstrap lock survived after nvs-tunnels exited"
+grep -Fq -- "-c zsh -lc 'echo NVS_TUNNEL_READY;" "$FAKE_ARGS" \
+  || fail "remote readiness command is not safely nested inside zsh -lc"
 
 echo "2. concurrent tunnel processes serialize interactive bootstrap"
 export FAKE_MODE=serialize

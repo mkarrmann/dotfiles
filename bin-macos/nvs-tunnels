@@ -85,8 +85,8 @@ fi
 # authenticated connection. This preserves cold-boot recovery without a
 # separate Mac discovery login; failure stays non-fatal because the hub startup
 # gate remains fail-closed and the next ET reconnect retries it.
-ready_marker="NVS tunnel ready."
-remote_cmd="printf '${ready_marker}\\n'; (\$HOME/bin/omnigent-hub cache-routing --force-remount --json >/dev/null 2>&1 || true) & nvs-status${session_names}; exec sleep infinity"
+ready_marker="NVS_TUNNEL_READY"
+remote_cmd="echo ${ready_marker}; (\$HOME/bin/omnigent-hub cache-routing --force-remount --json >/dev/null 2>&1 || true) & nvs-status${session_names}; exec sleep infinity"
 
 # Start clipboard listener if not already running
 nvs-clip-listen &
