@@ -68,6 +68,7 @@ Frequently remind yourself which step you are at by explicitly mentioning it out
 - If a commit is requested, create a new commit for each logical change so review stays easy.
 - DO include full, exact code links AND snippets when referencing code to explain, justify, or prove your answer. This is the ONLY way for me to fully understand what you're saying and be confident you're being honest and correct.
 - DO proactively test your changes, and more broadly prove your changes are safe and correct. If there are limitations to what you can feasibly prove/test, then explicitly and clearly surface that.
+- DO prioritize solving and verifying problems in the minimal amount of wall time (without sacrificing wall time). In particular, be prepared to escape early and search for alternatives if a step is taking longer than expected, and always look for ways to parallelize your work. Parallelization will include aggressive use of subagents, running different commands in parallel, and ensure individual tool calls (e.g. running unit tests) are configured to run in a parallel manner which minimizes wall time.
 
 ## Do Not's
 
