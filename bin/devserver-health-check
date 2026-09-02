@@ -187,11 +187,11 @@ echo ""
 
 # --- Claude Code sessions ---
 echo "--- Claude Code Sessions ---"
-# TODO: `grep -c` prints "0" *and* exits 1 when there are no matches, so the
-# `|| echo 0` appends a second line and claude_count becomes "0\n0". Both
-# arithmetic tests below then fail with "syntax error in expression" on stderr
-# and fall through to the else branch. Drop the `|| echo 0`.
-claude_count=$(ps -eo args 2>/dev/null | grep -c '^claude$' || echo 0)
+# `grep -c` already prints "0" when nothing matches; it just exits 1 as well.
+# `|| echo 0` appended a second line, making claude_count "0\n0" and both
+# arithmetic tests below fail with "syntax error in expression". `|| true`
+# keeps the count and only swallows the exit status.
+claude_count=$(ps -eo args 2>/dev/null | grep -c '^claude$' || true)
 if (( claude_count > 3 )); then
     warn "${claude_count} Claude Code sessions running (consider closing unused ones)"
 elif (( claude_count > 0 )); then
