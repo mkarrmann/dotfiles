@@ -41,10 +41,15 @@ case "$(uname -s)/$(uname -m)" in
     ;;
 esac
 
+# The release tag cannot be recovered from the binary: `marksman --version`
+# reports a build id ("1.0.0-8299f11+8299f11dfad36a9162e010245b380ba25001b15c"),
+# not "2024-12-18". So record which tag we installed alongside it. Deriving the
+# stamp from BIN keeps MARKSMAN_BIN overrides self-consistent.
+STAMP="$(dirname "$BIN")/.marksman-release"
+
 installed=""
-if [[ -x "$BIN" ]]; then
-  # `marksman --version` prints e.g. "marksman 2024-12-18".
-  installed="$("$BIN" --version 2>/dev/null | awk '{print $NF}')"
+if [[ -x "$BIN" && -r "$STAMP" ]] && "$BIN" --version >/dev/null 2>&1; then
+  installed="$(<"$STAMP")"
 fi
 
 if [[ "$installed" == "$VERSION" ]]; then
@@ -88,16 +93,15 @@ fi
 chmod +x "$tmp"
 
 # Prove it runs on this machine before putting it in place -- it is a
-# self-contained .NET binary and can fail on an unexpected libc.
-if ! actual="$("$tmp" --version 2>/dev/null | awk '{print $NF}')"; then
+# self-contained .NET binary and can fail on an unexpected libc. Only that it
+# runs is checked: the reported build id says nothing about the release tag.
+if ! build="$("$tmp" --version 2>/dev/null)" || [[ -z "$build" ]]; then
   echo "ERROR: downloaded marksman does not execute here" >&2
-  exit 1
-fi
-if [[ "$actual" != "$VERSION" ]]; then
-  echo "ERROR: expected marksman $VERSION, downloaded reports ${actual:-nothing}" >&2
   exit 1
 fi
 
 mv -f "$tmp" "$BIN"
 trap - EXIT
-echo "[marksman] installed $VERSION at $BIN"
+# Written after the move, so a failed install never claims a version.
+printf '%s\n' "$VERSION" >"$STAMP"
+echo "[marksman] installed $VERSION at $BIN ($build)"
