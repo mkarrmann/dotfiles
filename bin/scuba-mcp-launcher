@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+find_fbsource_root() {
+  local cursor candidate
+
+  if [[ -n "${FBSOURCE_ROOT:-}" ]]; then
+    candidate="$FBSOURCE_ROOT"
+  else
+    cursor="$PWD"
+    while :; do
+      if [[ -d "$cursor/fbsource" ]]; then
+        candidate="$cursor/fbsource"
+        break
+      fi
+      if [[ "${cursor##*/}" == "fbsource" ]]; then
+        candidate="$cursor"
+        break
+      fi
+      if [[ "${cursor##*/}" == "configerator" && -d "${cursor%/*}/fbsource" ]]; then
+        candidate="${cursor%/*}/fbsource"
+        break
+      fi
+      [[ "$cursor" == "/" ]] && break
+      cursor="${cursor%/*}"
+      [[ -n "$cursor" ]] || cursor="/"
+    done
+  fi
+
+  if [[ -z "${candidate:-}" && -d /data/sandcastle/boxes/fbsource ]]; then
+    candidate=/data/sandcastle/boxes/fbsource
+  fi
+  if [[ -z "${candidate:-}" ]]; then
+    candidate="$HOME/fbsource"
+  fi
+  if [[ ! -d "$candidate" ]]; then
+    echo "scuba-mcp-launcher: fbsource root is not a directory: $candidate" >&2
+    return 1
+  fi
+  (cd -P -- "$candidate" && pwd)
+}
+
+FBSOURCE_ROOT="$(find_fbsource_root)"
+export FBSOURCE_ROOT
+
+if [[ "${SCUBA_MCP_DEV:-}" == "1" ]]; then
+  cd -P -- "$FBSOURCE_ROOT"
+  exec buck2 run fbcode//model_context_protocol/python_servers/scuba:scuba_mcp_server
+fi
+
+binary="$FBSOURCE_ROOT/tools/devmate/python_servers_dotslash/scuba_mcp_server"
+if [[ -f "$binary" ]]; then
+  exec "$binary" "$@"
+fi
+
+cd -P -- "$FBSOURCE_ROOT"
+exec buck2 run fbcode//model_context_protocol/python_servers/scuba:scuba_mcp_server
