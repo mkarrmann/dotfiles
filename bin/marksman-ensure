@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Install the Markdown language server (marksman) used by nvim.
+#
+# The markdown extra imported in nvim/lua/config/lazy.lua registers marksman,
+# but Mason fetches it from GitHub releases and cannot install it in this
+# environment, so vim.lsp rejected the config on every startup. Installing it
+# here means the nvim spec can enable it on any machine that has it and stay
+# quiet on machines that do not.
+#
+# NOT installed to ~/bin: that directory is populated by sync.sh from
+# dotfiles/bin, and a ~20MB binary does not belong in the repo. ~/.local/bin is
+# machine-local; dotsync2 manages individual files there (.local/bin/tmux), not
+# the directory, so an extra binary is left alone.
+#
+# The absolute path matters. The nvs units inherit the systemd --user PATH,
+# which is only /usr/local/{s,}bin:/usr/{s,}bin -- no ~/.local/bin -- so
+# nvim/lua/plugins/overrides.lua points marksman's cmd at BIN directly rather
+# than relying on PATH.
+#
+# Curl is deliberately invoked with no --proxy: ~/.curlrc already routes through
+# fwdproxy:8082 with an x509 client cert, and overriding that with a bare
+# fwdproxy:8080 gets a 403.
+#
+# Override for a one-off with MARKSMAN_VERSION=x.y.z marksman-ensure.
+set -euo pipefail
+
+VERSION="${MARKSMAN_VERSION:-2024-12-18}"
+BIN="${MARKSMAN_BIN:-$HOME/.local/bin/marksman}"
+
+case "$(uname -s)/$(uname -m)" in
+  Linux/x86_64)   asset="marksman-linux-x64" ;;
+  Linux/aarch64)  asset="marksman-linux-arm64" ;;
+  Darwin/arm64)   asset="marksman-macos-arm64" ;;
+  Darwin/x86_64)  asset="marksman-macos-x64" ;;
+  *)
+    echo "[marksman] unsupported platform $(uname -s)/$(uname -m); skipping" >&2
+    exit 0
+    ;;
+esac
+
+installed=""
+if [[ -x "$BIN" ]]; then
+  # `marksman --version` prints e.g. "marksman 2024-12-18".
+  installed="$("$BIN" --version 2>/dev/null | awk '{print $NF}')"
+fi
+
+if [[ "$installed" == "$VERSION" ]]; then
+  echo "[marksman] $VERSION already installed at $BIN"
+  exit 0
+fi
+
+url="https://github.com/artempyanykh/marksman/releases/download/${VERSION}/${asset}"
+echo "[marksman] installing $VERSION (was ${installed:-none}) from $url"
+
+mkdir -p "$(dirname "$BIN")"
+tmp="$(mktemp "${TMPDIR:-/tmp}/marksman.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+
+# --fail so an HTML error page is not written out as if it were the binary:
+# a plain `curl -sSL -o` can exit 0 having produced nothing usable.
+if ! curl -sSLf -o "$tmp" "$url"; then
+  echo "WARNING: could not download marksman from $url" >&2
+  echo "         (GitHub release assets are not reachable from every host here;" >&2
+  echo "          nvim leaves marksman disabled when the binary is absent)" >&2
+  exit 1
+fi
+
+# Size guard: the real binary is tens of MB, an error page is bytes.
+size="$(wc -c <"$tmp")"
+if (( size < 1000000 )); then
+  echo "ERROR: downloaded marksman is only ${size} bytes; refusing to install" >&2
+  exit 1
+fi
+
+chmod +x "$tmp"
+
+# Prove it runs on this machine before putting it in place -- it is a
+# self-contained .NET binary and can fail on an unexpected libc.
+if ! actual="$("$tmp" --version 2>/dev/null | awk '{print $NF}')"; then
+  echo "ERROR: downloaded marksman does not execute here" >&2
+  exit 1
+fi
+if [[ "$actual" != "$VERSION" ]]; then
+  echo "ERROR: expected marksman $VERSION, downloaded reports ${actual:-nothing}" >&2
+  exit 1
+fi
+
+mv -f "$tmp" "$BIN"
+trap - EXIT
+echo "[marksman] installed $VERSION at $BIN"

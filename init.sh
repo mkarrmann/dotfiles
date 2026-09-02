@@ -235,3 +235,9 @@ fi
 # edited. See bin/stylua-ensure.
 "$DOTFILES_DIR/bin/stylua-ensure" \
     || echo "WARNING: stylua install failed (make format will be unavailable)" >&2
+
+# marksman, the Markdown language server. Non-fatal: GitHub release assets are
+# not reachable from every host here, and nvim leaves marksman disabled when the
+# binary is absent rather than erroring. See bin/marksman-ensure.
+"$DOTFILES_DIR/bin/marksman-ensure" \
+    || echo "WARNING: marksman install failed (markdown LSP will stay disabled)" >&2

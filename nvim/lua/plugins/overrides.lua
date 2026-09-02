@@ -37,16 +37,24 @@ return {
 		end,
 	},
 	{
-		-- The markdown extra imported in config/lazy.lua registers marksman, whose
-		-- binary Mason fetches from GitHub releases. fwdproxy returns 403 for those,
-		-- so it can never install here and vim.lsp rejects the config on every
-		-- startup: 'invalid "marksman" config: cmd: expected ... executable'.
-		-- The rest of the extra (render-markdown, markdownlint, preview, conform)
-		-- is unaffected; only the language server is dropped.
+		-- marksman (Markdown LSP) is installed by bin/marksman-ensure from
+		-- init.sh, not by Mason: Mason pulls it from GitHub releases, which some
+		-- hosts here cannot reach. Enable it only where the binary is actually
+		-- present, so a host without it stays quiet rather than failing config
+		-- validation on every startup with
+		--   'invalid "marksman" config: cmd: expected ... executable'
+		-- An absolute cmd is required, not a bare name: nvs servers inherit the
+		-- systemd --user PATH (/usr/local/{s,}bin:/usr/{s,}bin), which does not
+		-- include ~/.local/bin.
 		"neovim/nvim-lspconfig",
-		opts = {
-			servers = { marksman = { enabled = false } },
-		},
+		opts = function(_, opts)
+			local bin = vim.fn.expand("~/.local/bin/marksman")
+			opts.servers = opts.servers or {}
+			opts.servers.marksman = vim.fn.executable(bin) == 1
+					and { mason = false, cmd = { bin, "server" } }
+				or { enabled = false }
+			return opts
+		end,
 	},
 
 	{
