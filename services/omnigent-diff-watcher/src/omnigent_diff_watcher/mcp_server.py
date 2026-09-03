@@ -7,16 +7,32 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import quote, urlparse
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from pydantic import Field
 
 mcp = FastMCP("diff-watch", log_level="ERROR")
 # Spelled out rather than derived from EventKind so the published tool schema
 # stays a literal; tests pin the two together.
 EventName = Literal["review_comment", "ci_failure", "ai_review", "ci_green"]
+DiffId = Annotated[
+    str,
+    Field(
+        pattern=r"^D[1-9][0-9]*$",
+        description="Phabricator diff ID, for example D111179041.",
+    ),
+]
+DiffIds = Annotated[
+    list[DiffId],
+    Field(
+        min_length=1,
+        max_length=20,
+        description="Existing Phabricator diffs to associate with this session.",
+    ),
+]
 _ALL_EVENTS: tuple[EventName, ...] = (
     "review_comment",
     "ci_failure",
@@ -222,12 +238,21 @@ def _native_policy_result(
 @mcp.tool()
 def diff_watch_subscribe(
     events: list[EventName] | None = None,
+    diffs: DiffIds | None = None,
 ) -> str:
-    """Opt the current Omnigent session into diff review and CI notifications."""
+    """Subscribe this session to review and CI updates for associated diffs.
+
+    Pass ``diffs`` when watching existing diffs. Diffs created or updated by
+    this session are associated automatically and do not need to be repeated.
+    """
     selected = sorted(set(_ALL_EVENTS if events is None else events))
     if not selected:
         raise ValueError("at least one event type is required")
-    arguments: dict[str, object] = {} if events is None else {"events": events}
+    if diffs is not None and not diffs:
+        raise ValueError("at least one diff ID is required when diffs is provided")
+    arguments: dict[str, object] = {"events": selected}
+    if diffs is not None:
+        arguments["diffs"] = list(dict.fromkeys(diffs))
     return _native_policy_result(
         "diff_watch_subscribe",
         arguments,

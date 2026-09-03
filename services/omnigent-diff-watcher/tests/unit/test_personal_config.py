@@ -9,13 +9,14 @@ import tomllib
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
 import yaml
 
 DOTFILES = Path(__file__).resolve().parents[4]
+OMNIGENT_PYTHON = Path.home() / ".local/share/uv/tools/omnigent/bin/python"
 sys.path.insert(0, str(DOTFILES))
 
 from omnigent_config.policy_modules.capture_diff import (  # type: ignore[import-not-found]  # noqa: E402
-    approve_diff_watch_subscription,
     capture_labels_policy,
     diff_watch_preference_policy,
 )
@@ -77,7 +78,7 @@ def test_skill_eval_cases_cover_positive_negative_wake_and_cleanup() -> None:
 
 
 def test_personal_agent_specs_use_supported_stdio_mcp_tools() -> None:
-    for name in ("claude", "codex"):
+    for name in ("claude", "codex", "dvsc"):
         raw = yaml.safe_load((DOTFILES / f"omnigent_config/agents/{name}/config.yaml").read_text())
         tools = raw["tools"]
         assert "plugins" not in tools
@@ -90,6 +91,11 @@ def test_personal_agent_specs_use_supported_stdio_mcp_tools() -> None:
                 "diff_watch_status",
             ],
         }
+
+
+def test_dvsc_uses_non_interactive_default_permissions() -> None:
+    raw = yaml.safe_load((DOTFILES / "omnigent_config/agents/dvsc/config.yaml").read_text())
+    assert raw["executor"]["config"]["permission_mode"] == "bypassPermissions"
 
 
 def test_native_codex_config_registers_the_diff_watch_mcp() -> None:
@@ -194,44 +200,13 @@ def test_sync_updates_canonical_codex_home_from_a_native_session() -> None:
 def test_server_config_uses_only_existing_policy_extension_surface() -> None:
     config = yaml.safe_load((DOTFILES / "omnigent_config/server.yaml").read_text())
     assert "server_plugins" not in config
-    assert config["policies"]["approve_diff_watch_subscription"]["function"] == (
-        "capture_diff.approve_diff_watch_subscription"
-    )
+    assert "approve_diff_watch_subscription" not in config["policies"]
     preference = config["policies"]["diff_watch_preferences"]
     assert preference["function"] == "capture_diff.diff_watch_preference_policy"
-    assert preference["set_labels"] == ["omnigent.diff.watch"]
-
-
-def test_subscription_policy_asks_for_namespaced_subscribe_only() -> None:
-    subscribe = approve_diff_watch_subscription(
-        {
-            "type": "tool_call",
-            "target": "diff_watch__diff_watch_subscribe",
-            "data": {"name": "diff_watch__diff_watch_subscribe", "arguments": {}},
-        }
-    )
-    assert subscribe is not None and subscribe["result"] == "ASK"
-    assert (
-        approve_diff_watch_subscription(
-            {
-                "type": "tool_call",
-                "target": "diff_watch__diff_watch_status",
-                "data": {"name": "diff_watch__diff_watch_status", "arguments": {}},
-            }
-        )
-        is None
-    )
-    native_subscribe = approve_diff_watch_subscription(
-        {
-            "type": "tool_call",
-            "target": "",
-            "data": {
-                "name": "mcp__diff_watch__diff_watch_subscribe",
-                "arguments": {},
-            },
-        }
-    )
-    assert native_subscribe is not None and native_subscribe["result"] == "ASK"
+    assert preference["set_labels"] == [
+        "omnigent.diff.watch",
+        "omnigent.diff.number",
+    ]
 
 
 def test_preference_policy_binds_subscribe_status_and_unsubscribe_to_labels() -> None:
@@ -258,6 +233,42 @@ def test_subscribe_without_a_captured_diff_does_not_write_preference() -> None:
     assert result is not None
     assert "set_labels" not in result
     assert "no associated" in result["data"]
+    assert 'diffs: ["D12345"]' in result["data"]
+
+
+def test_subscribe_associates_an_explicit_existing_stack() -> None:
+    event = _tool_event(
+        "diff_watch_subscribe",
+        {
+            "diffs": ["D94275133", "D111179037", "D111179038", "D111179041"],
+            "events": ["review_comment", "ci_failure", "ai_review", "ci_green"],
+        },
+    )
+    event["context"] = {"labels": {"omnigent.diff.number": "D94275133"}}
+
+    result = diff_watch_preference_policy(event)
+
+    assert result is not None
+    assert result["set_labels"] == {
+        "omnigent.diff.watch": "ai_review,ci_failure,ci_green,review_comment",
+        "omnigent.diff.number": "D94275133,D111179037,D111179038,D111179041",
+    }
+    for diff_id in ("D94275133", "D111179037", "D111179038", "D111179041"):
+        assert diff_id in result["data"]
+
+
+def test_subscribe_rejects_an_invalid_explicit_diff() -> None:
+    event = _tool_event(
+        "diff_watch_subscribe",
+        {"diffs": ["D111179041", "not-a-diff"]},
+    )
+    event["context"] = {"labels": {}}
+
+    result = diff_watch_preference_policy(event)
+
+    assert result is not None
+    assert "set_labels" not in result
+    assert "every diff must look like D12345" in result["data"]
 
 
 def test_service_and_mcp_runtime_are_source_control_wired() -> None:
@@ -271,6 +282,8 @@ def test_service_and_mcp_runtime_are_source_control_wired() -> None:
 
 def test_agent_ensure_reconciles_existing_bundle_content() -> None:
     script = (DOTFILES / "bin/omnigent-agents-ensure").read_text()
+    assert "TRACKED_AGENT_NAMES=(claude codex dvsc)" in script
+    assert "PACKAGED_AGENT_NAMES=(polly debby)" in script
     assert 'managed_dirs+=("$spec_dir")' in script
     assert 'for d in "${managed_dirs[@]}"' in script
     assert 'has_agent "$live_url"' not in script
@@ -278,6 +291,39 @@ def test_agent_ensure_reconciles_existing_bundle_content() -> None:
     assert 'server.get("name") == "diff_watch"' in script
     assert 'server.get("command") == "omnigent-diff-watch-mcp"' in script
     assert "quiesce-check --json" in script
+    assert (
+        '"$DOTFILES_DIR/bin/omnigent-dvsc-ensure" --config-only'
+        in (DOTFILES / "init.sh").read_text()
+    )
+
+
+@pytest.mark.skipif(not OMNIGENT_PYTHON.exists(), reason="published Omnigent is not installed")
+def test_packaged_agent_overlays_add_diff_watch_without_losing_agent_tools(
+    tmp_path: Path,
+) -> None:
+    subprocess.run(
+        [
+            str(OMNIGENT_PYTHON),
+            str(DOTFILES / "omnigent_config/materialize_agent_overlays.py"),
+            str(tmp_path),
+            "polly",
+            "debby",
+        ],
+        check=True,
+    )
+
+    for name in ("polly", "debby"):
+        config = yaml.safe_load((tmp_path / name / "config.yaml").read_text())
+        assert config["tools"]["agents"]
+        assert config["tools"]["diff_watch"] == {
+            "type": "mcp",
+            "command": "omnigent-diff-watch-mcp",
+            "tools": [
+                "diff_watch_subscribe",
+                "diff_watch_unsubscribe",
+                "diff_watch_status",
+            ],
+        }
 
 
 def test_init_restarts_only_an_active_watcher_after_sync() -> None:
@@ -303,7 +349,9 @@ def test_preference_policy_reports_every_diff_in_a_stack() -> None:
     }
     subscribe = diff_watch_preference_policy(event)
     assert subscribe is not None
-    assert subscribe["set_labels"] == {"omnigent.diff.watch": "ci_failure,review_comment"}
+    assert subscribe["set_labels"] == {
+        "omnigent.diff.watch": "ai_review,ci_failure,ci_green,review_comment"
+    }
     for diff_id in ("D90000001", "D90000002", "D90000003"):
         assert diff_id in subscribe["data"]
 

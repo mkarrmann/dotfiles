@@ -15,15 +15,14 @@ policy_modules:
 # session. `type: function` self-selects its phase (a tool_result capture here),
 # so no `on:` is needed.
 policies:
-  approve_diff_watch_subscription:
-    type: function
-    function: capture_diff.approve_diff_watch_subscription
-
+  # No ASK gate: watcher preferences are session-scoped, idempotent, and
+  # reversible. Explicit DENY policies still apply normally.
   diff_watch_preferences:
     type: function
     function: capture_diff.diff_watch_preference_policy
     set_labels:
       - omnigent.diff.watch
+      - omnigent.diff.number
 
   capture_diff:
     type: function

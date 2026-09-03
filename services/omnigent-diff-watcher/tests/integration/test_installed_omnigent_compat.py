@@ -11,7 +11,7 @@ OMNIGENT_PYTHON = Path.home() / ".local/share/uv/tools/omnigent/bin/python"
 
 
 @pytest.mark.skipif(not OMNIGENT_PYTHON.exists(), reason="published Omnigent is not installed")
-def test_published_omnigent_parses_the_mcp_agent_bundles() -> None:
+def test_published_omnigent_parses_the_mcp_agent_bundles(tmp_path: Path) -> None:
     script = """
 import json
 import sys
@@ -32,7 +32,23 @@ for raw in sys.argv[1:]:
     ]
 print(json.dumps(result))
 """
-    paths = [DOTFILES / "omnigent_config/agents/claude", DOTFILES / "omnigent_config/agents/codex"]
+    subprocess.run(
+        [
+            str(OMNIGENT_PYTHON),
+            str(DOTFILES / "omnigent_config/materialize_agent_overlays.py"),
+            str(tmp_path),
+            "polly",
+            "debby",
+        ],
+        check=True,
+    )
+    paths = [
+        DOTFILES / "omnigent_config/agents/claude",
+        DOTFILES / "omnigent_config/agents/codex",
+        DOTFILES / "omnigent_config/agents/dvsc",
+        tmp_path / "polly",
+        tmp_path / "debby",
+    ]
     result = subprocess.run(
         [str(OMNIGENT_PYTHON), "-c", script, *(str(path) for path in paths)],
         check=True,
@@ -52,7 +68,13 @@ print(json.dumps(result))
             ],
         }
     ]
-    assert parsed == {"claude": expected, "codex": expected}
+    assert parsed == {
+        "claude": expected,
+        "codex": expected,
+        "dvsc": expected,
+        "polly": expected,
+        "debby": expected,
+    }
 
 
 @pytest.mark.skipif(not OMNIGENT_PYTHON.exists(), reason="published Omnigent is not installed")

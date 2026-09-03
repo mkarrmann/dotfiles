@@ -18,9 +18,9 @@ hold. The harnesses namespace it differently: the Omnigent SDK harnesses use
 use `mcp__diff_watch__diff_watch_subscribe`. Match on the suffix.
 
 If none of those tools exists, say so instead of improvising. Do NOT write the
-`omnigent.diff.*` session labels by hand: it skips the approval the subscribe
-tool is gated on, and a missing tool means this harness is not registered yet —
-which is a bug to report, not to work around.
+`omnigent.diff.*` session labels by hand: the subscribe tool binds changes to
+the authenticated session, and a missing tool means this harness is not
+registered yet—which is a bug to report, not to work around.
 
 - You just created or submitted a diff, or the user explicitly requested a
   watch.
@@ -31,19 +31,22 @@ which is a bug to report, not to work around.
   option instead of subscribing.
 - At least one diff is not terminal.
 
-The tools take no diff argument. Subscribing covers **every** diff this session
-created, so a stack needs one call, not one per diff. Diffs are recognized from
-the real Phabricator URLs in commit or `jf submit` output, so subscribe after
-the submit that prints them.
+Subscribing covers **every** diff already associated with this session, so a
+stack needs one call, not one per diff. Diffs created or updated by this session
+are recognized from the real Phabricator URLs in commit or `jf submit` output.
+When the user asks to watch existing diffs, pass their validated IDs through the
+subscribe tool's `diffs` argument; do not rely on merely printing or reading a
+diff URL to associate it.
 
 Do not subscribe for a read-only review, temporary research or sub-agent work,
 handed-off work, an unrelated diff merely seen in output, or a committed,
 abandoned, or reverted diff. Do not resubscribe on later turns.
 
-Use the default event set unless the user requests only `review_comment` or
-only `ci_failure`. Use the corresponding `diff_watch_status` tool to check this
-session's preference and `diff_watch_unsubscribe` when the user asks to stop or
-responsibility is handed off; normal diff completion retires automatically.
+Use the default event set unless the user requests a subset of
+`review_comment`, `ci_failure`, `ai_review`, or `ci_green`. Use the corresponding
+`diff_watch_status` tool to check this session's preference and
+`diff_watch_unsubscribe` when the user asks to stop or responsibility is handed
+off; normal diff completion retires automatically.
 
 When a `[Diff watcher ...]` message arrives, treat its counts as a stale hint.
 One wake covers the whole stack and names each affected diff. Load

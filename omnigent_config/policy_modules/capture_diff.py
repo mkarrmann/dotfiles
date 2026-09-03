@@ -10,7 +10,8 @@ The canonical use is stamping a session with the Phabricator diffs it created:
 when any tool's output contains ``Differential Revision: <url>/D12345``, the
 ``D12345`` is appended to the ``omnigent.diff.number`` session label, which is a
 comma-separated ordered set so one session can own a whole stack. The diff
-watcher also binds its stateless MCP intent tools to the current session here.
+watcher also binds its stateless MCP intent tools to the current session here;
+subscribe can add validated IDs for a pre-existing stack.
 
 The capture pattern deliberately requires the full Phabricator URL rather than a
 bare ``D\\d+``: the label is written from *any* tool's output, so a bare pattern
@@ -45,6 +46,12 @@ _WATCH_TOOLS = {
     "diff_watch_subscribe",
     "diff_watch_unsubscribe",
     "diff_watch_status",
+}
+_WATCH_EVENTS = {
+    "review_comment",
+    "ci_failure",
+    "ai_review",
+    "ci_green",
 }
 
 
@@ -137,9 +144,7 @@ def capture_labels_policy(
             set_labels: dict[str, str] = {}
             for key, rx in compiled:
                 if key in accumulating:
-                    found = [
-                        m.group(1) if m.groups() else m.group(0) for m in rx.finditer(text)
-                    ]
+                    found = [m.group(1) if m.groups() else m.group(0) for m in rx.finditer(text)]
                     merged = _merge_accumulated(current.get(key), [v for v in found if v])
                     if merged is not None:
                         set_labels[key] = merged
@@ -165,25 +170,6 @@ def capture_labels_policy(
             return None
 
     return _evaluate
-
-
-def approve_diff_watch_subscription(event: dict) -> dict | None:
-    """Require explicit approval for the one persistent watcher mutation."""
-
-    try:
-        if event.get("type") != "tool_call":
-            return None
-        data = event.get("data")
-        name = data.get("name") if isinstance(data, dict) else event.get("target")
-        if _watch_tool_name(name) != "diff_watch_subscribe":
-            return None
-        return {
-            "result": "ASK",
-            "reason": "Subscribe this session to batched review and CI notifications?",
-        }
-    except Exception:
-        # Approval policy failures must fail closed in the policy engine.
-        return {"result": "DENY", "reason": "Could not validate diff-watch opt-in."}
 
 
 def diff_watch_preference_policy(event: dict) -> dict | None:
@@ -215,11 +201,6 @@ def diff_watch_preference_policy(event: dict) -> dict | None:
                 "set_labels": {_WATCH_LABEL: "off"},
                 "data": "Diff-watch notifications are disabled for this session.",
             }
-        if not diff_ids:
-            return {
-                "result": "ALLOW",
-                "data": "Cannot subscribe: this session has no associated Phabricator diff.",
-            }
         request = event.get("request_data")
         arguments = request.get("arguments", {}) if isinstance(request, dict) else {}
         if isinstance(arguments, str):
@@ -227,25 +208,61 @@ def diff_watch_preference_policy(event: dict) -> dict | None:
                 arguments = json.loads(arguments)
             except json.JSONDecodeError:
                 arguments = {}
+        raw_diffs = arguments.get("diffs") if isinstance(arguments, dict) else None
+        if raw_diffs is not None:
+            if not isinstance(raw_diffs, list) or not raw_diffs:
+                return {
+                    "result": "ALLOW",
+                    "data": (
+                        "Cannot subscribe: diffs must contain at least one Phabricator diff ID."
+                    ),
+                }
+            if any(
+                not isinstance(value, str) or not re.fullmatch(r"D[1-9][0-9]*", value)
+                for value in raw_diffs
+            ):
+                return {
+                    "result": "ALLOW",
+                    "data": "Cannot subscribe: every diff must look like D12345.",
+                }
+            requested_diff_ids = _validated_diff_ids(raw_diffs)
+            merged = _merge_accumulated(labels.get(_DIFF_LABEL), requested_diff_ids)
+            if merged is not None:
+                diff_ids = _diff_ids(merged)
+
+        if not diff_ids:
+            return {
+                "result": "ALLOW",
+                "data": (
+                    "Cannot subscribe: this session has no associated Phabricator diff. "
+                    'Pass existing diff IDs with diffs: ["D12345"].'
+                ),
+            }
         raw_events = arguments.get("events") if isinstance(arguments, dict) else None
         if raw_events is None:
-            events = ["ci_failure", "review_comment"]
+            events = sorted(_WATCH_EVENTS)
         elif (
             isinstance(raw_events, list)
             and raw_events
-            and all(item in {"review_comment", "ci_failure"} for item in raw_events)
+            and all(item in _WATCH_EVENTS for item in raw_events)
         ):
             events = sorted(set(raw_events))
         else:
             return {
                 "result": "ALLOW",
-                "data": "Cannot subscribe: events must select review_comment or ci_failure.",
+                "data": (
+                    "Cannot subscribe: events must select review_comment, ci_failure, "
+                    "ai_review, or ci_green."
+                ),
             }
         preference = ",".join(events)
         listed = ", ".join(diff_ids)
+        set_labels = {_WATCH_LABEL: preference}
+        if raw_diffs is not None:
+            set_labels[_DIFF_LABEL] = ",".join(diff_ids)
         return {
             "result": "ALLOW",
-            "set_labels": {_WATCH_LABEL: preference},
+            "set_labels": set_labels,
             "data": f"Diff-watch notifications requested for {listed}: {preference}.",
         }
     except Exception:
@@ -267,6 +284,17 @@ def _diff_ids(value: object) -> list[str]:
         candidate = part.strip()
         if re.fullmatch(r"D[1-9][0-9]*", candidate) and candidate not in seen:
             seen.append(candidate)
+    return seen
+
+
+def _validated_diff_ids(values: list[object]) -> list[str]:
+    """Return validated, deduplicated Phabricator diff IDs in input order."""
+    seen: list[str] = []
+    for value in values:
+        if not isinstance(value, str) or not re.fullmatch(r"D[1-9][0-9]*", value):
+            continue
+        if value not in seen:
+            seen.append(value)
     return seen
 
 

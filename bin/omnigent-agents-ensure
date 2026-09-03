@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
-# omnigent-agents-ensure — register the dotfiles builtin Omnigent agents that
-# run a vendor harness DIRECTLY (claude-sdk, codex), so they show up in the
-# CodeCompanion omnigent picker (<leader>aM / <leader>aA) alongside
-# polly/debby/dvsc. The existing model/effort pickers key off each agent's
-# harness family (claude-sdk -> claude, codex -> codex), so no Neovim change is
-# needed — registering the specs is the whole job.
+# omnigent-agents-ensure — reconcile the source-controlled Omnigent agent
+# bundles (claude-sdk, codex, and dvsc) so they show up in the CodeCompanion
+# picker with their current tools and prompts. The existing model/effort
+# pickers key off each agent's harness family.
 #
-# This is the generic sibling of omnigent-dvsc-ensure: dvsc needs an extra
-# acp: config merge (its harness is acp:dvsc-core), so it keeps its own script;
-# claude/codex are pure executor.type=omnigent builtins that only need the
-# agent-store reconciliation, which this script does for all of them in ONE
-# throwaway server boot. Omnigent's ``--agent`` registration is content-aware:
+# This is the bundle-reconciliation sibling of omnigent-dvsc-ensure: dvsc needs
+# an extra acp: config merge (its harness is acp:dvsc-core), so it keeps its own
+# script; agent-store reconciliation happens here for all tracked agents in ONE
+# throwaway server boot.
+# Omnigent's ``--agent`` registration is content-aware:
 # it preserves the stable agent row and updates its bundle only when the
 # materialized content hash changes.
 #
@@ -19,7 +17,7 @@
 #
 # The managed `omnigent server start` has no `--agent` hook, so — exactly like
 # omnigent-dvsc-ensure — we register by briefly booting a throwaway server (a
-# free port, the SAME chat.db) with one `--agent` per tracked spec; it writes
+# free port, the SAME chat.db) with one `--agent` per managed bundle; it writes
 # changed builtin bundles in place, then exits. When a running server still has
 # the old parsed bundle cached, this script restarts it only after the hub
 # quiescence check passes. Clients, the standby, and macOS never open a local
@@ -43,8 +41,13 @@ command -v "$OMNIGENT_BIN" >/dev/null 2>&1 || OMNIGENT_BIN="omnigent"
 DATA_DIR="${OMNIGENT_DATA_DIR:-${OMNIGENT_CONFIG_HOME:-$HOME/.omnigent}}"
 AGENTS_DIR="$DOTFILES/omnigent_config/agents"
 
-# The builtin agents this script owns (spec dir basename == agent name).
-AGENT_NAMES=(claude codex)
+_tools_dir="$(uv tool dir 2>/dev/null || echo "$HOME/.local/share/uv/tools")"
+OMNIGENT_PY="${OMNIGENT_PY:-$_tools_dir/omnigent/bin/python3}"
+
+# Source-controlled bundles plus packaged upstream bundles that receive the
+# shared personal MCP overlay at registration time.
+TRACKED_AGENT_NAMES=(claude codex dvsc)
+PACKAGED_AGENT_NAMES=(polly debby)
 
 SERVER_URL="${OMNIGENT_SERVER_URL:-}"
 if [ -z "$SERVER_URL" ]; then
@@ -58,6 +61,10 @@ fi
 # Skip cleanly on machines without a usable omnigent install.
 if ! command -v "$OMNIGENT_BIN" >/dev/null 2>&1; then
   log "omnigent not installed; skipping"
+  exit 0
+fi
+if [ ! -x "$OMNIGENT_PY" ]; then
+  log "omnigent tool python not found at $OMNIGENT_PY; skipping"
   exit 0
 fi
 
@@ -113,13 +120,25 @@ fi
 # and updates the existing row in place without disturbing session history.
 managed_dirs=()
 managed_names=()
-for name in "${AGENT_NAMES[@]}"; do
+for name in "${TRACKED_AGENT_NAMES[@]}"; do
   spec_dir="$AGENTS_DIR/$name"
   if [ ! -d "$spec_dir" ]; then
     log "agent spec missing at $spec_dir; skipping $name"
     continue
   fi
   managed_dirs+=("$spec_dir")
+  managed_names+=("$name")
+done
+
+overlay_root="$(mktemp -d "${TMPDIR:-/tmp}/omnigent-agent-overlays.XXXXXX")"
+cleanup_overlays() {
+  rm -rf -- "$overlay_root"
+}
+trap cleanup_overlays EXIT
+"$OMNIGENT_PY" "$DOTFILES/omnigent_config/materialize_agent_overlays.py" \
+  "$overlay_root" "${PACKAGED_AGENT_NAMES[@]}"
+for name in "${PACKAGED_AGENT_NAMES[@]}"; do
+  managed_dirs+=("$overlay_root/$name")
   managed_names+=("$name")
 done
 
@@ -183,6 +202,7 @@ seed_pid=$!
 cleanup() {
   kill "$seed_pid" 2>/dev/null || true
   wait "$seed_pid" 2>/dev/null || true
+  cleanup_overlays
 }
 trap cleanup EXIT
 

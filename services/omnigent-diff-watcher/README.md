@@ -4,6 +4,10 @@ Private sidecar that watches Phabricator diffs for explicitly opted-in
 Omnigent sessions. It uses the published Omnigent `0.5.1` REST and policy
 surfaces and requires no Omnigent source changes.
 
+Subscription does not require an approval prompt. The operation is
+session-scoped, idempotent, reversible with `diff_watch_unsubscribe`, and can
+only attach validated Phabricator diff IDs.
+
 ## Events
 
 | Event | Fires when |
@@ -39,6 +43,8 @@ Three things are deliberately true here, each of which was once false:
   get that rewrite for free and need no flag.
 - `capture_diff.py` binds those tool results to the authenticated session by
   updating `omnigent.diff.watch`.
+- `diff_watch_subscribe` accepts explicit `diffs` for an existing diff or stack;
+  diffs submitted by the current session continue to associate automatically.
 - The hub-only service reconciles session labels through `GET /v1/sessions`,
   polls each active diff once, and stores cursors/batches in
   `~/.omnigent/diff-watcher.sqlite3`.

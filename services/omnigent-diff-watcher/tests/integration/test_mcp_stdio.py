@@ -67,7 +67,7 @@ async def test_real_stdio_server_lists_and_calls_intent_tools() -> None:
         }
         result = await session.call_tool(
             "diff_watch_subscribe",
-            {"events": ["review_comment"]},
+            {"events": ["review_comment"], "diffs": ["D111179041"]},
         )
         assert result.isError is False
         content = result.content[0]
@@ -114,6 +114,58 @@ async def test_native_codex_stdio_server_returns_policy_bound_status(tmp_path: P
     request_data = event["request_data"]
     assert isinstance(request_data, dict)
     assert request_data["name"] == "mcp__diff_watch__diff_watch_status"
+
+
+async def test_native_codex_subscribe_forwards_existing_diffs_and_all_events(
+    tmp_path: Path,
+) -> None:
+    codex_home = tmp_path / ".omnigent/codex-native/bridge/codex-home"
+    codex_home.mkdir(parents=True)
+    response = (
+        "Diff-watch notifications requested for D94275133, D111179041: "
+        "ai_review,ci_failure,ci_green,review_comment."
+    )
+    with _policy_relay(response) as (server, requests):
+        host = str(server.server_address[0])
+        port = int(server.server_address[1])
+        (codex_home.parent / "tool_relay.json").write_text(
+            json.dumps(
+                {
+                    "url": f"http://{host}:{port}",
+                    "token": "test-token",
+                    "session_id": "test-session",
+                }
+            )
+        )
+        parameters = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "omnigent_diff_watcher.mcp_server", "--native-codex"],
+            env={**os.environ, "CODEX_HOME": str(codex_home)},
+        )
+        async with (
+            stdio_client(parameters) as (reader, writer),
+            ClientSession(reader, writer) as session,
+        ):
+            await session.initialize()
+            result = await session.call_tool(
+                "diff_watch_subscribe",
+                {
+                    "diffs": ["D94275133", "D111179041"],
+                    "events": ["review_comment", "ci_failure", "ai_review", "ci_green"],
+                },
+            )
+
+    content = result.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == response
+    event = requests[0]["event"]
+    assert isinstance(event, dict)
+    request_data = event["request_data"]
+    assert isinstance(request_data, dict)
+    assert request_data["arguments"] == {
+        "diffs": ["D94275133", "D111179041"],
+        "events": ["ai_review", "ci_failure", "ci_green", "review_comment"],
+    }
 
 
 def _claude_bridge(tmp_path: Path, claude_session: str, omni_session: str) -> Path:

@@ -54,13 +54,12 @@ fi
 # Omnigent: register the dvsc-core ACP agent so it shows in the CodeCompanion
 # omnigent picker (<leader>aM / <leader>aA), alongside polly/debby. Idempotent
 # and self-skips where omnigent isn't installed; reconciles the per-host server
-# URL, merges the acp: block of ~/.omnigent/config.yaml, and registers the dvsc
-# builtin on the active Linux hub without restarting a running server. macOS,
-# the standby, and peer clients only reconcile config.yaml; they never open a
-# local chat.db. See
+# URL and merges the acp: block of ~/.omnigent/config.yaml. Bundle registration
+# is centralized in omnigent-agents-ensure below. macOS, the standby, and peer
+# clients only reconcile config.yaml; they never open a local chat.db. See
 # bin/omnigent-dvsc-ensure and omnigent_config/agents/dvsc/.
-"$DOTFILES_DIR/bin/omnigent-dvsc-ensure" \
-    || echo "WARNING: omnigent-dvsc-ensure failed (dvsc agent may not appear in the picker)" >&2
+"$DOTFILES_DIR/bin/omnigent-dvsc-ensure" --config-only \
+    || echo "WARNING: omnigent-dvsc-ensure failed (dvsc ACP config may be stale)" >&2
 
 # Omnigent: propagate shared, machine-agnostic client preferences into
 # ~/.omnigent/config.yaml. Runs here as well as in sync.sh so a fresh
@@ -75,14 +74,14 @@ fi
 "$DOTFILES_DIR/bin/omnigent-codex-login-ensure" \
     || echo "WARNING: omnigent-codex-login-ensure failed (codex-native first turns may fail)" >&2
 
-# Omnigent: register the direct-harness builtin agents (claude-sdk, codex) so
-# they show in the CodeCompanion omnigent picker (<leader>aM / <leader>aA)
-# alongside polly/debby/dvsc. The picker's model/effort steps key off each
+# Omnigent: reconcile all managed builtin agent bundles (claude-sdk, codex,
+# dvsc, and packaged Polly/Debby) so they show in the CodeCompanion omnigent
+# picker (<leader>aM / <leader>aA). The picker's model/effort steps key off each
 # agent's harness family, so registering the specs is the whole job. Idempotent
 # and self-skips off the active Linux hub. See bin/omnigent-agents-ensure and
-# omnigent_config/agents/{claude,codex}/.
+# omnigent_config/agents/{claude,codex,dvsc}/.
 "$DOTFILES_DIR/bin/omnigent-agents-ensure" \
-    || echo "WARNING: omnigent-agents-ensure failed (claude/codex agents may not appear in the picker)" >&2
+    || echo "WARNING: omnigent-agents-ensure failed (managed agents may be stale in the picker)" >&2
 
 # ---------------------------------------------------------------------------
 # 3. Live convergence (Linux). Restarts/reconciles RUNNING services so the

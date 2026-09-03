@@ -24,7 +24,8 @@ control surface plus a hub-local sidecar service.
 
 - Let the agent responsible for a diff explicitly subscribe or unsubscribe.
 - Bind opt-in to the authenticated Omnigent session without accepting a session
-  ID or diff ID from the model.
+  ID from the model. Accept validated diff IDs when explicitly associating an
+  existing diff or stack.
 - Wake that same session for new unresolved non-author review comments and new
   terminal CI failures on the latest version of any diff it owns.
 - Cover a whole stack from one session, with a single wake naming every
@@ -42,8 +43,8 @@ control surface plus a hub-local sidecar service.
 - Changes to `~/repos/omnigent` or any published Omnigent package.
 - Orchest task association.
 - Webhooks or a new internal event service.
-- Green or pending CI notifications.
-- Author, automated, draft, deleted, or resolved comment notifications.
+- Pending CI notifications.
+- Author, draft, deleted, or resolved ordinary comment notifications.
 - A general Omnigent plugin SDK.
 
 ## 4. Components
@@ -52,18 +53,22 @@ control surface plus a hub-local sidecar service.
 
 `services/omnigent-diff-watcher` installs a stdio MCP server exposing:
 
-- `diff_watch_subscribe(events?)`
+- `diff_watch_subscribe(events?, diffs?)`
 - `diff_watch_unsubscribe()`
 - `diff_watch_status()`
 
-Claude and headless Codex agent YAML declare this server with the existing
-inline `type: mcp` format. Those bind tools for the streamed SDK harnesses
-only: a native session boots the vendor TUI and takes its tool surface from
-that vendor's own config, so every native harness needs its own registration.
+Claude, headless Codex, and dvsc agent YAML declare this server with the
+existing inline `type: mcp` format. Polly and Debby are package-owned bundles;
+`omnigent-agents-ensure` copies their installed versions to a temporary staging
+directory and overlays the same MCP definition before registration, avoiding a
+stale vendored fork. Those bind tools for streamed SDK/ACP harnesses only: a
+native session boots the vendor TUI and takes its tool surface from that
+vendor's own config, so every native harness needs its own registration.
 
 | Harness | Registered in | Flag | Bridge found via |
 |---|---|---|---|
-| SDK Claude / Codex | `omnigent_config/agents/*/config.yaml` | none | n/a; policy rewrites the result |
+| SDK Claude / Codex / ACP dvsc | `omnigent_config/agents/*/config.yaml` | none | n/a; policy rewrites the result |
+| Polly / Debby | packaged agent copied and overlaid by `omnigent-agents-ensure` | none | n/a; policy rewrites the result |
 | Native Codex | `codex_config/config.template.toml` | `--native-codex` | `CODEX_HOME` |
 | Native Claude | `agent_config/plugins/custom-mcps/mcps/diff-watch.json` -> `~/.claude.json` | `--native-claude` | `CLAUDE_CODE_SESSION_ID` -> `state.json` |
 
@@ -81,10 +86,14 @@ directory present". Note `state.json` holds the *Claude* session id while
 `bridge.json` holds the *Omnigent* one; the policy call is addressed with the
 latter.
 
-The tools still accept no session or diff identity and the bridge directory is
-owner-only, so the trust boundary is unchanged in every mode. Native harnesses
-namespace the tools `mcp__diff_watch__*` and the SDK harnesses
-`diff_watch__*`; the approval policy matches on suffix, so both are gated.
+The tools accept no session identity. An optional `diffs` list accepts only
+canonical `D<digits>` identifiers and is bound to the authenticated current
+session; the bridge directory remains owner-only. Native harnesses namespace
+the tools `mcp__diff_watch__*` and the SDK/ACP harnesses `diff_watch__*`.
+The server installs no approval policy for these session-scoped, idempotent
+preferences. dvsc also uses ACP's `bypassPermissions` default so an ALLOW or
+policy abstention does not fall through to a redundant client prompt; explicit
+DENY or ASK policies continue to take precedence.
 
 Registration location matters as much as registration: `~/.claude/settings.json`
 accepts an `mcpServers` key and ignores it. Servers written there never reach
@@ -108,9 +117,10 @@ omnigent.diff.watch=off
 ```
 
 The `omnigent.diff.number` label supplies the diffs. It is a comma-separated
-ordered set (`D12345,D12346`), appended to as the session creates diffs, so one
-subscribe covers a whole stack; subscriptions are keyed `(session, diff)`.
-Subscribe requires an ASK approval policy. Status and unsubscribe do not.
+ordered set (`D12345,D12346`), appended to as the session creates diffs or when
+subscribe receives explicit existing diff IDs, so one subscribe covers a whole
+stack; subscriptions are keyed `(session, diff)`. Subscribe is idempotent and
+does not require a separate approval prompt; unsubscribe reverses it.
 
 The capture pattern requires a real Phabricator URL following either the
 `Differential Revision:` commit-message prefix or a current `jf submit`
@@ -146,7 +156,8 @@ and restores it on the promoted hub.
 
 Subscribe succeeds only when:
 
-- the current session already has a valid `omnigent.diff.number` label;
+- the current session already has a valid `omnigent.diff.number` label or the
+  call supplies at least one valid existing diff ID;
 - the session is not archived or closed;
 - the diff exists and is active;
 - every selected source can establish a current baseline; and
@@ -156,7 +167,7 @@ Repeated subscribe calls with the same preferences are idempotent. Adding a
 new event type baselines only that type, so a pre-existing CI failure does not
 wake a comments-only subscription that later enables CI.
 
-One session may watch one diff. Several sessions may intentionally watch the
+One session may watch a stack. Several sessions may intentionally watch the
 same diff; they share one external poll and receive separate batches.
 
 Unsubscribe writes `off`, retires the durable subscription, and cancels its
@@ -179,10 +190,11 @@ unavailable, malformed, or missing.
 A review event qualifies when a new or materially edited comment is current,
 unresolved, human-authored, non-author, and on the latest diff version.
 
-A CI event qualifies only when the latest version reaches terminal failure
-with a new stable failure fingerprint. Pending, green, skipped, and cancelled
-states do not qualify. A new diff version invalidates the old version's pending
-CI failures.
+A CI failure event qualifies when the latest version reports a new stable
+failure fingerprint. A CI-green event qualifies when the current version
+finishes with no failures. Pending, skipped, and cancelled states do not
+qualify. Automated-review findings use their dedicated event stream. A new diff
+version invalidates the old version's pending events.
 
 First observation is always a baseline and emits no event.
 
@@ -270,26 +282,17 @@ one current-state batch.
 
 ## 11. Configuration and rollout
 
-`services/omnigent-diff-watcher/config.toml` is source-controlled and starts
-with:
+`services/omnigent-diff-watcher/config.toml` is source-controlled with:
 
 ```toml
-delivery_mode = "log_only"
+delivery_mode = "enabled"
 delivery_session_allowlist = []
 ```
 
 Rollout order:
 
-1. Install/sync the service environment on both hub candidates and execution
-   hosts through `init.sh`.
-2. Verify the MCP server and published Omnigent agent parsing.
-3. Start the sidecar in `log_only`; confirm empty/expected subscriptions.
-4. Subscribe one canary session and verify the baseline is quiet.
-5. Observe one comment/CI burst as one `would deliver` batch.
-6. Set `delivery_mode = "enabled"` with only that session allowlisted.
-7. Verify one wake, restart recovery, source failure, unsubscribe, and terminal
-   retirement.
-8. Remove the allowlist only after those canary checks pass.
+The service was rolled out through log-only and allowlisted canary stages.
+Current delivery is enabled without a session allowlist.
 
 ## 12. Verification
 
@@ -327,7 +330,8 @@ uv run pytest tests/test_snapshot.py tests/test_handoff_integration.py \
 
 - No watcher code or required change exists in `~/repos/omnigent`.
 - Published Omnigent parses both MCP-enabled agent bundles.
-- Subscription is explicit, approved, session-bound, and idempotent.
+- Subscription is explicit, session-bound, idempotent, and reversible without a
+  redundant approval prompt.
 - Existing comments and failures never wake an agent.
 - A correlated review/CI burst produces one concise message after five minutes.
 - Resolution, supersession, or terminal state before flush prevents stale work.

@@ -8,7 +8,7 @@ service_tier = "fast"
 # Native Codex sessions run their own MCP surface rather than the tools from
 # the Omnigent agent spec. Register the stateless intent server here; the
 # native Pre/PostToolUse policy hooks bind its calls to the authenticated
-# Omnigent session and write omnigent.diff.watch.
+# Omnigent session and write omnigent.diff.watch / omnigent.diff.number.
 [mcp_servers.diff_watch]
 command = "omnigent-diff-watch-mcp"
 args = ["--native-codex"]

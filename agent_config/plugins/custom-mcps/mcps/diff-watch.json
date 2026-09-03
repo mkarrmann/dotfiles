@@ -1,5 +1,5 @@
 {
-  "description": "Subscribe the current Omnigent session to CI-failure and review-comment notifications on the Phabricator diffs it created.",
+  "description": "Subscribe the current Omnigent session to review, CI-failure, AI-review, and green-CI notifications for submitted or explicitly selected Phabricator diffs.",
   "agents": ["claude"],
   "mcpServers": {
     "diff_watch": {
