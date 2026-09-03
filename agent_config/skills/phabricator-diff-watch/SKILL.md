@@ -1,11 +1,12 @@
 ---
 name: phabricator-diff-watch
 description: >-
-  Use after successfully creating or submitting a Phabricator diff or stack
-  when this agent remains responsible for follow-up, or when the user asks to
-  watch, follow, or report new review comments or CI results for the session's
-  diffs. Prefer this over an in-turn CI polling loop: the sidecar polls out of
-  process and survives the session going idle.
+  Use immediately after successfully creating or submitting a Phabricator diff
+  or stack — the submit is itself the trigger, so subscribe in that same turn
+  rather than asking or offering. Also use when the user asks to watch, follow,
+  or report new review comments or CI results for the session's diffs. Prefer
+  this over an in-turn CI polling loop: the sidecar polls out of process and
+  survives the session going idle.
   Also use when a message beginning with [Diff watcher] wakes the session.
 ---
 
@@ -24,7 +25,10 @@ which is a bug to report, not to work around.
 - You just created or submitted a diff, or the user explicitly requested a
   watch.
 - This session owns the workspace needed to amend it.
-- You expect to remain responsible for follow-up.
+- You submitted in this session and the user has not handed the work off.
+  **Submitting is itself what makes you responsible** — never treat ownership
+  as something the user must grant first, and never offer the watch as an
+  option instead of subscribing.
 - At least one diff is not terminal.
 
 The tools take no diff argument. Subscribing covers **every** diff this session
