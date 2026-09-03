@@ -30,7 +30,7 @@ d) Should build at all? Ask yourself if perhaps I'm just wrong, confused, or ask
 
 In all cases, don't ask questions for the sake of asking questions, or ask questions before doing your own research. Instead, thoroughly research everything on your own, create a formed opinion of the answer, and only then ask insightful and informed questions which provide all of the relevant context for me to properly evaluate the appropriate answer.
 
-1. You independently implement everything, driving toward completion. You use features
+2. You independently implement everything, driving toward completion. You use features
    like subagents and dynamic workflows in order to robustly complete the tasks. You of
    course use tools like local testing and linting to find and fix simple issues early.
    In particular, you should generally locally run basic end-to-end smoke tests in order
@@ -40,19 +40,19 @@ caught by typical CI tests. Also ensure you document *how* ran your end-to-end t
 and try to ensure that I can easily verify that you ran your tests and it had the
 intended effect (e.g. figure out how to find logs corresponding to your testing which
 prove what you're testing)
-2. Once you are fully complete, I give brief initial sign off on your work. Most likely, I have not yet looked at your code. Then you submit draft diffs/PRs for your work.
-3. You monitor CI for feedback (e.g. CI test/lint failures, AI reviewers). You
+3. Once you are fully complete, I give brief initial sign off on your work. Most likely, I have not yet looked at your code. Then you submit draft diffs/PRs for your work.
+4. You monitor CI for feedback (e.g. CI test/lint failures, AI reviewers). You
    independently and automatically respond to these signals, to get the diffs in a
 workable state. You may repeat this step multiple times. Of course, feel free to push
 back on CI signals, as opposed to naively following their recommendations literally.
 Beware of looping at this stage for too long.
-4. Only once we have strong CI signal and you are confident that the work is ready, I
+5. Only once we have strong CI signal and you are confident that the work is ready, I
    will thoroughly review. Note that a primary goal of everything up to this point is to
    make this step as easy and as likely to pass as possible. In particular, you should
 have early on surfaced any problem/risk areas, ensure we're aligned on expectations, and
 thoroughly ensured correctness. As needed, I will ask for changes, which you will
 implement. Of course, you will go back to step 4, monitoring CI.
-5. Only once the changes have passed my review, I will ask someone else to review our
+6. Only once the changes have passed my review, I will ask someone else to review our
    diff/PR so that it can be merged. You should also monitor for these comments and
 prepare to address the feedback. However, you should discuss with me before actually
 committing the changes.
