@@ -239,6 +239,11 @@ fi
 # after the content-addressed database row is updated. Restart only when that
 # happens and only after the normal hub quiescence guard confirms no turn is
 # active. A fresh registration is visible immediately and needs no restart.
+#
+# The server's OWN config (server.yaml + the PYTHONPATH policy modules) is read
+# only at boot and is checked here too, via omnigent-server-config-stale. It is
+# not covered by the bundle hash above -- policies leave no trace in chat.db --
+# so a policy-only edit used to reach the disk and never the process.
 live_reachable=false
 if [ -n "$live_url" ] \
     && curl -sf --noproxy '*' --max-time 5 "$live_url/health" >/dev/null 2>&1; then
@@ -249,11 +254,17 @@ if [ "$live_reachable" = true ]; then
   for name in "${managed_names[@]}"; do
     has_current_agent "$live_url" "$name" || live_current=false
   done
-  if { [ "$bundles_changed" = true ] || [ "$live_current" != true ]; } \
+  config_stale=false
+  if [ -x "$DOTFILES/bin/omnigent-server-config-stale" ] \
+      && "$DOTFILES/bin/omnigent-server-config-stale"; then
+    config_stale=true
+  fi
+  if { [ "$bundles_changed" = true ] || [ "$live_current" != true ] \
+        || [ "$config_stale" = true ]; } \
       && systemctl --user is-active --quiet omnigent-server.service; then
     if [ ! -x "$DOTFILES/bin/omnigent-hub" ] \
         || ! "$DOTFILES/bin/omnigent-hub" quiesce-check --json >/dev/null; then
-      log "agent bundles updated, but the active server is busy; rerun init.sh after current turns finish"
+      log "server config/agent bundles updated, but the active server is busy; rerun after current turns finish"
       exit 1
     fi
     log "restarting quiescent server to load changed agent bundles and policies…"

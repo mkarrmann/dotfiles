@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# omnigent-server-config-stale — exit 0 iff the running Omnigent server booted
+# BEFORE the last edit to a file it only reads at startup.
+#
+# The server parses --config server.yaml and imports the PYTHONPATH policy
+# modules once, at boot. There is no reload endpoint (the REST surface is
+# GET/POST /v1/policies and DELETE /v1/policies/{id}, and config-sourced
+# policies come back with "id": null, so they cannot even be removed through
+# the API). An edit to either therefore has NO effect until the next restart.
+#
+# This is invisible to every other drift signal we have: agent bundles live in
+# chat.db and are content-hashed by omnigent-agents-ensure, but a policy edit
+# leaves no trace the live process can be asked about. Observed failure: an ASK
+# gate deleted from server.yaml kept parking approval cards on every diff-watch
+# subscribe for a day, because the server that still had it loaded had been up
+# since before the deletion.
+#
+# systemd holds the authoritative boot instant, so anything newer than
+# ExecMainStartTimestamp is by definition not loaded. Reports at most one file
+# (the check is a boolean; the first witness is enough to act on).
+#
+# Exit codes: 0 = stale (restart needed), 1 = current, or not applicable
+# (server not running / not this host / timestamp unreadable).
+#
+# Env overrides: DOTFILES_DIR.
+set -euo pipefail
+
+if [[ $# -gt 1 || ( $# -eq 1 && "$1" != "--quiet" ) ]]; then
+  echo "usage: omnigent-server-config-stale [--quiet]" >&2
+  exit 2
+fi
+quiet=false
+[[ ${1:-} == "--quiet" ]] && quiet=true
+
+DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
+
+command -v systemctl >/dev/null 2>&1 || exit 1
+systemctl --user is-active --quiet omnigent-server.service || exit 1
+
+started_at="$(systemctl --user show omnigent-server.service \
+  --property=ExecMainStartTimestamp --value 2>/dev/null || true)"
+[ -n "$started_at" ] || exit 1
+started_epoch="$(date -d "$started_at" +%s 2>/dev/null)" || exit 1
+
+for path in "$DOTFILES/omnigent_config/server.yaml" \
+            "$DOTFILES"/omnigent_config/policy_modules/*.py; do
+  [ -f "$path" ] || continue
+  if [ "$(stat -c %Y "$path")" -gt "$started_epoch" ]; then
+    if [ "$quiet" != true ]; then
+      printf 'omnigent server is running config from %s; newer on disk: %s\n' \
+        "$started_at" "${path#"$DOTFILES/"}"
+    fi
+    exit 0
+  fi
+done
+
+exit 1

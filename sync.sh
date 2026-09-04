@@ -662,6 +662,18 @@ fi
 "$DOTFILES_DIR/bin/omnigent-config-ensure" || \
   echo "WARNING: omnigent-config-ensure failed (shared prefs not applied)" >&2
 
+# Omnigent: report (never fix) a server running config older than the config on
+# disk. server.yaml and the policy modules are read only at boot and there is no
+# reload endpoint, so an edit to either sits inert until the next restart -- with
+# nothing anywhere to say so. Restarting belongs to init.sh, which gates on hub
+# quiescence; this file only stages, so it warns and moves on.
+if [[ -x "$DOTFILES_DIR/bin/omnigent-server-config-stale" ]]; then
+  if stale_detail="$("$DOTFILES_DIR/bin/omnigent-server-config-stale")"; then
+    echo "WARNING: $stale_detail" >&2
+    echo "         run init.sh (or bin/omnigent-agents-ensure) while sessions are idle to load it" >&2
+  fi
+fi
+
 # Omnigent: make a managed Codex install (Meta's AI Gateway, mTLS, no auth.json)
 # read as logged in, so a codex-native session created with a first prompt does
 # not fail that turn against a thread that was about to start. Self-skips off
