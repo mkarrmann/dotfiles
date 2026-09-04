@@ -57,9 +57,27 @@ Environment=TIKTOKEN_CACHE_DIR=%h/dotfiles/omnigent_config/tiktoken-cache
 # Same reason as TIKTOKEN_CACHE_DIR above: the runner sizes the compaction
 # budget via litellm, so it needs the offline cost map and the passthrough entry.
 Environment=LITELLM_LOCAL_MODEL_COST_MAP=True
+# Teaches the runner's changed-files panel to read Sapling repos, which it
+# otherwise cannot: omnigent probes for `.git` only, so an fbsource workspace
+# silently falls back to a registry that sees nothing a native harness does.
+# The directory holds a sitecustomize.py that swaps omnigent's registry factory
+# at interpreter start -- the only seam available, since the runner's package
+# tree is the managed uv-tool install (replaced wholesale on upgrade) and its
+# environment is scrubbed. The host itself sets no PYTHONPATH, so this
+# introduces one rather than overriding anything. See omnigent_config/runtime_ext/.
+# Disable without editing this unit: OMNIGENT_SAPLING_REGISTRY=0.
+# NOTE: agent shells inherit this too (omnigent strips only its own entry from
+# PYTHONPATH), so every python run in a session imports that sitecustomize. It
+# arms one meta_path hook, chains to any sitecustomize it shadows, and fails
+# open -- but drop these entries first when debugging a harness.
+Environment=PYTHONPATH=%h/dotfiles/omnigent_config/runtime_ext
 # The host filters its environment before launching runners. Forward only the
 # non-secret paths/selectors required by Meta's Claude and Codex launchers.
-Environment=OMNIGENT_RUNNER_ENV_PASSTHROUGH=THRIFT_TLS_CL_CERT_PATH,THRIFT_TLS_CL_KEY_PATH,CODEX_MANAGED_CONFIG_PATH,HARNESS_CODEX_PATH,HARNESS_CODEX_DISABLE_NATIVE_TOOLS,HARNESS_TURN_TIMEOUT_S,OMNIGENT_LOG_LEVEL,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS,TIKTOKEN_CACHE_DIR,LITELLM_LOCAL_MODEL_COST_MAP
+# PYTHONPATH is listed belt-and-braces: omnigent's own _RUNNER_ENV_ALLOWLIST
+# already forwards it, but that is a private upstream constant, and if it ever
+# stops covering PYTHONPATH the Sapling backend above would quietly stop
+# loading (panel empty again, nothing broken) with no obvious cause.
+Environment=OMNIGENT_RUNNER_ENV_PASSTHROUGH=THRIFT_TLS_CL_CERT_PATH,THRIFT_TLS_CL_KEY_PATH,CODEX_MANAGED_CONFIG_PATH,HARNESS_CODEX_PATH,HARNESS_CODEX_DISABLE_NATIVE_TOOLS,HARNESS_TURN_TIMEOUT_S,OMNIGENT_LOG_LEVEL,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS,TIKTOKEN_CACHE_DIR,LITELLM_LOCAL_MODEL_COST_MAP,PYTHONPATH
 # Meta's codex launcher re-execs the real binary into a transient systemd scope
 # under 3pai_sandbox.slice, which leaves this unit's cgroup. systemd kills a
 # unit by cgroup, so a restart kills the runner but strands the Codex
