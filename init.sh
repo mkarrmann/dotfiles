@@ -190,6 +190,10 @@ else
   echo "[desktop] skipping work plugins and Omnigent hub setup"
   "$DOTFILES_DIR/bin/omnigent-desktop-ensure" ||
     echo "WARNING: local Omnigent startup failed" >&2
+  if [[ "$(uname -s)" == Linux ]]; then
+    "$DOTFILES_DIR/bin/omnigent-desktop-app-ensure" ||
+      echo "WARNING: Omnigent desktop app installation failed" >&2
+  fi
 fi
 
 # ---------------------------------------------------------------------------

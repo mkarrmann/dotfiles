@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Install the pinned Linux GUI on personal desktops, leaving upgrades explicit.
+set -euo pipefail
+
+DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
+if [[ "$("$DOTFILES/bin/dotfiles-profile")" != desktop || "$(uname -s)" != Linux ]]; then
+  exit 0
+fi
+if ! command -v dpkg >/dev/null 2>&1 || ! command -v apt >/dev/null 2>&1; then
+  echo "[omnigent-app] automatic installation requires Debian/Ubuntu; see https://omnigent.ai/docs/interact/desktop"
+  exit 0
+fi
+if [[ "$(dpkg --print-architecture)" != amd64 ]]; then
+  echo "[omnigent-app] no pinned package for this architecture; skipping"
+  exit 0
+fi
+
+package=omnigent-desktop-electron
+installed="$(dpkg-query -W -f='${Status} ${Version}' "$package" 2>/dev/null || true)"
+if [[ "$installed" == 'install ok installed '* ]]; then
+  echo "[omnigent-app] ${installed#install ok installed } already installed; leaving it unchanged"
+  exit 0
+fi
+
+if [[ ! -t 0 || ! -t 1 ]]; then
+  printf '[omnigent-app] installation needs an interactive terminal for sudo/apt. Run:\n  %q\n' \
+    "$DOTFILES/bin/omnigent-desktop-app-ensure"
+  exit 0
+fi
+
+# shellcheck disable=SC1091
+source "$DOTFILES/omnigent_config/desktop-app.env"
+for tool in curl sha256sum dpkg-deb sudo; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "ERROR: $tool is required to install the Omnigent app" >&2; exit 1; }
+done
+
+download="$(mktemp "${TMPDIR:-/tmp}/omnigent-desktop.XXXXXX.deb")"
+trap 'rm -f "$download"' EXIT
+echo "[omnigent-app] downloading $OMNIGENT_DESKTOP_APP_VERSION"
+curl -fL --connect-timeout 10 --max-time 300 "$OMNIGENT_DESKTOP_APP_URL" -o "$download"
+if ! printf '%s  %s\n' "$OMNIGENT_DESKTOP_APP_SHA256" "$download" | sha256sum --check --status; then
+  echo "ERROR: Omnigent desktop package checksum mismatch" >&2
+  exit 1
+fi
+if [[ "$(dpkg-deb -f "$download" Package)" != "$package" ||
+      "$(dpkg-deb -f "$download" Version)" != "$OMNIGENT_DESKTOP_APP_VERSION" ||
+      "$(dpkg-deb -f "$download" Architecture)" != amd64 ]]; then
+  echo "ERROR: unexpected Omnigent desktop package metadata" >&2
+  exit 1
+fi
+chmod 644 "$download"
+sudo apt install "$download"
+echo "[omnigent-app] installed; open Omnigent and connect to http://127.0.0.1:6767"

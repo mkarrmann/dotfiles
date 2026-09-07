@@ -204,6 +204,7 @@ class InitProfileTest(ProfileFixture):
             "sync.sh", "agent_config/bootstrap-plugins",
             "bin/codecompanion-fork-ensure", "bin/omnigent-version-ensure",
             "bin/omnigent-desktop-ensure",
+            "bin/omnigent-desktop-app-ensure",
             "bin/omnigent-dvsc-ensure", "bin/omnigent-config-ensure",
             "bin/omnigent-codex-login-ensure", "bin/omnigent-agents-ensure",
             "bin/omnigent-google-chat-ensure", "bin/omnigent-retire-legacy-standby",
@@ -242,7 +243,11 @@ class InitProfileTest(ProfileFixture):
                 for helper in ("sync.sh", "codecompanion-fork-ensure", "omnigent-desktop-ensure", "stylua-ensure", "marksman-ensure"):
                     self.assertTrue(any(line.startswith(helper + " ") for line in calls), calls)
                 forbidden = ("omnigent-", "bootstrap-plugins ", "systemctl ", "launchctl ", "uv ", "curl ", "git ")
-                self.assertFalse(any(line.startswith(forbidden) for line in calls if not line.startswith("omnigent-desktop-ensure ")), calls)
+                self.assertFalse(any(line.startswith(forbidden) for line in calls if not line.startswith(("omnigent-desktop-ensure ", "omnigent-desktop-app-ensure "))), calls)
+                self.assertEqual(
+                    any(line.startswith("omnigent-desktop-app-ensure ") for line in calls),
+                    platform == "Linux",
+                )
                 self.assertTrue(all("profile=desktop" in line for line in calls), calls)
                 self.assertTrue(all(line.endswith(f"dotfiles={self.dotfiles}") for line in calls), calls)
 

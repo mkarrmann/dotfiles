@@ -31,6 +31,18 @@ through to the native CLI and use your local agent credentials; an explicit
 `--server URL` still selects a remote server. Unlike the work wrapper,
 desktop does not inject `OMNIGENT_URL` as a command-line server.
 
+On Debian/Ubuntu amd64 desktops, `init.sh` also installs the Omnigent GUI if
+the `omnigent-desktop-electron` package is absent. Its first-install version,
+download URL, and SHA-256 are pinned in `omnigent_config/desktop-app.env`;
+update all three together when choosing a new release. Existing installations
+are left untouched, including older versions; upgrades remain explicit.
+The installer uses an interactive sudo/apt prompt. Unattended runs print the
+command to run later without downloading or installing anything. To install
+only the GUI, run `./bin/omnigent-desktop-app-ensure` in a terminal.
+Other architectures and distributions skip this package installer. Devservers
+and Macs skip it entirely, and `sync.sh` never invokes it. On first launch,
+select `http://127.0.0.1:6767`; the app's settings stay machine-local.
+
 Override detection for one invocation with `DOTFILES_PROFILE=work ./init.sh`
 (or `desktop`). To persist an exception, put the single word `work`, `desktop`,
 or `auto` in `~/.config/dotfiles/profile` (under `$XDG_CONFIG_HOME` if set).
@@ -56,6 +68,7 @@ Regression checks use temporary homes and stubbed installers/service managers:
 python3 -m unittest discover -s tests -p test_dotfiles_profiles.py
 python3 -m unittest discover -s tests -p test_codex_config.py
 python3 -m unittest discover -s tests -p test_omnigent_desktop.py
+python3 -m unittest discover -s tests -p test_omnigent_desktop_app.py
 ```
 
 ## Omnigent topology
