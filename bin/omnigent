@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Prod Omnigent launcher: run the published uv-tool binary, but default
-# client subcommands to the remote hub.
+# Run the published uv-tool binary. Desktop uses its native local lifecycle;
+# work client subcommands default to the remote hub.
 #
 # The omnigent CLI has no default-server support — every `--server` option
 # defaults to a local server — so a bare `omnigent resume/run/...` silently
@@ -12,10 +12,18 @@
 # The dev/source build lives in `omnigent-dev`.
 set -euo pipefail
 
+DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
+profile="$("$DOTFILES/bin/dotfiles-profile")"
 real="$HOME/.local/bin/omnigent"
 if [[ ! -x "$real" ]]; then
   echo "omnigent: prod binary not found at $real (is the uv tool installed?)" >&2
   exit 127
+fi
+
+if [[ "$profile" == desktop ]]; then
+  # An injected URL selects remote mode, even for localhost, disabling the
+  # native CLI's automatic local server and execution-host startup.
+  exec "$real" "$@"
 fi
 
 # Client leaf-subcommands that accept `--server` and should target the hub by

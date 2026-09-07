@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Stage or activate the desktop's standard local Omnigent service.
+set -euo pipefail
+
+DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
+if [[ "$("$DOTFILES/bin/dotfiles-profile")" != desktop ]]; then
+  echo "omnigent-desktop-ensure requires the desktop profile" >&2
+  exit 1
+fi
+
+if [[ $# -gt 1 || ( $# -eq 1 && "$1" != --stage ) ]]; then
+  echo "usage: omnigent-desktop-ensure [--stage]" >&2
+  exit 2
+fi
+
+platform="$(uname -s)"
+if [[ "$platform" == Linux ]]; then
+  unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+  unit="$unit_dir/omnigent-host.service"
+  source="$DOTFILES/systemd/desktop/omnigent-host.service"
+  if [[ -e "$unit" || -L "$unit" ]]; then
+    if [[ ! -L "$unit" ]] || {
+      target="$(readlink -f "$unit")"
+      [[ "$target" != "$source" && "$target" != "$DOTFILES/systemd/omnigent-host.service" ]]
+    }; then
+      echo "ERROR: $unit is not a managed dotfiles unit; merge it before setup" >&2
+      exit 1
+    fi
+  fi
+  mkdir -p "$unit_dir"
+  ln -sfn "$source" "$unit"
+fi
+
+[[ "${1:-}" != --stage ]] || exit 0
+
+real="$HOME/.local/bin/omnigent"
+if [[ ! -x "$real" ]]; then
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "uv is required to install Omnigent" >&2
+    exit 1
+  fi
+  uv tool install 'omnigent>=0.12.0'
+fi
+
+if [[ "$platform" == Linux ]]; then
+  # Retire only the work units we own, before starting the local runtime.
+  retired=()
+  while IFS= read -r name; do
+    [[ -n "$name" && "$name" != \#* ]] || continue
+    if [[ -L "$unit_dir/$name" &&
+          "$(readlink -f "$unit_dir/$name")" == "$DOTFILES/systemd/$name" ]]; then
+      retired+=("$name")
+    fi
+  done < "$DOTFILES/systemd/desktop/disabled-units.list"
+  if (( ${#retired[@]} )); then
+    systemctl --user disable --now "${retired[@]}"
+  fi
+  # init.sh deliberately converges running services. Stop before reloading so
+  # the old service completes its own shutdown using its loaded definition.
+  systemctl --user stop omnigent-host.service
+  # A CLI invocation before setup may have started an unsupervised local host.
+  # Hand that role to systemd using the upstream daemon lifecycle command.
+  "$real" host stop --server '' --daemon-only
+  systemctl --user daemon-reload
+  exec systemctl --user enable --now omnigent-host.service
+fi
+
+exec "$real" start --server '' --non-interactive

@@ -188,6 +188,8 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
 
 else
   echo "[desktop] skipping work plugins and Omnigent hub setup"
+  "$DOTFILES_DIR/bin/omnigent-desktop-ensure" ||
+    echo "WARNING: local Omnigent startup failed" >&2
 fi
 
 # ---------------------------------------------------------------------------

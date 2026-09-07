@@ -203,6 +203,7 @@ class InitProfileTest(ProfileFixture):
         helpers = (
             "sync.sh", "agent_config/bootstrap-plugins",
             "bin/codecompanion-fork-ensure", "bin/omnigent-version-ensure",
+            "bin/omnigent-desktop-ensure",
             "bin/omnigent-dvsc-ensure", "bin/omnigent-config-ensure",
             "bin/omnigent-codex-login-ensure", "bin/omnigent-agents-ensure",
             "bin/omnigent-google-chat-ensure", "bin/omnigent-retire-legacy-standby",
@@ -238,10 +239,10 @@ class InitProfileTest(ProfileFixture):
                 result = self.run_script(self.script)
                 self.assert_success(result)
                 calls = self.calls()
-                for helper in ("sync.sh", "codecompanion-fork-ensure", "stylua-ensure", "marksman-ensure"):
+                for helper in ("sync.sh", "codecompanion-fork-ensure", "omnigent-desktop-ensure", "stylua-ensure", "marksman-ensure"):
                     self.assertTrue(any(line.startswith(helper + " ") for line in calls), calls)
                 forbidden = ("omnigent-", "bootstrap-plugins ", "systemctl ", "launchctl ", "uv ", "curl ", "git ")
-                self.assertFalse(any(line.startswith(forbidden) for line in calls), calls)
+                self.assertFalse(any(line.startswith(forbidden) for line in calls if not line.startswith("omnigent-desktop-ensure ")), calls)
                 self.assertTrue(all("profile=desktop" in line for line in calls), calls)
                 self.assertTrue(all(line.endswith(f"dotfiles={self.dotfiles}") for line in calls), calls)
 
@@ -313,6 +314,7 @@ class SyncProfileTest(ProfileFixture):
             "nori_config/config.toml", "hammerspoon.lua", "aerospace.toml",
             "sketchybar/sketchybarrc", "orchest_plugins.json",
             "systemd/omnigent-host.service", "systemd/omnigent-hub-reconcile.timer",
+            "systemd/desktop/omnigent-host.service",
             "launchd/com.mkarrmann.omnigent-host.plist",
             "launchd/com.mkarrmann.omnigent-tls.plist",
             "launchd/com.mkarrmann.omnigent-tunnel.plist",
@@ -321,6 +323,7 @@ class SyncProfileTest(ProfileFixture):
             path = self.dotfiles / source
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch()
+        shutil.copy2(ROOT / "bin/omnigent-desktop-ensure", self.dotfiles / "bin/omnigent-desktop-ensure")
         recorder = 'printf "%s %s profile=%s\\n" "${0##*/}" "$*" "${DOTFILES_PROFILE:-}" >> "$TEST_CALLS"'
         for helper in (
             "agent_config/sync-mcps", "bin/omnigent-config-ensure",
@@ -351,7 +354,11 @@ class SyncProfileTest(ProfileFixture):
                 self.assertTrue(all("profile=desktop" in line for line in calls), calls)
                 self.assertTrue((self.home / ".zshrc").is_symlink())
                 self.assertTrue((self.home / ".config/nvim/init.lua").is_symlink())
-                self.assertFalse((self.home / ".config/systemd/user").exists())
+                if platform == "Linux":
+                    self.assertEqual(
+                        (self.home / ".config/systemd/user/omnigent-host.service").resolve(),
+                        self.dotfiles / "systemd/desktop/omnigent-host.service",
+                    )
                 self.assertFalse((self.home / "Library/LaunchAgents").exists())
                 self.assertFalse((self.home / ".config/environment.d/omnigent.conf").exists())
                 self.assertFalse((self.home / ".hgrc").exists())
@@ -361,6 +368,17 @@ class SyncProfileTest(ProfileFixture):
                 self.assertEqual(settings["env"]["PERSONAL_SETTING"], "keep")
                 self.assertEqual(settings["statusLine"]["command"], "~/.claude/statusline.sh")
                 self.assertNotIn("omnigent-capture-diff", json.dumps(settings["hooks"]))
+
+    def test_work_sync_restores_host_unit_after_desktop_profile(self):
+        self.env["DOTFILES_PROFILE"] = "desktop"
+        self.assert_success(self.run_script(self.script))
+        host_unit = self.home / ".config/systemd/user/omnigent-host.service"
+        self.assertEqual(host_unit.resolve(), self.dotfiles / "systemd/desktop/omnigent-host.service")
+        self.env["DOTFILES_PROFILE"] = "work"
+        result = self.run_script(self.script)
+        self.assert_success(result)
+        self.assertEqual(host_unit.resolve(), self.dotfiles / "systemd/omnigent-host.service")
+        self.assertNotIn("SHADOWED", result.stdout)
 
     def test_work_sync_keeps_internal_services_and_settings(self):
         self.env["DOTFILES_PROFILE"] = "work"

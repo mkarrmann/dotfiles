@@ -1,0 +1,13 @@
+# Work infrastructure retired when activating the desktop profile.
+# Only units linked to this checkout's systemd/ directory are managed.
+omnigent-hub-reconcile.timer
+omnigent-logrotate.timer
+omnigent-snapshot.timer
+omnigent-hub-reconcile.service
+omnigent-logrotate.service
+omnigent-snapshot.service
+omnigent-client-proxy.service
+omnigent-diff-watcher.service
+omnigent-google-chat.service
+omnigent-prodnet.service
+omnigent-server.service

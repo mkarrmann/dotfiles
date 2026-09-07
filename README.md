@@ -20,6 +20,17 @@ devserver bootstrap sources, work MCPs, Linux services, and Mac client jobs.
 On Linux it discovers routing before running dependent Omnigent setup; failure
 skips those dependent steps, while declared Neovim sessions can still start.
 
+Desktop `init.sh` also installs Omnigent if absent. On Linux, `sync.sh` stages
+`systemd/desktop/omnigent-host.service`; `init.sh` enables and restarts it.
+The unit runs the standard `omnigent host --server '' --non-interactive`,
+which manages a local server and execution host with state under `~/.omnigent`.
+Systemd starts it at login (at boot too if user lingering is enabled).
+Personal Macs use the native background `omnigent start` lifecycle instead.
+Desktop `omnigent claude`, `omnigent codex`, and other commands pass straight
+through to the native CLI and use your local agent credentials; an explicit
+`--server URL` still selects a remote server. Unlike the work wrapper,
+desktop does not inject `OMNIGENT_URL` as a command-line server.
+
 Override detection for one invocation with `DOTFILES_PROFILE=work ./init.sh`
 (or `desktop`). To persist an exception, put the single word `work`, `desktop`,
 or `auto` in `~/.config/dotfiles/profile` (under `$XDG_CONFIG_HOME` if set).
@@ -30,14 +41,21 @@ Mac should need no override.
 converges services. Desktop sync removes previously managed internal MCP
 registrations and work Claude plugin settings while preserving unrelated
 personal entries. Codex's explicit local MCP overrides still win.
-Neither profile switching nor desktop sync stops services or removes packages
-left by an earlier work setup. Those need a deliberate, separate cleanup.
+Desktop sync only stages the service link. Desktop init also stops and disables
+the work units declared in `systemd/desktop/disabled-units.list`, then hands
+the local host role to systemd. It retires only units linked to this checkout;
+unrelated custom units are preserved. Host units can switch between the two
+managed profiles; a custom host unit is reported as a conflict. Re-running
+desktop init restarts the host and can interrupt active Omnigent sessions.
+For just this setup, run `bin/omnigent-desktop-ensure` (or `--stage` to only
+stage the unit). Installed packages and session history are retained.
 
 Regression checks use temporary homes and stubbed installers/service managers:
 
 ```sh
 python3 -m unittest discover -s tests -p test_dotfiles_profiles.py
 python3 -m unittest discover -s tests -p test_codex_config.py
+python3 -m unittest discover -s tests -p test_omnigent_desktop.py
 ```
 
 ## Omnigent topology

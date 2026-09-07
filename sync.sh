@@ -743,6 +743,11 @@ fi
 # NOT restart, reconcile, remount, or otherwise disturb anything already
 # running — that live convergence belongs to init.sh and the reconcile timer.
 if [[ "$DOTFILES_PROFILE" == work && "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
+  # Switching back from desktop restores only our own alternate host unit.
+  host_unit="$HOME/.config/systemd/user/omnigent-host.service"
+  if [[ -L "$host_unit" && "$(readlink -f "$host_unit")" == "$DOTFILES_DIR/systemd/desktop/omnigent-host.service" ]]; then
+    ln -sfn "$DOTFILES_DIR/systemd/omnigent-host.service" "$host_unit"
+  fi
   sync_link_dir "$DOTFILES_DIR/systemd" "$HOME/.config/systemd/user" "*.service"
   sync_link_dir "$DOTFILES_DIR/systemd" "$HOME/.config/systemd/user" "*.timer"
   # Hub ownership is dynamic. Only the reconcile timer starts at boot; it
@@ -825,6 +830,11 @@ if [[ "$DOTFILES_PROFILE" == work && "$(uname -s)" == "Linux" ]] && command -v s
   # StandardOutput=append: file, and a demoted hub keeps whatever it had.
   systemctl --user enable --now omnigent-logrotate.timer 2>/dev/null \
     || echo "WARNING: failed to enable omnigent-logrotate.timer" >&2
+fi
+
+if [[ "$DOTFILES_PROFILE" == desktop && "$(uname -s)" == Linux ]]; then
+  "$DOTFILES_DIR/bin/omnigent-desktop-ensure" --stage ||
+    echo "WARNING: desktop Omnigent service staging failed" >&2
 fi
 
 # Nori
