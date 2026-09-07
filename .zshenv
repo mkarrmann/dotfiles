@@ -7,4 +7,6 @@ fi
 if [[ -f ~/.zshenv.local ]]; then
   source ~/.zshenv.local
 fi
-. "$HOME/.cargo/env"
+if [[ -f "$HOME/.cargo/env" ]]; then
+  . "$HOME/.cargo/env"
+fi

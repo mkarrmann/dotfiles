@@ -12,7 +12,8 @@ fi
 
 # ~/bin holds intentional override wrappers (omnigent, codex, nori, ...); it
 # must precede ~/.local/bin so those wrappers win over the raw installed tools.
-export PATH=$HOME/bin:$HOME/.local/bin:$PATH
+# Include user-global npm installs below those wrappers in every shell type.
+export PATH="$HOME/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 
 # pyenv
 if command -v pyenv >> /dev/null 2>&1; then
@@ -85,4 +86,3 @@ _path_dedupe
 unset -f _path_dedupe
 
 export CLAUDE_CODE_NO_FLICKER=0
-

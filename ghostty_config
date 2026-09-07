@@ -1,7 +1,7 @@
 clipboard-write = allow
 clipboard-read = allow
 window-colorspace = srgb
-theme = Github Dark High Contrast
+theme = GitHub Dark High Contrast
 font-feature = -calt                                                                                                                                                                      
 font-feature = -liga                                                                                                                                                                      
 font-feature = -dlig
