@@ -8,6 +8,7 @@ set -euo pipefail
 # Called by startup-windows, but can also be invoked independently.
 
 ORCHEST_PORT=3100
+ORCHEST_LOG="${ORCHEST_LOG:-/tmp/orchest.log}"
 ORCHEST_MANAGED_WORKSPACES=(1 2 3 4 5 6 7 8 9)
 ORCHEST_DIR="${HOME}/dev/orchest"
 ORCHEST_DESKTOP_DIR="${ORCHEST_DIR}/apps/desktop"
@@ -33,39 +34,76 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-orchest_is_running() {
-  curl -sf "http://127.0.0.1:${ORCHEST_PORT}" >/dev/null 2>&1
+orchest_health() {
+  local response status body curl_status=0
+  response=$(curl --silent --show-error --noproxy '*' \
+    --connect-timeout 1 --max-time 2 --write-out '\n%{http_code}' \
+    "http://127.0.0.1:${ORCHEST_PORT}/health" 2>/dev/null) || curl_status=$?
+  if [[ "$curl_status" == 7 ]]; then
+    orchest_state=absent
+    return 0
+  elif [[ "$curl_status" != 0 ]]; then
+    echo "WARNING: [Orchest] cannot check port ${ORCHEST_PORT} (curl exit ${curl_status}); inspect the listener before retrying" >&2
+    return 1
+  fi
+
+  status="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+  if ! printf '%s' "$body" | jq -se --arg status "$status" '
+    length == 1 and (.[0] |
+      type == "object" and .service == "orchest" and
+      .protocolVersion == 1 and .shell == "desktop" and
+      (.pid | type == "number" and . > 0 and floor == .) and
+      (($status == "200" and .ready == true) or
+       ($status == "503" and .ready == false)))
+  ' >/dev/null 2>&1; then
+    echo "WARNING: [Orchest] port ${ORCHEST_PORT} does not expose a compatible Orchest desktop /health endpoint (HTTP ${status}); inspect the listener. For an older Orchest build, rebuild and explicitly restart it before retrying" >&2
+    return 1
+  fi
+  if [[ "$status" == 200 ]]; then
+    orchest_state=ready
+  else
+    orchest_state=starting
+  fi
 }
 
 orchest_cli() {
   (cd "$ORCHEST_DIR" && pnpm --silent --filter @orchest/cli orchest "$@")
 }
 
+launched_pid=
 launch_orchest_dev() {
   (
     cd "$ORCHEST_DIR"
-    ORCHEST_PROVIDER=macos-aerospace nohup pnpm dev </dev/null > /tmp/orchest.log 2>&1 &
-    disown "$!" 2>/dev/null || true
-  )
+    exec env ORCHEST_PROVIDER=macos-aerospace nohup pnpm dev
+  ) </dev/null > "$ORCHEST_LOG" 2>&1 &
+  launched_pid=$!
 }
 
 launch_orchest_prod() {
   (
     cd "$ORCHEST_DESKTOP_DIR"
-    ORCHEST_PROVIDER=macos-aerospace nohup pnpm exec electron . </dev/null > /tmp/orchest.log 2>&1 &
-    disown "$!" 2>/dev/null || true
-  )
+    exec env ORCHEST_PROVIDER=macos-aerospace nohup pnpm exec electron .
+  ) </dev/null > "$ORCHEST_LOG" 2>&1 &
+  launched_pid=$!
+}
+
+orchest_launch_alive() {
+  local launch_status=0
+  if [[ -n "$launched_pid" ]] && ! jobs -pr | grep -qx "$launched_pid"; then
+    wait "$launched_pid" || launch_status=$?
+    echo "WARNING: [Orchest] launch process exited before readiness (status ${launch_status}); see ${ORCHEST_LOG}" >&2
+    return 1
+  fi
 }
 
 failures=0
-
-# Launch Orchest if not running
-if ! orchest_is_running && [[ "$ACTION" != "open" ]]; then
-  echo "WARNING: [Orchest] is not running; cannot ${ACTION} workspace placement" >&2
-  exit 1
-fi
-
-if ! orchest_is_running; then
+orchest_health || exit 1
+if [[ "$orchest_state" == absent ]]; then
+  if [[ "$ACTION" != open ]]; then
+    echo "WARNING: [Orchest] is not running; cannot ${ACTION} workspace placement" >&2
+    exit 1
+  fi
   if [[ "$MODE" == "prod" ]]; then
     if [[ ! -f "$ORCHEST_PROD_ENTRY" ]]; then
       echo "[Orchest] no prod build found, running 'pnpm -r build'..."
@@ -80,16 +118,19 @@ if ! orchest_is_running; then
     echo "[Orchest] launching (dev)..."
     launch_orchest_dev
   fi
+fi
 
-  for _ in $(seq 1 40); do
+if [[ "$orchest_state" != ready ]]; then
+  deadline=$((SECONDS + 20))
+  while [[ "$SECONDS" -lt "$deadline" ]]; do
+    orchest_launch_alive || exit 1
+    orchest_health || exit 1
+    orchest_launch_alive || exit 1
+    [[ "$orchest_state" == ready ]] && break
     sleep 0.5
-    if orchest_is_running; then
-      break
-    fi
   done
-
-  if ! orchest_is_running; then
-    echo "WARNING: [Orchest] did not start within 20s, skipping workspace setup" >&2
+  if [[ "$orchest_state" != ready ]]; then
+    echo "WARNING: [Orchest] did not become ready within 20s; see ${ORCHEST_LOG}. Inspect the existing instance before retrying" >&2
     exit 1
   fi
 fi
