@@ -39,6 +39,9 @@ are left untouched, including older versions; upgrades remain explicit.
 The installer uses an interactive sudo/apt prompt. Unattended runs print the
 command to run later without downloading or installing anything. To install
 only the GUI, run `./bin/omnigent-desktop-app-ensure` in a terminal.
+`sync.sh` also links `omnigent_config/omnigent-desktop-electron.desktop` over the package's
+launcher entry to pass a Chromium flag that avoids a first-launch crash under sway with
+fractional scaling (details in that file).
 
 Linux desktops also get a systemd-coredump size cap (`systemd/desktop/coredump-size-cap.conf`,
 installed to `/etc/systemd/coredump.conf.d/` by `bin/coredump-size-cap-ensure`) so a crashing

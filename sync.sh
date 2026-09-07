@@ -835,6 +835,12 @@ fi
 if [[ "$DOTFILES_PROFILE" == desktop && "$(uname -s)" == Linux ]]; then
   "$DOTFILES_DIR/bin/omnigent-desktop-ensure" --stage ||
     echo "WARNING: desktop Omnigent service staging failed" >&2
+  # Launcher override for the packaged GUI; see the comment in the file.
+  mkdir -p "$HOME/.local/share/applications"
+  link_one "$DOTFILES_DIR/omnigent_config/omnigent-desktop-electron.desktop" \
+    "$HOME/.local/share/applications/omnigent-desktop-electron.desktop"
+  command -v update-desktop-database >/dev/null 2>&1 &&
+    update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
 fi
 
 # Nori

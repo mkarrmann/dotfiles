@@ -1,0 +1,20 @@
+[Desktop Entry]
+# Overrides the package entry from /usr/share/applications (same file id wins
+# from ~/.local/share/applications). Identical except for Exec.
+#
+# Chromium 148 (Electron 42) aborts on first launch under sway when the
+# monitor uses a fractional scale: with no saved window position Electron
+# centers the window, and the Wayland fractional-scale path then requests an
+# empty xdg-shell window geometry, which is a CHECK. Disabling that feature
+# falls back to integer buffer scaling, which the compositor downsamples.
+# Once a run has saved window bounds the crash no longer triggers, which is
+# why it only bites on fresh machines.
+Name=Omnigent
+Exec=/opt/Omnigent/omnigent-desktop-electron --disable-features=WaylandFractionalScaleV1 %U
+Terminal=false
+Type=Application
+Icon=omnigent-desktop-electron
+StartupWMClass=Omnigent
+Comment=Omnigent desktop shell (Electron edition) — a thin native wrapper around the server-served web UI.
+MimeType=x-scheme-handler/omnigent;
+Categories=Development;
