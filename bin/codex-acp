@@ -23,10 +23,22 @@ env | grep -E '^(META_CLAUDE|CODEX|OPENAI)_' | sort >&2
 echo "=== begin launcher output ===" >&2
 
 # Meta's codex on macOS is a dotslash binary at /usr/local/bin/codex
-# (symlink into /usr/local/bin/codex_cli/codex). On devvms the same
-# path generally exists; override CODEX_PATH per-machine if not.
-export CODEX_PATH="${CODEX_PATH:-/usr/local/bin/codex}"
-export NODE_EXTRA_CA_CERTS="/var/facebook/rootcanal/ca.pem"
+# (symlink into /usr/local/bin/codex_cli/codex). On devvms the same path
+# generally exists, and pointing at it routes auth through the launcher the
+# codex CLI uses interactively. Machines without it fall back to the sibling
+# wrapper, which resolves whichever codex is installed there.
+if [[ -z "${CODEX_PATH:-}" ]]; then
+  if [[ -x /usr/local/bin/codex ]]; then
+    CODEX_PATH=/usr/local/bin/codex
+  else
+    CODEX_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/codex"
+  fi
+fi
+export CODEX_PATH
+# Only Meta hosts have the rootcanal CA; elsewhere Node warns and ignores it.
+if [[ -r /var/facebook/rootcanal/ca.pem ]]; then
+  export NODE_EXTRA_CA_CERTS="/var/facebook/rootcanal/ca.pem"
+fi
 
 # Discover Node.js: prefer dotslash-cached modern Node, fall back to system.
 NODE="$(find "$HOME/.cache/dotslash" -name node -type f 2>/dev/null | head -1)"

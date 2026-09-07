@@ -83,6 +83,15 @@ Agent session naming helpers:
 
 Codex name/session mappings are stored in `~/.codex/agents.tsv` (machine-local).
 
+`bin/codex` is the launcher every codex entry point goes through. It picks the
+real binary in order: `/usr/local/bin/codex` (Meta's provisioned install, which
+owns auth on devservers and the work Mac), `/opt/homebrew/bin/codex`, the
+npm global prefix (`$NPM_CONFIG_PREFIX`, else `~/.npm-global`), then PATH. On
+machines without a provisioned install this lands on the same install that
+codex's own `npm install -g @openai/codex` self-update writes, so accepting an
+in-app upgrade actually takes effect. Set `CODEX_LAUNCHER_CANDIDATES` (a
+colon-separated list) for layouts the default order misses.
+
 Then download vim relative line numbers from https://www.vim.org/scripts/script.php?script_id=2351
 
 Follow instructions to install, run:

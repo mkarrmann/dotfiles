@@ -13,6 +13,11 @@ if [[ -r "$cert" ]]; then
   export THRIFT_TLS_CL_KEY_PATH="${THRIFT_TLS_CL_KEY_PATH:-$cert}"
 fi
 
+# Resolved before the app-server chdir below so the exec-loop guard can compare
+# it against candidate paths regardless of the working directory.
+self="${BASH_SOURCE[0]}"
+[[ "$self" == /* ]] || self="$PWD/$self"
+
 args=("$@")
 if [[ "${1:-}" == "app-server" ]]; then
   # HACK(omnigent-sdk-codex-cwd): Omnigent's managed-host runner resolves the
@@ -72,12 +77,26 @@ if [[ -n "${OMNIGENT_CODEX_REAL_PATH:-}" ]]; then
   fi
   exec "${OMNIGENT_CODEX_REAL_PATH}" ${args[@]+"${args[@]}"}
 fi
-if [[ -x /usr/local/bin/codex ]]; then
-  exec /usr/local/bin/codex ${args[@]+"${args[@]}"}
-fi
-if [[ -x /opt/homebrew/bin/codex ]]; then
-  exec /opt/homebrew/bin/codex ${args[@]+"${args[@]}"}
-fi
+# Launcher resolution, most specific first, then whatever PATH offers. Meta
+# devservers and macOS laptops provision /usr/local/bin/codex, and that install
+# owns auth, so it keeps winning there. Machines without it fall through to the
+# install that codex's own `npm install -g @openai/codex` self-update writes,
+# so an accepted upgrade actually takes effect instead of re-prompting forever.
+# CODEX_LAUNCHER_CANDIDATES overrides the built-in list (tests, exotic layouts).
+default_candidates="/usr/local/bin/codex"
+default_candidates+=":/opt/homebrew/bin/codex"
+default_candidates+=":${NPM_CONFIG_PREFIX:-$HOME/.npm-global}/bin/codex"
+IFS=':' read -r -a launchers <<<"${CODEX_LAUNCHER_CANDIDATES:-$default_candidates}"
+while IFS= read -r path; do
+  launchers+=("$path")
+done < <(type -aP codex 2>/dev/null || true)
+
+for launcher in ${launchers[@]+"${launchers[@]}"}; do
+  [[ -n "$launcher" && -f "$launcher" && -x "$launcher" ]] || continue
+  # Skip this wrapper, however it was reached, so PATH lookup can't exec-loop.
+  [[ "$launcher" -ef "$self" ]] && continue
+  exec "$launcher" ${args[@]+"${args[@]}"}
+done
 
 echo "codex launcher not found" >&2
 exit 127
