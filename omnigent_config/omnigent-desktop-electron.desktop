@@ -1,14 +1,34 @@
 [Desktop Entry]
-# Overrides the package entry from /usr/share/applications (same file id wins
-# from ~/.local/share/applications). Identical except for Exec.
+# HACK: overrides the package's launcher entry (same file id in
+# ~/.local/share/applications wins over /usr/share/applications). It is a copy
+# of /usr/share/applications/omnigent-desktop-electron.desktop with one flag
+# added to Exec. Because it shadows the package file entirely, any upstream
+# change to Exec/Icon/MimeType is masked: re-diff against the package entry on
+# every bump of OMNIGENT_DESKTOP_APP_VERSION in desktop-app.env.
 #
-# Chromium 148 (Electron 42) aborts on first launch under sway when the
-# monitor uses a fractional scale: with no saved window position Electron
-# centers the window, and the Wayland fractional-scale path then requests an
-# empty xdg-shell window geometry, which is a CHECK. Disabling that feature
-# falls back to integer buffer scaling, which the compositor downsamples.
-# Once a run has saved window bounds the crash no longer triggers, which is
-# why it only bites on fresh machines.
+# Bug: on a fresh machine (no window_bounds in ~/.config/Omnigent/settings.json)
+# the GUI dies with SIGTRAP within a second, silently. Electron centers the
+# window when it has no saved position, and on a fractionally scaled sway
+# output Chromium's Wayland fractional-scale path then requests an empty
+# xdg-shell window geometry, which trips CHECK(!bounds.IsEmpty()) in
+# ui::XdgSurface::SetWindowGeometry (ui/ozone/platform/wayland/host/xdg_surface.cc).
+# Once any run has saved bounds the centering path is skipped and the crash
+# never recurs, which is why it only bites first launches. Observed 2026-09-07
+# with Omnigent 0.10.0 / Electron 42.7.0 / Chromium 148.0.7778.280 on sway
+# 1.11 at output scale 1.2. VS Code, Cursor (Electron 42.10) and Chrome 152
+# do not hit it with fresh profiles: they pass an explicit window position.
+#
+# Fix: --disable-features=WaylandFractionalScaleV1 keeps the app on native
+# Wayland with integer buffer scaling (compositor downsamples). Verified the
+# only other working variant is --ozone-platform=x11 (blurrier);
+# --force-device-scale-factor=1 and WaylandPerSurfaceScale still crash.
+#
+# Remove this file (and its link in sync.sh) once the app no longer needs it:
+# either Omnigent ships explicit window bounds / this flag itself, or its
+# pinned Electron carries a Chromium where the CHECK path is fixed. To test,
+# delete "window_bounds" from settings.json and run the package Exec with
+# core dumps off:  (ulimit -c 0; /opt/Omnigent/omnigent-desktop-electron)
+# A window means the hack is obsolete; "Trace/breakpoint trap" means keep it.
 Name=Omnigent
 Exec=/opt/Omnigent/omnigent-desktop-electron --disable-features=WaylandFractionalScaleV1 %U
 Terminal=false
