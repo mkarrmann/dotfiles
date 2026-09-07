@@ -10,6 +10,9 @@
 set -uo pipefail
 
 DOTFILES_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+DOTFILES_PROFILE="$("$DOTFILES_DIR/bin/dotfiles-profile")" || exit 1
+export DOTFILES_DIR DOTFILES_PROFILE
+echo "[dotfiles] profile: $DOTFILES_PROFILE"
 
 CONFLICTS=()
 SKILL_ISSUES=()
@@ -320,7 +323,9 @@ fi
 # Meta tpai rules/skills integration overrides. Kept here rather than left as a
 # machine-local file so every host suppresses the duplicate skill injection; see
 # claude_config/meta-config.toml for the measurement behind it.
-link_one "$DOTFILES_DIR/claude_config/meta-config.toml" "$HOME/.claude/meta/config.toml"
+if [[ "$DOTFILES_PROFILE" == work ]]; then
+  link_one "$DOTFILES_DIR/claude_config/meta-config.toml" "$HOME/.claude/meta/config.toml"
+fi
 link_one "$DOTFILES_DIR/claude_config/statusline.sh" "$HOME/.claude/statusline.sh"
 # Agent Manager
 mkdir -p "$HOME/.claude/agent-manager/bin" "$HOME/.claude/statusline.d"
@@ -338,83 +343,86 @@ link_skills_scoped "$HOME/.claude/skills" global
 # SQLite/WAL and transcript writes do not become repository file-change events.
 # The launch preflight in codecompanion.lua retries active directories after
 # their current session closes.
-HGIGNORE_LOCAL="$HOME/.hgignore-local"
-touch "$HGIGNORE_LOCAL"
-if ! grep -Fqx '.codex-tmp/**' "$HGIGNORE_LOCAL"; then
-  printf '\nsyntax: glob\n.codex-tmp\n.codex-tmp/**\nsyntax: regexp\n' >> "$HGIGNORE_LOCAL"
-  echo "ignored .codex-tmp in $HGIGNORE_LOCAL"
-fi
-touch "$HOME/.hgrc"
-if ! grep -Fqx "ignore.omnigent-codex-tmp = $HGIGNORE_LOCAL" "$HOME/.hgrc"; then
-  printf '\n[ui]\nignore.omnigent-codex-tmp = %s\n' "$HGIGNORE_LOCAL" >> "$HOME/.hgrc"
-  echo "configured Sapling to read $HGIGNORE_LOCAL"
-fi
-# A workspace root is any real directory directly under $HOME that holds an
-# fbsource or configerator checkout: ~/checkoutN, plus older layouts such as
-# ~/local/configerator. Detecting them beats globbing checkout* so a checkout
-# outside the naming convention still gets its skills.
-#
-# Symlinked candidates count: ~/local is a symlink to the devserver data volume
-# and holds real checkouts. Roots are deduplicated by resolved path so a
-# workspace reachable under two names is only linked once, and the links are
-# created under the resolved path because cwd resolution is physical.
-#
-# $HOME itself is never a candidate (the glob starts one level down), so the
-# ~/fbsource and ~/configerator convenience symlinks cannot promote every
-# directory on the machine into a Meta workspace.
-seen_ws=""
-shopt -s nullglob
-for ws in "$HOME"/*/; do
-  [[ -d "${ws}fbsource" || -d "${ws}configerator" ]] || continue
-  # A repo checkout is never a workspace root, even though the configerator
-  # checkout does contain a directory called configerator/. Linking into one
-  # would drop 56 untracked symlinks inside a source repo.
-  [[ -e "${ws}.hg" || -e "${ws}.sl" || -e "${ws}.git" ]] && continue
-  ws_real="$(readlink -f "${ws%/}")"
-  if printf '%s\n' "$seen_ws" | grep -Fqx -- "$ws_real"; then
-    continue
+if [[ "$DOTFILES_PROFILE" == work ]]; then
+  HGIGNORE_LOCAL="$HOME/.hgignore-local"
+  touch "$HGIGNORE_LOCAL"
+  if ! grep -Fqx '.codex-tmp/**' "$HGIGNORE_LOCAL"; then
+    printf '\nsyntax: glob\n.codex-tmp\n.codex-tmp/**\nsyntax: regexp\n' >>"$HGIGNORE_LOCAL"
+    echo "ignored .codex-tmp in $HGIGNORE_LOCAL"
   fi
-  seen_ws="${seen_ws}${seen_ws:+$'\n'}${ws_real}"
-  link_skills_scoped "$ws_real/.claude/skills" meta
-  # Workspace-layout rules belong to the checkout, not to every machine, so they
-  # live here rather than in global-development-preferences.md. Both names are
-  # needed and neither duplicates the other: Claude Code reads only CLAUDE.md
-  # (and walks up to it from a subdirectory), Codex reads only AGENTS.md (and
-  # only in its own cwd, so it picks this up for sessions started at the
-  # workspace root -- the normal case -- while sessions started inside a repo
-  # get that repo's own AGENTS.md instead).
-  link_one "$DOTFILES_DIR/agent_config/meta-workspace-preferences.md" "$ws_real/CLAUDE.md"
-  link_one "$DOTFILES_DIR/agent_config/meta-workspace-preferences.md" "$ws_real/AGENTS.md"
-  for repo_name in fbsource configerator; do
-    repo_path="$ws_real/$repo_name"
-    [[ -d "$repo_path" ]] || continue
-    "$DOTFILES_DIR/bin/omnigent-codex-tmp-ensure" "$repo_path" ||
-      echo "WARNING: Codex temp redirect deferred for $repo_path" >&2
+  touch "$HOME/.hgrc"
+  if ! grep -Fqx "ignore.omnigent-codex-tmp = $HGIGNORE_LOCAL" "$HOME/.hgrc"; then
+    printf '\n[ui]\nignore.omnigent-codex-tmp = %s\n' "$HGIGNORE_LOCAL" >>"$HOME/.hgrc"
+    echo "configured Sapling to read $HGIGNORE_LOCAL"
+  fi
+  # A workspace root is any real directory directly under $HOME that holds an
+  # fbsource or configerator checkout: ~/checkoutN, plus older layouts such as
+  # ~/local/configerator. Detecting them beats globbing checkout* so a checkout
+  # outside the naming convention still gets its skills.
+  #
+  # Symlinked candidates count: ~/local is a symlink to the devserver data volume
+  # and holds real checkouts. Roots are deduplicated by resolved path so a
+  # workspace reachable under two names is only linked once, and the links are
+  # created under the resolved path because cwd resolution is physical.
+  #
+  # $HOME itself is never a candidate (the glob starts one level down), so the
+  # ~/fbsource and ~/configerator convenience symlinks cannot promote every
+  # directory on the machine into a Meta workspace.
+  seen_ws=""
+  shopt -s nullglob
+  for ws in "$HOME"/*/; do
+    [[ -d "${ws}fbsource" || -d "${ws}configerator" ]] || continue
+    # A repo checkout is never a workspace root, even though the configerator
+    # checkout does contain a directory called configerator/. Linking into one
+    # would drop 56 untracked symlinks inside a source repo.
+    [[ -e "${ws}.hg" || -e "${ws}.sl" || -e "${ws}.git" ]] && continue
+    ws_real="$(readlink -f "${ws%/}")"
+    if printf '%s\n' "$seen_ws" | grep -Fqx -- "$ws_real"; then
+      continue
+    fi
+    seen_ws="${seen_ws}${seen_ws:+$'\n'}${ws_real}"
+    link_skills_scoped "$ws_real/.claude/skills" meta
+    # Workspace-layout rules belong to the checkout, not to every machine, so they
+    # live here rather than in global-development-preferences.md. Both names are
+    # needed and neither duplicates the other: Claude Code reads only CLAUDE.md
+    # (and walks up to it from a subdirectory), Codex reads only AGENTS.md (and
+    # only in its own cwd, so it picks this up for sessions started at the
+    # workspace root -- the normal case -- while sessions started inside a repo
+    # get that repo's own AGENTS.md instead).
+    link_one "$DOTFILES_DIR/agent_config/meta-workspace-preferences.md" "$ws_real/CLAUDE.md"
+    link_one "$DOTFILES_DIR/agent_config/meta-workspace-preferences.md" "$ws_real/AGENTS.md"
+    for repo_name in fbsource configerator; do
+      repo_path="$ws_real/$repo_name"
+      [[ -d "$repo_path" ]] || continue
+      "$DOTFILES_DIR/bin/omnigent-codex-tmp-ensure" "$repo_path" ||
+        echo "WARNING: Codex temp redirect deferred for $repo_path" >&2
+    done
   done
-done
-shopt -u nullglob
+  shopt -u nullglob
 
-# Skills hand-linked into ~/.claude/skills from inside a repo checkout pin every
-# workspace to whichever checkout the link happens to name (often indirectly, via
-# the ~/fbsource convenience symlink) and duplicate the harness's own
-# ancestor-scoped discovery, which already finds them when cwd is in the owning
-# subtree. Match on the resolved path so the indirection does not hide them.
-shopt -s nullglob
-for dst in "$HOME"/.claude/skills/*; do
-  [[ -L "$dst" ]] || continue
-  skill_target="$(readlink -f "$dst")"
-  if [[ "$skill_target" == */fbsource/* || "$skill_target" == */configerator/* ]]; then
-    rm "$dst"
-    echo "removed checkout-pinned skill link $dst -> $skill_target"
-  fi
-done
-shopt -u nullglob
+  # Skills hand-linked into ~/.claude/skills from inside a repo checkout pin every
+  # workspace to whichever checkout the link happens to name (often indirectly, via
+  # the ~/fbsource convenience symlink) and duplicate the harness's own
+  # ancestor-scoped discovery, which already finds them when cwd is in the owning
+  # subtree. Match on the resolved path so the indirection does not hide them.
+  shopt -s nullglob
+  for dst in "$HOME"/.claude/skills/*; do
+    [[ -L "$dst" ]] || continue
+    skill_target="$(readlink -f "$dst")"
+    if [[ "$skill_target" == */fbsource/* || "$skill_target" == */configerator/* ]]; then
+      rm "$dst"
+      echo "removed checkout-pinned skill link $dst -> $skill_target"
+    fi
+  done
+  shopt -u nullglob
+fi
+
 # Ensure settings.json has the statusline command configured (preserving other settings)
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 if [[ ! -f "$CLAUDE_SETTINGS" ]]; then
   echo '{}' > "$CLAUDE_SETTINGS"
 fi
-tmp=$(jq '
+tmp=$(jq --arg profile "$DOTFILES_PROFILE" '
   .permissions.defaultMode = "bypassPermissions" |
   .model = "claude-opus-5[1m]" |
   # Claude Code budgets the skill listing at
@@ -441,7 +449,7 @@ tmp=$(jq '
     "MCP_TIMEOUT": "120000",
     "ENABLE_LSP_TOOL": "1"
   }) |
-  .enabledPlugins |= ((. // {}) + {
+  ({
     "meta-lsp@claude-templates": true,
     "meta-lsp-hack@claude-templates": true,
     "meta-lsp-flow@claude-templates": true,
@@ -452,7 +460,11 @@ tmp=$(jq '
     "meta-lsp-go@claude-templates": true,
     "meta-lsp-rust@claude-templates": true,
     "meta-lsp-typescript@claude-templates": true
-  }) |
+  }) as $work_plugins |
+  .enabledPlugins |= (
+    (. // {}) | if $profile == "work" then . + $work_plugins
+    else delpaths($work_plugins | keys | map([.])) end
+  ) |
   .statusLine = {"type": "command", "command": "~/.claude/statusline.sh"} |
   .hooks.PreToolUse = [
     {
@@ -495,6 +507,9 @@ tmp=$(jq '
       ]
     }
   ] |
+  (if $profile == "desktop" then
+    .hooks.PostToolUse |= map(select(.matcher != "Bash"))
+   else . end) |
   .hooks.Stop = [
     {
       "hooks": [
@@ -604,8 +619,12 @@ if [[ -L "$codex_retired_rule" ]]; then
   echo "removed stale link $codex_retired_rule"
 fi
 # Shared skills
-sync_link_subdirs "$DOTFILES_DIR/agent_config/skills" "$codex_home/skills" "SKILL.md"
-sync_link_subdirs "$DOTFILES_DIR/agent_config/skills/meta-powertools-vendored" "$codex_home/skills" "SKILL.md"
+if [[ "$DOTFILES_PROFILE" == work ]]; then
+  sync_link_subdirs "$DOTFILES_DIR/agent_config/skills" "$codex_home/skills" "SKILL.md"
+  sync_link_subdirs "$DOTFILES_DIR/agent_config/skills/meta-powertools-vendored" "$codex_home/skills" "SKILL.md"
+else
+  link_skills_scoped "$codex_home/skills" global
+fi
 
 # default.rules is machine-specific — managed by Codex itself
 
@@ -636,7 +655,7 @@ fi
 # agent's native config (Claude settings.json, Codex config.toml, Metacode
 # opencode.json). Replaces the meta-powertools bundle's MCPs that we dropped
 # to reclaim skill-description budget. See agent_config/README.md.
-"$DOTFILES_DIR/agent_config/sync-mcps" all || \
+AGENT_CONFIG_DIR="$DOTFILES_DIR/agent_config" "$DOTFILES_DIR/agent_config/sync-mcps" all || \
   echo "WARNING: agent_config/sync-mcps failed" >&2
 
 # Omnigent: propagate shared, machine-agnostic client preferences
@@ -644,27 +663,29 @@ fi
 # ~/.omnigent/config.yaml. Deep-merges only the declared keys, preserving
 # machine-specific host:/server:/acp:. Self-skips before omnigent is
 # installed (fresh bootstrap re-runs it from init.sh stage 2).
-"$DOTFILES_DIR/bin/omnigent-config-ensure" || \
-  echo "WARNING: omnigent-config-ensure failed (shared prefs not applied)" >&2
+if [[ "$DOTFILES_PROFILE" == work ]]; then
+  "$DOTFILES_DIR/bin/omnigent-config-ensure" ||
+    echo "WARNING: omnigent-config-ensure failed (shared prefs not applied)" >&2
 
-# Omnigent: report (never fix) a server running config older than the config on
-# disk. server.yaml and the policy modules are read only at boot and there is no
-# reload endpoint, so an edit to either sits inert until the next restart -- with
-# nothing anywhere to say so. Restarting belongs to init.sh, which gates on hub
-# quiescence; this file only stages, so it warns and moves on.
-if [[ -x "$DOTFILES_DIR/bin/omnigent-server-config-stale" ]]; then
-  if stale_detail="$("$DOTFILES_DIR/bin/omnigent-server-config-stale")"; then
-    echo "WARNING: $stale_detail" >&2
-    echo "         run init.sh (or bin/omnigent-agents-ensure) while sessions are idle to load it" >&2
+  # Omnigent: report (never fix) a server running config older than the config on
+  # disk. server.yaml and the policy modules are read only at boot and there is no
+  # reload endpoint, so an edit to either sits inert until the next restart -- with
+  # nothing anywhere to say so. Restarting belongs to init.sh, which gates on hub
+  # quiescence; this file only stages, so it warns and moves on.
+  if [[ -x "$DOTFILES_DIR/bin/omnigent-server-config-stale" ]]; then
+    if stale_detail="$("$DOTFILES_DIR/bin/omnigent-server-config-stale")"; then
+      echo "WARNING: $stale_detail" >&2
+      echo "         run init.sh (or bin/omnigent-agents-ensure) while sessions are idle to load it" >&2
+    fi
   fi
-fi
 
-# Omnigent: make a managed Codex install (Meta's AI Gateway, mTLS, no auth.json)
-# read as logged in, so a codex-native session created with a first prompt does
-# not fail that turn against a thread that was about to start. Self-skips off
-# managed installs and never touches a real Codex login.
-"$DOTFILES_DIR/bin/omnigent-codex-login-ensure" || \
-  echo "WARNING: omnigent-codex-login-ensure failed (codex-native first turns may fail)" >&2
+  # Omnigent: make a managed Codex install (Meta's AI Gateway, mTLS, no auth.json)
+  # read as logged in, so a codex-native session created with a first prompt does
+  # not fail that turn against a thread that was about to start. Self-skips off
+  # managed installs and never touches a real Codex login.
+  "$DOTFILES_DIR/bin/omnigent-codex-login-ensure" ||
+    echo "WARNING: omnigent-codex-login-ensure failed (codex-native first turns may fail)" >&2
+fi
 
 # Ghostty
 mkdir -p "$HOME/.config/ghostty"
@@ -692,23 +713,25 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   # across system upgrades is more predictable when the file is
   # materialized. sync_launchd_plist only reloads a job when its plist
   # content actually changed.
-  mkdir -p "$HOME/Library/LaunchAgents" \
-           "$HOME/.local/state/omnigent-host" \
-           "$HOME/.local/state/omnigent-tls" \
-           "$HOME/.local/state/omnigent-tunnel"
-  sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-host.plist"
-  sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-tls.plist"
-  # Owns OMNIGENT_PORT. Supervised rather than run from a Ghostty window
-  # because `omnigent stop`/`omnigent update` kill whatever holds :6767.
-  sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-tunnel.plist"
-  # The Omnigent server moved to the HUB devserver (systemd omnigent-server).
-  # Retire the old Mac-local server job so it can't bind :6767 and collide with
-  # the local failover proxy that exposes the HUB server on Mac localhost.
-  retire_launchd_plist "com.mkarrmann.omnigent-server"
-  # ACP-broker and its persistence-server are deprecated (superseded by
-  # omnigent). Retire the old Mac-local jobs on sync.
-  retire_launchd_plist "com.mkarrmann.acp-broker"
-  retire_launchd_plist "com.mkarrmann.persistence-server"
+  if [[ "$DOTFILES_PROFILE" == work ]]; then
+    mkdir -p "$HOME/Library/LaunchAgents" \
+             "$HOME/.local/state/omnigent-host" \
+             "$HOME/.local/state/omnigent-tls" \
+             "$HOME/.local/state/omnigent-tunnel"
+    sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-host.plist"
+    sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-tls.plist"
+    # Owns OMNIGENT_PORT. Supervised rather than run from a Ghostty window
+    # because `omnigent stop`/`omnigent update` kill whatever holds :6767.
+    sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-tunnel.plist"
+    # The Omnigent server moved to the HUB devserver (systemd omnigent-server).
+    # Retire the old Mac-local server job so it can't bind :6767 and collide with
+    # the local failover proxy that exposes the HUB server on Mac localhost.
+    retire_launchd_plist "com.mkarrmann.omnigent-server"
+    # ACP-broker and its persistence-server are deprecated (superseded by
+    # omnigent). Retire the old Mac-local jobs on sync.
+    retire_launchd_plist "com.mkarrmann.acp-broker"
+    retire_launchd_plist "com.mkarrmann.persistence-server"
+  fi
 fi
 
 # Linux-only: systemd --user units. Linger is expected to be enabled
@@ -719,7 +742,7 @@ fi
 # writes the environment file, and enables units so they start at boot. It does
 # NOT restart, reconcile, remount, or otherwise disturb anything already
 # running — that live convergence belongs to init.sh and the reconcile timer.
-if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
+if [[ "$DOTFILES_PROFILE" == work && "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
   sync_link_dir "$DOTFILES_DIR/systemd" "$HOME/.config/systemd/user" "*.service"
   sync_link_dir "$DOTFILES_DIR/systemd" "$HOME/.config/systemd/user" "*.timer"
   # Hub ownership is dynamic. Only the reconcile timer starts at boot; it

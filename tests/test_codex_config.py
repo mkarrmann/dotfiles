@@ -1,5 +1,6 @@
 """Run with python3 -m unittest discover -s tests -p test_codex_config.py."""
 
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -24,6 +25,8 @@ class CodexConfigTest(unittest.TestCase):
         self.template.write_text(
             'model = "shared"\nmodel_reasoning_effort = "high"\n'
             '[features]\nshared_flag = true\n'
+        )
+        (self.config_dir / 'config.work.toml').write_text(
             '[mcp_servers.diff_watch]\ncommand = "watch"\nargs = ["--native"]\n'
         )
         self.mcps = self.dotfiles / "agent_config/plugins/custom-mcps/mcps"
@@ -32,11 +35,15 @@ class CodexConfigTest(unittest.TestCase):
             '{"mcpServers": {"scuba": {"command": "~/bin/scuba-mcp-launcher"},'
             '"quoted.server": {"command": "managed"}}}'
         )
+        (self.mcps / 'diff-watch.json').write_text(
+            '{"agents": ["claude"], "mcpServers": {"diff_watch": {"command": "watch"}}}'
+        )
         self.codex_home = self.home / ".codex"
         self.codex_home.mkdir()
         self.path = self.codex_home / "config.toml"
         self.local = self.codex_home / "config.local.toml"
         self.env = dict(os.environ, HOME=str(self.home), CODEX_HOME=str(self.codex_home),
+                        DOTFILES_PROFILE="work",
                         AGENT_CONFIG_DIR=str(self.dotfiles / "agent_config"))
 
     def run_sync(self, generate=True, success=True):
@@ -173,6 +180,43 @@ name = "second"
 ''')
         data["control\x7f"] = "\x7f"
         self.assertEqual(config.tomllib.loads(config.dumps(data)), data)
+
+    def test_desktop_retracts_work_mcps_and_preserves_personal_config(self):
+        self.local.write_text('model = "personal"\n[mcp_servers.personal]\ncommand = "personal"\n')
+        self.run_sync()
+        claude = self.home / '.claude.json'
+        claude.write_text(json.dumps({'mcpServers': {'scuba': {'command': 'old'},
+                                                   'diff_watch': {'command': 'watch'},
+                                                   'personal': {'command': 'personal'}},
+                                     'other': 42}))
+        stale = self.home / '.claude/settings.json'
+        stale.parent.mkdir()
+        stale.write_text(json.dumps({'mcpServers': {'scuba': {'command': 'ignored'}}}))
+        metacode = self.home / '.config/opencode/opencode.json'
+        metacode.parent.mkdir(parents=True)
+        vendored = str(self.dotfiles / 'agent_config/skills/meta-powertools-vendored')
+        metacode.write_text(json.dumps({'mcp': {'scuba': {}, 'personal': {'type': 'local'}},
+                                       'skills': {'paths': [vendored, '/personal/skills']}}))
+        self.env['DOTFILES_PROFILE'] = 'desktop'
+        self.run_sync()
+        result = subprocess.run([sys.executable, str(ROOT / 'agent_config/sync-mcps'), 'all'],
+                                env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        codex = config.read_config(self.path)
+        self.assertEqual(codex['mcp_servers'], {'personal': {'command': 'personal'}})
+        self.assertEqual(codex['model'], 'personal')
+        self.assertEqual(json.loads(claude.read_text()),
+                         {'mcpServers': {'personal': {'command': 'personal'}}, 'other': 42})
+        self.assertNotIn('mcpServers', json.loads(stale.read_text()))
+        meta = json.loads(metacode.read_text())
+        self.assertEqual(meta['mcp'], {'personal': {'type': 'local'}})
+        self.assertEqual(meta['skills']['paths'], ['/personal/skills'])
+        self.env['DOTFILES_PROFILE'] = 'work'
+        self.run_sync()
+        servers = config.read_config(self.path)['mcp_servers']
+        self.assertIn('diff_watch', servers)
+        self.assertIn('scuba', servers)
+        self.assertIn('personal', servers)
 
 
 if __name__ == "__main__":

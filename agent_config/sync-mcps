@@ -15,6 +15,7 @@ Devmate inherits from Claude via DOTSYNC_DEVSERVER — no separate config.
 For Codex we replace managed tables by name and then merge local MCP
 overrides. --generate-config also renders the shared Codex template and
 migrates the retired dotfiles config symlink, preserving local settings.
+Desktop runs retract the managed work MCPs while retaining personal servers.
 
 Usage: sync-mcps [claude|codex|metacode|all]   (default: all)
        sync-mcps codex --generate-config
@@ -22,6 +23,7 @@ Usage: sync-mcps [claude|codex|metacode|all]   (default: all)
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -37,7 +39,7 @@ def load_mcps() -> dict:
 
     An MCP file may set a top-level ``"agents": [...]`` to restrict itself to
     some agents. For example, native Codex gets a different diff_watch
-    invocation from config.template.toml, so its definition here is limited
+    invocation from config.work.toml, so its definition here is limited
     to the other agents.
     """
     out = {}
@@ -90,7 +92,7 @@ def _write_json_atomic(path: Path, data: dict) -> None:
     os.replace(tmp, path)
 
 
-def sync_claude(mcps: dict) -> None:
+def sync_claude(mcps: dict, retired=()) -> None:
     """Register user-scope MCP servers where Claude Code actually reads them.
 
     ``~/.claude/settings.json`` accepts an ``mcpServers`` key and does nothing
@@ -107,7 +109,10 @@ def sync_claude(mcps: dict) -> None:
         return
     data = json.loads(path.read_text())
     servers = data.setdefault("mcpServers", {})
-    if all(servers.get(name) == spec for name, spec in mcps.items()):
+    removed = any(name in servers for name in retired)
+    for name in retired:
+        servers.pop(name, None)
+    if not removed and all(servers.get(name) == spec for name, spec in mcps.items()):
         print(f"claude already current ({len(mcps)} MCPs in {path})")
     else:
         servers.update(mcps)
@@ -123,7 +128,7 @@ def sync_claude(mcps: dict) -> None:
     leftover = settings.get("mcpServers")
     if not isinstance(leftover, dict) or not leftover:
         return
-    for name in mcps:
+    for name in set(mcps) | set(retired):
         leftover.pop(name, None)
     if not leftover:
         settings.pop("mcpServers", None)
@@ -131,13 +136,15 @@ def sync_claude(mcps: dict) -> None:
     print(f"removed ignored mcpServers entries from {stale}")
 
 
-def sync_metacode(mcps: dict) -> None:
+def sync_metacode(mcps: dict, retired=(), *, work: bool = True) -> None:
     path = HOME / ".config" / "opencode" / "opencode.json"
     if not path.exists():
         print(f"skip metacode: {path} not found")
         return
     data = json.loads(path.read_text())
     mcp_block = data.setdefault("mcp", {})
+    for name in retired:
+        mcp_block.pop(name, None)
     for name, spec in mcps.items():
         entry = {
             "type": "local",
@@ -151,8 +158,10 @@ def sync_metacode(mcps: dict) -> None:
     skills = data.setdefault("skills", {})
     paths = skills.setdefault("paths", [])
     vendored = str(VENDORED_SKILLS)
-    if vendored not in paths:
+    if work and vendored not in paths:
         paths.append(vendored)
+    elif not work:
+        skills["paths"] = [p for p in paths if p != vendored]
 
     # Metacode does NOT read ~/.config/opencode/AGENTS.md, despite that being the
     # documented opencode convention: asked to quote a rule from it, it answered
@@ -169,7 +178,7 @@ def sync_metacode(mcps: dict) -> None:
     print(f"synced {len(mcps)} MCPs + skills.paths + instructions into {path}")
 
 
-def sync_codex(mcps: dict, generate: bool = False) -> None:
+def sync_codex(mcps: dict, generate: bool = False, *, work: bool = True, retired=()) -> None:
     # Keep TOML dependencies scoped to Codex; other agents need only stdlib.
     from codex_config import (
         GENERATED_HEADER,
@@ -182,7 +191,7 @@ def sync_codex(mcps: dict, generate: bool = False) -> None:
     )
 
     if generate:
-        generate_config(CFG.parent, mcps)
+        generate_config(CFG.parent, mcps, work=work, retired=retired)
         return
     path = codex_home() / "config.toml"
     if not path.exists():
@@ -191,7 +200,7 @@ def sync_codex(mcps: dict, generate: bool = False) -> None:
     if path.is_symlink():
         raise ValueError(f"migrate {path} first with sync-mcps codex --generate-config")
     local = read_config(path.with_name("config.local.toml"))
-    data = apply_mcps(read_config(path), mcps, local)
+    data = apply_mcps(read_config(path), mcps, local, retired)
     write_atomic(path, GENERATED_HEADER + dumps(data))
     print(f"synced {len(mcps)} MCPs into {path}")
 
@@ -209,12 +218,17 @@ def main() -> int:
     if not mcps:
         print(f"no MCPs found under {MCP_DIR}", file=sys.stderr)
         return 1
+    profile_helper = Path(__file__).resolve().parents[1] / "bin/dotfiles-profile"
+    profile = subprocess.check_output([str(profile_helper)], text=True).strip()
+    work = profile == "work"
+    retired = set() if work else set(mcps)
     if target in ("all", "claude"):
-        sync_claude(for_agent(mcps, "claude"))
+        sync_claude(for_agent(mcps, "claude") if work else {}, retired)
     if target in ("all", "codex"):
-        sync_codex(for_agent(mcps, "codex"), generate=generate)
+        sync_codex(for_agent(mcps, "codex") if work else {}, generate=generate,
+                   work=work, retired=retired)
     if target in ("all", "metacode"):
-        sync_metacode(for_agent(mcps, "metacode"))
+        sync_metacode(for_agent(mcps, "metacode") if work else {}, retired, work=work)
     return 0
 
 

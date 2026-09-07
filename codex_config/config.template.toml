@@ -5,14 +5,5 @@ model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
 service_tier = "fast"
 
-# Native Codex sessions run their own MCP surface rather than the tools from
-# the Omnigent agent spec. Register the stateless intent server here; the
-# native Pre/PostToolUse policy hooks bind its calls to the authenticated
-# Omnigent session and write omnigent.diff.watch / omnigent.diff.number.
-[mcp_servers.diff_watch]
-command = "omnigent-diff-watch-mcp"
-args = ["--native-codex"]
-env_vars = ["CODEX_HOME"]
-
 # Codex writes runtime state to config.toml. Sync preserves its state tables;
 # explicit template or config.local.toml settings take precedence.

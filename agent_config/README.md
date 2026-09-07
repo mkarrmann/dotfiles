@@ -10,6 +10,12 @@ is the inverse — plugins kept uninstalled everywhere. MCPs live under
 
 Running `init.sh` (designed to be re-run; idempotent) handles:
 
+Work plugins and internal MCPs below are enabled only in the `work` profile.
+`bin/dotfiles-profile` performs the same detection for standalone `sync-mcps`
+runs as for `init.sh`/`sync.sh`; see the repository README for overrides.
+Desktop runs remove managed internal MCP registrations from existing configs
+without removing unrelated personal servers.
+
 1. **Symlinks** every `skills/*/SKILL.md` and every
    `skills/meta-powertools-vendored/*/SKILL.md` subdir into
    `~/.codex/skills/`, and — for Claude — into either
@@ -17,6 +23,7 @@ Running `init.sh` (designed to be re-run; idempotent) handles:
    `skills-global.list` (see "Skills" below).
 2. **Generates** `~/.codex/config.toml` from
    `codex_config/config.template.toml` + `~/.codex/config.local.toml`.
+   Work machines also merge `codex_config/config.work.toml`.
    These are parsed and merged recursively: local scalars and arrays replace
    shared values, and local table entries override matching shared entries.
    The generated file is replaced atomically; invalid TOML leaves it intact.
@@ -44,7 +51,9 @@ Codex reads the resulting `config.toml` and writes its runtime state there.
 Examples live in `codex_config/config.local.example.toml`.
 
 Generation combines the shared template and managed MCP definitions, then
-applies local overrides. It preserves existing `projects`, `tui`, `notice`,
+applies local overrides. The work profile also loads `config.work.toml` and
+registers internal MCPs; desktop generation retracts those managed servers.
+It preserves existing `projects`, `tui`, `notice`,
 `features`, `plugins`, and `hooks` tables and unmanaged MCP definitions;
 explicit template/local entries take precedence. Put durable preference
 overrides in `config.local.toml`, since edits to shared keys in the generated

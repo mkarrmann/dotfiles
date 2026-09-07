@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Ensure Linux devservers have an internal source for the CodeCompanion fork.
+# Ensure a local source for the CodeCompanion fork appropriate to this machine.
 set -euo pipefail
+DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
+profile="$("$DOTFILES/bin/dotfiles-profile")"
 
 repo="${CODECOMPANION_NVIM_REPO:-$HOME/repos/codecompanion.nvim}"
 installed="$HOME/.local/share/nvim/lazy/codecompanion.nvim"
@@ -20,7 +22,7 @@ if [[ -e "$repo" ]]; then
   exit 1
 fi
 
-if [[ "$(uname -s)" != "Linux" ]]; then
+if [[ "$profile" == work && "$(uname -s)" != "Linux" ]]; then
   echo "[codecompanion] local fork absent; Lazy will use GitHub on this platform"
   exit 0
 fi
@@ -44,6 +46,14 @@ if valid_repo "$installed"; then
     exit 0
   fi
   rm -rf "$tmp"
+fi
+
+if [[ "$profile" == desktop ]]; then
+  if git clone https://github.com/mkarrmann/codecompanion.nvim.git "$tmp" && finish_clone; then
+    exit 0
+  fi
+  echo "ERROR: could not bootstrap the CodeCompanion fork from GitHub" >&2
+  exit 1
 fi
 
 primary="$(omnigent-server-url --primary 2>/dev/null || true)"

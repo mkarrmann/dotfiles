@@ -124,9 +124,11 @@ def _differences(current: dict, defaults: dict) -> dict:
     return result
 
 
-def apply_mcps(data: dict, mcps: dict, local: dict) -> dict:
+def apply_mcps(data: dict, mcps: dict, local: dict, retired=()) -> dict:
     data = copy.deepcopy(data)
     servers = data.setdefault("mcp_servers", {})
+    for name in retired:
+        servers.pop(name, None)
     for name, spec in mcps.items():
         # Replace managed definitions as a unit so retired args/env disappear.
         servers[name] = {
@@ -138,7 +140,7 @@ def apply_mcps(data: dict, mcps: dict, local: dict) -> dict:
     return data
 
 
-def generate_config(dotfiles: Path, mcps: dict) -> None:
+def generate_config(dotfiles: Path, mcps: dict, *, work: bool = True, retired=()) -> None:
     home = codex_home()
     path = home / "config.toml"
     local_path = home / "config.local.toml"
@@ -146,6 +148,8 @@ def generate_config(dotfiles: Path, mcps: dict) -> None:
     # Escape the replacement for its position inside a TOML string.
     escaped_home = json.dumps(str(Path.home()), ensure_ascii=False)[1:-1]
     defaults = tomllib.loads(template.read_text().replace("__HOME__", escaped_home))
+    if work:
+        defaults = merge(defaults, read_config(dotfiles / "codex_config/config.work.toml"))
     current, local = read_config(path), read_config(local_path)
     legacy = dotfiles / "codex_config/config.toml"
     migrate = path.is_symlink() and path.resolve() == legacy.resolve()
@@ -157,7 +161,7 @@ def generate_config(dotfiles: Path, mcps: dict) -> None:
         for key in ("tui", "notice", "plugins", "hooks"):
             saved.pop(key, None)
         servers = saved.get("mcp_servers", {})
-        for name in mcps:
+        for name in set(mcps) | set(retired):
             servers.pop(name, None)
         if not servers:
             saved.pop("mcp_servers", None)
@@ -170,7 +174,7 @@ def generate_config(dotfiles: Path, mcps: dict) -> None:
     }
     result = merge(merge(state, defaults), local)
     result.setdefault("projects", {}).setdefault(str(dotfiles), {"trust_level": "trusted"})
-    result = apply_mcps(result, mcps, local)
+    result = apply_mcps(result, mcps, local, retired)
     rendered = GENERATED_HEADER + dumps(result)
     local_text = "# Local overrides preserved from the legacy Codex config.\n" + dumps(local)
 

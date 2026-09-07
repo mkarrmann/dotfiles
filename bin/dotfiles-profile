@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Resolve the machine role without connecting to a hub or changing local state.
+set -euo pipefail
+
+profile="${DOTFILES_PROFILE:-}"
+profile_file="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/profile"
+if [[ -z "$profile" && -f "$profile_file" ]]; then
+  profile="$(cat "$profile_file")"
+fi
+case "${profile:-auto}" in
+  desktop|work) printf '%s\n' "$profile"; exit 0 ;;
+  auto) ;;
+  *) echo "Invalid dotfiles profile '$profile': expected auto, desktop, or work" >&2; exit 2 ;;
+esac
+
+fqdn="$(hostname -f 2>/dev/null || hostname)"
+case "$fqdn" in
+  *.facebook.com) echo work; exit 0 ;;
+esac
+if command -v x2ssh >/dev/null 2>&1; then
+  echo work
+else
+  echo desktop
+fi
