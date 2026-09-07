@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Install the systemd-coredump size cap on Linux desktops (see the conf header).
+set -euo pipefail
+
+DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
+if [[ "$("$DOTFILES/bin/dotfiles-profile")" != desktop || "$(uname -s)" != Linux ]]; then
+  exit 0
+fi
+
+source="$DOTFILES/systemd/desktop/coredump-size-cap.conf"
+target=/etc/systemd/coredump.conf.d/50-size-cap.conf
+
+if cmp -s "$source" "$target"; then
+  echo "[coredump-cap] $target up to date"
+  exit 0
+fi
+
+if [[ ! -t 0 || ! -t 1 ]]; then
+  printf '[coredump-cap] installing %s needs an interactive terminal for sudo. Run:\n  %q\n' \
+    "$target" "$DOTFILES/bin/coredump-size-cap-ensure"
+  exit 0
+fi
+
+# systemd-coredump re-reads its config on every invocation; no reload needed.
+sudo install -D -m 644 "$source" "$target"
+echo "[coredump-cap] installed $target"

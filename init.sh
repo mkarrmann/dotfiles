@@ -193,6 +193,8 @@ else
   if [[ "$(uname -s)" == Linux ]]; then
     "$DOTFILES_DIR/bin/omnigent-desktop-app-ensure" ||
       echo "WARNING: Omnigent desktop app installation failed" >&2
+    "$DOTFILES_DIR/bin/coredump-size-cap-ensure" ||
+      echo "WARNING: coredump size cap installation failed" >&2
   fi
 fi
 

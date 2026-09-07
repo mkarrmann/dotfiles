@@ -39,6 +39,11 @@ are left untouched, including older versions; upgrades remain explicit.
 The installer uses an interactive sudo/apt prompt. Unattended runs print the
 command to run later without downloading or installing anything. To install
 only the GUI, run `./bin/omnigent-desktop-app-ensure` in a terminal.
+
+Linux desktops also get a systemd-coredump size cap (`systemd/desktop/coredump-size-cap.conf`,
+installed to `/etc/systemd/coredump.conf.d/` by `bin/coredump-size-cap-ensure`) so a crashing
+Electron app cannot fill the root filesystem with a 30 GB core. Needs sudo, so `init.sh` prints
+the command when run non-interactively.
 Other architectures and distributions skip this package installer. Devservers
 and Macs skip it entirely, and `sync.sh` never invokes it. On first launch,
 select `http://127.0.0.1:6767`; the app's settings stay machine-local.
