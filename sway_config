@@ -222,39 +222,9 @@ bar {
 include /etc/sway/config.d/*
 
 ### Displays ############################################################
-
-# Names from `swaymsg -t get_outputs`
-# Dell U3225QE
-set $main DP-1
-# Samsung LU
-set $top  DP-2
-
-# logical height is 2160 / 1.2 = 1800
-set $scale 1.2
-set $stack_y 1800
-
-# Top monitor (above)
-output $top {
-    pos 0 0
-    scale $scale
-    scale_filter smart
-    mode 3840x2160@59.997Hz
-}
-
-# Main monitor (below)
-output $main {
-    pos 0 $stack_y
-    scale $scale
-    scale_filter smart
-    mode 3840x2160@119.999Hz
-}
-
-# Make the Dell the practical “main” by pinning your primary workspace(s) to it
-workspace 1 output $main
-workspace 2 output $top
-
-# Optional: ensure focus lands on the main output after reload
-exec_always --no-startup-id swaymsg 'focus output DP-1'
+# Monitor layout is machine-specific and lives outside the repo in
+# ~/.config/sway/config.d/. See sway_config.local.example for a template.
+include ~/.config/sway/config.d/*
 #########################################################################
 
 output * adaptive_sync off

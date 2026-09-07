@@ -1,0 +1,38 @@
+# Machine-specific sway output layout. Not loaded from the repo: copy it to
+# ~/.config/sway/config.d/displays (any filename under config.d/ is picked up by
+# the include in sway_config) and edit for the machine.
+#
+# Identify monitors by "make model serial" from `swaymsg -t get_outputs`, not by
+# connector name (DP-N): connectors renumber across driver versions and cable swaps.
+
+# Dell U3225QE
+set $main 'Dell Inc. DELL U3225QE FSYR984'
+# Samsung LU28R55
+set $top  'Samsung Electric Company LU28R55 HCJRA03329'
+
+# logical height is 2160 / 1.2 = 1800
+set $scale 1.2
+set $stack_y 1800
+
+# Top monitor (above)
+output $top {
+    pos 0 0
+    scale $scale
+    scale_filter smart
+    mode 3840x2160@59.997Hz
+}
+
+# Main monitor (below)
+output $main {
+    pos 0 $stack_y
+    scale $scale
+    scale_filter smart
+    mode 3840x2160@119.999Hz
+}
+
+# Make the Dell the practical "main" by pinning your primary workspace(s) to it
+workspace 1 output $main
+workspace 2 output $top
+
+# Ensure focus lands on the main output after reload
+exec_always --no-startup-id swaymsg focus output $main
