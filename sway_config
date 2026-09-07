@@ -4,8 +4,6 @@
 #
 # Read `man 5 sway` for a complete reference.
 
-# TODO probably remove this
-xwayland force
 
 ### Variables
 #
