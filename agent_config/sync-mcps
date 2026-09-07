@@ -12,18 +12,16 @@ accepts an mcpServers key and silently ignores it -- see sync_claude.
 
 Devmate inherits from Claude via DOTSYNC_DEVSERVER — no separate config.
 
-For Codex we identify our managed blocks by name (the 7 MCPs loaded
-from plugins/custom-mcps/mcps/*.json) and strip-then-append them on
-every run. We deliberately avoid a comment marker because Codex
-re-serializes config.toml at runtime and strips comments — a marker
-would survive only until the next codex action.
+For Codex we replace managed tables by name and then merge local MCP
+overrides. --generate-config also renders the shared Codex template and
+migrates the retired dotfiles config symlink, preserving local settings.
 
 Usage: sync-mcps [claude|codex|metacode|all]   (default: all)
+       sync-mcps codex --generate-config
 """
 
 import json
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -38,11 +36,9 @@ def load_mcps() -> dict:
     """Map server name -> spec, carrying a private ``_agents`` allowlist.
 
     An MCP file may set a top-level ``"agents": [...]`` to restrict itself to
-    some agents. Needed because a server can already be registered for one
-    agent by another mechanism -- diff_watch is written into Codex's
-    config.template.toml -- and emitting it twice into the same
-    ``~/.codex/config.toml`` would produce a duplicate ``[mcp_servers.*]``
-    table.
+    some agents. For example, native Codex gets a different diff_watch
+    invocation from config.template.toml, so its definition here is limited
+    to the other agents.
     """
     out = {}
     for p in sorted(MCP_DIR.glob("*.json")):
@@ -173,57 +169,30 @@ def sync_metacode(mcps: dict) -> None:
     print(f"synced {len(mcps)} MCPs + skills.paths + instructions into {path}")
 
 
-def _toml_escape(s: str) -> str:
-    return json.dumps(s)
+def sync_codex(mcps: dict, generate: bool = False) -> None:
+    # Keep TOML dependencies scoped to Codex; other agents need only stdlib.
+    from codex_config import (
+        GENERATED_HEADER,
+        apply_mcps,
+        codex_home,
+        dumps,
+        generate_config,
+        read_config,
+        write_atomic,
+    )
 
-
-def _emit_toml_block(name: str, spec: dict) -> str:
-    lines = [f"[mcp_servers.{name}]"]
-    lines.append(f"command = {_toml_escape(spec['command'])}")
-    args = spec.get("args") or []
-    if args:
-        lines.append("args = [" + ", ".join(_toml_escape(a) for a in args) + "]")
-    # Unresolved ${VAR} env refs are already dropped by load_mcps.
-    env = spec.get("env") or {}
-    if env:
-        lines.append("")
-        lines.append(f"[mcp_servers.{name}.env]")
-        for k, v in env.items():
-            lines.append(f"{k} = {_toml_escape(v)}")
-    return "\n".join(lines) + "\n"
-
-
-def _strip_managed_mcp_blocks(text: str, names: set) -> str:
-    """Drop any [mcp_servers.<name>] and [mcp_servers.<name>.<sub>] tables
-    whose top-level name is in `names`. Preserves everything else verbatim,
-    including hand-managed mcp_servers blocks (e.g. meta_core) and codex's
-    own state tables (hooks.state, plugins.X, projects.Y)."""
-    out_lines = []
-    skipping = False
-    header_re = re.compile(r"^\s*\[([^\]]+)\]\s*$")
-    for line in text.splitlines(keepends=True):
-        m = header_re.match(line)
-        if m:
-            parts = m.group(1).split(".")
-            if len(parts) >= 2 and parts[0] == "mcp_servers" and parts[1] in names:
-                skipping = True
-                continue
-            skipping = False
-        if not skipping:
-            out_lines.append(line)
-    return "".join(out_lines)
-
-
-def sync_codex(mcps: dict) -> None:
-    path = HOME / ".codex" / "config.toml"
+    if generate:
+        generate_config(CFG.parent, mcps)
+        return
+    path = codex_home() / "config.toml"
     if not path.exists():
         print(f"skip codex: {path} not found")
         return
-    text = _strip_managed_mcp_blocks(path.read_text(), set(mcps))
-    text = text.rstrip() + "\n\n"
-    for name in sorted(mcps):
-        text += _emit_toml_block(name, mcps[name]) + "\n"
-    path.write_text(text)
+    if path.is_symlink():
+        raise ValueError(f"migrate {path} first with sync-mcps codex --generate-config")
+    local = read_config(path.with_name("config.local.toml"))
+    data = apply_mcps(read_config(path), mcps, local)
+    write_atomic(path, GENERATED_HEADER + dumps(data))
     print(f"synced {len(mcps)} MCPs into {path}")
 
 
@@ -232,6 +201,10 @@ def main() -> int:
     if target not in ("all", "claude", "codex", "metacode"):
         print(f"unknown target: {target}", file=sys.stderr)
         return 2
+    generate = sys.argv[2:] == ["--generate-config"] and target == "codex"
+    if sys.argv[2:] and not generate:
+        print("--generate-config is supported only for the codex target", file=sys.stderr)
+        return 2
     mcps = load_mcps()
     if not mcps:
         print(f"no MCPs found under {MCP_DIR}", file=sys.stderr)
@@ -239,7 +212,7 @@ def main() -> int:
     if target in ("all", "claude"):
         sync_claude(for_agent(mcps, "claude"))
     if target in ("all", "codex"):
-        sync_codex(for_agent(mcps, "codex"))
+        sync_codex(for_agent(mcps, "codex"), generate=generate)
     if target in ("all", "metacode"):
         sync_metacode(for_agent(mcps, "metacode"))
     return 0

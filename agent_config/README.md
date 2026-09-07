@@ -17,9 +17,12 @@ Running `init.sh` (designed to be re-run; idempotent) handles:
    `skills-global.list` (see "Skills" below).
 2. **Generates** `~/.codex/config.toml` from
    `codex_config/config.template.toml` + `~/.codex/config.local.toml`.
+   These are parsed and merged recursively: local scalars and arrays replace
+   shared values, and local table entries override matching shared entries.
+   The generated file is replaced atomically; invalid TOML leaves it intact.
 3. **MCPs** — calls `agent_config/sync-mcps all`, which writes the 7
    MCP definitions from `plugins/custom-mcps/mcps/*.json` into each
-   agent's native config (Claude `settings.json.mcpServers`, Codex
+   agent's native config (Claude `~/.claude.json.mcpServers`, Codex
    `[mcp_servers.X]`, Metacode `opencode.json.mcp`). For Metacode it
    also adds the vendored-skills dir to `skills.paths` (Metacode loads
    skills from paths, not symlinks).
@@ -30,6 +33,34 @@ Running `init.sh` (designed to be re-run; idempotent) handles:
    to install everything in `plugins.list` on every agent.
 
 So: pull dotfiles → run `init.sh` → every devserver lines up.
+
+### Codex config and local overrides
+
+Use `sync.sh` to apply config edits, or run
+`agent_config/sync-mcps codex --generate-config` for only the Codex config.
+This requires Python 3.11+ (or `tomli` installed for an older Python).
+`config.local.toml` is a dotfiles convention, consumed by this generator;
+Codex reads the resulting `config.toml` and writes its runtime state there.
+Examples live in `codex_config/config.local.example.toml`.
+
+Generation combines the shared template and managed MCP definitions, then
+applies local overrides. It preserves existing `projects`, `tui`, `notice`,
+`features`, `plugins`, and `hooks` tables and unmanaged MCP definitions;
+explicit template/local entries take precedence. Put durable preference
+overrides in `config.local.toml`, since edits to shared keys in the generated
+file are replaced on the next sync. Local MCP overrides also survive a
+standalone `sync-mcps codex` run.
+
+For the retired symlink to `dotfiles/codex_config/config.toml`, generation
+first backs up the original under the Codex home, migrates differing
+preferences and trust entries into `config.local.toml`, and replaces the
+symlink with a regular generated file. Existing local overrides win and are
+also backed up. The old symlink target is left intact for archival.
+Runtime UI state stays in the generated file, and managed MCP definitions
+are refreshed from their canonical JSON sources.
+
+Both Codex sync paths honor `CODEX_HOME`, except that an Omnigent native
+session's temporary home maps back to `~/.codex`, as in `sync.sh`.
 
 ## Skills: scoping and the listing budget
 
@@ -114,9 +145,8 @@ fresh on its own — no manual step.
   and symlinked by `init.sh` (checkout-scoped — see "Skills" above).
   See that dir's `TODO.md` for the staleness problem.
 - Codex re-serializes `~/.codex/config.toml` at runtime and strips
-  comments — that's why `sync-mcps` identifies its managed blocks by
-  table *name* (`[mcp_servers.<known-name>]`) rather than by a marker
-  comment.
+  comments. `sync-mcps` parses TOML and replaces managed MCP tables by
+  name, so formatting and quoted table names do not affect synchronization.
 - Some plugins won't install on every agent — `sync apply` logs
   `(failed — X may not be available for Y)` and keeps going.
 - Devmate has no on-disk user config; it inherits from Claude via

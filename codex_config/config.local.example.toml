@@ -1,5 +1,17 @@
 # Example machine-local Codex overrides.
 # Copy the settings you want into ~/.codex/config.local.toml.
+# sync.sh merges tables recursively; local scalars and arrays replace defaults.
+# Root settings belong before the first table, as in any TOML document.
+
+# model = "gpt-6-astra"
+# approvals_reviewer = "user"
+
+# [features]
+# multi_agent = true
+
+# Local MCP settings also win over managed definitions.
+# [mcp_servers.scuba]
+# enabled = false
 
 [projects."/absolute/path/to/project"]
 trust_level = "trusted"

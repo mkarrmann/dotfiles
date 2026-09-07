@@ -585,25 +585,10 @@ case "$codex_home" in
 esac
 mkdir -p "$codex_home/rules" "$codex_home/skills"
 
-# Portable Codex template + machine-local overrides (config.local.toml)
-codex_config="$codex_home/config.toml"
-codex_existed=$([[ -f "$codex_config" ]] && echo true || echo false)
-sed "s|__HOME__|$HOME|g" "$DOTFILES_DIR/codex_config/config.template.toml" > "$codex_config"
-if [[ -f "$codex_home/config.local.toml" ]]; then
-  echo "" >> "$codex_config"
-  cat "$codex_home/config.local.toml" >> "$codex_config"
-fi
-# Ensure dotfiles repo is trusted by default unless explicitly set in local overrides.
-if ! grep -Fqx "[projects.\"$HOME/dotfiles\"]" "$codex_config"; then
-  echo "" >> "$codex_config"
-  echo "[projects.\"$HOME/dotfiles\"]" >> "$codex_config"
-  echo "trust_level = \"trusted\"" >> "$codex_config"
-fi
-if $codex_existed; then
-  echo "updated $codex_config"
-else
-  echo "generated $codex_config"
-fi
+# Parse and merge the portable template, managed MCPs, and local overrides.
+# Abort on invalid TOML before later sync steps can touch the old config.
+AGENT_CONFIG_DIR="$DOTFILES_DIR/agent_config" CODEX_HOME="$codex_home" \
+  "$DOTFILES_DIR/agent_config/sync-mcps" codex --generate-config || exit 1
 
 # Shared development rules. Codex loads global instructions from
 # $codex_home/AGENTS.override.md then $codex_home/AGENTS.md, upstream and at

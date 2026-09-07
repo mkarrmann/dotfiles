@@ -1,6 +1,6 @@
 # Shared Codex defaults. Machine-specific overrides belong in
-# ~/.codex/config.local.toml, which init.sh appends after generating
-# ~/.codex/config.toml from this template.
+# ~/.codex/config.local.toml. sync.sh merges its parsed TOML over this
+# template and the managed MCP definitions to generate ~/.codex/config.toml.
 model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
 service_tier = "fast"
@@ -14,6 +14,5 @@ command = "omnigent-diff-watch-mcp"
 args = ["--native-codex"]
 env_vars = ["CODEX_HOME"]
 
-# Note: [features] is owned by ~/.codex/config.local.toml — codex itself
-# re-serializes it there, so declaring it here would create a duplicate
-# section after init.sh's concatenation.
+# Codex writes runtime state to config.toml. Sync preserves its state tables;
+# explicit template or config.local.toml settings take precedence.
