@@ -4,7 +4,7 @@
 # Root settings belong before the first table, as in any TOML document.
 
 # model = "gpt-6-astra"
-# approvals_reviewer = "user"
+# approvals_reviewer = "auto_review"
 
 # [features]
 # multi_agent = true

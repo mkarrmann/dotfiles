@@ -1,6 +1,8 @@
 # Shared Codex defaults. Machine-specific overrides belong in
 # ~/.codex/config.local.toml. sync.sh merges its parsed TOML over this
 # template and the managed MCP definitions to generate ~/.codex/config.toml.
+approval_policy = "on-request"
+approvals_reviewer = "auto_review"
 model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
 service_tier = "fast"
