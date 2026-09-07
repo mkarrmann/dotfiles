@@ -70,6 +70,10 @@ output * bg /usr/share/backgrounds/ubuntu-wallpaper-d.png fill
     # Start a terminal
     bindsym $mod+Return exec $term
 
+    # Copy a selected region or the entire desktop to the clipboard.
+    bindsym --release Print exec sh -c 'geometry=$(slurp) && grim -g "$geometry" - | wl-copy --type image/png'
+    bindsym --release Shift+Print exec grim - | wl-copy --type image/png
+
     # Kill focused window
     bindsym $mod+Shift+q kill
 
