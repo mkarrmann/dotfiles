@@ -58,24 +58,26 @@ done
 # by the mark sw:<ws>:<type>.
 #
 # Terminal commands are wrapped in a restart loop so quitting the editor
-# leaves the window in place rather than closing it.
+# leaves the window in place rather than closing it. They run nvim directly:
+# the Mac table's `nvs` attaches to a headless server on a remote devserver so
+# buffers survive the SSH session, which has no counterpart on a local desktop.
 WORKSPACES=(
   "1|term|local|~|while true; do nvim --cmd 'set title titlestring=local\\ —\\ %t'; sleep 0.5; done"
   "1|chrome"
   "1|omnigent"
-  "2|term|dotfiles|~/dotfiles|while true; do nvs dotfiles; sleep 0.5; done"
+  "2|term|dotfiles|~/dotfiles|while true; do nvim --cmd 'set title titlestring=dotfiles\\ —\\ %t'; sleep 0.5; done"
   "2|chrome"
   "2|omnigent"
-  "3|term|orchest|~/dev/orchest|while true; do nvs orchest; sleep 0.5; done"
+  "3|term|orchest|~/dev/orchest|while true; do nvim --cmd 'set title titlestring=orchest\\ —\\ %t'; sleep 0.5; done"
   "3|chrome"
   "3|omnigent"
-  "4|term|omnigent-repo|~/repos/omnigent|while true; do nvs omnigent-repo; sleep 0.5; done"
+  "4|term|omnigent-repo|~/repos/omnigent|while true; do nvim --cmd 'set title titlestring=omnigent-repo\\ —\\ %t'; sleep 0.5; done"
   "4|chrome"
   "4|omnigent"
-  "5|term|presto|~/work/presto|while true; do nvs presto; sleep 0.5; done"
+  "5|term|presto|~/work/presto|while true; do nvim --cmd 'set title titlestring=presto\\ —\\ %t'; sleep 0.5; done"
   "5|chrome"
   "5|omnigent"
-  "6|term|gatech|~/gatech|while true; do nvs gatech; sleep 0.5; done"
+  "6|term|gatech|~/gatech|while true; do nvim --cmd 'set title titlestring=gatech\\ —\\ %t'; sleep 0.5; done"
   "6|chrome"
   "6|omnigent"
 )

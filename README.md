@@ -98,11 +98,11 @@ anything.
 | WS | Contents |
 |----|----------|
 | 1  | local terminal (bare nvim) + Chrome + Omnigent |
-| 2  | `nvs dotfiles` + Chrome + Omnigent |
-| 3  | `nvs orchest` + Chrome + Omnigent |
-| 4  | `nvs omnigent-repo` + Chrome + Omnigent |
-| 5  | `nvs presto` + Chrome + Omnigent |
-| 6  | `nvs gatech` + Chrome + Omnigent |
+| 2  | nvim in `~/dotfiles` + Chrome + Omnigent |
+| 3  | nvim in `~/dev/orchest` + Chrome + Omnigent |
+| 4  | nvim in `~/repos/omnigent` + Chrome + Omnigent |
+| 5  | nvim in `~/work/presto` + Chrome + Omnigent |
+| 6  | nvim in `~/gatech` + Chrome + Omnigent |
 | 9  | second-monitor dashboard (Obsidian) |
 | Z  | overflow / stray sweep (`$mod+z`) |
 
@@ -112,12 +112,12 @@ Workspace-to-monitor pinning is machine-local (`~/.config/sway/config.d/`, see
 without the script doing any monitor arithmetic of its own — unlike
 `bin-macos/arrange-ws11`, which has to resolve the display itself.
 
-Edit the `WORKSPACES` table to change the layout. The `nvs` sessions it names
-must also be declared in `~/.config/nvs/sessions.<short hostname>` (see
-`bin/nvs-sessions-file`); `init.sh` turns those into `nvs@` units. A machine
-that needs a different layout can drop a `~/.config/sway-windows/layout.sh`
-that reassigns `WORKSPACES` / `DASHBOARD_PANES` / `CHROME_CMD`, rather than
-editing the repo table.
+Edit the `WORKSPACES` table to change the layout. Terminals run `nvim`
+directly in the repo (the Mac's `nvs` exists to keep buffers alive on a remote
+devserver across SSH drops, which does not apply locally). A machine that
+needs a different layout can drop a `~/.config/sway-windows/layout.sh` that
+reassigns `WORKSPACES` / `DASHBOARD_PANES` / `CHROME_CMD`, rather than editing
+the repo table.
 
 The script is idempotent and self-healing: a re-run adopts what is already
 there, returns displaced windows to their workspace, and sweeps anything
