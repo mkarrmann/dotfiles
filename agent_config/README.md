@@ -41,6 +41,14 @@ without removing unrelated personal servers.
 
 So: pull dotfiles → run `init.sh` → every devserver lines up.
 
+Not managed here, by design: the `aws-mcp` server and `aws-*` skills that
+`bin/aws-agent-toolkit-ensure` installs on desktop machines. The MCP registry
+above is all-or-nothing by profile (every entry is a work tool, retired on
+desktop), which is backwards for a personal AWS account, and the skills are
+versioned downloads from AWS's catalog rather than authored content. `sync-mcps`
+leaves `mcpServers` entries it does not own alone, and `sync.sh` prunes only
+skill symlinks that point into dotfiles, so the toolkit's files survive syncs.
+
 ### Codex config and local overrides
 
 Use `sync.sh` to apply config edits, or run

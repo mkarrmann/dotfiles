@@ -140,6 +140,8 @@ If a future harness reads none of these, Omnigent's `instructions:` / `prompt:` 
 | Machine-specific nvim config | `~/.config/nvim/lua/config/local.lua` | No — created by `meta_init.sh` or manually |
 | Project-specific Claude context | `~/.claude/projects/<project>.md` | No |
 | Machine-specific shell config | `~/.localrc` | No |
+| CLI tools (gh, aws, nori, marksman) | `~/.local/bin` | No — installed by `bin/*-ensure` from `init.sh`; re-run to upgrade |
+| AWS Agent Toolkit (`aws-mcp` server, `aws-*` skills) | `~/.claude.json`, `~/.claude/skills/aws-*` (+ Codex/Cursor/Metacode equivalents) | No — `bin/aws-agent-toolkit-ensure` (desktop `init.sh`, after `aws login`); deliberately outside `sync-mcps`, see `agent_config/README.md` |
 
 ## Editor Stack
 

@@ -20,6 +20,13 @@ devserver bootstrap sources, work MCPs, Linux services, and Mac client jobs.
 On Linux it discovers routing before running dependent Omnigent setup; failure
 skips those dependent steps, while declared Neovim sessions can still start.
 
+Both profiles install the GitHub CLI into `~/.local/bin` (`bin/gh-ensure`).
+Desktop `init.sh` also installs the AWS CLI and, once `aws login` has been run
+on that machine, the AWS Agent Toolkit: the `aws-mcp` server and AWS's default
+`aws-*` skills, written into every detected agent (`bin/aws-agent-toolkit-ensure`).
+Credentials never live in dotfiles; before login the toolkit step skips with
+instructions, and re-running after setup refreshes the skills.
+
 Desktop `init.sh` also installs Omnigent if absent. On Linux, `sync.sh` stages
 `systemd/desktop/omnigent-host.service`; `init.sh` enables and restarts it.
 The unit runs the standard `omnigent host --server '' --non-interactive`,
