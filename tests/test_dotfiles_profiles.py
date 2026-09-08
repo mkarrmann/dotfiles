@@ -324,6 +324,7 @@ class SyncProfileTest(ProfileFixture):
             "sketchybar/sketchybarrc", "orchest_plugins.json",
             "systemd/omnigent-host.service", "systemd/omnigent-hub-reconcile.timer",
             "systemd/desktop/omnigent-host.service",
+            "omnigent_config/omnigent-desktop-electron.desktop",
             "launchd/com.mkarrmann.omnigent-host.plist",
             "launchd/com.mkarrmann.omnigent-tls.plist",
             "launchd/com.mkarrmann.omnigent-tunnel.plist",
