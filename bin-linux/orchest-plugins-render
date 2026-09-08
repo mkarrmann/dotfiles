@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Renders the Linux Orchest plugin manifest.
+#
+# The Omnigent bridge attributes an agent session to an Orchest workspace by
+# the session's cwd, which is the same workspace-to-checkout mapping the sway
+# layout table already declares. Deriving it here rather than restating it in
+# orchest_plugins.linux.json means editing the WORKSPACES table (or dropping a
+# machine-local layout override) moves both at once.
+#
+# TODO: orchest_plugins.json (macOS) still restates the same mapping by hand,
+# twice over -- the Omnigent bridge's byHostAndCwd and obsidian-notes'
+# byNvimSession are both copies of bin-macos/startup-windows' WORKSPACES table.
+#
+# The source manifest carries a sentinel where the attribution goes. If this
+# renderer is ever bypassed, the bridge's own config validation rejects the
+# sentinel at startup instead of silently attributing nothing.
+#
+# Usage: orchest-plugins-render <source-manifest> <destination>
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+SENTINEL="__DERIVED_FROM_SWAY_LAYOUT__"
+
+if [[ $# -ne 2 ]]; then
+  echo "Usage: orchest-plugins-render <source-manifest> <destination>" >&2
+  exit 2
+fi
+src="$1"
+dst="$2"
+
+command -v jq >/dev/null 2>&1 || { echo "ERROR: jq not found." >&2; exit 1; }
+[[ -r "$src" ]] || { echo "ERROR: source manifest not readable: $src" >&2; exit 1; }
+
+layout="$("$SCRIPT_DIR/startup-windows" --print-layout)"
+
+tmp="$(mktemp "${dst}.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+
+jq --argjson layout "$layout" --arg sentinel "$SENTINEL" '
+  ($layout.terminals | map({ key: .workdir, value: .workspace }) | from_entries) as $byCwd
+  | if [.plugins[] | select(.config.attribution == $sentinel)] | length == 0
+    then error("no plugin carries the \($sentinel) attribution sentinel")
+    else . end
+  | .plugins |= map(
+      if .config.attribution == $sentinel
+      then .config.attribution = { byCwd: $byCwd }
+      else . end
+    )
+' "$src" > "$tmp"
+
+# Only touch the destination when the rendering actually changed: sync.sh runs
+# on every login and the file is read at Orchest startup.
+if [[ -f "$dst" ]] && cmp -s "$tmp" "$dst"; then
+  rm -f "$tmp"
+  trap - EXIT
+  exit 0
+fi
+
+mkdir -p "$(dirname "$dst")"
+mv "$tmp" "$dst"
+trap - EXIT
+echo "generated $dst"

@@ -1,0 +1,27 @@
+{
+  "plugins": [
+    {
+      "id": "task-status",
+      "module": "/home/matt/dev/orchest/packages/plugin-task-status/dist/index.js",
+      "config": { "staleAfterMs": 300000 },
+      "policy": {
+        "attention": { "maxLevel": "flash" },
+        "notification": { "rateLimitPerMinute": 10 }
+      }
+    },
+    {
+      "id": "orchest-omnigent-bridge",
+      "module": "/home/matt/dev/orchest/packages/plugin-omnigent-bridge/dist/index.js",
+      "config": {
+        "serverUrl": "http://127.0.0.1:6767",
+        "pollIntervalMs": 5000,
+        "attribution": "__DERIVED_FROM_SWAY_LAYOUT__"
+      },
+      "policy": {
+        "attention": { "maxLevel": "flash" },
+        "notification": { "rateLimitPerMinute": 10 }
+      }
+    }
+  ],
+  "disabledPlugins": []
+}

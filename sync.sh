@@ -841,6 +841,15 @@ if [[ "$DOTFILES_PROFILE" == desktop && "$(uname -s)" == Linux ]]; then
     "$HOME/.local/share/applications/omnigent-desktop-electron.desktop"
   command -v update-desktop-database >/dev/null 2>&1 &&
     update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+
+  # Orchest plugin manifest. Generated rather than symlinked like the macOS
+  # one: the Omnigent bridge attributes a session to a workspace by its cwd,
+  # and that mapping is already declared by the sway layout table, so it is
+  # derived from there instead of restated here.
+  "$DOTFILES_DIR/bin-linux/orchest-plugins-render" \
+    "$DOTFILES_DIR/orchest_plugins.linux.json" \
+    "$HOME/.config/@orchest/desktop/plugins.json" ||
+    echo "WARNING: Orchest plugin manifest rendering failed" >&2
 fi
 
 # Nori
