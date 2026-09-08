@@ -30,9 +30,21 @@ output $main {
     mode 3840x2160@119.999Hz
 }
 
-# Make the Dell the practical "main" by pinning your primary workspace(s) to it
+# Make the Dell the practical "main" by pinning the numbered workspaces to it.
+# bin-linux/startup-windows builds workspaces 1-6 (terminal + Chrome + Omnigent
+# each) and puts the dashboard on 9; keep that split in sync with its table.
 workspace 1 output $main
-workspace 2 output $top
+workspace 2 output $main
+workspace 3 output $main
+workspace 4 output $main
+workspace 5 output $main
+workspace 6 output $main
+# Overflow workspace for the stray sweep.
+workspace Z output $main
+# The second-monitor dashboard. startup-windows only fills it; which monitor it
+# lands on is the compositor's job, which is why there is no arrange-ws11
+# equivalent doing its own monitor arithmetic.
+workspace 9 output $top
 
 # Ensure focus lands on the main output after reload
 exec_always --no-startup-id swaymsg focus output $main

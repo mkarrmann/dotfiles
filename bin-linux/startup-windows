@@ -1,0 +1,513 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Reconcile the sway session into the declared workspace layout. Idempotent:
+# every run finds-or-creates each declared window, puts it on its workspace,
+# claims it, and sweeps anything unclaimed off the managed workspaces.
+#
+# This is the Linux counterpart of bin-macos/startup-windows. It is a rewrite
+# rather than a port: most of the Mac script's bulk works around AeroSpace
+# (snapshot-diffing to identify new windows, an AppleScript menu click to make
+# a window, timeout/retry around a CLI that can wedge, a flatten-and-rebuild
+# layout pass). sway needs almost none of that -- see sway-windows-lib.sh for
+# how window identity works here, which is the substantive difference.
+#
+# What survives from the Mac design, because it is the actual product:
+#   - a declarative workspace table as the only thing you edit,
+#   - find-or-create + relocate + claim, so a re-run repairs a drifted session
+#     instead of duplicating windows,
+#   - sweeping unclaimed windows to an overflow workspace.
+#
+# There is no late-window polling pass here, unlike the Mac. Claims live in
+# the compositor as marks, so a window that arrives after a run is simply
+# adopted by the next run ($mod+Shift+r); the script is cheap enough to rerun
+# that a polling loop would only add wall time to every login.
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=./sway-windows-lib.sh
+source "$SCRIPT_DIR/sway-windows-lib.sh"
+
+# Kept verbatim for the lock wrapper below, which re-runs this script: the
+# parse loop shifts $@ away, and a re-exec with an empty $@ silently dropped
+# every flag -- including --dry-run, which then ran live.
+ORIG_ARGS=("$@")
+DRY_RUN=false
+SKIP_DASHBOARD=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY_RUN=true; shift ;;
+    --no-dashboard) SKIP_DASHBOARD=true; shift ;;
+    -h|--help)
+      echo "Usage: startup-windows [--dry-run] [--no-dashboard]"
+      echo "  --dry-run       print the plan without creating or moving windows"
+      echo "  --no-dashboard  skip the workspace-${DASHBOARD_WS:-9} dashboard"
+      exit 0
+      ;;
+    *) echo "Unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+# ── Workspace definitions ────────────────────────────────────────────
+# Format:
+#   term:     ws|term|slot|workdir|command
+#   chrome:   ws|chrome
+#   omnigent: ws|omnigent
+#
+# A term's app_id is sway-ws.term.<slot> and is set at launch, so it needs no
+# title regex -- the identity IS the match. chrome/omnigent slots are claimed
+# by the mark sw:<ws>:<type>.
+#
+# Terminal commands are wrapped in a restart loop so quitting the editor
+# leaves the window in place rather than closing it.
+WORKSPACES=(
+  "1|term|local|~|while true; do nvim --cmd 'set title titlestring=local\\ —\\ %t'; sleep 0.5; done"
+  "1|chrome"
+  "1|omnigent"
+  "2|term|dotfiles|~/dotfiles|while true; do nvs dotfiles; sleep 0.5; done"
+  "2|chrome"
+  "2|omnigent"
+  "3|term|orchest|~/dev/orchest|while true; do nvs orchest; sleep 0.5; done"
+  "3|chrome"
+  "3|omnigent"
+  "4|term|omnigent-repo|~/repos/omnigent|while true; do nvs omnigent-repo; sleep 0.5; done"
+  "4|chrome"
+  "4|omnigent"
+  "5|term|presto|~/work/presto|while true; do nvs presto; sleep 0.5; done"
+  "5|chrome"
+  "5|omnigent"
+  "6|term|gatech|~/gatech|while true; do nvs gatech; sleep 0.5; done"
+  "6|chrome"
+  "6|omnigent"
+)
+
+SWEEP_WORKSPACE="Z"
+
+# The second-monitor dashboard (the ws-11 equivalent). Pinned to the Samsung by
+# `workspace 9 output $top` in ~/.config/sway/config.d/displays -- placement is
+# the compositor's job here, unlike arrange-ws11 which had to resolve the
+# monitor itself. Panes are laid out left-to-right by arrange-workspaces.
+#
+# Format: app_id|launch-command
+# To add a pane, add a row (and see arrange-workspaces DASHBOARD_LAYOUT):
+#   "google-chrome|google-chrome --new-window https://calendar.google.com"
+#   "sway-ws.term.monitor|ghostty --class=sway-ws.term.monitor -e btop"
+DASHBOARD_WS=9
+DASHBOARD_LAYOUT=splith
+DASHBOARD_PANES=(
+  "obsidian|__desktop_entry__ obsidian.desktop"
+)
+
+CHROME_CMD=(google-chrome --profile-directory=Default --new-window)
+OMNIGENT_DESKTOP_ENTRY="omnigent-desktop-electron.desktop"
+OMNIGENT_NEW_WINDOW_KEYS=(-M ctrl -M shift -k n -m shift -m ctrl)
+
+# Machine-local layout override, sourced LAST so it can reassign any of the
+# settings above (WORKSPACES, DASHBOARD_PANES, DASHBOARD_WS, CHROME_CMD, ...).
+# Same pattern as the sway display config: the repo carries the layout every
+# desktop gets, and a machine that needs a different one drops a file outside
+# the repo instead of editing this table.
+LAYOUT_OVERRIDE="${SWAY_WINDOWS_LAYOUT:-${XDG_CONFIG_HOME:-$HOME/.config}/sway-windows/layout.sh}"
+if [[ -r "$LAYOUT_OVERRIDE" ]]; then
+  echo "Using layout override: $LAYOUT_OVERRIDE"
+  # shellcheck source=/dev/null
+  source "$LAYOUT_OVERRIDE"
+fi
+# ─────────────────────────────────────────────────────────────────────
+
+# Only one reconciler per compositor may mutate its tree at a time. Keyed by
+# the IPC socket rather than by user because that is what it protects: a
+# nested or headless sway (the e2e tests run one) is a separate tree with a
+# reconciler of its own.
+#
+# The lock is a kernel flock held by a flock(1) parent that re-runs this
+# script under it. Two properties matter:
+#   - It is released when the parent exits for any reason, so there is no
+#     stale-lock recovery path -- and it was exactly that path (a second
+#     invocation seeing a lock dir with no pid file yet and deleting it) that
+#     let two reconcilers run concurrently under the previous mkdir protocol.
+#   - `-o` closes the lock fd before the script runs, so no child can inherit
+#     it. Holding the lock on an fd inside this process (`exec 9>file; flock 9`)
+#     leaked it into every child: a long-lived one kept the lock after the
+#     script exited and every later run quietly reported "already running".
+LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/sway-startup-windows.$(basename "${SWAYSOCK:-default}").lock"
+if [[ -z "${SWAY_STARTUP_WINDOWS_LOCKED:-}" ]]; then
+  rc=0
+  SWAY_STARTUP_WINDOWS_LOCKED=1 flock -n -E 75 -o "$LOCK_FILE" "$BASH" "${BASH_SOURCE[0]}" "${ORIG_ARGS[@]}" || rc=$?
+  if [[ "$rc" -eq 75 ]]; then
+    echo "startup-windows is already running; exiting."
+    exit 0
+  fi
+  exit "$rc"
+fi
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+failures=0
+warn() { echo "WARNING: $*" >&2; failures=$(( failures + 1 )); }
+
+# ── Preflight ────────────────────────────────────────────────────────
+
+if ! command -v swaymsg >/dev/null 2>&1; then
+  echo "ERROR: swaymsg not found; this script requires sway." >&2
+  exit 1
+fi
+if ! sway_ipc -t get_version >/dev/null 2>&1; then
+  echo "ERROR: cannot reach sway (is SWAYSOCK set / is sway running?)." >&2
+  exit 1
+fi
+for dep in jq ghostty; do
+  command -v "$dep" >/dev/null 2>&1 || { echo "ERROR: $dep not found." >&2; exit 1; }
+done
+
+# wtype is how a SECOND Omnigent window gets created: the app is
+# single-instance, its deep link REUSES a window already on the same origin
+# (web/electron/src/deepLink.js chooseDeepLinkStrategy), and a plain second
+# launch only focuses the existing window (main.js second-instance handler).
+# The Server > New Window menu item is the only entry point, and its
+# accelerator is CmdOrCtrl+Shift+N -- so we synthesize it, exactly as the Mac
+# script clicks the same menu item via AppleScript.
+HAVE_WTYPE=true
+if ! command -v wtype >/dev/null 2>&1; then
+  HAVE_WTYPE=false
+fi
+
+# Fail fast on a malformed terminal app_id rather than letting ghostty fall
+# back to its default class, which would silently collapse every managed
+# terminal onto one identity.
+validate_term_app_ids() {
+  local entry ws type rest slot bad=0
+  for entry in "${WORKSPACES[@]}"; do
+    IFS='|' read -r ws type rest <<< "$entry"
+    [[ "$type" == term ]] || continue
+    IFS='|' read -r slot _ <<< "$rest"
+    if ! valid_term_app_id "${TERM_APP_ID_PREFIX}${slot}"; then
+      echo "ERROR: slot '$slot' yields an invalid GTK application id: ${TERM_APP_ID_PREFIX}${slot}" >&2
+      bad=1
+    fi
+  done
+  return "$bad"
+}
+validate_term_app_ids || {
+  echo "ERROR: fix the workspace table before running." >&2
+  exit 1
+}
+
+managed_workspaces() {
+  printf '%s\n' "${WORKSPACES[@]}" | cut -d'|' -f1 | sort -u
+}
+
+# The claims the table declares today. The sweep keeps a window on a managed
+# workspace only if it holds one of these, so deleting or renaming a slot
+# retires its old window instead of leaving it in the layout for good.
+# Dashboard claims count even under --no-dashboard: skipping the dashboard
+# means leaving its windows alone, not evicting them.
+current_claim_marks() {
+  local entry ws type rest pane app_id
+  for entry in "${WORKSPACES[@]}"; do
+    IFS='|' read -r ws type rest <<< "$entry"
+    case "$type" in chrome|omnigent) echo "sw:${ws}:${type}" ;; esac
+  done
+  for pane in "${DASHBOARD_PANES[@]}"; do
+    IFS='|' read -r app_id _ <<< "$pane"
+    echo "sw:${DASHBOARD_WS}:${app_id}"
+  done
+}
+current_term_app_ids() {
+  local entry ws type rest slot
+  for entry in "${WORKSPACES[@]}"; do
+    IFS='|' read -r ws type rest <<< "$entry"
+    [[ "$type" == term ]] || continue
+    IFS='|' read -r slot _ <<< "$rest"
+    echo "${TERM_APP_ID_PREFIX}${slot}"
+  done
+}
+
+# ── Window creation ──────────────────────────────────────────────────
+
+# Launch through sway's own `exec` so the process is detached from this script
+# and inherits the compositor's environment.
+launch() {
+  local quoted
+  quoted=$(printf '%q ' "$@")
+  if [[ "$DRY_RUN" == true ]]; then
+    echo "  DRY-RUN launch: $quoted"
+    return 0
+  fi
+  sway_cmd "exec $quoted"
+}
+
+launch_desktop_entry() {
+  local entry="$1" exec_line
+  if ! exec_line=$(desktop_entry_exec "$entry"); then
+    warn "no desktop entry found for $entry"
+    return 1
+  fi
+  if [[ "$DRY_RUN" == true ]]; then
+    echo "  DRY-RUN launch: $exec_line"
+    return 0
+  fi
+  sway_cmd "exec $exec_line"
+}
+
+create_term() {
+  local slot="$1" workdir="$2" cmd="$3"
+  workdir="${workdir/#\~/$HOME}"
+  launch ghostty "--class=${TERM_APP_ID_PREFIX}${slot}" \
+    "--working-directory=$workdir" -e zsh -lc "$cmd"
+}
+
+# Whether Omnigent already has a window we could open another from.
+#
+# Deliberately NOT a pgrep on the binary path: any process whose command line
+# merely mentions that path (a grep, an editor, a shell running this script)
+# is a false positive, and a false positive here skips the initial launch and
+# then tries to synthesize New Window against an app that is not running. The
+# window tree is both the authoritative answer and the thing we actually need.
+omnigent_has_window() {
+  local ids
+  ids=$(window_ids_matching "$SNAPSHOT" "$OMNIGENT_MATCH_JQ" "$OMNIGENT_INVALID_TITLE_RE")
+  [[ -n "$ids" ]]
+}
+
+# ── Reconcile one slot ───────────────────────────────────────────────
+
+SNAPSHOT=""
+# An unreadable tree aborts the run. Continuing with an empty SNAPSHOT would
+# make every slot look vacant and launch a duplicate of everything.
+refresh() {
+  local attempt
+  for attempt in 1 2 3; do
+    if SNAPSHOT=$(snapshot_windows); then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "ERROR: cannot read the sway window tree; refusing to continue with an unknown window set." >&2
+  exit 1
+}
+
+place() {
+  local id="$1" ws="$2" label="$3" current
+  current=$(workspace_of "$SNAPSHOT" "$id")
+  [[ "$current" == "$ws" ]] && return 0
+  if [[ "$DRY_RUN" == true ]]; then
+    echo "  DRY-RUN move $label (id=$id) ${current:-?} -> $ws"
+    return 0
+  fi
+  move_to_workspace "$id" "$ws" || { warn "[$label] move to workspace $ws failed"; return 1; }
+}
+
+reconcile_term() {
+  local ws="$1" slot="$2" workdir="$3" cmd="$4"
+  local app_id="${TERM_APP_ID_PREFIX}${slot}" id
+  id=$(id_with_app_id "$SNAPSHOT" "$app_id")
+  if [[ -n "$id" ]]; then
+    echo "[term:$slot] found (id=$id)"
+    place "$id" "$ws" "term:$slot"
+    return 0
+  fi
+
+  echo "[term:$slot] creating on workspace $ws..."
+  create_term "$slot" "$workdir" "$cmd" || { warn "[term:$slot] launch failed"; return 1; }
+  [[ "$DRY_RUN" == true ]] && return 0
+
+  # The app_id is fixed at launch, so we just wait for it to appear -- no
+  # id-diffing, and no chance of adopting an unrelated window.
+  local deadline
+  deadline=$(( $(date +%s) + 20 ))
+  while [[ $(date +%s) -lt "$deadline" ]]; do
+    sleep 0.4
+    refresh
+    id=$(id_with_app_id "$SNAPSHOT" "$app_id")
+    [[ -n "$id" ]] && break
+  done
+  if [[ -z "$id" ]]; then
+    warn "[term:$slot] window never appeared"
+    return 1
+  fi
+  place "$id" "$ws" "term:$slot"
+}
+
+# Chrome and Omnigent slots: reuse whatever already holds the mark, else adopt
+# an unclaimed window, else create one.
+reconcile_marked() {
+  local ws="$1" type="$2" match="$3" invalid="$4"
+  local mark="sw:${ws}:${type}" id
+
+  id=$(id_with_mark "$SNAPSHOT" "$mark")
+  if [[ -n "$id" ]]; then
+    echo "[$type:$ws] holding mark $mark (id=$id)"
+    place "$id" "$ws" "$type:$ws"
+    return 0
+  fi
+
+  id=$(unclaimed_window_id "$SNAPSHOT" "$match" "$invalid")
+
+  if [[ -n "$id" ]]; then
+    echo "[$type:$ws] adopting unclaimed window $id"
+  else
+    echo "[$type:$ws] creating..."
+    local before
+    before=$(window_ids_matching "$SNAPSHOT" "$match" "$invalid")
+    case "$type" in
+      chrome)
+        launch "${CHROME_CMD[@]}" || { warn "[$type:$ws] launch failed"; return 1; } ;;
+      omnigent)
+        if ! omnigent_has_window; then
+          launch_desktop_entry "$OMNIGENT_DESKTOP_ENTRY" || return 1
+        elif [[ "$HAVE_WTYPE" == true ]]; then
+          # Focus the app, then synthesize its New Window accelerator.
+          local anchor
+          anchor=$(echo "$SNAPSHOT" | jq -r "[.[] | select($match)] | sort_by(.id) | first | .id // empty")
+          [[ -n "$anchor" ]] || { warn "[$type:$ws] no Omnigent window to focus"; return 1; }
+          [[ "$DRY_RUN" == true ]] || {
+            # The accelerator goes to whatever has focus. Ctrl+Shift+N in a
+            # terminal opens a stray terminal, so confirm focus actually
+            # landed on the Omnigent window before sending anything.
+            sway_cmd "[con_id=$anchor] focus" || {
+              warn "[$type:$ws] could not focus Omnigent window $anchor; not sending the accelerator"; return 1; }
+            sleep 0.4
+            local focused
+            focused=$(focused_window_id)
+            [[ "$focused" == "$anchor" ]] || {
+              warn "[$type:$ws] focus is on ${focused:-nothing}, not Omnigent window $anchor; not sending the accelerator"; return 1; }
+            wtype "${OMNIGENT_NEW_WINDOW_KEYS[@]}" 2>/dev/null || {
+              warn "[$type:$ws] wtype failed"; return 1; }
+          }
+        else
+          warn "[$type:$ws] wtype is not installed; cannot open an additional Omnigent window (sudo apt install wtype)"
+          return 1
+        fi
+        ;;
+    esac
+    [[ "$DRY_RUN" == true ]] && return 0
+    id=$(wait_for_new_window "$match" "$before" "$invalid" 25) || {
+      warn "[$type:$ws] new window never appeared"; return 1; }
+  fi
+
+  place "$id" "$ws" "$type:$ws"
+  [[ "$DRY_RUN" == true ]] || mark_window "$id" "$mark" || warn "[$type:$ws] could not mark $id"
+  refresh
+}
+
+# ── Main ─────────────────────────────────────────────────────────────
+
+refresh
+
+if [[ "$HAVE_WTYPE" != true ]]; then
+  echo "NOTE: wtype is not installed. The first Omnigent window will be created," \
+       "but per-workspace copies need it: sudo apt install wtype" >&2
+fi
+
+for entry in "${WORKSPACES[@]}"; do
+  IFS='|' read -r ws type rest <<< "$entry"
+  case "$type" in
+    term)
+      IFS='|' read -r slot workdir cmd <<< "$rest"
+      reconcile_term "$ws" "$slot" "$workdir" "$cmd" || true
+      refresh
+      ;;
+    chrome)
+      reconcile_marked "$ws" chrome "$CHROME_MATCH_JQ" "$CHROME_INVALID_TITLE_RE" || true
+      ;;
+    omnigent)
+      reconcile_marked "$ws" omnigent "$OMNIGENT_MATCH_JQ" "$OMNIGENT_INVALID_TITLE_RE" || true
+      ;;
+  esac
+done
+
+# ── Dashboard ────────────────────────────────────────────────────────
+
+# Same contract as reconcile_marked: the pane's own mark wins, then a window
+# of that identity no slot has claimed, then a fresh launch. Matching by
+# identity alone would let a pane take a window a standard workspace already
+# owns -- the same app can legitimately fill both kinds of slot.
+reconcile_dashboard_pane() {
+  local app_id="$1" cmd="$2"
+  local mark="sw:${DASHBOARD_WS}:${app_id}" id deadline
+
+  id=$(id_with_mark "$SNAPSHOT" "$mark")
+  if [[ -n "$id" ]]; then
+    echo "[dash:$app_id] holding mark $mark (id=$id)"
+    place "$id" "$DASHBOARD_WS" "dash:$app_id"
+    return 0
+  fi
+
+  id=$(unclaimed_id_with_app_identity "$SNAPSHOT" "$app_id")
+  if [[ -n "$id" ]]; then
+    echo "[dash:$app_id] adopting unclaimed window $id"
+  else
+    echo "[dash:$app_id] creating..."
+    if [[ "$cmd" == __desktop_entry__* ]]; then
+      launch_desktop_entry "${cmd#__desktop_entry__ }" || return 1
+    else
+      # shellcheck disable=SC2086
+      launch $cmd || { warn "[dash:$app_id] launch failed"; return 1; }
+    fi
+    [[ "$DRY_RUN" == true ]] && return 0
+    deadline=$(( $(date +%s) + 25 ))
+    while [[ $(date +%s) -lt "$deadline" ]]; do
+      sleep 0.5
+      refresh
+      id=$(unclaimed_id_with_app_identity "$SNAPSHOT" "$app_id")
+      [[ -n "$id" ]] && break
+    done
+    [[ -n "$id" ]] || { warn "[dash:$app_id] window never appeared"; return 1; }
+  fi
+
+  place "$id" "$DASHBOARD_WS" "dash:$app_id"
+  [[ "$DRY_RUN" == true ]] || mark_window "$id" "$mark" || warn "[dash:$app_id] could not mark $id"
+  refresh
+}
+
+if [[ "$SKIP_DASHBOARD" != true ]]; then
+  for pane in "${DASHBOARD_PANES[@]}"; do
+    IFS='|' read -r app_id cmd <<< "$pane"
+    reconcile_dashboard_pane "$app_id" "$cmd" || true
+  done
+fi
+
+# ── Sweep ────────────────────────────────────────────────────────────
+# Anything on a managed workspace that is not a slot the table declares today
+# goes to the overflow workspace, and its stale claims are removed so a later
+# slot can adopt it as an ordinary unclaimed window. Omnigent's update overlay
+# is parked in the scratchpad by a for_window rule in sway_config, so it is
+# not seen here at all.
+
+if [[ "$DRY_RUN" != true ]]; then
+  refresh
+  managed_re=$(managed_workspaces | paste -sd'|' -)
+  swept=0
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    echo "Sweeping stray window $id to $SWEEP_WORKSPACE..."
+    move_to_workspace "$id" "$SWEEP_WORKSPACE" && swept=$(( swept + 1 )) || true
+    while IFS= read -r stale; do
+      [[ -n "$stale" ]] || continue
+      sway_cmd "[con_id=$id] unmark \"$stale\"" || true
+    done < <(sw_marks_of "$SNAPSHOT" "$id")
+  done < <(stray_window_ids "$SNAPSHOT" "^($managed_re)$" "$(current_claim_marks)" "$(current_term_app_ids)")
+  [[ "$swept" -gt 0 ]] && echo "Swept ${swept} stray window(s) to ${SWEEP_WORKSPACE}."
+fi
+
+# ── Layout ───────────────────────────────────────────────────────────
+
+if [[ "$DRY_RUN" != true ]]; then
+  arrange_targets=()
+  while IFS= read -r ws; do arrange_targets+=("$ws"); done < <(managed_workspaces)
+  [[ "$SKIP_DASHBOARD" == true ]] || arrange_targets+=("$DASHBOARD_WS")
+  # The arranger is a separate process: every setting an override can change
+  # that it depends on has to be forwarded, or it silently falls back to its
+  # defaults -- a moved dashboard gets tabbed, a custom terminal prefix makes
+  # it report "no managed windows" and succeed.
+  DASHBOARD_LAYOUT="$DASHBOARD_LAYOUT" TERM_APP_ID_PREFIX="$TERM_APP_ID_PREFIX" \
+    "$SCRIPT_DIR/arrange-workspaces" --dashboard-ws "$DASHBOARD_WS" "${arrange_targets[@]}" \
+    || warn "arrange-workspaces did not converge"
+  sway_cmd "workspace number 1" || true
+fi
+
+if [[ "$failures" -gt 0 ]]; then
+  echo "Done with ${failures} warning(s)."
+  exit 1
+fi
+echo "Done."

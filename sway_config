@@ -253,3 +253,29 @@ bindsym XF86AudioMute        exec --no-startup-id wpctl set-mute   @DEFAULT_AUDI
 
 bindsym $mod+Shift+x exec swaylock -f --image /usr/share/backgrounds/Autumn_by_mendhak.png
 
+
+### Managed window layout #################################################
+# Workspace contents are declared in bin-linux/startup-windows, which is the
+# Linux counterpart of bin-macos/startup-windows (AeroSpace on the Mac). The
+# script is idempotent and self-healing: re-run it any time the session drifts.
+
+# Omnigent's update overlay is a real 344x1 transparent window created one id
+# after its parent shell window (desktop 0.10.0, web/electron/src/update_overlay.js),
+# deliberately kept mapped so its ResizeObserver stays alive. It can never fill
+# a workspace slot and must never join a layout, and it does NOT follow its
+# parent across workspaces -- so park it instead of letting it pile up on
+# whichever workspace was focused when it was created. On the Mac this needs
+# ~40 lines of eviction logic in arrange-workspaces; here it is one rule.
+for_window [title="^Omnigent Update$"] floating enable, move scratchpad
+
+# The overflow workspace the stray sweep uses. Not reachable by the numeric
+# bindings above, so give it one.
+bindsym $mod+z workspace Z
+
+# Rebuild the declared layout on demand.
+bindsym $mod+Shift+r exec $HOME/bin/startup-windows
+
+# Build the layout once per sway start (not exec_always: a config reload must
+# not re-run the reconciler underneath a session you are using).
+exec $HOME/bin/startup-windows
+###########################################################################

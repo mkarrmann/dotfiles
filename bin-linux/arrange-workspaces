@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Lay out the managed sway workspaces.
+#
+#   standard workspaces -> one tabbed container, ordered term, chrome, omnigent
+#   dashboard workspace -> panes side by side (splith)
+#
+# This is deliberately tiny compared to bin-macos/arrange-workspaces (~900
+# lines). That script has to flatten and rebuild each workspace tree, retry
+# until it converges, and work around AeroSpace normalizing single-child
+# containers away. sway needs none of it, which three properties verified
+# against sway 1.11 make true:
+#
+#   1. `move container to workspace N` on a window ALREADY on N re-inserts it
+#      relative to the focused container. Moving each window and then focusing
+#      it makes the declared order fall out directly -- no directional
+#      navigation and nothing spatial to reason about.
+#   2. `layout tabbed` is idempotent -- re-running it on an already-tabbed
+#      workspace is a no-op, so this can run on every login without churn.
+#   3. A window that appears later joins the existing tabbed container by
+#      itself, so a late arrival does not require a rebuild.
+#
+# Ordering is derived from window properties rather than duplicating
+# startup-windows' table: terminals carry the sway-ws.term. app_id prefix, and
+# the other slots carry an sw:<ws>:<type> mark.
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=./sway-windows-lib.sh
+source "$SCRIPT_DIR/sway-windows-lib.sh"
+
+DASHBOARD_WS="${DASHBOARD_WS:-9}"
+DASHBOARD_LAYOUT="${DASHBOARD_LAYOUT:-splith}"
+
+usage() {
+  echo "Usage: arrange-workspaces [--dashboard-ws N] WORKSPACE..."
+  exit "${1:-0}"
+}
+
+workspaces=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dashboard-ws) DASHBOARD_WS="$2"; shift 2 ;;
+    -h|--help) usage 0 ;;
+    -*) echo "Unknown option: $1" >&2; usage 2 ;;
+    *) workspaces+=("$1"); shift ;;
+  esac
+done
+[[ ${#workspaces[@]} -gt 0 ]] || usage 2
+
+sway_ipc -t get_version >/dev/null 2>&1 || {
+  echo "ERROR: cannot reach sway." >&2; exit 1; }
+
+failures=0
+
+# Managed windows of WS, in layout order.
+#
+# rank 0 terminal (app_id sway-ws.term.<slot>)
+# rank 1 chrome    (mark sw:<ws>:chrome)
+# rank 2 omnigent  (mark sw:<ws>:omnigent)
+# rank 3 any other sw: mark (dashboard panes, future slots)
+# Ties break by window id so the order is stable between runs.
+ordered_ids() {
+  local snapshot="$1" ws="$2"
+  echo "$snapshot" | jq -r --arg ws "$ws" --arg prefix "$TERM_APP_ID_PREFIX" '
+    [ .[]
+      | select(.ws == $ws)
+      | . as $w
+      | ( if (($w.app_id // "") | startswith($prefix)) then 0
+          elif ($w.marks | any(. == "sw:\($ws):chrome")) then 1
+          elif ($w.marks | any(. == "sw:\($ws):omnigent")) then 2
+          elif ($w.marks | any(startswith("sw:"))) then 3
+          else empty end ) as $rank
+      | { id: $w.id, rank: $rank } ]
+    | sort_by(.rank, .id) | .[].id'
+}
+
+arrange_workspace() {
+  local ws="$1" layout="$2"
+  local snapshot ids count first id
+
+  snapshot=$(snapshot_windows) || { echo "WARNING: [$ws] snapshot failed" >&2; return 1; }
+  ids=$(ordered_ids "$snapshot" "$ws")
+  count=$(printf '%s\n' "$ids" | grep -c . || true)
+
+  if [[ "$count" -eq 0 ]]; then
+    echo "[$ws] no managed windows; leaving alone"
+    return 0
+  fi
+
+  # Order by re-inserting each window in turn. sway inserts a moved container
+  # relative to the FOCUSED one, not at the end of the parent, so each window
+  # is focused immediately after its move -- that makes the next one land
+  # directly after it and the declared order fall out exactly.
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    # `layout` only acts on tiled containers. A managed window someone floated
+    # would otherwise be skipped silently and the run still report success.
+    sway_cmd "[con_id=$id] floating disable" || echo "WARNING: [$ws] could not tile window $id" >&2
+    move_to_workspace "$id" "$ws" || {
+      echo "WARNING: [$ws] could not order window $id" >&2; continue; }
+    sway_cmd "[con_id=$id] focus" || echo "WARNING: [$ws] could not focus $id" >&2
+  done <<< "$ids"
+
+  first=$(printf '%s\n' "$ids" | grep . | head -1)
+  sway_cmd "layout $layout" || { echo "WARNING: [$ws] could not set layout $layout" >&2; return 1; }
+  # Leave the first slot (the terminal) as the visible tab.
+  sway_cmd "[con_id=$first] focus" || echo "WARNING: [$ws] could not focus $first" >&2
+
+  # Success means the tree actually has the shape we asked for, not that every
+  # command returned 0. A floating leftover or a mis-ordered tab fails here.
+  if ! verify_workspace "$ws" "$layout"; then
+    echo "WARNING: [$ws] tree does not match the requested ${layout} order after arrangement" >&2
+    return 1
+  fi
+  echo "[$ws] arranged ${count} window(s) as ${layout}"
+}
+
+# A workspace is correct when its managed windows sit in one container of the
+# requested layout, in the requested order.
+verify_workspace() {
+  local ws="$1" layout="$2" snapshot expected actual
+  snapshot=$(snapshot_windows) || return 1
+  expected=$(ordered_ids "$snapshot" "$ws" | paste -sd, -)
+  [[ -n "$expected" ]] || return 0
+
+  # Floating windows live in floating_nodes and never appear in a layout
+  # container, so the order check below would miss one -- reject it outright.
+  if sway_ipc -t get_tree | jq -e --arg ws "$ws" --argjson want "[${expected}]" '
+      [ recurse(.nodes[]?) | select(.type == "workspace" and .name == $ws) ] | first
+      | [ .floating_nodes[]? | recurse(.nodes[]?) | select(.pid != null) | .id ]
+      | any(. as $id | $want | index($id))' >/dev/null 2>&1; then
+    return 1
+  fi
+
+  # The managed windows must sit together, in order, as direct children of one
+  # container with the requested layout. A window the user opened there too is
+  # tolerated: startup-windows sweeps those before arranging, but a standalone
+  # run should not call the layout broken because of one.
+  actual=$(sway_ipc -t get_tree | jq -r --arg ws "$ws" --arg layout "$layout" \
+      --argjson want "[${expected}]" '
+    [ recurse(.nodes[]?) | select(.type == "workspace" and .name == $ws) ] | first
+    | [ recurse(.nodes[]?; . != null)
+        | select(.layout == $layout)
+        | [ .nodes[]? | select(.pid != null) | .id ] ]
+    | map(select(any(.[]; . == $want[0]))) | first // []
+    | map(select(. as $id | $want | index($id)))
+    | join(",")')
+
+  [[ "$actual" == "$expected" ]]
+}
+
+for ws in "${workspaces[@]}"; do
+  layout=tabbed
+  [[ "$ws" == "$DASHBOARD_WS" ]] && layout="$DASHBOARD_LAYOUT"
+  arrange_workspace "$ws" "$layout" || failures=$(( failures + 1 ))
+done
+
+if [[ "$failures" -gt 0 ]]; then
+  echo "arrange-workspaces finished with ${failures} warning(s)." >&2
+  exit 1
+fi
+exit 0

@@ -86,6 +86,82 @@ python3 -m unittest discover -s tests -p test_omnigent_desktop.py
 python3 -m unittest discover -s tests -p test_omnigent_desktop_app.py
 ```
 
+## Sway window orchestration (Linux desktops)
+
+`bin-linux/startup-windows` builds and repairs the sway session's workspace
+layout. It is the Linux counterpart of `bin-macos/startup-windows` (AeroSpace),
+and sway starts it once per session via the `exec` line at the bottom of
+`sway_config`. Rebuild on demand with `$mod+Shift+r`, or run
+`~/bin/startup-windows` directly; `--dry-run` prints the plan without touching
+anything.
+
+| WS | Contents |
+|----|----------|
+| 1  | local terminal (bare nvim) + Chrome + Omnigent |
+| 2  | `nvs dotfiles` + Chrome + Omnigent |
+| 3  | `nvs orchest` + Chrome + Omnigent |
+| 4  | `nvs omnigent-repo` + Chrome + Omnigent |
+| 5  | `nvs presto` + Chrome + Omnigent |
+| 6  | `nvs gatech` + Chrome + Omnigent |
+| 9  | second-monitor dashboard (Obsidian) |
+| Z  | overflow / stray sweep (`$mod+z`) |
+
+Each workspace is one tabbed container ordered terminal, Chrome, Omnigent.
+Workspace-to-monitor pinning is machine-local (`~/.config/sway/config.d/`, see
+`sway_config.local.example`), so the dashboard lands on the second monitor
+without the script doing any monitor arithmetic of its own — unlike
+`bin-macos/arrange-ws11`, which has to resolve the display itself.
+
+Edit the `WORKSPACES` table to change the layout. The `nvs` sessions it names
+must also be declared in `~/.config/nvs/sessions.<short hostname>` (see
+`bin/nvs-sessions-file`); `init.sh` turns those into `nvs@` units. A machine
+that needs a different layout can drop a `~/.config/sway-windows/layout.sh`
+that reassigns `WORKSPACES` / `DASHBOARD_PANES` / `CHROME_CMD`, rather than
+editing the repo table.
+
+The script is idempotent and self-healing: a re-run adopts what is already
+there, returns displaced windows to their workspace, and sweeps anything
+unclaimed to `Z`. It is much smaller than the Mac original because sway
+supplies what AeroSpace does not:
+
+- Terminals are identified by an app_id set at launch (`ghostty --class=...`),
+  so they need no title matching or creation-order polling. The class must be a
+  valid GTK application id — ghostty silently falls back to its default
+  otherwise, so `startup-windows` validates every slot before launching.
+- Chrome and Omnigent cannot carry a per-window identity (Chrome's second
+  window inherits the first's `--class`), so they are claimed by sway marks.
+  Marks are globally unique in sway, which makes double-claiming impossible and
+  lets a re-run read back the previous run's claims.
+- Layout is `layout tabbed`, which is idempotent and absorbs late-arriving
+  windows, so there is no flatten-and-rebuild pass.
+
+Two Linux-specific constraints are load-bearing:
+
+- Omnigent is launched through its **desktop entry**, never
+  `/opt/Omnigent/omnigent-desktop-electron` directly, so it inherits
+  `--disable-features=WaylandFractionalScaleV1` from
+  `omnigent_config/omnigent-desktop-electron.desktop`. Without that flag a
+  first launch on a fractionally scaled output dies with SIGTRAP.
+- Additional Omnigent windows need `wtype` (`sudo apt install wtype`). The app
+  is single-instance, a deep link reuses an existing window, and a second
+  launch only focuses one, so the Server ▸ New Window accelerator
+  (Ctrl+Shift+N) is synthesized — the same thing the Mac script does by
+  clicking that menu item via AppleScript. Without `wtype` you get one Omnigent
+  window and a warning per additional slot.
+
+Regression checks. The first needs no compositor; the second starts a private
+headless sway (pinned to `WLR_BACKENDS=headless`, stub apps only, under its own
+D-Bus session and runtime dir where `dbus-run-session` exists) and exercises
+the real orchestration: dry run, fresh build, idempotent re-run, self-healing,
+stray sweep, floating repair, `--no-dashboard`, retired slots, prefix and
+`DASHBOARD_WS` overrides, dashboard claims. It never touches the live session
+and skips itself if sway, ghostty, or flock is missing.
+
+```sh
+./tests/test-sway-windows.sh
+./tests/test-sway-windows-e2e.sh
+```
+
 ## Omnigent topology
 
 `omnigent_config/topology.env` declares the central Omnigent hub shared by the
