@@ -199,7 +199,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Shell & toolchain installs (oh-my-zsh, tpm, cargo, bob, nori).
+# 4. Shell & toolchain installs (oh-my-zsh, tpm, cargo, bob, nori, gh, aws).
 # ---------------------------------------------------------------------------
 # Nori CLI
 if ! command -v nori &>/dev/null; then
@@ -281,3 +281,18 @@ fi
 # binary is absent rather than erroring. See bin/marksman-ensure.
 "$DOTFILES_DIR/bin/marksman-ensure" \
     || echo "WARNING: marksman install failed (markdown LSP will stay disabled)" >&2
+
+# GitHub CLI, latest release into ~/.local/bin. Non-fatal for the same reason
+# as marksman: release assets are not reachable from every host, and nothing
+# else here depends on it. See bin/gh-ensure.
+"$DOTFILES_DIR/bin/gh-ensure" \
+    || echo "WARNING: gh install failed" >&2
+
+# AWS CLI and the AWS Agent Toolkit (aws-mcp server + aws-* skills for every
+# detected agent). Desktop only: it is a personal account. Credentials never
+# come from dotfiles -- the helper skips the toolkit step, with instructions,
+# until `aws login` has been run on this machine. See bin/aws-agent-toolkit-ensure.
+if [[ "$DOTFILES_PROFILE" == desktop ]]; then
+  "$DOTFILES_DIR/bin/aws-agent-toolkit-ensure" \
+      || echo "WARNING: AWS Agent Toolkit setup failed" >&2
+fi

@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Install the GitHub CLI from its release assets into ~/.local/bin.
+#
+# Not apt/brew: Ubuntu's `gh` package trails upstream by years (26.04 ships
+# 2.46 against a 2.100 current), and system installs need sudo, which init.sh
+# does not have when it runs unattended. ~/.local/bin is machine-local and
+# already on PATH via .shell_env, the same home marksman uses.
+#
+# Latest by default rather than pinned: unlike stylua (a formatter that must
+# agree across machines) nothing here depends on a particular gh version, so
+# drift is harmless and re-running init.sh doubles as the upgrade path.
+#
+# The download is checked against the release's published sha256 list before
+# anything is installed. Non-fatal from init.sh: GitHub release assets are not
+# reachable from every host here (see stylua-ensure), and nothing else in the
+# bootstrap depends on gh.
+#
+# Override for a one-off with GH_VERSION=x.y.z gh-ensure.
+set -euo pipefail
+
+REPO="cli/cli"
+BIN="${GH_BIN:-$HOME/.local/bin/gh}"
+REQUESTED="${GH_VERSION:-latest}"
+
+case "$(uname -s)/$(uname -m)" in
+  Linux/x86_64)   asset_suffix="linux_amd64.tar.gz" ;;
+  Linux/aarch64)  asset_suffix="linux_arm64.tar.gz" ;;
+  Darwin/arm64)   asset_suffix="macOS_arm64.zip" ;;
+  Darwin/x86_64)  asset_suffix="macOS_amd64.zip" ;;
+  *)
+    echo "[gh] unsupported platform $(uname -s)/$(uname -m); skipping" >&2
+    exit 0
+    ;;
+esac
+
+if [[ "$REQUESTED" == latest ]]; then
+  # The /releases/latest redirect carries the tag; no API call, no rate limit.
+  final_url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")"
+  version="${final_url##*/}"
+  version="${version#v}"
+  if [[ -z "$version" || "$version" == "$final_url" ]]; then
+    echo "WARNING: could not resolve the latest gh release from GitHub" >&2
+    exit 1
+  fi
+else
+  version="${REQUESTED#v}"
+fi
+
+installed=""
+if [[ -x "$BIN" ]]; then
+  # `gh version 2.100.0 (2026-09-03)` -> 2.100.0
+  installed="$("$BIN" --version 2>/dev/null | awk 'NR==1 {print $3}')"
+fi
+if [[ "$installed" == "$version" ]]; then
+  echo "[gh] $version already installed at $BIN"
+  exit 0
+fi
+echo "[gh] installing $version (was ${installed:-none})"
+
+asset="gh_${version}_${asset_suffix}"
+base="https://github.com/$REPO/releases/download/v${version}"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/gh-ensure.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+
+# --fail so an HTML error page is never treated as an archive.
+curl -fsSL -o "$tmp/$asset" "$base/$asset"
+curl -fsSL -o "$tmp/checksums.txt" "$base/gh_${version}_checksums.txt"
+
+if command -v sha256sum >/dev/null 2>&1; then
+  sum_cmd=(sha256sum -c -)
+else
+  sum_cmd=(shasum -a 256 -c -)   # macOS
+fi
+if ! (cd "$tmp" && grep " ${asset}\$" checksums.txt | "${sum_cmd[@]}" >/dev/null); then
+  echo "ERROR: sha256 mismatch for $asset; refusing to install" >&2
+  exit 1
+fi
+
+case "$asset" in
+  *.tar.gz) tar -xzf "$tmp/$asset" -C "$tmp" ;;
+  *.zip)    unzip -q "$tmp/$asset" -d "$tmp" ;;
+esac
+extracted="$tmp/${asset%.tar.gz}"
+extracted="${extracted%.zip}/bin/gh"
+if [[ ! -x "$extracted" ]]; then
+  echo "ERROR: $asset did not contain bin/gh where expected" >&2
+  exit 1
+fi
+
+mkdir -p "$(dirname "$BIN")"
+install -m 0755 "$extracted" "$BIN"
+echo "[gh] installed $("$BIN" --version | head -n1) at $BIN"

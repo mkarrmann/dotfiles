@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Install the AWS CLI and wire the AWS Agent Toolkit -- the `aws-mcp` MCP
+# server plus AWS's default `aws-*` skills -- into every AI agent whose config
+# directory exists on this machine (Claude Code, Codex, Cursor, Metacode, ...).
+#
+# Why this is a helper and not entries in agent_config/: sync-mcps' registry is
+# all-or-nothing by profile. Every managed MCP there is a Meta-internal tool,
+# live on `work` and retired on `desktop`; this server is the opposite (a
+# personal account, desktop only), and its skills are versioned downloads from
+# AWS's catalog rather than authored content. So AWS's own installer owns both,
+# the way agent-market owns plugins.list. What it writes survives sync.sh:
+# sync-mcps preserves mcpServers entries it does not manage, and the skills
+# pruning in sync.sh only removes symlinks that point into dotfiles.
+#
+# Credentials never come from dotfiles. `aws login` state is per machine, so
+# until it has been run here the toolkit step is skipped -- successfully, with
+# instructions -- rather than failed. Re-running after login finishes the
+# setup; re-running once set up refreshes the skills to the catalog's current
+# versions, which is the intended upgrade path.
+#
+# The toolkit region is fixed at us-east-1 whatever the account's default:
+# it is the only region the Agent Toolkit service is offered in.
+#
+# Override the profile for a one-off with AWS_TOOLKIT_PROFILE=name.
+set -euo pipefail
+
+PROFILE="${AWS_TOOLKIT_PROFILE:-default}"
+TOOLKIT_REGION="us-east-1"
+INSTALLER_URL="https://awscli.amazonaws.com/v2/install.sh"
+
+if ! command -v aws >/dev/null 2>&1; then
+  # AWS's installer: Linux and macOS, user-local under ~/.local by default,
+  # and it verifies the download against AWS's signing key itself.
+  echo "[aws] installing AWS CLI v2 (user-local)"
+  curl -fsSL "$INSTALLER_URL" | bash
+  # It lands in ~/.local/bin, which .shell_env puts on PATH for new shells;
+  # make it visible to the rest of this run too.
+  export PATH="$HOME/.local/bin:$PATH"
+  if ! command -v aws >/dev/null 2>&1; then
+    echo "ERROR: aws is not on PATH after the installer ran" >&2
+    exit 1
+  fi
+fi
+echo "[aws] $(aws --version)"
+
+if ! aws sts get-caller-identity --profile "$PROFILE" >/dev/null 2>&1; then
+  echo "[aws] no valid session for profile '$PROFILE'; skipping Agent Toolkit setup"
+  echo "      run: aws login --profile $PROFILE   then re-run init.sh or this script"
+  exit 0
+fi
+
+echo "[aws] configuring Agent Toolkit (profile=$PROFILE, region=$TOOLKIT_REGION)"
+aws configure agent-toolkit --yes --region "$TOOLKIT_REGION" --profile "$PROFILE"

@@ -210,6 +210,7 @@ class InitProfileTest(ProfileFixture):
             "bin/omnigent-google-chat-ensure", "bin/omnigent-retire-legacy-standby",
             "bin/omnigent-onboard-check", "bin/stylua-ensure", "bin/marksman-ensure",
             "bin/install-or-upgrade-nori", "bin-macos/omnigent-tls-ensure",
+            "bin/gh-ensure", "bin/aws-agent-toolkit-ensure",
         )
         for helper in helpers:
             self.stub(self.dotfiles / helper, recorder)
@@ -240,7 +241,7 @@ class InitProfileTest(ProfileFixture):
                 result = self.run_script(self.script)
                 self.assert_success(result)
                 calls = self.calls()
-                for helper in ("sync.sh", "codecompanion-fork-ensure", "omnigent-desktop-ensure", "stylua-ensure", "marksman-ensure"):
+                for helper in ("sync.sh", "codecompanion-fork-ensure", "omnigent-desktop-ensure", "stylua-ensure", "marksman-ensure", "gh-ensure", "aws-agent-toolkit-ensure"):
                     self.assertTrue(any(line.startswith(helper + " ") for line in calls), calls)
                 forbidden = ("omnigent-", "bootstrap-plugins ", "systemctl ", "launchctl ", "uv ", "curl ", "git ")
                 self.assertFalse(any(line.startswith(forbidden) for line in calls if not line.startswith(("omnigent-desktop-ensure ", "omnigent-desktop-app-ensure "))), calls)
@@ -261,6 +262,8 @@ class InitProfileTest(ProfileFixture):
             self.assertGreater(index, discovery, calls)
         self.assertTrue(any(line.startswith("bootstrap-plugins ") for line in calls), calls)
         self.assertTrue(any(line.startswith("systemctl ") for line in calls), calls)
+        self.assertTrue(any(line.startswith("gh-ensure ") for line in calls), calls)
+        self.assertFalse(any(line.startswith("aws-agent-toolkit-ensure ") for line in calls), calls)
 
     def test_failed_discovery_skips_routing_dependent_operations(self):
         self.env["DOTFILES_PROFILE"] = "work"
@@ -296,8 +299,9 @@ class InitProfileTest(ProfileFixture):
             "omnigent-agents-ensure", "omnigent-tls-ensure",
         ):
             self.assertTrue(any(line.startswith(helper + " ") for line in calls), calls)
-        forbidden = ("systemctl ", "omnigent-hub discover ", "omnigent-hub cache-routing ", "omnigent-onboard-check ")
+        forbidden = ("systemctl ", "omnigent-hub discover ", "omnigent-hub cache-routing ", "omnigent-onboard-check ", "aws-agent-toolkit-ensure ")
         self.assertFalse(any(line.startswith(forbidden) for line in calls), calls)
+        self.assertTrue(any(line.startswith("gh-ensure ") for line in calls), calls)
         self.assertTrue(all(line.endswith(f"dotfiles={self.dotfiles}") for line in calls), calls)
 
 
