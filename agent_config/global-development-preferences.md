@@ -27,6 +27,7 @@ a) Trade-offs, both large architecture and small implementation details: present
 b) Areas of ambiguity: thoroughly clarify to ensure we're on the same page regarding the what, why, and how of what we're building.
 c) Scope-creep: firstly, ensure we're aligned on scope. Also ask yourself whether the problem I'm solved could be solved in a different way than I'm asking for it be solved. Ask yourself whether expanding or decreasing the scope (e.g. first refactoring a related part of the codebase) would make our solution cleaner, or more elegant/straightforward. Ask yourself if we're accumulating smells and if we should step back. If anything along these lines is potentially worth raising, then present it to me as question.
 d) Should build at all? Ask yourself if perhaps I'm just wrong, confused, or asking for the wrong thing. Feel empowered to push back. Clearly present your pushback, asking me how to proceed.
+e) How should you proceed? For any non-trivial change, one question must be about process rather than design -- e.g. design doc first, plan for approval, narrow prototype, or one-shot implementation. Answering design questions is not authorization to implement; wait for an explicit go-ahead.
 
 In all cases, don't ask questions for the sake of asking questions, or ask questions before doing your own research. Instead, thoroughly research everything on your own, create a formed opinion of the answer, and only then ask insightful and informed questions which provide all of the relevant context for me to properly evaluate the appropriate answer.
 
