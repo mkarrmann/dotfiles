@@ -15,8 +15,9 @@
 #     would collapse every managed terminal onto one app_id.
 #   * A slot must never steal a window another slot already claimed.
 #   * Omnigent's update overlay must never satisfy a slot.
-#   * The Omnigent desktop entry carries --disable-features=WaylandFractionalScaleV1;
-#     losing it means the GUI dies with SIGTRAP on a fresh profile.
+#   * The Omnigent desktop entry carries --disable-features=WaylandFractionalScaleV1
+#     and --ozone-platform=x11; losing either means the GUI dies with SIGTRAP
+#     (on a fresh profile, or on the first parent resize, respectively).
 set -uo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -253,15 +254,19 @@ check "the user override wins over the packaged entry, field codes stripped" \
 out=$(XDG_DATA_HOME="$TMP/missing" XDG_DATA_DIRS="$TMP/sys" desktop_entry_exec x.desktop)
 check "falls back to the packaged entry" "/usr/bin/packaged" "$out"
 
-# The real entry must keep carrying the fractional-scale workaround; without it
-# a first launch on a scaled output dies with SIGTRAP.
+# The real entry must keep carrying both SIGTRAP workarounds (see the HACK note
+# in omnigent_config/omnigent-desktop-electron.desktop for when each can go).
 real=$(desktop_entry_exec omnigent-desktop-electron.desktop 2>/dev/null || true)
 if [[ -z "$real" ]]; then
   echo "  skip: Omnigent desktop entry not installed on this host"
-elif [[ "$real" == *--disable-features=WaylandFractionalScaleV1* ]]; then
-  pass "the installed Omnigent entry keeps the fractional-scale workaround"
 else
-  fail "the installed Omnigent entry lost --disable-features=WaylandFractionalScaleV1: $real"
+  for flag in --disable-features=WaylandFractionalScaleV1 --ozone-platform=x11; do
+    if [[ "$real" == *"$flag"* ]]; then
+      pass "the installed Omnigent entry keeps $flag"
+    else
+      fail "the installed Omnigent entry lost $flag: $real"
+    fi
+  done
 fi
 
 echo

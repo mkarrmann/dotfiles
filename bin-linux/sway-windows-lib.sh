@@ -103,9 +103,13 @@ snapshot_windows() {
 # a null app_id; matching both fields keeps this correct if it is ever run
 # with --ozone-platform=wayland.
 CHROME_MATCH_JQ='((.app_id // "") | test("^(google-chrome|Google-chrome)"; "i")) or ((.class // "") | test("^google-chrome"; "i"))'
-# Matched case-insensitively: the desktop entry says StartupWMClass=Omnigent
-# (the X11 class), but the app runs as a native Wayland client here and its
-# actual app_id is lowercase "omnigent". Verified against a live window.
+# Matched case-insensitively and on both fields: the desktop entry says
+# StartupWMClass=Omnigent, but the launcher override currently forces
+# --ozone-platform=x11 (see omnigent_config/omnigent-desktop-electron.desktop),
+# under which sway reports a null app_id and window_properties.class /
+# .instance "omnigent". Run as a native Wayland client (once that flag is
+# dropped) the identity moves to app_id "omnigent". Both verified against
+# live windows.
 OMNIGENT_MATCH_JQ='((.app_id // "") | test("^omnigent"; "i")) or ((.class // "") | test("^omnigent"; "i"))'
 
 # Chrome's profile picker is a Chrome window but cannot satisfy a slot.
@@ -199,11 +203,11 @@ wait_for_new_window() {
 #
 # Omnigent MUST be launched through its desktop entry rather than
 # /opt/Omnigent/omnigent-desktop-electron directly: the entry in
-# ~/.local/share/applications adds --disable-features=WaylandFractionalScaleV1,
-# without which a first launch on a fractionally scaled output dies with
-# SIGTRAP (see omnigent_config/omnigent-desktop-electron.desktop for the full
-# diagnosis). Reading the Exec line here means this inherits that flag, and any
-# future change to it, instead of duplicating the workaround.
+# ~/.local/share/applications adds the flags without which the GUI dies with
+# SIGTRAP under sway, on first launch and again on the first parent resize
+# (see omnigent_config/omnigent-desktop-electron.desktop for the full
+# diagnosis). Reading the Exec line here means this inherits those flags, and
+# any future change to them, instead of duplicating the workaround.
 desktop_entry_exec() {
   local base="$1" dir f
   local -a dirs=()

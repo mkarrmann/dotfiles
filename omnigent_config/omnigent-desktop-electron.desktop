@@ -1,36 +1,75 @@
 [Desktop Entry]
 # HACK: overrides the package's launcher entry (same file id in
 # ~/.local/share/applications wins over /usr/share/applications). It is a copy
-# of /usr/share/applications/omnigent-desktop-electron.desktop with one flag
+# of /usr/share/applications/omnigent-desktop-electron.desktop with two flags
 # added to Exec. Because it shadows the package file entirely, any upstream
 # change to Exec/Icon/MimeType is masked: re-diff against the package entry on
 # every bump of OMNIGENT_DESKTOP_APP_VERSION in desktop-app.env.
 #
-# Bug: on a fresh machine (no window_bounds in ~/.config/Omnigent/settings.json)
-# the GUI dies with SIGTRAP within a second, silently. Electron centers the
-# window when it has no saved position, and on a fractionally scaled sway
-# output Chromium's Wayland fractional-scale path then requests an empty
-# xdg-shell window geometry, which trips CHECK(!bounds.IsEmpty()) in
-# ui::XdgSurface::SetWindowGeometry (ui/ozone/platform/wayland/host/xdg_surface.cc).
-# Once any run has saved bounds the centering path is skipped and the crash
-# never recurs, which is why it only bites first launches. Observed 2026-09-07
-# with Omnigent 0.10.0 / Electron 42.7.0 / Chromium 148.0.7778.280 on sway
-# 1.11 at output scale 1.2. VS Code, Cursor (Electron 42.10) and Chrome 152
-# do not hit it with fresh profiles: they pass an explicit window position.
+# Both flags work around the same fatal check in Chromium's native-Wayland
+# backend, CHECK(!bounds.IsEmpty()) in ui::XdgSurface::SetWindowGeometry
+# (ui/ozone/platform/wayland/host/xdg_surface.cc). Official builds strip the
+# message, so the symptom is a silent SIGTRAP of the main process (journal:
+# "traps: omnigent-deskto[...] trap int3", systemd-coredump, no stderr). It is
+# reachable at all only because Electron >= 38 defaults to native Wayland in a
+# Wayland session; XWayland and macOS have no such check. Two distinct triggers
+# reach it, observed 2026-09-07 with Omnigent desktop 0.10.0 / Electron 42.7.0
+# / Chromium 148.0.7778.280 on sway 1.11 at output scale 1.2:
 #
-# Fix: --disable-features=WaylandFractionalScaleV1 keeps the app on native
-# Wayland with integer buffer scaling (compositor downsamples). Verified the
-# only other working variant is --ozone-platform=x11 (blurrier);
-# --force-device-scale-factor=1 and WaylandPerSurfaceScale still crash.
+# Trigger 1 (first launch) -> --disable-features=WaylandFractionalScaleV1.
+#   With no window_bounds in ~/.config/Omnigent/settings.json Electron centers
+#   the window, and on a fractionally scaled output Chromium's fractional-scale
+#   path then requests an empty xdg-shell geometry: dead within a second, once.
+#   The flag keeps the app on native Wayland with integer buffer scaling.
+#   --force-device-scale-factor=1 and WaylandPerSurfaceScale still crashed.
 #
-# Remove this file (and its link in sync.sh) once the app no longer needs it:
-# either Omnigent ships explicit window bounds / this flag itself, or its
-# pinned Electron carries a Chromium where the CHECK path is fixed. To test,
-# delete "window_bounds" from settings.json and run the package Exec with
-# core dumps off:  (ulimit -c 0; /opt/Omnigent/omnigent-desktop-electron)
-# A window means the hack is obsolete; "Trace/breakpoint trap" means keep it.
+# Trigger 2 (any later parent resize/move) -> --ozone-platform=x11.
+#   The app's update overlay (web/electron/src/update_overlay.js) is a
+#   344x1 frameless child window. When the card is empty, i.e. every launch
+#   where "Update ... is not available", the renderer reports height 0 and the
+#   shell stores it (heights.set(overlay, 0)), but the parent resize/move
+#   handler is
+#       const reposition = () => position(parent, overlay, heights.get(overlay) ?? 1);
+#   and `??` does not replace 0. So the next time sway retiles the parent, e.g.
+#   any window opening on its workspace, the overlay gets setBounds({height: 0});
+#   Electron forwards it (visible on the wire as xdg_toplevel.set_max_size(344, 0))
+#   and Chromium trips the check. That is why instances died 2.5 s after launch
+#   (overlay loads, then sway's first retile), or minutes to hours later on the
+#   first retile, and why an instance alone on its workspace survived. Proven by
+#   a WAYLAND_DEBUG trace plus an A/B run: an unpacked copy with that line
+#   changed to `|| 1` survived forced retiles while the unpatched copy died.
+#   Not fixed upstream as of omnigent-ai/omnigent main 3d7dd102 (2026-09-08) or
+#   tag v0.12.0; the Linux updater feed still serves 0.10.0. --ozone-platform=x11
+#   sidesteps both triggers by running under XWayland (verified: the installed
+#   binary survived six forced resize/move commands with it). Cost: XWayland
+#   upscaling at scale 1.2 is blurrier than native, and sway now identifies the
+#   windows by X11 class/instance "omnigent" instead of app_id (the matchers in
+#   bin-linux/sway-windows-lib.sh accept both).
+#
+# Remove --ozone-platform=x11 once BOTH hold:
+#   1. upstream web/electron/src/update_overlay.js no longer repositions with
+#      `heights.get(overlay) ?? 1`; the reposition path clamps to >= 1 the way
+#      unsuppress() already does (position(parent, overlay, Math.max(1, height)))
+#      or the overlay is no longer a separate window at all; and
+#   2. that fix is in a Linux build you actually run, i.e. a version newer than
+#      the one served by https://omnigent.ai/_desktop/updates/latest-linux.yml
+#      at the time of writing (0.10.0), and desktop-app.env is bumped to it.
+#   Test (Trigger 2): launch the package Exec plus only the fractional-scale
+#   flag with core dumps off, wait ~5 s for the overlay, then
+#     swaymsg '[app_id="omnigent" title="^Omnigent$"] resize set height 60 ppt'
+#   A window that survives a few resize/move commands means x11 can go;
+#   "Trace/breakpoint trap" means keep it.
+# Remove --disable-features=WaylandFractionalScaleV1 once Omnigent ships
+#   explicit window bounds / this flag itself, or its pinned Electron carries a
+#   Chromium where the fractional-scale geometry path no longer produces an
+#   empty rect. Test (Trigger 1): delete "window_bounds" from settings.json and
+#   run the package Exec with core dumps off:
+#     (ulimit -c 0; /opt/Omnigent/omnigent-desktop-electron)
+#   A window means the hack is obsolete; "Trace/breakpoint trap" means keep it.
+# Both tests are only meaningful while --ozone-platform=x11 is NOT passed.
+# Remove this file (and its link in sync.sh) once neither flag is needed.
 Name=Omnigent
-Exec=/opt/Omnigent/omnigent-desktop-electron --disable-features=WaylandFractionalScaleV1 %U
+Exec=/opt/Omnigent/omnigent-desktop-electron --disable-features=WaylandFractionalScaleV1 --ozone-platform=x11 %U
 Terminal=false
 Type=Application
 Icon=omnigent-desktop-electron

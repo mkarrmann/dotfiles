@@ -139,9 +139,12 @@ Two Linux-specific constraints are load-bearing:
 
 - Omnigent is launched through its **desktop entry**, never
   `/opt/Omnigent/omnigent-desktop-electron` directly, so it inherits
-  `--disable-features=WaylandFractionalScaleV1` from
-  `omnigent_config/omnigent-desktop-electron.desktop`. Without that flag a
-  first launch on a fractionally scaled output dies with SIGTRAP.
+  `--disable-features=WaylandFractionalScaleV1 --ozone-platform=x11` from
+  `omnigent_config/omnigent-desktop-electron.desktop`. Without them the GUI
+  dies with SIGTRAP under sway: on a first launch on a fractionally scaled
+  output, and on the first parent resize after its update overlay reports an
+  empty height (an upstream `update_overlay.js` bug, unfixed as of 0.12.0).
+  The entry's HACK note has the diagnosis and the removal conditions.
 - Additional Omnigent windows need `wtype` (`sudo apt install wtype`). The app
   is single-instance, a deep link reuses an existing window, and a second
   launch only focuses one, so the Server ▸ New Window accelerator
