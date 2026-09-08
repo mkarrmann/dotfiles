@@ -33,14 +33,17 @@ source "$SCRIPT_DIR/sway-windows-lib.sh"
 ORIG_ARGS=("$@")
 DRY_RUN=false
 SKIP_DASHBOARD=false
+PRINT_LAYOUT=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=true; shift ;;
     --no-dashboard) SKIP_DASHBOARD=true; shift ;;
+    --print-layout) PRINT_LAYOUT=true; shift ;;
     -h|--help)
-      echo "Usage: startup-windows [--dry-run] [--no-dashboard]"
+      echo "Usage: startup-windows [--dry-run] [--no-dashboard] [--print-layout]"
       echo "  --dry-run       print the plan without creating or moving windows"
       echo "  --no-dashboard  skip the workspace-${DASHBOARD_WS:-9} dashboard"
+      echo "  --print-layout  emit the resolved workspace table as JSON and exit"
       exit 0
       ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
@@ -110,11 +113,33 @@ OMNIGENT_NEW_WINDOW_KEYS=(-M ctrl -M shift -k n -m shift -m ctrl)
 # the repo instead of editing this table.
 LAYOUT_OVERRIDE="${SWAY_WINDOWS_LAYOUT:-${XDG_CONFIG_HOME:-$HOME/.config}/sway-windows/layout.sh}"
 if [[ -r "$LAYOUT_OVERRIDE" ]]; then
-  echo "Using layout override: $LAYOUT_OVERRIDE"
+  # stderr: --print-layout writes JSON to stdout, and a notice mixed into it
+  # would leave every consumer parsing a corrupt document.
+  echo "Using layout override: $LAYOUT_OVERRIDE" >&2
   # shellcheck source=/dev/null
   source "$LAYOUT_OVERRIDE"
 fi
 # ─────────────────────────────────────────────────────────────────────
+# The table above is the only place the workspace-to-checkout mapping is
+# written down, so anything that needs it reads it from here rather than
+# keeping a copy. sync.sh derives Orchest's Omnigent attribution this way.
+# Emitted before the lock and preflight: this reports the DECLARED layout, so
+# it must work with no compositor running.
+if [[ "$PRINT_LAYOUT" == true ]]; then
+  command -v jq >/dev/null 2>&1 || { echo "ERROR: jq not found." >&2; exit 1; }
+  for entry in "${WORKSPACES[@]}"; do
+    IFS='|' read -r ws type rest <<< "$entry"
+    [[ "$type" == term ]] || continue
+    IFS='|' read -r slot workdir _ <<< "$rest"
+    printf '%s\t%s\t%s\n' "$ws" "$slot" "${workdir/#\~/$HOME}"
+  done | jq -Rn --arg sweep "$SWEEP_WORKSPACE" --arg dashboard "$DASHBOARD_WS" '
+    {
+      sweepWorkspace: $sweep,
+      dashboardWorkspace: $dashboard,
+      terminals: [inputs | split("\t") | { workspace: .[0], slot: .[1], workdir: .[2] }]
+    }'
+  exit 0
+fi
 
 # Only one reconciler per compositor may mutate its tree at a time. Keyed by
 # the IPC socket rather than by user because that is what it protects: a
