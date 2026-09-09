@@ -335,6 +335,15 @@ sync_link_dir "$DOTFILES_DIR/claude_config/agent-manager" "$HOME/.claude/agent-m
 link_one "$DOTFILES_DIR/claude_config/obsidian-vault.conf" "$HOME/.claude/obsidian-vault.conf"
 # Hooks
 sync_link_dir "$DOTFILES_DIR/claude_config/hooks" "$HOME/.claude/hooks" "*"
+# Retired: the foreground-wait gate briefly shipped as a per-harness PreToolUse
+# hook before moving to an Omnigent policy (omnigent_config/policy_modules/),
+# which covers every harness from one place. Drop the links it left behind.
+for retired_hook in "$HOME"/.claude/hooks/no-foreground-wait.*; do
+  if [[ -L "$retired_hook" ]]; then
+    rm "$retired_hook"
+    echo "removed retired hook $retired_hook"
+  fi
+done
 # Skills
 validate_skill_frontmatter
 link_skills_scoped "$HOME/.claude/skills" global
@@ -610,6 +619,59 @@ AGENT_CONFIG_DIR="$DOTFILES_DIR/agent_config" CODEX_HOME="$codex_home" \
 # Meta alike (codex-rs/codex-home/src/instructions/mod.rs). AGENTS.override.md
 # is left free as a machine-local escape hatch that wins over this link.
 link_one "$DOTFILES_DIR/agent_config/global-development-preferences.md" "$codex_home/AGENTS.md"
+
+# Retired: same foreground-wait hook as on the Claude side, now an Omnigent
+# policy. Codex never saw it under Omnigent anyway — that runs in a private
+# CODEX_HOME which does not inherit this hooks.json. Strip our entry from the
+# machine-local file without disturbing the ATC wiring this repo does not own,
+# and never touch a hooks.json we cannot parse.
+for retired_hook in "$codex_home"/hooks/no-foreground-wait.*; do
+  if [[ -L "$retired_hook" ]]; then
+    rm "$retired_hook"
+    echo "removed retired hook $retired_hook"
+  fi
+done
+python3 - "$codex_home/hooks.json" <<'PY' || exit 1
+import json, os, sys, tempfile
+
+path = sys.argv[1]
+try:
+    with open(path) as handle:
+        config = json.load(handle)
+except FileNotFoundError:
+    sys.exit(0)
+except (OSError, ValueError) as exc:
+    print(f"ERROR: {path} is unreadable ({exc}); left alone", file=sys.stderr)
+    sys.exit(1)
+
+hooks = config.get("hooks") if isinstance(config, dict) else None
+if not isinstance(hooks, dict):
+    sys.exit(0)
+
+def ours(entry):
+    return isinstance(entry, dict) and any(
+        "no-foreground-wait" in str((hook or {}).get("command", ""))
+        for hook in entry.get("hooks", []) or []
+    )
+
+changed = False
+for event, entries in list(hooks.items()):
+    if not isinstance(entries, list):
+        continue
+    kept = [entry for entry in entries if not ours(entry)]
+    if len(kept) != len(entries):
+        hooks[event] = kept
+        changed = True
+
+if changed:
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".hooks.json.")
+    with os.fdopen(fd, "w") as handle:
+        json.dump(config, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    os.replace(tmp, path)
+    print(f"removed retired hook entry from {path}")
+PY
+
 # $codex_home/rules is the exec-policy store: the loader keeps only entries
 # whose extension is `rules` (codex-rs/core/src/exec_policy.rs), so the .md we
 # used to link there was silently ignored rather than read as instructions.
