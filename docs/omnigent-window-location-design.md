@@ -1,8 +1,14 @@
 # Per-window location for the Omnigent desktop app
 
-Status: **In progress.** The origins are live on this Mac and the source of
-truth exists; the window placement and manifest rendering are not built yet.
-See Verification for exactly which claims are observed versus still reasoned.
+Status: **Built, one claim unverified.** The origins are live on this Mac, the
+source of truth exists, `startup-windows` pins each window to its workspace's
+origin, and the Orchest manifest is derived. What is not yet observed is the
+core behaviour: that a window _restores_ its own host and workspace across an
+app relaunch. See Verification.
+
+Taking effect also needs `sync.sh` to run, which symlinks `bin-macos/workspaces`
+into `~/bin` and swaps the Orchest manifest symlink for a rendered file; and
+each origin needs its consent dialog accepted once.
 
 ## Summary
 
@@ -158,10 +164,21 @@ with devservers and checkouts in it, and its Linux counterpart is already
 `bin-linux/startup-windows --print-layout`. A shared `bin/` name would imply
 one table serves both desktops, which is not true. Generated from it:
 
-1. the macOS `WORKSPACES` rows (ghostty / chrome / omnigent triples);
-2. `orchest_plugins.json` attribution, which stops being hand-maintained and
-   becomes rendered like its Linux counterpart;
-3. the reverse map, workspace → (host, checkout), which nothing produces today.
+1. `orchest_plugins.json` attribution, which stops being hand-maintained and
+   becomes rendered like its Linux counterpart (`bin-macos/orchest-plugins-render`,
+   source `orchest_plugins.macos.json`);
+2. the reverse map, workspace → (host, checkout), which nothing produced before
+   and which `startup-windows` now reads at window-creation time to build each
+   workspace's deep link.
+
+The macOS `WORKSPACES` rows are **not** generated, though this doc first said
+they would be. Building them at runtime would make `startup-windows` depend on
+the table, `jq` and a working emitter for _all_ window creation rather than
+just Omnigent: today a broken table costs unscoped Omnigent windows, whereas
+derived rows would cost every window, on the script that runs at login. The
+values stay written twice and a test pins them instead — the nvs session, the
+terminal title, and the tunnel rows' FQDNs and checkout lists. Same trade as
+the Caddy address list below, for the same reason.
 
 The `/etc/hosts` block is gone from this list — it is not needed at all.
 
