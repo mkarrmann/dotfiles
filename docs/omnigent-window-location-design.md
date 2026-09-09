@@ -241,13 +241,28 @@ the Mac:
 1. **The core claim** — set a window's host and workspace, quit and relaunch
    the app, confirm that window restores its own values and that a _different_
    window is unaffected. Everything else is worthless if this fails.
-   **Partially confirmed.** The storage layer does partition: after pinning one
+   **Partially confirmed — the partition, not the restore.** After pinning one
    window to `cco-checkout3.omnigent.localhost:6443`, the app's localStorage
-   grew a second origin bucket holding its own `omnigent:session-workspace-state`,
-   separate from the `localhost:6443` bucket that holds everything else. The
-   baseline before the change was a single shared bucket whose one
-   `omnigent:last-host-choice` read `c8c10fd6…` — the _Linux_ hub — which is the
-   reported bug, measured. Restore-across-relaunch is still unverified.
+   grew a second area: keys prefixed `_https://cco-checkout3.omnigent.localhost:6443\x00\x01`
+   appeared where before there were only `_https://localhost:6443` (51 keys)
+   and `_http://localhost:6767`. A separate area is exactly the mechanism the
+   design rests on. The baseline before the change was a single shared area
+   whose one `omnigent:last-host-choice` read `c8c10fd6…` — the _Linux_ hub —
+   which is the reported bug, measured.
+
+   Two honest limits on that evidence. The new area holds **one** key, because
+   no host has been chosen in that window yet, so `last-host-choice` has never
+   been written per-origin. And individual keys cannot be reliably attributed
+   to an origin by scanning the files: Chromium prefix-compresses adjacent keys
+   within a LevelDB block, so a key's `_<origin>` prefix is frequently elided on
+   disk. Counting area-prefixed keys and `META:<origin>` records is sound;
+   claiming a particular key belongs to a particular origin from a byte scan is
+   not, and an earlier revision of this section overstated exactly that.
+
+   **Restore-across-relaunch is unverified, and the UI is the instrument** —
+   not the LevelDB. Set a visibly different host in two windows on two origins,
+   quit and relaunch, and read what each window's composer shows.
+
 2. Deep link places a window on its origin and infers `https`. **Confirmed** —
    `open omnigent://cco-checkout3.omnigent.localhost:6443/c/<id>` landed a
    window on the origin over TLS.
