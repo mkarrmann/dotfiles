@@ -1,0 +1,391 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Reveal source locations in a running Neovim.
+#
+#   nvim-show FILE [LINE [COL]] [--text NOTE]   jump to one location
+#   nvim-show --list [PATH|-]                   JSON array -> location list
+#   nvim-show --clear                           drop this agent's annotations
+#
+# Options: --server ADDR  --session NAME  --agent KEY  --title LABEL  --no-jump
+#
+# --list input is a JSON array of {"file","line","col","text"}; "text" becomes
+# both the location-list entry and an inline virtual-text annotation.
+#
+# Each calling agent owns one tabpage, keyed by its harness session id
+# ($CC_SESSION_ID for Claude), so concurrent agents never share a view. See
+# nvim/lua/lib/show-in-nvim.lua.
+#
+# ---------------------------------------------------------------------------
+# Target resolution
+#
+# Two layers. The portable layer needs nothing but a running Neovim; the nvs
+# layer adds workspace-accurate routing on machines that run `nvs` headless
+# servers, and disables itself silently everywhere else.
+#
+# Unambiguous targets -- if named but unreachable, this fails rather than
+# quietly opening somewhere else:
+#   1. --server ADDR              socket path or host:port          (portable)
+#   2. --session NAME             an nvs session, by port formula   (nvs)
+#   3. $NVIM                      you are inside a Neovim terminal  (portable)
+#   4. longest workdir-prefix match of the shown path against this host's nvs
+#      session list, so a file in ~/checkout2 opens in that checkout's editor
+#   5. the same match against $PWD                                  (nvs)
+#
+# Fallbacks -- each is skipped when it is not reachable:
+#   6. the target this agent last resolved to; an agent owns one tab, so
+#      --clear and later jumps stay with it                         (portable)
+#   7. $NVIM_SHOW_SERVER          address pin                       (portable)
+#   8. $NVS_TARGET_SESSION        nvs session pin                   (nvs)
+#   9. the sole running Neovim, discovered from its default server socket
+#      under $XDG_RUNTIME_DIR (or $TMPDIR/nvim.$USER). Ambiguous when more
+#      than one is running, and then it says so.                    (portable)
+#
+# Steps 2, 4, 5 and 8 need bin/nvs-sessions-file and a declared session list;
+# without them the command still works through the portable steps alone.
+
+script_dir=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+
+usage() {
+  cat >&2 <<'EOF'
+usage: nvim-show FILE [LINE [COL]] [--text NOTE]
+       nvim-show --list [PATH|-]
+       nvim-show --clear
+
+options: --server ADDR  --session NAME  --agent KEY  --title LABEL  --no-jump
+EOF
+  exit 64
+}
+
+action="show"
+list_input=""
+server_arg=""
+session=""
+agent=""
+title=""
+text=""
+jump="true"
+positional=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --list)
+      action="list"
+      if [[ -n ${2:-} && ( ${2} != -* || ${2} == "-" ) ]]; then
+        list_input="$2"
+        shift
+      fi
+      shift
+      ;;
+    --clear)   action="clear"; shift ;;
+    --server)  server_arg="${2:?--server needs an address}"; shift 2 ;;
+    --session) session="${2:?--session needs a name}"; shift 2 ;;
+    --agent)   agent="${2:?--agent needs a key}"; shift 2 ;;
+    --title)   title="${2:?--title needs a label}"; shift 2 ;;
+    --text)    text="${2:?--text needs a note}"; shift 2 ;;
+    --no-jump) jump="false"; shift ;;
+    -h|--help) usage ;;
+    --)        shift; positional+=("$@"); break ;;
+    -)         positional+=("$1"); shift ;;
+    -*)        echo "nvim-show: unknown option: $1" >&2; usage ;;
+    *)         positional+=("$1"); shift ;;
+  esac
+done
+
+if [[ -n $session && ! $session =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+  echo "nvim-show: invalid session name: $session" >&2
+  exit 2
+fi
+
+file=""
+line="1"
+col="1"
+case "$action" in
+  show)
+    (( ${#positional[@]} >= 1 && ${#positional[@]} <= 3 )) || usage
+    file="${positional[0]}"
+    line="${positional[1]:-1}"
+    col="${positional[2]:-1}"
+    [[ $line =~ ^[0-9]+$ && $line -ge 1 ]] || { echo "nvim-show: LINE must be a positive integer" >&2; exit 64; }
+    [[ $col  =~ ^[0-9]+$ && $col  -ge 1 ]] || { echo "nvim-show: COLUMN must be a positive integer" >&2; exit 64; }
+    ;;
+  list|clear)
+    # --list takes its source immediately, but "--list --title X -" is just as
+    # natural to write, so accept a trailing path or "-" too.
+    if [[ $action == list && -z $list_input ]] && (( ${#positional[@]} == 1 )); then
+      list_input="${positional[0]}"
+      positional=()
+    fi
+    (( ${#positional[@]} == 0 )) || usage
+    ;;
+esac
+
+# Agent identity. Claude Code exports both of these into every Bash tool call.
+agent="${agent:-${CC_SESSION_ID:-${CLAUDE_CODE_CURRENT_SESSION_ID:-${OMNIGENT_SESSION_ID:-}}}}"
+if [[ -z $agent ]]; then
+  echo "nvim-show: cannot determine the calling agent's session id — pass --agent KEY" >&2
+  exit 1
+fi
+title="${title:-${AGENT:-agent}:${agent:0:8}}"
+
+payload_file=$(mktemp "${TMPDIR:-/tmp}/nvim-show.XXXXXX")
+builder="$payload_file.py"
+trap 'rm -f "$payload_file" "$builder"' EXIT
+
+# The builder lives in a file rather than a heredoc so that stdin stays free for
+# `--list -`.
+cat > "$builder" <<'PY'
+import json
+import os
+import sys
+
+out_path, list_input = sys.argv[1], sys.argv[2]
+action = os.environ["NVIM_SHOW_ACTION"]
+
+payload = {
+    "agent": os.environ["NVIM_SHOW_AGENT"],
+    "action": action,
+    "title": os.environ["NVIM_SHOW_TITLE"],
+    "jump": os.environ["NVIM_SHOW_JUMP"] == "true",
+}
+
+
+def absolute(value):
+    return os.path.abspath(os.path.expanduser(str(value)))
+
+
+if action == "list":
+    raw = sys.stdin.read() if list_input in ("", "-") else open(list_input).read()
+    try:
+        items = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        sys.exit(f"nvim-show: --list input is not valid JSON: {exc}")
+    if not isinstance(items, list) or not items:
+        sys.exit("nvim-show: --list input must be a non-empty JSON array")
+    normalized = []
+    for index, item in enumerate(items, 1):
+        if not isinstance(item, dict) or not item.get("file"):
+            sys.exit(f'nvim-show: --list item {index} has no "file"')
+        try:
+            lnum = int(item.get("line") or 1)
+            cnum = int(item.get("col") or 1)
+        except (TypeError, ValueError):
+            sys.exit(f"nvim-show: --list item {index} has a non-numeric line/col")
+        normalized.append({
+            "file": absolute(item["file"]),
+            "line": max(1, lnum),
+            "col": max(1, cnum),
+            "text": str(item.get("text") or ""),
+        })
+    payload["items"] = normalized
+elif action == "show":
+    payload["items"] = [{
+        "file": absolute(os.environ["NVIM_SHOW_FILE"]),
+        "line": int(os.environ["NVIM_SHOW_LINE"]),
+        "col": int(os.environ["NVIM_SHOW_COL"]),
+        "text": os.environ["NVIM_SHOW_TEXT"],
+    }]
+
+with open(out_path, "w") as handle:
+    json.dump(payload, handle)
+
+print(payload["items"][0]["file"] if payload.get("items") else "")
+PY
+
+# Build and validate the payload before touching Neovim, and echo back the first
+# path so session resolution can key on the file being shown.
+hint=$(
+  NVIM_SHOW_ACTION="$action" \
+  NVIM_SHOW_AGENT="$agent" \
+  NVIM_SHOW_TITLE="$title" \
+  NVIM_SHOW_JUMP="$jump" \
+  NVIM_SHOW_FILE="$file" \
+  NVIM_SHOW_LINE="$line" \
+  NVIM_SHOW_COL="$col" \
+  NVIM_SHOW_TEXT="$text" \
+  python3 "$builder" "$payload_file" "$list_input"
+)
+
+server_live() {
+  nvim --server "$1" --remote-expr '1' >/dev/null 2>&1
+}
+
+# --- nvs layer: absent on machines that do not run headless nvim servers -----
+
+port_for() {
+  printf '%s' "$1" | cksum | awk '{ print 7000 + ($1 % 1000) }'
+}
+
+sessions_file() {
+  local resolver="$script_dir/nvs-sessions-file"
+  [[ -x $resolver ]] || return 1
+  "$resolver" 2>/dev/null
+}
+
+# Longest declared workdir that contains $1, so a nested checkout wins over an
+# enclosing one.
+session_for_path() {
+  local target="$1" list name workdir best_name="" best_len=0
+  [[ -n $target ]] || return 1
+  list=$(sessions_file) || return 1
+  while read -r name workdir _; do
+    [[ -n $name && $name != \#* && -n ${workdir:-} ]] || continue
+    workdir="${workdir/#\~/$HOME}"
+    workdir="${workdir%/}"
+    if [[ $target == "$workdir" || $target == "$workdir"/* ]] && (( ${#workdir} > best_len )); then
+      best_len=${#workdir}
+      best_name="$name"
+    fi
+  done < "$list"
+  [[ -n $best_name ]] || return 1
+  printf '%s\n' "$best_name"
+}
+
+# --- portable layer ----------------------------------------------------------
+
+memory_dir="${XDG_STATE_HOME:-$HOME/.local/state}/nvim-show"
+memory_file="$memory_dir/${agent//[^A-Za-z0-9._-]/_}"
+
+remembered_label=""
+remembered_server=""
+read_memory() {
+  local label="" addr=""
+  [[ -r $memory_file ]] || return 1
+  { read -r label || true; read -r addr || true; } < "$memory_file"
+  [[ -n $label ]] || return 1
+  # Files written before addresses were recorded hold a bare nvs session name.
+  [[ -n $addr ]] || addr="localhost:$(port_for "$label")"
+  remembered_label="$label"
+  remembered_server="$addr"
+}
+
+remember_target() {
+  mkdir -p "$memory_dir" 2>/dev/null || return 0
+  printf '%s\n%s\n' "$1" "$2" > "$memory_file" 2>/dev/null || true
+  # One file per agent session id, so retire the ones no longer in use.
+  find "$memory_dir" -maxdepth 1 -type f -mtime +7 -delete 2>/dev/null || true
+}
+
+# Neovim's default server socket. On Linux that is $XDG_RUNTIME_DIR/nvim.PID.0;
+# without XDG_RUNTIME_DIR it lands under $TMPDIR/nvim.$USER instead. nvs servers
+# listen on TCP and so never appear here.
+discovered=()
+discover_servers() {
+  local user dir sock seen="" dirs=()
+  user="${USER:-$(id -un)}"
+  dirs=("${XDG_RUNTIME_DIR:-}" "${TMPDIR:-/tmp}/nvim.$user" "/tmp/nvim.$user")
+  discovered=()
+  for dir in "${dirs[@]}"; do
+    [[ -n $dir && -d $dir ]] || continue
+    for sock in "$dir"/nvim.*.0 "$dir"/*/0; do
+      [[ -S $sock ]] || continue
+      case "$seen" in *"|$sock|"*) continue ;; esac
+      seen="$seen|$sock|"
+      server_live "$sock" && discovered+=("$sock")
+    done
+  done
+  (( ${#discovered[@]} > 0 ))
+}
+
+# --- resolution --------------------------------------------------------------
+
+resolved_server=""
+resolved_label=""
+resolve_target() {
+  local name pinned
+
+  # Unambiguous: named or derived from the path. Reachability is checked by the
+  # caller, so a declared-but-down editor is an error, not a silent redirect.
+  if [[ -n $server_arg ]]; then
+    resolved_label="$server_arg"
+    resolved_server="$server_arg"
+    return 0
+  fi
+  if [[ -n $session ]]; then
+    resolved_label="$session"
+    resolved_server="localhost:$(port_for "$session")"
+    return 0
+  fi
+  if [[ -n ${NVIM:-} ]]; then
+    resolved_label="\$NVIM"
+    resolved_server="$NVIM"
+    return 0
+  fi
+  name=$(session_for_path "$hint" || true)
+  [[ -n $name ]] || name=$(session_for_path "$PWD" || true)
+  if [[ -n $name ]]; then
+    resolved_label="$name"
+    resolved_server="localhost:$(port_for "$name")"
+    return 0
+  fi
+
+  # Fallbacks: each is a guess, so an unreachable one falls through.
+  if read_memory && server_live "$remembered_server"; then
+    resolved_label="$remembered_label"
+    resolved_server="$remembered_server"
+    return 0
+  fi
+  if [[ -n ${NVIM_SHOW_SERVER:-} ]] && server_live "$NVIM_SHOW_SERVER"; then
+    resolved_label="$NVIM_SHOW_SERVER"
+    resolved_server="$NVIM_SHOW_SERVER"
+    return 0
+  fi
+  if [[ -n ${NVS_TARGET_SESSION:-} ]]; then
+    pinned="localhost:$(port_for "$NVS_TARGET_SESSION")"
+    if server_live "$pinned"; then
+      resolved_label="$NVS_TARGET_SESSION"
+      resolved_server="$pinned"
+      return 0
+    fi
+  fi
+  if discover_servers && (( ${#discovered[@]} == 1 )); then
+    resolved_label="${discovered[0]}"
+    resolved_server="${discovered[0]}"
+    return 0
+  fi
+  return 1
+}
+
+if ! resolve_target; then
+  {
+    echo "nvim-show: cannot determine which Neovim to use."
+    if (( ${#discovered[@]} > 1 )); then
+      echo "  Several are running; name one with --server ADDR:"
+      printf '    %s\n' "${discovered[@]}"
+    else
+      echo "  Start Neovim, or name one with --server ADDR."
+    fi
+    if list=$(sessions_file); then
+      echo "  nvs sessions declared for $(hostname -s) in $list:"
+      grep -vE '^[[:space:]]*(#|$)' "$list" | sed 's/^/    /'
+      echo "  Select one with --session NAME, or export NVS_TARGET_SESSION."
+    fi
+  } >&2
+  exit 1
+fi
+
+if ! server_live "$resolved_server"; then
+  echo "nvim-show: Neovim '$resolved_label' is not reachable at $resolved_server" >&2
+  exit 1
+fi
+
+expression="luaeval(\"require('lib.show-in-nvim').dispatch_file(_A)\", \"$payload_file\")"
+result=$(nvim --server "$resolved_server" --remote-expr "$expression") || {
+  echo "nvim-show: RPC to '$resolved_label' failed" >&2
+  exit 1
+}
+
+case "$result" in
+  ok)
+    remember_target "$resolved_label" "$resolved_server"
+    case "$action" in
+      show)  echo "nvim-show: $resolved_label <- $hint:$line:$col" ;;
+      list)  echo "nvim-show: $resolved_label <- location list '$title'" ;;
+      clear) echo "nvim-show: $resolved_label <- cleared '$title'" ;;
+    esac
+    ;;
+  *)
+    echo "nvim-show: ${result#error: }" >&2
+    exit 1
+    ;;
+esac
