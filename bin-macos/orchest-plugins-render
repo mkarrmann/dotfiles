@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Renders the macOS Orchest plugin manifest.
+#
+# Orchest attributes an agent session to a workspace by the session's nvs
+# session name or its (host, cwd) -- the same workspace-to-checkout mapping
+# bin-macos/workspaces already declares. Deriving it here rather than restating
+# it in the manifest means editing that one table moves both at once. This is
+# the macOS half of the TODO in bin-linux/orchest-plugins-render:12-14.
+#
+# The source manifest carries a sentinel where each attribution goes. If this
+# renderer is ever bypassed, the plugins' own config validation rejects the
+# sentinel at startup instead of silently attributing nothing.
+#
+# TODO: the disabled orchest-acp-bridge still restates byNvimSession and a
+# FTW-only byCwd by hand. Its byCwd maps only the FTW checkouts, which the
+# table cannot express without a per-plugin host filter, and the plugin is
+# disabled -- so it is left literal rather than given a second sentinel shape.
+#
+# Usage: orchest-plugins-render <source-manifest> <destination>
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+SENTINEL="__DERIVED_FROM_WORKSPACE_TABLE__"
+
+if [[ $# -ne 2 ]]; then
+  echo "Usage: orchest-plugins-render <source-manifest> <destination>" >&2
+  exit 2
+fi
+src="$1"
+dst="$2"
+
+command -v jq >/dev/null 2>&1 || { echo "ERROR: jq not found." >&2; exit 1; }
+[[ -r "$src" ]] || { echo "ERROR: source manifest not readable: $src" >&2; exit 1; }
+
+table="$("$SCRIPT_DIR/workspaces" --json)"
+
+# mkdir before mktemp: mktemp writes beside the destination so the later mv is
+# an atomic same-filesystem rename, which fails on a first run if the directory
+# does not exist yet.
+mkdir -p "$(dirname "$dst")"
+tmp="$(mktemp "${dst}.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+
+jq --argjson table "$table" --arg sentinel "$SENTINEL" '
+  ($table.workspaces | map(select(.kind == "devserver"))) as $dev
+  | ($table.checkoutSubdirs) as $subs
+  | ($table.workspaces | map(select(.kind == "local"))) as $local
+
+  | ($dev | map({ key: .nvsSession, value: .workspace }) | from_entries) as $byNvimSession
+
+  # reduce, not group_by: the hosts come out in table order rather than sorted,
+  # and each checkout is followed by its repo roots -- an agent cwd is routinely
+  # a repo root rather than the checkout, and attribution matches exact paths.
+  | (reduce $dev[] as $w ({};
+      .[$w.host] = ((.[$w.host] // {})
+        + { ($w.checkout): $w.workspace }
+        + ([$subs[] | { ($w.checkout + "/" + .): $w.workspace }] | add // {}))
+    )) as $byHostAndCwd
+
+  | ($local | map({ key: .cwd, value: .workspace }) | from_entries) as $byCwd
+
+  | if [.plugins[] | select(.config.attribution == $sentinel)] | length == 0
+    then error("no plugin carries the \($sentinel) attribution sentinel")
+    else . end
+  | .plugins |= map(
+      if .config.attribution == $sentinel
+      then
+        if .id == "obsidian-notes"
+        then .config.attribution = { byNvimSession: $byNvimSession }
+        elif .id == "orchest-omnigent-bridge"
+        then .config.attribution = { byHostAndCwd: $byHostAndCwd, byCwd: $byCwd }
+        else error("plugin \(.id) carries the sentinel but this renderer has no attribution shape for it")
+        end
+      else . end
+    )
+' "$src" > "$tmp"
+
+# Only touch the destination when the rendering actually changed: sync.sh runs
+# on every login and the file is read at Orchest startup.
+if [[ -f "$dst" ]] && cmp -s "$tmp" "$dst"; then
+  rm -f "$tmp"
+  trap - EXIT
+  exit 0
+fi
+
+mv "$tmp" "$dst"
+trap - EXIT
+echo "generated $dst"

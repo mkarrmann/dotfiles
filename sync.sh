@@ -705,9 +705,17 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   link_one "$DOTFILES_DIR/sketchybar/sketchybarrc" "$HOME/.config/sketchybar/sketchybarrc"
   sync_link_dir "$DOTFILES_DIR/sketchybar/plugins" "$HOME/.config/sketchybar/plugins" "*"
 
-  # Orchest plugin manifest
+  # Orchest plugin manifest. Generated rather than symlinked, like its Linux
+  # counterpart: the workspace attribution is already declared by
+  # bin-macos/workspaces, so it is derived from there instead of restated.
+  # Replaces the symlink this used to install; the renderer writes a real file.
   mkdir -p "$HOME/Library/Application Support/@orchest/desktop"
-  link_one "$DOTFILES_DIR/orchest_plugins.json" "$HOME/Library/Application Support/@orchest/desktop/plugins.json"
+  orchest_manifest="$HOME/Library/Application Support/@orchest/desktop/plugins.json"
+  [[ -L "$orchest_manifest" ]] && rm -f "$orchest_manifest"
+  "$DOTFILES_DIR/bin-macos/orchest-plugins-render" \
+    "$DOTFILES_DIR/orchest_plugins.macos.json" \
+    "$orchest_manifest" ||
+    echo "WARNING: Orchest plugin manifest rendering failed" >&2
 
   # Launchd jobs. Plists are copied (not symlinked) — launchd's behavior
   # across system upgrades is more predictable when the file is

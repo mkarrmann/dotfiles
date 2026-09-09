@@ -117,6 +117,51 @@ while IFS=$'\t' read -r ws session; do
 done < <(jq -r '.workspaces[] | select(.kind == "devserver") | "\(.workspace)\t\(.nvsSession)"' <<< "$table")
 [[ "$nvs_mismatch" -eq 0 ]] && pass "every devserver workspace launches the nvs session the table declares"
 
+echo "== macOS Orchest manifest renders from the table =="
+
+RENDER="$ROOT/bin-macos/orchest-plugins-render"
+SOURCE_MANIFEST="$ROOT/orchest_plugins.macos.json"
+GOLDEN="$ROOT/orchest_plugins.json"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+dst="$TMP/plugins.json"
+if "$RENDER" "$SOURCE_MANIFEST" "$dst" >/dev/null; then
+  pass "renders"
+else
+  fail "renderer exited non-zero"
+fi
+
+check "leaves no sentinel anywhere in the output" "0" \
+  "$(grep -c '__DERIVED_FROM_WORKSPACE_TABLE__' "$dst" || true)"
+
+# The golden: until the hand-written manifest is deleted, the derived one must
+# reproduce it exactly. This is what proves the migration changes no behaviour,
+# and it keeps the two honest while both exist.
+if [[ -r "$GOLDEN" ]]; then
+  if diff -q <(jq -S . "$GOLDEN") <(jq -S . "$dst") >/dev/null; then
+    pass "derived attribution matches the hand-written manifest"
+  else
+    fail "derived attribution differs from the hand-written manifest"
+    diff <(jq -S . "$GOLDEN") <(jq -S . "$dst") | head -20 | sed 's/^/    /' >&2
+  fi
+fi
+
+# A bypassed renderer must not ship a manifest that attributes nothing.
+jq 'del(.plugins[].config.attribution)' "$SOURCE_MANIFEST" > "$TMP/no-sentinel.json"
+if "$RENDER" "$TMP/no-sentinel.json" "$TMP/never.json" >/dev/null 2>&1; then
+  fail "a source manifest with no sentinel should not render"
+else
+  pass "a source manifest with no sentinel fails loudly"
+fi
+[[ -e "$TMP/never.json" ]] && fail "a failed render must not leave a destination behind"
+
+# sync.sh runs on every login and Orchest reads this file at startup.
+before="$(stat -f %m "$dst")"
+sleep 1
+"$RENDER" "$SOURCE_MANIFEST" "$dst" >/dev/null || fail "re-render exited non-zero"
+check "an unchanged render leaves the destination untouched" "$before" "$(stat -f %m "$dst")"
+
 echo
 if [[ "$failures" -gt 0 ]]; then
   echo "$failures test(s) failed."
