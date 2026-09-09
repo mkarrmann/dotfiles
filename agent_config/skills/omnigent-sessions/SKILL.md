@@ -67,11 +67,11 @@ ls -lh ~/.omnigent/chat.db 2>/dev/null && echo "on the hub"  # DB local?
 
 ## Three ways to read a session — pick by environment
 
-| Path | Source of truth? | Works off-hub? | Use when |
-|------|------------------|----------------|----------|
-| **A. REST API** (`$OMNIGENT_URL`) | Yes | Yes (via forward) | **Default.** Cleanest, portable, JSON. |
-| **B. `omnigent` CLI** | Yes (calls REST) | Yes (`--server`) | Exporting a full transcript, or resuming. |
-| **C. On-disk SQLite** | Yes | No — **hub only** | REST unreachable AND you're on the hub. |
+| Path                              | Source of truth? | Works off-hub?    | Use when                                  |
+| --------------------------------- | ---------------- | ----------------- | ----------------------------------------- |
+| **A. REST API** (`$OMNIGENT_URL`) | Yes              | Yes (via forward) | **Default.** Cleanest, portable, JSON.    |
+| **B. `omnigent` CLI**             | Yes (calls REST) | Yes (`--server`)  | Exporting a full transcript, or resuming. |
+| **C. On-disk SQLite**             | Yes              | No — **hub only** | REST unreachable AND you're on the hub.   |
 
 ## Path A — REST API (preferred)
 
@@ -94,15 +94,15 @@ curl -s --noproxy '*' "$BASE/v1/sessions?limit=10" \
 
 Useful query params (defaults in parens):
 
-| Param | Purpose |
-|-------|---------|
-| `limit` (20) | Page size. |
-| `order` (desc) / `sort_by` (created_at) | Sort direction / key. |
-| `after` / `before` | Cursor pagination (pass a `conv_` id from `last_id`). |
-| `agent_name` / `agent_id` | Filter by harness, e.g. `agent_name=dvsc`. |
-| `search_query` | **Full-text over session items** (title + message/tool text). Returns a `search_snippet` per row. |
-| `include_archived` (false) | Include archived sessions. |
-| `project` | Filter by session project. |
+| Param                                   | Purpose                                                                                           |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `limit` (20)                            | Page size.                                                                                        |
+| `order` (desc) / `sort_by` (created_at) | Sort direction / key.                                                                             |
+| `after` / `before`                      | Cursor pagination (pass a `conv_` id from `last_id`).                                             |
+| `agent_name` / `agent_id`               | Filter by harness, e.g. `agent_name=dvsc`.                                                        |
+| `search_query`                          | **Full-text over session items** (title + message/tool text). Returns a `search_snippet` per row. |
+| `include_archived` (false)              | Include archived sessions.                                                                        |
+| `project`                               | Filter by session project.                                                                        |
 
 A `SessionListItem` carries: `id`, `status`, `agent_name`/`agent_id`,
 `workspace`, `git_branch`, `title`, `created_at`/`updated_at`,
@@ -154,12 +154,12 @@ Only when REST is down **and** you're on the hub. The DB is
 less legible than REST — prefer A/B).
 
 - `conversations(id, created_at, updated_at, title, agent_id, workspace,
-  git_branch, reasoning_effort, model_override, harness_override,
-  parent_conversation_id, archived, session_state BLOB, …)` — note there is
+git_branch, reasoning_effort, model_override, harness_override,
+parent_conversation_id, archived, session_state BLOB, …)` — note there is
   **no** `status`/`agent_name` column; the API computes those from
   `session_state`/`runner` and `agent_id`.
 - `conversation_items(id, conversation_id, response_id, created_at, position,
-  type SMALLINT, status SMALLINT, data TEXT /*JSON*/, search_text, created_by)`
+type SMALLINT, status SMALLINT, data TEXT /*JSON*/, search_text, created_by)`
 - `conversation_labels(...)`; full-text search is backed by
   `conversation_items_fts`.
 
@@ -175,13 +175,13 @@ A session's `items[]` (or `/items` `data[]`) is the conversation, in order.
 Each item has `id`, `type`, `status`, `created_at`, `response_id`, and a
 `data` object. Common `type`s:
 
-| `type` | `data` shape | Meaning |
-|--------|--------------|---------|
-| `message` | `role` ∈ {user, assistant}; `content[]` blocks of `type` `input_text` (user) or `output_text` (assistant); assistant also has `model` | A conversational turn. Reasoning shows up inline in `output_text`. |
-| `function_call` | `name`, `arguments`, `call_id` | An Omnigent-observed tool invocation. SDK-vendor-native tools may be absent unless disabled in that harness. |
-| `function_call_output` | `call_id`, `output` (a JSON string: `{"data":…, "info":…}`) | Result of a tool call. `info` often carries human-readable status ("moved to background", "was cancelled", "Tool result too large → /tmp/…"). |
-| `resource_event` | `event_type` (e.g. `session.resource.created`), `resource` | Terminal/file/env resource lifecycle. |
-| `error` | `source`, `code`, `message` | A turn-level failure (see below). |
+| `type`                 | `data` shape                                                                                                                          | Meaning                                                                                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `message`              | `role` ∈ {user, assistant}; `content[]` blocks of `type` `input_text` (user) or `output_text` (assistant); assistant also has `model` | A conversational turn. Reasoning shows up inline in `output_text`.                                                                            |
+| `function_call`        | `name`, `arguments`, `call_id`                                                                                                        | An Omnigent-observed tool invocation. SDK-vendor-native tools may be absent unless disabled in that harness.                                  |
+| `function_call_output` | `call_id`, `output` (a JSON string: `{"data":…, "info":…}`)                                                                           | Result of a tool call. `info` often carries human-readable status ("moved to background", "was cancelled", "Tool result too large → /tmp/…"). |
+| `resource_event`       | `event_type` (e.g. `session.resource.created`), `resource`                                                                            | Terminal/file/env resource lifecycle.                                                                                                         |
+| `error`                | `source`, `code`, `message`                                                                                                           | A turn-level failure (see below).                                                                                                             |
 
 ```bash
 # Timeline of a session, one line per item:
@@ -244,7 +244,7 @@ curl -s --noproxy '*' "$BASE/v1/sessions/$CONV" | jq -r '
    omnigent-codex-orphans reap --session "$CONV"  # clear one session's lock
    ```
 
-   Stop the *scope*, never the pid — the scope's own `KillMode=control-group`
+   Stop the _scope_, never the pid — the scope's own `KillMode=control-group`
    takes the whole subtree (`codex.real`, `fast_mux`, `codex-code-mode-host`,
    the bridge MCP), and `reap` does that for you. Everything the orphan
    finished is already durable in its rollout JSONL, so a resume after the
@@ -272,7 +272,7 @@ curl -s --noproxy '*' "$BASE/v1/sessions/$CONV" | jq -r '
   `limit`+`after`, or filter, rather than materializing everything.
 - `workspace` on a session is where it was launched (the client's cwd), not
   where the hub runs.
-- `search_query` searches item *content*, not just titles — good for "which
+- `search_query` searches item _content_, not just titles — good for "which
   session was I doing X in".
 
 ## Related
