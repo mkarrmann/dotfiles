@@ -271,4 +271,12 @@ for pid in "${bare_pids[@]}"; do
   wait "$pid" 2>/dev/null || true
 done
 
+
+# --- the module is wired for delivery ----------------------------------------
+
+grep -q '^show-in-nvim$' "$repo_root/agent_config/skills-global.list" \
+  || fail "show-in-nvim is not in skills-global.list"
+[[ -f $repo_root/agent_config/skills/show-in-nvim/SKILL.md ]] \
+  || fail "the show-in-nvim skill is missing"
+
 echo "test-nvim-show: ok"
