@@ -79,6 +79,19 @@ are refreshed from their canonical JSON sources.
 Both Codex sync paths honor `CODEX_HOME`, except that an Omnigent native
 session's temporary home maps back to `~/.codex`, as in `sync.sh`.
 
+## Enforcing a practice across agents
+
+Prefer an Omnigent policy (`omnigent_config/policy_modules/`) over a per-harness
+`PreToolUse` hook. One policy covers every harness Omnigent fronts, because
+`native_policy_hook` funnels each harness's native tool call through the policy
+engine; hooks cover only what is wired by hand, and miss Codex entirely — it
+runs under a private `CODEX_HOME` that does not inherit `~/.codex/hooks.json`.
+Claude-only hooks still belong in `claude_config/hooks/`.
+
+Enforcement is not discovery: an agent meets a policy only by being denied,
+after it has already spent the turn. So pair one with a skill that explains the
+practice beforehand (`no_foreground_wait` ↔ `waiting-without-polling`).
+
 ## Skills: scoping and the listing budget
 
 Claude Code and Omnigent both walk the ancestor `.claude/skills/` chain
