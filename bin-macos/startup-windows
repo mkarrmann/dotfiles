@@ -338,17 +338,39 @@ omnigent_window_ids_by_title() {
 # consent dialog and opens no window until accepted, and a wrong claim would
 # pin the wrong location for the rest of the run.
 wait_for_omnigent_deep_link_window() {
-  local title="$1" attempt=0 wid
+  local title="$1" attempt=0 wid focused unclaimed count
 
   while [[ "$attempt" -lt 20 ]]; do
     attempt=$(( attempt + 1 ))
     sleep 0.5
+
+    unclaimed=""
     for wid in $(omnigent_window_ids_by_title "$title"); do
-      if ! omnigent_id_is_claimed "$wid"; then
-        echo "$wid"
-        return 0
-      fi
+      omnigent_id_is_claimed "$wid" || unclaimed="${unclaimed}${unclaimed:+$'\n'}${wid}"
     done
+    [[ -n "$unclaimed" ]] || continue
+
+    # Titles are conversation names and are NOT unique -- three checkouts can
+    # each hold a session called "Casual greeting". Title alone would then hand
+    # a workspace a correctly-titled window belonging to another origin, which
+    # is the original mis-assignment wearing a better disguise. The app raises
+    # the window a link targets, so focus is what disambiguates; the title is
+    # what stops a stale focus being mistaken for the link landing. Require
+    # both.
+    focused=$(get_focused_window_id)
+    if [[ -n "$focused" ]] && echo "$unclaimed" | grep -qx "$focused"; then
+      echo "$focused"
+      return 0
+    fi
+
+    # Unique title and the app has had time to raise: focus is not needed to
+    # tell the windows apart, so accept it rather than fail over a window
+    # manager that did not report focus.
+    count=$(echo "$unclaimed" | grep -c .)
+    if [[ "$count" -eq 1 && "$attempt" -ge 6 ]]; then
+      echo "$unclaimed"
+      return 0
+    fi
   done
   return 1
 }

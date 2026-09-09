@@ -1,10 +1,10 @@
 # Per-window location for the Omnigent desktop app
 
-Status: **Built, one claim unverified.** The origins are live on this Mac, the
-source of truth exists, `startup-windows` pins each window to its workspace's
-origin, and the Orchest manifest is derived. What is not yet observed is the
-core behaviour: that a window _restores_ its own host and workspace across an
-app relaunch. See Verification.
+Status: **Built and verified.** The origins are live on this Mac, the source of
+truth exists, `startup-windows` pins each window to its workspace's origin, the
+hub trusts those origins, and the Orchest manifest is derived. The core
+behaviour — a window restoring its own host and workspace across an app
+relaunch — was observed on 2026-09-09; see Verification.
 
 Taking effect also needs `sync.sh` to run, which symlinks `bin-macos/workspaces`
 into `~/bin` and swaps the Orchest manifest symlink for a rendered file; and
@@ -165,6 +165,25 @@ The first link to each origin raises a native consent dialog — pinning an
 origin is a privilege grant. Eight one-time dialogs; afterwards
 `chooseDeepLinkStrategy` returns `open-known` and placement is automatic.
 
+Two things this section originally got wrong, both found by running it.
+
+**Consent is not one-time.** The grant is recorded by pushing the origin onto
+`recent_servers`, which is also the UI's recents list and is capped at
+`MAX_RECENT_SERVERS` (5). Nine origins cannot fit, so the earliest grants are
+evicted and re-prompt. `startup-windows` restores the full set into
+`settings.json` before each link; `knownOrigins()` re-reads it per link and caps
+only on write, so every origin is recognised. A trust set kept in a display
+list with a display cap is the underlying bug.
+
+**A window cannot be identified by its title alone.** Conversation titles are
+not unique — three checkouts can each hold a session called "Casual greeting" —
+so matching on title hands a workspace a correctly-titled window that may belong
+to another origin. Since the app raises the window a link targets, the claim
+requires the window to be _focused_ **and** correctly titled: focus tells
+same-titled windows apart, the title stops a stale focus being mistaken for the
+link landing. Claiming by arrival order, the first attempt, shuffled every
+window into the wrong workspace.
+
 ### What this buys
 
 Each window's `localStorage` is now its own. The app's existing behaviour —
@@ -288,27 +307,21 @@ the Mac:
 1. **The core claim** — set a window's host and workspace, quit and relaunch
    the app, confirm that window restores its own values and that a _different_
    window is unaffected. Everything else is worthless if this fails.
-   **Partially confirmed — the partition, not the restore.** After pinning one
-   window to `cco-checkout3.omnigent.localhost:6443`, the app's localStorage
-   grew a second area: keys prefixed `_https://cco-checkout3.omnigent.localhost:6443\x00\x01`
-   appeared where before there were only `_https://localhost:6443` (51 keys)
-   and `_http://localhost:6767`. A separate area is exactly the mechanism the
-   design rests on. The baseline before the change was a single shared area
-   whose one `omnigent:last-host-choice` read `c8c10fd6…` — the _Linux_ hub —
-   which is the reported bug, measured.
+   **CONFIRMED (2026-09-09).** Two windows were given different hosts by
+   explicit pick, the app was quit and relaunched, and each origin's own
+   `last-host-choice` came back from disk:
 
-   Two honest limits on that evidence. The new area holds **one** key, because
-   no host has been chosen in that window yet, so `last-host-choice` has never
-   been written per-origin. And individual keys cannot be reliably attributed
-   to an origin by scanning the files: Chromium prefix-compresses adjacent keys
-   within a LevelDB block, so a key's `_<origin>` prefix is frequently elided on
-   disk. Counting area-prefixed keys and `META:<origin>` records is sound;
-   claiming a particular key belongs to a particular origin from a byte scan is
-   not, and an earlier revision of this section overstated exactly that.
+   ```
+   _https://cco-checkout3.omnigent.localhost:6443 … last-host-choice … c8c10fd6…  → CCO devvm20365
+   _https://ftw-checkout1.omnigent.localhost:6443 … last-host-choice … 351b0366…  → FTW devvm36111
+   ```
 
-   **Restore-across-relaunch is unverified, and the UI is the instrument** —
-   not the LevelDB. Set a visibly different host in two windows on two origins,
-   quit and relaunch, and read what each window's composer shows.
+   The origin prefix sits in the same record as the key and value, so this
+   attribution is read directly rather than inferred from adjacency. Before the
+   change there was one shared area whose single `last-host-choice` read
+   `c8c10fd6…` — the _Linux_ hub — for every window. The premise holds: the app's
+   existing per-origin storage gives per-window location memory with no app
+   change.
 
 2. Deep link places a window on its origin and infers `https`. **Confirmed** —
    `open omnigent://cco-checkout3.omnigent.localhost:6443/c/<id>` landed a
