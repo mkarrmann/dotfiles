@@ -148,7 +148,7 @@ copy.
   via `sync save` and gets actively uninstalled on next bootstrap).
 - **Audit drift across agents**: `sync diff`.
 
-The `agent-market` 2-hour systemd cron keeps installed-plugin *versions*
+The `agent-market` 2-hour systemd cron keeps installed-plugin _versions_
 fresh on its own — no manual step.
 
 ## Notes

@@ -130,8 +130,7 @@ The production client endpoint is:
 wss://agentcloud-orchestrator-prod.playground.x2p.facebook.net/ws/chat?v=1
 ```
 
-`v=1` is the current protocol version. A version mismatch is rejected with HTTP
-426. Client and server envelopes are:
+`v=1` is the current protocol version. A version mismatch is rejected with HTTP 426. Client and server envelopes are:
 
 ```json
 {"sub": 0, "payload": {"cmd": "fleet", "auth": {"cat": {"payload": "..."}}}}
@@ -440,25 +439,25 @@ store. Add first-class rows to the conversation database.
 
 One row per mirrored session:
 
-| Column | Type | Notes |
-|---|---|---|
-| `workspace_id` | bigint | Tenant key |
-| `conversation_id` | UUID | PK/FK to Omnigent conversation |
-| `provider` | varchar(32) | `agentcloud` |
-| `external_session_id` | varchar(128) | AgentCloud session ID |
-| `external_harness` | varchar(32) | `claude_code` or `codex` |
-| `node_id` | varchar(256) | Desired AgentCloud node |
-| `endpoint_fingerprint` | varchar(128) | Hash/identifier, never credentials |
-| `protocol_version` | integer | Initially `1` |
-| `last_durable_seq` | bigint | Highest atomically ingested durable seq |
-| `last_boundary` | bigint nullable | Latest observed Hello boundary |
-| `active_run_seq` | bigint nullable | Current AgentCloud run |
-| `active_response_id` | varchar(64) nullable | Omnigent response identity |
-| `cumulative_input_tokens` | bigint | Durable usage folded so far |
-| `cumulative_output_tokens` | bigint | Durable usage folded so far |
-| `status` | varchar(32) | binding/attached/reconnecting/conflict/error |
-| `last_error` | text nullable | Sanitized operator-visible reason |
-| `created_at`, `updated_at` | timestamp | Audit/reconciliation |
+| Column                     | Type                 | Notes                                        |
+| -------------------------- | -------------------- | -------------------------------------------- |
+| `workspace_id`             | bigint               | Tenant key                                   |
+| `conversation_id`          | UUID                 | PK/FK to Omnigent conversation               |
+| `provider`                 | varchar(32)          | `agentcloud`                                 |
+| `external_session_id`      | varchar(128)         | AgentCloud session ID                        |
+| `external_harness`         | varchar(32)          | `claude_code` or `codex`                     |
+| `node_id`                  | varchar(256)         | Desired AgentCloud node                      |
+| `endpoint_fingerprint`     | varchar(128)         | Hash/identifier, never credentials           |
+| `protocol_version`         | integer              | Initially `1`                                |
+| `last_durable_seq`         | bigint               | Highest atomically ingested durable seq      |
+| `last_boundary`            | bigint nullable      | Latest observed Hello boundary               |
+| `active_run_seq`           | bigint nullable      | Current AgentCloud run                       |
+| `active_response_id`       | varchar(64) nullable | Omnigent response identity                   |
+| `cumulative_input_tokens`  | bigint               | Durable usage folded so far                  |
+| `cumulative_output_tokens` | bigint               | Durable usage folded so far                  |
+| `status`                   | varchar(32)          | binding/attached/reconnecting/conflict/error |
+| `last_error`               | text nullable        | Sanitized operator-visible reason            |
+| `created_at`, `updated_at` | timestamp            | Audit/reconciliation                         |
 
 Unique constraints:
 
@@ -484,15 +483,15 @@ omnigent.agentcloud.node_id=<id>
 
 Each accepted durable C5 frame gets a receipt:
 
-| Column | Type | Notes |
-|---|---|---|
-| binding identity | composite | Same tenant/provider/session identity |
-| `source_seq` | bigint | AgentCloud durable seq |
-| `payload_sha256` | binary(32) | Detect divergent replay/protocol bugs |
-| `event_count` | integer | Number of translated events |
-| `publish_payload` | compressed JSON | Stable SSE outbox entries for this frame |
-| `published_at` | timestamp nullable | Set after outbox delivery |
-| `accepted_at` | timestamp | Audit |
+| Column            | Type               | Notes                                    |
+| ----------------- | ------------------ | ---------------------------------------- |
+| binding identity  | composite          | Same tenant/provider/session identity    |
+| `source_seq`      | bigint             | AgentCloud durable seq                   |
+| `payload_sha256`  | binary(32)         | Detect divergent replay/protocol bugs    |
+| `event_count`     | integer            | Number of translated events              |
+| `publish_payload` | compressed JSON    | Stable SSE outbox entries for this frame |
+| `published_at`    | timestamp nullable | Set after outbox delivery                |
+| `accepted_at`     | timestamp          | Audit                                    |
 
 Primary key: `(workspace_id, provider, external_session_id, source_seq)`.
 
@@ -516,20 +515,20 @@ recovery auditable.
 
 Each editor-originated message is durable before it is sent to C5:
 
-| Column | Type | Notes |
-|---|---|---|
-| `conversation_id` | UUID | Owning Omnigent session |
-| `pending_id` | varchar(64) | Client/server correlation key, unique |
-| `text` | text | Exact C5 text |
-| `content` | compressed JSON | Original blocks, including attachments |
-| `apply` | varchar(32) | `end_of_turn` |
-| `state` | varchar(32) | pending/sending/confirmed/applied/finished/ambiguous/failed |
-| `pre_send_seq` | bigint nullable | Highest C5 sequence observed before send |
-| `agentcloud_input_seq` | bigint nullable | Bound `UserInput` seq |
-| `agentcloud_run_seq` | bigint nullable | Bound `RunStarted` seq |
-| `response_id` | varchar(64) nullable | Omnigent response identity |
-| `created_by` | varchar(128) nullable | Original actor |
-| timestamps/error | mixed | Retry and operator diagnostics |
+| Column                 | Type                  | Notes                                                       |
+| ---------------------- | --------------------- | ----------------------------------------------------------- |
+| `conversation_id`      | UUID                  | Owning Omnigent session                                     |
+| `pending_id`           | varchar(64)           | Client/server correlation key, unique                       |
+| `text`                 | text                  | Exact C5 text                                               |
+| `content`              | compressed JSON       | Original blocks, including attachments                      |
+| `apply`                | varchar(32)           | `end_of_turn`                                               |
+| `state`                | varchar(32)           | pending/sending/confirmed/applied/finished/ambiguous/failed |
+| `pre_send_seq`         | bigint nullable       | Highest C5 sequence observed before send                    |
+| `agentcloud_input_seq` | bigint nullable       | Bound `UserInput` seq                                       |
+| `agentcloud_run_seq`   | bigint nullable       | Bound `RunStarted` seq                                      |
+| `response_id`          | varchar(64) nullable  | Omnigent response identity                                  |
+| `created_by`           | varchar(128) nullable | Original actor                                              |
+| timestamps/error       | mixed                 | Retry and operator diagnostics                              |
 
 `pending_id` is supplied by CodeCompanion when available and generated by the
 server otherwise. Reusing an existing pending ID with identical content is
@@ -581,8 +580,18 @@ POST /v1/sessions/{conversation_id}/external-frames
     "payload_sha256": "..."
   },
   "events": [
-    {"type": "external_response_started", "data": {"response_id": "resp_ac_..."}},
-    {"type": "external_conversation_item", "data": {"item_type": "message", "response_id": "resp_ac_...", "item_data": {}}}
+    {
+      "type": "external_response_started",
+      "data": { "response_id": "resp_ac_..." }
+    },
+    {
+      "type": "external_conversation_item",
+      "data": {
+        "item_type": "message",
+        "response_id": "resp_ac_...",
+        "item_data": {}
+      }
+    }
   ]
 }
 ```
@@ -665,7 +674,7 @@ CodeCompanion generates a random, process-unique ID before posting:
   "client_request_id": "cc_<uuid>",
   "data": {
     "role": "user",
-    "content": [{"type": "input_text", "text": "..."}]
+    "content": [{ "type": "input_text", "text": "..." }]
   }
 }
 ```
@@ -883,22 +892,22 @@ cleaner than creating a chat and immediately calling a private resume path.
 
 The durable journal is authoritative. Live keyed frames are previews.
 
-| AgentCloud event | Omnigent effect |
-|---|---|
-| `UserInput` | Persist user item; record input seq; bind/clear pending ID when matched |
-| `RunStarted` | Open run projection and begin collecting the starting input batch |
-| `InputApplied` | Map the named input seq to the open run (starting input or mid-run steering) |
-| `Block(Text)` | Durable assistant message item |
-| `Block(Thinking)` | Reasoning item if retained by product policy; otherwise omit from durable UI |
-| `Block(ToolUse)` | Durable `function_call` keyed by AgentCloud call ID |
-| `ToolIntent` | Execution metadata/fallback function call; dedup against `Block(ToolUse)` by call ID |
-| `ToolResult` | Durable `function_call_output` paired by intent/call ID |
-| `ModelCallSettled.usage` | Add to bridge cumulative input/output totals; emit cumulative external usage |
-| `RunFinished(completed)` | `external_response_completed`, then idle status |
-| `RunFinished(interrupted)` | `external_response_cancelled` plus `session.interrupted`, then idle |
-| `RunFinished(failed)` | `external_response_failed` and failed session status with sanitized error |
-| child link events | Ignore in v1; retain in metrics/logs |
-| unknown additive event | Advance cursor with zero translated events; debug metric, do not crash |
+| AgentCloud event           | Omnigent effect                                                                      |
+| -------------------------- | ------------------------------------------------------------------------------------ |
+| `UserInput`                | Persist user item; record input seq; bind/clear pending ID when matched              |
+| `RunStarted`               | Open run projection and begin collecting the starting input batch                    |
+| `InputApplied`             | Map the named input seq to the open run (starting input or mid-run steering)         |
+| `Block(Text)`              | Durable assistant message item                                                       |
+| `Block(Thinking)`          | Reasoning item if retained by product policy; otherwise omit from durable UI         |
+| `Block(ToolUse)`           | Durable `function_call` keyed by AgentCloud call ID                                  |
+| `ToolIntent`               | Execution metadata/fallback function call; dedup against `Block(ToolUse)` by call ID |
+| `ToolResult`               | Durable `function_call_output` paired by intent/call ID                              |
+| `ModelCallSettled.usage`   | Add to bridge cumulative input/output totals; emit cumulative external usage         |
+| `RunFinished(completed)`   | `external_response_completed`, then idle status                                      |
+| `RunFinished(interrupted)` | `external_response_cancelled` plus `session.interrupted`, then idle                  |
+| `RunFinished(failed)`      | `external_response_failed` and failed session status with sanitized error            |
+| child link events          | Ignore in v1; retain in metrics/logs                                                 |
+| unknown additive event     | Advance cursor with zero translated events; debug metric, do not crash               |
 
 Do not emit both `Block(ToolUse)` and `ToolIntent` as separate visible tool
 calls. `Block(ToolUse)` is the model transcript record; `ToolIntent` is the
@@ -1133,24 +1142,24 @@ reply command that do not exist in the verified client contract.
 
 ## 15. Failure behavior
 
-| Failure | Required behavior |
-|---|---|
-| HTTP 426 | Mark protocol skew; require bridge update |
-| CAT mint/verification failure | Keep binding, stop commands, expose auth error |
-| WSS 403 | Report unsupported transport/proxy or x509 failure |
-| Lost `create` reply | Fleet-reconcile deterministic title before retry |
-| Lost `input` echo | Replay and match history; never blind retry |
-| Duplicate durable frame | Receipt no-op if hash matches |
-| Same seq, different hash | Hard conflict; stop ingestion |
-| Omnigent ingest timeout | Retry same seq/hash; server dedups |
-| Slow C5 consumer | Reconnect and page from durable cursor |
-| Missing configured node | Attach it and wait within bind budget |
-| Other/multiple nodes | Conflict; do not detach automatically |
-| Phone run while editor request exists | Route by response ownership, not foreground presence |
-| Bridge exits mid-run | Runner restart, attach, replay, recover terminal |
-| AgentCloud session disappears | Binding error; no implicit replacement |
-| Omnigent session deleted | Close bridge/remove local binding; leave AgentCloud session |
-| Unknown additive AgentCloud event | Record empty translated batch and metric |
+| Failure                               | Required behavior                                           |
+| ------------------------------------- | ----------------------------------------------------------- |
+| HTTP 426                              | Mark protocol skew; require bridge update                   |
+| CAT mint/verification failure         | Keep binding, stop commands, expose auth error              |
+| WSS 403                               | Report unsupported transport/proxy or x509 failure          |
+| Lost `create` reply                   | Fleet-reconcile deterministic title before retry            |
+| Lost `input` echo                     | Replay and match history; never blind retry                 |
+| Duplicate durable frame               | Receipt no-op if hash matches                               |
+| Same seq, different hash              | Hard conflict; stop ingestion                               |
+| Omnigent ingest timeout               | Retry same seq/hash; server dedups                          |
+| Slow C5 consumer                      | Reconnect and page from durable cursor                      |
+| Missing configured node               | Attach it and wait within bind budget                       |
+| Other/multiple nodes                  | Conflict; do not detach automatically                       |
+| Phone run while editor request exists | Route by response ownership, not foreground presence        |
+| Bridge exits mid-run                  | Runner restart, attach, replay, recover terminal            |
+| AgentCloud session disappears         | Binding error; no implicit replacement                      |
+| Omnigent session deleted              | Close bridge/remove local binding; leave AgentCloud session |
+| Unknown additive AgentCloud event     | Record empty translated batch and metric                    |
 
 Bridge health should be visible in the session snapshot:
 

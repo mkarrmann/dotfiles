@@ -63,14 +63,14 @@ The behavioral rules for working inside one — repository selection, never hard
 
 Every layer uses the same pattern — load portable config, then silently load local overrides:
 
-| Layer | Portable | Local override | Mechanism |
-|-------|----------|----------------|-----------|
-| Neovim | `config/*.lua`, `plugins/*.lua` | `config/local.lua` | `pcall(require, "config.local")` in `autocmds.lua` |
-| Shell | `.shellrc` | `~/.localrc` | `source ~/.localrc` in `.shellrc` |
-| Tmux | `.tmux.conf` | `~/.tmux.conf.local` | `source-file` if exists |
-| Claude | `CLAUDE.md` | `CLAUDE.local.md` | `@~/.claude/CLAUDE.local.md` reference |
-| Codex | `config.template.toml` | `config.local.toml` | Appended by `sync.sh` |
-| Codex instructions | `~/.codex/AGENTS.md` | `~/.codex/AGENTS.override.md` | Loaded first by Codex, wins |
+| Layer              | Portable                        | Local override                | Mechanism                                          |
+| ------------------ | ------------------------------- | ----------------------------- | -------------------------------------------------- |
+| Neovim             | `config/*.lua`, `plugins/*.lua` | `config/local.lua`            | `pcall(require, "config.local")` in `autocmds.lua` |
+| Shell              | `.shellrc`                      | `~/.localrc`                  | `source ~/.localrc` in `.shellrc`                  |
+| Tmux               | `.tmux.conf`                    | `~/.tmux.conf.local`          | `source-file` if exists                            |
+| Claude             | `CLAUDE.md`                     | `CLAUDE.local.md`             | `@~/.claude/CLAUDE.local.md` reference             |
+| Codex              | `config.template.toml`          | `config.local.toml`           | Appended by `sync.sh`                              |
+| Codex instructions | `~/.codex/AGENTS.md`            | `~/.codex/AGENTS.override.md` | Loaded first by Codex, wins                        |
 
 **Rule of thumb:** `local.lua` / `localrc` / etc. are the machine-specific escape hatches — not in dotfiles. Shared config (even Meta-specific) lives in dotfiles under a descriptive name.
 
@@ -90,26 +90,26 @@ On non-Meta machines (where only `init.sh` runs), neither file is symlinked — 
 
 `agent_config/global-development-preferences.md` is the single canonical file. `sync.sh` symlinks it into each agent's own global-instruction path; no agent reads another's, and each sees it exactly once.
 
-| Sink | Serves |
-|------|--------|
+| Sink                                                | Serves                                                                               |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------ |
 | `~/.claude/rules/global-development-preferences.md` | Claude Code TUI, Claude Agent SDK, Omnigent `claude-sdk` agents (claude/polly/debby) |
-| `~/.codex/AGENTS.md` | Codex TUI, `codex exec`, codex app-server, Omnigent `codex` agents |
-| `opencode.json` → `instructions` | Metacode. **Not** `~/.config/opencode/AGENTS.md` — see below |
+| `~/.codex/AGENTS.md`                                | Codex TUI, `codex exec`, codex app-server, Omnigent `codex` agents                   |
+| `opencode.json` → `instructions`                    | Metacode. **Not** `~/.config/opencode/AGENTS.md` — see below                         |
 
 `~/.claude/CLAUDE.md` pulls the first in via `@~/.claude/rules/...`.
 
 **Rules are split by scope.** `global-development-preferences.md` holds only machine-agnostic preferences and goes everywhere. Anything specific to the Meta checkout layout lives in `meta-workspace-preferences.md`, which `sync.sh` symlinks into each detected workspace root as both `CLAUDE.md` and `AGENTS.md`. Those two names are not redundant, and each agent still sees the content once:
 
-| At `~/checkoutN/` | `CLAUDE.md` | `AGENTS.md` |
-|---|---|---|
-| Claude Code | read; walks up from subdirectories | ignored |
-| Codex | ignored | read in cwd only; does **not** walk up |
+| At `~/checkoutN/` | `CLAUDE.md`                        | `AGENTS.md`                            |
+| ----------------- | ---------------------------------- | -------------------------------------- |
+| Claude Code       | read; walks up from subdirectories | ignored                                |
+| Codex             | ignored                            | read in cwd only; does **not** walk up |
 
 So a session started at the workspace root — the normal case — gets the rules in either agent, while a Codex session started inside `fbsource/` gets that repo's own `AGENTS.md` instead. Machines with no checkout get neither file, which is why this content must not sit in the global file.
 
 Why the two non-obvious paths work (verified empirically 2026-08):
 
-- **Claude Agent SDK under Omnigent.** A spec's `prompt:` becomes a full-replacement `--system-prompt`, which does *not* suppress CLAUDE.md. `skills_filter` defaults to `"all"` → `setting_sources=None` → the SDK emits `--setting-sources=user,project`. Omnigent deliberately omits `--bare`, which would skip CLAUDE.md discovery.
+- **Claude Agent SDK under Omnigent.** A spec's `prompt:` becomes a full-replacement `--system-prompt`, which does _not_ suppress CLAUDE.md. `skills_filter` defaults to `"all"` → `setting_sources=None` → the SDK emits `--setting-sources=user,project`. Omnigent deliberately omits `--bare`, which would skip CLAUDE.md discovery.
 - **Codex under Omnigent.** The executor redirects `CODEX_HOME` to a per-session private home, but symlinks `AGENTS.md` / `AGENTS.override.md` in from the real `~/.codex` so instructions survive the redirect. Suppressed only by `HARNESS_CODEX_MINIMAL_CONFIG`, which nothing sets.
 
 Traps:
@@ -122,25 +122,25 @@ Traps:
 
 Not covered:
 
-- **dvsc / devmate.** Its spec declares no `prompt:`, and the generic ACP harness injects no instructions — dvsc-core owns its prompt end to end. Devmate's own personal-rules channel is `~/.llms/rules/*.md`, which dotfiles does not populate; note that llm-rules would then *also* inject it into Claude Code, double-exposing it.
+- **dvsc / devmate.** Its spec declares no `prompt:`, and the generic ACP harness injects no instructions — dvsc-core owns its prompt end to end. Devmate's own personal-rules channel is `~/.llms/rules/*.md`, which dotfiles does not populate; note that llm-rules would then _also_ inject it into Claude Code, double-exposing it.
 
 If a future harness reads none of these, Omnigent's `instructions:` / `prompt:` spec field is the harness-agnostic fallback. They are the same field (the parser prefers `instructions:`, falls back to `prompt:`), it resolves a sibling filename inside the agent dir, and it reaches every executor — the ACP harness folds it into the first user turn. Agent dirs register by path and are content-addressed, so a sibling `AGENTS.md` travels with the bundle and re-registers when it changes.
 
 ## Where Things Go
 
-| What | Location | Source-controlled? |
-|------|----------|-------------------|
-| New portable skill | `~/dotfiles/agent_config/skills/<name>/SKILL.md` | Yes — auto-symlinked by `sync.sh` |
-| Cross-agent rules (machine-agnostic) | `~/dotfiles/agent_config/global-development-preferences.md` | Yes — 3 sinks via `sync.sh` |
-| Meta checkout-layout rules | `~/dotfiles/agent_config/meta-workspace-preferences.md` | Yes — → `~/checkoutN/{CLAUDE.md,AGENTS.md}` |
-| tpai rules/skills policy | `~/dotfiles/claude_config/meta-config.toml` | Yes — → `~/.claude/meta/config.toml` |
-| Meta-specific skill | `~/.claude/skills/<name>/SKILL.md` | No — created directly |
-| Meta nvim plugins | `~/dotfiles/nvim/local/plugins/meta.lua` | Yes — symlinked by `meta_init.sh`, cond-guarded |
-| Meta nvim config (LSPs, etc.) | `~/dotfiles/nvim/local/config/meta.lua` | Yes — symlinked by `meta_init.sh`, opt-in via local.lua |
-| Machine-specific nvim config | `~/.config/nvim/lua/config/local.lua` | No — created by `meta_init.sh` or manually |
-| Project-specific Claude context | `~/.claude/projects/<project>.md` | No |
-| Machine-specific shell config | `~/.localrc` | No |
-| CLI tools (gh, aws, nori, marksman) | `~/.local/bin` | No — installed by `bin/*-ensure` from `init.sh`; re-run to upgrade |
+| What                                                 | Location                                                                         | Source-controlled?                                                                                                                         |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| New portable skill                                   | `~/dotfiles/agent_config/skills/<name>/SKILL.md`                                 | Yes — auto-symlinked by `sync.sh`                                                                                                          |
+| Cross-agent rules (machine-agnostic)                 | `~/dotfiles/agent_config/global-development-preferences.md`                      | Yes — 3 sinks via `sync.sh`                                                                                                                |
+| Meta checkout-layout rules                           | `~/dotfiles/agent_config/meta-workspace-preferences.md`                          | Yes — → `~/checkoutN/{CLAUDE.md,AGENTS.md}`                                                                                                |
+| tpai rules/skills policy                             | `~/dotfiles/claude_config/meta-config.toml`                                      | Yes — → `~/.claude/meta/config.toml`                                                                                                       |
+| Meta-specific skill                                  | `~/.claude/skills/<name>/SKILL.md`                                               | No — created directly                                                                                                                      |
+| Meta nvim plugins                                    | `~/dotfiles/nvim/local/plugins/meta.lua`                                         | Yes — symlinked by `meta_init.sh`, cond-guarded                                                                                            |
+| Meta nvim config (LSPs, etc.)                        | `~/dotfiles/nvim/local/config/meta.lua`                                          | Yes — symlinked by `meta_init.sh`, opt-in via local.lua                                                                                    |
+| Machine-specific nvim config                         | `~/.config/nvim/lua/config/local.lua`                                            | No — created by `meta_init.sh` or manually                                                                                                 |
+| Project-specific Claude context                      | `~/.claude/projects/<project>.md`                                                | No                                                                                                                                         |
+| Machine-specific shell config                        | `~/.localrc`                                                                     | No                                                                                                                                         |
+| CLI tools (gh, aws, nori, marksman)                  | `~/.local/bin`                                                                   | No — installed by `bin/*-ensure` from `init.sh`; re-run to upgrade                                                                         |
 | AWS Agent Toolkit (`aws-mcp` server, `aws-*` skills) | `~/.claude.json`, `~/.claude/skills/aws-*` (+ Codex/Cursor/Metacode equivalents) | No — `bin/aws-agent-toolkit-ensure` (desktop `init.sh`, after `aws login`); deliberately outside `sync-mcps`, see `agent_config/README.md` |
 
 ## Editor Stack
@@ -176,21 +176,21 @@ Mac (Ghostty)                    ET tunnel                    Devvm
 
 ### Key files
 
-| File | Where | Purpose |
-|------|-------|---------|
-| `bin/nvs` | Remote (cross-platform) | Starts headless nvim server, loads clipboard-relay |
-| `bin-macos/nvs` | Mac only | TUI client — waits for tunnel, connects `--remote-ui` |
-| `bin-macos/nvs-tunnels` | Mac only | Sets up ET tunnels (forward + reverse) per devvm |
-| `bin-macos/nvs-clip-listen` | Mac only | Listens on port 8765, pipes to `pbcopy` |
-| `nvim/lua/lib/clipboard-relay.lua` | Remote | Custom `g:clipboard` — sends yanks via nc to Mac |
-| `bin-macos/startup-windows` | Mac only | Launches tunnel + session windows via AeroSpace |
+| File                               | Where                   | Purpose                                               |
+| ---------------------------------- | ----------------------- | ----------------------------------------------------- |
+| `bin/nvs`                          | Remote (cross-platform) | Starts headless nvim server, loads clipboard-relay    |
+| `bin-macos/nvs`                    | Mac only                | TUI client — waits for tunnel, connects `--remote-ui` |
+| `bin-macos/nvs-tunnels`            | Mac only                | Sets up ET tunnels (forward + reverse) per devvm      |
+| `bin-macos/nvs-clip-listen`        | Mac only                | Listens on port 8765, pipes to `pbcopy`               |
+| `nvim/lua/lib/clipboard-relay.lua` | Remote                  | Custom `g:clipboard` — sends yanks via nc to Mac      |
+| `bin-macos/startup-windows`        | Mac only                | Launches tunnel + session windows via AeroSpace       |
 
 ### Clipboard
 
 The headless server has no terminal, so OSC 52 (the normal clipboard mechanism) has nowhere to go. Instead, a **reverse ET tunnel** (`-r 8765:8765`) connects the devvm back to the Mac. On yank, `clipboard-relay.lua` spawns `nc -w 1 localhost 8765` asynchronously and sends the text. On the Mac, `nvs-clip-listen` receives it and pipes to `pbcopy`.
 
 - **Copy (remote → Mac):** Automatic on every yank. `clipboard-relay.lua` handles `"+y` via `vim.g.clipboard` and regular `y` via a `TextYankPost` autocmd.
-- **Paste (Mac → remote):** Use `Cmd+V` in Ghostty (sends clipboard as bracketed paste). `"+p` pastes the last *remote* yank, not the current Mac clipboard.
+- **Paste (Mac → remote):** Use `Cmd+V` in Ghostty (sends clipboard as bracketed paste). `"+p` pastes the last _remote_ yank, not the current Mac clipboard.
 
 ### Session naming
 
@@ -208,27 +208,27 @@ CCO and FTW checkouts are interleaved (CCO on even slots, FTW on odd). FTW
 has checkouts 1–3; CCO has checkouts 1–4. Each numbered workspace also holds
 a Chrome window. Code editing runs through Ghostty-backed `nvs` sessions.
 
-| Workspace | Content |
-|-----------|---------|
-| 1 | Local macOS |
-| T | Tunnel windows (one per devvm) |
-| 2 | CCO: checkout1 |
-| 3 | FTW: checkout1 |
-| 4 | CCO: checkout2 |
-| 5 | FTW: checkout2 |
-| 6 | CCO: checkout3 |
-| 7 | FTW: checkout3 |
-| 8 | CCO: checkout4 |
-| Z | Sweep/overflow (stray windows) |
+| Workspace | Content                        |
+| --------- | ------------------------------ |
+| 1         | Local macOS                    |
+| T         | Tunnel windows (one per devvm) |
+| 2         | CCO: checkout1                 |
+| 3         | FTW: checkout1                 |
+| 4         | CCO: checkout2                 |
+| 5         | FTW: checkout2                 |
+| 6         | CCO: checkout3                 |
+| 7         | FTW: checkout3                 |
+| 8         | CCO: checkout4                 |
+| Z         | Sweep/overflow (stray windows) |
 
 ### Workspace management scripts
 
-| Script | Purpose |
-|--------|---------|
-| `startup-windows` | Creates/places all windows on correct AeroSpace workspaces, runs orchest, reconciles late-appearing windows, distributes Chrome session-restored windows, sweeps strays to Z |
+| Script               | Purpose                                                                                                                                                                                                    |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `startup-windows`    | Creates/places all windows on correct AeroSpace workspaces, runs orchest, reconciles late-appearing windows, distributes Chrome session-restored windows, sweeps strays to Z                               |
 | `arrange-workspaces` | Public layout dispatcher. Standard workspaces use sidebar\|accordion, workspace 11 delegates to its dashboard arranger, and Z is intentionally unchanged. Preserves focus and serializes arrangement runs. |
-| `arrange-ws11` | Workspace-11 dashboard implementation. Arranges existing windows by default; startup uses `--ensure-windows` to provision missing dashboard windows. |
-| `auto-accordion` | Optional AeroSpace `on-window-detected` callback. Currently disabled in `aerospace.toml`; if re-enabled, it is suppressed while the `/tmp/startup-windows.lock` directory exists. |
+| `arrange-ws11`       | Workspace-11 dashboard implementation. Arranges existing windows by default; startup uses `--ensure-windows` to provision missing dashboard windows.                                                       |
+| `auto-accordion`     | Optional AeroSpace `on-window-detected` callback. Currently disabled in `aerospace.toml`; if re-enabled, it is suppressed while the `/tmp/startup-windows.lock` directory exists.                          |
 
 ### AeroSpace gotchas
 
@@ -241,11 +241,11 @@ These behaviors differ from what you'd expect and have caused bugs:
 - **`move-node-to-workspace` always inserts at root level, rightmost.** The window lands as the last child of the workspace root container, never inside a nested container. This is the only reliable way to extract a window from a nested container (round-trip to another workspace and back).
 - **`join-with` is a no-op on floating windows.** Both windows must be tiling for `join-with` to create a container. Filter for tiling windows when selecting join targets.
 - **AeroSpace auto-collapses single-child containers (when normalization is enabled).** With `enable-normalization-flatten-containers = false`, single-child containers persist. `arrange-workspaces` creates single-window accordion containers using a scaffold: borrow a tiling window from workspace Z, join it with the target, set accordion layout, return the scaffold. The sidebar is never moved, so it stays on the left.
-- **`aerospace layout <a> <b> ...` cycles through args, it does not set them.** If the current layout matches one of the args, it advances to the next; otherwise it picks the first. So `layout tiles horizontal` from `v_accordion` becomes `v_tiles` (picks "tiles", orientation preserved) — *not* `h_tiles`. Use the explicit composite layout names (`h_tiles`, `v_tiles`, `h_accordion`, `v_accordion`) when you need a deterministic result.
+- **`aerospace layout <a> <b> ...` cycles through args, it does not set them.** If the current layout matches one of the args, it advances to the next; otherwise it picks the first. So `layout tiles horizontal` from `v_accordion` becomes `v_tiles` (picks "tiles", orientation preserved) — _not_ `h_tiles`. Use the explicit composite layout names (`h_tiles`, `v_tiles`, `h_accordion`, `v_accordion`) when you need a deterministic result.
 - **`flatten-workspace-tree` resets root to `default-root-container-layout` (accordion).** Always follow flatten with `layout h_tiles` (not `layout tiles horizontal` — that cycles, see above) to override.
 - **Spatial order after flatten is unpredictable.** Windows added last (e.g. Orchest from `orchest-open-workspaces`) end up rightmost. Discover order by walking `focus left`/`focus right`; don't assume positions.
-- **`aerospace focus left/right` defaults to `--boundaries-action wrap-around-the-workspace`, AND `stop` doesn't always engage.** Bare `focus left` from the leftmost window wraps to the rightmost — focus *always* changes. Passing `--boundaries-action stop` helps in the well-behaved case but **still wraps** when a phantom/unfocusable window sits in the tree (observed with `cmux` occasionally reporting `window-id 0` in workspace 1 — `focus right` from the rightmost *visible* window wraps past it to the leftmost). Conclusion: never trust "walk until focus stops moving" as a sole terminator. `discover_spatial_order` in `arrange-workspaces` uses cycle detection (track visited window IDs, break on repeat) as a backstop. Confirmed on AeroSpace 0.20.3-Beta. The `alt-h/j/k/l` keybindings setting wrap-around explicitly are redundant (matches the default), not the cause.
-- **`aerospace focus --window-id N` can silently land focus on a *different* window for phantom/sentinel IDs.** Observed with cmux reporting `window-id 0`: focusing 0 from one neighbor lands on 0, but from another lands on whichever window AeroSpace's resolver picks (typically 163). The result is starting-state-dependent, so any logic that assumes "focus --window-id X means focus is now X" can silently misbehave. Generic detection: after each `focus --window-id`, re-query `list-windows --focused --format '%{window-id}'` and compare. `arrange-workspaces` does this in `focus_verified` and sweeps ordinary windows that fail verification to workspace Z before computing the layout. Orchest windows are never swept: moving one to Z changes its persisted `desktopWorkspaceId`, so the layout pass instead fails and retries while preserving the binding.
+- **`aerospace focus left/right` defaults to `--boundaries-action wrap-around-the-workspace`, AND `stop` doesn't always engage.** Bare `focus left` from the leftmost window wraps to the rightmost — focus _always_ changes. Passing `--boundaries-action stop` helps in the well-behaved case but **still wraps** when a phantom/unfocusable window sits in the tree (observed with `cmux` occasionally reporting `window-id 0` in workspace 1 — `focus right` from the rightmost _visible_ window wraps past it to the leftmost). Conclusion: never trust "walk until focus stops moving" as a sole terminator. `discover_spatial_order` in `arrange-workspaces` uses cycle detection (track visited window IDs, break on repeat) as a backstop. Confirmed on AeroSpace 0.20.3-Beta. The `alt-h/j/k/l` keybindings setting wrap-around explicitly are redundant (matches the default), not the cause.
+- **`aerospace focus --window-id N` can silently land focus on a _different_ window for phantom/sentinel IDs.** Observed with cmux reporting `window-id 0`: focusing 0 from one neighbor lands on 0, but from another lands on whichever window AeroSpace's resolver picks (typically 163). The result is starting-state-dependent, so any logic that assumes "focus --window-id X means focus is now X" can silently misbehave. Generic detection: after each `focus --window-id`, re-query `list-windows --focused --format '%{window-id}'` and compare. `arrange-workspaces` does this in `focus_verified` and sweeps ordinary windows that fail verification to workspace Z before computing the layout. Orchest windows are never swept: moving one to Z changes its persisted `desktopWorkspaceId`, so the layout pass instead fails and retries while preserving the binding.
 - **`wait_for_new_window` uses a 10s timeout.** Some app windows can take longer to appear or settle their titles. The reconciliation pass in `startup-windows` catches these late-appearing windows.
 - **Individual AeroSpace CLI clients can wedge during a login-time window burst.** `startup-windows` and `arrange-workspaces` bound each CLI call and retry read-only queries. Automatic startup logs to `~/.local/state/startup-windows-logs/latest.log` for post-login diagnosis.
 - **Chrome restores all previous windows onto the active workspace.** `startup-windows` waits for that restore burst to settle, assigns one restored window to each managed workspace, and moves surplus restored windows to Z.

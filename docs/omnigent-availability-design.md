@@ -171,10 +171,10 @@ logical Omnigent history.
 
 ### 4.1 State that moves with the active hub
 
-| Path | Purpose |
-|---|---|
-| `~/.omnigent/chat.db` | Sessions, durable items, labels, hosts, permissions, and other server state |
-| `~/.omnigent/artifacts/` | Agent bundles, uploads, and content-addressed server artifacts |
+| Path                              | Purpose                                                                             |
+| --------------------------------- | ----------------------------------------------------------------------------------- |
+| `~/.omnigent/chat.db`             | Sessions, durable items, labels, hosts, permissions, and other server state         |
+| `~/.omnigent/artifacts/`          | Agent bundles, uploads, and content-addressed server artifacts                      |
 | `~/.omnigent/google-chat.sqlite3` | Thread mappings, inbound claims, outbound request IDs, cursors, and ambiguity state |
 
 These three stores form one operational recovery unit. Restoring only

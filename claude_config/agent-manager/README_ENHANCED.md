@@ -5,6 +5,7 @@ This enhanced version of your agent manager incorporates the best status detecti
 ## Key Enhancements
 
 ### 1. **Granular Status Detection**
+
 - **Thinking states**: Detects "✶ Vibing…", "✻ Skedaddling…" and other thinking indicators
 - **Tool execution**: Recognizes `◐` indicator and specific tools (Bash, Task, Skill, etc.)
 - **Activity detection**: Writing, reading, searching with file/query details
@@ -12,18 +13,22 @@ This enhanced version of your agent manager incorporates the best status detecti
 - **Error states**: Identifies errors, failures, and tracebacks
 
 ### 2. **Context Percentage Tracking**
+
 - Extracts context % from claude-hud-meta and meta-statusline-pro
 - Visual indicators: 🟢 Green (<70%), 🟡 Yellow (70-85%), 🔴 Red (>85%)
 - Alerts when context is critically high
 
 ### 3. **Alert System**
+
 - 🔐 Permission required
 - ❌ Error detected
 - ⚠️ High context usage
 - 💤 Long idle times
 
 ### 4. **Neovim-Aware Chrome Filtering**
+
 Enhanced filtering for Neovim terminal modes:
+
 - TERMINAL, NORMAL, INSERT, VISUAL mode indicators
 - Line numbers, indent guides, status lines
 - Vim empty line indicators (~)
@@ -31,22 +36,26 @@ Enhanced filtering for Neovim terminal modes:
 ## Files
 
 ### Core Modules
+
 - `enhanced_status_patterns.py` - Pattern library from tmux-orchestrator
 - `agent_state_enhanced.py` - Enhanced agent state with new detection
 - `dashboard_enhanced.py` - Interactive TUI with alerts and context tracking
 - `statusline_enhanced.py` - Rich statusline for tmux/terminal
 
 ### Setup
+
 - `setup_enhanced.sh` - Test and configure enhanced features
 
 ## Usage
 
 ### Interactive Dashboard
+
 ```bash
 python3 dashboard_enhanced.py
 ```
 
 Features:
+
 - Real-time status updates
 - Context percentage bars
 - Alert notifications
@@ -54,6 +63,7 @@ Features:
 - Keyboard navigation
 
 Keys:
+
 - `↑↓` - Navigate agents
 - `Enter` - Focus agent's tmux window
 - `s` - Toggle stopped agents
@@ -64,11 +74,13 @@ Keys:
 - `q` - Quit
 
 ### Status Summary
+
 ```bash
 python3 dashboard_enhanced.py --summary
 ```
 
 ### Statusline (for tmux)
+
 ```bash
 # Compact for tmux status bar
 python3 statusline_enhanced.py --compact
@@ -78,12 +90,15 @@ python3 statusline_enhanced.py
 ```
 
 ### Add to tmux.conf
+
 ```bash
 set -g status-right "#(python3 ~/dotfiles/claude_config/agent-manager/statusline_enhanced.py --compact) | %H:%M"
 ```
 
 ### Shell Aliases
+
 Add to ~/.bashrc:
+
 ```bash
 alias agentdash='python3 ~/dotfiles/claude_config/agent-manager/dashboard_enhanced.py'
 alias agentstatus='python3 ~/dotfiles/claude_config/agent-manager/statusline_enhanced.py'
@@ -92,12 +107,14 @@ alias agentstatus='python3 ~/dotfiles/claude_config/agent-manager/statusline_enh
 ## Pattern Examples
 
 ### Thinking Detection
+
 ```python
 # Active: ✶ Vibing… (2m 24s · thinking)
 # Completed: ✻ Cogitated for 52s
 ```
 
 ### Tool Execution
+
 ```python
 # ◐ Bash - Running command
 # ◐ Task - Task agent executing
@@ -105,12 +122,14 @@ alias agentstatus='python3 ~/dotfiles/claude_config/agent-manager/statusline_enh
 ```
 
 ### Context Extraction
+
 ```python
 # [Opus 4.5] █████░░░░░ 45% | @80828
 # devvm80828 | ... | 🧠 45% | ...
 ```
 
 ### Permission Prompts
+
 ```python
 # Do you want to proceed?
 # Use skill "skill-name"?
@@ -126,16 +145,16 @@ alias agentstatus='python3 ~/dotfiles/claude_config/agent-manager/statusline_enh
 
 ## Comparison with Tmux Orchestrator
 
-| Feature | Your Original | Tmux Orchestrator | This Enhanced Version |
-|---------|--------------|-------------------|---------------------|
-| Status Detection | Basic (active/idle) | Sophisticated patterns | Sophisticated patterns |
-| Context Tracking | No | Yes (statusline) | Yes (extracted) |
-| Permission Detection | No | Yes | Yes |
-| Error Detection | Basic | Advanced | Advanced |
-| Neovim Compatibility | Yes | No (send-keys issues) | Yes (full) |
-| Cross-machine | Yes (gdrive) | No | Yes (gdrive) |
-| LLM Classification | Yes (expensive) | No | Hybrid (fallback) |
-| Real-time Updates | 30s poll | Sub-second | 2s poll |
+| Feature              | Your Original       | Tmux Orchestrator      | This Enhanced Version  |
+| -------------------- | ------------------- | ---------------------- | ---------------------- |
+| Status Detection     | Basic (active/idle) | Sophisticated patterns | Sophisticated patterns |
+| Context Tracking     | No                  | Yes (statusline)       | Yes (extracted)        |
+| Permission Detection | No                  | Yes                    | Yes                    |
+| Error Detection      | Basic               | Advanced               | Advanced               |
+| Neovim Compatibility | Yes                 | No (send-keys issues)  | Yes (full)             |
+| Cross-machine        | Yes (gdrive)        | No                     | Yes (gdrive)           |
+| LLM Classification   | Yes (expensive)     | No                     | Hybrid (fallback)      |
+| Real-time Updates    | 30s poll            | Sub-second             | 2s poll                |
 
 ## Benefits
 
@@ -148,6 +167,7 @@ alias agentstatus='python3 ~/dotfiles/claude_config/agent-manager/statusline_enh
 ## Technical Details
 
 The enhanced detection uses a priority system:
+
 1. Permission prompts (highest priority)
 2. Active thinking
 3. Tool execution
@@ -157,11 +177,13 @@ The enhanced detection uses a priority system:
 7. Idle detection (lowest priority)
 
 Context percentage is extracted from:
+
 - claude-hud-meta: `[Model] ████░░ 45%`
 - meta-statusline-pro: `🧠 45%`
 - Simple format: `45% context`
 
 Chrome filtering removes:
+
 - Neovim mode indicators
 - Line numbers and indent guides
 - Status lines and borders
@@ -170,6 +192,7 @@ Chrome filtering removes:
 ## Future Improvements
 
 Potential additions:
+
 - Historical context tracking (graph over time)
 - Multi-machine coordination improvements
 - Webhook alerts for critical states

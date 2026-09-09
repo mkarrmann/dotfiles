@@ -556,7 +556,7 @@ For normal text, POST the same shape used by the Slack integration:
   "type": "message",
   "data": {
     "role": "user",
-    "content": [{"type": "input_text", "text": "..."}]
+    "content": [{ "type": "input_text", "text": "..." }]
   }
 }
 ```
@@ -599,46 +599,46 @@ Use one SQLite database with WAL mode and a single-process lock.
 
 ### 9.1 `session_threads`
 
-| Column | Purpose |
-|---|---|
-| `omnigent_session_id` | Primary key |
-| `space_name` | Exact Google Chat space resource |
-| `thread_name` | Unique Google Chat thread resource |
-| `root_message_name` | Root message resource |
-| `title` | Last displayed title |
-| `last_item_position` | Omnigent durable reconciliation cursor |
-| `state` | active/detached/archived/error |
-| timestamps | creation/update/reconciliation audit |
+| Column                | Purpose                                |
+| --------------------- | -------------------------------------- |
+| `omnigent_session_id` | Primary key                            |
+| `space_name`          | Exact Google Chat space resource       |
+| `thread_name`         | Unique Google Chat thread resource     |
+| `root_message_name`   | Root message resource                  |
+| `title`               | Last displayed title                   |
+| `last_item_position`  | Omnigent durable reconciliation cursor |
+| `state`               | active/detached/archived/error         |
+| timestamps            | creation/update/reconciliation audit   |
 
 ### 9.2 `gchat_inbound`
 
-| Column | Purpose |
-|---|---|
-| `message_name` | Primary key; Google Chat durable identity |
-| `thread_name` | Mapping lookup |
-| `actor_id` | Authorization audit |
-| `created_at_google` | Poll ordering/high-water reconciliation |
-| `text_sha256` | Detect changed/replayed message content without storing it |
-| `state` | claimed/dispatching/submitted/ambiguous/rejected |
-| `error` | Sanitized failure reason |
-| timestamps | lifecycle audit |
+| Column              | Purpose                                                    |
+| ------------------- | ---------------------------------------------------------- |
+| `message_name`      | Primary key; Google Chat durable identity                  |
+| `thread_name`       | Mapping lookup                                             |
+| `actor_id`          | Authorization audit                                        |
+| `created_at_google` | Poll ordering/high-water reconciliation                    |
+| `text_sha256`       | Detect changed/replayed message content without storing it |
+| `state`             | claimed/dispatching/submitted/ambiguous/rejected           |
+| `error`             | Sanitized failure reason                                   |
+| timestamps          | lifecycle audit                                            |
 
 Do not persist the phone message body in this table. It already exists in
 Google Chat and, once accepted, in the Omnigent transcript.
 
 ### 9.3 `gchat_outbound`
 
-| Column | Purpose |
-|---|---|
-| `request_id` | Primary key; stable idempotency key |
-| `omnigent_session_id` | Owning session |
-| `source_kind` | item/status/root/notice |
-| `source_id` | Omnigent item/event identity |
-| `part_index` | Long-message chunk number |
-| `message_name` | Returned Google Chat message identity |
-| `state` | pending/sent/failed/suppressed |
-| `attempt_count`, `error` | Retry/health information |
-| timestamps | lifecycle audit |
+| Column                   | Purpose                               |
+| ------------------------ | ------------------------------------- |
+| `request_id`             | Primary key; stable idempotency key   |
+| `omnigent_session_id`    | Owning session                        |
+| `source_kind`            | item/status/root/notice               |
+| `source_id`              | Omnigent item/event identity          |
+| `part_index`             | Long-message chunk number             |
+| `message_name`           | Returned Google Chat message identity |
+| `state`                  | pending/sent/failed/suppressed        |
+| `attempt_count`, `error` | Retry/health information              |
+| timestamps               | lifecycle audit                       |
 
 ### 9.4 `bridge_state`
 
@@ -784,27 +784,27 @@ bridge posts confirmation naming the affected session.
 
 ## 12. Failure and recovery behavior
 
-| Failure | Required behavior |
-|---|---|
-| Omnigent server unavailable | Keep mappings/cursors, reconnect with backoff |
-| Session SSE disconnect | Reopen stream, reconcile `/items`, dedup by item ID |
-| Runner offline | Use normal host relaunch; never choose an unrelated host |
-| Google Chat send timeout | Retry same request ID |
-| Poll overlap returns old messages | Dedup by durable message resource name |
-| Poll/list command fails | Do not advance cursor; back off and retry |
-| Poll falls behind | Page oldest-first from overlap cursor until current head |
-| Meta Bot unavailable/not distinct | Fail startup/input closed; no self-post fallback |
+| Failure                                   | Required behavior                                          |
+| ----------------------------------------- | ---------------------------------------------------------- |
+| Omnigent server unavailable               | Keep mappings/cursors, reconnect with backoff              |
+| Session SSE disconnect                    | Reopen stream, reconcile `/items`, dedup by item ID        |
+| Runner offline                            | Use normal host relaunch; never choose an unrelated host   |
+| Google Chat send timeout                  | Retry same request ID                                      |
+| Poll overlap returns old messages         | Dedup by durable message resource name                     |
+| Poll/list command fails                   | Do not advance cursor; back off and retry                  |
+| Poll falls behind                         | Page oldest-first from overlap cursor until current head   |
+| Meta Bot unavailable/not distinct         | Fail startup/input closed; no self-post fallback           |
 | Unmentioned bot thread replies are silent | Mention only human-attention notifications per Section 7.3 |
-| Mentioned bot thread replies are silent | Fail the Phase 0 mobile-notification gate |
-| Cached/incomplete Chat read | Use raw JSON with `--skip-cache` |
-| Chat message changed after claim | Reject changed hash; do not resubmit |
-| Omnigent POST definite failure | Retry boundedly |
-| Omnigent POST ambiguous | Mark ambiguous; never automatic resubmit |
-| Restart finds stale `dispatching` input | Mark ambiguous and post one idempotent thread warning |
-| Unknown actor/space/thread | Reject and audit without contacting Omnigent |
-| Mapping missing | Ignore ordinary reply; optionally post safe orientation |
-| Session archived/deleted | Disable mapping; do not recreate session |
-| SQLite unavailable/corrupt | Fail closed for input; do not run stateless |
+| Mentioned bot thread replies are silent   | Fail the Phase 0 mobile-notification gate                  |
+| Cached/incomplete Chat read               | Use raw JSON with `--skip-cache`                           |
+| Chat message changed after claim          | Reject changed hash; do not resubmit                       |
+| Omnigent POST definite failure            | Retry boundedly                                            |
+| Omnigent POST ambiguous                   | Mark ambiguous; never automatic resubmit                   |
+| Restart finds stale `dispatching` input   | Mark ambiguous and post one idempotent thread warning      |
+| Unknown actor/space/thread                | Reject and audit without contacting Omnigent               |
+| Mapping missing                           | Ignore ordinary reply; optionally post safe orientation    |
+| Session archived/deleted                  | Disable mapping; do not recreate session                   |
+| SQLite unavailable/corrupt                | Fail closed for input; do not run stateless                |
 
 Outbound mirroring is best effort and must never affect the running agent.
 Inbound control fails closed whenever authorization or dedup state is
@@ -1109,12 +1109,12 @@ CLI latency diagnostics.
 
 Assuming Phase 0 passes:
 
-| Milestone | Focused effort |
-|---|---:|
-| Transport/phone-notification spike | 0.5 day |
-| Poll-only read/reply first cut | 1-2 days |
-| Discovery, restart, security, and tests | 1-2 days |
-| Reliable personal daily driver | 2-4 days total |
+| Milestone                               | Focused effort |
+| --------------------------------------- | -------------: |
+| Transport/phone-notification spike      |        0.5 day |
+| Poll-only read/reply first cut          |       1-2 days |
+| Discovery, restart, security, and tests |       1-2 days |
+| Reliable personal daily driver          | 2-4 days total |
 
 This is materially smaller than the Agent Home client-plane bridge because:
 

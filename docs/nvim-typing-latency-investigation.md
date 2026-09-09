@@ -23,7 +23,7 @@ That observation is what falsified the first hypothesis. An early estimate put
 the Mac↔devvm round trip at ~29ms, which would have made the wire the dominant
 term. But `:enew` costs 0.5ms server-side, so if the wire really were ~29ms,
 `:enew` would feel mushy too. It doesn't. The 29ms figure came from timing a
-*fresh TCP connection* through the ET reverse tunnel, which includes ET's
+_fresh TCP connection_ through the ET reverse tunnel, which includes ET's
 tunnel-open handshake — it measured connection setup, not steady-state RTT. The
 true per-keystroke wire cost is well below that and was never the problem.
 
@@ -38,7 +38,7 @@ redraw generated".
 
 An earlier `nvim_eval`-only probe against idle sessions reported p50 0.05ms and
 was reported as "server side is free". That was wrong: with no UI attached it
-measured whether the main loop was *blocked*, not what a keystroke costs.
+measured whether the main loop was _blocked_, not what a keystroke costs.
 
 > **Safety.** The benchmark types into a buffer, and `lib/autosave.lua` writes on
 > `TextChanged`. An ad-hoc early version committed 200 stray `x` characters into
@@ -51,11 +51,11 @@ measured whether the main loop was *blocked*, not what a keystroke costs.
 
 Server-side only; add your Mac↔devvm RTT for what you actually feel.
 
-| Buffer | p50 | p95 | max |
-|---|---|---|---|
-| `:enew` scratch | 0.52 ms | 1.07 ms | 1.98 ms |
-| `PlanBuilder.cpp` (2878 lines, C++) | 6.04 ms | 17.86 ms | 40.56 ms |
-| `velox_auto_merge_tool.py` (2572 lines) | **45–100 ms** | **105–287 ms** | 308 ms |
+| Buffer                                  | p50           | p95            | max      |
+| --------------------------------------- | ------------- | -------------- | -------- |
+| `:enew` scratch                         | 0.52 ms       | 1.07 ms        | 1.98 ms  |
+| `PlanBuilder.cpp` (2878 lines, C++)     | 6.04 ms       | 17.86 ms       | 40.56 ms |
+| `velox_auto_merge_tool.py` (2572 lines) | **45–100 ms** | **105–287 ms** | 308 ms   |
 
 Peeling layers off the Python file, one at a time:
 
@@ -96,20 +96,20 @@ change; `pyrefly@meta` does.
 
 Each of these was hypothesised, tested, and rejected:
 
-| Hypothesis | Result |
-|---|---|
-| Network RTT | `:enew` is 0.5ms and feels fine; wire estimate was a bad measurement |
-| Number of diagnostics | Typing inside a comment (0 diagnostics present) is equally slow |
-| Diagnostic flood from transient syntax errors | Same as above |
-| `update_in_insert` | Already `false`; forcing it changes nothing |
-| Diagnostic rendering (virtual_text / signs / underline) | Disabling all three: no change |
-| Semantic tokens | Disabling: no change |
-| Inlay hints | Disabling: 46.90 → 41.38 ms, marginal |
-| Full-document LSP sync | `textDocumentSync.change == 2` (incremental) |
-| URI→buffer churn in the diagnostics handler | Buffer count 3 before and after; URI matches exactly |
-| Completion (nvim-cmp) | Disabling after diagnostics: 6.15 → 5.54 ms, marginal |
-| Statusline / winbar refresh | Disabling entirely: 44.90 → 39.30 ms, ~12% |
-| `force_hl_update` in `render.open` | First fix attempt; **active and did nothing** |
+| Hypothesis                                              | Result                                                               |
+| ------------------------------------------------------- | -------------------------------------------------------------------- |
+| Network RTT                                             | `:enew` is 0.5ms and feels fine; wire estimate was a bad measurement |
+| Number of diagnostics                                   | Typing inside a comment (0 diagnostics present) is equally slow      |
+| Diagnostic flood from transient syntax errors           | Same as above                                                        |
+| `update_in_insert`                                      | Already `false`; forcing it changes nothing                          |
+| Diagnostic rendering (virtual_text / signs / underline) | Disabling all three: no change                                       |
+| Semantic tokens                                         | Disabling: no change                                                 |
+| Inlay hints                                             | Disabling: 46.90 → 41.38 ms, marginal                                |
+| Full-document LSP sync                                  | `textDocumentSync.change == 2` (incremental)                         |
+| URI→buffer churn in the diagnostics handler             | Buffer count 3 before and after; URI matches exactly                 |
+| Completion (nvim-cmp)                                   | Disabling after diagnostics: 6.15 → 5.54 ms, marginal                |
+| Statusline / winbar refresh                             | Disabling entirely: 44.90 → 39.30 ms, ~12%                           |
+| `force_hl_update` in `render.open`                      | First fix attempt; **active and did nothing**                        |
 
 ## The unexplained 98%
 
@@ -148,10 +148,10 @@ failure when absent).
 
 Same-session A/B via `nvim-keystroke-bench --compare`:
 
-| File | hack on | hack off |
-|---|---|---|
+| File                       | hack on                     | hack off                      |
+| -------------------------- | --------------------------- | ----------------------------- |
 | `velox_auto_merge_tool.py` | p50 **9.92** / p95 25.87 ms | p50 **62.25** / p95 146.34 ms |
-| `PlanBuilder.cpp` | p50 5.30 / p95 16.44 ms | p50 5.14 / p95 15.97 ms |
+| `PlanBuilder.cpp`          | p50 5.30 / p95 16.44 ms     | p50 5.14 / p95 15.97 ms       |
 
 C++ is unchanged, as expected — no benefit, no harm.
 

@@ -95,16 +95,16 @@ and sway starts it once per session via the `exec` line at the bottom of
 `~/bin/startup-windows` directly; `--dry-run` prints the plan without touching
 anything.
 
-| WS | Contents |
-|----|----------|
-| 1  | local terminal (bare nvim) + Chrome + Omnigent |
-| 2  | nvim in `~/dotfiles` + Chrome + Omnigent |
-| 3  | nvim in `~/dev/orchest` + Chrome + Omnigent |
-| 4  | nvim in `~/repos/omnigent` + Chrome + Omnigent |
-| 5  | nvim in `~/work/presto` + Chrome + Omnigent |
-| 6  | nvim in `~/gatech` + Chrome + Omnigent |
-| 9  | second-monitor dashboard (Obsidian) |
-| Z  | overflow / stray sweep (`$mod+z`) |
+| WS  | Contents                                       |
+| --- | ---------------------------------------------- |
+| 1   | local terminal (bare nvim) + Chrome + Omnigent |
+| 2   | nvim in `~/dotfiles` + Chrome + Omnigent       |
+| 3   | nvim in `~/dev/orchest` + Chrome + Omnigent    |
+| 4   | nvim in `~/repos/omnigent` + Chrome + Omnigent |
+| 5   | nvim in `~/work/presto` + Chrome + Omnigent    |
+| 6   | nvim in `~/gatech` + Chrome + Omnigent         |
+| 9   | second-monitor dashboard (Obsidian)            |
+| Z   | overflow / stray sweep (`$mod+z`)              |
 
 Each workspace is one tabbed container ordered terminal, Chrome, Omnigent.
 Workspace-to-monitor pinning is machine-local (`~/.config/sway/config.d/`, see

@@ -32,12 +32,12 @@ Use `:MetaRepo` to force a repository selection for the current tab. If no repos
 
 The resolver applies to:
 
-| Tool | Behavior |
-|------|----------|
-| Myles (`<leader>p`) | Uses the current file's directory, or the selected repository root for a virtual buffer. |
-| Biggrep (`<leader>sg`, `<leader>sr`, `:Bgs`, `:Bgf`, `:Bgr`) | Still uses the Biggrep extension; the wrapper only supplies the resolved directory/repository as `cwd`. |
-| Sapling (`<leader>hs`, `:HgSsl`, `:HgSslSplit`, diff helpers, `:SlPull`) | Runs against the resolved Sapling repository. |
-| Buck (`<leader>B{t,T,f,l,b,r,g}` and ownership queries) | Uses the nearest `.buckconfig` root for the active file or selected repository. |
+| Tool                                                                     | Behavior                                                                                                |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| Myles (`<leader>p`)                                                      | Uses the current file's directory, or the selected repository root for a virtual buffer.                |
+| Biggrep (`<leader>sg`, `<leader>sr`, `:Bgs`, `:Bgf`, `:Bgr`)             | Still uses the Biggrep extension; the wrapper only supplies the resolved directory/repository as `cwd`. |
+| Sapling (`<leader>hs`, `:HgSsl`, `:HgSslSplit`, diff helpers, `:SlPull`) | Runs against the resolved Sapling repository.                                                           |
+| Buck (`<leader>B{t,T,f,l,b,r,g}` and ownership queries)                  | Uses the nearest `.buckconfig` root for the active file or selected repository.                         |
 
 Shell commands remain separate from this editor behavior: agents should explicitly run `sl`, `jf`, `arc`, `buck`, and repository-scoped searches from the intended sibling repository.
 
@@ -50,11 +50,11 @@ Shell commands remain separate from this editor behavior: agents should explicit
 
 **Phase 2 includes BOTH review status AND CI signal indicators:**
 
-| Symbol | Meaning | Highlight |
-|--------|---------|-----------|
-| `✓` | CI signals passed | Green (`String`) |
-| `✗` | CI signals failed | Red (`DiagnosticError`) |
-| `‼` | CI signals warning | Yellow (`DiagnosticWarn`) |
+| Symbol | Meaning            | Highlight                 |
+| ------ | ------------------ | ------------------------- |
+| `✓`    | CI signals passed  | Green (`String`)          |
+| `✗`    | CI signals failed  | Red (`DiagnosticError`)   |
+| `‼`    | CI signals warning | Yellow (`DiagnosticWarn`) |
 
 These are rendered by `hg ssl` itself (via the `{phabstatus}` Mercurial extension with `signalstatus=True`) and highlighted by `/usr/share/fb-editor-support/nvim/syntax/hgssl.vim`.
 
@@ -62,14 +62,14 @@ These are rendered by `hg ssl` itself (via the `{phabstatus}` Mercurial extensio
 
 **SSL keybindings:**
 
-| Key | Action |
-|-----|--------|
-| `<CR>` | Context-sensitive command menu (checkout, show, rebase, submit, hide, split, metaedit, open in phabricator, etc.) |
-| `j`/`k` | Navigate to next/prev commit |
-| `r` | Refresh |
-| `c`/`C` | Jump to current commit |
-| `s` | Show commit (`hg show`) |
-| `gx` | Open diff in Phabricator |
+| Key     | Action                                                                                                            |
+| ------- | ----------------------------------------------------------------------------------------------------------------- |
+| `<CR>`  | Context-sensitive command menu (checkout, show, rebase, submit, hide, split, metaedit, open in phabricator, etc.) |
+| `j`/`k` | Navigate to next/prev commit                                                                                      |
+| `r`     | Refresh                                                                                                           |
+| `c`/`C` | Jump to current commit                                                                                            |
+| `s`     | Show commit (`hg show`)                                                                                           |
+| `gx`    | Open diff in Phabricator                                                                                          |
 
 **Submit actions from SSL:** `jf submit`, `jf submit --stack`, `jf submit --draft`, `jf submit --draft --stack`
 
@@ -77,26 +77,26 @@ These are rendered by `hg ssl` itself (via the `{phabstatus}` Mercurial extensio
 
 ## Source Control — Other Commands
 
-| Command | Description |
-|---------|-------------|
-| `:HgBlame` | Scrollbound blame split; `<CR>` on diff ID opens Phabricator; `gq` to close |
-| `:HgDiff` | Telescope picker of diff hunks (respects base revision) |
-| `:HgDiffIgnoreAllSpace` | Same but ignoring whitespace |
-| `:HgDiffCurrentCommit` | Diff hunks for current commit only |
-| `:HgStatus` | Interactive status window with staging keybinds (`a`/`s`/`X`/`u`/`d`) |
-| `:HgHistory [N]` | Last N diffs for current file (default 50) |
-| `:HgCommit` | Open commit message editor |
-| `:HgAmend` | Amend changes into current commit |
-| `:HgCommitInteractive` | `hg commit --interactive` |
-| `:HgAbsorb` | `hg absorb` (auto-distribute changes across stack) |
-| `:HgHunkRevert` | Revert hunk under cursor |
-| `:HgRead` | Restore buffer to committed version |
-| `:HgPrev`/`:HgNext` | Navigate commit stack |
-| `:HgChangeBase [rev]` | Change base revision for diff/gutter (empty resets) |
-| `:HgChangeBaseStack` | Set base to last public ancestor |
-| `:HgShowBase` | Show current base revision |
-| `:HgLineBlameToggle` | Toggle inline blame virtual text |
-| `:SlPull` | Async `sl pull` (user-defined in `config/local.lua`) |
+| Command                 | Description                                                                 |
+| ----------------------- | --------------------------------------------------------------------------- |
+| `:HgBlame`              | Scrollbound blame split; `<CR>` on diff ID opens Phabricator; `gq` to close |
+| `:HgDiff`               | Telescope picker of diff hunks (respects base revision)                     |
+| `:HgDiffIgnoreAllSpace` | Same but ignoring whitespace                                                |
+| `:HgDiffCurrentCommit`  | Diff hunks for current commit only                                          |
+| `:HgStatus`             | Interactive status window with staging keybinds (`a`/`s`/`X`/`u`/`d`)       |
+| `:HgHistory [N]`        | Last N diffs for current file (default 50)                                  |
+| `:HgCommit`             | Open commit message editor                                                  |
+| `:HgAmend`              | Amend changes into current commit                                           |
+| `:HgCommitInteractive`  | `hg commit --interactive`                                                   |
+| `:HgAbsorb`             | `hg absorb` (auto-distribute changes across stack)                          |
+| `:HgHunkRevert`         | Revert hunk under cursor                                                    |
+| `:HgRead`               | Restore buffer to committed version                                         |
+| `:HgPrev`/`:HgNext`     | Navigate commit stack                                                       |
+| `:HgChangeBase [rev]`   | Change base revision for diff/gutter (empty resets)                         |
+| `:HgChangeBaseStack`    | Set base to last public ancestor                                            |
+| `:HgShowBase`           | Show current base revision                                                  |
+| `:HgLineBlameToggle`    | Toggle inline blame virtual text                                            |
+| `:SlPull`               | Async `sl pull` (user-defined in `config/local.lua`)                        |
 
 **Hunk navigation:** `]h`/`[h` next/prev hunk, `]H`/`[H` last/first hunk
 
@@ -104,15 +104,15 @@ These are rendered by `hg ssl` itself (via the `{phabstatus}` Mercurial extensio
 
 ## Phabricator Integration
 
-| Command/Action | Description |
-|----------------|-------------|
-| `:HgBrowse` | Open current file/selection in Phabricator code browser |
-| `:HgBrowseYank` | Yank the Phabricator URL |
-| `:HgBrowseRev` / `:HgBrowseRevYank` | Same but pinned to current commit |
-| `:MetaDiffComments` | Fetch and display Phabricator comments for current diff (via `jf graphql`) |
-| `:MetaDiffCheckout` | Telescope picker of your diffs with checkout |
-| `:MetaDiffOpenFiles` | Telescope picker of your diffs, opens files |
-| `gx` (normal mode) | Smart opener — if word matches `[DTPSNCX]\d+`, opens via BunnyLOL (Phabricator diff, task, paste, etc.) |
+| Command/Action                      | Description                                                                                             |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `:HgBrowse`                         | Open current file/selection in Phabricator code browser                                                 |
+| `:HgBrowseYank`                     | Yank the Phabricator URL                                                                                |
+| `:HgBrowseRev` / `:HgBrowseRevYank` | Same but pinned to current commit                                                                       |
+| `:MetaDiffComments`                 | Fetch and display Phabricator comments for current diff (via `jf graphql`)                              |
+| `:MetaDiffCheckout`                 | Telescope picker of your diffs with checkout                                                            |
+| `:MetaDiffOpenFiles`                | Telescope picker of your diffs, opens files                                                             |
+| `gx` (normal mode)                  | Smart opener — if word matches `[DTPSNCX]\d+`, opens via BunnyLOL (Phabricator diff, task, paste, etc.) |
 
 ## Other Meta Features
 

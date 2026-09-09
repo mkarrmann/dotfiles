@@ -66,7 +66,7 @@ So my `~/.localrc` defines a `_checkout_suffix` function that returns `""` for t
 
 ### 1.4 Multi-devserver orchestration
 
-I work across **two devservers** simultaneously, both reachable from my Mac via [ET](https://www.internalfb.com/wiki/Engineering_Terminal_(ET)/) tunnels:
+I work across **two devservers** simultaneously, both reachable from my Mac via [ET](<https://www.internalfb.com/wiki/Engineering_Terminal_(ET)/>) tunnels:
 
 - **FTW**: `devvm36111.ftw0.facebook.com`
 - **CCO**: `devvm20365.cco0.facebook.com`
@@ -77,19 +77,19 @@ Window orchestration on the Mac is via `~/dotfiles/bin-macos/startup-windows`,
 which uses [AeroSpace](https://github.com/nikitabobko/AeroSpace) to lay out 9
 numeric workspaces:
 
-| WS | Contents |
-|----|----------|
-| 1  | local Mac terminal + Chrome |
-| T  | per-devserver SSH tunnel windows (Ghostty) |
-| 2  | CCO checkout1 (Ghostty + Chrome) |
-| 3  | FTW checkout1 (Ghostty + Chrome) |
-| 4  | CCO checkout2 (Ghostty + Chrome) |
-| 5  | FTW checkout2 (Ghostty + Chrome) |
-| 6  | CCO checkout3 (Ghostty + Chrome) |
-| 7  | FTW checkout3 (Ghostty + Chrome) |
-| 8  | CCO checkout4 (Ghostty + Chrome) |
-| 9  | Orchest-only workspace |
-| Z  | sweep / stragglers |
+| WS  | Contents                                   |
+| --- | ------------------------------------------ |
+| 1   | local Mac terminal + Chrome                |
+| T   | per-devserver SSH tunnel windows (Ghostty) |
+| 2   | CCO checkout1 (Ghostty + Chrome)           |
+| 3   | FTW checkout1 (Ghostty + Chrome)           |
+| 4   | CCO checkout2 (Ghostty + Chrome)           |
+| 5   | FTW checkout2 (Ghostty + Chrome)           |
+| 6   | CCO checkout3 (Ghostty + Chrome)           |
+| 7   | FTW checkout3 (Ghostty + Chrome)           |
+| 8   | CCO checkout4 (Ghostty + Chrome)           |
+| 9   | Orchest-only workspace                     |
+| Z   | sweep / stragglers                         |
 
 Code editing currently runs through Ghostty-backed `nvs` sessions. `startup-windows`
 no longer opens VS Code windows.
@@ -99,6 +99,7 @@ no longer opens VS Code windows.
 Headless Neovim servers run on each devserver, persistent across SSH sessions. The wrapper `~/dotfiles/bin/nvs` takes a session name and optional working dir; it hashes the name to a port in `[7000, 8000)`, starts a `nvim --headless --listen localhost:<port>` if not already running, and `cd`s to the workdir on first start.
 
 The Mac side runs `nvs-tunnels` per devserver, which:
+
 1. Sets up SSH port forwarding for each session's port.
 2. Invokes `nvs --server-only <session> <workdir>` on the remote — this starts the headless server with the right `cd` and a watchdog that auto-restarts it within ~5s if it dies.
 
@@ -144,11 +145,11 @@ Each of the 12 files falls into one of four categories:
 
 #### A. **Inherent — must reference a specific checkout**
 
-The DAP source maps in `dap.lua` and `fdb-dap.lua` map binary debug-info paths back to source. The binary was compiled from a specific checkout, so the IDE has to know which one. This category is irreducible — but the *number* of hardcoded checkouts should match the number of workspaces (one map per workspace).
+The DAP source maps in `dap.lua` and `fdb-dap.lua` map binary debug-info paths back to source. The binary was compiled from a specific checkout, so the IDE has to know which one. This category is irreducible — but the _number_ of hardcoded checkouts should match the number of workspaces (one map per workspace).
 
 #### B. **"Pick a default when no PWD context"**
 
-`.local_init.sh` (system setup, runs from `$HOME`), the `presto-build` script's fallback (`echo "$HOME/fbsource/fbcode"`), and the `devmate_mux` wrapper (`cd "$HOME/fbsource"` because devmate_mux's auto-detection is broken on devvms) all need *some* default when they can't infer a checkout from cwd. Defensible — but the literal path should be a variable, not baked in.
+`.local_init.sh` (system setup, runs from `$HOME`), the `presto-build` script's fallback (`echo "$HOME/fbsource/fbcode"`), and the `devmate_mux` wrapper (`cd "$HOME/fbsource"` because devmate_mux's auto-detection is broken on devvms) all need _some_ default when they can't infer a checkout from cwd. Defensible — but the literal path should be a variable, not baked in.
 
 #### C. **"Convenience shortcut"**
 
@@ -192,54 +193,54 @@ Detailed list of every place workspace assumptions live, with file path, line ra
 
 ### Shell layer
 
-| File | Lines | What | Category | Notes |
-|------|-------|------|----------|-------|
-| `~/.localrc` | 50–95 | `_workspace_root`, `_fbsource_root`, `_configerator_root`, `_checkout_suffix`, `gfb`, `con`, `gf`, `gp`, `_mf_flags`, `_mp_flags` | C (shortcuts) + B (suffix) | `_workspace_root` already case-matches `~/checkout1` and `~/checkout2` literally — needs to become a loop over `WORKSPACES` |
-| `~/.local_init.sh` | 62, 63, 94, 232 | Sphinx venv + Rust toolchain paths, all under `~/checkout1/fbsource/...` | B (default) | Setup runs from `$HOME` so cwd-walking won't help — needs `$PRIMARY_FBSOURCE` |
-| `~/dotfiles/bin/devmate_mux` | 4 | `cd "$HOME/main/fbsource"` before invoking real `devmate_mux` | B/C | Wrapper exists because real devmate_mux's auto-detect is broken on devvms |
-| `~/dotfiles/bin/setup-checkouts` | top | `PRIMARY_NAME=checkout1`, `SECONDARY_NAME=checkout2`, `TERTIARY_NAME=checkout3` defaults | already parameterized | Could read defaults from `workspaces.sh` |
+| File                             | Lines           | What                                                                                                                              | Category                   | Notes                                                                                                                       |
+| -------------------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `~/.localrc`                     | 50–95           | `_workspace_root`, `_fbsource_root`, `_configerator_root`, `_checkout_suffix`, `gfb`, `con`, `gf`, `gp`, `_mf_flags`, `_mp_flags` | C (shortcuts) + B (suffix) | `_workspace_root` already case-matches `~/checkout1` and `~/checkout2` literally — needs to become a loop over `WORKSPACES` |
+| `~/.local_init.sh`               | 62, 63, 94, 232 | Sphinx venv + Rust toolchain paths, all under `~/checkout1/fbsource/...`                                                          | B (default)                | Setup runs from `$HOME` so cwd-walking won't help — needs `$PRIMARY_FBSOURCE`                                               |
+| `~/dotfiles/bin/devmate_mux`     | 4               | `cd "$HOME/main/fbsource"` before invoking real `devmate_mux`                                                                     | B/C                        | Wrapper exists because real devmate_mux's auto-detect is broken on devvms                                                   |
+| `~/dotfiles/bin/setup-checkouts` | top             | `PRIMARY_NAME=checkout1`, `SECONDARY_NAME=checkout2`, `TERTIARY_NAME=checkout3` defaults                                          | already parameterized      | Could read defaults from `workspaces.sh`                                                                                    |
 
 ### Neovim layer
 
-| File | Lines | What | Category | Notes |
-|------|-------|------|----------|-------|
-| `~/dotfiles/nvim/lua/lib/presto-maven.lua` | 4 | `DEV_HOME = ~/checkout1/fbsource/fbcode/github` | C | Could walk up from `vim.fn.getcwd()` |
-| `~/dotfiles/nvim/lua/lib/fdb-dap.lua` | 10, 175 | `DEBUGPY_DOTSLASH` + buck cwd | C | Same — could walk up |
-| `~/dotfiles/nvim/lua/plugins/dap.lua` | 45–47 | LLDB source maps | A | Must enumerate all workspaces (currently only maps `~/checkout1`) |
+| File                                       | Lines   | What                                            | Category | Notes                                                             |
+| ------------------------------------------ | ------- | ----------------------------------------------- | -------- | ----------------------------------------------------------------- |
+| `~/dotfiles/nvim/lua/lib/presto-maven.lua` | 4       | `DEV_HOME = ~/checkout1/fbsource/fbcode/github` | C        | Could walk up from `vim.fn.getcwd()`                              |
+| `~/dotfiles/nvim/lua/lib/fdb-dap.lua`      | 10, 175 | `DEBUGPY_DOTSLASH` + buck cwd                   | C        | Same — could walk up                                              |
+| `~/dotfiles/nvim/lua/plugins/dap.lua`      | 45–47   | LLDB source maps                                | A        | Must enumerate all workspaces (currently only maps `~/checkout1`) |
 
 ### Mac orchestration layer
 
-| File | Lines | What | Category |
-|------|-------|------|----------|
+| File                                   | Lines | What                                               | Category                                    |
+| -------------------------------------- | ----- | -------------------------------------------------- | ------------------------------------------- |
 | `~/dotfiles/bin-macos/startup-windows` | 30–53 | Workspace table: 4 entries per devserver hardcoded | A (per-workspace) + B (table-of-workspaces) |
-| `~/dotfiles/bin-macos/nvs-tunnels` | 17 | Example comment in usage docstring | D |
+| `~/dotfiles/bin-macos/nvs-tunnels`     | 17    | Example comment in usage docstring                 | D                                           |
 
 ### Tooling-script layer
 
-| File | Lines | What | Category |
-|------|-------|------|----------|
-| `~/dotfiles/agent_config/skills/presto-build/presto-build` | 18, 28, 36–40 | Auto-detects checkout from cwd; falls back to `~/checkout1/fbsource/fbcode`; suffix derivation already updated | B (fallback) + cleanly-done |
-| `~/dotfiles/agent_config/skills/presto-gateway-deploy/presto-gateway-deploy-finish` | 14 | `TW_CONFIG="$HOME/main/fbsource/...gateway-test.tw"` | C |
+| File                                                                                | Lines         | What                                                                                                           | Category                    |
+| ----------------------------------------------------------------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| `~/dotfiles/agent_config/skills/presto-build/presto-build`                          | 18, 28, 36–40 | Auto-detects checkout from cwd; falls back to `~/checkout1/fbsource/fbcode`; suffix derivation already updated | B (fallback) + cleanly-done |
+| `~/dotfiles/agent_config/skills/presto-gateway-deploy/presto-gateway-deploy-finish` | 14            | `TW_CONFIG="$HOME/main/fbsource/...gateway-test.tw"`                                                           | C                           |
 
 ### Documentation layer
 
-| File | What |
-|------|------|
-| `~/dotfiles/agent_config/skills/presto-build/SKILL.md` | Mentions workspace layout |
-| `~/dotfiles/agent_config/skills/presto-deploy/SKILL.md` | Example paths |
-| `~/dotfiles/agent_config/skills/presto-gateway-deploy/SKILL.md` | Suffix doc |
-| `~/dotfiles/agent_config/skills/screenshot-workflow/SKILL.md` | Symlink description |
-| `~/.claude/projects/presto.md` | Checkout isolation table |
-| `~/dotfiles/docs/workspace-layout-refactor.md` | This doc |
+| File                                                            | What                      |
+| --------------------------------------------------------------- | ------------------------- |
+| `~/dotfiles/agent_config/skills/presto-build/SKILL.md`          | Mentions workspace layout |
+| `~/dotfiles/agent_config/skills/presto-deploy/SKILL.md`         | Example paths             |
+| `~/dotfiles/agent_config/skills/presto-gateway-deploy/SKILL.md` | Suffix doc                |
+| `~/dotfiles/agent_config/skills/screenshot-workflow/SKILL.md`   | Symlink description       |
+| `~/.claude/projects/presto.md`                                  | Checkout isolation table  |
+| `~/dotfiles/docs/workspace-layout-refactor.md`                  | This doc                  |
 
 ### Per-workspace files (out of scope; inherent)
 
-| File | What |
-|------|------|
-| `~/dotfiles/checkout1.code-workspace` | Multi-root workspace, blue peacock theme |
-| `~/dotfiles/checkout2.code-workspace` | Multi-root workspace, teal peacock theme |
-| `~/dotfiles/checkout3.code-workspace` | Multi-root workspace, orange peacock theme |
-| `~/checkout1.code-workspace`, `~/checkout2.code-workspace`, `~/checkout3.code-workspace` | Symlinks → dotfiles |
+| File                                                                                     | What                                       |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------ |
+| `~/dotfiles/checkout1.code-workspace`                                                    | Multi-root workspace, blue peacock theme   |
+| `~/dotfiles/checkout2.code-workspace`                                                    | Multi-root workspace, teal peacock theme   |
+| `~/dotfiles/checkout3.code-workspace`                                                    | Multi-root workspace, orange peacock theme |
+| `~/checkout1.code-workspace`, `~/checkout2.code-workspace`, `~/checkout3.code-workspace` | Symlinks → dotfiles                        |
 
 ---
 
@@ -536,6 +537,7 @@ Accept that workspace renames are an N-file diff. Rejected because the migration
 ### 7.2 Symlink farm
 
 Make every reference go through symlinks like `~/.config/dev-checkout/primary/fbsource -> ~/checkout1/fbsource`. Rejected because:
+
 - We just removed exactly this pattern (`~/fbsource -> ~/local/fbsource`) because it's a footgun with Eden — tools that `realpath` see the canonical path; tools that don't, see the symlink. Round trips through symlinks confuse Buck, watchman, sl.
 
 ### 7.3 Per-tool config files
@@ -560,7 +562,7 @@ Walk `~/*` looking for dirs containing both `fbsource` and `configerator`. Rejec
 
 3. **Do per-workspace `.code-workspace` files belong in `workspaces.sh`?** Probably not — colors and folder lists are workspace-specific data, not metadata about which workspaces exist. Keep them as separate files.
 
-4. **What about the `gfb` / `con` "current vs primary" semantics?** Today `gfb` cd's to the *current* fbsource (the one PWD is inside). Sometimes I want "go to the primary" instead. Could add `gfb-main` / `gfb-scratch` variants. Defer.
+4. **What about the `gfb` / `con` "current vs primary" semantics?** Today `gfb` cd's to the _current_ fbsource (the one PWD is inside). Sometimes I want "go to the primary" instead. Could add `gfb-main` / `gfb-scratch` variants. Defer.
 
 5. **Should `setup-checkouts` enforce that the workspaces in `workspaces.sh` exist after provisioning?** I.e. for each workspace in the list, ensure there's a clone. Currently the script hardcodes the three defaults (`checkout1`, `checkout2`, `checkout3`) and accepts overrides. Could iterate over `${WORKSPACES[@]}` instead — likely worthwhile next time the workspace list changes.
 
@@ -578,16 +580,19 @@ Walk `~/*` looking for dirs containing both `fbsource` and `configerator`. Rejec
 ## 10. Appendix: Why the migration was done in the first place
 
 Pre-migration, the layout was:
+
 ```
 ~/fbsource{,2,3}      ~/configerator{,2,3}
 ```
 
 This meant:
+
 - VS Code workspaces were single-folder: `~/fbsource2.code-workspace` opened only fbsource. Configerator had to be opened separately or not at all in that VS Code window.
 - Workspace identity was implicit in the directory suffix — easy to mix up which `fbsource2` belonged with which `configerator2`.
 - The `~/fbsource -> ~/local/fbsource` symlink chain was a known Eden footgun (different tools see different paths after `realpath`).
 
 Post-migration:
+
 ```
 ~/checkout1/{fbsource,configerator}      ~/checkout2/{fbsource,configerator}
 ```

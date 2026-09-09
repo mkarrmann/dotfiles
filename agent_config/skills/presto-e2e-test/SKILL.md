@@ -20,6 +20,7 @@ End-to-end testing tools for validating Presto builds deployed to remote Katchin
 **Key script:** `~/.claude/skills/presto-e2e-test/presto-test`
 
 **Related skills:**
+
 - `presto-build` — Local builds, unit tests, and checkstyle
 - `presto-deploy` — Deploying to a cluster and reserving test clusters (required before testing)
 
@@ -31,37 +32,37 @@ There are three testing tools, each with different query sources and tradeoffs. 
 
 ### Tool Comparison
 
-| | Verifier | BEEST (QueryBank) | goshadow / shadow perfrun |
-|---|---|---|---|
-| **Tests** | Correctness (checksum comparison) | Correctness or performance (configurable mode) | Performance (CPU/memory regression) |
-| **Query source** | Production-sampled queries (daily-refreshed) | Curated synthetic data (Synthefy-generated) | Real production traffic (live or historical) |
-| **Deterministic** | Yes (fixed suite) | Yes (synthetic data, reproducible) | perfrun: yes (same `--end-date` = same queries). goshadow logs: no (tables may expire) |
-| **Region constraint** | Yes — suite must match cluster region (e.g., `atn1_default` only runs on `atn1` clusters) | No — synthetic data runs anywhere | No |
-| **Strengths** | Catches correctness bugs on real query shapes; excludes non-deterministic functions automatically | Targeted operator/feature coverage; 231 suites; privacy-safe; runs in CORRECTNESS, PERFORMANCE, or STRESS mode | Tests with real production workloads; catches issues synthetic data misses |
-| **Weaknesses** | Region-locked; misses query shapes not in the suite; cannot test performance | Synthetic data may miss production edge cases | Queries may fail due to expired tables or permissions; performance results have noise |
+|                       | Verifier                                                                                          | BEEST (QueryBank)                                                                                              | goshadow / shadow perfrun                                                              |
+| --------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| **Tests**             | Correctness (checksum comparison)                                                                 | Correctness or performance (configurable mode)                                                                 | Performance (CPU/memory regression)                                                    |
+| **Query source**      | Production-sampled queries (daily-refreshed)                                                      | Curated synthetic data (Synthefy-generated)                                                                    | Real production traffic (live or historical)                                           |
+| **Deterministic**     | Yes (fixed suite)                                                                                 | Yes (synthetic data, reproducible)                                                                             | perfrun: yes (same `--end-date` = same queries). goshadow logs: no (tables may expire) |
+| **Region constraint** | Yes — suite must match cluster region (e.g., `atn1_default` only runs on `atn1` clusters)         | No — synthetic data runs anywhere                                                                              | No                                                                                     |
+| **Strengths**         | Catches correctness bugs on real query shapes; excludes non-deterministic functions automatically | Targeted operator/feature coverage; 231 suites; privacy-safe; runs in CORRECTNESS, PERFORMANCE, or STRESS mode | Tests with real production workloads; catches issues synthetic data misses             |
+| **Weaknesses**        | Region-locked; misses query shapes not in the suite; cannot test performance                      | Synthetic data may miss production edge cases                                                                  | Queries may fail due to expired tables or permissions; performance results have noise  |
 
 ### Decision Framework
 
 **Step 1: What did you change?**
 
-| Change type | Correctness test | Performance test |
-|---|---|---|
-| Broad / optimizer rule / planner | Verifier (default suite) | `pt shadow perfrun` |
-| Specific operator (e.g., hash agg) | BEEST operator suite (e.g., `operator_hash_aggregation_synthefy`) | `pt shadow perfrun` with `--predicate` to filter relevant queries |
-| Specific data type (e.g., decimals) | BEEST data structure suite (e.g., `ds_decimal_types_synthefy`) | goshadow replay of queries using that type |
-| Feature area (metalake, nimble, deltoid) | BEEST feature suites (see catalog below) | goshadow with filtered queries |
-| Join behavior | BEEST join suites + Verifier | `pt shadow perfrun` |
-| Session property toggle | BEEST with `-s prop=value` | `pt shadow perfrun -cs "prop=old" -es "prop=new"` |
-| Server config toggle (e.g., HTTPS, auth) | BEEST + Verifier | Manual goshadow A/B with redeploy between arms (not `pt shadow perfrun`); see `presto-deploy` "Modifying Cluster Config for Testing" |
-| Quick smoke test | `presto_smoke_test` (5 tests) or CLI spot-check | N/A |
+| Change type                              | Correctness test                                                  | Performance test                                                                                                                     |
+| ---------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Broad / optimizer rule / planner         | Verifier (default suite)                                          | `pt shadow perfrun`                                                                                                                  |
+| Specific operator (e.g., hash agg)       | BEEST operator suite (e.g., `operator_hash_aggregation_synthefy`) | `pt shadow perfrun` with `--predicate` to filter relevant queries                                                                    |
+| Specific data type (e.g., decimals)      | BEEST data structure suite (e.g., `ds_decimal_types_synthefy`)    | goshadow replay of queries using that type                                                                                           |
+| Feature area (metalake, nimble, deltoid) | BEEST feature suites (see catalog below)                          | goshadow with filtered queries                                                                                                       |
+| Join behavior                            | BEEST join suites + Verifier                                      | `pt shadow perfrun`                                                                                                                  |
+| Session property toggle                  | BEEST with `-s prop=value`                                        | `pt shadow perfrun -cs "prop=old" -es "prop=new"`                                                                                    |
+| Server config toggle (e.g., HTTPS, auth) | BEEST + Verifier                                                  | Manual goshadow A/B with redeploy between arms (not `pt shadow perfrun`); see `presto-deploy` "Modifying Cluster Config for Testing" |
+| Quick smoke test                         | `presto_smoke_test` (5 tests) or CLI spot-check                   | N/A                                                                                                                                  |
 
 **Step 2: How confident do you need to be?**
 
-| Confidence level | What to run |
-|---|---|
-| Sanity check | CLI spot-check or `presto_smoke_test` |
-| Dev iteration | One targeted BEEST suite |
-| Pre-diff | Verifier (default suite) + 1-2 relevant BEEST suites |
+| Confidence level             | What to run                                                    |
+| ---------------------------- | -------------------------------------------------------------- |
+| Sanity check                 | CLI spot-check or `presto_smoke_test`                          |
+| Dev iteration                | One targeted BEEST suite                                       |
+| Pre-diff                     | Verifier (default suite) + 1-2 relevant BEEST suites           |
 | Pre-land / release candidate | Verifier + `batch_tier1` + `batch_tier2` + `pt shadow perfrun` |
 
 ### Verifier Suites
@@ -69,6 +70,7 @@ There are three testing tools, each with different query sources and tradeoffs. 
 Suites are defined in Configerator and are **region-specific** (named `<region>_<suite>`). The default suite (used when `--suite` is omitted) is `<region>_default`. List suites via Configerator (`source/presto/verifier/suites`); they cannot be enumerated from the CLI.
 
 Common patterns:
+
 - `<region>_default` — daily-refreshed production-sampled queries (general correctness)
 - `<region>_alluxio` — Alluxio-specific
 - `<region>_full_outer_join_with_coalesce` — targeted join shape
@@ -83,29 +85,29 @@ Production-sampled suites automatically exclude non-deterministic functions (`ra
 
 **Go-to suites by scenario:**
 
-| Scenario | Suite | Tests | Notes |
-|----------|-------|-------|-------|
-| Quick smoke test | `presto_smoke_test` | 5 | Does not support `--engine PRESTISSIMO` — use default engine |
-| Representative batch | `batch_representative` | 52 | Good fast overview |
-| Full batch correctness | `batch_tier1` | 2179 | Primary release-gating suite |
-| CPU-heavy perf | `batch_high_cpu_verified` | 13 | Curated, high signal |
-| Memory-heavy perf | `batch_high_memory_verified` | 8 | Curated, high signal |
-| Network/shuffle perf | `batch_high_network_verified` | 7 | Curated, high signal |
-| OOM reliability | `batch_out_of_memory_reliability` | 24 | Stress test |
+| Scenario               | Suite                             | Tests | Notes                                                        |
+| ---------------------- | --------------------------------- | ----- | ------------------------------------------------------------ |
+| Quick smoke test       | `presto_smoke_test`               | 5     | Does not support `--engine PRESTISSIMO` — use default engine |
+| Representative batch   | `batch_representative`            | 52    | Good fast overview                                           |
+| Full batch correctness | `batch_tier1`                     | 2179  | Primary release-gating suite                                 |
+| CPU-heavy perf         | `batch_high_cpu_verified`         | 13    | Curated, high signal                                         |
+| Memory-heavy perf      | `batch_high_memory_verified`      | 8     | Curated, high signal                                         |
+| Network/shuffle perf   | `batch_high_network_verified`     | 7     | Curated, high signal                                         |
+| OOM reliability        | `batch_out_of_memory_reliability` | 24    | Stress test                                                  |
 
 **Operator suites** — use when your change targets a specific operator. Pick the one that matches:
 
-| Operator | Suite | Tests |
-|----------|-------|-------|
-| Scan/filter/project | `operator_scan_filter_and_project_synthefy` | 816 |
-| Hash aggregation | `operator_hash_aggregation_synthefy` | 490 |
-| Exchange (shuffle) | `operator_exchange_synthefy` | 746 |
-| Partitioned output | `operator_partitioned_output_synthefy` | 448 |
-| Join (general) | `operator_join_synthefy` | 48 |
-| Lookup join | `operator_lookup_join_synthefy` | 429 |
-| Window | `operator_window_synthefy` | 250 |
-| Table writer (INSERT) | `operator_table_writer_synthefy` | 312 |
-| Multi-stage joins | `operator_10_or_more_join_stages` | 42 |
+| Operator              | Suite                                       | Tests |
+| --------------------- | ------------------------------------------- | ----- |
+| Scan/filter/project   | `operator_scan_filter_and_project_synthefy` | 816   |
+| Hash aggregation      | `operator_hash_aggregation_synthefy`        | 490   |
+| Exchange (shuffle)    | `operator_exchange_synthefy`                | 746   |
+| Partitioned output    | `operator_partitioned_output_synthefy`      | 448   |
+| Join (general)        | `operator_join_synthefy`                    | 48    |
+| Lookup join           | `operator_lookup_join_synthefy`             | 429   |
+| Window                | `operator_window_synthefy`                  | 250   |
+| Table writer (INSERT) | `operator_table_writer_synthefy`            | 312   |
+| Multi-stage joins     | `operator_10_or_more_join_stages`           | 42    |
 
 For other operators, run `pt beest suites | grep operator_`.
 
@@ -129,6 +131,7 @@ pt beest run --suite batch_high_cpu_verified --suite batch_high_network_verified
 Key flags: `--engine PRESTISSIMO` (required for Prestissimo), `--mode PERFORMANCE` (benchmarking), `--force` (skip active-query check — needed for batch test clusters), `--limit <n>` (cap test count), `-s "prop=value"` (session properties), `--no-upload-result` (don't write to XDB).
 
 **BEEST pitfalls:**
+
 - `--engine PRESTISSIMO` is **not supported by all suites** (e.g., `presto_smoke_test` is Java-only). If you get `Execution engine PRESTISSIMO not supported`, omit the flag — the suite will still run on Prestissimo workers, it just uses the default (PRESTO/Java) engine classification for test matching.
 - **Synthetic tables may not exist in all regions.** If queries fail with "table does not exist", the suite's data hasn't been replicated to your cluster's local namespace. Prefer clusters in `atn`, `ftw`, `pnb`, `rcd`. See "Namespaces and Regions" below.
 - **Batch test clusters restrict cross-region access.** If queries fail with `PRISM_REGION_NOT_ALLOWED`, the synthetic data is in a different region. See the `presto-deploy` skill for the `allowed_fb_regions` workaround.
@@ -137,16 +140,16 @@ Key flags: `--engine PRESTISSIMO` (required for Prestissimo), `--mode PERFORMANC
 
 **Which suites for which change (performance testing):**
 
-| What you're changing | Start with | Expand to |
-|---------------------|------------|-----------|
-| Exchange / network | `batch_high_network_verified` (7) | `operator_exchange_synthefy` (746) |
-| CPU optimization | `batch_high_cpu_verified` (13) | `batch_high_cpu` (31) |
-| Memory / join strategy | `batch_high_memory_verified` (8) | `batch_high_memory` (126) |
-| Aggregation | `operator_hash_aggregation_synthefy` (490) | — |
-| Scan / filter | `operator_scan_filter_and_project_synthefy` (816) | — |
-| Join operator | `operator_join_synthefy` (48) | `operator_10_or_more_join_stages` (42) |
-| File format (Nimble) | `nimble_qb_adhoc_prestissimo_read` (122) | `nimble_qb_adhoc_prestissimo_write` (84) |
-| Overall impact | `batch_representative` (52) | `batch_tier1` (2179) |
+| What you're changing   | Start with                                        | Expand to                                |
+| ---------------------- | ------------------------------------------------- | ---------------------------------------- |
+| Exchange / network     | `batch_high_network_verified` (7)                 | `operator_exchange_synthefy` (746)       |
+| CPU optimization       | `batch_high_cpu_verified` (13)                    | `batch_high_cpu` (31)                    |
+| Memory / join strategy | `batch_high_memory_verified` (8)                  | `batch_high_memory` (126)                |
+| Aggregation            | `operator_hash_aggregation_synthefy` (490)        | —                                        |
+| Scan / filter          | `operator_scan_filter_and_project_synthefy` (816) | —                                        |
+| Join operator          | `operator_join_synthefy` (48)                     | `operator_10_or_more_join_stages` (42)   |
+| File format (Nimble)   | `nimble_qb_adhoc_prestissimo_read` (122)          | `nimble_qb_adhoc_prestissimo_write` (84) |
+| Overall impact         | `batch_representative` (52)                       | `batch_tier1` (2179)                     |
 
 ### Namespaces and Regions
 
@@ -154,10 +157,10 @@ Presto namespaces (Hive metastore schemas) determine where data is physically st
 
 **Namespace types:**
 
-| Type | Pattern | Data location | Example |
-|------|---------|---------------|---------|
-| **Local** | `local_<datacenter><id><name>` | Specific region/datacenter | `local_atn5cerium`, `local_ftw2nitrogen` |
-| **Global** | No `local_` prefix | May span multiple regions | `beest`, `di` |
+| Type       | Pattern                        | Data location              | Example                                  |
+| ---------- | ------------------------------ | -------------------------- | ---------------------------------------- |
+| **Local**  | `local_<datacenter><id><name>` | Specific region/datacenter | `local_atn5cerium`, `local_ftw2nitrogen` |
+| **Global** | No `local_` prefix             | May span multiple regions  | `beest`, `di`                            |
 
 **Local namespaces** are guaranteed to have all data in the specified region. When a Presto cluster reads from a local namespace matching its own region, all reads are in-region and fast. When the namespace is in a different region, reads are **cross-region** (x-region) — data must traverse the inter-region network, which adds latency and can significantly inflate wall times.
 
@@ -169,12 +172,12 @@ When `--cluster` is specified but `--namespace` is omitted, `pt beest run` auto-
 
 **Impact on performance testing:**
 
-| Scenario | Cross-region? | Impact |
-|----------|---------------|--------|
-| Cluster in `rcd`, namespace `local_rcd0dw0` | No | Clean baseline — in-region reads |
-| Cluster in `rcd`, namespace `local_ftw2nitrogen` | Yes | Inflated wall times; CPU usually unaffected but I/O wait increases |
-| Cluster in `atn`, namespace auto-resolved | No | Auto-resolves to `local_atn*` — in-region |
-| Cluster in `rcd`, no namespace specified | No | Auto-resolved to local region |
+| Scenario                                         | Cross-region? | Impact                                                             |
+| ------------------------------------------------ | ------------- | ------------------------------------------------------------------ |
+| Cluster in `rcd`, namespace `local_rcd0dw0`      | No            | Clean baseline — in-region reads                                   |
+| Cluster in `rcd`, namespace `local_ftw2nitrogen` | Yes           | Inflated wall times; CPU usually unaffected but I/O wait increases |
+| Cluster in `atn`, namespace auto-resolved        | No            | Auto-resolves to `local_atn*` — in-region                          |
+| Cluster in `rcd`, no namespace specified         | No            | Auto-resolved to local region                                      |
 
 **Recommendations:**
 
@@ -190,6 +193,7 @@ When `--cluster` is specified but `--namespace` is omitted, `pt beest run` auto-
 **See the `presto-deploy` skill** for detailed guidance on cluster sizing (worker-count-dependent configs, sizing recommendations) and reservation (flags, checklist, region selection).
 
 Key points for test selection:
+
 - **Correctness testing** (BEEST, verifier): 10-50 workers is fine
 - **Performance A/B** (goshadow/perfrun): Use 100-300 workers for production-representative signal
 - **A/B comparisons**: Both arms must use the same cluster — relative comparisons are valid even on smaller clusters
@@ -198,6 +202,7 @@ Key points for test selection:
 ### goshadow / Shadow Perfrun Query Selection
 
 **`pt shadow perfrun`** samples production queries deterministically — same `--end-date` and parameters produce the same query set. Filter with:
+
 - `--catalog` (default: `prism,prism_batch`) — which catalogs to sample from
 - `--days` / `--end-date` — time window
 - `--max-queries` (default: 1000) — sample size
@@ -207,34 +212,34 @@ Key points for test selection:
 
 Common predicates by test type:
 
-| Testing | Predicate | Why |
-|---------|-----------|-----|
-| Network/exchange overhead | `total_bytes > CAST(10 AS BIGINT)*1024*1024*1024 AND stage_count > 3` | Network-heavy workloads amplify exchange protocol overhead |
-| CPU optimization | `total_split_cpu_time_ms > 300000 AND total_bytes / NULLIF(total_split_cpu_time_ms, 0) < 1000000` | Compute-bound queries show CPU improvements clearly |
-| Memory optimization | `peak_total_memory_bytes > CAST(100 AS BIGINT)*1024*1024*1024 OR spilled_bytes > 0` | Memory-intensive queries stress the changes |
-| File format change | `total_bytes > CAST(50 AS BIGINT)*1024*1024*1024 AND total_split_cpu_time_ms / NULLIF(total_bytes, 0) * 1024 < 10` | I/O-bound queries isolate storage layer impact |
-| Join strategy | `stage_count >= 3 AND peak_total_memory_bytes > CAST(50 AS BIGINT)*1024*1024*1024` | Multi-stage, memory-intensive patterns indicate joins |
+| Testing                   | Predicate                                                                                                          | Why                                                        |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- |
+| Network/exchange overhead | `total_bytes > CAST(10 AS BIGINT)*1024*1024*1024 AND stage_count > 3`                                              | Network-heavy workloads amplify exchange protocol overhead |
+| CPU optimization          | `total_split_cpu_time_ms > 300000 AND total_bytes / NULLIF(total_split_cpu_time_ms, 0) < 1000000`                  | Compute-bound queries show CPU improvements clearly        |
+| Memory optimization       | `peak_total_memory_bytes > CAST(100 AS BIGINT)*1024*1024*1024 OR spilled_bytes > 0`                                | Memory-intensive queries stress the changes                |
+| File format change        | `total_bytes > CAST(50 AS BIGINT)*1024*1024*1024 AND total_split_cpu_time_ms / NULLIF(total_bytes, 0) * 1024 < 10` | I/O-bound queries isolate storage layer impact             |
+| Join strategy             | `stage_count >= 3 AND peak_total_memory_bytes > CAST(50 AS BIGINT)*1024*1024*1024`                                 | Multi-stage, memory-intensive patterns indicate joins      |
 
-> **Presto byte-literal gotcha:** write byte thresholds as a BIGINT literal (e.g. `10737418240` for 10 GiB) or `CAST(N AS BIGINT)*1024*1024*1024`. Plain `N*1024*1024*1024` **overflows INT32** for N≥2 (error: `integer multiplication overflow`), and `^` is **bitwise XOR** in Presto, *not* exponentiation — so `1024^3` silently computes the wrong value.
+> **Presto byte-literal gotcha:** write byte thresholds as a BIGINT literal (e.g. `10737418240` for 10 GiB) or `CAST(N AS BIGINT)*1024*1024*1024`. Plain `N*1024*1024*1024` **overflows INT32** for N≥2 (error: `integer multiplication overflow`), and `^` is **bitwise XOR** in Presto, _not_ exponentiation — so `1024^3` silently computes the wrong value.
 
 **goshadow** replays specific queries or traffic windows. For performance A/B, prefer `pt shadow perfrun` unless you need to replay specific query IDs from a paste.
 
 ## Quick Reference
 
-| Task | Command |
-|------|---------|
-| Interactive CLI | `presto-test cli -c <cluster>` |
-| Spot-check query | `presto-test cli -c <cluster> -e "SELECT ..."` |
-| Verifier (default) | `presto-test verifier -c <cluster>` |
-| Verifier (explicit control) | `presto-test verifier -c <cluster> --control <ctl> --suite <suite>` |
-| Acquire Super User | `di_super_user_tools get_temp_global_super_user_privilge --catalog hive --identity-name <user> --identity-type username --exp-days 1 --privilege SELECT --reason "<description>"` |
-| goshadow (paste) | `presto-test goshadow -c <cluster> -p <paste_id>` |
-| goshadow (logs) | `presto-test goshadow -c <cluster> --mode logs --env <src> --start "..." --end "..."` |
-| goshadow (live) | `presto-test goshadow -c <cluster> --mode live --env <src>` |
-| goshadow (A/B with session) | `presto-test goshadow -c <cluster> --mode logs --env <src> --start "..." --end "..." --session "prop=val" --tag "my_tag" --limit 1000` |
-| BEEST (suite) | `presto-test beest -c <cluster> --suite <suite>` |
-| BEEST (specific IDs) | `presto-test beest -c <cluster> --ids 115315,127316` |
-| Shadow A/B | `presto-test shadow -c <cluster> --query-file <file> --tag <tag>` |
+| Task                        | Command                                                                                                                                                                           |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Interactive CLI             | `presto-test cli -c <cluster>`                                                                                                                                                    |
+| Spot-check query            | `presto-test cli -c <cluster> -e "SELECT ..."`                                                                                                                                    |
+| Verifier (default)          | `presto-test verifier -c <cluster>`                                                                                                                                               |
+| Verifier (explicit control) | `presto-test verifier -c <cluster> --control <ctl> --suite <suite>`                                                                                                               |
+| Acquire Super User          | `di_super_user_tools get_temp_global_super_user_privilge --catalog hive --identity-name <user> --identity-type username --exp-days 1 --privilege SELECT --reason "<description>"` |
+| goshadow (paste)            | `presto-test goshadow -c <cluster> -p <paste_id>`                                                                                                                                 |
+| goshadow (logs)             | `presto-test goshadow -c <cluster> --mode logs --env <src> --start "..." --end "..."`                                                                                             |
+| goshadow (live)             | `presto-test goshadow -c <cluster> --mode live --env <src>`                                                                                                                       |
+| goshadow (A/B with session) | `presto-test goshadow -c <cluster> --mode logs --env <src> --start "..." --end "..." --session "prop=val" --tag "my_tag" --limit 1000`                                            |
+| BEEST (suite)               | `presto-test beest -c <cluster> --suite <suite>`                                                                                                                                  |
+| BEEST (specific IDs)        | `presto-test beest -c <cluster> --ids 115315,127316`                                                                                                                              |
+| Shadow A/B                  | `presto-test shadow -c <cluster> --query-file <file> --tag <tag>`                                                                                                                 |
 
 ## CLI Spot-Check
 
@@ -268,11 +273,13 @@ AS SELECT ...                               -- shape data to trigger your code p
 **Catalog**: `prism` (or `prism_batch` for batch tiers) is the documented Hive-family catalog for ad-hoc writes. There is no separate non-prod write catalog — `retention_days` is what makes this safe, not catalog choice.
 
 **Key conventions:**
+
 - Prefix table name with your unixname (`mkarrmann_missing_buckets_test`) to avoid collisions and make ownership obvious.
 - Always set `retention_days` (1 is fine for a one-shot verification). Without it, the table persists indefinitely.
 - For format-sensitive bugs (e.g., empty-file behavior), use the actual production format — DWRF/ORC empty files are ~27 bytes in production but may be 0 bytes in unit-test environments where `OrcOutputFormat.close(false)` short-circuits. The real warehouse path is the only way to verify.
 
 **Caveats:**
+
 - Writing to `prism` from a locally-built coordinator (`presto-local-dev`) talks to the production metastore and warmstorage. Prefer running the CTAS through an officially-deployed adhoc cluster (`presto --smc <adhoc_cluster>`) when possible, so the write path matches a sanctioned binary.
 - After the CTAS, read back metastore parameters via `SELECT * FROM "<table>$properties"` or directly via the Hive metastore client to verify the stat (e.g., `totalSize`, `numFiles`).
 
@@ -313,6 +320,7 @@ presto-test goshadow -c <cluster> --mode live --env <source_cluster>
 The script automatically adds `--run-as-current-user` and `--max-concurrent-query 200`.
 
 **Session property A/B testing:** Use `--session` to set session properties and `--tag` to tag queries for analysis:
+
 ```bash
 # Control arm
 presto-test goshadow -c <cluster> --mode logs --env <src> \
@@ -341,7 +349,7 @@ The script automatically sets `--namespace` based on the cluster's region (auto-
 
 Compares query performance between a control build and an experiment build. Both builds must be deployed to the **same** cluster (different clusters have different hardware/load, making cross-cluster comparison unreliable).
 
-**Build type matters for binary-comparison A/B tests** (comparing different Presto versions or code changes). BOLT applies profile-guided optimization trained on *current* production code paths, which unfairly favors whichever binary matches production behavior. Use `opt` builds for both arms in binary comparisons. See `presto-deploy` "Build Type for Performance Testing" for details.
+**Build type matters for binary-comparison A/B tests** (comparing different Presto versions or code changes). BOLT applies profile-guided optimization trained on _current_ production code paths, which unfairly favors whichever binary matches production behavior. Use `opt` builds for both arms in binary comparisons. See `presto-deploy` "Build Type for Performance Testing" for details.
 
 **Always use opt builds for A/B tests, including config-toggle tests.** BOLT optimizes instruction layout for production code paths. Even when both arms use the identical binary, a config toggle that changes which code paths are hot (e.g., HTTPS on/off removes TLS from the hot path) biases results toward the production-config arm. Use an existing opt hybrid ephemeral — find one with `fbpkg versions presto.presto 2>&1 | grep -v "cpp-bolt" | grep "cpp-" | head -10`.
 
@@ -350,17 +358,20 @@ Compares query performance between a control build and an experiment build. Both
 The appropriate methodology depends on how much confidence is needed:
 
 **Quick sanity check** (50-100 queries, single run):
+
 - "Is this change catastrophically bad?"
 - Aggregate CPU ratio is sufficient — a 20%+ change is signal, anything smaller is noise at this sample size
 - Use `pt shadow perfrun` with `--max-queries 100`
 
 **Moderate confidence** (200-500 queries, single run):
+
 - "Is there a meaningful performance difference?"
 - Look at aggregate CPU ratio and per-bucket breakdowns by query size
 - Effects of 5-10% are detectable but not conclusive
 - Use `pt shadow perfrun` with default settings, or manual goshadow
 
 **High confidence** (500+ queries, multiple runs):
+
 - "We need to quantify this precisely for a decision"
 - Run each condition at least twice (ideally interleaved: control → experiment → control → experiment)
 - Compare across runs to estimate natural variance before attributing effects
@@ -387,6 +398,7 @@ Before committing to a large A/B test run, validate these assumptions:
 **1. Verify the toggle is the ONLY difference.** List every dimension that changes between arms (protocol, port, connection pool, multiplexing, config properties, binary version). If more than one thing changes, the test measures a combination of effects, not the intended variable. This is the most common and most expensive mistake.
 
 **2. Run a small pilot first.** Run 5-10 queries with each arm. Check:
+
 - Do both arms have similar success/failure rates? If not, the toggle is broken.
 - Are there unexpected error patterns in one arm? (e.g., exchange failures, connection refused)
 - Is the CPU ratio roughly what you expect? A wildly different ratio (e.g., 2x) suggests a bug, not a real effect.
@@ -401,21 +413,21 @@ The queries you test determine the signal you get. Choose query sets based on wh
 
 **Query Size Thresholds** (for filtering and bucketing results):
 
-| Metric | Small | Medium | Large | Very Large |
-|--------|-------|--------|-------|------------|
-| CPU time (`total_split_cpu_time_ms`) | < 75,000 (75s) | 75k-250k (1-4min) | 250k-1M (4-16min) | > 1M (>16min) |
-| Memory (`peak_total_memory_bytes`) | < 10 GB | 10-100 GB | 100GB-1TB | > 1 TB |
-| I/O (`total_bytes`) | < 1 GB | 1-30 GB | 30-100 GB | > 100 GB |
+| Metric                                | Small          | Medium             | Large              | Very Large      |
+| ------------------------------------- | -------------- | ------------------ | ------------------ | --------------- |
+| CPU time (`total_split_cpu_time_ms`)  | < 75,000 (75s) | 75k-250k (1-4min)  | 250k-1M (4-16min)  | > 1M (>16min)   |
+| Memory (`peak_total_memory_bytes`)    | < 10 GB        | 10-100 GB          | 100GB-1TB          | > 1 TB          |
+| I/O (`total_bytes`)                   | < 1 GB         | 1-30 GB            | 30-100 GB          | > 100 GB        |
 | Wall time (`query_execution_time_ms`) | < 10,000 (10s) | 10k-60k (10s-1min) | 60k-1.2M (1-20min) | > 1.2M (>20min) |
 
-| Profile | Filter | Test these for |
-|---------|--------|----------------|
-| **CPU-heavy** | `total_split_cpu_time_ms > 300000 AND total_bytes / NULLIF(total_split_cpu_time_ms, 0) < 1000000` | CPU optimizations, vectorization, SIMD |
-| **Memory-heavy** | `peak_total_memory_bytes > CAST(100 AS BIGINT)*1024*1024*1024 OR spilled_bytes > 0` | Memory optimizations, join/agg strategies, spilling |
-| **I/O-heavy** | `total_bytes > CAST(30 AS BIGINT)*1024*1024*1024 AND total_split_cpu_time_ms / NULLIF(total_bytes, 0) * 1024 < 5` | File format changes, predicate pushdown, column pruning |
-| **Shuffle-heavy** | `stage_count > 3 AND total_split_wall_time_ms / NULLIF(total_split_cpu_time_ms, 0) > 2.0` | Exchange protocol changes, network optimizations, compression |
-| **Join-heavy** | `stage_count >= 3 AND peak_total_memory_bytes > CAST(50 AS BIGINT)*1024*1024*1024` | Join strategy changes, hash table optimizations |
-| **Aggregation-heavy** | `total_rows > 0 AND CAST(output_rows AS DOUBLE) / total_rows < 0.01 AND peak_total_memory_bytes > CAST(50 AS BIGINT)*1024*1024*1024` | Aggregation algorithms, group-by strategies |
+| Profile               | Filter                                                                                                                               | Test these for                                                |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
+| **CPU-heavy**         | `total_split_cpu_time_ms > 300000 AND total_bytes / NULLIF(total_split_cpu_time_ms, 0) < 1000000`                                    | CPU optimizations, vectorization, SIMD                        |
+| **Memory-heavy**      | `peak_total_memory_bytes > CAST(100 AS BIGINT)*1024*1024*1024 OR spilled_bytes > 0`                                                  | Memory optimizations, join/agg strategies, spilling           |
+| **I/O-heavy**         | `total_bytes > CAST(30 AS BIGINT)*1024*1024*1024 AND total_split_cpu_time_ms / NULLIF(total_bytes, 0) * 1024 < 5`                    | File format changes, predicate pushdown, column pruning       |
+| **Shuffle-heavy**     | `stage_count > 3 AND total_split_wall_time_ms / NULLIF(total_split_cpu_time_ms, 0) > 2.0`                                            | Exchange protocol changes, network optimizations, compression |
+| **Join-heavy**        | `stage_count >= 3 AND peak_total_memory_bytes > CAST(50 AS BIGINT)*1024*1024*1024`                                                   | Join strategy changes, hash table optimizations               |
+| **Aggregation-heavy** | `total_rows > 0 AND CAST(output_rows AS DOUBLE) / total_rows < 0.01 AND peak_total_memory_bytes > CAST(50 AS BIGINT)*1024*1024*1024` | Aggregation algorithms, group-by strategies                   |
 
 ### Multi-Suite Exploration Strategy
 
@@ -432,27 +444,28 @@ When exploring the implications of a change without a specific hypothesis, trian
 Goshadow rewrites INSERT queries as `CREATE TABLE` (CTAS) into shadow tables. INSERT workloads are generally preferred for batch testing — they better reflect typical batch usage and avoid variance from streaming results back to a client.
 
 However, in sequential A/B on the **same cluster**, shadow tables from the control run persist and the experiment run's CTAS short-circuits with 0 CPU because the table already exists. Two options:
+
 1. **In analysis:** Filter with `query NOT LIKE '%CREATE TABLE%'` and note excluded queries.
 2. **Prevention:** Use `--batch-mode` (runs cleanup between stages) or manually drop shadow tables between runs.
 
 ### A/B Testing Pitfalls
 
-| Pitfall | Impact | Mitigation |
-|---------|--------|------------|
-| BOLT builds in A/B | Unfair optimization for production code paths | Use `opt` builds for ALL A/B tests (binary-comparison AND config-toggle). BOLT optimizes for production paths, biasing any test that changes hot code paths |
-| CTAS table collision in sequential runs | Experiment CTAS short-circuits with 0 CPU | Filter in analysis or clean up shadow tables between runs |
-| Wall time as metric | Confounded by queuing, scheduling, run ordering | Use `total_split_cpu_time_ms`; wall time is unreliable in sequential A/B |
-| Single run, small effect | 5-10% natural variance masks small effects | Run each condition twice, or increase query count |
-| Custom `--target-client-tags` not in stats | Tags may not appear in `client_tags` | Use the goshadow run ID (printed at completion) to filter query stats |
-| `tw update` on test/verifier tiers | No longer blocked — D99740807 grants Claude Code `MUTATE` and `CONTROL` permissions. Use `tw update` directly, or `pt pcm deploy -l -pv <version>` with local TW config |
-| Not verifying the config took effect | Change may not have propagated | After deploying, spot-check a query or inspect worker config before running the full suite |
-| Config-only A/B (not session property) | Requires redeployment between arms; adds time for cluster restart | Use post-construction override in `batch_native.cinc` + `pt pcm deploy -l -pv <version>`; see `presto-deploy` "Modifying Cluster Config for Testing". `-pv` is required and safe with `-l` (CLI syncs `PRESTO_VERSION` from it). Note: `batch_native.cinc` is `tw_strict` — don't `import os` there; read env via `utils.get_env(...)` |
-| Uncontrolled variables in A/B | Experiment measures wrong thing | Before running, explicitly list EVERY dimension that differs between arms. Confirm only the intended variable changes. Config toggles often have cascading side effects |
-| Small-sample significance | False confidence from noise | A statistically significant result on 50 queries may vanish at 500. With 200 concurrent queries, per-query variance is 20-50%. Need 500+ queries to detect 5% effects, 2000+ for 2% effects. Always run the largest feasible test before drawing conclusions |
-| CTAS collision in parallel A/B | Shadow tables collide between simultaneous arms | `--batch-mode` only cleans within one goshadow run, not between two parallel runs. Filter CTAS in analysis (`query NOT LIKE '%CREATE TABLE%'`), or accept CTAS queries are invalid in parallel A/B |
-| Missing super user permissions | ~10% of queries fail with PERMISSION_DENIED, reducing matched sample | Acquire super user BEFORE launching goshadow: `di_super_user_tools get_temp_global_super_user_privilge --catalog hive --identity-name <user> --identity-type username --exp-days 1 --privilege SELECT --reason "<description>"` |
-| Cluster reservation expiration | Cluster scales down mid-test, invalidating results | Note expiration time before starting. Extend reservation to cover full test duration plus 1-hour buffer. Check with `pt pcm test-cluster list` |
-| Not sanity-checking the toggle | Full test runs with broken toggle, wasting hours | Run 5-10 queries with each arm first. Check for unexpected failures, verify CPU/E2E ratios are reasonable, confirm no exchange errors in experiment arm |
+| Pitfall                                    | Impact                                                                                                                                                                  | Mitigation                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BOLT builds in A/B                         | Unfair optimization for production code paths                                                                                                                           | Use `opt` builds for ALL A/B tests (binary-comparison AND config-toggle). BOLT optimizes for production paths, biasing any test that changes hot code paths                                                                                                                                                                            |
+| CTAS table collision in sequential runs    | Experiment CTAS short-circuits with 0 CPU                                                                                                                               | Filter in analysis or clean up shadow tables between runs                                                                                                                                                                                                                                                                              |
+| Wall time as metric                        | Confounded by queuing, scheduling, run ordering                                                                                                                         | Use `total_split_cpu_time_ms`; wall time is unreliable in sequential A/B                                                                                                                                                                                                                                                               |
+| Single run, small effect                   | 5-10% natural variance masks small effects                                                                                                                              | Run each condition twice, or increase query count                                                                                                                                                                                                                                                                                      |
+| Custom `--target-client-tags` not in stats | Tags may not appear in `client_tags`                                                                                                                                    | Use the goshadow run ID (printed at completion) to filter query stats                                                                                                                                                                                                                                                                  |
+| `tw update` on test/verifier tiers         | No longer blocked — D99740807 grants Claude Code `MUTATE` and `CONTROL` permissions. Use `tw update` directly, or `pt pcm deploy -l -pv <version>` with local TW config |
+| Not verifying the config took effect       | Change may not have propagated                                                                                                                                          | After deploying, spot-check a query or inspect worker config before running the full suite                                                                                                                                                                                                                                             |
+| Config-only A/B (not session property)     | Requires redeployment between arms; adds time for cluster restart                                                                                                       | Use post-construction override in `batch_native.cinc` + `pt pcm deploy -l -pv <version>`; see `presto-deploy` "Modifying Cluster Config for Testing". `-pv` is required and safe with `-l` (CLI syncs `PRESTO_VERSION` from it). Note: `batch_native.cinc` is `tw_strict` — don't `import os` there; read env via `utils.get_env(...)` |
+| Uncontrolled variables in A/B              | Experiment measures wrong thing                                                                                                                                         | Before running, explicitly list EVERY dimension that differs between arms. Confirm only the intended variable changes. Config toggles often have cascading side effects                                                                                                                                                                |
+| Small-sample significance                  | False confidence from noise                                                                                                                                             | A statistically significant result on 50 queries may vanish at 500. With 200 concurrent queries, per-query variance is 20-50%. Need 500+ queries to detect 5% effects, 2000+ for 2% effects. Always run the largest feasible test before drawing conclusions                                                                           |
+| CTAS collision in parallel A/B             | Shadow tables collide between simultaneous arms                                                                                                                         | `--batch-mode` only cleans within one goshadow run, not between two parallel runs. Filter CTAS in analysis (`query NOT LIKE '%CREATE TABLE%'`), or accept CTAS queries are invalid in parallel A/B                                                                                                                                     |
+| Missing super user permissions             | ~10% of queries fail with PERMISSION_DENIED, reducing matched sample                                                                                                    | Acquire super user BEFORE launching goshadow: `di_super_user_tools get_temp_global_super_user_privilge --catalog hive --identity-name <user> --identity-type username --exp-days 1 --privilege SELECT --reason "<description>"`                                                                                                        |
+| Cluster reservation expiration             | Cluster scales down mid-test, invalidating results                                                                                                                      | Note expiration time before starting. Extend reservation to cover full test duration plus 1-hour buffer. Check with `pt pcm test-cluster list`                                                                                                                                                                                         |
+| Not sanity-checking the toggle             | Full test runs with broken toggle, wasting hours                                                                                                                        | Run 5-10 queries with each arm first. Check for unexpected failures, verify CPU/E2E ratios are reasonable, confirm no exchange errors in experiment arm                                                                                                                                                                                |
 
 ### Automated: `pt shadow perfrun`
 
@@ -470,26 +483,27 @@ pt shadow perfrun -c <cluster> \
 
 Key options:
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-c, --cluster` | required | Target test cluster |
-| `-cv, --control-version` | (omit for standalone) | Control Presto version |
-| `-ev, --experimental-version` | required | Experiment Presto version |
-| `-cs, --control-session` | none | Control session properties (repeatable) |
-| `-es, --experimental-session` | none | Experiment session properties (repeatable) |
-| `-ct, --control-tag` | `perf_shadow_comparison_control` | Tag for control run |
-| `-et, --experimental-tag` | `pt_shadow_perfrun_experimental` | Tag for experiment run |
-| `--max-queries` | 1000 | Max queries to run |
-| `--days` | 1 | Sample queries from last N days |
-| `--end-date` | today | End date for query sampling (yyyy-mm-dd) |
-| `-p, --predicate` | none | Extra SQL predicate for query filtering |
-| `-clg, --catalog` | `prism,prism_batch` | Catalogs to sample from |
-| `--min-cpu-time` | none | Min CPU time per query |
-| `--max-cpu-time` | 100d | Max CPU time per query |
-| `--min-execution-time` | none | Min wall time per query |
-| `--max-execution-time` | 1.5h | Max wall time per query |
+| Flag                          | Default                          | Description                                |
+| ----------------------------- | -------------------------------- | ------------------------------------------ |
+| `-c, --cluster`               | required                         | Target test cluster                        |
+| `-cv, --control-version`      | (omit for standalone)            | Control Presto version                     |
+| `-ev, --experimental-version` | required                         | Experiment Presto version                  |
+| `-cs, --control-session`      | none                             | Control session properties (repeatable)    |
+| `-es, --experimental-session` | none                             | Experiment session properties (repeatable) |
+| `-ct, --control-tag`          | `perf_shadow_comparison_control` | Tag for control run                        |
+| `-et, --experimental-tag`     | `pt_shadow_perfrun_experimental` | Tag for experiment run                     |
+| `--max-queries`               | 1000                             | Max queries to run                         |
+| `--days`                      | 1                                | Sample queries from last N days            |
+| `--end-date`                  | today                            | End date for query sampling (yyyy-mm-dd)   |
+| `-p, --predicate`             | none                             | Extra SQL predicate for query filtering    |
+| `-clg, --catalog`             | `prism,prism_batch`              | Catalogs to sample from                    |
+| `--min-cpu-time`              | none                             | Min CPU time per query                     |
+| `--max-cpu-time`              | 100d                             | Max CPU time per query                     |
+| `--min-execution-time`        | none                             | Min wall time per query                    |
+| `--max-execution-time`        | 1.5h                             | Max wall time per query                    |
 
 On completion, it prints:
+
 - **Katchin test URLs** for the control and experimental runs
 - **Client tags** for each run (formatted as `<user>_<tag>_<cluster>_<timestamp>`)
 
@@ -519,27 +533,28 @@ When you need more control (e.g., replaying specific query IDs from a paste), us
 
 Key goshadow flags for this workflow:
 
-| Flag | Description |
-|------|-------------|
-| `--target <cluster>` | Cluster to replay against |
-| `--queryid-paste P<id>` | Paste containing query IDs to replay |
-| `--target-client-tags <csv>` | Tags added to replayed queries (for filtering in query stats) |
-| `--run-as-current-user` | Run queries as yourself (required for permission) |
-| `--max-concurrent-query <n>` | Concurrency limit (default: 50) |
-| `--repeat <n>` | Repeat each query N times (works with `--queryid-paste`) |
-| `--session <props>` | Session properties for replayed queries (`prop=value;prop2=value2`) |
-| `--mode logs` | Replay historical queries (requires `--environment`, `--start`, `--end`) |
-| `--mode live` | Shadow live traffic (requires `--environment`) |
-| `--batch-mode` | Run setup/shadow/cleanup queries in three sequential stages |
-| `--included_source`, `--skipped_source` | Filter by source regex |
-| `--included_user`, `--skipped_user` | Filter by user regex |
-| `--included_schema`, `--skipped_schema` | Filter by schema regex |
+| Flag                                    | Description                                                              |
+| --------------------------------------- | ------------------------------------------------------------------------ |
+| `--target <cluster>`                    | Cluster to replay against                                                |
+| `--queryid-paste P<id>`                 | Paste containing query IDs to replay                                     |
+| `--target-client-tags <csv>`            | Tags added to replayed queries (for filtering in query stats)            |
+| `--run-as-current-user`                 | Run queries as yourself (required for permission)                        |
+| `--max-concurrent-query <n>`            | Concurrency limit (default: 50)                                          |
+| `--repeat <n>`                          | Repeat each query N times (works with `--queryid-paste`)                 |
+| `--session <props>`                     | Session properties for replayed queries (`prop=value;prop2=value2`)      |
+| `--mode logs`                           | Replay historical queries (requires `--environment`, `--start`, `--end`) |
+| `--mode live`                           | Shadow live traffic (requires `--environment`)                           |
+| `--batch-mode`                          | Run setup/shadow/cleanup queries in three sequential stages              |
+| `--included_source`, `--skipped_source` | Filter by source regex                                                   |
+| `--included_user`, `--skipped_user`     | Filter by user regex                                                     |
+| `--included_schema`, `--skipped_schema` | Filter by schema regex                                                   |
 
 ### Analyzing Performance Results
 
 Replayed queries are stored in `di.presto_query_statistics_inc_archive` (near-realtime, <5 min lag). Each replayed query's text is prefixed with `-- replaying query <original_query_id>, run_id <run_id>`, and its `client_tags` array contains the run_id and any tags set via `--target-client-tags`. This allows matching control and experiment queries by their shared original query ID.
 
 To identify replayed queries, filter by:
+
 - `query LIKE '-- replaying query%'` — matches replayed queries by text prefix
 - `contains(client_tags, '<run_id_or_tag>')` — matches by the run_id or custom tag in client_tags
 - `environment = '<cluster>'` — matches by cluster name
@@ -640,6 +655,7 @@ The `c.cpu_ms > 60000` filter excludes queries under 1 CPU minute to focus on me
 The `di.presto_query_statistics_inc_archive` Hive table contains exhaustive query-level information for all finished queries (success or failure), with near-realtime data freshness (<5 min lag). Queryable via `presto --execute "<sql>" --output-format TSV_HEADER di`. Requires a `ds >= '<YYYY-MM-DD>'` partition filter for performance. Documentation: https://www.internalfb.com/wiki/Presto/query_stats_datasets/
 
 Key columns:
+
 - **`query_id`** — Unique query identifier
 - **`query`** — Full query text (use `presto_query_statistics_view` for non-sensitive queries if ACL-restricted)
 - **`total_split_cpu_time_ms`** — Total CPU time across all splits (primary performance signal)
@@ -664,88 +680,97 @@ Key columns:
 ### What to Always Use
 
 **Verifier** — always set these three flags:
+
 ```bash
 pt verifier run <cluster> \
   --verifier-timeout 2h \
   -q 500 \
   --success-rate-threshold 90
 ```
+
 - `--verifier-timeout` — hard time limit on the entire run (no default — without this, it runs until all queries complete)
 - `-q` — cap total queries (default 50,000 is far too many for dev iteration)
 - `--success-rate-threshold 90` — exit early if >10% of queries fail (something is clearly broken, no point continuing)
 
 **BEEST** — always wrap with `timeout` and use `--limit`:
+
 ```bash
 timeout -k 5m 30m pt beest run \
   --suite <suite> --limit 100 \
   --cluster <cluster>
 ```
+
 BEEST has no built-in overall timeout or fail-fast. Without `timeout`, a hung query blocks the entire run indefinitely.
 
 **goshadow** — always use `-replay-limit` and wrap with `timeout`:
+
 ```bash
 timeout -k 5m 1h goshadow --mode logs \
   --environment <src> --target <cluster> \
   --start "2026-02-01 12:00" --end "2026-02-01 13:00" \
   -replay-limit 200 --run-as-current-user --max-concurrent-query 200
 ```
+
 Keep the time window short (1-2 hours of traffic) and set `-replay-limit` to avoid replaying thousands of queries.
 
 **`pt shadow perfrun`** — always wrap with `timeout`:
+
 ```bash
 timeout -k 5m 4h pt shadow perfrun \
   -c <cluster> -cv <v1> -ev <v2> --max-queries 500
 ```
+
 The default `--max-queries 1000` is reasonable for pre-land, but use 500 for dev iteration.
 
 ### Scope Reference
 
-| Scenario | Tool | Flags |
-|---|---|---|
-| Quick smoke test | BEEST | `--suite presto_smoke_test` (5 tests, no timeout needed) |
-| Dev iteration (correctness) | Verifier | `-q 200 --verifier-timeout 30m --success-rate-threshold 90` |
-| Dev iteration (targeted) | BEEST | `--limit 100`, wrap with `timeout 30m` |
-| Pre-diff correctness | Verifier | `-q 2000 --verifier-timeout 2h --success-rate-threshold 95` |
-| Pre-diff performance | shadow perfrun | `--max-queries 500`, wrap with `timeout 3h` |
-| Pre-land validation | Verifier + BEEST batch_tier1 | `--verifier-timeout 4h`, BEEST with `timeout 4h` |
-| Pre-land performance | shadow perfrun | `--max-queries 1000`, wrap with `timeout 6h` |
+| Scenario                    | Tool                         | Flags                                                       |
+| --------------------------- | ---------------------------- | ----------------------------------------------------------- |
+| Quick smoke test            | BEEST                        | `--suite presto_smoke_test` (5 tests, no timeout needed)    |
+| Dev iteration (correctness) | Verifier                     | `-q 200 --verifier-timeout 30m --success-rate-threshold 90` |
+| Dev iteration (targeted)    | BEEST                        | `--limit 100`, wrap with `timeout 30m`                      |
+| Pre-diff correctness        | Verifier                     | `-q 2000 --verifier-timeout 2h --success-rate-threshold 95` |
+| Pre-diff performance        | shadow perfrun               | `--max-queries 500`, wrap with `timeout 3h`                 |
+| Pre-land validation         | Verifier + BEEST batch_tier1 | `--verifier-timeout 4h`, BEEST with `timeout 4h`            |
+| Pre-land performance        | shadow perfrun               | `--max-queries 1000`, wrap with `timeout 6h`                |
 
 ### Additional Verifier Controls
 
-| Flag | Default | Purpose |
-|---|---|---|
-| `--test-timeout <duration>` | 1h | Per-query timeout on test cluster |
-| `--control-timeout <duration>` | 10m | Per-query timeout on control cluster |
-| `--threads <n>` | 70 | Concurrent verifications |
+| Flag                               | Default      | Purpose                                       |
+| ---------------------------------- | ------------ | --------------------------------------------- |
+| `--test-timeout <duration>`        | 1h           | Per-query timeout on test cluster             |
+| `--control-timeout <duration>`     | 10m          | Per-query timeout on control cluster          |
+| `--threads <n>`                    | 70           | Concurrent verifications                      |
 | `--correctness-rate-threshold <n>` | 0 (disabled) | Exit early if correctness rate drops below n% |
 
 ### Additional goshadow Controls
 
-| Flag | Default | Purpose |
-|---|---|---|
-| `-sample_rate <float>` | 1.0 | Sample fraction (0.0-1.0) — use 0.1 for 10% sampling |
-| `-max-concurrent-query <n>` | 50 | Concurrent queries (script defaults to 200) |
-| `-total-split-cpu-time-ms-range low,high` | none | Filter by CPU time |
-| `-query-execution-time-ms-range low,high` | none | Filter by wall time |
+| Flag                                      | Default | Purpose                                              |
+| ----------------------------------------- | ------- | ---------------------------------------------------- |
+| `-sample_rate <float>`                    | 1.0     | Sample fraction (0.0-1.0) — use 0.1 for 10% sampling |
+| `-max-concurrent-query <n>`               | 50      | Concurrent queries (script defaults to 200)          |
+| `-total-split-cpu-time-ms-range low,high` | none    | Filter by CPU time                                   |
+| `-query-execution-time-ms-range low,high` | none    | Filter by wall time                                  |
 
 ### GNU `timeout` Pattern
 
 ```bash
 timeout -k <kill_grace> <duration> <command>
 ```
+
 - Sends SIGTERM after `<duration>`, then SIGKILL after `<kill_grace>` if still running
 - Exit code 124 indicates the command was killed by timeout
 - Always use `-k 5m` to ensure cleanup if the process ignores SIGTERM
 
 ## Common Issues
 
-| Problem | Fix |
-|---------|-----|
-| `presto --smc` "Oncall must be specified" | Batch clusters require `--oncall <oncall_name>` (e.g., `--oncall presto_release_internal`) |
-| Cluster unreachable during validation | Check deployment; use `--skip-validation` to bypass |
-| goshadow auth errors | Script adds `--run-as-current-user` automatically |
-| Verifier: no control cluster | Specify `--control <cluster>` explicitly |
-| `presto --smc` connection refused | Cluster may still be restarting; check `tw.real job show tsp_<region>/presto/<cluster>.worker` |
-| BEEST namespace errors | Namespace auto-resolves from cluster region; specify `--namespace` explicitly if auto-resolution fails |
+| Problem                                    | Fix                                                                                                            |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `presto --smc` "Oncall must be specified"  | Batch clusters require `--oncall <oncall_name>` (e.g., `--oncall presto_release_internal`)                     |
+| Cluster unreachable during validation      | Check deployment; use `--skip-validation` to bypass                                                            |
+| goshadow auth errors                       | Script adds `--run-as-current-user` automatically                                                              |
+| Verifier: no control cluster               | Specify `--control <cluster>` explicitly                                                                       |
+| `presto --smc` connection refused          | Cluster may still be restarting; check `tw.real job show tsp_<region>/presto/<cluster>.worker`                 |
+| BEEST namespace errors                     | Namespace auto-resolves from cluster region; specify `--namespace` explicitly if auto-resolution fails         |
 | `tw job update` blocked by AI agent policy | Use `pt pcm deploy -l -pv <version>`. See `presto-deploy` "Claude Code Deployment" for the fast deploy pattern |
-| `tw` command blocked by bpfjailer | Use `tw.real` instead — the wrapper is blocked but the actual binary is not |
+| `tw` command blocked by bpfjailer          | Use `tw.real` instead — the wrapper is blocked but the actual binary is not                                    |

@@ -22,12 +22,14 @@ Handles the full Nexus deploy, fbpkg packaging, and cluster deployment pipeline.
 **Prerequisites:** `feature install warehouse`, Nexus credentials in `~/.m2/settings.xml`
 
 **Key scripts:**
+
 - `~/.claude/skills/presto-deploy/presto-deploy` -- builds, packages, deploys (everything Claude Code can do)
 - `~/.claude/skills/presto-deploy/presto-deploy-finish` -- completes SAP-blocked steps (user runs this)
 
 **Depends on:** `~/.claude/skills/presto-build/presto-build` (sourced for Maven config and build functions)
 
 **Related skills:**
+
 - `presto-build` -- Local builds, unit tests, and checkstyle
 - `presto-e2e-test` -- End-to-end testing against remote clusters (correctness verification, performance regression)
 
@@ -37,9 +39,10 @@ All Presto test/verifier TW specs have an `allowAgents` policy (D99740807) grant
 
 **What Claude Code CAN do:** `tw update`, `tw task-control apply-task-ops`, `tw restart`, `tw job status`, `tw log`, `fbpkg build`, `fbpkg fetch`, `fbpkg info`, `fbpkg versions`, `presto --smc`, `mvn deploy`, and the `fb_presto_cpp/scripts/build.sh` hybrid merge (the merge's `fbpkg build` succeeds; only its trailing `fbpkg tag` is blocked).
 
-**What the USER must run (blocked for Claude Code — `CPPlatformApiServer.executeAction` SAP block):** ALL `pt pcm ...` commands, including `pt pcm test-cluster list/reserve/release`, **`pt pcm deploy`**, and `pt pcm cancel`. Hand the user the exact command to run via `!` and have them paste the output. *(Verified 2026-06-12: `pt pcm deploy` fails for the agent with `[Service Authorization Platform] ... blocked method 'CPPlatformApiServer.executeAction'`.)*
+**What the USER must run (blocked for Claude Code — `CPPlatformApiServer.executeAction` SAP block):** ALL `pt pcm ...` commands, including `pt pcm test-cluster list/reserve/release`, **`pt pcm deploy`**, and `pt pcm cancel`. Hand the user the exact command to run via `!` and have them paste the output. _(Verified 2026-06-12: `pt pcm deploy` fails for the agent with `[Service Authorization Platform] ... blocked method 'CPPlatformApiServer.executeAction'`.)_
 
 **What the user MUST do via `presto-deploy-finish`:**
+
 - `fbpkg tag` -- tag the hybrid package (only needed when you deploy by `v<version>` tag rather than by hash; deploying by `-pv <hash>` needs no tag)
 
 **Deploy without `pt pcm` (fully agent-runnable alternative):** the `tw update` + `apply-task-ops` fast path below works for Claude Code on test/verifier tiers. It needs the package resolvable by the TW config (tag `v<version>`), so it pairs with a user-run `fbpkg tag`. When in doubt, the simplest division of labor is: agent builds the (hybrid) fbpkg → user runs `pt pcm deploy -pv <hash>` → agent runs `presto-deploy-finish accelerate` and verifies with `presto --smc`.
@@ -66,10 +69,10 @@ All Presto test/verifier TW specs have an `allowAgents` policy (D99740807) grant
 
 `pt pcm deploy -pv <version>` (and the `tw update`/`PRESTO_VERSION` paths) set the `presto.presto` package version for **both the coordinator and the workers**. The package at that version must contain the binary each role needs:
 
-| Cluster type | Worker binary needed | Package you must deploy | Deploying the wrong one |
-|---|---|---|---|
-| **Prestissimo** (C++ workers) | C++ `presto_server` | **Hybrid** `presto.presto` (Java coord + C++ worker, ~5–7 GB) | Java-only package → workers find no C++ binary → **crash-loop, cluster down** |
-| **All-Java** | Java | **Java-only** `presto.presto` (~3.5 GB) | Hybrid works but is wasteful |
+| Cluster type                  | Worker binary needed | Package you must deploy                                       | Deploying the wrong one                                                       |
+| ----------------------------- | -------------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| **Prestissimo** (C++ workers) | C++ `presto_server`  | **Hybrid** `presto.presto` (Java coord + C++ worker, ~5–7 GB) | Java-only package → workers find no C++ binary → **crash-loop, cluster down** |
+| **All-Java**                  | Java                 | **Java-only** `presto.presto` (~3.5 GB)                       | Hybrid works but is wasteful                                                  |
 
 A coordinator-only Java change on a Prestissimo cluster is the trap: it feels "Java-only", but you must still ship a hybrid so the C++ workers keep a valid binary. Build your Java fbpkg, then merge it with a recent `presto.presto_cpp` (the C++ workers are unchanged) — see "Hybrid merge" and "Getting an opt hybrid for deployment" below.
 
@@ -79,7 +82,7 @@ The `presto.presto` fbpkg has two variants: **Java-only** (~3.5 GB) and **hybrid
 
 **How `pt pcm deploy -pv` resolves the version for Prestissimo clusters:**
 
-`-pv <version>` (or `<hash>`) sets the `presto.presto` package version for **both** the Java coordinator AND the C++ workers. The `cpp-prod` tag is only the *fallback* when no version is specified (resolution order: `PRESTO_VERSION` env → `TW_PUSHED_VERSION` → `cpp-prod` tag — see "How Prestissimo Worker Version Is Resolved" below). So if you pass `-pv <something>`, that `<something>` **must point at a hybrid** — a Java-only package or hash will crash the workers.
+`-pv <version>` (or `<hash>`) sets the `presto.presto` package version for **both** the Java coordinator AND the C++ workers. The `cpp-prod` tag is only the _fallback_ when no version is specified (resolution order: `PRESTO_VERSION` env → `TW_PUSHED_VERSION` → `cpp-prod` tag — see "How Prestissimo Worker Version Is Resolved" below). So if you pass `-pv <something>`, that `<something>` **must point at a hybrid** — a Java-only package or hash will crash the workers.
 
 > ⚠️ Historical note: an earlier version of this skill claimed `-pv` only affected the coordinator and workers always came from `cpp-prod`. That is **wrong** — verified on 2026-06-12 when `pt pcm deploy -pv <java_only_hash>` crash-looped all 50 workers on a `*_batchtest_bgm_*` cluster.
 
@@ -107,12 +110,12 @@ fbpkg info presto.presto:<hash> 2>&1 | grep -E "(Build User|Revision|Upstream)"
 
 **fbpkg package naming:**
 
-| Package | Contents | Size | Use case |
-|---------|----------|------|----------|
-| `presto.presto` (Java-only) | Java coordinator only | ~3.5 GB | Tagged `prod`, `stable`, `fbcode-ci-latest` |
-| `presto.presto` (hybrid) | Java coordinator + C++ worker | ~5-7 GB | Tagged `cpp-prod`, or `.cpp-<user>-`/`.cpp-bolt-` version tags |
-| `presto.presto_cpp` | C++ opt worker only | ~4.7 GB | Intermediate artifact; many ephemerals built daily |
-| `presto.presto_cpp_bolt` | C++ BOLT worker only | ~3.1 GB | Production-optimized intermediate |
+| Package                     | Contents                      | Size    | Use case                                                       |
+| --------------------------- | ----------------------------- | ------- | -------------------------------------------------------------- |
+| `presto.presto` (Java-only) | Java coordinator only         | ~3.5 GB | Tagged `prod`, `stable`, `fbcode-ci-latest`                    |
+| `presto.presto` (hybrid)    | Java coordinator + C++ worker | ~5-7 GB | Tagged `cpp-prod`, or `.cpp-<user>-`/`.cpp-bolt-` version tags |
+| `presto.presto_cpp`         | C++ opt worker only           | ~4.7 GB | Intermediate artifact; many ephemerals built daily             |
+| `presto.presto_cpp_bolt`    | C++ BOLT worker only          | ~3.1 GB | Production-optimized intermediate                              |
 
 ## Deploying to a Test Cluster
 
@@ -127,6 +130,7 @@ Run `presto-deploy`, then paste the `presto-deploy-finish` command for the user 
 1. **Verify** the cluster is a test cluster with an active reservation (from the user's reserve output — `pt pcm test-cluster list` is SAP-blocked for the agent). Confirm whether it's **Prestissimo or all-Java** and pick the package type accordingly (see "CRITICAL: Match the package to the cluster type").
 
 2. **Build the right package** (note: the `-c` deploy step inside `presto-deploy` runs `pt pcm deploy`, which is **blocked for the agent** — so build without `-c`, then hand the user the `pt pcm deploy` command):
+
    ```bash
    # Prestissimo cluster (hybrid REQUIRED — even for coordinator-only Java changes):
    presto-deploy -n                       # build Java + C++ + merge hybrid
@@ -134,6 +138,7 @@ Run `presto-deploy`, then paste the `presto-deploy-finish` command for the user 
    # All-Java cluster only:
    presto-deploy                          # Java-only package
    ```
+
    Then give the user: `pt pcm deploy -c <cluster> -pv <hybrid_or_java_hash> -r "<reason>" -f -ni -dt 0`
 
 3. **Accelerate the rollout** -- the `presto-deploy` script now runs `presto-deploy-finish accelerate` automatically after deployment. For hybrid builds, paste the `presto-deploy-finish tag` command for the user to run (`fbpkg tag` is still blocked).
@@ -151,6 +156,7 @@ pt pcm deploy -c <cluster> -pv <version> -r "<reason>" -f -ni -dt 0
 ```
 
 Then ask the user to run:
+
 ```bash
 presto-deploy-finish accelerate <cluster>
 ```
@@ -170,11 +176,13 @@ presto-deploy -J <hash> -L -c <cluster> -r "<reason>"
 ```
 
 Or manually via `pt pcm deploy`:
+
 ```bash
 pt pcm deploy -c <cluster> -pv <maven_version> -l -r "<reason>" -f -ni -dt 0
 ```
 
 Then accelerate the rollout:
+
 ```bash
 presto-deploy-finish accelerate <cluster>
 ```
@@ -182,38 +190,40 @@ presto-deploy-finish accelerate <cluster>
 ### Stuck or failed deploys
 
 Cancel the stale PCM request before retrying:
+
 ```bash
 pt pcm cancel --request_id <request_id>
 ```
 
 If workers are crash-looping and need a restart:
+
 ```bash
 presto-deploy-finish restart <cluster>
 ```
 
 ## `presto-deploy-finish` Reference
 
-| Command | What it does |
-|---------|-------------|
-| `presto-deploy-finish tag <identifier> <version_tag> [<cpp_tag>]` | `fbpkg tag` the hybrid package |
-| `presto-deploy-finish accelerate <cluster>` | Poll + `tw task-control apply-task-ops` on worker and coordinator |
-| `presto-deploy-finish restart <cluster>` | `tw restart --fast --kill` on workers |
+| Command                                                           | What it does                                                      |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `presto-deploy-finish tag <identifier> <version_tag> [<cpp_tag>]` | `fbpkg tag` the hybrid package                                    |
+| `presto-deploy-finish accelerate <cluster>`                       | Poll + `tw task-control apply-task-ops` on worker and coordinator |
+| `presto-deploy-finish restart <cluster>`                          | `tw restart --fast --kill` on workers                             |
 
 ## Quick Reference
 
-| Task | Command |
-|------|---------|
-| **Deploy existing release** | **`pt pcm deploy -c <cluster> -pv <version> -r "<reason>" -f -ni -dt 0`** |
-| Full build + deploy + fbpkg | `presto-deploy` |
-| Skip OSS rebuild | `presto-deploy -T` |
-| Hybrid (Java + C++ opt) | `presto-deploy -n` |
-| Hybrid with BOLT | `presto-deploy -n -m bolt` |
-| Reuse existing Java fbpkg | `presto-deploy -J <hash>` |
-| Hybrid with existing Java | `presto-deploy -J <hash> -n` |
-| Build + deploy + push to cluster | `presto-deploy -c <cluster> -r "reason"` |
-| Full hybrid + push to cluster | `presto-deploy -n -c <cluster> -r "reason"` |
-| Deploy with local TW config | `presto-deploy -L -c <cluster> -r "reason"` |
-| Hybrid + local TW config | `presto-deploy -n -L -c <cluster> -r "reason"` |
+| Task                             | Command                                                                   |
+| -------------------------------- | ------------------------------------------------------------------------- |
+| **Deploy existing release**      | **`pt pcm deploy -c <cluster> -pv <version> -r "<reason>" -f -ni -dt 0`** |
+| Full build + deploy + fbpkg      | `presto-deploy`                                                           |
+| Skip OSS rebuild                 | `presto-deploy -T`                                                        |
+| Hybrid (Java + C++ opt)          | `presto-deploy -n`                                                        |
+| Hybrid with BOLT                 | `presto-deploy -n -m bolt`                                                |
+| Reuse existing Java fbpkg        | `presto-deploy -J <hash>`                                                 |
+| Hybrid with existing Java        | `presto-deploy -J <hash> -n`                                              |
+| Build + deploy + push to cluster | `presto-deploy -c <cluster> -r "reason"`                                  |
+| Full hybrid + push to cluster    | `presto-deploy -n -c <cluster> -r "reason"`                               |
+| Deploy with local TW config      | `presto-deploy -L -c <cluster> -r "reason"`                               |
+| Hybrid + local TW config         | `presto-deploy -n -L -c <cluster> -r "reason"`                            |
 
 ## Workflow
 
@@ -249,13 +259,13 @@ After Nexus deployment, the script runs `pt build fbpkg presto <version>` to cre
 
 When `-n` is specified, the script builds a C++ fbpkg via `fbpkg build fbcode//fb_presto_cpp:<target>`.
 
-| Mode | fbpkg target | Notes |
-|------|-------------|-------|
-| opt | `presto.presto_cpp` | Default for packaging |
+| Mode | fbpkg target             | Notes                                |
+| ---- | ------------------------ | ------------------------------------ |
+| opt  | `presto.presto_cpp`      | Default for packaging                |
 | bolt | `presto.presto_cpp_bolt` | BOLT optimization (requires ThinLTO) |
-| asan | `presto.presto_cpp_asan` | Address sanitizer |
-| tsan | `presto.presto_cpp_tsan` | Thread sanitizer |
-| dbgo | `presto.presto_cpp_dbgo` | Debug optimized |
+| asan | `presto.presto_cpp_asan` | Address sanitizer                    |
+| tsan | `presto.presto_cpp_tsan` | Thread sanitizer                     |
+| dbgo | `presto.presto_cpp_dbgo` | Debug optimized                      |
 
 `dev` mode cannot be packaged -- use `presto-build -n` for local C++ dev builds.
 
@@ -320,37 +330,37 @@ pt reservation list --service PRESTISSIMO
 
 **Worker-count-dependent configurations:**
 
-| Config | How it scales | Impact of mismatch |
-|--------|---------------|-------------------|
-| `query.initial-hash-partitions` | `get_hash_partitions(worker_count, driver_count)`, capped at 333 | Fewer workers -> fewer partitions -> larger partitions -> different shuffle/join behavior |
-| `sink.max-buffer-size` | `ceil(0.64 * hash_partitions)` MB | Scales with hash partitions |
-| Effective total query memory | `query.max-memory-per-node * worker_count` | 10 workers x 14GB = 140GB vs 300 workers x 14GB = 4.2TB -- queries that fit in production may OOM or spill heavily on small clusters |
-| `minimum_required_workers_active` | `worker_count * 0.75` | Small clusters start faster |
-| Total cluster parallelism | `worker_count * task_threads` | 10 BGM workers = 1,700 threads vs 300 = 51,000 |
+| Config                            | How it scales                                                    | Impact of mismatch                                                                                                                   |
+| --------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `query.initial-hash-partitions`   | `get_hash_partitions(worker_count, driver_count)`, capped at 333 | Fewer workers -> fewer partitions -> larger partitions -> different shuffle/join behavior                                            |
+| `sink.max-buffer-size`            | `ceil(0.64 * hash_partitions)` MB                                | Scales with hash partitions                                                                                                          |
+| Effective total query memory      | `query.max-memory-per-node * worker_count`                       | 10 workers x 14GB = 140GB vs 300 workers x 14GB = 4.2TB -- queries that fit in production may OOM or spill heavily on small clusters |
+| `minimum_required_workers_active` | `worker_count * 0.75`                                            | Small clusters start faster                                                                                                          |
+| Total cluster parallelism         | `worker_count * task_threads`                                    | 10 BGM workers = 1,700 threads vs 300 = 51,000                                                                                       |
 
 **Fixed configurations** (do NOT scale with worker count): `join-max-broadcast-table-size` (1GB), per-worker memory limits, per-worker spill limits (300GB), task thread counts.
 
 **Sizing recommendations:**
 
-| Test purpose | Recommended workers (`-w`) | Why |
-|---|---|---|
-| Correctness (BEEST, verifier) | 10-50 | Plan shapes may differ but correctness should hold |
-| Performance A/B (goshadow/perfrun) | 100-300 | Need production-like hash partitions, memory, and parallelism for representative signal |
-| Quick smoke test | 10 | Just checking it runs |
+| Test purpose                       | Recommended workers (`-w`) | Why                                                                                     |
+| ---------------------------------- | -------------------------- | --------------------------------------------------------------------------------------- |
+| Correctness (BEEST, verifier)      | 10-50                      | Plan shapes may differ but correctness should hold                                      |
+| Performance A/B (goshadow/perfrun) | 100-300                    | Need production-like hash partitions, memory, and parallelism for representative signal |
+| Quick smoke test                   | 10                         | Just checking it runs                                                                   |
 
 For A/B comparisons, what matters most is that both arms use the **same** cluster size -- relative comparisons are valid even on a smaller cluster. But use at least 100 workers on BGM if you want results that generalize to production.
 
 ### Build Type for Performance Testing
 
-For A/B performance comparisons, use `opt` (default), **not `bolt`**. BOLT's profile-guided optimization (PGO) is trained on production code paths, so it disproportionately optimizes whichever behavior is dominant in production. If you're testing whether a code path change (e.g., disabling TLS, changing a shuffle algorithm) improves performance, BOLT will have already optimized the *current* path -- biasing results toward the control arm and underestimating the treatment's benefit.
+For A/B performance comparisons, use `opt` (default), **not `bolt`**. BOLT's profile-guided optimization (PGO) is trained on production code paths, so it disproportionately optimizes whichever behavior is dominant in production. If you're testing whether a code path change (e.g., disabling TLS, changing a shuffle algorithm) improves performance, BOLT will have already optimized the _current_ path -- biasing results toward the control arm and underestimating the treatment's benefit.
 
 Prestissimo's build modes and their PGO characteristics:
 
-| Mode | Optimization | LTO | BOLT PGO | FDO | Fair for A/B? |
-|---|---|---|---|---|---|
-| `@mode/opt` | -O3 | No | No | No | **Yes** |
-| `@mode/opt-clang-thinlto` | -O3 | ThinLTO | **Yes** (trained on prod) | No | No |
-| `bolt` fbpkg mode | -O3 | ThinLTO | **Yes** | No | No |
+| Mode                      | Optimization | LTO     | BOLT PGO                  | FDO | Fair for A/B? |
+| ------------------------- | ------------ | ------- | ------------------------- | --- | ------------- |
+| `@mode/opt`               | -O3          | No      | No                        | No  | **Yes**       |
+| `@mode/opt-clang-thinlto` | -O3          | ThinLTO | **Yes** (trained on prod) | No  | No            |
+| `bolt` fbpkg mode         | -O3          | ThinLTO | **Yes**                   | No  | No            |
 
 `@mode/opt` is the clean optimized mode -- no profile-guided optimizations of any kind. The default AutoFDO profile was removed from fbcode in August 2024, Prestissimo is not registered in the centralized AutoFDO refresh pipeline, and BOLT only activates under LTO modes. The `presto.presto_cpp` fbpkg is built with `@mode/opt`, so it's PGO-free.
 
@@ -373,8 +383,10 @@ fbpkg build fbcode//fb_presto_cpp:presto.presto_cpp
 NOTE: Replace `~/checkout1/fbsource` with the actual checkout root (e.g., `~/checkout2/fbsource` or `~/checkout3/fbsource`) if working from a non-primary workspace.
 
 # 3. Deploy the opt hybrid
+
 pt pcm deploy -c <cluster> -pv <hybrid_version> -r "opt build" -f -ni -dt 0
-```
+
+````
 
 Note: `fbpkg build` rejects untracked files. Move `etc-local/` dirs out of the repo first, restore after.
 
@@ -405,7 +417,7 @@ pt pcm test-cluster reserve -w 300 -r rcd -m T1_BGM -d "24 hours" \
 
 # Typical correctness testing reservation
 pt pcm test-cluster reserve -w 10 -d "24 hours" --request-reason "BEEST correctness: <description>"
-```
+````
 
 ### Modifying Cluster Config for Testing
 
@@ -415,10 +427,10 @@ Some tests require cluster-wide config changes that cannot be set via session pr
 
 **This is critical.** Modifying the wrong file will silently have no effect -- your config change won't be applied but everything will appear to work. The experiment will run with both arms having identical config.
 
-| Cluster type | How you got it | TW config file | Override approach |
-|---|---|---|---|
-| **Statically-defined Katchin** (`atn6_prestotest2`, `ftw2_prestotest_ec1`, `atn1crossenginetest1`) | Hardcoded in `katchin.tw` | `testing/katchin.tw` | Post-construction override on `cluster_job_configs` dict (see below) |
-| **Dynamically-reserved batch test** (`pnb1_batchtest_bgm_2`, `rcd1_batchtest_bgm_1`, etc.) | `pt pcm test-cluster reserve` | `testing/batch_test.tw` | Must modify the `.cinc` helper that generates configs (see below) |
+| Cluster type                                                                                       | How you got it                | TW config file          | Override approach                                                    |
+| -------------------------------------------------------------------------------------------------- | ----------------------------- | ----------------------- | -------------------------------------------------------------------- |
+| **Statically-defined Katchin** (`atn6_prestotest2`, `ftw2_prestotest_ec1`, `atn1crossenginetest1`) | Hardcoded in `katchin.tw`     | `testing/katchin.tw`    | Post-construction override on `cluster_job_configs` dict (see below) |
+| **Dynamically-reserved batch test** (`pnb1_batchtest_bgm_2`, `rcd1_batchtest_bgm_1`, etc.)         | `pt pcm test-cluster reserve` | `testing/batch_test.tw` | Must modify the `.cinc` helper that generates configs (see below)    |
 
 **How to verify which file manages your cluster:** Check the deploy log output. `pt pcm deploy` prints `Creating NUJ for ... from spec file at .../config/presto/testing/<file>.tw`. If it says `batch_test.tw`, do NOT put overrides in `katchin.tw`.
 
@@ -433,15 +445,15 @@ Presto cluster config is generated by Python code in `tupperware/config/presto/`
 
 **Key config files:**
 
-| File | Role |
-|------|------|
-| `testing/katchin.tw` | Statically-defined Katchin test clusters only (`atn6_prestotest2`, etc.); supports direct post-construction overrides |
-| `testing/batch_test.tw` | All dynamically-reserved batch test clusters (from `pt pcm test-cluster reserve`); delegates to helper `.cinc` files |
-| `include/tupperware_configs/warehouse/batch_native.cinc` | Generates Prestissimo batch cluster configs; modify here for dynamically-reserved Prestissimo clusters |
-| `include/tupperware_configs/warehouse/batch.cinc` | Generates Java batch cluster configs |
-| `include/configgen.cinc` | Core config generation helpers (`enable_https()`, `enable_auth()`, etc.) |
-| `include/presto.cinc` | `WarehouseConfig` / `WarehouseBatchConfig` classes -- assembles all config |
-| `include/warehouse_config.cinc` | Shared/coordinator/worker `config.properties` defaults (ports, exchange, memory) |
+| File                                                     | Role                                                                                                                  |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `testing/katchin.tw`                                     | Statically-defined Katchin test clusters only (`atn6_prestotest2`, etc.); supports direct post-construction overrides |
+| `testing/batch_test.tw`                                  | All dynamically-reserved batch test clusters (from `pt pcm test-cluster reserve`); delegates to helper `.cinc` files  |
+| `include/tupperware_configs/warehouse/batch_native.cinc` | Generates Prestissimo batch cluster configs; modify here for dynamically-reserved Prestissimo clusters                |
+| `include/tupperware_configs/warehouse/batch.cinc`        | Generates Java batch cluster configs                                                                                  |
+| `include/configgen.cinc`                                 | Core config generation helpers (`enable_https()`, `enable_auth()`, etc.)                                              |
+| `include/presto.cinc`                                    | `WarehouseConfig` / `WarehouseBatchConfig` classes -- assembles all config                                            |
+| `include/warehouse_config.cinc`                          | Shared/coordinator/worker `config.properties` defaults (ports, exchange, memory)                                      |
 
 All paths relative to `tupperware/config/presto/`.
 
@@ -491,7 +503,7 @@ For Java clusters, the equivalent file is `include/tupperware_configs/warehouse/
 
 The `-l` / `--use-local-config` flag deploys the **entire TW config from your local working copy** (the `tupperware/` directory in the current fbsource checkout). Any uncommitted changes to `.tw` or `.cinc` files take effect. Without `-l`, the tool uses a daily-published config snapshot (`tupperware_fbcode_config_snapshot:daily`), so local changes won't be picked up.
 
-**`-l` and `-pv` are safe to combine -- and `-pv` is required.** The click parser marks `-pv` as required even with `-l`, so you cannot omit it. Since `D99880356` (2026-04-07) the CLI sets `os.environ["PRESTO_VERSION"]` from the `-pv` value *before* the local spec is evaluated, so the spec's `get_maven_version_from_env()` resolves the same version and the CONFIG_BLOB compiles for the same version as the deployed binary -- they stay in sync by construction. (Historically `-l` + `-pv` was banned over a CONFIG_BLOB/binary mismatch fear; that mismatch is now impossible. Verified 2026-06-14: `-l -pv <hybrid>` deployed cleanly with all 101 nodes on the matching version.)
+**`-l` and `-pv` are safe to combine -- and `-pv` is required.** The click parser marks `-pv` as required even with `-l`, so you cannot omit it. Since `D99880356` (2026-04-07) the CLI sets `os.environ["PRESTO_VERSION"]` from the `-pv` value _before_ the local spec is evaluated, so the spec's `get_maven_version_from_env()` resolves the same version and the CONFIG_BLOB compiles for the same version as the deployed binary -- they stay in sync by construction. (Historically `-l` + `-pv` was banned over a CONFIG_BLOB/binary mismatch fear; that mismatch is now impossible. Verified 2026-06-14: `-l -pv <hybrid>` deployed cleanly with all 101 nodes on the matching version.)
 
 #### How Prestissimo Worker Version Is Resolved
 
@@ -505,11 +517,13 @@ native_presto_version = (
 ```
 
 **Resolution order:**
+
 1. `PRESTO_VERSION` env var — if set, parses this into a `PrestoVersion` and uses it
 2. `TW_PUSHED_VERSION` env var — used during `tw push` workflows
 3. `cpp-prod` tag — falls back to `presto.presto:cpp-prod` fbpkg tag lookup
 
 The final worker package is `presto.presto` with tag `v{version_string}`. To deploy a custom hybrid:
+
 1. Deploy: `pt pcm deploy -c <cluster> -pv <version_string_or_hash> -l -r "..." -f -ni -dt 0` -- the CLI syncs `PRESTO_VERSION` from `-pv`, so the spec resolves the same version. Deploying by hash needs no prior `fbpkg tag`.
 
 Reference files: `include/utils.cinc` (`get_maven_version_from_env()`), `include/constants.cinc` (`FBPKG_CPP_PROD_TAG = "cpp-prod"`).
@@ -538,13 +552,13 @@ presto-test cli -c <cluster> -e "SELECT 1"   # basic connectivity
 
 #### Common Config Properties Reference
 
-| What | TW Parameter | Presto Property | Where Set |
-|------|-------------|-----------------|-----------|
-| Internal HTTPS | `secure_internal_communications` | `internal-communication.https.required` | `configgen.cinc` `enable_https()` |
-| Cross-region access | `allowed_fb_regions` | `namespace.allowed-fb-regions` (catalog) | `batch_native.cinc` |
-| HTTP port | (always set) | `http-server.http.port` = 7777 | `warehouse_config.cinc` |
-| HTTPS port | (set when HTTPS enabled) | `http-server.https.port` = 7778 | `configgen.cinc` |
-| Hipster ACL | `hipster_acl_name` | `http-server.authorization.enabled` | `configgen.cinc` |
+| What                | TW Parameter                     | Presto Property                          | Where Set                         |
+| ------------------- | -------------------------------- | ---------------------------------------- | --------------------------------- |
+| Internal HTTPS      | `secure_internal_communications` | `internal-communication.https.required`  | `configgen.cinc` `enable_https()` |
+| Cross-region access | `allowed_fb_regions`             | `namespace.allowed-fb-regions` (catalog) | `batch_native.cinc`               |
+| HTTP port           | (always set)                     | `http-server.http.port` = 7777           | `warehouse_config.cinc`           |
+| HTTPS port          | (set when HTTPS enabled)         | `http-server.https.port` = 7778          | `configgen.cinc`                  |
+| Hipster ACL         | `hipster_acl_name`               | `http-server.authorization.enabled`      | `configgen.cinc`                  |
 
 #### Validation Constraints
 
@@ -618,6 +632,7 @@ PRESTO_VERSION=<maven-version> \
 ```
 
 Gotchas (all learned the hard way):
+
 - **Scheduler prefix ≠ region prefix.** The scheduler is `tsp_atn` for `atn6_...`
   (not `tsp_atn6`), `tsp_rcd` for `rcd1_...`. If unsure, probe:
   `tw.real resolve tsp_<guess>/presto/<cluster>.coordinator` until one returns RUNNING.
@@ -645,21 +660,21 @@ presto-deploy-finish restart <cluster>
 
 ## Common Issues
 
-| Problem | Fix |
-|---------|-----|
-| `mvn deploy` fails with auth error | Check Nexus credentials: `cat ~/.m2/settings.xml` |
-| fbpkg build fails | Ensure `mvn deploy` succeeded; check `/tmp/presto_dev_deploy.log` |
-| `fbpkg build` refuses to run (dirty repo) | `fbpkg build` rejects untracked files. Move `etc-local/` dirs out of repo before building, restore after. |
-| `fbpkg build` fails with `<unknown>` Rust backtrace + "could not extract hash", log says "Repo has uncommitted changes, refusing to run" | ANY uncommitted/untracked file in fbsource (even unrelated to your change) blocks `fbpkg build`. Run `sl status`, commit your change (scratch/`HACK:` commit is fine), and `sl shelve`/remove unrelated files. The `presto-deploy` script now pre-checks and fails fast. |
-| Java build fails compiling a broken trunk **test** source (e.g. `TestSliceDictionaryColumnWriter.java` "incompatible types") | Pre-existing broken test in trunk, unrelated to your change. `mvn install` compiles test sources even under `-DskipTests`. Use `-Dmaven.test.skip=true` (skips test compilation). `presto-deploy` now does this by default. |
-| Java build fails `maven-dependency-plugin:analyze-only` "Dependency problems found" (e.g. `presto-hdfs-core`, `presto-client`) | Side effect of skipping test compilation: test-scoped deps look "unused". A package build needs no dependency analysis. Add `-Dmdep.analyze.skip=true`. `presto-deploy` now does this by default. |
-| C++ fbpkg is opt but I wanted a cheaper build | opt/bolt/asan/tsan/dbgo all package (`-m <mode>`). But only opt/bolt are cache-warm (`ci.continuous`); dbgo/asan/tsan compile cold and are often slower. dev (-O0) has no fbpkg target — use `presto-build -n` for local-only. |
-| C++ fbpkg hash empty | Check `fbpkg build fbcode//fb_presto_cpp:<target>` output directly |
-| Cluster shows old version after deploy | Run `presto-deploy-finish accelerate <cluster>` |
-| `presto --smc` connection refused | Cluster may still be restarting; check `tw.real job status tsp_<region>/presto/<cluster>.worker` |
-| Deploy seems stuck / rolling slowly | Run `presto-deploy-finish accelerate <cluster>` |
-| `pt pcm deploy` stuck in QUEUED | A previous deploy request may be blocking. Cancel it with `pt pcm cancel --request_id <id>` (request ID is in the deploy output) |
-| `fbpkg tag` blocked by AI agent policy | The `presto-deploy` script handles this -- it prints a `presto-deploy-finish tag` command for the user |
-| **Workers crash-loop after deploying to a Prestissimo cluster, cluster shows 0 nodes via `presto --smc`** | You deployed a **Java-only** package to a C++-worker cluster — workers have no `presto_server` binary. `restart` alone won't help (the spec still points at the bad package). Fix: build a **hybrid** (merge your Java fbpkg with a recent `presto.presto_cpp` via `fb_presto_cpp/scripts/build.sh -c <cpp_hash> -p <java_hash>`) and redeploy `-pv <hybrid_hash>`. This restores valid workers and lands the coordinator change in one deploy. |
-| Workers crash-looping, need restart (binary/config OK) | Run `presto-deploy-finish restart <cluster>` |
-| Confirm a worker's crash reason | `tw.real log tsp_<region>/presto/<cluster>.worker/0 -n 80` (region = first cluster token with trailing digits stripped, e.g. `atn6_...` → `tsp_atn`) |
+| Problem                                                                                                                                  | Fix                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mvn deploy` fails with auth error                                                                                                       | Check Nexus credentials: `cat ~/.m2/settings.xml`                                                                                                                                                                                                                                                                                                                                                                                               |
+| fbpkg build fails                                                                                                                        | Ensure `mvn deploy` succeeded; check `/tmp/presto_dev_deploy.log`                                                                                                                                                                                                                                                                                                                                                                               |
+| `fbpkg build` refuses to run (dirty repo)                                                                                                | `fbpkg build` rejects untracked files. Move `etc-local/` dirs out of repo before building, restore after.                                                                                                                                                                                                                                                                                                                                       |
+| `fbpkg build` fails with `<unknown>` Rust backtrace + "could not extract hash", log says "Repo has uncommitted changes, refusing to run" | ANY uncommitted/untracked file in fbsource (even unrelated to your change) blocks `fbpkg build`. Run `sl status`, commit your change (scratch/`HACK:` commit is fine), and `sl shelve`/remove unrelated files. The `presto-deploy` script now pre-checks and fails fast.                                                                                                                                                                        |
+| Java build fails compiling a broken trunk **test** source (e.g. `TestSliceDictionaryColumnWriter.java` "incompatible types")             | Pre-existing broken test in trunk, unrelated to your change. `mvn install` compiles test sources even under `-DskipTests`. Use `-Dmaven.test.skip=true` (skips test compilation). `presto-deploy` now does this by default.                                                                                                                                                                                                                     |
+| Java build fails `maven-dependency-plugin:analyze-only` "Dependency problems found" (e.g. `presto-hdfs-core`, `presto-client`)           | Side effect of skipping test compilation: test-scoped deps look "unused". A package build needs no dependency analysis. Add `-Dmdep.analyze.skip=true`. `presto-deploy` now does this by default.                                                                                                                                                                                                                                               |
+| C++ fbpkg is opt but I wanted a cheaper build                                                                                            | opt/bolt/asan/tsan/dbgo all package (`-m <mode>`). But only opt/bolt are cache-warm (`ci.continuous`); dbgo/asan/tsan compile cold and are often slower. dev (-O0) has no fbpkg target — use `presto-build -n` for local-only.                                                                                                                                                                                                                  |
+| C++ fbpkg hash empty                                                                                                                     | Check `fbpkg build fbcode//fb_presto_cpp:<target>` output directly                                                                                                                                                                                                                                                                                                                                                                              |
+| Cluster shows old version after deploy                                                                                                   | Run `presto-deploy-finish accelerate <cluster>`                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `presto --smc` connection refused                                                                                                        | Cluster may still be restarting; check `tw.real job status tsp_<region>/presto/<cluster>.worker`                                                                                                                                                                                                                                                                                                                                                |
+| Deploy seems stuck / rolling slowly                                                                                                      | Run `presto-deploy-finish accelerate <cluster>`                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `pt pcm deploy` stuck in QUEUED                                                                                                          | A previous deploy request may be blocking. Cancel it with `pt pcm cancel --request_id <id>` (request ID is in the deploy output)                                                                                                                                                                                                                                                                                                                |
+| `fbpkg tag` blocked by AI agent policy                                                                                                   | The `presto-deploy` script handles this -- it prints a `presto-deploy-finish tag` command for the user                                                                                                                                                                                                                                                                                                                                          |
+| **Workers crash-loop after deploying to a Prestissimo cluster, cluster shows 0 nodes via `presto --smc`**                                | You deployed a **Java-only** package to a C++-worker cluster — workers have no `presto_server` binary. `restart` alone won't help (the spec still points at the bad package). Fix: build a **hybrid** (merge your Java fbpkg with a recent `presto.presto_cpp` via `fb_presto_cpp/scripts/build.sh -c <cpp_hash> -p <java_hash>`) and redeploy `-pv <hybrid_hash>`. This restores valid workers and lands the coordinator change in one deploy. |
+| Workers crash-looping, need restart (binary/config OK)                                                                                   | Run `presto-deploy-finish restart <cluster>`                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Confirm a worker's crash reason                                                                                                          | `tw.real log tsp_<region>/presto/<cluster>.worker/0 -n 80` (region = first cluster token with trailing digits stripped, e.g. `atn6_...` → `tsp_atn`)                                                                                                                                                                                                                                                                                            |

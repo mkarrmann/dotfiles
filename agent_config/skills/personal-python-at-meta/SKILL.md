@@ -27,7 +27,7 @@ environment.
 Do **NOT** try to "install" the package to fix this:
 
 - **`pip install`** does not work — Meta Python deps are managed by Buck, not pip.
-- **`mgt import`** is ONLY for adding a *brand-new* package that does not yet
+- **`mgt import`** is ONLY for adding a _brand-new_ package that does not yet
   exist under `third-party/pypi/`. numpy, pandas, and virtually every common
   package already exist there, so there is nothing to import — running it just
   fails or wastes time.

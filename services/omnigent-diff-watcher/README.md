@@ -10,12 +10,12 @@ only attach validated Phabricator diff IDs.
 
 ## Events
 
-| Event | Fires when |
-| --- | --- |
+| Event            | Fires when                                                  |
+| ---------------- | ----------------------------------------------------------- |
 | `review_comment` | A human leaves an unresolved comment on the latest version. |
-| `ci_failure` | A signal reports `FAILED`, as soon as it does. |
-| `ai_review` | An automated reviewer has an unresolved finding. |
-| `ci_green` | A version's run finishes with nothing failing. |
+| `ci_failure`     | A signal reports `FAILED`, as soon as it does.              |
+| `ai_review`      | An automated reviewer has an unresolved finding.            |
+| `ci_green`       | A version's run finishes with nothing failing.              |
 
 Three things are deliberately true here, each of which was once false:
 
@@ -26,7 +26,7 @@ Three things are deliberately true here, each of which was once false:
   feeds: the comment stream filters automated authors, and reviewers report at
   `WARNING`, which is not a CI failure. Two sources are read — signalview's
   `REVIEW_INSIGHTS` group (RADAR and friends) and `meta phabricator.diff
-  arctic`. Arctic findings the author already dismissed or addressed are
+arctic`. Arctic findings the author already dismissed or addressed are
   skipped.
 - **Completion is reported, not only breakage.** Without `ci_green` a session
   can learn that something broke but never that the work is done, so "is it

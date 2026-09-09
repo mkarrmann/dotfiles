@@ -19,15 +19,15 @@ Configerator is Meta's configuration management system. It is **NOT standard Pyt
 
 ## File Types
 
-| Extension | Purpose | Compiles to JSON? |
-|-----------|---------|-------------------|
-| `.cconf` | Single config (must call `export()`) | Yes |
-| `.mcconf` | Multi-config (exports dict of configs) | Yes (multiple) |
-| `.cinc` | Shared include/library code | No |
-| `.thrift` | Schema definitions (IDL) | No |
-| `.thrift-cvalidator` | Validator functions (run at build time) | No |
-| `.ctest` | Unit tests for validators/helpers | No |
-| `.materialized_JSON` | Generated output (committed) | N/A |
+| Extension            | Purpose                                 | Compiles to JSON? |
+| -------------------- | --------------------------------------- | ----------------- |
+| `.cconf`             | Single config (must call `export()`)    | Yes               |
+| `.mcconf`            | Multi-config (exports dict of configs)  | Yes (multiple)    |
+| `.cinc`              | Shared include/library code             | No                |
+| `.thrift`            | Schema definitions (IDL)                | No                |
+| `.thrift-cvalidator` | Validator functions (run at build time) | No                |
+| `.ctest`             | Unit tests for validators/helpers       | No                |
+| `.materialized_JSON` | Generated output (committed)            | N/A               |
 
 **Key:** `.cinc` files are NOT configs — they cannot be read at runtime. Use `.cinc` for shared code; importing a `.cconf` triggers validation (slow).
 
@@ -54,12 +54,12 @@ conf submit --non-interactive --verbatim
 
 ## Formatting & Linting
 
-| Tool | What it does | Command |
-|------|-------------|---------|
-| **pyfmt** | Black + usort (import sorting) | `pyfmt source/path/file.cinc` |
-| **arc f** | Runs only BLACK formatter via arc lint | `arc f` |
-| **arc lint** | Full lint suite (BLACK, FLAKE8, ConfigeratorCconfLinter, etc.) | `arc lint` |
-| **conf build** | De facto validator — catches import errors, type mismatches, missing exports | `conf build` |
+| Tool           | What it does                                                                 | Command                       |
+| -------------- | ---------------------------------------------------------------------------- | ----------------------------- |
+| **pyfmt**      | Black + usort (import sorting)                                               | `pyfmt source/path/file.cinc` |
+| **arc f**      | Runs only BLACK formatter via arc lint                                       | `arc f`                       |
+| **arc lint**   | Full lint suite (BLACK, FLAKE8, ConfigeratorCconfLinter, etc.)               | `arc lint`                    |
+| **conf build** | De facto validator — catches import errors, type mismatches, missing exports | `conf build`                  |
 
 **Lint engine:** `FacebookConfigeratorLintEngine` — legacy PHP-based arcanist framework, NOT the newer Linttool/TOML system used in fbsource.
 
@@ -82,6 +82,7 @@ import_python("foo.cinc", "m_foo")
 ```
 
 **Rules:**
+
 - `.thrift` extension must be included: `from foo.bar.thrift import X`
 - Python keywords in paths need underscore suffix: `from foo.if_.config.thrift import X`
 - Wildcard imports (`*`) are deprecated
@@ -90,39 +91,39 @@ import_python("foo.cinc", "m_foo")
 
 ## Builtins (Available Without Import)
 
-| Function | Purpose |
-|----------|---------|
-| `export(config)` | Export config (required, once per .cconf) |
-| `configerator_warn(msg)` | Print warning (visible with `--verbose`) |
-| `configerator_base_path()` | Returns repo base path |
-| `configerator_cconf_path()` | Returns path of file being compiled |
-| `configerator_file_exists(path)` | Check if file exists |
-| `add_validator(ThriftClass, func)` | Add validator (in .thrift-cvalidator) |
+| Function                               | Purpose                                   |
+| -------------------------------------- | ----------------------------------------- |
+| `export(config)`                       | Export config (required, once per .cconf) |
+| `configerator_warn(msg)`               | Print warning (visible with `--verbose`)  |
+| `configerator_base_path()`             | Returns repo base path                    |
+| `configerator_cconf_path()`            | Returns path of file being compiled       |
+| `configerator_file_exists(path)`       | Check if file exists                      |
+| `add_validator(ThriftClass, func)`     | Add validator (in .thrift-cvalidator)     |
 | `add_validator_ext(ThriftClass, func)` | Extended validator (receives params dict) |
-| `RawConfig(...)` / `RawDict(...)` | Export raw content |
+| `RawConfig(...)` / `RawDict(...)`      | Export raw content                        |
 
 `export_if_last()` was **removed** in June 2025 — caused multiple SEV1s.
 
 ## Build Commands
 
-| Command | Behavior |
-|---------|----------|
-| `conf build` / `arc build` | Auto-selects local or remote (identical since May 2025) |
-| `conf build --prefer-remote` | Force remote build |
-| `conf build --prefer-local` | Force local build |
-| `conf build --legacy --verbose` | Local build with `print()` output visible |
-| `configerator source/path.cconf` | Compile single file (debugging) |
-| `configerator -j 1 source/path.cconf` | Single-threaded (for pdb/breakpoints) |
+| Command                               | Behavior                                                |
+| ------------------------------------- | ------------------------------------------------------- |
+| `conf build` / `arc build`            | Auto-selects local or remote (identical since May 2025) |
+| `conf build --prefer-remote`          | Force remote build                                      |
+| `conf build --prefer-local`           | Force local build                                       |
+| `conf build --legacy --verbose`       | Local build with `print()` output visible               |
+| `configerator source/path.cconf`      | Compile single file (debugging)                         |
+| `configerator -j 1 source/path.cconf` | Single-threaded (for pdb/breakpoints)                   |
 
 **Debugging:** Add `print()` or `breakpoint()` in your config, then `configerator -j 1 source/path.cconf`.
 
 ## CI Jobs (Sandcastle)
 
-| Job | Purpose |
-|-----|---------|
+| Job                           | Purpose                                                           |
+| ----------------------------- | ----------------------------------------------------------------- |
 | `configerator-build-and-diff` | Main job: mutation lint + build verification (runs on every diff) |
-| `configerator-lint` | Separate job: arcanist linters (BLACK, FLAKE8, etc.) |
-| `configerator-consumptor` | Config consumption checks |
+| `configerator-lint`           | Separate job: arcanist linters (BLACK, FLAKE8, etc.)              |
+| `configerator-consumptor`     | Config consumption checks                                         |
 
 **`configerator-build-and-diff` flow with `conf submit`:** Finds existing mutation ID → lint mutation → recommend reviewers. Skips rebuild.
 
@@ -144,18 +145,18 @@ Test validators with `.ctest` files. Do NOT import `.cconf` in `.ctest` — shar
 
 ## Common Mistakes
 
-| Mistake | Fix |
-|---------|-----|
-| Using `jf submit` | Use `conf submit` (preserves mutation ID) |
-| Stacking diffs | Squash into one or land sequentially |
-| Forgetting materialized configs | `sl addremove && sl amend` after `conf build` |
-| Changes after `conf build` | Rebuild before submitting |
-| Assuming standard Python linting | Check `source/.flake8` — F401/F403/F821 suppressed |
-| `rstrip("suffix")` | Use `removesuffix("suffix")` — `rstrip` strips char set |
-| Importing `.cconf` for shared code | Use `.cinc` instead (`.cconf` triggers validation) |
+| Mistake                                         | Fix                                                                                                                                                                              |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Using `jf submit`                               | Use `conf submit` (preserves mutation ID)                                                                                                                                        |
+| Stacking diffs                                  | Squash into one or land sequentially                                                                                                                                             |
+| Forgetting materialized configs                 | `sl addremove && sl amend` after `conf build`                                                                                                                                    |
+| Changes after `conf build`                      | Rebuild before submitting                                                                                                                                                        |
+| Assuming standard Python linting                | Check `source/.flake8` — F401/F403/F821 suppressed                                                                                                                               |
+| `rstrip("suffix")`                              | Use `removesuffix("suffix")` — `rstrip` strips char set                                                                                                                          |
+| Importing `.cconf` for shared code              | Use `.cinc` instead (`.cconf` triggers validation)                                                                                                                               |
 | Hand-editing files under `fbcode/configerator/` | Never do this — the files are generated from configerator master. Land the configerator change first; local edits are for temporary testing only and must never appear in a diff |
-| Using `find`/`grep -R` on repo root | Use `cbgs "string"` / `cbgr "regex"` (BigGrep) |
-| Standard Python debugger workflow | Use `configerator -j 1 file.cconf` with `breakpoint()` |
+| Using `find`/`grep -R` on repo root             | Use `cbgs "string"` / `cbgr "regex"` (BigGrep)                                                                                                                                   |
+| Standard Python debugger workflow               | Use `configerator -j 1 file.cconf` with `breakpoint()`                                                                                                                           |
 
 ## Quick Reference
 

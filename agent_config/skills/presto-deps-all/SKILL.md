@@ -10,6 +10,7 @@ description: Use when adding, exposing, or updating a Java dependency in presto-
 `presto-deps-all` is a `java_shaded_jar` Buck target at `//fbjava/presto-facebook-deps:presto-deps-all` that bundles a curated set of buck-built Java targets into a single Maven artifact (`com.facebook.presto:presto-deps-all:1.0-<timestamp>-<rev>`) published to Meta Nexus. It exists because `fbcode/github/presto-facebook-trunk` is a Maven build that can't depend on buck targets directly — `presto-deps-all` is the bridge.
 
 **Key files:**
+
 - `fbcode/fbjava/presto-facebook-deps/BUCK` — dep list + shading rules
 - `fbcode/tools/build/buck/java/buck2nexus/config.json` — publisher config (entry: `//fbjava/presto-facebook-deps:presto-deps-all`)
 - `fbcode/github/presto-facebook-trunk/pom.xml` (~line 1601) — parent dependencyManagement, declares the version consumed
@@ -43,6 +44,7 @@ The first two are usually one logical commit. The pom bump must be a separate co
 Edit `fbcode/fbjava/presto-facebook-deps/BUCK`:
 
 **To add a new dep:** append to the `deps = [...]` block (around lines 191-260):
+
 ```python
 deps = [
     ...existing entries...
@@ -52,6 +54,7 @@ deps = [
 ```
 
 **To control how a package is exposed:** add to the `shade = [...]` block (lines 96-190). Each entry is `(src, dst, includes, excludes)`:
+
 - Identity (unshade): `("com.facebook.serviceframework", "com.facebook.serviceframework", [], [])` — keep package at its natural path
 - Relocate: `("com.facebook.x2p.proxyclient", "fbshaded0.com.facebook.x2p.proxyclient", [], [])` — move to a different package
 - The catch-all near line 142 is `("com.facebook", "com.facebook.presto.$internal.com.facebook", [], [])` — anything not caught by an earlier rule gets shaded into `$internal`
@@ -66,6 +69,7 @@ grep -rln 'fbshaded0\.com\.facebook\.<package>' fbcode/github/presto-facebook-tr
 ```
 
 Commit:
+
 ```bash
 sl commit -m "[build] <short description of what changed>
 
@@ -117,6 +121,7 @@ Edit `fbcode/github/presto-facebook-trunk/pom.xml` — the `<version>` line imme
 **Do NOT** add `<version>` to any module-level pom (e.g. `presto-gateway/pom.xml`). They inherit from the parent.
 
 Commit:
+
 ```bash
 sl commit -m "[build] Bump presto-deps-all to <NEW_VERSION>" \
   fbcode/github/presto-facebook-trunk/pom.xml
@@ -138,6 +143,7 @@ Or any module that consumes the new dep. If a class still resolves to the old sh
 `mvn deploy` (the upload step) is a Java process that defaults to preferring IPv4. `maven.thefacebook.com` resolves ONLY to an AAAA record on Meta devvms. Without IPv6 prefs, Maven exits with `Network is unreachable` instead of falling back to IPv6.
 
 **Fix permanently:** add to `~/.localrc`:
+
 ```bash
 case " ${MAVEN_OPTS} " in
     *" -Djava.net.preferIPv6Addresses=true "*) ;;
@@ -158,17 +164,19 @@ If a package is shaded `(A → B)` in BUCK, the jar contains classes at path `B`
 The catch-all at line 142 relocates everything under `com.facebook.*` (that isn't caught by an earlier explicit rule) to `com.facebook.presto.$internal.com.facebook.*`. If you add a new Buck dep and try to `import com.facebook.foo.Bar;` from Maven code without adding a corresponding unshade rule, the compile will fail.
 
 Always add an unshade rule for any new package you want to expose:
+
 ```python
 ("com.facebook.foo", "com.facebook.foo", [], []),
 ```
+
 Place it before line 142.
 
 ### Two existing prefixes for shaded classes
 
-| Prefix | Why |
-|---|---|
-| `com.facebook.presto.$internal.com.facebook.*` | The catch-all default for `com.facebook.*` |
-| `fbshaded0.com.facebook.*` | Explicit relocations for "cat-for-presto-shaded classes" (CAT token provider, etc.) — see existing rules around line 110 |
+| Prefix                                         | Why                                                                                                                      |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `com.facebook.presto.$internal.com.facebook.*` | The catch-all default for `com.facebook.*`                                                                               |
+| `fbshaded0.com.facebook.*`                     | Explicit relocations for "cat-for-presto-shaded classes" (CAT token provider, etc.) — see existing rules around line 110 |
 
 Both exist for historical reasons. Don't add new `fbshaded0` mappings — prefer unshade-or-leave-alone.
 
@@ -187,12 +195,14 @@ Do NOT run `buck2 build //fbjava/presto-facebook-deps:presto-deps-all` first. `b
 ### Module-pom versions are inherited
 
 `presto-gateway/pom.xml` (and any other module that consumes `presto-deps-all`) has:
+
 ```xml
 <dependency>
     <groupId>com.facebook.presto</groupId>
     <artifactId>presto-deps-all</artifactId>
 </dependency>
 ```
+
 NO `<version>` tag. The version is resolved from the parent's `<dependencyManagement>`. Never add `<version>` to module poms — Maven will warn at build time and reviewers will complain.
 
 ### Dirty repo state
@@ -205,15 +215,15 @@ Plan ahead. Don't kick off a republish during a context-window-constrained workf
 
 ## Common Failure Modes
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| `Network is unreachable -> [Help 1]` during `mvn deploy` | Java preferring IPv4, no A record for maven.thefacebook.com | Add `-Djava.net.preferIPv6Addresses=true` to `MAVEN_OPTS` (see Gotchas) |
-| `package com.facebook.X does not exist` in consumer Maven module after presto-deps-all bump | Missing unshade rule for `com.facebook.X` (catch-all relocated it) | Add identity unshade rule before line 142, republish, bump pom |
-| `Could not extract jar version` from log | buck2nexus log format drifted | Inspect log manually; look for `Uploaded artifact ... version=...` |
-| Compile error `package fbshaded0.com.facebook.X does not exist` after intentional unshade | Missed updating a caller's import | `grep -rln fbshaded0\.com\.facebook\.X fbcode/github/presto-facebook-trunk/` and fix imports |
-| `Refusing to publish: dirty repo` | Uncommitted changes | Commit cleanly OR pass `--ignore-repo-state` |
-| Nexus 409 / version conflict | Same timestamp-rev as a prior upload (rare — minute precision) | Wait 60s, rebuild |
-| Maven build fails in unrelated modules (e.g. `presto-prism-metastore`, `presto-facebook-hive`) | Pre-existing breakage in trunk, not caused by your change | Don't try to fix it. Verify with `mvn -pl <your-module> compile -DskipTests`. Record skip reason in commit's Test Plan. |
+| Symptom                                                                                        | Cause                                                              | Fix                                                                                                                     |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `Network is unreachable -> [Help 1]` during `mvn deploy`                                       | Java preferring IPv4, no A record for maven.thefacebook.com        | Add `-Djava.net.preferIPv6Addresses=true` to `MAVEN_OPTS` (see Gotchas)                                                 |
+| `package com.facebook.X does not exist` in consumer Maven module after presto-deps-all bump    | Missing unshade rule for `com.facebook.X` (catch-all relocated it) | Add identity unshade rule before line 142, republish, bump pom                                                          |
+| `Could not extract jar version` from log                                                       | buck2nexus log format drifted                                      | Inspect log manually; look for `Uploaded artifact ... version=...`                                                      |
+| Compile error `package fbshaded0.com.facebook.X does not exist` after intentional unshade      | Missed updating a caller's import                                  | `grep -rln fbshaded0\.com\.facebook\.X fbcode/github/presto-facebook-trunk/` and fix imports                            |
+| `Refusing to publish: dirty repo`                                                              | Uncommitted changes                                                | Commit cleanly OR pass `--ignore-repo-state`                                                                            |
+| Nexus 409 / version conflict                                                                   | Same timestamp-rev as a prior upload (rare — minute precision)     | Wait 60s, rebuild                                                                                                       |
+| Maven build fails in unrelated modules (e.g. `presto-prism-metastore`, `presto-facebook-hive`) | Pre-existing breakage in trunk, not caused by your change          | Don't try to fix it. Verify with `mvn -pl <your-module> compile -DskipTests`. Record skip reason in commit's Test Plan. |
 
 ## Reference: BUCK File Structure
 
@@ -251,6 +261,7 @@ java_shaded_jar(
 ## Reference: Recent Working Example
 
 Commits `4df734341c87` and `9ea546469728` (June 2026, authN migration ralph loop) are good worked examples:
+
 - `4df734341c87` — add `service-framework` + `aclcheckerhandler_jni` deps + unshade rules for `nifty.core`, `serviceframework`, `infrasec`
 - `9ea546469728` — unshade `com.facebook.nifty.ssl` and update the one `CryptoAuthTokenProviderUtils.java` caller from `fbshaded0.com.facebook.nifty.ssl.*` to `com.facebook.nifty.ssl.*`
 

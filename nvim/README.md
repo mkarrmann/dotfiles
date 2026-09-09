@@ -27,6 +27,7 @@ This directory contains an extensible environment detection and configuration sy
 ## Meta-specific workarounds
 
 When Meta environment is detected:
+
 - Disables Lazy.nvim auto-update (GitHub blocked by proxy)
 - Disables Lazy.nvim auto-install
 - Reduces git timeout for faster failures
@@ -36,6 +37,7 @@ When Meta environment is detected:
 ## Setup
 
 Add to your `.localrc`, `.bashrc`, or `.zshrc`:
+
 ```bash
 source ~/dotfiles/nvim/env-setup.sh
 ```
@@ -53,6 +55,7 @@ To add support for a new environment, edit `lib/env.lua`:
 3. Optionally update the shell wrapper (`../bin/nvim-env-wrapper`)
 
 Example:
+
 ```lua
 -- In M.detect()
 if vim.env.COMPANY_SPECIFIC_VAR then

@@ -11,6 +11,7 @@ definition + a launch keymap. Everything else is parity/polish.
 > (agent `polly`, `OMNIGENT_URL`, `host="auto"`, create-time `labels`) and the
 > `<leader>aM` launcher are in `nvim/lua/plugins/codecompanion.lua`. Since the
 > original plan, ALL remaining milestones shipped:
+>
 > - The `apply()` stop_stream leak is **fixed** (outgoing omnigent session's stream
 >   is torn down symmetric to the ACP disconnect).
 > - **M3 resume UX**: `omnigent_continue()` picker on `<leader>amc` (cwd-scoped,
@@ -232,7 +233,7 @@ not part of the CWD cleanup.
   omnigent agents filtered to `claude-sdk` harness + `model_options`. Start
   hardcoded; add a picker later.
 - **Devserver**: set `OMNIGENT_URL` to the Mac-server tunnel when nvim runs on a
-  devserver; `host = "auto"` will then resolve the *devserver* host (bind tools to
+  devserver; `host = "auto"` will then resolve the _devserver_ host (bind tools to
   where nvim is, not where the server is).
 - **Attribution labels** (optional, needs a 1-line plugin tweak): to stamp nvim
   identity onto sessions for Orchest mapping (your `build_client_metadata`

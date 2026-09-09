@@ -67,21 +67,21 @@ The `claude-diff` model solves both. The interesting realization is that CodeCom
 
 ### 1.4 CodeCompanion signals available
 
-**False start (kept here as a warning).** My first instinct was that `helpers.show_diff(args)` was a single chokepoint that every agent edit funnels through — capture `args.from_lines` + `args.chat_bufnr` and you'd have all writes. **This is wrong.** `show_diff` is the *render* function for the floating accept/reject UI, not the *write* function. It's called conditionally:
+**False start (kept here as a warning).** My first instinct was that `helpers.show_diff(args)` was a single chokepoint that every agent edit funnels through — capture `args.from_lines` + `args.chat_bufnr` and you'd have all writes. **This is wrong.** `show_diff` is the _render_ function for the floating accept/reject UI, not the _write_ function. It's called conditionally:
 
-| Path | When `show_diff` is **skipped** |
-|------|------|
-| Small diff under `display.diff.threshold_for_chat` | Always — diff text is inlined into the chat buffer (`approval_prompt.present_diff` line 132) |
-| Chat buffer not focused at request time | Only fires if the user later picks "View" (line 137) |
-| HTTP `insert_edit_into_file` with `opts.approved == true` (auto-approve list) | Always — `opts.apply()` runs directly (`insert_edit_into_file/diff.lua:134`) |
-| `display.diff.enabled == false` or `require_confirmation_after == false` | Always |
-| Inline edits with buffer in always-approved list | Always (`inline/init.lua:794-799`) |
+| Path                                                                          | When `show_diff` is **skipped**                                                              |
+| ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Small diff under `display.diff.threshold_for_chat`                            | Always — diff text is inlined into the chat buffer (`approval_prompt.present_diff` line 132) |
+| Chat buffer not focused at request time                                       | Only fires if the user later picks "View" (line 137)                                         |
+| HTTP `insert_edit_into_file` with `opts.approved == true` (auto-approve list) | Always — `opts.apply()` runs directly (`insert_edit_into_file/diff.lua:134`)                 |
+| `display.diff.enabled == false` or `require_confirmation_after == false`      | Always                                                                                       |
+| Inline edits with buffer in always-approved list                              | Always (`inline/init.lua:794-799`)                                                           |
 
 A `show_diff`-based wrapper would systematically miss the most common workflows (small edits, unfocused chat, auto-approved tools) — exactly the cases where a session-level diff view is most useful. Also `args.bufnr` is not the edited file's buffer (it's the diff display buffer, often a freshly created scratch), and `args.keymaps.on_accept` is not set on the ACP permission path at all (`request_permission.lua` only sets `on_reject`), so any "refresh after accept" hook is dead code for the most important provider.
 
 **Actual chokepoints:**
 
-- **ACP writes — `Connection:handle_fs_write_file_request` (`acp/init.lua:815`).** Every `fs/write_text_file` RPC from claude-agent-acp / codex-acp / dvsc-core-acp flows through this one handler, regardless of approval mode. It has `params.sessionId`, `params.path`, `params.content`, and we can `read_file_lines(path)` *before* calling the original to capture pre-write content. This catches 100% of ACP writes including `bypassPermissions` mode.
+- **ACP writes — `Connection:handle_fs_write_file_request` (`acp/init.lua:815`).** Every `fs/write_text_file` RPC from claude-agent-acp / codex-acp / dvsc-core-acp flows through this one handler, regardless of approval mode. It has `params.sessionId`, `params.path`, `params.content`, and we can `read_file_lines(path)` _before_ calling the original to capture pre-write content. This catches 100% of ACP writes including `bypassPermissions` mode.
 - **HTTP `insert_edit_into_file` — `diff.review(opts)` (`insert_edit_into_file/diff.lua:131`).** Called unconditionally before the three-branch `present_diff` dispatch. It has `opts.from_lines`, `opts.to_lines`, `opts.chat_bufnr`, and `opts.title` (display name; we resolve via the chat's tracked filepath). Patching here captures all HTTP edits regardless of which approval branch fires.
 - **Inline edits — `inline/init.lua:806`.** Has its own `show_diff` call site but no chat session, so out of scope for v1.
 
@@ -114,17 +114,17 @@ Active development risk: both providers are likely to see fixes (`scrollbind` in
 
 ### 2.2 What's genuinely shared vs. wrapper-specific
 
-| Concern | Shared (move to `diff-tab.lua`) | Wrapper-specific (stays per-provider) |
-|---|---|---|
-| Tab lifecycle (open/close/autocmds) | ✓ | |
-| Pair rendering & winbar | ✓ | |
-| Per-file scratch buffers | ✓ | |
-| File-list state & navigation keymaps | ✓ | |
-| Mode toggle (turn ↔ session) | ✓ | |
-| **Where snapshots come from** | | ✓ (Claude: disk paths; CC: in-memory) |
-| **What is a "session"** | | ✓ (Claude: wrapper session_id; CC: chat bufnr) |
-| **Lifecycle event source** | | ✓ (Claude: explicit API calls; CC: User autocmds) |
-| **Tab → session lookup** | | ✓ (`vim.t.claude_session_id` vs `vim.t.codecompanion_chat_bufnr`) |
+| Concern                              | Shared (move to `diff-tab.lua`) | Wrapper-specific (stays per-provider)                             |
+| ------------------------------------ | ------------------------------- | ----------------------------------------------------------------- |
+| Tab lifecycle (open/close/autocmds)  | ✓                               |                                                                   |
+| Pair rendering & winbar              | ✓                               |                                                                   |
+| Per-file scratch buffers             | ✓                               |                                                                   |
+| File-list state & navigation keymaps | ✓                               |                                                                   |
+| Mode toggle (turn ↔ session)         | ✓                               |                                                                   |
+| **Where snapshots come from**        |                                 | ✓ (Claude: disk paths; CC: in-memory)                             |
+| **What is a "session"**              |                                 | ✓ (Claude: wrapper session_id; CC: chat bufnr)                    |
+| **Lifecycle event source**           |                                 | ✓ (Claude: explicit API calls; CC: User autocmds)                 |
+| **Tab → session lookup**             |                                 | ✓ (`vim.t.claude_session_id` vs `vim.t.codecompanion_chat_bufnr`) |
 
 Roughly 70% of `claude-diff.lua` lifts cleanly.
 
@@ -144,7 +144,7 @@ Roughly 70% of `claude-diff.lua` lifts cleanly.
 ### Non-Goals
 
 - **Not changing the diff renderer.** We still use Vim's built-in `diffthis`. No third-party diff library, no rendering inside floating windows.
-- **Not replacing CodeCompanion's stock floating diff UI.** That stays as the in-flight permission UI; our split tab is an *additional* view you can open on demand.
+- **Not replacing CodeCompanion's stock floating diff UI.** That stays as the in-flight permission UI; our split tab is an _additional_ view you can open on demand.
 - **Not capturing inline edits (`:CodeCompanion` outside chat).** No chat session = no session key. The wrapper falls through cleanly; just no diff-tab entry created.
 - **Not persisting state across `nvim` restarts.** Sessions are in-memory only, just like today.
 - **Not supporting cross-tab diff viewing.** Diff is per-session per-tab; if the chat moves tabs we don't follow.
@@ -156,37 +156,39 @@ Roughly 70% of `claude-diff.lua` lifts cleanly.
 
 `lib/claude-diff.lua` (589 lines), annotated by what moves where:
 
-| Symbol | Lines | Move target | Notes |
-|---|---|---|---|
-| `_counter` | 3 | `diff-tab.lua` | Used for buffer name uniqueness. |
-| `_sessions` | 4 | `diff-tab.lua` (per-manager) | Becomes `self._sessions` on the manager instance. |
-| `KEYMAPS` constant | 6 | `diff-tab.lua` | List of keys to unregister on close. |
-| `read_file_lines` | 10–21 | **`claude-diff.lua`** (wrapper-specific) | Only Claude needs disk reads; CC has in-memory lines. |
-| `make_scratch_buf` | 23–36 | `diff-tab.lua` | Take a `label` arg so wrappers can prefix names (e.g. `"after"`, `"turn-before"`, `"session-before"`). |
-| `update_scratch_buf` | 38–42 | `diff-tab.lua` | |
-| `delete_buf` | 44–48 | `diff-tab.lua` | |
-| `get_state` | 50–68 | `diff-tab.lua` (manager method) | |
-| `get_file_list` | 70–72 | `diff-tab.lua` | |
-| `get_before_buf` | 74–80 | `diff-tab.lua` | |
-| `update_winbar` | 84–129 | `diff-tab.lua` | Winbar text format hardcoded today; expose as config option (see §5.2). |
-| `show_pair` | 133–204 | `diff-tab.lua` | |
-| `set_keymaps` (closure over `session_id`) | 210–295 | `diff-tab.lua` | Refactored to take `(buf, manager, session_id)`. |
-| `remove_keymaps_from_buf` | 297–304 | `diff-tab.lua` | |
-| `close_diff_tab` | 308–347 | `diff-tab.lua` | |
-| `setup_diff_tab` | 349–407 | `diff-tab.lua` | Tab-local var key (`vim.t.claude_diff_session`) becomes `vim.t[manager.tab_var]`. |
-| `M.toggle` | 411–433 | `diff-tab.lua` (manager method) | Reads `vim.t[manager.tab_var]` instead of hardcoded keys. |
-| `M.file_edited` | 435–505 | **`claude-diff.lua`** (wrapper-specific) | Reads disk snapshots, calls `manager:add_file(...)`. |
-| `M.new_turn` | 507–544 | `diff-tab.lua` (manager method) | Generic enough — drops turn snapshots, refreshes view. |
-| `M.cleanup` | 546–571 | `diff-tab.lua` (manager method) | |
-| `M.debug` | 573–586 | `diff-tab.lua` (manager method) | Wrappers can extend with provider-specific info. |
+| Symbol                                    | Lines   | Move target                              | Notes                                                                                                  |
+| ----------------------------------------- | ------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `_counter`                                | 3       | `diff-tab.lua`                           | Used for buffer name uniqueness.                                                                       |
+| `_sessions`                               | 4       | `diff-tab.lua` (per-manager)             | Becomes `self._sessions` on the manager instance.                                                      |
+| `KEYMAPS` constant                        | 6       | `diff-tab.lua`                           | List of keys to unregister on close.                                                                   |
+| `read_file_lines`                         | 10–21   | **`claude-diff.lua`** (wrapper-specific) | Only Claude needs disk reads; CC has in-memory lines.                                                  |
+| `make_scratch_buf`                        | 23–36   | `diff-tab.lua`                           | Take a `label` arg so wrappers can prefix names (e.g. `"after"`, `"turn-before"`, `"session-before"`). |
+| `update_scratch_buf`                      | 38–42   | `diff-tab.lua`                           |                                                                                                        |
+| `delete_buf`                              | 44–48   | `diff-tab.lua`                           |                                                                                                        |
+| `get_state`                               | 50–68   | `diff-tab.lua` (manager method)          |                                                                                                        |
+| `get_file_list`                           | 70–72   | `diff-tab.lua`                           |                                                                                                        |
+| `get_before_buf`                          | 74–80   | `diff-tab.lua`                           |                                                                                                        |
+| `update_winbar`                           | 84–129  | `diff-tab.lua`                           | Winbar text format hardcoded today; expose as config option (see §5.2).                                |
+| `show_pair`                               | 133–204 | `diff-tab.lua`                           |                                                                                                        |
+| `set_keymaps` (closure over `session_id`) | 210–295 | `diff-tab.lua`                           | Refactored to take `(buf, manager, session_id)`.                                                       |
+| `remove_keymaps_from_buf`                 | 297–304 | `diff-tab.lua`                           |                                                                                                        |
+| `close_diff_tab`                          | 308–347 | `diff-tab.lua`                           |                                                                                                        |
+| `setup_diff_tab`                          | 349–407 | `diff-tab.lua`                           | Tab-local var key (`vim.t.claude_diff_session`) becomes `vim.t[manager.tab_var]`.                      |
+| `M.toggle`                                | 411–433 | `diff-tab.lua` (manager method)          | Reads `vim.t[manager.tab_var]` instead of hardcoded keys.                                              |
+| `M.file_edited`                           | 435–505 | **`claude-diff.lua`** (wrapper-specific) | Reads disk snapshots, calls `manager:add_file(...)`.                                                   |
+| `M.new_turn`                              | 507–544 | `diff-tab.lua` (manager method)          | Generic enough — drops turn snapshots, refreshes view.                                                 |
+| `M.cleanup`                               | 546–571 | `diff-tab.lua` (manager method)          |                                                                                                        |
+| `M.debug`                                 | 573–586 | `diff-tab.lua` (manager method)          | Wrappers can extend with provider-specific info.                                                       |
 
 Wrapper-specific bits that stay in `claude-diff.lua`:
+
 - `read_file_lines` (Claude wrapper writes snapshot files to disk; CC doesn't)
 - `M.file_edited` glue that reads disk and calls `manager:add_file`
 - Tab var key name (`claude_session_id` / `claude_diff_session`)
 - Augroup naming prefix (`claude_diff_` + session_id)
 
 New wrapper bits unique to `codecompanion-diff.lua`:
+
 - Monkey-patch of `Connection:handle_fs_write_file_request` (`acp/init.lua`) for ACP write capture
 - Monkey-patch of `diff.review` (`insert_edit_into_file/diff.lua`) for HTTP write capture
 - `Connection → chat_bufnr` lookup (walk `_G.codecompanion.chats` and match `acp_connection`)
@@ -245,6 +247,7 @@ mgr:debug()                                      -- inspect state
 ```
 
 Internally each manager carries:
+
 - `self._sessions` — `{ [session_id] = state }` table (state shape identical to today's).
 - `self._counter` — buffer-name uniqueness counter (per-manager so claude and CC bufnames don't collide).
 - `self.opts` — `name`, `tab_var`, `diff_tab_var`.
@@ -448,12 +451,12 @@ Roughly ~120 lines. Public API parallel to claude-diff (`toggle`, `cleanup`, `de
 The key insight: `diff-tab.lua` doesn't care **how** snapshots are obtained. `add_file(session_id, path, { after_lines, turn_before_lines?, session_before_lines? })` just takes line arrays. Internal dedup logic decides whether `turn_before_lines` / `session_before_lines` on a subsequent call for the same path is honored (first-seen-this-turn / first-seen-this-session) or ignored.
 
 - **Claude wrapper**: reads snapshot files written by the external wrapper script and passes line arrays.
-- **CodeCompanion wrapper**: reads disk *before* the write (ACP path via `Connection:handle_fs_write_file_request`; HTTP path via `diff.review`'s `opts.from_lines`) and passes line arrays.
+- **CodeCompanion wrapper**: reads disk _before_ the write (ACP path via `Connection:handle_fs_write_file_request`; HTTP path via `diff.review`'s `opts.from_lines`) and passes line arrays.
 
 Why disk reads on the CC side, when `from_lines` is available in-memory for HTTP and `params.content` for ACP? Three reasons:
 
 1. **Authority**: For the ACP `bypassPermissions` case (and any auto-approved write) there is no `from_lines` because no diff was computed. We have to read disk regardless. Making disk reads the rule, not the exception, simplifies the wrapper.
-2. **Truthfulness**: `tool_call.content[1].oldText` in the ACP permission flow is the *agent's claim* of what was there. The agent could be wrong (stale file read, race with user edit, hallucination). Disk read is ground truth.
+2. **Truthfulness**: `tool_call.content[1].oldText` in the ACP permission flow is the _agent's claim_ of what was there. The agent could be wrong (stale file read, race with user edit, hallucination). Disk read is ground truth.
 3. **Symmetry with Claude wrapper**: both wrappers now have the same model — snapshot is "what's on disk right before the write." This makes any future bug fix to snapshot semantics apply identically.
 
 Either provider can also call `refresh_after(session_id, path, new_after_lines)` independently when the file changes via a non-agent path (e.g., user manual edit). Not wired in v1 — see §8.
@@ -562,6 +565,7 @@ After this lands, opening a chat in tab N:
 ### 8.1 ACP `Connection` internals drift
 
 Patching `Connection:handle_fs_write_file_request` reaches into plugin internals (`acp/init.lua:815`). Upstream could rename, restructure, or split the handler. Mitigation:
+
 - Pin behavior with a comment in the monkey-patch noting the expected method signature.
 - Gate the wrap defensively — if `params.path` or `params.content` is missing, fall through to the original without capturing.
 - Periodically re-check on plugin updates. If upstream lands the `prompt_builder:on_write_text_file` integration (the hook is already exposed at `acp/prompt_builder.lua:57` but unused by `ACPHandler`), pivot to that — it's the designed extension point and bypasses the monkey-patch entirely.
@@ -569,8 +573,9 @@ Patching `Connection:handle_fs_write_file_request` reaches into plugin internals
 ### 8.2 `Connection → chat_bufnr` lookup is heuristic
 
 `chat_bufnr_for_connection` walks `_G.codecompanion.chats` (or equivalent registry) and matches `chat.acp_connection == self`. Risks:
+
 - If the registry key/name changes upstream, lookup returns nil and we silently drop captures. Mitigation: assert at `setup()` time that the registry exists; log a one-time warning otherwise.
-- If multiple chats ever share a connection (broker multiplexing?), we'd attribute writes to whichever chat we find first. Worth verifying — for the broker case, each `Chat` should still own a distinct `acp_connection` (broker is *inside* the connection, not above it).
+- If multiple chats ever share a connection (broker multiplexing?), we'd attribute writes to whichever chat we find first. Worth verifying — for the broker case, each `Chat` should still own a distinct `acp_connection` (broker is _inside_ the connection, not above it).
 
 ### 8.3 HTTP path needs `opts.filepath`
 
@@ -587,7 +592,7 @@ For ACP, we read disk pre-write inside the RPC handler — authoritative.
 
 For HTTP via `diff.review`, `opts.from_lines` comes from `source.content`, which `make_file_source` (`init.lua:79`) reads from disk at the start of `execute_edit`. There's a small window between that read and `diff.review` being called where the user could modify the file. Acceptable — same race as Claude Code wrapper.
 
-For ACP's `tool_call.content[1].oldText` (used only by `show_diff` for in-flight rendering, not by us): the agent's *claim* of pre-write content. We deliberately do not trust it — we read disk instead.
+For ACP's `tool_call.content[1].oldText` (used only by `show_diff` for in-flight rendering, not by us): the agent's _claim_ of pre-write content. We deliberately do not trust it — we read disk instead.
 
 ### 8.5 Multiple chats in flight (different tabs) — state collision?
 
@@ -596,6 +601,7 @@ Each chat is its own session in `_sessions`, keyed by `chat_bufnr`. ACP captures
 ### 8.6 Tab var key for CC
 
 Two options:
+
 - (a) Reuse `vim.t.codecompanion_chat_bufnr` (already stamped by my existing autocmd). Same lifecycle, no double-bookkeeping.
 - (b) Add a separate `vim.t.codecompanion_diff_session` stamped only inside the diff tab itself.
 

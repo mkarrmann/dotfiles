@@ -6,7 +6,7 @@ description: Reveal source locations in Matt's running Neovim session instead of
 # Show code in Neovim
 
 `nvim-show` opens a concrete source location in the Neovim session that owns it.
-Prefer it over describing a location in prose: when Matt asks *where* something
+Prefer it over describing a location in prose: when Matt asks _where_ something
 is, put it in front of him.
 
 ## Commands
@@ -80,26 +80,26 @@ to start one, or for an address to use.
 **Several are running and none is implied.** It lists them and stops rather than
 guessing. Pass `--server ADDR` with the one he names.
 
-The full order, for when you need to reason about it. Steps marked *(nvs)* apply
+The full order, for when you need to reason about it. Steps marked _(nvs)_ apply
 only on machines running `nvs` headless servers — Matt's devservers — and switch
 themselves off elsewhere.
 
 Named or derived; if unreachable this errors rather than redirecting:
 
 1. `--server ADDR` — a socket path or `host:port`
-2. `--session NAME` *(nvs)*
+2. `--session NAME` _(nvs)_
 3. `$NVIM` — you are running in a terminal buffer inside Neovim
 4. longest workdir-prefix match of the shown path against this host's nvs
    session list, so a file under `~/checkout2` opens in that checkout's
-   editor *(nvs)*
-5. the same match against the working directory *(nvs)*
+   editor _(nvs)_
+5. the same match against the working directory _(nvs)_
 
 Fallbacks; each is skipped when it is not reachable:
 
 6. the target you last resolved to — so `--clear`, which carries no path, and
    later jumps outside any checkout still land in your own tab
 7. `$NVIM_SHOW_SERVER`
-8. `$NVS_TARGET_SESSION` *(nvs)*
+8. `$NVS_TARGET_SESSION` _(nvs)_
 9. the sole running Neovim, found from its default server socket
 
 On a devserver, rule 4 means a path under a checkout always reaches that

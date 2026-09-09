@@ -65,12 +65,12 @@ stale vendored fork. Those bind tools for streamed SDK/ACP harnesses only: a
 native session boots the vendor TUI and takes its tool surface from that
 vendor's own config, so every native harness needs its own registration.
 
-| Harness | Registered in | Flag | Bridge found via |
-|---|---|---|---|
-| SDK Claude / Codex / ACP dvsc | `omnigent_config/agents/*/config.yaml` | none | n/a; policy rewrites the result |
-| Polly / Debby | packaged agent copied and overlaid by `omnigent-agents-ensure` | none | n/a; policy rewrites the result |
-| Native Codex | `codex_config/config.template.toml` | `--native-codex` | `CODEX_HOME` |
-| Native Claude | `agent_config/plugins/custom-mcps/mcps/diff-watch.json` -> `~/.claude.json` | `--native-claude` | `CLAUDE_CODE_SESSION_ID` -> `state.json` |
+| Harness                       | Registered in                                                               | Flag              | Bridge found via                         |
+| ----------------------------- | --------------------------------------------------------------------------- | ----------------- | ---------------------------------------- |
+| SDK Claude / Codex / ACP dvsc | `omnigent_config/agents/*/config.yaml`                                      | none              | n/a; policy rewrites the result          |
+| Polly / Debby                 | packaged agent copied and overlaid by `omnigent-agents-ensure`              | none              | n/a; policy rewrites the result          |
+| Native Codex                  | `codex_config/config.template.toml`                                         | `--native-codex`  | `CODEX_HOME`                             |
+| Native Claude                 | `agent_config/plugins/custom-mcps/mcps/diff-watch.json` -> `~/.claude.json` | `--native-claude` | `CLAUDE_CODE_SESSION_ID` -> `state.json` |
 
 The native modes exist because the vendor TUIs do not hand the policy's
 rewritten result back to the model, so the server makes the policy round trip
@@ -82,8 +82,8 @@ Claude Code does export to every MCP server it spawns is
 `CLAUDE_CODE_SESSION_ID`, and the bridge records that same id in `state.json`,
 so the directory is found by matching on it. Several bridges coexist, one per
 concurrent session, so the match must be on identity and not on "the only
-directory present". Note `state.json` holds the *Claude* session id while
-`bridge.json` holds the *Omnigent* one; the policy call is addressed with the
+directory present". Note `state.json` holds the _Claude_ session id while
+`bridge.json` holds the _Omnigent_ one; the policy call is addressed with the
 latter.
 
 The tools accept no session identity. An optional `diffs` list accepts only
@@ -180,7 +180,7 @@ The read-only source executes bounded, argv-only commands:
 
 - `jf diff-properties D12345`
 - `meta phabricator.diff comments ... --latest-version --skip-author
-  --unresolved-only --no-suggestions`
+--unresolved-only --no-suggestions`
 - a fixed `jf graphql` Signalview query for aggregate and failed signal IDs
 
 Each command has a 30-second timeout and one-MiB output cap. The environment is
@@ -202,14 +202,14 @@ First observation is always a baseline and emits no event.
 
 Successful polling uses the diff's last meaningful activity:
 
-| State | Interval |
-|---|---:|
-| CI active or activity under 1 hour | 1 minute |
-| Idle 1-6 hours | 5 minutes |
-| Idle 6-24 hours | 15 minutes |
-| Idle 1-3 days | 1 hour |
-| Idle 3-14 days | 6 hours |
-| Idle over 14 days | 24 hours |
+| State                              |   Interval |
+| ---------------------------------- | ---------: |
+| CI active or activity under 1 hour |   1 minute |
+| Idle 1-6 hours                     |  5 minutes |
+| Idle 6-24 hours                    | 15 minutes |
+| Idle 1-3 days                      |     1 hour |
+| Idle 3-14 days                     |    6 hours |
+| Idle over 14 days                  |   24 hours |
 
 Deadlines receive deterministic plus/minus 10 percent jitter. Source failures
 use a separate 1, 2, 5, 15, then 30 minute exponential sequence and never make

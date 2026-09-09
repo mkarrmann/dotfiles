@@ -236,18 +236,18 @@ The module owns:
 
 ### 3. State transitions
 
-| Omnigent update | Result |
-| --- | --- |
-| session ready/restored | Attach session id and seed from the session snapshot |
-| `turn_started` | `phase=running`, `unread=false` |
-| `elicitation` | `phase=waiting` |
-| `elicitation_resolved` | `waiting` if other elicitations remain; otherwise `running` when a response is active, else `idle` |
-| `turn_completed` | `phase=idle`; set `unread=true` only if the owner tab is not current |
-| `turn_failed` or `error` | `phase=failed`; set `unread=true` only if the owner tab is not current |
-| `interrupted` or `turn_cancelled` | `phase=idle`, `unread=false` |
-| new turn after failure/completion | Clear the previous terminal/unread state |
-| `TabEnter` | Clear `unread`; do not clear `waiting` |
-| chat closed/adapter replaced | Clear the tab's session association and status |
+| Omnigent update                   | Result                                                                                             |
+| --------------------------------- | -------------------------------------------------------------------------------------------------- |
+| session ready/restored            | Attach session id and seed from the session snapshot                                               |
+| `turn_started`                    | `phase=running`, `unread=false`                                                                    |
+| `elicitation`                     | `phase=waiting`                                                                                    |
+| `elicitation_resolved`            | `waiting` if other elicitations remain; otherwise `running` when a response is active, else `idle` |
+| `turn_completed`                  | `phase=idle`; set `unread=true` only if the owner tab is not current                               |
+| `turn_failed` or `error`          | `phase=failed`; set `unread=true` only if the owner tab is not current                             |
+| `interrupted` or `turn_cancelled` | `phase=idle`, `unread=false`                                                                       |
+| new turn after failure/completion | Clear the previous terminal/unread state                                                           |
+| `TabEnter`                        | Clear `unread`; do not clear `waiting`                                                             |
+| chat closed/adapter replaced      | Clear the tab's session association and status                                                     |
 
 Terminal updates should be matched against the current response id where one is
 available. A late terminal event from an older request must not clear a newer
@@ -258,13 +258,13 @@ running state. This mirrors the request-id protection already used by
 
 The renderer maps semantic state to text and highlights:
 
-| State | Suggested marker | Meaning |
-| --- | --- | --- |
-| running | `⚙` | Agent is processing |
-| waiting | `!` | An Omnigent elicitation needs input |
-| idle + unread | `✓` | A background completion has not been viewed |
-| failed + unread | `×` | A background failure has not been viewed |
-| idle, viewed | none | No attention required |
+| State           | Suggested marker | Meaning                                     |
+| --------------- | ---------------- | ------------------------------------------- |
+| running         | `⚙`              | Agent is processing                         |
+| waiting         | `!`              | An Omnigent elicitation needs input         |
+| idle + unread   | `✓`              | A background completion has not been viewed |
+| failed + unread | `×`              | A background failure has not been viewed    |
+| idle, viewed    | none             | No attention required                       |
 
 Rename the current Claude-specific highlight groups to transport-neutral names,
 for example `TablineAgentRunning`, `TablineAgentWaiting`,

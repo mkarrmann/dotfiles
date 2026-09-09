@@ -12,7 +12,7 @@ not a pin**:
 - below the floor → rolled forward to the latest release
 - at or above it → left alone, so a machine you deliberately moved ahead stays
   ahead
-- missing a `--with` extra → the *currently installed* version is reinstalled,
+- missing a `--with` extra → the _currently installed_ version is reinstalled,
   never silently bumped
 
 ## Roll the fleet forward
@@ -25,10 +25,12 @@ not a pin**:
    cp ~/.omnigent/chat.db ~/.omnigent/chat.db.pre-<version>
    ```
 3. On each machine:
+
    ```bash
    cd ~/dotfiles && git pull && ./init.sh
    systemctl --user daemon-reload
    ```
+
    **The host daemon restart is automatic.** `omnigent-version-ensure` does it
    whenever it actually writes the package — `try-restart` on Linux, stop plus
    `launchctl kickstart -k` on macOS — and does nothing on a converge that
@@ -42,6 +44,7 @@ not a pin**:
    can migrate `chat.db`, so step 2's backup must happen first.
    `omnigent-version-ensure` prints the exact commands when it sees a running
    server on pre-upgrade code.
+
 4. Verify (from `/` — `python -c` puts cwd on `sys.path`, so running this inside
    an omnigent checkout tests the wrong copy):
    ```bash
@@ -99,7 +102,7 @@ with new on-disk ones:
 
 - Mac, daemon 3 days old — `ValueError: runner fork request requires a cwd`
 - FTW, daemon 8 days old — `ImportError: cannot import name
-  'RUNNER_SLICE_KEY_ENV_VAR' from 'omnigent.runner.identity'`
+'RUNNER_SLICE_KEY_ENV_VAR' from 'omnigent.runner.identity'`
 
 Both read as a corrupt install. Neither was: the symbol was present on disk and
 every file came from the same install. The tell is a traceback whose frames
@@ -122,6 +125,6 @@ offline permanently. It now requires a pane that is not dead.
 - The REPL's resume path calls `count_tokens` unguarded, so a tokenizer failure
   aborts the whole attach rather than just skipping the meter.
 - `/compact` on a `claude-sdk` session requires `llm.model` / `executor.model`
-  *and* an api-key-style provider. Every Meta endpoint is mTLS and omnigent's
+  _and_ an api-key-style provider. Every Meta endpoint is mTLS and omnigent's
   LLM client has no client-cert support, so server-side compaction cannot work
   here at all.

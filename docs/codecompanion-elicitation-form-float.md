@@ -33,6 +33,7 @@ described in "Proposed design" is not.
 `lib/codecompanion-elicitation.lua` (~450 lines) has two layers:
 
 ### Wire / patch layer (KEEP — orthogonal to rendering)
+
 - `patch()` — idempotent monkey-patch of `codecompanion.acp.Connection`:
   1. **Dispatch**: wraps `handle_incoming_request_or_notification` to short-circuit
      `elicitation/create` → `M._handle_elicitation_create`.
@@ -45,6 +46,7 @@ described in "Proposed design" is not.
 - `focus_owning_tab` / `open_plan_file` / `announce_preamble` — placement + preamble.
 
 ### Render layer (REPLACE — ~210 lines)
+
 - `ask_schema` → iterates properties (required-first ordering) → `ask_property`
 - `ask_property` → dispatches by JSON-schema type to one of:
   `pick_one` / `pick_one_or_input` / `pick_many` / `ask_input` / boolean picker /
@@ -52,6 +54,7 @@ described in "Proposed design" is not.
   callbacks.
 
 ### The wrapper contract (server side, for reference)
+
 The agent side lives in `dvsc-core-acp/packages/acp-wrapper/src/elicitation.ts`
 (landed in **D106593967**). `buildElicitationRequest` maps dm-core's
 `questions[]` → an `ElicitationSchema`: single-select → `string + enum`,
@@ -63,11 +66,11 @@ multi-select → `array` with `items.enum`. Property key = `question.header` or
 
 ## The three problems
 
-| # | Problem | Root cause |
-|---|---------|------------|
-| a | No way to give a free-form answer — enum questions box you into the listed options. | `ask_property` sends `string+enum` straight to a closed `vim.ui.select`. |
-| b | Long option labels get truncated. | The snacks `select` layout preset (`width 0.5, max_width 100`) clips long sentence-options; the list window doesn't wrap. |
-| c | The picker/plan-split opens in whatever tab is focused, not the tab that owns the chat. | The handler drove `vim.ui` in the focused tab without re-focusing the owning tab. |
+| #   | Problem                                                                                 | Root cause                                                                                                                |
+| --- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| a   | No way to give a free-form answer — enum questions box you into the listed options.     | `ask_property` sends `string+enum` straight to a closed `vim.ui.select`.                                                  |
+| b   | Long option labels get truncated.                                                       | The snacks `select` layout preset (`width 0.5, max_width 100`) clips long sentence-options; the list window doesn't wrap. |
+| c   | The picker/plan-split opens in whatever tab is focused, not the tab that owns the chat. | The handler drove `vim.ui` in the focused tab without re-focusing the owning tab.                                         |
 
 All three are symptoms of the same thing: **one logical question is spread across
 several independent, stateless UI calls**, so there's no single surface to control
@@ -78,7 +81,7 @@ for placement.
 
 ## Already shipped (stop-gaps — keep until the form-float lands)
 
-These are in the tree today and are the *interim* fixes:
+These are in the tree today and are the _interim_ fixes:
 
 - **(a)** Free-form escape hatch via sentinel options: `pick_one_or_input` appends
   `✎ Other (type a custom response)…`; `pick_many` has an `✎ add a custom value…`
@@ -118,13 +121,14 @@ Replace the render layer (`ask_schema`, `ask_property`, `pick_one`,
 
 ### Module shape (recommend splitting for testability)
 
-| Piece | Responsibility | Testable |
-|-------|----------------|----------|
-| **Model** (pure) | `schema → ordered fields` (reuse required-first ordering); per-field state (single idx / multi set / free text / number / bool / custom); `assemble_content` + required-validation + number parse/validate (moved out of `ask_property`). | Yes — unit-test directly, no UI. |
-| **Render** (mostly pure) | fields → buffer lines + highlight ranges + a `line → (field, option)` map; width-aware wrapping (this is what kills (b) permanently). | Mostly. |
-| **Window/keymaps** | `nui.Popup` (border, title "Devmate question", footer key-hints); nav (`<Tab>`/`j`/`k`), toggle (`<CR>`/`<Space>`), per-field custom-text entry (fixes (a) as a real row), submit, cancel; `VimResized` relayout; `WinClosed`/`BufLeave` → cancel; **exactly-once** resolve guard. | Hard — drive via simulated keymaps. |
+| Piece                    | Responsibility                                                                                                                                                                                                                                                                     | Testable                            |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| **Model** (pure)         | `schema → ordered fields` (reuse required-first ordering); per-field state (single idx / multi set / free text / number / bool / custom); `assemble_content` + required-validation + number parse/validate (moved out of `ask_property`).                                          | Yes — unit-test directly, no UI.    |
+| **Render** (mostly pure) | fields → buffer lines + highlight ranges + a `line → (field, option)` map; width-aware wrapping (this is what kills (b) permanently).                                                                                                                                              | Mostly.                             |
+| **Window/keymaps**       | `nui.Popup` (border, title "Devmate question", footer key-hints); nav (`<Tab>`/`j`/`k`), toggle (`<CR>`/`<Space>`), per-field custom-text entry (fixes (a) as a real row), submit, cancel; `VimResized` relayout; `WinClosed`/`BufLeave` → cancel; **exactly-once** resolve guard. | Hard — drive via simulated keymaps. |
 
 ### Field rendering
+
 - single-select (`string+enum`): radio rows `( )` / `(•)`, plus an inline
   `Other: …` editable row.
 - multi-select (`array+items.enum`): checkbox rows `[ ]` / `[x]`, plus an
@@ -134,12 +138,14 @@ Replace the render layer (`ask_schema`, `ask_property`, `pick_one`,
 - `integer`/`number`: input region, parsed + validated on submit.
 
 ### Submit / cancel semantics
+
 - Submit assembles `content` exactly as `ask_schema` does today (key order
   preserved, all required fields present) → `{action="accept", content=...}`.
 - Esc / `q` / window-closed / focus-loss → `{action="cancel"}`.
 - A single-fire guard ensures `conn:send_result` is called **exactly once**.
 
 ### Plan-exit elicitations
+
 Keep `open_plan_file` + `focus_owning_tab`. Open the plan in a split in the owning
 tab; float the sign-off form over it. The plan stays editable (the agent re-reads
 it on proceed).
@@ -153,12 +159,12 @@ Sizing in LOC + complexity + risk (not wall-clock).
 **Unchanged:** wire/patch layer (~140 lines).
 **Replaced:** ~210 lines of render layer.
 
-| Component | New LOC | Complexity |
-|-----------|---------|------------|
-| Model | ~150–220 | Low |
-| Render | ~120–180 | Medium |
-| Window + keymaps | ~120–180 | **High** |
-| Test rewrite (current spec is 361 lines, stubs `vim.ui.select/input` — that approach dies) | ~200–280 | Medium |
+| Component                                                                                  | New LOC  | Complexity |
+| ------------------------------------------------------------------------------------------ | -------- | ---------- |
+| Model                                                                                      | ~150–220 | Low        |
+| Render                                                                                     | ~120–180 | Medium     |
+| Window + keymaps                                                                           | ~120–180 | **High**   |
+| Test rewrite (current spec is 361 lines, stubs `vim.ui.select/input` — that approach dies) | ~200–280 | Medium     |
 
 **Total new/changed:** ≈600–860 LOC, replacing ≈210. ~3–4× the render code, plus
 the test rewrite.
@@ -168,6 +174,7 @@ already installed so window boilerplate is small. The real risk concentrates in
 window lifecycle.
 
 ### Where the risk actually is
+
 1. **Exactly-once `conn:send_result`** — today's sequential pickers make this
    trivial; a float dismissed via `:q` / `<Esc>` / focus-loss / submit must resolve
    once and only once. #1 source of "agent hangs / double-reply" bugs.
