@@ -41,7 +41,38 @@
 # Port mirrors OMNIGENT_TLS_PORT in omnigent_config/topology.env, the same way
 # mac_proxy mirrors the tunnel-port defaults. topology.env is authoritative for
 # the shell side; change both together.
-localhost:6443, 127.0.0.1:6443 {
+#
+# The `*.omnigent.localhost` names give each AeroSpace workspace's Omnigent
+# window its own ORIGIN on this one listener. The app persists "which host and
+# which checkout the composer starts on" in localStorage
+# (`omnigent:last-host-choice`, `omnigent:recent-workspaces`), which is
+# app-global -- every window shares it, so picking a checkout in one window
+# silently moves every other window. localStorage is partitioned by origin, so
+# distinct names turn that shared memory into per-window memory with no change
+# to the app. See docs/omnigent-window-location-design.md.
+#
+# Names rather than extra ports, for two reasons: `web/electron/src/url.js`
+# treats {localhost, 127.0.0.1, ::1} as an exact set that infers `http`, so
+# `localhost:<other port>` deep links could never reach a TLS listener; and the
+# app prefixes notification titles with the firing origin's host, which makes a
+# descriptive name useful attribution instead of noise.
+#
+# No /etc/hosts entries: macOS resolves *.localhost to loopback natively
+# (verified with getaddrinfo). One `tls internal` covers every name here --
+# Caddy issues each from the CA already trusted for 6443, so no new trust step.
+#
+# TODO: this address list is about to be generated from the bin/workspaces
+# table rather than hand-maintained; see the design doc's single-source-of-truth
+# section.
+localhost:6443, 127.0.0.1:6443,
+local.omnigent.localhost:6443,
+cco-checkout1.omnigent.localhost:6443,
+ftw-checkout1.omnigent.localhost:6443,
+cco-checkout2.omnigent.localhost:6443,
+ftw-checkout2.omnigent.localhost:6443,
+cco-checkout3.omnigent.localhost:6443,
+ftw-checkout3.omnigent.localhost:6443,
+cco-checkout4.omnigent.localhost:6443 {
 	tls internal
 
 	reverse_proxy 127.0.0.1:6767 {
