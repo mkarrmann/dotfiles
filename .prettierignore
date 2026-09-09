@@ -1,0 +1,16 @@
+# Upstream copies we don't author. meta-powertools-vendored is refreshed by
+# rsync from the marketplace cache (see its TODO.md), so any formatting applied
+# here is reverted on the next sync.
+agent_config/skills/meta-powertools-vendored/
+syncthing-linux-amd64-v2.0.15/
+omnigent_config/tiktoken-cache/
+
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# HACK: the two `@`-imports sit in a single paragraph, so prettier's GFM parser
+# reads `~...~` across the line break as strikethrough and rewrites both tildes
+# to `~~`, corrupting the paths. This file is symlinked to ~/.claude/CLAUDE.md,
+# so that silently drops the global instructions from every Claude session.
+claude_config/CLAUDE.md
