@@ -255,53 +255,100 @@ omnigent_deep_link() {
 
   # No server-side host_id filter exists, so page a window of recent sessions
   # and pick client-side. Archived sessions are already excluded by default.
+  # Untitled sessions are skipped: the title is how the resulting window is
+  # identified below, so a session without one cannot be claimed.
   session=$(curl -s --noproxy '*' -m 8 "$base/v1/sessions?limit=100" 2>/dev/null \
     | jq -r --arg host "$host_id" --arg ws_dir "$workspace_filter" '
         [ .data[]?
           | select(.host_id == $host)
           | select($ws_dir == "" or .workspace == $ws_dir)
-        ] | .[0].id // empty' | head -1)
-  [[ -n "$session" ]] || return 1
+          | select((.title // "") != "")
+        ] | .[0] | "\(.id)\t\(.title)" // empty' | head -1)
+  [[ -n "$session" && "$session" != "null" ]] || return 1
 
-  printf 'omnigent://%s:%s/c/%s\n' "$origin" "$OMNIGENT_TLS_PORT" "$session"
+  printf 'omnigent://%s:%s/c/%s\t%s\n' \
+    "$origin" "$OMNIGENT_TLS_PORT" "${session%%$'\t'*}" "${session#*$'\t'}"
 }
 
-# Resolve which window a deep link landed on.
+# Make every workspace origin a KNOWN server before linking to it.
 #
-# The app either reuses the window already pinned to that origin, navigating it
-# in place, or opens a new one when the origin has no window
-# (`reuse-inplace` / `open-known` in deepLink.js). Either way it raises the
-# target, so a window that APPEARED is the answer, and otherwise the focused one
-# is. Focus is only trusted after a beat, so a stale focus from the previous
-# workspace cannot be mistaken for the link landing.
+# The app asks for consent the first time a link pins a new origin, and records
+# the grant by pushing the URL onto `recent_servers` -- whose own docstring says
+# a user who consented "should not have to consent again next time". That list
+# is also the UI's recents list and is capped at MAX_RECENT_SERVERS (5), so with
+# 8 workspace origins plus the saved default it cannot hold them all: the
+# earliest grants are evicted and re-prompt at the next login, forever.
 #
-# The very first link to an origin raises a consent dialog instead and opens
-# nothing until it is accepted -- pinning an origin is a privilege grant. That
-# times out here, and the caller warns rather than guessing at a window.
-wait_for_omnigent_deep_link_window() {
-  local before_snapshot="$1"
-  local before_ids current_ids new_id focused attempt=0
+# knownOrigins() re-reads settings.json on every link and applies no cap on
+# READ -- only writes truncate. So restoring the full set immediately before
+# each link is enough for every one of them to be recognised. The app is free
+# to truncate afterwards; the next call puts it back.
+#
+# HACK: this writes another application's settings file. It is contained
+# (recent_servers only, atomic replace, every other key preserved) and that
+# file is explicitly documented as tolerating hand edits (main.js:1065), but the
+# real fix is upstream -- the consent set is a trust store and should not be
+# kept in a display list with a display cap. Delete this once that lands.
+omnigent_seed_known_origins() {
+  local settings="$HOME/Library/Application Support/Omnigent/settings.json"
+  local table origins tmp
+  [[ -f "$settings" ]] || return 0
+  command -v workspaces >/dev/null 2>&1 || return 0
+  table=$(workspaces --json 2>/dev/null) || return 0
 
-  before_ids=$(window_ids_for_app "$before_snapshot" "$OMNIGENT_APP" "$OMNIGENT_INVALID_TITLE_PATTERN")
-  while [[ "$attempt" -lt 16 ]]; do
+  origins=$(jq -c --arg port "$OMNIGENT_TLS_PORT" \
+    '[.workspaces[].origin | "https://\(.):\($port)"]' <<< "$table") || return 0
+
+  tmp=$(mktemp "${settings}.XXXXXX") || return 0
+  if jq --argjson origins "$origins" '.recent_servers = $origins' "$settings" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$settings"
+  else
+    rm -f "$tmp"
+  fi
+}
+
+# Omnigent windows showing conversation TITLE, by id.
+#
+# The conversation title is the only identity an Omnigent window exposes to
+# AeroSpace -- there is no origin and no stable id -- and a deep link names the
+# session it targets, so the title is knowable in advance. Tolerates the "● "
+# the app prepends while that conversation has a turn running.
+omnigent_window_ids_by_title() {
+  local want="$1"
+  aerospace list-windows --all --json 2>/dev/null \
+    | jq -r --arg app "$OMNIGENT_APP" --arg invalid "$OMNIGENT_INVALID_TITLE_PATTERN" \
+           --arg want "$want" '
+        .[] | select(
+          ."app-name" == $app
+          and ((.["window-title"] // "") | test($invalid) | not)
+          and (((.["window-title"] // "") | ltrimstr("● ")) == $want)
+        ) | .["window-id"]' | sort -n
+}
+
+# Resolve which window a deep link landed on, by the conversation it shows.
+#
+# Matching on identity rather than on arrival: the app reuses the window already
+# pinned to that origin or opens a new one (`reuse-inplace` / `open-known` in
+# deepLink.js), and window creation is slow enough that "whichever window
+# appeared" attributes a late window from one workspace to the next one in the
+# loop -- which shuffled every window into the wrong workspace the first time
+# this ran.
+#
+# Returns nothing rather than guessing. The first link to an origin raises a
+# consent dialog and opens no window until accepted, and a wrong claim would
+# pin the wrong location for the rest of the run.
+wait_for_omnigent_deep_link_window() {
+  local title="$1" attempt=0 wid
+
+  while [[ "$attempt" -lt 20 ]]; do
     attempt=$(( attempt + 1 ))
     sleep 0.5
-    current_ids=$(window_ids_for_app "$(snapshot_windows)" "$OMNIGENT_APP" "$OMNIGENT_INVALID_TITLE_PATTERN")
-
-    new_id=$(comm -23 <(echo "$current_ids") <(echo "$before_ids") | head -1)
-    if [[ -n "$new_id" ]]; then
-      echo "$new_id"
-      return 0
-    fi
-
-    if [[ "$attempt" -ge 3 ]]; then
-      focused=$(get_focused_window_id)
-      if [[ -n "$focused" ]] && echo "$current_ids" | grep -qx "$focused" \
-          && ! omnigent_id_is_claimed "$focused"; then
-        echo "$focused"
+    for wid in $(omnigent_window_ids_by_title "$title"); do
+      if ! omnigent_id_is_claimed "$wid"; then
+        echo "$wid"
         return 0
       fi
-    fi
+    done
   done
   return 1
 }
@@ -1098,12 +1145,16 @@ for i in "${!WORKSPACES[@]}"; do
       # host-prefixed title in main.js applies to OAuth popups only). So adopting
       # an arbitrary unclaimed window would pin the wrong location here. Fire
       # this workspace's deep link instead and let the app raise the right one.
-      deep_link=$(omnigent_deep_link "$ws") || deep_link=""
-      if [[ -n "$deep_link" ]]; then
+      deep_link_row=$(omnigent_deep_link "$ws") || deep_link_row=""
+      deep_link="${deep_link_row%%$'\t'*}"
+      deep_link_title="${deep_link_row#*$'\t'}"
+      if [[ -n "$deep_link_row" ]]; then
         echo "[$title] pinning workspace $ws to ${deep_link#omnigent://}"
-        before_snapshot="$SNAPSHOT"
+        # Restore the full trust set first, or an origin evicted from the app's
+        # 5-slot recents list prompts for consent again. See the function.
+        omnigent_seed_known_origins
         open "$deep_link" >/dev/null 2>&1 || true
-        if window_id=$(wait_for_omnigent_deep_link_window "$before_snapshot"); then
+        if window_id=$(wait_for_omnigent_deep_link_window "$deep_link_title"); then
           aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || true
           claim_omnigent_window "$window_id"
         else
