@@ -202,12 +202,108 @@ create_cmux_window() {
 
 # `open -n` is a no-op for Omnigent: its Electron single-instance lock hands the
 # launch to the running app, which does not open a window for it. The Server ▸
-# New Window menu item is the only window-creation entry point.
+# New Window menu item is the only window-creation entry point that does not
+# name an origin, so it is now the FALLBACK -- a window it makes lands on
+# whatever origin the app last used, which is the bug this file works around.
 create_omnigent_window() {
   osascript \
     -e 'tell application "System Events" to tell process "Omnigent"' \
     -e '  click menu item "New Window" of menu 1 of menu bar item "Server" of menu bar 1' \
     -e 'end tell' >/dev/null 2>&1
+}
+
+# Deep link that pins this workspace's Omnigent window to its own origin.
+#
+# Each workspace has a distinct hostname on the one TLS listener, so its window
+# gets its own localStorage and therefore its own memory of which host and
+# checkout the composer starts on. Without this the app's choice is app-global
+# and every window shares it. See docs/omnigent-window-location-design.md.
+#
+# The link grammar accepts only /c/<session_id> (deepLink.js), so the origin
+# needs a session to point at: the most recent one already on that host and
+# checkout, which lands the window on the last thing worked on there.
+#
+# Prints the URL, or nothing when it cannot be resolved -- a missing table, a
+# hub that is not answering, or a location with no sessions yet. The caller
+# falls back to an unscoped window rather than failing a login-time script.
+omnigent_deep_link() {
+  local ws="$1" table row kind origin fqdn workspace_filter host_id session base
+
+  command -v workspaces >/dev/null 2>&1 || return 1
+  table=$(workspaces --json 2>/dev/null) || return 1
+  row=$(jq -c --arg ws "$ws" '.workspaces[] | select(.workspace == $ws)' <<< "$table")
+  [[ -n "$row" ]] || return 1
+
+  kind=$(jq -r '.kind' <<< "$row")
+  origin=$(jq -r '.origin' <<< "$row")
+  [[ -n "$origin" && "$origin" != null ]] || return 1
+
+  # A devserver row is pinned to one checkout on one host; the local row is the
+  # Mac itself, where any of its own sessions is the right landing place.
+  if [[ "$kind" == devserver ]]; then
+    fqdn=$(jq -r '.host' <<< "$row")
+    workspace_filter=$(jq -r '.checkout' <<< "$row")
+  else
+    fqdn=$(hostname -f 2>/dev/null || hostname 2>/dev/null)
+    workspace_filter=""
+  fi
+
+  base="http://127.0.0.1:${OMNIGENT_PORT}"
+  host_id=$(curl -s --noproxy '*' -m 5 "$base/v1/hosts" 2>/dev/null \
+    | jq -r --arg fqdn "$fqdn" '.hosts[]? | select(.name == $fqdn) | .host_id' | head -1)
+  [[ -n "$host_id" ]] || return 1
+
+  # No server-side host_id filter exists, so page a window of recent sessions
+  # and pick client-side. Archived sessions are already excluded by default.
+  session=$(curl -s --noproxy '*' -m 8 "$base/v1/sessions?limit=100" 2>/dev/null \
+    | jq -r --arg host "$host_id" --arg ws_dir "$workspace_filter" '
+        [ .data[]?
+          | select(.host_id == $host)
+          | select($ws_dir == "" or .workspace == $ws_dir)
+        ] | .[0].id // empty' | head -1)
+  [[ -n "$session" ]] || return 1
+
+  printf 'omnigent://%s:%s/c/%s\n' "$origin" "$OMNIGENT_TLS_PORT" "$session"
+}
+
+# Resolve which window a deep link landed on.
+#
+# The app either reuses the window already pinned to that origin, navigating it
+# in place, or opens a new one when the origin has no window
+# (`reuse-inplace` / `open-known` in deepLink.js). Either way it raises the
+# target, so a window that APPEARED is the answer, and otherwise the focused one
+# is. Focus is only trusted after a beat, so a stale focus from the previous
+# workspace cannot be mistaken for the link landing.
+#
+# The very first link to an origin raises a consent dialog instead and opens
+# nothing until it is accepted -- pinning an origin is a privilege grant. That
+# times out here, and the caller warns rather than guessing at a window.
+wait_for_omnigent_deep_link_window() {
+  local before_snapshot="$1"
+  local before_ids current_ids new_id focused attempt=0
+
+  before_ids=$(window_ids_for_app "$before_snapshot" "$OMNIGENT_APP" "$OMNIGENT_INVALID_TITLE_PATTERN")
+  while [[ "$attempt" -lt 16 ]]; do
+    attempt=$(( attempt + 1 ))
+    sleep 0.5
+    current_ids=$(window_ids_for_app "$(snapshot_windows)" "$OMNIGENT_APP" "$OMNIGENT_INVALID_TITLE_PATTERN")
+
+    new_id=$(comm -23 <(echo "$current_ids") <(echo "$before_ids") | head -1)
+    if [[ -n "$new_id" ]]; then
+      echo "$new_id"
+      return 0
+    fi
+
+    if [[ "$attempt" -ge 3 ]]; then
+      focused=$(get_focused_window_id)
+      if [[ -n "$focused" ]] && echo "$current_ids" | grep -qx "$focused" \
+          && ! omnigent_id_is_claimed "$focused"; then
+        echo "$focused"
+        return 0
+      fi
+    fi
+  done
+  return 1
 }
 
 omnigent_app_is_running() {
@@ -996,34 +1092,61 @@ for i in "${!WORKSPACES[@]}"; do
         continue
       fi
 
-      existing=$(find_unclaimed_omnigent_window "$ws") || true
-      if [[ -z "$existing" ]]; then
-        existing=$(find_unclaimed_omnigent_window) || true
-      fi
-      if [[ -n "$existing" ]]; then
-        echo "[$title] assigning existing Omnigent window $existing to workspace $ws..."
-        aerospace move-node-to-workspace --window-id "$existing" "$ws" 2>/dev/null || true
-        claim_omnigent_window "$existing"
-      else
-        echo "[$title] creating on workspace $ws..."
+      # Omnigent windows are no longer interchangeable: each is pinned to the
+      # origin that carries its host/checkout memory, and nothing exposes a
+      # window's origin to AeroSpace (the title is the conversation name; the
+      # host-prefixed title in main.js applies to OAuth popups only). So adopting
+      # an arbitrary unclaimed window would pin the wrong location here. Fire
+      # this workspace's deep link instead and let the app raise the right one.
+      deep_link=$(omnigent_deep_link "$ws") || deep_link=""
+      if [[ -n "$deep_link" ]]; then
+        echo "[$title] pinning workspace $ws to ${deep_link#omnigent://}"
         before_snapshot="$SNAPSHOT"
-        create_omnigent_window || {
-          echo "WARNING: [$title] creation failed, skipping" >&2
-          ((failures++)) || true
-          continue
-        }
-        # No focused-window fallback here: Omnigent windows are claimed by ID,
-        # so misidentifying one pins the wrong window to this workspace for the
-        # rest of the run.
-        if window_id=$(wait_for_new_window "$app_name" "$before_snapshot" \
-            "$OMNIGENT_INVALID_TITLE_PATTERN"); then
+        open "$deep_link" >/dev/null 2>&1 || true
+        if window_id=$(wait_for_omnigent_deep_link_window "$before_snapshot"); then
           aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || true
           claim_omnigent_window "$window_id"
         else
-          echo "WARNING: [$title] could not find new Omnigent window" >&2
+          echo "WARNING: [$title] deep link landed no window; the first link to an" >&2
+          echo "         origin needs its consent dialog accepted once" >&2
           ((failures++)) || true
         fi
         SNAPSHOT=$(snapshot_windows)
+      else
+        # Degraded: no workspace table, no hub, or no session on that host and
+        # checkout yet. An unscoped window is better than no window at login.
+        echo "WARNING: [$title] could not resolve an origin for workspace $ws;" >&2
+        echo "         falling back to an unscoped window" >&2
+        existing=$(find_unclaimed_omnigent_window "$ws") || true
+        if [[ -z "$existing" ]]; then
+          existing=$(find_unclaimed_omnigent_window) || true
+        fi
+        if [[ -n "$existing" ]]; then
+          echo "[$title] assigning existing Omnigent window $existing to workspace $ws..."
+          aerospace move-node-to-workspace --window-id "$existing" "$ws" 2>/dev/null || true
+          claim_omnigent_window "$existing"
+        else
+          echo "[$title] creating on workspace $ws..."
+          before_snapshot="$SNAPSHOT"
+          create_omnigent_window || {
+            echo "WARNING: [$title] creation failed, skipping" >&2
+            ((failures++)) || true
+            continue
+          }
+          # No focused-window fallback here: a menu-click window is claimed by
+          # ID, so misidentifying one pins the wrong window to this workspace
+          # for the rest of the run. The deep-link path above can trust focus
+          # because the app raises the window the link targeted.
+          if window_id=$(wait_for_new_window "$app_name" "$before_snapshot" \
+              "$OMNIGENT_INVALID_TITLE_PATTERN"); then
+            aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || true
+            claim_omnigent_window "$window_id"
+          else
+            echo "WARNING: [$title] could not find new Omnigent window" >&2
+            ((failures++)) || true
+          fi
+          SNAPSHOT=$(snapshot_windows)
+        fi
       fi
       ;;
   esac

@@ -83,6 +83,40 @@ else
   diff <(echo "$expected") <(echo "$served") | sed 's/^/    /' >&2
 fi
 
+echo "== startup-windows agrees with the table =="
+
+STARTUP="$ROOT/bin-macos/startup-windows"
+[[ -r "$STARTUP" ]] || fail "startup-windows not readable: $STARTUP"
+
+sw_rows="$(sed -n '/^WORKSPACES=(/,/^)/p' "$STARTUP" | grep -oE '"[^"]*"' | tr -d '"')"
+
+# Every declared workspace needs an omnigent slot, or it never gets a window to
+# pin and silently keeps the app-global default.
+declared_ws="$(jq -r '.workspaces[].workspace' <<< "$table" | sort -u)"
+omnigent_ws="$(awk -F'|' '$2 == "omnigent" { print $1 }' <<< "$sw_rows" | sort -u)"
+if [[ "$declared_ws" == "$omnigent_ws" ]]; then
+  pass "every declared workspace has an omnigent slot"
+else
+  fail "workspaces with an omnigent slot differ from the table"
+  diff <(echo "$declared_ws") <(echo "$omnigent_ws") | sed 's/^/    /' >&2
+fi
+
+# The nvs session is still written in both places -- the table declares it and
+# the ghostty row launches it. Until the rows are derived, pin that they agree.
+nvs_mismatch=0
+while IFS=$'\t' read -r ws session; do
+  [[ -n "$session" && "$session" != "null" ]] || continue
+  row="$(awk -F'|' -v ws="$ws" '$1 == ws && $2 == "ghostty"' <<< "$sw_rows")"
+  if [[ -z "$row" ]]; then
+    fail "workspace $ws declares nvs session '$session' but has no ghostty row"
+    nvs_mismatch=$((nvs_mismatch + 1))
+  elif [[ "$row" != *"nvs $session"* ]]; then
+    fail "workspace $ws launches a different nvs session than the table's '$session'"
+    nvs_mismatch=$((nvs_mismatch + 1))
+  fi
+done < <(jq -r '.workspaces[] | select(.kind == "devserver") | "\(.workspace)\t\(.nvsSession)"' <<< "$table")
+[[ "$nvs_mismatch" -eq 0 ]] && pass "every devserver workspace launches the nvs session the table declares"
+
 echo
 if [[ "$failures" -gt 0 ]]; then
   echo "$failures test(s) failed."
