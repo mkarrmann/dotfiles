@@ -106,6 +106,36 @@ No new certificate trust step either: `tls internal` issues from the CA already
 trusted for 6443. Confirmed after the rollout — `curl` validates every new name
 with no `-k`, and the chain reads `Caddy Local Authority - ECC Intermediate`.
 
+### The hub has to trust the origins too
+
+Serving a name is not enough — the hub must also accept it as first-party.
+State-changing routes that take `multipart/form-data` are CSRF-guarded by
+requiring a trusted `Origin`, because multipart is CORS-safelisted and the
+JSON content-type guard cannot cover it; in single-user local mode "trusted"
+means a loopback hostname, tested as an exact string compare:
+
+`omnigent/server/ws_origin.py:92`
+
+```python
+if host == "localhost":
+    return True
+```
+
+RFC 6761 makes every `*.localhost` name loopback, but this does not know that,
+so a pinned window is read as cross-site and starting a session fails with
+`Forbidden: this endpoint requires a trusted Origin header`. The same policy
+backs the WebSocket handshake, so the updates socket is refused as well — the
+window loads and then behaves like a broken session rather than a misconfigured
+one.
+
+`OMNIGENT_WS_ALLOWED_ORIGINS` is consulted before the loopback rule and always
+passes, so the eight origins are listed there on the hub unit. That list is a
+fifth copy of the origin set, kept honest by `tests/test-workspaces.sh`.
+
+This is the third exact-match `localhost` check this design has run into, after
+`url.js:26` and the deep-link scheme inference. All three would be fixed once,
+upstream, by treating `*.localhost` as loopback per RFC 6761.
+
 ### Placing each window on its origin
 
 `startup-windows` currently creates Omnigent windows by driving the

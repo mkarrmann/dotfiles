@@ -47,6 +47,21 @@ Environment=LITELLM_LOCAL_MODEL_COST_MAP=True
 # both run 0.13.0, which knows `canvas`; the Mac CLI is still 0.12.0 and does
 # not. Resolved once at startup, so changing it needs a restart, not a reload.
 Environment=OMNIGENT_FEATURES=canvas
+# Trust the per-workspace window origins. The hub guards state-changing routes
+# that accept multipart (CORS-safelisted, so the JSON content-type guard cannot
+# protect them) by requiring a trusted Origin, and in single-user local mode
+# "trusted" means a loopback hostname -- tested as `host == "localhost"`, an
+# exact match (omnigent/server/ws_origin.py). RFC 6761 makes every *.localhost
+# name loopback, but that check does not know it, so a window pinned to
+# cco-checkout3.omnigent.localhost is read as cross-site and its uploads 403.
+#
+# This allowlist is consulted BEFORE the loopback rule and always passes, so it
+# is the supported way to say these are first-party. It governs the WebSocket
+# handshake too -- one trust boundary for both surfaces -- so without it the
+# updates socket from a pinned window is rejected as well.
+#
+# Kept in step with bin-macos/workspaces by tests/test-workspaces.sh.
+Environment=OMNIGENT_WS_ALLOWED_ORIGINS=https://local.omnigent.localhost:6443,https://cco-checkout1.omnigent.localhost:6443,https://ftw-checkout1.omnigent.localhost:6443,https://cco-checkout2.omnigent.localhost:6443,https://ftw-checkout2.omnigent.localhost:6443,https://cco-checkout3.omnigent.localhost:6443,https://ftw-checkout3.omnigent.localhost:6443,https://cco-checkout4.omnigent.localhost:6443
 EnvironmentFile=%h/dotfiles/omnigent_config/topology.env
 ExecCondition=%h/dotfiles/services/omnigent-hub/.venv/bin/omnigent-hub gate
 # Bind 127.0.0.1 (v4 loopback): serves every local consumer (Orchest,

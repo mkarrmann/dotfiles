@@ -155,6 +155,26 @@ while read -r fqdn; do
 done < <(jq -r '[.workspaces[] | select(.kind == "devserver") | .host] | unique | .[]' <<< "$table")
 [[ "$tunnel_mismatch" -eq 0 ]] && pass "every tunnel row forwards exactly the checkouts the table declares"
 
+echo "== the hub trusts every origin the table declares =="
+
+UNIT="$ROOT/systemd/omnigent-server.service"
+[[ -r "$UNIT" ]] || fail "server unit not readable: $UNIT"
+
+# An origin the hub does not trust is worse than an unpinned window: the window
+# loads, and only multipart POSTs and the updates WebSocket fail, so it presents
+# as a broken session rather than a configuration error.
+trusted="$(grep -oE '^Environment=OMNIGENT_WS_ALLOWED_ORIGINS=.*' "$UNIT" \
+  | sed 's/^Environment=OMNIGENT_WS_ALLOWED_ORIGINS=//' \
+  | tr ',' '\n' | sed 's/[[:space:]]//g' | grep -v '^$' | sort -u)"
+declared_origins="$(jq -r --arg port "$tls_port" '.workspaces[] | "https://\(.origin):\($port)"' <<< "$table" | sort -u)"
+
+if [[ "$trusted" == "$declared_origins" ]]; then
+  pass "OMNIGENT_WS_ALLOWED_ORIGINS lists exactly the declared origins"
+else
+  fail "the hub's trusted-origin allowlist has drifted from bin-macos/workspaces"
+  diff <(echo "$declared_origins") <(echo "$trusted") | sed 's/^/    /' >&2
+fi
+
 echo "== macOS Orchest manifest renders from the table =="
 
 RENDER="$ROOT/bin-macos/orchest-plugins-render"
