@@ -207,8 +207,7 @@ curl -s --noproxy '*' "$BASE/v1/sessions/$CONV" | jq -r '
 2. **Turn-level signal:** scan items for `type == "error"`. The most common
    hang is the **harness idle watchdog**:
 
-   > `RuntimeError: turn exceeded the 240s harness idle watchdog (run_turn
-   > emitted no events for 240s; likely a wedged LLM or tool call)`
+   > `RuntimeError: turn exceeded the 240s harness idle watchdog (run_turn emitted no events for 240s; likely a wedged LLM or tool call)`
 
    This fires when the outer harness receives **no progress events** for the
    configured interval; it does not prove the model or tool is wedged. Check
