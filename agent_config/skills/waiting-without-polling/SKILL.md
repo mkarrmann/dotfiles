@@ -26,16 +26,16 @@ turns cost **~1.4M tokens and 75 minutes of dead wall-clock**, and returned only
 a timestamp. Backgrounding the same wait costs nothing.
 
 Note both halves. Dropping `sleep` but still issuing a check every few turns is
-the *same* mistake — the turn is the unit of cost, not the sleep.
+the _same_ mistake — the turn is the unit of cost, not the sleep.
 
 ## Pick the cheapest thing that can decide
 
-| Deciding the condition needs… | Use | Cost |
-|---|---|---|
-| A comparison, exit code, threshold | backgrounded condition loop | 0 |
+| Deciding the condition needs…      | Use                                    | Cost       |
+| ---------------------------------- | -------------------------------------- | ---------- |
+| A comparison, exit code, threshold | backgrounded condition loop            | 0          |
 | Judgment ("does this look wrong?") | a recurring pass, proposed to the user | ~205k/turn |
-| Phabricator diff / CI | `phabricator-diff-watch` | 0 |
-| Anything else a command can report | `watch-anything` | 0 |
+| Phabricator diff / CI              | `phabricator-diff-watch`               | 0          |
+| Anything else a command can report | `watch-anything`                       | 0          |
 
 Prefer a watch over a backgrounded loop whenever the wait may outlive the
 session or the turn: a backgrounded process dies with the session, while a
@@ -87,7 +87,7 @@ notifies on completion — use a long fallback (1200s+) as a heartbeat instead.
 ## Traps
 
 - **Capture the baseline before the thing can change.** A watcher started after
-  a change has already propagated records the *new* value as its baseline and
+  a change has already propagated records the _new_ value as its baseline and
   never fires. This has actually happened: a JustKnob watcher missed its own
   rollout because it began after the value flipped locally. If the baseline
   might already be stale, compare against a known-expected value, not against
