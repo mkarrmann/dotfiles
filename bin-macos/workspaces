@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# The macOS workspace table: the one place the AeroSpace workspace ->
+# (devserver, checkout, nvs session, Omnigent origin) mapping is written down.
+#
+# This mapping used to be restated three times -- bin-macos/startup-windows'
+# WORKSPACES rows, and orchest_plugins.json's byHostAndCwd and byNvimSession
+# attribution maps -- which is the outstanding TODO in
+# bin-linux/orchest-plugins-render:12-14. The Omnigent per-window origin work
+# (docs/omnigent-window-location-design.md) added two more consumers, so the
+# copies are collapsed here instead of multiplied.
+#
+# The Linux desktop keeps its own table in bin-linux/startup-windows: it maps
+# workspaces to local directories on one machine, which is a different mapping
+# with no devservers in it. This file is the macOS counterpart, and mirrors that
+# script's --print-layout so both platforms are consumed the same way.
+#
+# Usage: workspaces [--json]
+
+# Format:
+#   local:      ws|local|cwd|origin
+#   devserver:  ws|devserver|fqdn|checkout|nvs_session|origin
+#
+# origin is the hostname that workspace's Omnigent window is pinned to. Each is
+# a distinct ORIGIN on the single TLS listener, which is what makes the app's
+# app-global "last host / last workspace" memory per-window; see
+# services/omnigent-tls/Caddyfile. Keep these two in step -- tests/test-workspaces.sh
+# fails if the Caddyfile's address list and this table disagree.
+WORKSPACES=(
+  "1|local|~|local.omnigent.localhost"
+  "2|devserver|devvm20365.cco0.facebook.com|/home/mkarrmann/checkout1|CCO-checkout1|cco-checkout1.omnigent.localhost"
+  "3|devserver|devvm36111.ftw0.facebook.com|/home/mkarrmann/checkout1|FTW-checkout1|ftw-checkout1.omnigent.localhost"
+  "4|devserver|devvm20365.cco0.facebook.com|/home/mkarrmann/checkout2|CCO-checkout2|cco-checkout2.omnigent.localhost"
+  "5|devserver|devvm36111.ftw0.facebook.com|/home/mkarrmann/checkout2|FTW-checkout2|ftw-checkout2.omnigent.localhost"
+  "6|devserver|devvm20365.cco0.facebook.com|/home/mkarrmann/checkout3|CCO-checkout3|cco-checkout3.omnigent.localhost"
+  "7|devserver|devvm36111.ftw0.facebook.com|/home/mkarrmann/checkout3|FTW-checkout3|ftw-checkout3.omnigent.localhost"
+  "8|devserver|devvm20365.cco0.facebook.com|/home/mkarrmann/checkout4|CCO-checkout4|cco-checkout4.omnigent.localhost"
+)
+
+# Repository roots that live inside a checkout. An agent's cwd is routinely one
+# of these rather than the checkout itself, and the Omnigent bridge attributes
+# by exact cwd, so every consumer of the attribution map needs the checkout and
+# its repo roots to resolve to the same workspace.
+CHECKOUT_SUBDIRS=(fbsource configerator)
+
+case "${1:---json}" in
+  --json) ;;
+  -h|--help)
+    echo "Usage: workspaces [--json]"
+    echo "  --json  (default) emit the workspace table as JSON and exit"
+    exit 0
+    ;;
+  *) echo "Unknown arg: $1" >&2; exit 2 ;;
+esac
+
+command -v jq >/dev/null 2>&1 || { echo "ERROR: jq not found." >&2; exit 1; }
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+tls_port="${OMNIGENT_TLS_PORT:-$("$SCRIPT_DIR/../bin/omnigent-server-url" --tls-port)}"
+
+for entry in "${WORKSPACES[@]}"; do
+  IFS='|' read -r ws kind rest <<< "$entry"
+  case "$kind" in
+    local)
+      IFS='|' read -r cwd origin <<< "$rest"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$ws" "$kind" "" "${cwd/#\~/$HOME}" "" "$origin"
+      ;;
+    devserver)
+      IFS='|' read -r host checkout nvs origin <<< "$rest"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$ws" "$kind" "$host" "$checkout" "$nvs" "$origin"
+      ;;
+    *)
+      echo "ERROR: unknown workspace kind '$kind' in row: $entry" >&2
+      exit 1
+      ;;
+  esac
+done | jq -Rn \
+  --arg tlsPort "$tls_port" \
+  --args '
+    {
+      tlsPort: $tlsPort,
+      checkoutSubdirs: $ARGS.positional,
+      workspaces: [
+        inputs
+        | split("\t")
+        | { workspace: .[0], kind: .[1], origin: .[5] }
+          + (if .[1] == "devserver"
+             then { host: .[2], checkout: .[3], nvsSession: .[4] }
+             else { cwd: .[3] }
+             end)
+      ]
+    }' "${CHECKOUT_SUBDIRS[@]}"
