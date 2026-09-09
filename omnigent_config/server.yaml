@@ -10,6 +10,7 @@
 # PYTHONPATH). Their POLICY_REGISTRY entries are merged into the registry.
 policy_modules:
   - capture_diff
+  - no_foreground_wait
 
 # Server-wide default policies, appended after per-agent policies for EVERY
 # session. `type: function` self-selects its phase (a tool_result capture here),
@@ -53,3 +54,17 @@ policies:
     # Whitelist of label keys this policy may write.
     set_labels:
       - omnigent.diff.number
+
+  # Refuse a shell command that blocks the turn on a long sleep — waiting in-turn
+  # spends a model turn to produce nothing, and every harness can detach instead.
+  # Enforced here rather than as per-harness PreToolUse hooks because one policy
+  # covers everything Omnigent fronts; hooks would miss native Codex entirely,
+  # which runs under a private CODEX_HOME that never reads ~/.codex/hooks.json.
+  # A session started outside Omnigent is not gated; the waiting-without-polling
+  # skill still reaches it.
+  no_foreground_wait:
+    type: function
+    function:
+      path: no_foreground_wait.block_foreground_wait
+      arguments:
+        action: deny

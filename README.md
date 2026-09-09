@@ -84,6 +84,7 @@ python3 -m unittest discover -s tests -p test_dotfiles_profiles.py
 python3 -m unittest discover -s tests -p test_codex_config.py
 python3 -m unittest discover -s tests -p test_omnigent_desktop.py
 python3 -m unittest discover -s tests -p test_omnigent_desktop_app.py
+python3 -m unittest discover -s tests -p test_no_foreground_wait.py
 ```
 
 ## Sway window orchestration (Linux desktops)
