@@ -117,6 +117,44 @@ while IFS=$'\t' read -r ws session; do
 done < <(jq -r '.workspaces[] | select(.kind == "devserver") | "\(.workspace)\t\(.nvsSession)"' <<< "$table")
 [[ "$nvs_mismatch" -eq 0 ]] && pass "every devserver workspace launches the nvs session the table declares"
 
+# The ghostty title and its match regex encode the same site/checkout pair the
+# table declares. A title that drifts silently breaks window claiming, because
+# the regex is how an existing terminal is recognised.
+title_mismatch=0
+while IFS=$'\t' read -r ws session; do
+  [[ -n "$session" && "$session" != "null" ]] || continue
+  site="${session%%-*}"; checkout="${session#*-}"
+  row="$(awk -F'|' -v ws="$ws" '$1 == ws && $2 == "ghostty"' <<< "$sw_rows")"
+  got_title="$(cut -d'|' -f3 <<< "$row")"
+  if [[ "$got_title" != "$site: $checkout" ]]; then
+    fail "workspace $ws ghostty title is '$got_title', table implies '$site: $checkout'"
+    title_mismatch=$((title_mismatch + 1))
+  fi
+done < <(jq -r '.workspaces[] | select(.kind == "devserver") | "\(.workspace)\t\(.nvsSession)"' <<< "$table")
+[[ "$title_mismatch" -eq 0 ]] && pass "every devserver terminal is titled from the table's site and checkout"
+
+# The tunnel rows restate every devserver FQDN and every nvs session again --
+# the densest copy of the mapping left in the script.
+tunnel_mismatch=0
+while read -r fqdn; do
+  [[ -n "$fqdn" ]] || continue
+  row="$(grep -F "nvs-tunnels $fqdn" <<< "$sw_rows" || true)"
+  if [[ -z "$row" ]]; then
+    fail "no tunnel row for $fqdn, which the table declares"
+    tunnel_mismatch=$((tunnel_mismatch + 1))
+    continue
+  fi
+  want="$(jq -r --arg h "$fqdn" '
+    [ .workspaces[] | select(.kind == "devserver") | select(.host == $h)
+      | "\(.nvsSession):~/\(.checkout | split("/") | last)" ] | join(" ")' <<< "$table")"
+  got="$(grep -oE '[A-Z]+-checkout[0-9]+:~/[a-z0-9]+' <<< "$row" | tr '\n' ' ' | sed 's/ $//')"
+  if [[ "$want" != "$got" ]]; then
+    fail "tunnel row for $fqdn lists '$got', table declares '$want'"
+    tunnel_mismatch=$((tunnel_mismatch + 1))
+  fi
+done < <(jq -r '[.workspaces[] | select(.kind == "devserver") | .host] | unique | .[]' <<< "$table")
+[[ "$tunnel_mismatch" -eq 0 ]] && pass "every tunnel row forwards exactly the checkouts the table declares"
+
 echo "== macOS Orchest manifest renders from the table =="
 
 RENDER="$ROOT/bin-macos/orchest-plugins-render"
