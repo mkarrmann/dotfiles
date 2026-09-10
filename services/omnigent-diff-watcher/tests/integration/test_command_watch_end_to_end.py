@@ -16,6 +16,7 @@ from omnigent_diff_watcher.domain import (
     COMMAND_EVENT_KINDS,
     EventKind,
     SessionSnapshot,
+    SubscriptionState,
     WatcherConfig,
 )
 from omnigent_diff_watcher.repository import WatcherRepository
@@ -179,3 +180,77 @@ async def test_a_command_subject_cannot_be_subscribed_through_the_diff_source(
             frozenset({EventKind.CI_FAILURE}),
             source_name="command",
         )
+
+
+@pytest.mark.asyncio
+async def test_unsubscribing_actually_stops_the_watch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancelling the stored request is not enough to stop a watch.
+
+    The poller claims any subject that still has an active subscriber, so a
+    watch whose request was cancelled but whose subscription survived would go
+    on polling and waking this session forever -- from a tool named
+    unsubscribe. The proof is the silence after the value moves.
+    """
+    from omnigent_diff_watcher import mcp_server
+
+    value = tmp_path / "knob"
+    value.write_text("false\n")
+    clock = FakeClock()
+    delivery = RecordingDeliveryService()
+    repository, watcher = _watcher(tmp_path, clock, delivery)
+
+    spec = _spec(value)
+    repository.request_watch(
+        "session-1", "command", SUBJECT, COMMAND_EVENT_KINDS, spec=spec, now=1000.0
+    )
+    await watcher.subscribe(
+        "session-1", SUBJECT, COMMAND_EVENT_KINDS, source_name="command", spec=spec
+    )
+
+    monkeypatch.setattr(mcp_server, "_watch_repository", lambda: (repository, "session-1"))
+    mcp_server.watch_unsubscribe()
+
+    subscription = repository.subscription("session-1", SUBJECT)
+    assert subscription is not None
+    assert subscription.state is SubscriptionState.RETIRED
+    assert repository.active_watch_requests("session-1") == []
+
+    # The value moves; nobody is woken, because nobody is subscribed.
+    value.write_text("1/10\n")
+    for _ in range(3):
+        clock.advance(120)
+        await watcher.run_iteration()
+        clock.advance(60)
+        await watcher.run_iteration()
+    assert delivery.calls == []
+
+
+@pytest.mark.asyncio
+async def test_status_shows_the_command_a_watch_will_keep_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The argv outlives the turn that registered it, so it has to be legible
+    from the status tool rather than only by reading the database."""
+    from omnigent_diff_watcher import mcp_server
+
+    value = tmp_path / "knob"
+    value.write_text("false\n")
+    repository, _watcher_unused = _watcher(tmp_path, FakeClock(), RecordingDeliveryService())
+    repository.request_watch(
+        "session-1",
+        "command",
+        SUBJECT,
+        COMMAND_EVENT_KINDS,
+        spec=CommandSpec(["cat", str(value)], r"(\d+)", 120.0).to_json(),
+        now=1000.0,
+    )
+
+    monkeypatch.setattr(mcp_server, "_watch_repository", lambda: (repository, "session-1"))
+    status = mcp_server.watch_status()
+
+    assert SUBJECT in status
+    assert f"cat {value}" in status
+    assert "every 120s" in status
+    assert r"(\d+)" in status

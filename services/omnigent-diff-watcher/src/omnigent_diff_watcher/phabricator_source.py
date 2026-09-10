@@ -268,11 +268,6 @@ class PhabricatorReviewSource:
         if spec is not None:
             raise ValueError("the phabricator source takes no spec")
 
-    def describe(self, counts: Mapping[EventKind, int]) -> str:
-        from .logic import _describe_counts
-
-        return _describe_counts(counts)
-
     async def poll(
         self,
         subject: str,

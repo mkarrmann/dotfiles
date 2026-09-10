@@ -202,10 +202,6 @@ class CommandSource:
             )
         CommandSpec.from_json(spec)
 
-    def describe(self, counts: Mapping[EventKind, int]) -> str:
-        count = counts.get(EventKind.CHANGED, 0)
-        return f"{count} change" if count == 1 else f"{count} changes"
-
     async def poll(
         self,
         subject: str,

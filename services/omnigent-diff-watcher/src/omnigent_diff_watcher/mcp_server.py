@@ -7,12 +7,15 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 from urllib.parse import quote, urlparse
 
 import httpx
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
+
+if TYPE_CHECKING:
+    from .repository import WatcherRepository
 
 mcp = FastMCP("diff-watch", log_level="ERROR")
 # Spelled out rather than derived from EventKind so the published tool schema
@@ -338,7 +341,7 @@ def _database_path() -> Path:
     return Path(DEFAULT_DATABASE_PATH).expanduser()
 
 
-def _watch_repository() -> tuple[object, str]:
+def _watch_repository() -> tuple[WatcherRepository, str]:
     """Open the watcher database and resolve this session's Omnigent id."""
     from .repository import WatcherRepository
 
@@ -390,7 +393,7 @@ def watch_subscribe(
 
     spec = CommandSpec(command, extract, interval_seconds, timeout_seconds)
     repository, session_id = _watch_repository()
-    repository.request_watch(  # type: ignore[attr-defined]
+    repository.request_watch(
         session_id,
         SOURCE_NAME,
         subject,
@@ -409,22 +412,75 @@ def watch_unsubscribe(subject: WatchSubject | None = None) -> str:
     """Stop one generic watch, or all of them, for the current session."""
     import time
 
+    from .domain import SubscriptionState
+
     repository, session_id = _watch_repository()
-    cancelled = repository.cancel_watch_requests(  # type: ignore[attr-defined]
-        session_id, now=time.time(), subject=subject
-    )
+    now = time.time()
+
+    # Retiring the subscription is what actually stops the watch: the poller
+    # only claims subjects that still have an active subscriber. Cancelling the
+    # request alone would merely stop it being re-bound, leaving it polling and
+    # waking this session indefinitely.
+    #
+    # Read the requests before cancelling them -- they are how we know which
+    # subjects are ours, so a bare unsubscribe cannot reach a diff watch.
+    targets = [
+        row_subject
+        for _session, _source, row_subject, _spec, _kinds in repository.active_watch_requests(
+            session_id
+        )
+        if subject is None or row_subject == subject
+    ]
+    cancelled = repository.cancel_watch_requests(session_id, now=now, subject=subject)
+
+    retired = 0
+    for row_subject in targets:
+        existing = repository.subscription(session_id, row_subject)
+        if existing is None or existing.state is SubscriptionState.RETIRED:
+            continue
+        repository.retire_subscription(existing.id, "unsubscribed", now=now)
+        retired += 1
+
     scope = subject if subject is not None else "all subjects"
-    return f"Cancelled {cancelled} watch(es) for {scope}."
+    return f"Cancelled {cancelled} and stopped {retired} watch(es) for {scope}."
 
 
 @mcp.tool()
 def watch_status() -> str:
-    """List the generic watches this session has registered."""
+    """List the generic watches this session has registered, and how each reads.
+
+    The command is shown, not just the subject: it is stored and re-run on an
+    interval long after the turn that registered it, so it has to be auditable
+    from here rather than only by reading the database.
+    """
+    import shlex
+
+    from .command_source import SOURCE_NAME as COMMAND_SOURCE_NAME
+    from .command_source import CommandSpec
+
     repository, session_id = _watch_repository()
-    rows = repository.active_watch_requests(session_id)  # type: ignore[attr-defined]
+    rows = repository.active_watch_requests(session_id)
     if not rows:
         return "This session has no generic watches."
-    lines = [f"{subject} via {source}" for _, source, subject, _, _ in rows]
+    lines = []
+    for _session, source, subject, spec_json, _kinds in rows:
+        detail = ""
+        if source == COMMAND_SOURCE_NAME:
+            try:
+                spec = CommandSpec.from_json(spec_json)
+            except ValueError:
+                detail = " — unreadable spec; the watch will fail to poll"
+            else:
+                detail = (
+                    f" — {shlex.join(spec.argv)}"
+                    f" every {spec.interval_seconds:g}s"
+                    f", timeout {spec.timeout_seconds:g}s"
+                )
+                if spec.extract is not None:
+                    # Quoted but not repr'd: repr escapes the backslashes, so a
+                    # pattern reads back as something the caller never typed.
+                    detail += f", matching '{spec.extract}'"
+        lines.append(f"{subject} via {source}{detail}")
     return "Active watches:\n" + "\n".join(lines)
 
 

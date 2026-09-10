@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from collections import deque
-from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -119,9 +118,6 @@ class DiffSourceMixin:
 
     def validate_subject(self, subject: str, spec: str | None) -> None:
         del subject, spec
-
-    def describe(self, counts: Mapping[EventKind, int]) -> str:
-        return ", ".join(f"{kind.value}={count}" for kind, count in sorted(counts.items()))
 
     async def poll(
         self,

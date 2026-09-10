@@ -51,8 +51,8 @@ watch_subscribe(
 - **`interval_seconds`** is held constant. Unlike a diff watch, a command watch
   does not back off when nothing is happening.
 
-`watch_status` lists this session's watches; `watch_unsubscribe` cancels one or
-all of them.
+`watch_status` lists this session's watches and the exact command each will
+keep running; `watch_unsubscribe` stops one or all of them.
 
 ## Judgment: keep it out of the poll
 

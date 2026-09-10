@@ -230,10 +230,6 @@ class WatchSource(Protocol):
         spec: str | None,
     ) -> PollResult: ...
 
-    def describe(self, counts: Mapping[EventKind, int]) -> str:
-        """Render this source's share of a wake message."""
-        ...
-
 
 class SessionService(Protocol):
     async def get(self, session_id: str) -> SessionSnapshot: ...
