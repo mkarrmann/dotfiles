@@ -1,6 +1,6 @@
 {
-  "schema_version": 2,
-  "diff_id": "D90000004",
+  "schema_version": 3,
+  "subject": "D90000004",
   "lifecycle": "committed",
   "author_id": "user-author",
   "latest_version_id": "version-committed-3",

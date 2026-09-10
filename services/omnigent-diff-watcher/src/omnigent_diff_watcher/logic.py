@@ -1,4 +1,4 @@
-"""Pure scheduling, normalization, and message-rendering logic."""
+"""Pure scheduling and message-rendering logic, shared by every source."""
 
 from __future__ import annotations
 
@@ -6,17 +6,26 @@ import hashlib
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 
-from .domain import EventKind, NormalizedEvent
-from .source_models import CIAggregateState, DiffSnapshot, fingerprint
+from .domain import EventKind
 
 _FAILURE_DELAYS = (60.0, 120.0, 300.0, 900.0, 1800.0)
 
+PHABRICATOR_SOURCE = "phabricator"
 
-def successful_poll_delay(snapshot: DiffSnapshot, now: datetime) -> float:
-    """Return the unjittered adaptive interval for a successful snapshot."""
-    if snapshot.ci.aggregate is CIAggregateState.PENDING:
-        return 60.0
-    idle_seconds = max(0.0, (now - snapshot.last_activity_at).total_seconds())
+
+def successful_poll_delay(
+    last_activity_at: datetime,
+    now: datetime,
+    poll_hint_seconds: float | None = None,
+) -> float:
+    """Return the unjittered adaptive interval for a successful poll.
+
+    A source may override the idle-based ladder with ``poll_hint_seconds`` when
+    it knows something the clock does not -- a CI run still in flight, say.
+    """
+    if poll_hint_seconds is not None:
+        return poll_hint_seconds
+    idle_seconds = max(0.0, (now - last_activity_at).total_seconds())
     if idle_seconds < 60 * 60:
         return 60.0
     if idle_seconds < 6 * 60 * 60:
@@ -30,79 +39,16 @@ def successful_poll_delay(snapshot: DiffSnapshot, now: datetime) -> float:
     return 24 * 60 * 60.0
 
 
-def deterministic_jitter(delay: float, diff_id: str, cycle: int) -> float:
+def deterministic_jitter(delay: float, subject: str, cycle: int) -> float:
     """Apply stable +/-10 percent jitter without global random state."""
-    digest = hashlib.sha256(f"{diff_id}:{cycle}".encode()).digest()
+    digest = hashlib.sha256(f"{subject}:{cycle}".encode()).digest()
     fraction = int.from_bytes(digest[:8], "big") / ((1 << 64) - 1)
     return delay * (0.9 + 0.2 * fraction)
 
 
-def failure_poll_delay(failure_count: int, diff_id: str) -> float:
+def failure_poll_delay(failure_count: int, subject: str) -> float:
     index = min(max(failure_count, 1), len(_FAILURE_DELAYS)) - 1
-    return deterministic_jitter(_FAILURE_DELAYS[index], diff_id, failure_count)
-
-
-def normalize_snapshot(
-    snapshot: DiffSnapshot,
-) -> dict[EventKind, tuple[NormalizedEvent, ...]]:
-    """Normalize only source components that succeeded in this poll."""
-    result: dict[EventKind, tuple[NormalizedEvent, ...]] = {}
-    if snapshot.comments.status == "ok":
-        result[EventKind.REVIEW_COMMENT] = tuple(
-            NormalizedEvent(
-                diff_id=snapshot.diff_id,
-                kind=EventKind.REVIEW_COMMENT,
-                external_id=item.external_id,
-                version_id=item.version_id,
-                fingerprint=item.content_fingerprint,
-                changed_at=item.updated_at,
-            )
-            for item in snapshot.comments.items
-            if item.version_id == snapshot.latest_version_id
-        )
-    if snapshot.ci.status == "ok":
-        version_id = snapshot.latest_version_id or ""
-        result[EventKind.CI_FAILURE] = tuple(
-            NormalizedEvent(
-                diff_id=snapshot.diff_id,
-                kind=EventKind.CI_FAILURE,
-                external_id=item.external_id,
-                version_id=version_id,
-                fingerprint=item.fingerprint,
-                changed_at=snapshot.observed_at,
-            )
-            for item in snapshot.ci.failures
-        )
-        # One event per version rather than per poll: the external ID and the
-        # fingerprint are both version-scoped, so re-observing a green run
-        # deduplicates instead of waking the session again.
-        result[EventKind.CI_GREEN] = (
-            (
-                NormalizedEvent(
-                    diff_id=snapshot.diff_id,
-                    kind=EventKind.CI_GREEN,
-                    external_id=f"green:{version_id}",
-                    version_id=version_id,
-                    fingerprint=fingerprint(f"{version_id}:{snapshot.ci.aggregate.value}"),
-                    changed_at=snapshot.observed_at,
-                ),
-            )
-            if snapshot.ci.green
-            else ()
-        )
-    if snapshot.ai_reviews.status == "ok":
-        result[EventKind.AI_REVIEW] = tuple(
-            NormalizedEvent(
-                diff_id=snapshot.diff_id,
-                kind=EventKind.AI_REVIEW,
-                external_id=item.external_id,
-                version_id=snapshot.latest_version_id or "",
-                fingerprint=item.fingerprint,
-                changed_at=snapshot.observed_at,
-            )
-            for item in snapshot.ai_reviews.items
-        )
-    return result
+    return deterministic_jitter(_FAILURE_DELAYS[index], subject, failure_count)
 
 
 # Rendered in this order so a wake leads with what needs action. Each entry is
@@ -115,6 +61,7 @@ _KIND_NOUNS: dict[EventKind, tuple[str, str]] = {
         "unresolved automated-review finding",
         "unresolved automated-review findings",
     ),
+    EventKind.CHANGED: ("change", "changes"),
 }
 
 
@@ -139,30 +86,32 @@ def _describe_counts(counts: Mapping[EventKind, int]) -> str:
 
 def render_batch_summary(
     batch_id: str,
-    counts_by_diff: Sequence[tuple[str, Mapping[EventKind, int]]],
+    counts_by_subject: Sequence[tuple[str, str, Mapping[EventKind, int]]],
 ) -> str:
     """Render one concise wake without raw comments, URLs, or CI logs.
 
-    ``counts_by_diff`` is ``(diff_id, counts_by_kind)`` per diff, in a stable
-    caller-chosen order. A session watching a stack gets one message covering
-    every affected diff rather than one wake per diff.
+    ``counts_by_subject`` is ``(source, subject, counts_by_kind)`` per subject,
+    in a stable caller-chosen order. A session watching a stack gets one message
+    covering every affected diff rather than one wake per diff.
+
+    The closing instruction stays diff-specific only while every subject in the
+    batch is a diff. A session may watch a diff and a JustKnob at once, and
+    telling it to go read the CI state of a knob would be nonsense.
     """
     described = [
-        (diff_id, _describe_counts(counts))
-        for diff_id, counts in counts_by_diff
+        (source, subject, _describe_counts(counts))
+        for source, subject, counts in counts_by_subject
         if any(counts.values())
     ]
     if not described:
         raise ValueError("cannot render an empty watcher batch")
-    if len(described) == 1:
-        diff_id, joined = described[0]
-        body = f"{diff_id} has {joined}"
-        tail = "the diff"
+    body = "; ".join(f"{subject} has {joined}" for _, subject, joined in described)
+    if all(source == PHABRICATOR_SOURCE for source, _, _ in described):
+        tail = "the diff" if len(described) == 1 else "each diff"
+        instruction = (
+            "Load the current diff review and CI "
+            f"state, address actionable findings, and update {tail} as needed."
+        )
     else:
-        body = "; ".join(f"{diff_id} has {joined}" for diff_id, joined in described)
-        tail = "each diff"
-    return (
-        f"[Diff watcher {batch_id}] {body}. "
-        "Load the current diff review and CI "
-        f"state, address actionable findings, and update {tail} as needed."
-    )
+        instruction = "Load the current state of each subject and act on what changed."
+    return f"[Diff watcher {batch_id}] {body}. {instruction}"

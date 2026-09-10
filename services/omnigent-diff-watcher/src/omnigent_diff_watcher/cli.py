@@ -70,7 +70,7 @@ async def _run_once(service: DiffWatcherService) -> None:
 async def _probe(diff_id: str) -> dict[str, object]:
     snapshot = await PhabricatorReviewSource().snapshot(diff_id, None)
     return {
-        "diff_id": snapshot.diff_id,
+        "diff_id": snapshot.subject,
         "lifecycle": snapshot.lifecycle.value,
         "comments_status": snapshot.comments.status,
         "comments_count": len(snapshot.comments.items),

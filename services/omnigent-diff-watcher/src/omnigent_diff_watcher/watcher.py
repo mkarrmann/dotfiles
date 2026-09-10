@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Mapping
 from datetime import datetime
 
 from .domain import (
@@ -13,17 +14,19 @@ from .domain import (
     DeliveryService,
     EventDeliveryStatus,
     EventKind,
-    ReviewSource,
+    Lifecycle,
+    PollResult,
     SessionService,
     Subscription,
     SubscriptionState,
     SystemClock,
-    WatchedDiff,
+    WatchedSubject,
     WatcherConfig,
+    WatchSource,
 )
 from .logic import deterministic_jitter, failure_poll_delay, successful_poll_delay
 from .repository import SubscriptionConstraintError, WatcherRepository
-from .source_models import DiffLifecycle, DiffSnapshot, ReviewSourceError
+from .source_models import ReviewSourceError
 
 _logger = logging.getLogger(__name__)
 
@@ -38,16 +41,22 @@ class DiffWatcher:
     def __init__(
         self,
         repository: WatcherRepository,
-        source: ReviewSource,
+        source: WatchSource,
         sessions: SessionService,
         delivery: DeliveryService,
         *,
         clock: Clock | None = None,
         config: WatcherConfig | None = None,
         owner: str | None = None,
+        sources: Mapping[str, WatchSource] | None = None,
     ) -> None:
         self.repository = repository
+        # The positional source stays the default so every existing caller --
+        # and every diff-only deployment -- keeps working unchanged.
         self.source = source
+        self.sources: dict[str, WatchSource] = {source.name: source}
+        if sources:
+            self.sources.update(sources)
         self.sessions = sessions
         self.delivery = delivery
         self.clock = clock or SystemClock()
@@ -55,48 +64,73 @@ class DiffWatcher:
         self.owner = owner or uuid.uuid4().hex
         self.last_source_error_category: str | None = None
 
+    def source_for(self, name: str | None) -> WatchSource:
+        """Resolve a watch's source, falling back to the default."""
+        if name is None:
+            return self.source
+        resolved = self.sources.get(name)
+        if resolved is None:
+            raise SubscriptionError(f"no watch source named {name!r} is configured")
+        return resolved
+
     async def subscribe(
         self,
         session_id: str,
-        diff_id: str,
+        subject: str,
         event_types: frozenset[EventKind],
+        *,
+        source_name: str | None = None,
+        spec: str | None = None,
     ) -> tuple[Subscription, bool]:
-        existing = await asyncio.to_thread(self.repository.subscription, session_id, diff_id)
-        watch = await asyncio.to_thread(self.repository.watch, diff_id)
+        existing = await asyncio.to_thread(self.repository.subscription, session_id, subject)
+        watch = await asyncio.to_thread(self.repository.watch, subject)
         if (
             existing is None
             and watch is None
             and (
-                await asyncio.to_thread(self.repository.active_diff_count)
-                >= self.config.max_active_diffs
+                await asyncio.to_thread(self.repository.active_subject_count)
+                >= self.config.max_active_subjects
             )
         ):
             raise SubscriptionError("diff watcher active-diff limit reached")
         session = await self.sessions.get(session_id)
         if session.terminal:
             raise SubscriptionError("session is closed or no longer exists")
+        source = self.source_for(source_name)
+        # An existing watch keeps the spec it was created with; a second
+        # subscriber to the same subject shares its poll rather than silently
+        # redefining how it is read.
+        spec = watch.spec if watch is not None else spec
         try:
-            snapshot = await self.source.snapshot(diff_id, None)
+            source.validate_subject(subject, spec)
+        except ValueError as exc:
+            raise SubscriptionError(str(exc)) from exc
+        unsupported = event_types - source.event_kinds
+        if unsupported:
+            raise SubscriptionError(f"{source.name} cannot emit: {', '.join(sorted(unsupported))}")
+        try:
+            result = await source.poll(subject, None, spec)
         except ReviewSourceError as exc:
-            # A diff id that does not resolve fails here rather than in the
+            # A subject that does not resolve fails here rather than in the
             # validation below, so without this every other failure mode would
             # be reported as SubscriptionError and this one alone would escape.
-            raise SubscriptionError(f"could not read the diff: {exc}") from exc
-        if snapshot.lifecycle.terminal:
-            raise SubscriptionError("diff is terminal or missing")
-        if EventKind.REVIEW_COMMENT in event_types and snapshot.comments.status != "ok":
-            raise SubscriptionError("could not establish the review-comment baseline")
-        if EventKind.CI_FAILURE in event_types and snapshot.ci.status != "ok":
-            raise SubscriptionError("could not establish the CI baseline")
+            raise SubscriptionError(f"could not read the subject: {exc}") from exc
+        if result.lifecycle is not Lifecycle.ACTIVE:
+            raise SubscriptionError("subject is terminal or missing")
+        missing_baseline = event_types & result.failed_kinds
+        if missing_baseline:
+            raise SubscriptionError(
+                f"could not establish a baseline for: {', '.join(sorted(missing_baseline))}"
+            )
         now_dt = self.clock.now()
         now = now_dt.timestamp()
-        delay = self._success_delay(snapshot, now_dt)
+        delay = self._success_delay(result, now_dt)
         if watch is not None:
             # Apply transitions for existing subscribers before the new
             # caller's baseline updates the shared source-event rows.
             await asyncio.to_thread(
-                self.repository.apply_snapshot,
-                snapshot,
+                self.repository.apply_poll,
+                result,
                 now=now,
                 next_poll_at=now + delay,
                 batch_window_seconds=self.config.batch_window_seconds,
@@ -105,12 +139,13 @@ class DiffWatcher:
             return await asyncio.to_thread(
                 self.repository.subscribe,
                 session_id,
-                diff_id,
+                subject,
                 event_types,
-                snapshot,
+                result,
                 now=now,
                 next_poll_at=now + delay,
-                max_active_diffs=self.config.max_active_diffs,
+                max_active_subjects=self.config.max_active_subjects,
+                spec=spec,
             )
         except SubscriptionConstraintError as exc:
             raise SubscriptionError(str(exc)) from exc
@@ -142,20 +177,20 @@ class DiffWatcher:
             if await self._batch_ready_for_refresh(batch, now):
                 ready_batches.add(batch.batch_id)
         refresh_results: dict[str, bool] = {}
-        for diff_id in dict.fromkeys(
-            diff_id
+        for subject in dict.fromkeys(
+            subject
             for batch in due_before
             if batch.batch_id in ready_batches
-            for diff_id in batch.diff_ids
+            for subject in batch.subjects
         ):
             watch = await asyncio.to_thread(
                 self.repository.claim_watch,
-                diff_id,
+                subject,
                 now=now,
                 owner=self.owner,
                 lease_seconds=self.config.poll_lease_seconds,
             )
-            refresh_results[diff_id] = await self._poll_watch(watch) if watch is not None else False
+            refresh_results[subject] = await self._poll_watch(watch) if watch is not None else False
 
         claimed = await asyncio.to_thread(
             self.repository.claim_due_watches,
@@ -166,7 +201,7 @@ class DiffWatcher:
         )
         semaphore = asyncio.Semaphore(self.config.poll_concurrency)
 
-        async def poll_one(watch: WatchedDiff) -> None:
+        async def poll_one(watch: WatchedSubject) -> None:
             async with semaphore:
                 await self._poll_watch(watch)
 
@@ -178,7 +213,7 @@ class DiffWatcher:
                 continue
             # Any diff in the batch failing to refresh defers the whole wake:
             # a stale count for one diff would misreport the stack.
-            if any(refresh_results.get(diff_id) is False for diff_id in batch.diff_ids):
+            if any(refresh_results.get(subject) is False for subject in batch.subjects):
                 await self._defer(batch, now)
                 continue
             await self._flush_batch(batch)
@@ -214,53 +249,52 @@ class DiffWatcher:
             return False
         return True
 
-    async def _poll_watch(self, watch: WatchedDiff) -> bool:
+    async def _poll_watch(self, watch: WatchedSubject) -> bool:
         try:
-            snapshot = await self.source.snapshot(watch.diff_id, watch.cursor)
+            source = self.source_for(watch.source)
+            result = await source.poll(watch.subject, watch.cursor, watch.spec)
             now_dt = self.clock.now()
             now = now_dt.timestamp()
-            source_failed = snapshot.comments.status == "error" or snapshot.ci.status == "error"
-            self.last_source_error_category = (
-                self._snapshot_error_category(snapshot) if source_failed else None
-            )
-            if snapshot.lifecycle.terminal:
+            source_failed = bool(result.failed_kinds)
+            self.last_source_error_category = result.error_category if source_failed else None
+            if result.lifecycle is not Lifecycle.ACTIVE:
                 delay = (
-                    failure_poll_delay(watch.failure_count + 1, watch.diff_id)
-                    if snapshot.lifecycle is DiffLifecycle.MISSING
-                    else self._success_delay(snapshot, now_dt)
+                    failure_poll_delay(watch.failure_count + 1, watch.subject)
+                    if result.lifecycle is Lifecycle.MISSING
+                    else self._success_delay(result, now_dt)
                 )
                 await asyncio.to_thread(
-                    self.repository.apply_snapshot,
-                    snapshot,
+                    self.repository.apply_poll,
+                    result,
                     now=now,
                     next_poll_at=now + delay,
                     batch_window_seconds=self.config.batch_window_seconds,
                 )
-                if snapshot.lifecycle is DiffLifecycle.MISSING:
+                if result.lifecycle is Lifecycle.MISSING:
                     await asyncio.to_thread(
                         self.repository.partial_poll_failed,
-                        watch.diff_id,
+                        watch.subject,
                         next_poll_at=now + delay,
                     )
                     return False
                 return True
-            if snapshot.comments.status == "error" and snapshot.ci.status == "error":
-                delay = failure_poll_delay(watch.failure_count + 1, watch.diff_id)
+            if result.totally_failed:
+                delay = failure_poll_delay(watch.failure_count + 1, watch.subject)
                 await asyncio.to_thread(
                     self.repository.poll_failed,
-                    watch.diff_id,
+                    watch.subject,
                     self.owner,
                     next_poll_at=now + delay,
                 )
                 return False
             delay = (
-                failure_poll_delay(watch.failure_count + 1, watch.diff_id)
+                failure_poll_delay(watch.failure_count + 1, watch.subject)
                 if source_failed
-                else self._success_delay(snapshot, now_dt)
+                else self._success_delay(result, now_dt)
             )
             await asyncio.to_thread(
-                self.repository.apply_snapshot,
-                snapshot,
+                self.repository.apply_poll,
+                result,
                 now=now,
                 next_poll_at=now + delay,
                 batch_window_seconds=self.config.batch_window_seconds,
@@ -268,7 +302,7 @@ class DiffWatcher:
             if source_failed:
                 await asyncio.to_thread(
                     self.repository.partial_poll_failed,
-                    watch.diff_id,
+                    watch.subject,
                     next_poll_at=now + delay,
                 )
                 return False
@@ -276,7 +310,7 @@ class DiffWatcher:
         except asyncio.CancelledError:
             await asyncio.to_thread(
                 self.repository.release_lease,
-                watch.diff_id,
+                watch.subject,
                 self.owner,
             )
             raise
@@ -287,14 +321,14 @@ class DiffWatcher:
                 category_value if isinstance(category_value, str) else "unavailable"
             )
             now = self.clock.now().timestamp()
-            delay = failure_poll_delay(watch.failure_count + 1, watch.diff_id)
+            delay = failure_poll_delay(watch.failure_count + 1, watch.subject)
             await asyncio.to_thread(
                 self.repository.poll_failed,
-                watch.diff_id,
+                watch.subject,
                 self.owner,
                 next_poll_at=now + delay,
             )
-            _logger.warning("diff watcher source poll failed for %s", watch.diff_id)
+            _logger.warning("diff watcher source poll failed for %s", watch.subject)
             return False
 
     async def _check_liveness(self, session_id: str) -> None:
@@ -418,18 +452,9 @@ class DiffWatcher:
             retry_at=now + self.config.delivery_retry_seconds,
         )
 
-    def _success_delay(self, snapshot: DiffSnapshot, now: datetime) -> float:
+    def _success_delay(self, result: PollResult, now: datetime) -> float:
         if self.config.poll_interval_override_seconds is not None:
             return self.config.poll_interval_override_seconds
-        base = successful_poll_delay(snapshot, now)
+        base = successful_poll_delay(result.last_activity_at, now, result.poll_hint_seconds)
         cycle = int(now.timestamp() // max(base, 1.0))
-        return deterministic_jitter(base, snapshot.diff_id, cycle)
-
-    @staticmethod
-    def _snapshot_error_category(snapshot: DiffSnapshot) -> str:
-        categories = {
-            component.error.category.value
-            for component in (snapshot.comments, snapshot.ci)
-            if component.status == "error" and component.error is not None
-        }
-        return next(iter(categories)) if len(categories) == 1 else "partial"
+        return deterministic_jitter(base, result.subject, cycle)

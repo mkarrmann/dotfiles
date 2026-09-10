@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DIFF_ID_PATTERN = r"^D[1-9][0-9]*$"
 FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
 
@@ -205,8 +205,8 @@ class SourceCursor(_StrictModel):
 
 
 class DiffSnapshot(_StrictModel):
-    schema_version: Literal[2]
-    diff_id: str = Field(pattern=DIFF_ID_PATTERN)
+    schema_version: Literal[3]
+    subject: str = Field(pattern=DIFF_ID_PATTERN)
     lifecycle: DiffLifecycle
     author_id: str | None = Field(default=None, min_length=1, max_length=128)
     latest_version_id: str | None = Field(default=None, min_length=1, max_length=128)

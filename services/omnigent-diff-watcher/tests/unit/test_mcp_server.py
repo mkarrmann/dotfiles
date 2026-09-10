@@ -4,7 +4,7 @@ from typing import get_args
 
 import pytest
 
-from omnigent_diff_watcher.domain import EventKind
+from omnigent_diff_watcher.domain import DIFF_EVENT_KINDS
 from omnigent_diff_watcher.mcp_server import (
     _ALL_EVENTS,
     EventName,
@@ -32,9 +32,13 @@ def test_intent_tools_return_bounded_non_identity_results() -> None:
 def test_published_event_names_match_the_watcher_domain() -> None:
     """The tool schema is a hand-written literal; drift would silently make an
     event unsubscribable from the MCP surface while the watcher still emits it.
+
+    Pinned to the diff source's kinds rather than to every ``EventKind``: this
+    tool subscribes to diffs, so a kind another source emits does not belong in
+    its schema.
     """
-    assert set(_ALL_EVENTS) == {kind.value for kind in EventKind}
-    assert set(get_args(EventName)) == {kind.value for kind in EventKind}
+    assert set(_ALL_EVENTS) == {kind.value for kind in DIFF_EVENT_KINDS}
+    assert set(get_args(EventName)) == {kind.value for kind in DIFF_EVENT_KINDS}
 
 
 def test_subscribe_rejects_an_empty_selection() -> None:

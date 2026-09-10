@@ -10,6 +10,13 @@ import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 
+from .domain import (
+    DIFF_EVENT_KINDS,
+    EventKind,
+    Lifecycle,
+    NormalizedEvent,
+    PollResult,
+)
 from .source_command import (
     SourceCommandError,
     SourceCommandErrorCategory,
@@ -34,8 +41,15 @@ from .source_models import (
     fingerprint as _fingerprint,
 )
 
-__all__ = ["PhabricatorReviewSource", "ReviewSourceError"]
+__all__ = [
+    "PhabricatorReviewSource",
+    "ReviewSourceError",
+    "SOURCE_NAME",
+    "normalize_snapshot",
+    "to_poll_result",
+]
 
+SOURCE_NAME = "phabricator"
 _DIFF_ID = re.compile(r"^D[1-9][0-9]*$")
 _SAFE_ENV_NAMES = (
     "PATH",
@@ -105,17 +119,17 @@ class PhabricatorReviewSource:
 
     async def snapshot(
         self,
-        diff_id: str,
+        subject: str,
         previous: SourceCursor | None,
     ) -> DiffSnapshot:
         del previous
-        if not _DIFF_ID.fullmatch(diff_id):
+        if not _DIFF_ID.fullmatch(subject):
             raise ValueError("diff ID must match D<number>")
         observed_at = datetime.now(UTC)
         try:
-            properties_raw = await self._run(("jf", "diff-properties", diff_id))
+            properties_raw = await self._run(("jf", "diff-properties", subject))
             properties = _object(properties_raw, "diff properties")
-            metadata = _parse_metadata(diff_id, properties, observed_at)
+            metadata = _parse_metadata(subject, properties, observed_at)
         except SourceCommandError as exc:
             if exc.category is SourceCommandErrorCategory.EXIT:
                 raise ReviewSourceError(SourceErrorCategory.UNAVAILABLE) from exc
@@ -130,8 +144,8 @@ class PhabricatorReviewSource:
                 summary="diff was not found",
             )
             return DiffSnapshot(
-                schema_version=2,
-                diff_id=diff_id,
+                schema_version=3,
+                subject=subject,
                 lifecycle=DiffLifecycle.MISSING,
                 last_activity_at=metadata.last_activity_at,
                 observed_at=observed_at,
@@ -142,8 +156,8 @@ class PhabricatorReviewSource:
 
         if metadata.lifecycle.terminal:
             return DiffSnapshot(
-                schema_version=2,
-                diff_id=diff_id,
+                schema_version=3,
+                subject=subject,
                 lifecycle=metadata.lifecycle,
                 author_id=metadata.author_id,
                 latest_version_id=metadata.latest_version_id,
@@ -170,7 +184,7 @@ class PhabricatorReviewSource:
                     "meta",
                     "phabricator.diff",
                     "comments",
-                    f"--number={diff_id}",
+                    f"--number={subject}",
                     "--output=json",
                     "--no-color",
                     "--latest-version",
@@ -198,7 +212,7 @@ class PhabricatorReviewSource:
                     "meta",
                     "phabricator.diff",
                     "arctic",
-                    f"--number={diff_id}",
+                    f"--number={subject}",
                     f"--insight-type={_ARCTIC_ACTIONABLE_INSIGHT}",
                     "--output=json",
                 )
@@ -223,8 +237,8 @@ class PhabricatorReviewSource:
             version_id,
         )
         return DiffSnapshot(
-            schema_version=2,
-            diff_id=diff_id,
+            schema_version=3,
+            subject=subject,
             lifecycle=metadata.lifecycle,
             author_id=metadata.author_id,
             latest_version_id=metadata.latest_version_id,
@@ -234,6 +248,166 @@ class PhabricatorReviewSource:
             ci=ci,
             ai_reviews=ai_reviews,
         )
+
+    # -- WatchSource ----------------------------------------------------
+    #
+    # The engine speaks PollResult. Everything above stays diff-shaped and is
+    # unchanged; this adapts it at the boundary rather than diluting it.
+
+    @property
+    def name(self) -> str:
+        return SOURCE_NAME
+
+    @property
+    def event_kinds(self) -> frozenset[EventKind]:
+        return DIFF_EVENT_KINDS
+
+    def validate_subject(self, subject: str, spec: str | None) -> None:
+        if not _DIFF_ID.fullmatch(subject):
+            raise ValueError("diff ID must match D<number>")
+        if spec is not None:
+            raise ValueError("the phabricator source takes no spec")
+
+    def describe(self, counts: Mapping[EventKind, int]) -> str:
+        from .logic import _describe_counts
+
+        return _describe_counts(counts)
+
+    async def poll(
+        self,
+        subject: str,
+        cursor: str | None,
+        spec: str | None = None,
+    ) -> PollResult:
+        del spec
+        previous = _decode_cursor(cursor)
+        snapshot = await self.snapshot(subject, previous)
+        return to_poll_result(snapshot, previous)
+
+
+def _decode_cursor(cursor: str | None) -> SourceCursor | None:
+    if not cursor:
+        return None
+    try:
+        return SourceCursor.model_validate_json(cursor)
+    except ValueError:
+        # A cursor this build cannot read costs one full refetch, which is
+        # strictly better than wedging the watch.
+        return None
+
+
+def to_poll_result(
+    snapshot: DiffSnapshot,
+    previous: SourceCursor | None = None,
+) -> PollResult:
+    """Adapt a diff-shaped snapshot into the engine's source-neutral terms.
+
+    ``previous`` must be threaded through: a snapshot only advances the cursor
+    of a section it actually read, so without it a partial failure would drop
+    the failed section's position and refetch that section from scratch.
+    """
+    events = normalize_snapshot(snapshot)
+    ok_kinds = frozenset(events)
+    failed_kinds = DIFF_EVENT_KINDS - ok_kinds
+    if snapshot.lifecycle is DiffLifecycle.MISSING:
+        lifecycle = Lifecycle.MISSING
+    elif snapshot.lifecycle.terminal:
+        lifecycle = Lifecycle.TERMINAL
+    else:
+        lifecycle = Lifecycle.ACTIVE
+    categories = {
+        component.error.category.value
+        for component in (snapshot.comments, snapshot.ci)
+        if component.status == "error" and component.error is not None
+    }
+    return PollResult(
+        subject=snapshot.subject,
+        source=SOURCE_NAME,
+        lifecycle=lifecycle,
+        state_label=snapshot.lifecycle.value,
+        latest_version_id=snapshot.latest_version_id,
+        last_activity_at=snapshot.last_activity_at,
+        observed_at=snapshot.observed_at,
+        cursor=snapshot.cursor(previous).model_dump_json(),
+        status=snapshot.ci.aggregate.value,
+        events=events,
+        ok_kinds=ok_kinds,
+        failed_kinds=failed_kinds,
+        error_category=(
+            None
+            if not categories
+            else next(iter(categories))
+            if len(categories) == 1
+            else "partial"
+        ),
+        # A run still in flight is the one case where the idle clock is wrong:
+        # nothing has "happened" yet, but something is about to.
+        poll_hint_seconds=(60.0 if snapshot.ci.aggregate is CIAggregateState.PENDING else None),
+        version_scoped_kinds=frozenset({EventKind.CI_FAILURE, EventKind.CI_GREEN}),
+    )
+
+
+def normalize_snapshot(
+    snapshot: DiffSnapshot,
+) -> dict[EventKind, tuple[NormalizedEvent, ...]]:
+    """Normalize only source components that succeeded in this poll."""
+    result: dict[EventKind, tuple[NormalizedEvent, ...]] = {}
+    if snapshot.comments.status == "ok":
+        result[EventKind.REVIEW_COMMENT] = tuple(
+            NormalizedEvent(
+                subject=snapshot.subject,
+                kind=EventKind.REVIEW_COMMENT,
+                external_id=item.external_id,
+                version_id=item.version_id,
+                fingerprint=item.content_fingerprint,
+                changed_at=item.updated_at,
+            )
+            for item in snapshot.comments.items
+            if item.version_id == snapshot.latest_version_id
+        )
+    if snapshot.ci.status == "ok":
+        version_id = snapshot.latest_version_id or ""
+        result[EventKind.CI_FAILURE] = tuple(
+            NormalizedEvent(
+                subject=snapshot.subject,
+                kind=EventKind.CI_FAILURE,
+                external_id=item.external_id,
+                version_id=version_id,
+                fingerprint=item.fingerprint,
+                changed_at=snapshot.observed_at,
+            )
+            for item in snapshot.ci.failures
+        )
+        # One event per version rather than per poll: the external ID and the
+        # fingerprint are both version-scoped, so re-observing a green run
+        # deduplicates instead of waking the session again.
+        result[EventKind.CI_GREEN] = (
+            (
+                NormalizedEvent(
+                    subject=snapshot.subject,
+                    kind=EventKind.CI_GREEN,
+                    external_id=f"green:{version_id}",
+                    version_id=version_id,
+                    fingerprint=_fingerprint(f"{version_id}:{snapshot.ci.aggregate.value}"),
+                    changed_at=snapshot.observed_at,
+                ),
+            )
+            if snapshot.ci.green
+            else ()
+        )
+    if snapshot.ai_reviews.status == "ok":
+        result[EventKind.AI_REVIEW] = tuple(
+            NormalizedEvent(
+                subject=snapshot.subject,
+                kind=EventKind.AI_REVIEW,
+                external_id=item.external_id,
+                version_id=snapshot.latest_version_id or "",
+                fingerprint=item.fingerprint,
+                changed_at=snapshot.observed_at,
+            )
+            for item in snapshot.ai_reviews.items
+        )
+    return result
 
 
 class _Metadata:
@@ -266,7 +440,7 @@ def _object(value: object, name: str) -> dict[str, object]:
 
 
 def _parse_metadata(
-    diff_id: str,
+    subject: str,
     payload: dict[str, object],
     observed_at: datetime,
 ) -> _Metadata:
@@ -290,7 +464,7 @@ def _parse_metadata(
     author_id = _identity(author) or _optional_string(root.get("author_id"))
     version = _latest_version(root)
     if lifecycle is not DiffLifecycle.MISSING and (author_id is None or version is None):
-        raise ValueError(f"{diff_id} metadata omitted author or latest version")
+        raise ValueError(f"{subject} metadata omitted author or latest version")
     activity_value = next(
         (
             root[key]

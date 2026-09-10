@@ -85,12 +85,12 @@ async def test_one_session_watches_every_diff_in_its_stack(tmp_path: Path) -> No
     service = DiffWatcherService(_settings(tmp_path), client=client)  # type: ignore[arg-type]
     base = fixture("active")
     service.watcher.source = FakeReviewSource(
-        *(base.model_copy(update={"diff_id": d}) for d in ("D90000001", "D90000002", "D90000003"))
+        *(base.model_copy(update={"subject": d}) for d in ("D90000001", "D90000002", "D90000003"))
     )
 
     await service.reconcile_subscriptions()
     subscriptions = service.repository.subscriptions_for_session("conv_stack")
-    assert [row.diff_id for row in subscriptions] == [
+    assert [row.subject for row in subscriptions] == [
         "D90000001",
         "D90000002",
         "D90000003",
@@ -113,7 +113,7 @@ async def test_landing_one_diff_retires_only_that_subscription(tmp_path: Path) -
     service = DiffWatcherService(_settings(tmp_path), client=client)  # type: ignore[arg-type]
     base = fixture("active")
     service.watcher.source = FakeReviewSource(
-        *(base.model_copy(update={"diff_id": d}) for d in ("D90000001", "D90000002"))
+        *(base.model_copy(update={"subject": d}) for d in ("D90000001", "D90000002"))
     )
     await service.reconcile_subscriptions()
 
@@ -124,7 +124,7 @@ async def test_landing_one_diff_retires_only_that_subscription(tmp_path: Path) -
     }
     await service.reconcile_subscriptions()
 
-    by_diff = {r.diff_id: r for r in service.repository.subscriptions_for_session("conv_stack")}
+    by_diff = {r.subject: r for r in service.repository.subscriptions_for_session("conv_stack")}
     assert by_diff["D90000001"].state is SubscriptionState.RETIRED
     assert by_diff["D90000001"].retired_reason == "preference_removed"
     assert by_diff["D90000002"].state is SubscriptionState.ACTIVE
@@ -150,11 +150,11 @@ async def test_an_unusable_diff_does_not_block_the_rest_of_the_stack(tmp_path: P
     service = DiffWatcherService(_settings(tmp_path), client=client)  # type: ignore[arg-type]
     service.watcher.source = FakeReviewSource(
         fixture("committed"),  # D90000004 is terminal -> SubscriptionError
-        fixture("active").model_copy(update={"diff_id": "D90000002"}),
+        fixture("active").model_copy(update={"subject": "D90000002"}),
     )
 
     await service.reconcile_subscriptions()
-    by_diff = {r.diff_id: r for r in service.repository.subscriptions_for_session("conv_stack")}
+    by_diff = {r.subject: r for r in service.repository.subscriptions_for_session("conv_stack")}
     assert "D90000004" not in by_diff
     assert by_diff["D90000002"].state is SubscriptionState.ACTIVE
     await client.close()
@@ -181,11 +181,11 @@ async def test_a_diff_the_source_cannot_read_does_not_block_the_rest(tmp_path: P
     service = DiffWatcherService(_settings(tmp_path), client=client)  # type: ignore[arg-type]
     service.watcher.source = FakeReviewSource(
         ReviewSourceError(SourceErrorCategory.MALFORMED),
-        fixture("active").model_copy(update={"diff_id": "D90000002"}),
+        fixture("active").model_copy(update={"subject": "D90000002"}),
     )
 
     await service.reconcile_subscriptions()
-    by_diff = {r.diff_id: r for r in service.repository.subscriptions_for_session("conv_stack")}
+    by_diff = {r.subject: r for r in service.repository.subscriptions_for_session("conv_stack")}
     assert "D12345678" not in by_diff
     assert by_diff["D90000002"].state is SubscriptionState.ACTIVE
     await client.close()

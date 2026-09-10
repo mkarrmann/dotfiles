@@ -20,10 +20,13 @@ from omnigent_diff_watcher.source_models import (
 )
 from omnigent_diff_watcher.watcher import DiffWatcher
 from tests.support import (
+    DiffSourceMixin,
     FakeClock,
     FakeSessionService,
     RecordingDeliveryService,
+    apply_snapshot,
     fixture,
+    subscribe_snapshot,
 )
 from tests.unit.test_repository import (
     _new_comment_snapshot,
@@ -34,7 +37,8 @@ def test_restart_recovers_open_delivering_and_delivered_batches(tmp_path: Path) 
     path = tmp_path / "watcher.sqlite3"
     clock = FakeClock()
     repository = WatcherRepository(path)
-    subscription, _ = repository.subscribe(
+    subscription, _ = subscribe_snapshot(
+        repository,
         "session-1",
         "D90000001",
         DEFAULT_EVENT_TYPES,
@@ -43,7 +47,8 @@ def test_restart_recovers_open_delivering_and_delivered_batches(tmp_path: Path) 
         next_poll_at=clock.now().timestamp() + 60,
     )
     clock.advance(60)
-    repository.apply_snapshot(
+    apply_snapshot(
+        repository,
         _new_comment_snapshot(clock),
         now=clock.now().timestamp(),
         next_poll_at=clock.now().timestamp() + 60,
@@ -72,7 +77,7 @@ def test_restart_recovers_open_delivering_and_delivered_batches(tmp_path: Path) 
     assert WatcherRepository(path).open_batch_for(subscription.id) is None
 
 
-class _BlockingSource:
+class _BlockingSource(DiffSourceMixin):
     def __init__(self) -> None:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
@@ -80,10 +85,10 @@ class _BlockingSource:
 
     async def snapshot(
         self,
-        diff_id: str,
+        subject: str,
         previous: SourceCursor | None,
     ) -> DiffSnapshot:
-        del diff_id, previous
+        del subject, previous
         self.calls += 1
         self.started.set()
         await self.release.wait()
@@ -95,7 +100,8 @@ async def test_two_scheduler_instances_do_not_overlap_one_diff(tmp_path: Path) -
     path = tmp_path / "watcher.sqlite3"
     clock = FakeClock()
     repository = WatcherRepository(path)
-    repository.subscribe(
+    subscribe_snapshot(
+        repository,
         "session-1",
         "D90000001",
         DEFAULT_EVENT_TYPES,
@@ -135,7 +141,8 @@ async def test_poll_cancellation_releases_lease_for_restart(tmp_path: Path) -> N
     path = tmp_path / "watcher.sqlite3"
     clock = FakeClock()
     repository = WatcherRepository(path)
-    repository.subscribe(
+    subscribe_snapshot(
+        repository,
         "session-1",
         "D90000001",
         DEFAULT_EVENT_TYPES,
@@ -165,4 +172,4 @@ async def test_poll_cancellation_releases_lease_for_restart(tmp_path: Path) -> N
         lease_seconds=30,
         limit=1,
     )
-    assert [watch.diff_id for watch in reclaimed] == ["D90000001"]
+    assert [watch.subject for watch in reclaimed] == ["D90000001"]

@@ -45,12 +45,12 @@ def test_v1_batches_are_rekeyed_to_their_session(tmp_path: Path) -> None:
 
     repository = WatcherRepository(path)
 
-    assert repository.schema_version() == 2
+    assert repository.schema_version() == 3
     batch = repository.open_batch_for_session("conv_a")
     assert batch is not None
     assert batch.batch_id == "dwb_old"
     assert batch.session_id == "conv_a"
-    assert batch.diff_ids == ("D90000001",)
+    assert batch.subjects == ("D90000001",)
     # Scheduling state must survive verbatim; a migration should not re-time a
     # pending wake.
     assert batch.flush_at == 410.0
@@ -65,7 +65,7 @@ def test_v1_batch_events_survive_the_primary_key_change(tmp_path: Path) -> None:
     connection = sqlite3.connect(path)
     try:
         rows = connection.execute(
-            "SELECT batch_id, diff_id, kind, external_id, fingerprint FROM batch_events"
+            "SELECT batch_id, subject, kind, external_id, fingerprint FROM batch_events"
         ).fetchall()
         assert rows == [("dwb_old", "D90000001", "ci_failure", "sig-1", "fp-1")]
         columns = {row[1] for row in connection.execute("PRAGMA table_info(batches)").fetchall()}
@@ -83,12 +83,12 @@ def test_migration_is_idempotent_across_reopens(tmp_path: Path) -> None:
     WatcherRepository(path)
     reopened = WatcherRepository(path)
 
-    assert reopened.schema_version() == 2
+    assert reopened.schema_version() == 3
     batch = reopened.open_batch_for_session("conv_a")
-    assert batch is not None and batch.diff_ids == ("D90000001",)
+    assert batch is not None and batch.subjects == ("D90000001",)
 
 
-def test_fresh_database_lands_on_v2_directly(tmp_path: Path) -> None:
+def test_fresh_database_lands_on_the_current_schema_directly(tmp_path: Path) -> None:
     repository = WatcherRepository(tmp_path / "fresh.sqlite3")
-    assert repository.schema_version() == 2
+    assert repository.schema_version() == 3
     assert repository.open_batch_for_session("conv_missing") is None

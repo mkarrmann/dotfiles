@@ -24,6 +24,7 @@ from omnigent_diff_watcher.watcher import (
     SubscriptionError,
 )
 from tests.support import (
+    DiffSourceMixin,
     FakeClock,
     FakeReviewSource,
     FakeSessionService,
@@ -126,7 +127,7 @@ async def test_subscribe_rejects_terminal_and_failed_requested_baseline(
         RecordingDeliveryService(),
         clock,
     )
-    with pytest.raises(SubscriptionError, match="CI baseline"):
+    with pytest.raises(SubscriptionError, match="could not establish a baseline"):
         await watcher.subscribe("session-1", "D90000006", DEFAULT_EVENT_TYPES)
 
 
@@ -234,7 +235,7 @@ async def test_partial_refresh_defers_batch_until_all_sources_are_authoritative(
     partial_raw = fixture("partial_failure")
     partial = partial_raw.model_copy(
         update={
-            "diff_id": changed.diff_id,
+            "subject": changed.subject,
             "latest_version_id": changed.latest_version_id,
             "comments": changed.comments,
         }
@@ -267,7 +268,7 @@ async def test_repeated_partial_failures_increase_backoff_streak(
     tmp_path: Path,
 ) -> None:
     clock = FakeClock()
-    partial = fixture("partial_failure").model_copy(update={"diff_id": "D90000001"})
+    partial = fixture("partial_failure").model_copy(update={"subject": "D90000001"})
     source = FakeReviewSource(fixture("active"), partial, partial)
     watcher = _watcher(
         tmp_path,
@@ -298,7 +299,7 @@ async def test_authoritative_terminal_and_two_missing_polls_retire(
     failed_components = fixture("missing")
     committed = fixture("committed").model_copy(
         update={
-            "diff_id": "D90000001",
+            "subject": "D90000001",
             "comments": failed_components.comments,
             "ci": failed_components.ci,
         }
@@ -318,7 +319,7 @@ async def test_authoritative_terminal_and_two_missing_polls_retire(
     assert terminal_subscription is not None
     assert terminal_subscription.state is SubscriptionState.RETIRED
 
-    missing = failed_components.model_copy(update={"diff_id": "D90000001"})
+    missing = failed_components.model_copy(update={"subject": "D90000001"})
     missing_watcher = _watcher(
         tmp_path / "missing",
         FakeReviewSource(fixture("active"), missing, missing),
@@ -430,7 +431,7 @@ async def test_terminal_sessions_retire(snapshot: SessionSnapshot, tmp_path: Pat
     assert len(source.calls) == 1
 
 
-class KeyedReviewSource:
+class KeyedReviewSource(DiffSourceMixin):
     """Return a snapshot per diff id, not per call.
 
     ``FakeReviewSource`` pops a queue in call order, which cannot express "two
@@ -441,9 +442,9 @@ class KeyedReviewSource:
         self.snapshots = snapshots
         self.calls: list[tuple[str, object]] = []
 
-    async def snapshot(self, diff_id: str, previous: object = None) -> DiffSnapshot:
-        self.calls.append((diff_id, previous))
-        return self.snapshots[diff_id]
+    async def snapshot(self, subject: str, previous: object = None) -> DiffSnapshot:
+        self.calls.append((subject, previous))
+        return self.snapshots[subject]
 
 
 @pytest.mark.asyncio
@@ -460,7 +461,7 @@ async def test_a_stack_going_red_produces_one_wake_naming_every_diff(
     source = KeyedReviewSource(
         {
             "D90000001": fixture("active"),
-            "D90000002": fixture("active").model_copy(update={"diff_id": "D90000002"}),
+            "D90000002": fixture("active").model_copy(update={"subject": "D90000002"}),
         }
     )
     sessions = FakeSessionService(SessionSnapshot("session-1", {}))
@@ -471,7 +472,7 @@ async def test_a_stack_going_red_produces_one_wake_naming_every_diff(
 
     # Both diffs now pick up findings.
     source.snapshots["D90000001"] = _new_snapshot(clock)
-    source.snapshots["D90000002"] = _new_snapshot(clock).model_copy(update={"diff_id": "D90000002"})
+    source.snapshots["D90000002"] = _new_snapshot(clock).model_copy(update={"subject": "D90000002"})
 
     clock.advance(70)
     await watcher.run_iteration()
@@ -495,7 +496,7 @@ async def test_retiring_one_diff_keeps_the_rest_of_the_stack_wake(
     source = KeyedReviewSource(
         {
             "D90000001": fixture("active"),
-            "D90000002": fixture("active").model_copy(update={"diff_id": "D90000002"}),
+            "D90000002": fixture("active").model_copy(update={"subject": "D90000002"}),
         }
     )
     sessions = FakeSessionService(SessionSnapshot("session-1", {}))
@@ -504,19 +505,19 @@ async def test_retiring_one_diff_keeps_the_rest_of_the_stack_wake(
     first, _ = await watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
     await watcher.subscribe("session-1", "D90000002", DEFAULT_EVENT_TYPES)
     source.snapshots["D90000001"] = _new_snapshot(clock)
-    source.snapshots["D90000002"] = _new_snapshot(clock).model_copy(update={"diff_id": "D90000002"})
+    source.snapshots["D90000002"] = _new_snapshot(clock).model_copy(update={"subject": "D90000002"})
     clock.advance(70)
     await watcher.run_iteration()
 
     batch = watcher.repository.open_batch_for(first.id)
     assert batch is not None
-    assert set(batch.diff_ids) == {"D90000001", "D90000002"}
+    assert set(batch.subjects) == {"D90000001", "D90000002"}
 
     watcher.repository.retire_subscription(first.id, "committed", now=clock.now().timestamp())
 
     remaining = watcher.repository.open_batch_for_session("session-1")
     assert remaining is not None
-    assert remaining.diff_ids == ("D90000002",)
+    assert remaining.subjects == ("D90000002",)
 
 
 @pytest.mark.asyncio

@@ -75,18 +75,18 @@ class DiffWatcherService:
             existing_all = await asyncio.to_thread(
                 self.repository.subscriptions_for_session, session_id
             )
-            existing_by_diff = {row.diff_id: row for row in existing_all}
+            existing_by_diff = {row.subject: row for row in existing_all}
             if desired is None:
                 if any(row.state is not SubscriptionState.RETIRED for row in existing_all):
                     await self.watcher.unsubscribe(session_id)
                 continue
-            diff_ids, raw_events = desired
+            subjects, raw_events = desired
             event_types = frozenset(EventKind(value) for value in raw_events)
 
             # Retire diffs the session no longer claims, without disturbing the
             # ones it still does. A stack shrinks as its diffs land.
             for row in existing_all:
-                if row.diff_id in diff_ids or row.state is SubscriptionState.RETIRED:
+                if row.subject in subjects or row.state is SubscriptionState.RETIRED:
                     continue
                 await asyncio.to_thread(
                     self.repository.retire_subscription,
@@ -95,8 +95,8 @@ class DiffWatcherService:
                     now=time.time(),
                 )
 
-            for diff_id in diff_ids:
-                existing = existing_by_diff.get(diff_id)
+            for subject in subjects:
+                existing = existing_by_diff.get(subject)
                 if (
                     existing is not None
                     and existing.event_types == event_types
@@ -110,12 +110,12 @@ class DiffWatcherService:
                 ):
                     continue
                 try:
-                    await self.watcher.subscribe(session_id, diff_id, event_types)
+                    await self.watcher.subscribe(session_id, subject, event_types)
                 except SubscriptionError as exc:
                     # One unusable diff (terminal, missing, or a stale label
                     # entry) must not stop the rest of the stack from binding.
                     _logger.warning(
-                        "could not reconcile session=%s diff=%s: %s", session_id, diff_id, exc
+                        "could not reconcile session=%s diff=%s: %s", session_id, subject, exc
                     )
 
     def _next_delay(self) -> float:

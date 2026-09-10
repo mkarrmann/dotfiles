@@ -13,14 +13,15 @@ from .domain import (
     Batch,
     BatchState,
     EventKind,
+    Lifecycle,
     NormalizedEvent,
+    PollResult,
     Subscription,
     SubscriptionState,
-    WatchedDiff,
+    WatchedSubject,
 )
-from .source_models import DiffLifecycle, DiffSnapshot, SourceCursor
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # The v1 DDL, kept as a constant so the v1 -> v2 migration test exercises the
 # real historical schema instead of a copy that can drift from it.
@@ -122,6 +123,10 @@ class NewerSchemaError(RuntimeError):
     """The database belongs to a newer plugin version."""
 
 
+class StaleSchemaError(RuntimeError):
+    """The database predates this build, and this caller may not migrate it."""
+
+
 class SubscriptionConstraintError(RuntimeError):
     """A subscription would violate a watcher resource invariant."""
 
@@ -129,12 +134,39 @@ class SubscriptionConstraintError(RuntimeError):
 class WatcherRepository:
     """Short-transaction repository; external calls never run under its lock."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, migrate: bool = True) -> None:
+        """Open the watcher database.
+
+        :param migrate: Whether this caller owns the schema. The sidecar does
+            and passes the default; the MCP tool does not and passes ``False``.
+            A migration run by anything other than the sidecar would rename
+            tables out from under the *already running* sidecar process, whose
+            old code is loaded in memory and would then fail every poll until
+            restarted. Refusing is recoverable and legible; migrating is not.
+        """
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self._migrate()
+        if migrate:
+            self._migrate()
+        else:
+            self._require_current_schema()
         with suppress(OSError):
             self.path.chmod(0o600)
+
+    def _require_current_schema(self) -> None:
+        with self._connect() as connection:
+            current = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if current == SCHEMA_VERSION:
+            return
+        if current > SCHEMA_VERSION:
+            raise NewerSchemaError(
+                f"watcher schema {current} is newer than supported {SCHEMA_VERSION}"
+            )
+        raise StaleSchemaError(
+            f"the watcher database is at schema {current}, but this build expects "
+            f"{SCHEMA_VERSION}. Restart the diff-watcher service so it can migrate: "
+            "systemctl --user restart omnigent-diff-watcher"
+        )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10)
@@ -156,6 +188,9 @@ class WatcherRepository:
                 current = 1
             if current < 2:
                 self._migrate_to_session_batches()
+                current = 2
+            if current < 3:
+                self._migrate_to_generic_subjects()
 
     def _migrate_to_session_batches(self) -> None:
         """v1 -> v2: re-key batches from one subscription to one session.
@@ -236,56 +271,137 @@ class WatcherRepository:
         finally:
             connection.close()
 
+    def _migrate_to_generic_subjects(self) -> None:
+        """v2 -> v3: re-key watches from a diff id to a source-owned subject.
+
+        The engine below this line — leasing, fingerprint diffing, batching,
+        delivery — never depended on the subject being a diff. Only the naming
+        did. This renames the key so a subject may be any watchable thing, and
+        adds the ``source`` column that says who knows how to poll it. Existing
+        rows are all Phabricator diffs by construction.
+
+        The three diff-shaped state columns collapse into two source-owned
+        ones: ``cursor`` holds whatever the source needs to resume (Phabricator
+        keeps its per-section cursors there as JSON, backfilled here so no
+        watch refetches from scratch), and ``spec`` holds how to poll a subject
+        the source cannot derive from the subject alone -- the argv of a
+        command watch. ``ci_state`` becomes ``source_status``: it was only ever
+        written, never read, and is kept because it is NOT NULL and cheap to
+        carry as a source-owned status string.
+
+        ``watch_requests`` is the desired state for non-diff watches. Diff
+        watches are reconciled from session labels, but a label value is capped
+        at 256 characters, which an arbitrary argv overruns; a generic watch is
+        recorded here by the MCP tool and reconciled from the table instead.
+
+        The primary key stays ``subject`` alone rather than becoming
+        ``(source, subject)``: three tables carry a foreign key to it, so a
+        composite key would mean rebuilding four tables on a live database.
+        Global uniqueness is preserved by construction instead — every source
+        other than Phabricator namespaces its subjects as ``<source>:<id>``,
+        which cannot collide with a bare ``D123``. See ``SUBJECT_PATTERN``.
+        """
+        connection = sqlite3.connect(self.path, timeout=10)
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA busy_timeout=10000")
+            connection.executescript(
+                """
+                BEGIN IMMEDIATE;
+                ALTER TABLE watched_diffs RENAME TO watched_subjects;
+                ALTER TABLE watched_subjects RENAME COLUMN diff_id TO subject;
+                ALTER TABLE watched_subjects RENAME COLUMN ci_state TO source_status;
+                ALTER TABLE watched_subjects
+                    ADD COLUMN source TEXT NOT NULL DEFAULT 'phabricator';
+                ALTER TABLE watched_subjects ADD COLUMN cursor TEXT;
+                ALTER TABLE watched_subjects ADD COLUMN spec TEXT;
+                UPDATE watched_subjects SET cursor = json_object(
+                    'latest_version_id', latest_version_id,
+                    'comments', comments_cursor,
+                    'ci', ci_cursor);
+                ALTER TABLE subscriptions RENAME COLUMN diff_id TO subject;
+                ALTER TABLE source_events RENAME COLUMN diff_id TO subject;
+                ALTER TABLE batch_events RENAME COLUMN diff_id TO subject;
+                DROP INDEX IF EXISTS subscriptions_state_diff;
+                CREATE INDEX IF NOT EXISTS subscriptions_state_subject
+                    ON subscriptions(state, subject);
+                CREATE TABLE IF NOT EXISTS watch_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    spec TEXT,
+                    event_types TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'active',
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    UNIQUE(session_id, subject)
+                );
+                CREATE INDEX IF NOT EXISTS watch_requests_state
+                    ON watch_requests(state);
+                PRAGMA user_version=3;
+                COMMIT;
+                """
+            )
+            violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise RuntimeError(
+                    f"diff-watcher v3 migration left {len(violations)} FK violations"
+                )
+        finally:
+            connection.close()
+
     def schema_version(self) -> int:
         with self._connect() as connection:
             return int(connection.execute("PRAGMA user_version").fetchone()[0])
 
-    def active_diff_count(self) -> int:
+    def active_subject_count(self) -> int:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT COUNT(DISTINCT diff_id) FROM subscriptions WHERE state != 'retired'"
+                "SELECT COUNT(DISTINCT subject) FROM subscriptions WHERE state != 'retired'"
             ).fetchone()
             return int(row[0])
 
-    def watch(self, diff_id: str) -> WatchedDiff | None:
+    def watch(self, subject: str) -> WatchedSubject | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM watched_diffs WHERE diff_id = ?", (diff_id,)
+                "SELECT * FROM watched_subjects WHERE subject = ?", (subject,)
             ).fetchone()
             return self._watch(row) if row is not None else None
 
     def subscribe(
         self,
         session_id: str,
-        diff_id: str,
+        subject: str,
         event_types: frozenset[EventKind],
-        snapshot: DiffSnapshot,
+        result: PollResult,
         *,
         now: float,
         next_poll_at: float,
-        max_active_diffs: int | None = None,
+        max_active_subjects: int | None = None,
+        spec: str | None = None,
     ) -> tuple[Subscription, bool]:
         """Baseline source state and idempotently activate one subscription."""
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
-                "SELECT * FROM subscriptions WHERE session_id = ? AND diff_id = ?",
-                (session_id, diff_id),
+                "SELECT * FROM subscriptions WHERE session_id = ? AND subject = ?",
+                (session_id, subject),
             ).fetchone()
             diff_is_active = connection.execute(
-                "SELECT 1 FROM subscriptions WHERE diff_id = ? AND state != 'retired' LIMIT 1",
-                (diff_id,),
+                "SELECT 1 FROM subscriptions WHERE subject = ? AND state != 'retired' LIMIT 1",
+                (subject,),
             ).fetchone()
-            if max_active_diffs is not None and diff_is_active is None:
+            if max_active_subjects is not None and diff_is_active is None:
                 active_count = int(
                     connection.execute(
-                        "SELECT COUNT(DISTINCT diff_id) FROM subscriptions WHERE state != 'retired'"
+                        "SELECT COUNT(DISTINCT subject) FROM subscriptions WHERE state != 'retired'"
                     ).fetchone()[0]
                 )
-                if active_count >= max_active_diffs:
+                if active_count >= max_active_subjects:
                     raise SubscriptionConstraintError("diff watcher active-diff limit reached")
-            self._upsert_watch(connection, snapshot, now=now, next_poll_at=next_poll_at)
-            self._replace_source_components(connection, snapshot, now=now)
+            self._upsert_watch(connection, result, now=now, next_poll_at=next_poll_at, spec=spec)
+            self._replace_source_components(connection, result, now=now)
             encoded_types = json.dumps(sorted(kind.value for kind in event_types))
             created = existing is None
             reset_baseline = existing is None or existing["state"] == "retired"
@@ -293,10 +409,10 @@ class WatcherRepository:
             if existing is None:
                 cursor = connection.execute(
                     "INSERT INTO subscriptions "
-                    "(session_id, diff_id, event_types, state, baseline_at, "
+                    "(session_id, subject, event_types, state, baseline_at, "
                     "last_liveness_at, created_at, updated_at) "
                     "VALUES (?, ?, ?, 'active', ?, ?, ?, ?)",
-                    (session_id, diff_id, encoded_types, now, now, now, now),
+                    (session_id, subject, encoded_types, now, now, now, now),
                 )
                 if cursor.lastrowid is None:
                     raise RuntimeError("subscription insert returned no row id")
@@ -332,20 +448,93 @@ class WatcherRepository:
                     "INSERT OR IGNORE INTO subscription_events "
                     "(subscription_id, kind, external_id, fingerprint, handled_at) "
                     "SELECT ?, kind, external_id, fingerprint, ? FROM source_events "
-                    "WHERE diff_id = ? AND kind = ? AND actionable = 1",
-                    (subscription_id, now, diff_id, event_type),
+                    "WHERE subject = ? AND kind = ? AND actionable = 1",
+                    (subscription_id, now, subject, event_type),
                 )
             connection.commit()
-        result = self.subscription(session_id, diff_id)
-        assert result is not None
-        return result, created
+        created_subscription = self.subscription(session_id, subject)
+        assert created_subscription is not None
+        return created_subscription, created
 
-    def subscription(self, session_id: str, diff_id: str | None = None) -> Subscription | None:
+    def request_watch(
+        self,
+        session_id: str,
+        source: str,
+        subject: str,
+        event_types: frozenset[EventKind],
+        *,
+        spec: str | None,
+        now: float,
+    ) -> None:
+        """Record a session's desire to watch a subject, for the sidecar to apply."""
+        encoded = json.dumps(sorted(kind.value for kind in event_types))
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "INSERT INTO watch_requests "
+                "(session_id, source, subject, spec, event_types, state, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?) "
+                "ON CONFLICT(session_id, subject) DO UPDATE SET "
+                "source = excluded.source, spec = excluded.spec, "
+                "event_types = excluded.event_types, state = 'active', "
+                "updated_at = excluded.updated_at",
+                (session_id, source, subject, spec, encoded, now, now),
+            )
+            connection.commit()
+
+    def active_watch_requests(
+        self, session_id: str | None = None
+    ) -> list[tuple[str, str, str, str | None, frozenset[EventKind]]]:
+        """Return ``(session_id, source, subject, spec, event_types)`` rows."""
+        query = (
+            "SELECT session_id, source, subject, spec, event_types FROM watch_requests "
+            "WHERE state = 'active'"
+        )
+        parameters: tuple[object, ...] = ()
+        if session_id is not None:
+            query += " AND session_id = ?"
+            parameters = (session_id,)
+        with self._connect() as connection:
+            rows = connection.execute(query + " ORDER BY id", parameters).fetchall()
+        results = []
+        for row in rows:
+            try:
+                kinds = frozenset(EventKind(value) for value in json.loads(row["event_types"]))
+            except ValueError:
+                # A kind written by a newer build is skipped rather than fatal,
+                # so a downgrade cannot wedge reconciliation.
+                continue
+            results.append(
+                (
+                    str(row["session_id"]),
+                    str(row["source"]),
+                    str(row["subject"]),
+                    row["spec"],
+                    kinds,
+                )
+            )
+        return results
+
+    def cancel_watch_requests(
+        self, session_id: str, *, now: float, subject: str | None = None
+    ) -> int:
+        query = "UPDATE watch_requests SET state = 'cancelled', updated_at = ? WHERE session_id = ?"
+        parameters: tuple[object, ...] = (now, session_id)
+        if subject is not None:
+            query += " AND subject = ?"
+            parameters += (subject,)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(query + " AND state = 'active'", parameters)
+            connection.commit()
+            return max(cursor.rowcount, 0)
+
+    def subscription(self, session_id: str, subject: str | None = None) -> Subscription | None:
         sql = "SELECT * FROM subscriptions WHERE session_id = ?"
         params: tuple[object, ...] = (session_id,)
-        if diff_id is not None:
-            sql += " AND diff_id = ?"
-            params = (session_id, diff_id)
+        if subject is not None:
+            sql += " AND subject = ?"
+            params = (session_id, subject)
         sql += " ORDER BY id DESC LIMIT 1"
         with self._connect() as connection:
             row = connection.execute(sql, params).fetchone()
@@ -356,23 +545,38 @@ class WatcherRepository:
         session_id: str,
         *,
         states: Iterable[SubscriptionState] | None = None,
+        sources: Iterable[str] | None = None,
     ) -> list[Subscription]:
-        """Every subscription a session owns; one session may watch a stack."""
-        sql = "SELECT * FROM subscriptions WHERE session_id = ?"
+        """Every subscription a session owns; one session may watch a stack.
+
+        ``sources`` scopes the result to subjects owned by particular sources.
+        Reconciliation needs this: the diff reconciler retires whatever a
+        session's labels no longer claim, and must not sweep away a generic
+        watch the labels never described in the first place.
+        """
+        sql = "SELECT s.* FROM subscriptions s WHERE s.session_id = ?"
         params: tuple[object, ...] = (session_id,)
         if states is not None:
             values = tuple(state.value for state in states)
             placeholders = ",".join("?" for _ in values)
-            sql += f" AND state IN ({placeholders})"
-            params = (session_id, *values)
-        sql += " ORDER BY id"
+            sql += f" AND s.state IN ({placeholders})"
+            params += values
+        if sources is not None:
+            names = tuple(sources)
+            placeholders = ",".join("?" for _ in names)
+            sql += (
+                " AND COALESCE((SELECT ws.source FROM watched_subjects ws "
+                f"WHERE ws.subject = s.subject), 'phabricator') IN ({placeholders})"
+            )
+            params += names
+        sql += " ORDER BY s.id"
         with self._connect() as connection:
             rows = connection.execute(sql, params).fetchall()
             return [self._subscription(row) for row in rows]
 
     def subscriptions_for_diff(
         self,
-        diff_id: str,
+        subject: str,
         *,
         states: Iterable[SubscriptionState] = (SubscriptionState.ACTIVE,),
     ) -> list[Subscription]:
@@ -380,9 +584,9 @@ class WatcherRepository:
         placeholders = ",".join("?" for _ in values)
         with self._connect() as connection:
             rows = connection.execute(
-                f"SELECT * FROM subscriptions WHERE diff_id = ? "
+                f"SELECT * FROM subscriptions WHERE subject = ? "
                 f"AND state IN ({placeholders}) ORDER BY id",
-                (diff_id, *values),
+                (subject, *values),
             ).fetchall()
             return [self._subscription(row) for row in rows]
 
@@ -428,9 +632,9 @@ class WatcherRepository:
             self._detach_subscription_from_batches(connection, subscription_id, now)
             connection.commit()
 
-    def apply_snapshot(
+    def apply_poll(
         self,
-        snapshot: DiffSnapshot,
+        result: PollResult,
         *,
         now: float,
         next_poll_at: float,
@@ -440,63 +644,61 @@ class WatcherRepository:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             prior = connection.execute(
-                "SELECT latest_version_id, missing_count FROM watched_diffs WHERE diff_id = ?",
-                (snapshot.diff_id,),
+                "SELECT latest_version_id, missing_count FROM watched_subjects WHERE subject = ?",
+                (result.subject,),
             ).fetchone()
             previous_version = prior["latest_version_id"] if prior is not None else None
             missing_count = int(prior["missing_count"] or 0) if prior is not None else 0
-            if snapshot.lifecycle is DiffLifecycle.MISSING:
+            if result.lifecycle is Lifecycle.MISSING:
                 missing_count += 1
             else:
                 missing_count = 0
             self._upsert_watch(
                 connection,
-                snapshot,
+                result,
                 now=now,
                 next_poll_at=next_poll_at,
                 missing_count=missing_count,
-                reset_failure_count=(
-                    snapshot.comments.status == "ok" and snapshot.ci.status == "ok"
-                ),
+                reset_failure_count=not result.failed_kinds,
             )
-            self._replace_source_components(connection, snapshot, now=now)
-            if previous_version and previous_version != snapshot.latest_version_id:
+            self._replace_source_components(connection, result, now=now)
+            if (
+                previous_version
+                and previous_version != result.latest_version_id
+                and result.version_scoped_kinds
+            ):
+                placeholders = ",".join("?" for _ in result.version_scoped_kinds)
                 connection.execute(
                     "UPDATE source_events SET actionable = 0, last_seen_at = ? "
-                    "WHERE diff_id = ? AND kind IN (?, ?) AND version_id != ?",
+                    f"WHERE subject = ? AND kind IN ({placeholders}) AND version_id != ?",
                     (
                         now,
-                        snapshot.diff_id,
-                        EventKind.CI_FAILURE.value,
-                        EventKind.CI_GREEN.value,
-                        snapshot.latest_version_id or "",
+                        result.subject,
+                        *sorted(kind.value for kind in result.version_scoped_kinds),
+                        result.latest_version_id or "",
                     ),
                 )
 
             terminal_reason: str | None = None
-            if snapshot.lifecycle in {
-                DiffLifecycle.COMMITTED,
-                DiffLifecycle.ABANDONED,
-                DiffLifecycle.REVERTED,
-            }:
-                terminal_reason = snapshot.lifecycle.value
-            elif snapshot.lifecycle is DiffLifecycle.MISSING and missing_count >= 2:
+            if result.lifecycle is Lifecycle.TERMINAL:
+                terminal_reason = result.state_label
+            elif result.lifecycle is Lifecycle.MISSING and missing_count >= 2:
                 terminal_reason = "missing"
             if terminal_reason is not None:
-                self._retire_diff_locked(connection, snapshot.diff_id, terminal_reason, now)
+                self._retire_diff_locked(connection, result.subject, terminal_reason, now)
                 connection.commit()
                 return 0
 
             added = 0
             subscriptions = connection.execute(
-                "SELECT * FROM subscriptions WHERE diff_id = ? AND state = 'active'",
-                (snapshot.diff_id,),
+                "SELECT * FROM subscriptions WHERE subject = ? AND state = 'active'",
+                (result.subject,),
             ).fetchall()
             for subscription in subscriptions:
                 selected = set(json.loads(subscription["event_types"]))
                 events = connection.execute(
-                    "SELECT * FROM source_events WHERE diff_id = ? AND actionable = 1",
-                    (snapshot.diff_id,),
+                    "SELECT * FROM source_events WHERE subject = ? AND actionable = 1",
+                    (result.subject,),
                 ).fetchall()
                 qualifying = [
                     event
@@ -538,17 +740,17 @@ class WatcherRepository:
                     )
                 for event in qualifying:
                     connection.execute(
-                        "DELETE FROM batch_events WHERE batch_id = ? AND diff_id = ? "
+                        "DELETE FROM batch_events WHERE batch_id = ? AND subject = ? "
                         "AND kind = ? AND external_id = ?",
-                        (batch_id, snapshot.diff_id, event["kind"], event["external_id"]),
+                        (batch_id, result.subject, event["kind"], event["external_id"]),
                     )
                     cursor = connection.execute(
                         "INSERT OR IGNORE INTO batch_events "
-                        "(batch_id, diff_id, kind, external_id, fingerprint) "
+                        "(batch_id, subject, kind, external_id, fingerprint) "
                         "VALUES (?, ?, ?, ?, ?)",
                         (
                             batch_id,
-                            snapshot.diff_id,
+                            result.subject,
                             event["kind"],
                             event["external_id"],
                             event["fingerprint"],
@@ -561,26 +763,28 @@ class WatcherRepository:
     def _replace_source_components(
         self,
         connection: sqlite3.Connection,
-        snapshot: DiffSnapshot,
+        result: PollResult,
         *,
         now: float,
     ) -> None:
-        from .logic import normalize_snapshot
-
-        for kind, events in normalize_snapshot(snapshot).items():
+        # Only kinds the source read authoritatively are replaced. A kind that
+        # failed this poll keeps its last known events rather than being
+        # cleared, so a transient source error cannot look like a resolution.
+        for kind in result.ok_kinds:
+            events = result.events.get(kind, ())
             connection.execute(
                 "UPDATE source_events SET actionable = 0, last_seen_at = ? "
-                "WHERE diff_id = ? AND kind = ?",
-                (now, snapshot.diff_id, kind.value),
+                "WHERE subject = ? AND kind = ?",
+                (now, result.subject, kind.value),
             )
             for event in events:
                 self._upsert_source_event(connection, event, now=now)
             connection.execute(
                 "DELETE FROM subscription_events WHERE kind = ? "
-                "AND subscription_id IN (SELECT id FROM subscriptions WHERE diff_id = ?) "
+                "AND subscription_id IN (SELECT id FROM subscriptions WHERE subject = ?) "
                 "AND external_id IN (SELECT external_id FROM source_events "
-                "WHERE diff_id = ? AND kind = ? AND actionable = 0)",
-                (kind.value, snapshot.diff_id, snapshot.diff_id, kind.value),
+                "WHERE subject = ? AND kind = ? AND actionable = 0)",
+                (kind.value, result.subject, result.subject, kind.value),
             )
 
     @staticmethod
@@ -592,8 +796,8 @@ class WatcherRepository:
     ) -> None:
         existing = connection.execute(
             "SELECT fingerprint, first_seen_at, last_changed_at FROM source_events "
-            "WHERE diff_id = ? AND kind = ? AND external_id = ?",
-            (event.diff_id, event.kind.value, event.external_id),
+            "WHERE subject = ? AND kind = ? AND external_id = ?",
+            (event.subject, event.kind.value, event.external_id),
         ).fetchone()
         # Discovery time is authoritative for watcher ordering. External
         # timestamps may be skewed or rounded, so a newly observed fingerprint
@@ -604,15 +808,15 @@ class WatcherRepository:
         first_seen_at = float(existing["first_seen_at"]) if existing is not None else now
         connection.execute(
             "INSERT INTO source_events "
-            "(diff_id, kind, external_id, version_id, fingerprint, actionable, "
+            "(subject, kind, external_id, version_id, fingerprint, actionable, "
             "first_seen_at, last_changed_at, last_seen_at) "
             "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?) "
-            "ON CONFLICT(diff_id, kind, external_id) DO UPDATE SET "
+            "ON CONFLICT(subject, kind, external_id) DO UPDATE SET "
             "version_id = excluded.version_id, fingerprint = excluded.fingerprint, "
             "actionable = 1, last_changed_at = excluded.last_changed_at, "
             "last_seen_at = excluded.last_seen_at",
             (
-                event.diff_id,
+                event.subject,
                 event.kind.value,
                 event.external_id,
                 event.version_id,
@@ -640,7 +844,7 @@ class WatcherRepository:
             "AND external_id = ? AND fingerprint = ? UNION ALL "
             "SELECT 1 FROM batch_events be JOIN batches b ON b.batch_id = be.batch_id "
             "JOIN subscriptions s ON s.session_id = b.session_id "
-            "WHERE s.id = ? AND be.diff_id = s.diff_id "
+            "WHERE s.id = ? AND be.subject = s.subject "
             "AND b.state IN ('open', 'delivering') "
             "AND be.kind = ? "
             "AND be.external_id = ? AND be.fingerprint = ? LIMIT 1",
@@ -669,7 +873,7 @@ class WatcherRepository:
     @staticmethod
     def _batch_diff_ids(connection: sqlite3.Connection, batch_id: str) -> tuple[str, ...]:
         rows = connection.execute(
-            "SELECT DISTINCT diff_id FROM batch_events WHERE batch_id = ? ORDER BY diff_id",
+            "SELECT DISTINCT subject FROM batch_events WHERE batch_id = ? ORDER BY subject",
             (batch_id,),
         ).fetchall()
         return tuple(str(row[0]) for row in rows)
@@ -732,7 +936,7 @@ class WatcherRepository:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 "DELETE FROM batch_events WHERE batch_id = ? AND NOT EXISTS ("
-                "SELECT 1 FROM source_events se WHERE se.diff_id = batch_events.diff_id "
+                "SELECT 1 FROM source_events se WHERE se.subject = batch_events.subject "
                 "AND se.kind = batch_events.kind AND se.external_id = batch_events.external_id "
                 "AND se.fingerprint = batch_events.fingerprint AND se.actionable = 1)",
                 (batch_id,),
@@ -746,9 +950,12 @@ class WatcherRepository:
                 connection.commit()
                 return None
             per_diff: dict[str, dict[EventKind, int]] = {}
+            sources: dict[str, str] = {}
             for event_row in connection.execute(
-                "SELECT diff_id, kind, COUNT(*) AS count FROM batch_events "
-                "WHERE batch_id = ? GROUP BY diff_id, kind ORDER BY diff_id",
+                "SELECT be.subject AS subject, be.kind AS kind, COUNT(*) AS count, "
+                "COALESCE(ws.source, 'phabricator') AS source FROM batch_events be "
+                "LEFT JOIN watched_subjects ws ON ws.subject = be.subject "
+                "WHERE be.batch_id = ? GROUP BY be.subject, be.kind ORDER BY be.subject",
                 (batch_id,),
             ).fetchall():
                 # A kind written by a newer build is ignored rather than fatal,
@@ -757,7 +964,9 @@ class WatcherRepository:
                     kind = EventKind(str(event_row["kind"]))
                 except ValueError:
                     continue
-                bucket = per_diff.setdefault(str(event_row["diff_id"]), {})
+                subject = str(event_row["subject"])
+                sources[subject] = str(event_row["source"])
+                bucket = per_diff.setdefault(subject, {})
                 bucket[kind] = int(event_row["count"])
             totals: dict[EventKind, int] = {}
             for bucket in per_diff.values():
@@ -772,7 +981,10 @@ class WatcherRepository:
                 return None
             summary = render_batch_summary(
                 batch_id,
-                [(diff_id, bucket) for diff_id, bucket in per_diff.items()],
+                [
+                    (sources.get(subject, "phabricator"), subject, bucket)
+                    for subject, bucket in per_diff.items()
+                ],
             )
             connection.execute(
                 "UPDATE batches SET state = 'delivering', summary = ?, updated_at = ? "
@@ -807,7 +1019,7 @@ class WatcherRepository:
                     "(subscription_id, kind, external_id, fingerprint, handled_at) "
                     "SELECT s.id, be.kind, be.external_id, be.fingerprint, ? "
                     "FROM batch_events be JOIN subscriptions s "
-                    "ON s.session_id = ? AND s.diff_id = be.diff_id "
+                    "ON s.session_id = ? AND s.subject = be.subject "
                     "WHERE be.batch_id = ?",
                     (now, session_id, batch_id),
                 )
@@ -832,22 +1044,22 @@ class WatcherRepository:
         owner: str,
         lease_seconds: float,
         limit: int,
-    ) -> list[WatchedDiff]:
+    ) -> list[WatchedSubject]:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
-                "SELECT wd.* FROM watched_diffs wd WHERE wd.next_poll_at <= ? "
+                "SELECT wd.* FROM watched_subjects wd WHERE wd.next_poll_at <= ? "
                 "AND (wd.lease_until IS NULL OR wd.lease_until <= ?) AND EXISTS ("
-                "SELECT 1 FROM subscriptions s WHERE s.diff_id = wd.diff_id "
+                "SELECT 1 FROM subscriptions s WHERE s.subject = wd.subject "
                 "AND s.state = 'active') ORDER BY wd.next_poll_at LIMIT ?",
                 (now, now, limit),
             ).fetchall()
-            claimed: list[WatchedDiff] = []
+            claimed: list[WatchedSubject] = []
             for row in rows:
                 cursor = connection.execute(
-                    "UPDATE watched_diffs SET lease_owner = ?, lease_until = ? "
-                    "WHERE diff_id = ? AND (lease_until IS NULL OR lease_until <= ?)",
-                    (owner, now + lease_seconds, row["diff_id"], now),
+                    "UPDATE watched_subjects SET lease_owner = ?, lease_until = ? "
+                    "WHERE subject = ? AND (lease_until IS NULL OR lease_until <= ?)",
+                    (owner, now + lease_seconds, row["subject"], now),
                 )
                 if cursor.rowcount == 1:
                     claimed.append(self._watch(row))
@@ -856,56 +1068,56 @@ class WatcherRepository:
 
     def claim_watch(
         self,
-        diff_id: str,
+        subject: str,
         *,
         now: float,
         owner: str,
         lease_seconds: float,
-    ) -> WatchedDiff | None:
+    ) -> WatchedSubject | None:
         """Claim a specific diff for flush-time revalidation."""
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT * FROM watched_diffs WHERE diff_id = ? AND "
+                "SELECT * FROM watched_subjects WHERE subject = ? AND "
                 "(lease_until IS NULL OR lease_until <= ?)",
-                (diff_id, now),
+                (subject, now),
             ).fetchone()
             if row is None:
                 connection.commit()
                 return None
             cursor = connection.execute(
-                "UPDATE watched_diffs SET lease_owner = ?, lease_until = ? "
-                "WHERE diff_id = ? AND (lease_until IS NULL OR lease_until <= ?)",
-                (owner, now + lease_seconds, diff_id, now),
+                "UPDATE watched_subjects SET lease_owner = ?, lease_until = ? "
+                "WHERE subject = ? AND (lease_until IS NULL OR lease_until <= ?)",
+                (owner, now + lease_seconds, subject, now),
             )
             connection.commit()
             return self._watch(row) if cursor.rowcount == 1 else None
 
-    def poll_failed(self, diff_id: str, owner: str, *, next_poll_at: float) -> None:
+    def poll_failed(self, subject: str, owner: str, *, next_poll_at: float) -> None:
         with self._connect() as connection:
             connection.execute(
-                "UPDATE watched_diffs SET failure_count = failure_count + 1, "
+                "UPDATE watched_subjects SET failure_count = failure_count + 1, "
                 "next_poll_at = ?, lease_owner = NULL, lease_until = NULL "
-                "WHERE diff_id = ? AND lease_owner = ?",
-                (next_poll_at, diff_id, owner),
+                "WHERE subject = ? AND lease_owner = ?",
+                (next_poll_at, subject, owner),
             )
 
-    def partial_poll_failed(self, diff_id: str, *, next_poll_at: float) -> None:
+    def partial_poll_failed(self, subject: str, *, next_poll_at: float) -> None:
         """Back off after persisting only the source components that succeeded."""
 
         with self._connect() as connection:
             connection.execute(
-                "UPDATE watched_diffs SET failure_count = failure_count + 1, "
-                "next_poll_at = ? WHERE diff_id = ?",
-                (next_poll_at, diff_id),
+                "UPDATE watched_subjects SET failure_count = failure_count + 1, "
+                "next_poll_at = ? WHERE subject = ?",
+                (next_poll_at, subject),
             )
 
-    def release_lease(self, diff_id: str, owner: str) -> None:
+    def release_lease(self, subject: str, owner: str) -> None:
         with self._connect() as connection:
             connection.execute(
-                "UPDATE watched_diffs SET lease_owner = NULL, lease_until = NULL "
-                "WHERE diff_id = ? AND lease_owner = ?",
-                (diff_id, owner),
+                "UPDATE watched_subjects SET lease_owner = NULL, lease_until = NULL "
+                "WHERE subject = ? AND lease_owner = ?",
+                (subject, owner),
             )
 
     def release_owner_leases(self, owner: str) -> None:
@@ -913,7 +1125,7 @@ class WatcherRepository:
 
         with self._connect() as connection:
             connection.execute(
-                "UPDATE watched_diffs SET lease_owner = NULL, lease_until = NULL "
+                "UPDATE watched_subjects SET lease_owner = NULL, lease_until = NULL "
                 "WHERE lease_owner = ?",
                 (owner,),
             )
@@ -929,8 +1141,8 @@ class WatcherRepository:
         with self._connect() as connection:
             candidates: list[float] = []
             poll = connection.execute(
-                "SELECT MIN(wd.next_poll_at) FROM watched_diffs wd WHERE EXISTS ("
-                "SELECT 1 FROM subscriptions s WHERE s.diff_id = wd.diff_id "
+                "SELECT MIN(wd.next_poll_at) FROM watched_subjects wd WHERE EXISTS ("
+                "SELECT 1 FROM subscriptions s WHERE s.subject = wd.subject "
                 "AND s.state = 'active')"
             ).fetchone()[0]
             if poll is not None:
@@ -992,7 +1204,7 @@ class WatcherRepository:
             recovered_diff_ids = [
                 str(row[0])
                 for row in connection.execute(
-                    "SELECT DISTINCT diff_id FROM subscriptions WHERE session_id = ? "
+                    "SELECT DISTINCT subject FROM subscriptions WHERE session_id = ? "
                     "AND state = 'suspended'",
                     (session_id,),
                 ).fetchall()
@@ -1005,8 +1217,8 @@ class WatcherRepository:
                 (now, now, session_id),
             )
             connection.executemany(
-                "UPDATE watched_diffs SET next_poll_at = MIN(next_poll_at, ?) WHERE diff_id = ?",
-                [(now, diff_id) for diff_id in recovered_diff_ids],
+                "UPDATE watched_subjects SET next_poll_at = MIN(next_poll_at, ?) WHERE subject = ?",
+                [(now, subject) for subject in recovered_diff_ids],
             )
             connection.commit()
             return cursor.rowcount > 0
@@ -1040,7 +1252,7 @@ class WatcherRepository:
             connection.execute(
                 "DELETE FROM source_events WHERE actionable = 0 AND last_seen_at < ? "
                 "AND NOT EXISTS (SELECT 1 FROM batch_events be WHERE "
-                "be.diff_id = source_events.diff_id AND be.kind = source_events.kind "
+                "be.subject = source_events.subject AND be.kind = source_events.kind "
                 "AND be.external_id = source_events.external_id)",
                 (cutoff,),
             )
@@ -1050,11 +1262,11 @@ class WatcherRepository:
             )
             connection.execute(
                 "DELETE FROM source_events WHERE NOT EXISTS ("
-                "SELECT 1 FROM subscriptions s WHERE s.diff_id = source_events.diff_id)",
+                "SELECT 1 FROM subscriptions s WHERE s.subject = source_events.subject)",
             )
             connection.execute(
-                "DELETE FROM watched_diffs WHERE NOT EXISTS ("
-                "SELECT 1 FROM subscriptions s WHERE s.diff_id = watched_diffs.diff_id)",
+                "DELETE FROM watched_subjects WHERE NOT EXISTS ("
+                "SELECT 1 FROM subscriptions s WHERE s.subject = watched_subjects.subject)",
             )
             connection.commit()
 
@@ -1068,9 +1280,9 @@ class WatcherRepository:
                         (state.value,),
                     ).fetchone()[0]
                 )
-            result["watched_diffs"] = int(
+            result["watched_subjects"] = int(
                 connection.execute(
-                    "SELECT COUNT(DISTINCT diff_id) FROM subscriptions WHERE state != 'retired'"
+                    "SELECT COUNT(DISTINCT subject) FROM subscriptions WHERE state != 'retired'"
                 ).fetchone()[0]
             )
             result["open_batches"] = int(
@@ -1080,14 +1292,14 @@ class WatcherRepository:
             )
             result["source_failed_watches"] = int(
                 connection.execute(
-                    "SELECT COUNT(*) FROM watched_diffs WHERE failure_count > 0 "
+                    "SELECT COUNT(*) FROM watched_subjects WHERE failure_count > 0 "
                     "AND EXISTS (SELECT 1 FROM subscriptions s "
-                    "WHERE s.diff_id = watched_diffs.diff_id AND s.state = 'active')"
+                    "WHERE s.subject = watched_subjects.subject AND s.state = 'active')"
                 ).fetchone()[0]
             )
             result["source_failure_streak"] = int(
                 connection.execute(
-                    "SELECT COALESCE(MAX(failure_count), 0) FROM watched_diffs"
+                    "SELECT COALESCE(MAX(failure_count), 0) FROM watched_subjects"
                 ).fetchone()[0]
             )
             return result
@@ -1102,46 +1314,40 @@ class WatcherRepository:
     @staticmethod
     def _upsert_watch(
         connection: sqlite3.Connection,
-        snapshot: DiffSnapshot,
+        result: PollResult,
         *,
         now: float,
         next_poll_at: float,
         missing_count: int = 0,
         reset_failure_count: bool = True,
+        spec: str | None = None,
     ) -> None:
-        previous = connection.execute(
-            "SELECT latest_version_id, comments_cursor, ci_cursor "
-            "FROM watched_diffs WHERE diff_id = ?",
-            (snapshot.diff_id,),
-        ).fetchone()
-        previous_cursor = SourceCursor(
-            latest_version_id=(previous["latest_version_id"] if previous is not None else None),
-            comments=previous["comments_cursor"] if previous is not None else None,
-            ci=previous["ci_cursor"] if previous is not None else None,
-        )
-        cursor = snapshot.cursor(previous_cursor)
+        # ``spec`` is set once, when the subject is first watched, and is not
+        # refreshed by later polls: a poll describes what the subject looks
+        # like, not how to reach it.
         connection.execute(
-            "INSERT INTO watched_diffs "
-            "(diff_id, lifecycle, latest_version_id, last_activity_at, next_poll_at, "
-            "comments_cursor, ci_cursor, ci_state, failure_count, last_success_at, "
-            "missing_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?) "
-            "ON CONFLICT(diff_id) DO UPDATE SET lifecycle = excluded.lifecycle, "
+            "INSERT INTO watched_subjects "
+            "(subject, source, lifecycle, latest_version_id, last_activity_at, next_poll_at, "
+            "cursor, spec, source_status, failure_count, last_success_at, "
+            "missing_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?) "
+            "ON CONFLICT(subject) DO UPDATE SET lifecycle = excluded.lifecycle, "
             "latest_version_id = excluded.latest_version_id, "
             "last_activity_at = excluded.last_activity_at, next_poll_at = excluded.next_poll_at, "
-            "comments_cursor = excluded.comments_cursor, ci_cursor = excluded.ci_cursor, "
-            "ci_state = excluded.ci_state, failure_count = CASE WHEN ? "
-            "THEN 0 ELSE watched_diffs.failure_count END, "
+            "cursor = excluded.cursor, "
+            "source_status = excluded.source_status, failure_count = CASE WHEN ? "
+            "THEN 0 ELSE watched_subjects.failure_count END, "
             "last_success_at = excluded.last_success_at, missing_count = excluded.missing_count, "
             "lease_owner = NULL, lease_until = NULL",
             (
-                snapshot.diff_id,
-                snapshot.lifecycle.value,
-                snapshot.latest_version_id,
-                snapshot.last_activity_at.timestamp(),
+                result.subject,
+                result.source,
+                result.state_label,
+                result.latest_version_id,
+                result.last_activity_at.timestamp(),
                 next_poll_at,
-                cursor.comments,
-                cursor.ci,
-                snapshot.ci.aggregate.value,
+                result.cursor,
+                spec,
+                result.status,
                 now,
                 missing_count,
                 int(reset_failure_count),
@@ -1151,13 +1357,13 @@ class WatcherRepository:
     @staticmethod
     def _retire_diff_locked(
         connection: sqlite3.Connection,
-        diff_id: str,
+        subject: str,
         reason: str,
         now: float,
     ) -> None:
         rows = connection.execute(
-            "SELECT id FROM subscriptions WHERE diff_id = ? AND state != 'retired'",
-            (diff_id,),
+            "SELECT id FROM subscriptions WHERE subject = ? AND state != 'retired'",
+            (subject,),
         ).fetchall()
         for row in rows:
             WatcherRepository._retire_subscription_locked(connection, int(row["id"]), reason, now)
@@ -1189,16 +1395,16 @@ class WatcherRepository:
         and cancel the batch if that empties it.
         """
         row = connection.execute(
-            "SELECT session_id, diff_id FROM subscriptions WHERE id = ?",
+            "SELECT session_id, subject FROM subscriptions WHERE id = ?",
             (subscription_id,),
         ).fetchone()
         if row is None:
             return
         connection.execute(
-            "DELETE FROM batch_events WHERE diff_id = ? AND batch_id IN "
+            "DELETE FROM batch_events WHERE subject = ? AND batch_id IN "
             "(SELECT batch_id FROM batches WHERE session_id = ? "
             "AND state IN ('open', 'delivering'))",
-            (str(row["diff_id"]), str(row["session_id"])),
+            (str(row["subject"]), str(row["session_id"])),
         )
         connection.execute(
             "UPDATE batches SET state = 'cancelled', updated_at = ? "
@@ -1212,7 +1418,7 @@ class WatcherRepository:
         return Subscription(
             id=int(row["id"]),
             session_id=str(row["session_id"]),
-            diff_id=str(row["diff_id"]),
+            subject=str(row["subject"]),
             event_types=frozenset(EventKind(value) for value in json.loads(row["event_types"])),
             state=SubscriptionState(row["state"]),
             baseline_at=float(row["baseline_at"]),
@@ -1226,11 +1432,11 @@ class WatcherRepository:
         )
 
     @staticmethod
-    def _batch(row: sqlite3.Row, diff_ids: tuple[str, ...]) -> Batch:
+    def _batch(row: sqlite3.Row, subjects: tuple[str, ...]) -> Batch:
         return Batch(
             batch_id=str(row["batch_id"]),
             session_id=str(row["session_id"]),
-            diff_ids=diff_ids,
+            subjects=subjects,
             state=BatchState(row["state"]),
             first_event_at=float(row["first_event_at"]),
             flush_at=float(row["flush_at"]),
@@ -1240,18 +1446,16 @@ class WatcherRepository:
         )
 
     @staticmethod
-    def _watch(row: sqlite3.Row) -> WatchedDiff:
-        return WatchedDiff(
-            diff_id=str(row["diff_id"]),
+    def _watch(row: sqlite3.Row) -> WatchedSubject:
+        return WatchedSubject(
+            subject=str(row["subject"]),
+            source=str(row["source"]),
             lifecycle=str(row["lifecycle"]),
             latest_version_id=row["latest_version_id"],
             last_activity_at=float(row["last_activity_at"]),
             next_poll_at=float(row["next_poll_at"]),
-            cursor=SourceCursor(
-                latest_version_id=row["latest_version_id"],
-                comments=row["comments_cursor"],
-                ci=row["ci_cursor"],
-            ),
+            cursor=row["cursor"],
+            spec=row["spec"],
             failure_count=int(row["failure_count"]),
             last_success_at=(
                 float(row["last_success_at"]) if row["last_success_at"] is not None else None

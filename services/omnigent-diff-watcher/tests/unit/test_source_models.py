@@ -29,7 +29,7 @@ SYNTHETIC_DIFF_IDS = {f"D9000000{index}" for index in range(1, 7)}
 def test_parse_sanitized_fixture(fixture_name: str) -> None:
     snapshot = DiffSnapshot.model_validate_json((FIXTURES / fixture_name).read_bytes())
 
-    assert snapshot.diff_id in SYNTHETIC_DIFF_IDS
+    assert snapshot.subject in SYNTHETIC_DIFF_IDS
     assert snapshot.observed_at.tzinfo is not None
 
 

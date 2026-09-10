@@ -12,7 +12,7 @@ from omnigent_diff_watcher.domain import (
     Subscription,
     SubscriptionState,
 )
-from omnigent_diff_watcher.logic import (
+from omnigent_diff_watcher.phabricator_source import (
     normalize_snapshot,
 )
 from omnigent_diff_watcher.repository import (
@@ -27,10 +27,13 @@ from omnigent_diff_watcher.source_models import (
     DiffLifecycle,
     DiffSnapshot,
     ReviewComment,
+    SourceCursor,
 )
 from tests.support import (
     FakeClock,
+    apply_snapshot,
     fixture,
+    subscribe_snapshot,
 )
 
 
@@ -43,7 +46,8 @@ def _subscribe(
     clock: FakeClock,
     session_id: str = "session-1",
 ) -> Subscription:
-    return repo.subscribe(
+    return subscribe_snapshot(
+        repo,
         session_id,
         "D90000001",
         DEFAULT_EVENT_TYPES,
@@ -77,7 +81,7 @@ def _new_comment_snapshot(clock: FakeClock) -> DiffSnapshot:
 
 def test_schema_migration_and_newer_schema_rejection(tmp_path: Path) -> None:
     path = tmp_path / "watcher.sqlite3"
-    assert WatcherRepository(path).schema_version() == 2
+    assert WatcherRepository(path).schema_version() == 3
     assert path.stat().st_mode & 0o777 == 0o600
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA user_version=99")
@@ -90,7 +94,8 @@ def test_subscribe_and_unsubscribe_are_idempotent_and_session_scoped(
 ) -> None:
     repo = _repository(tmp_path)
     clock = FakeClock()
-    first, created = repo.subscribe(
+    first, created = subscribe_snapshot(
+        repo,
         "session-1",
         "D90000001",
         DEFAULT_EVENT_TYPES,
@@ -98,7 +103,8 @@ def test_subscribe_and_unsubscribe_are_idempotent_and_session_scoped(
         now=clock.now().timestamp(),
         next_poll_at=clock.now().timestamp() + 60,
     )
-    second, created_again = repo.subscribe(
+    second, created_again = subscribe_snapshot(
+        repo,
         "session-1",
         "D90000001",
         DEFAULT_EVENT_TYPES,
@@ -118,8 +124,9 @@ def test_subscribe_and_unsubscribe_are_idempotent_and_session_scoped(
 def test_baseline_suppresses_existing_comment_and_ci(tmp_path: Path) -> None:
     repo = _repository(tmp_path)
     clock = FakeClock()
-    snapshot = fixture("failing").model_copy(update={"diff_id": "D90000001"})
-    repo.subscribe(
+    snapshot = fixture("failing").model_copy(update={"subject": "D90000001"})
+    subscribe_snapshot(
+        repo,
         "session-1",
         "D90000001",
         DEFAULT_EVENT_TYPES,
@@ -129,7 +136,8 @@ def test_baseline_suppresses_existing_comment_and_ci(tmp_path: Path) -> None:
     )
     clock.advance(60)
     assert (
-        repo.apply_snapshot(
+        apply_snapshot(
+            repo,
             snapshot,
             now=clock.now().timestamp(),
             next_poll_at=clock.now().timestamp() + 60,
@@ -146,7 +154,8 @@ def test_first_event_fixes_flush_and_comment_ci_share_batch(tmp_path: Path) -> N
     clock.advance(60)
     comment_snapshot = _new_comment_snapshot(clock)
     assert (
-        repo.apply_snapshot(
+        apply_snapshot(
+            repo,
             comment_snapshot,
             now=clock.now().timestamp(),
             next_poll_at=clock.now().timestamp() + 60,
@@ -172,7 +181,8 @@ def test_first_event_fixes_flush_and_comment_ci_share_batch(tmp_path: Path) -> N
     )
     combined = comment_snapshot.model_copy(update={"observed_at": clock.now(), "ci": ci})
     assert (
-        repo.apply_snapshot(
+        apply_snapshot(
+            repo,
             combined,
             now=clock.now().timestamp(),
             next_poll_at=clock.now().timestamp() + 60,
@@ -198,7 +208,8 @@ def test_resolution_before_flush_drops_empty_batch(tmp_path: Path) -> None:
     subscription = _subscribe(repo, clock)
     clock.advance(60)
     snapshot = _new_comment_snapshot(clock)
-    repo.apply_snapshot(
+    apply_snapshot(
+        repo,
         snapshot,
         now=clock.now().timestamp(),
         next_poll_at=clock.now().timestamp() + 60,
@@ -218,7 +229,8 @@ def test_resolution_before_flush_drops_empty_batch(tmp_path: Path) -> None:
             ),
         }
     )
-    repo.apply_snapshot(
+    apply_snapshot(
+        repo,
         resolved,
         now=clock.now().timestamp(),
         next_poll_at=clock.now().timestamp() + 60,
@@ -248,7 +260,8 @@ def test_material_edit_qualifies_once(tmp_path: Path) -> None:
         }
     )
     assert (
-        repo.apply_snapshot(
+        apply_snapshot(
+            repo,
             snapshot,
             now=clock.now().timestamp(),
             next_poll_at=clock.now().timestamp() + 60,
@@ -257,7 +270,8 @@ def test_material_edit_qualifies_once(tmp_path: Path) -> None:
         == 1
     )
     assert (
-        repo.apply_snapshot(
+        apply_snapshot(
+            repo,
             snapshot,
             now=clock.now().timestamp() + 1,
             next_poll_at=clock.now().timestamp() + 61,
@@ -275,12 +289,13 @@ def test_terminal_diff_retires_subscription(tmp_path: Path, lifecycle: str) -> N
     subscription = _subscribe(repo, clock)
     terminal = fixture("committed").model_copy(
         update={
-            "diff_id": "D90000001",
+            "subject": "D90000001",
             "lifecycle": DiffLifecycle(lifecycle),
             "latest_version_id": fixture("active").latest_version_id,
         }
     )
-    repo.apply_snapshot(
+    apply_snapshot(
+        repo,
         terminal,
         now=clock.now().timestamp(),
         next_poll_at=clock.now().timestamp() + 60,
@@ -297,7 +312,7 @@ def test_two_schedulers_cannot_claim_same_diff(tmp_path: Path) -> None:
     now = clock.now().timestamp() + 61
     first = repo.claim_due_watches(now=now, owner="one", lease_seconds=120, limit=2)
     second = repo.claim_due_watches(now=now, owner="two", lease_seconds=120, limit=2)
-    assert [watch.diff_id for watch in first] == ["D90000001"]
+    assert [watch.subject for watch in first] == ["D90000001"]
     assert second == []
 
 
@@ -359,7 +374,8 @@ def test_delivered_fingerprint_survives_batch_retention(tmp_path: Path) -> None:
     subscription = _subscribe(repo, clock)
     snapshot = _new_comment_snapshot(clock)
     observed = clock.now().timestamp() + 60
-    repo.apply_snapshot(
+    apply_snapshot(
+        repo,
         snapshot,
         now=observed,
         next_poll_at=observed + 60,
@@ -371,7 +387,8 @@ def test_delivered_fingerprint_survives_batch_retention(tmp_path: Path) -> None:
     repo.deliver_batch(batch.batch_id, now=observed + 6)
     repo.prune(now=observed + 107, retention_seconds=100)
 
-    repo.apply_snapshot(
+    apply_snapshot(
+        repo,
         snapshot,
         now=observed + 108,
         next_poll_at=observed + 168,
@@ -386,9 +403,10 @@ def test_non_actionable_interval_allows_one_recurrence(tmp_path: Path) -> None:
     repo = _repository(tmp_path)
     clock = FakeClock()
     subscription = _subscribe(repo, clock)
-    failing = fixture("failing").model_copy(update={"diff_id": "D90000001"})
+    failing = fixture("failing").model_copy(update={"subject": "D90000001"})
     observed = clock.now().timestamp() + 60
-    repo.apply_snapshot(
+    apply_snapshot(
+        repo,
         failing,
         now=observed,
         next_poll_at=observed + 60,
@@ -401,17 +419,19 @@ def test_non_actionable_interval_allows_one_recurrence(tmp_path: Path) -> None:
 
     green = fixture("green").model_copy(
         update={
-            "diff_id": "D90000001",
+            "subject": "D90000001",
             "latest_version_id": failing.latest_version_id,
         }
     )
-    repo.apply_snapshot(
+    apply_snapshot(
+        repo,
         green,
         now=observed + 7,
         next_poll_at=observed + 67,
         batch_window_seconds=5,
     )
-    repo.apply_snapshot(
+    apply_snapshot(
+        repo,
         failing,
         now=observed + 8,
         next_poll_at=observed + 68,
@@ -427,8 +447,9 @@ def test_expanding_event_preferences_baselines_new_kind(tmp_path: Path) -> None:
     repo = _repository(tmp_path)
     clock = FakeClock()
     comments_only = frozenset({EventKind.REVIEW_COMMENT})
-    partial = fixture("partial_failure").model_copy(update={"diff_id": "D90000001"})
-    repo.subscribe(
+    partial = fixture("partial_failure").model_copy(update={"subject": "D90000001"})
+    subscribe_snapshot(
+        repo,
         "session-1",
         "D90000001",
         comments_only,
@@ -437,7 +458,8 @@ def test_expanding_event_preferences_baselines_new_kind(tmp_path: Path) -> None:
         next_poll_at=clock.now().timestamp() + 60,
     )
     current_failure = partial.model_copy(update={"ci": fixture("failing").ci})
-    subscription, _ = repo.subscribe(
+    subscription, _ = subscribe_snapshot(
+        repo,
         "session-1",
         "D90000001",
         DEFAULT_EVENT_TYPES,
@@ -446,7 +468,8 @@ def test_expanding_event_preferences_baselines_new_kind(tmp_path: Path) -> None:
         next_poll_at=clock.now().timestamp() + 61,
     )
 
-    repo.apply_snapshot(
+    apply_snapshot(
+        repo,
         current_failure,
         now=clock.now().timestamp() + 62,
         next_poll_at=clock.now().timestamp() + 122,
@@ -463,9 +486,10 @@ def test_partial_failure_advances_only_successful_cursor(tmp_path: Path) -> None
     prior = repo.watch("D90000001")
     assert prior is not None
     partial = fixture("partial_failure").model_copy(
-        update={"diff_id": "D90000001", "latest_version_id": prior.latest_version_id}
+        update={"subject": "D90000001", "latest_version_id": prior.latest_version_id}
     )
-    repo.apply_snapshot(
+    apply_snapshot(
+        repo,
         partial,
         now=clock.now().timestamp() + 60,
         next_poll_at=clock.now().timestamp() + 120,
@@ -473,8 +497,13 @@ def test_partial_failure_advances_only_successful_cursor(tmp_path: Path) -> None
     )
     after = repo.watch("D90000001")
     assert after is not None
-    assert after.cursor.comments == "comments-partial-2"
-    assert after.cursor.ci == prior.cursor.ci
+    # The cursor is opaque to the engine now; assert through the source's
+    # own encoding rather than a typed column.
+    assert SourceCursor.model_validate_json(after.cursor or "").comments == "comments-partial-2"
+    assert (
+        SourceCursor.model_validate_json(after.cursor or "").ci
+        == SourceCursor.model_validate_json(prior.cursor or "").ci
+    )
 
 
 def test_normalizer_omits_pending_green_and_skipped_ci() -> None:
@@ -492,20 +521,21 @@ def test_subscription_resource_constraints_are_transactional(tmp_path: Path) -> 
     repo = _repository(tmp_path)
     clock = FakeClock()
     _subscribe(repo, clock)
-    second = fixture("active").model_copy(update={"diff_id": "D90000002"})
+    second = fixture("active").model_copy(update={"subject": "D90000002"})
 
     with pytest.raises(SubscriptionConstraintError, match="active-diff limit"):
-        repo.subscribe(
+        subscribe_snapshot(
+            repo,
             "session-2",
             "D90000002",
             DEFAULT_EVENT_TYPES,
             second,
             now=clock.now().timestamp(),
             next_poll_at=clock.now().timestamp() + 60,
-            max_active_diffs=1,
+            max_active_subjects=1,
         )
     assert repo.watch("D90000002") is None
-    assert repo.active_diff_count() == 1
+    assert repo.active_subject_count() == 1
 
 
 def test_a_session_may_watch_several_diffs_at_once(tmp_path: Path) -> None:
@@ -513,21 +543,22 @@ def test_a_session_may_watch_several_diffs_at_once(tmp_path: Path) -> None:
     repo = _repository(tmp_path)
     clock = FakeClock()
     _subscribe(repo, clock)
-    second = fixture("active").model_copy(update={"diff_id": "D90000002"})
+    second = fixture("active").model_copy(update={"subject": "D90000002"})
 
-    repo.subscribe(
+    subscribe_snapshot(
+        repo,
         "session-1",
         "D90000002",
         DEFAULT_EVENT_TYPES,
         second,
         now=clock.now().timestamp(),
         next_poll_at=clock.now().timestamp() + 60,
-        max_active_diffs=10,
+        max_active_subjects=10,
     )
 
     rows = repo.subscriptions_for_session("session-1")
-    assert sorted(row.diff_id for row in rows) == ["D90000001", "D90000002"]
-    assert repo.active_diff_count() == 2
+    assert sorted(row.subject for row in rows) == ["D90000001", "D90000002"]
+    assert repo.active_subject_count() == 2
 
 
 def test_recovered_subscription_forces_one_current_poll(tmp_path: Path) -> None:

@@ -48,7 +48,7 @@ async def test_label_subscription_batches_and_posts_one_existing_api_event(
     failing_raw = fixture("failing")
     failing = failing_raw.model_copy(
         update={
-            "diff_id": active.diff_id,
+            "subject": active.subject,
             "latest_version_id": active.latest_version_id,
             "comments": failing_raw.comments.model_copy(
                 update={
@@ -61,7 +61,7 @@ async def test_label_subscription_batches_and_posts_one_existing_api_event(
         }
     )
     committed = fixture("committed").model_copy(
-        update={"diff_id": active.diff_id, "latest_version_id": active.latest_version_id}
+        update={"subject": active.subject, "latest_version_id": active.latest_version_id}
     )
     source = FakeReviewSource(active, failing, failing, committed)
     clock = FakeClock()
@@ -79,7 +79,7 @@ async def test_label_subscription_batches_and_posts_one_existing_api_event(
             delivery_retry_seconds=1,
         ),
     )
-    await watcher.subscribe("conv_watch", active.diff_id, DEFAULT_EVENT_TYPES)
+    await watcher.subscribe("conv_watch", active.subject, DEFAULT_EVENT_TYPES)
 
     clock.advance(2)
     await watcher.run_iteration()

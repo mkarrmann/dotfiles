@@ -11,7 +11,20 @@ from omnigent_diff_watcher.logic import (
     render_batch_summary,
     successful_poll_delay,
 )
+from omnigent_diff_watcher.phabricator_source import to_poll_result
+from omnigent_diff_watcher.source_models import DiffSnapshot
 from tests.support import fixture
+
+
+def _snapshot_delay(snapshot: DiffSnapshot, now: datetime) -> float:
+    """Delay for a diff snapshot, through the real adapter.
+
+    ``successful_poll_delay`` is source-neutral now, so these tests compose it
+    with the Phabricator adapter rather than restating the adapter's decision
+    about when a pending run overrides the idle ladder.
+    """
+    result = to_poll_result(snapshot)
+    return successful_poll_delay(result.last_activity_at, now, result.poll_hint_seconds)
 
 
 @pytest.mark.parametrize(
@@ -28,13 +41,13 @@ from tests.support import fixture
 def test_adaptive_interval_boundaries(idle: timedelta, expected: float) -> None:
     now = datetime(2026, 1, 20, tzinfo=UTC)
     snapshot = fixture("green").model_copy(update={"last_activity_at": now - idle})
-    assert successful_poll_delay(snapshot, now) == expected
+    assert _snapshot_delay(snapshot, now) == expected
 
 
 def test_pending_ci_stays_at_one_minute() -> None:
     snapshot = fixture("active")
     now = snapshot.last_activity_at + timedelta(days=30)
-    assert successful_poll_delay(snapshot, now) == 60
+    assert _snapshot_delay(snapshot, now) == 60
 
 
 def test_jitter_is_stable_and_bounded() -> None:
@@ -54,7 +67,7 @@ def test_failure_backoff_sequence_and_cap() -> None:
 def test_summary_is_concise_and_contains_no_raw_detail() -> None:
     summary = render_batch_summary(
         "dwb_test",
-        [("D90000001", {EventKind.REVIEW_COMMENT: 2, EventKind.CI_FAILURE: 1})],
+        [("phabricator", "D90000001", {EventKind.REVIEW_COMMENT: 2, EventKind.CI_FAILURE: 1})],
     )
     assert summary.startswith("[Diff watcher dwb_test] D90000001")
     assert "2 unresolved review comments" in summary
@@ -68,8 +81,8 @@ def test_summary_covers_every_affected_diff_in_one_wake() -> None:
     summary = render_batch_summary(
         "dwb_test",
         [
-            ("D115903821", {EventKind.CI_FAILURE: 2}),
-            ("D115903819", {EventKind.REVIEW_COMMENT: 1}),
+            ("phabricator", "D115903821", {EventKind.CI_FAILURE: 2}),
+            ("phabricator", "D115903819", {EventKind.REVIEW_COMMENT: 1}),
         ],
     )
     assert "D115903821 has 2 current-version CI failures" in summary
@@ -82,7 +95,7 @@ def test_summary_names_automated_review_findings_distinctly() -> None:
     """An automated finding must not read as a human comment or a CI failure."""
     summary = render_batch_summary(
         "dwb_test",
-        [("D115903819", {EventKind.AI_REVIEW: 2})],
+        [("phabricator", "D115903819", {EventKind.AI_REVIEW: 2})],
     )
     assert "2 unresolved automated-review findings" in summary
     assert "review comment" not in summary
@@ -90,7 +103,9 @@ def test_summary_names_automated_review_findings_distinctly() -> None:
 
 
 def test_summary_reports_a_green_run_without_inventing_a_count() -> None:
-    summary = render_batch_summary("dwb_test", [("D115903819", {EventKind.CI_GREEN: 1})])
+    summary = render_batch_summary(
+        "dwb_test", [("phabricator", "D115903819", {EventKind.CI_GREEN: 1})]
+    )
     assert "D115903819 has CI green" in summary
     assert "1 CI green" not in summary
 
@@ -100,6 +115,7 @@ def test_summary_joins_three_kinds_readably() -> None:
         "dwb_test",
         [
             (
+                "phabricator",
                 "D115903819",
                 {
                     EventKind.REVIEW_COMMENT: 1,
@@ -117,7 +133,10 @@ def test_summary_joins_three_kinds_readably() -> None:
 def test_summary_skips_diffs_with_no_findings() -> None:
     summary = render_batch_summary(
         "dwb_test",
-        [("D115903821", {EventKind.CI_FAILURE: 1}), ("D115903820", {})],
+        [
+            ("phabricator", "D115903821", {EventKind.CI_FAILURE: 1}),
+            ("phabricator", "D115903820", {}),
+        ],
     )
     assert "D115903820" not in summary
     assert "update the diff as needed" in summary
@@ -125,6 +144,6 @@ def test_summary_skips_diffs_with_no_findings() -> None:
 
 def test_summary_rejects_an_entirely_empty_batch() -> None:
     with pytest.raises(ValueError):
-        render_batch_summary("dwb_test", [("D1", {EventKind.CI_FAILURE: 0})])
+        render_batch_summary("dwb_test", [("phabricator", "D1", {EventKind.CI_FAILURE: 0})])
     with pytest.raises(ValueError):
         render_batch_summary("dwb_test", [])

@@ -13,5 +13,5 @@ unavailable_suspend_seconds = 86400
 liveness_probe_seconds = 300
 suspended_liveness_probe_seconds = 21600
 completed_retention_seconds = 2592000
-max_active_diffs = 100
+max_active_subjects = 100
 delivery_retry_seconds = 300
