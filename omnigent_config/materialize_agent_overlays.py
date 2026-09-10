@@ -11,6 +11,9 @@ from pathlib import Path
 import yaml
 
 _PACKAGED_AGENTS = {"polly", "debby"}
+# Both watch surfaces: diff_watch_* for Phabricator diffs, watch_* for anything
+# else a command can report. This is an allowlist, so a tool omitted here is
+# silently invisible to the agent rather than broken.
 _DIFF_WATCH = {
     "type": "mcp",
     "command": "omnigent-diff-watch-mcp",
@@ -18,6 +21,9 @@ _DIFF_WATCH = {
         "diff_watch_subscribe",
         "diff_watch_unsubscribe",
         "diff_watch_status",
+        "watch_subscribe",
+        "watch_unsubscribe",
+        "watch_status",
     ],
 }
 

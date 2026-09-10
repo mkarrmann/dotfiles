@@ -1,5 +1,5 @@
 {
-  "description": "Subscribe the current Omnigent session to review, CI-failure, AI-review, and green-CI notifications for submitted or explicitly selected Phabricator diffs.",
+  "description": "Wake the current Omnigent session when something changes. diff_watch_* subscribes to review, CI-failure, AI-review, and green-CI notifications for submitted or explicitly selected Phabricator diffs; watch_* watches anything else a command can report, such as a JustKnob rollout or a job's status.",
   "agents": ["claude"],
   "mcpServers": {
     "diff_watch": {
