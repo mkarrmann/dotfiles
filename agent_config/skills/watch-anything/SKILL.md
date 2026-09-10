@@ -27,8 +27,19 @@ events. This one knows nothing about its subject and only reports "it changed".
 
 ## Subscribing
 
-The tool is `mcp__diff_watch__watch_subscribe`; match on the suffix. If it is
-absent, say so rather than improvising a polling loop.
+The tool is `mcp__diff_watch__watch_subscribe`; match on the suffix.
+
+**If the tool is absent or its connection is dead, stop and say so.** Do not
+substitute anything for it — not a polling loop, and not driving
+`omnigent-diff-watch-mcp` yourself over stdio. The stdio route does work, which
+is the trap: it registers a real watch while leaving this session unable to
+list or stop it, and it hides a broken deployment that would otherwise get
+fixed. This has happened.
+
+The usual cause is not a broken server. A harness binds its MCP servers once,
+at session start, so a server that was installed or repaired *during* this
+session stays dead here no matter how healthy it is. **A new session is the
+fix**, and saying that is more useful than working around it.
 
 ```
 watch_subscribe(
@@ -40,11 +51,14 @@ watch_subscribe(
 )
 ```
 
-- **`session_id`** is the session to wake. Call `sys_session_get_info` and pass
-  the `session_id` it reports. If you are a subagent that will not outlive the
-  watch, pass its `parent_session_id` instead — otherwise the wake is delivered
-  to a session that no longer exists, which is the one way to register a watch
-  that fires correctly and still reaches nobody.
+- **`session_id`** is the **Omnigent** session to wake — call
+  `sys_session_get_info` and pass the `session_id` it reports. It is not your
+  harness's own session id: a Claude Code or Codex session id is a different
+  identifier, sitting right there in your environment, and passing it is the
+  natural mistake. The tool rejects it, but only after a round trip. If you are
+  a subagent that will not outlive the watch, pass `parent_session_id` instead
+  — otherwise the wake goes to a session that no longer exists, which is the
+  one way to register a watch that fires correctly and still reaches nobody.
 - **`subject`** must be namespaced `<prefix>:<identifier>`. It is the watch's
   identity, and the namespace is what keeps it from colliding with a diff id.
 - **`command`** is an argv list, run directly — never through a shell. Pipes,

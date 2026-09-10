@@ -15,8 +15,15 @@ description: >-
 Subscribe with the available `diff_watch_subscribe` tool only when all of these
 hold. The harnesses namespace it differently: the Omnigent SDK harnesses use
 `diff_watch__diff_watch_subscribe`, and the native ones (Claude Code and Codex)
-use `mcp__diff_watch__diff_watch_subscribe`. Match on the suffix. If no such
-tool exists, say so instead of improvising a polling loop.
+use `mcp__diff_watch__diff_watch_subscribe`. Match on the suffix.
+
+**If the tool is absent or its connection is dead, stop and say so.** Do not
+substitute anything for it — not a polling loop, and not driving
+`omnigent-diff-watch-mcp` yourself over stdio. The stdio route does work, which
+is the trap: it registers a real watch while leaving this session unable to
+list or stop it, and it hides a broken deployment. A harness binds its MCP
+servers once, at session start, so a server repaired *during* this session
+stays dead here; **a new session is the fix**.
 
 - You just created or submitted a diff, or the user explicitly requested a
   watch.
@@ -39,10 +46,13 @@ diff_watch_subscribe(
 )
 ```
 
-- **`session_id`** is the session to wake. Call `sys_session_get_info` and pass
-  the `session_id` it reports. If you are a subagent that will not outlive the
-  watch, pass its `parent_session_id` instead — otherwise the wake goes to a
-  session that no longer exists.
+- **`session_id`** is the **Omnigent** session to wake — call
+  `sys_session_get_info` and pass the `session_id` it reports. It is not your
+  harness's own session id: a Claude Code or Codex session id is a different
+  identifier sitting right there in your environment, and passing it is the
+  natural mistake. If you are a subagent that will not outlive the watch, pass
+  `parent_session_id` instead — otherwise the wake goes to a session that no
+  longer exists.
 - **`diffs`** is required. Name every diff in the stack; one call covers all of
   them. Read the ids out of your own `jf submit` / `conf submit` output. Nothing
   is scraped from tool output on your behalf — an earlier version of this system
