@@ -64,6 +64,9 @@ async def test_real_stdio_server_lists_and_calls_intent_tools() -> None:
             "diff_watch_subscribe",
             "diff_watch_unsubscribe",
             "diff_watch_status",
+            "watch_subscribe",
+            "watch_unsubscribe",
+            "watch_status",
         }
         result = await session.call_tool(
             "diff_watch_subscribe",

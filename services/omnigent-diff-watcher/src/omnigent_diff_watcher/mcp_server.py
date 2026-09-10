@@ -280,6 +280,154 @@ def diff_watch_status() -> str:
     )
 
 
+# -- Generic watch surface ------------------------------------------------
+#
+# Deliberately a separate tool set from diff_watch_*. Those stay opinionated
+# about diffs -- no source, no argv, events fixed to the four diff kinds --
+# because that is the interface worth having for the common case. These make no
+# assumption about what is being watched, at the cost of the caller having to
+# say how to read it.
+#
+# They also take a different route. A diff watch is a session *label*, capped at
+# 256 characters, which an arbitrary argv overruns; a generic watch is written
+# straight to the watcher database, which the sidecar reconciles.
+
+WatchSubject = Annotated[
+    str,
+    Field(
+        pattern=r"^[a-z][a-z0-9_-]{0,31}:[\x20-\x7e]{1,200}$",
+        description=(
+            "Namespaced identifier for the thing being watched, "
+            "for example jk:presto/presto_batch:my_knob."
+        ),
+    ),
+]
+WatchArgv = Annotated[
+    list[Annotated[str, Field(min_length=1, max_length=512)]],
+    Field(
+        min_length=1,
+        max_length=32,
+        description=(
+            "Command to run, as an argv list. Executed directly, never through "
+            "a shell, so pipes and redirection are not available -- wrap those "
+            "in a script and name the script here."
+        ),
+    ),
+]
+
+
+DEFAULT_DATABASE_PATH = "~/.omnigent/diff-watcher.sqlite3"
+
+
+def _database_path() -> Path:
+    """Locate the watcher database the sidecar reconciles from.
+
+    The repo checkout is the normal case, but this server can also be launched
+    from an installed package where ``config.toml`` is not alongside the code.
+    Falling back to the documented default beats refusing to subscribe --
+    settings.py uses the same default when the key is absent.
+    """
+    from .settings import ServiceSettings
+
+    config = Path(__file__).resolve().parents[2] / "config.toml"
+    if config.is_file():
+        try:
+            return ServiceSettings.load(config).database_path
+        except (OSError, ValueError):
+            pass
+    return Path(DEFAULT_DATABASE_PATH).expanduser()
+
+
+def _watch_repository() -> tuple[object, str]:
+    """Open the watcher database and resolve this session's Omnigent id."""
+    from .repository import WatcherRepository
+
+    bridge_dir = _native_bridge_dir()
+    if _NATIVE_MODE == "claude":
+        bridge = _read_json_object(bridge_dir / "bridge.json")
+        session_id = bridge.get("active_session_id") or bridge.get("conversation_id")
+    else:
+        relay = _read_json_object(bridge_dir / "tool_relay.json")
+        state = _read_json_object(bridge_dir / "state.json")
+        session_id = relay.get("session_id") or state.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        raise RuntimeError("could not resolve this Omnigent session")
+    # migrate=False: the sidecar owns the schema. See WatcherRepository.__init__.
+    return WatcherRepository(_database_path(), migrate=False), session_id
+
+
+@mcp.tool()
+def watch_subscribe(
+    subject: WatchSubject,
+    command: WatchArgv,
+    extract: str | None = None,
+    interval_seconds: float = 60.0,
+    timeout_seconds: float = 30.0,
+) -> str:
+    """Wake this session when the output of a command changes.
+
+    Use for anything that has no purpose-built watcher: a JustKnob rollout, a
+    config value, a job's status. Prefer ``diff_watch_subscribe`` for diffs.
+
+    The command runs on an interval in a background service, not in this
+    session, so waiting costs no model turns. Its output is hashed; the session
+    is woken only when the hash changes. Pass ``extract`` -- a regular
+    expression, optionally with one capture group -- when the output carries a
+    timestamp or request id that would otherwise change on every poll.
+
+    The first reading is the baseline and never wakes anyone. Subscribe *before*
+    the change you are waiting for can happen, or you will baseline the value
+    you were watching for.
+
+    ``timeout_seconds`` (1..120, and never more than ``interval_seconds``)
+    bounds each run. Raise it for a slow probe -- a `meta`/`jf` round trip, or a
+    command that asks a model to judge whether a condition has been met.
+    """
+    import time
+
+    from .command_source import SOURCE_NAME, CommandSpec
+    from .domain import COMMAND_EVENT_KINDS
+
+    spec = CommandSpec(command, extract, interval_seconds, timeout_seconds)
+    repository, session_id = _watch_repository()
+    repository.request_watch(  # type: ignore[attr-defined]
+        session_id,
+        SOURCE_NAME,
+        subject,
+        COMMAND_EVENT_KINDS,
+        spec=spec.to_json(),
+        now=time.time(),
+    )
+    return (
+        f"Watching {subject}: {' '.join(spec.argv)} every {spec.interval_seconds:g}s. "
+        "This session will be woken when its output changes."
+    )
+
+
+@mcp.tool()
+def watch_unsubscribe(subject: WatchSubject | None = None) -> str:
+    """Stop one generic watch, or all of them, for the current session."""
+    import time
+
+    repository, session_id = _watch_repository()
+    cancelled = repository.cancel_watch_requests(  # type: ignore[attr-defined]
+        session_id, now=time.time(), subject=subject
+    )
+    scope = subject if subject is not None else "all subjects"
+    return f"Cancelled {cancelled} watch(es) for {scope}."
+
+
+@mcp.tool()
+def watch_status() -> str:
+    """List the generic watches this session has registered."""
+    repository, session_id = _watch_repository()
+    rows = repository.active_watch_requests(session_id)  # type: ignore[attr-defined]
+    if not rows:
+        return "This session has no generic watches."
+    lines = [f"{subject} via {source}" for _, source, subject, _, _ in rows]
+    return "Active watches:\n" + "\n".join(lines)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     # A native harness runs the vendor TUI, which does not hand the policy's

@@ -51,13 +51,24 @@ def test_subscribe_rejects_an_empty_diff_selection() -> None:
         diff_watch_subscribe(diffs=[])
 
 
-async def test_mcp_exposes_only_the_three_intent_tools() -> None:
+async def test_mcp_exposes_the_diff_and_generic_watch_surfaces() -> None:
+    """Two surfaces, deliberately. The diff tools stay opinionated about diffs
+    -- no source, no argv -- and the generic ones make no assumption about
+    what is being watched. Adding a tool to either set should be a decision,
+    not a side effect."""
     tools = await mcp.list_tools()
     assert {tool.name for tool in tools} == {
         "diff_watch_subscribe",
         "diff_watch_unsubscribe",
         "diff_watch_status",
+        "watch_subscribe",
+        "watch_unsubscribe",
+        "watch_status",
     }
+    # The diff surface must not grow generic knobs.
+    diff_subscribe = next(tool for tool in tools if tool.name == "diff_watch_subscribe")
+    assert "command" not in diff_subscribe.inputSchema.get("properties", {})
+    assert "source" not in diff_subscribe.inputSchema.get("properties", {})
     subscribe = next(tool for tool in tools if tool.name == "diff_watch_subscribe")
     assert "session_id" not in subscribe.inputSchema.get("properties", {})
     diffs = subscribe.inputSchema.get("properties", {}).get("diffs", {})
