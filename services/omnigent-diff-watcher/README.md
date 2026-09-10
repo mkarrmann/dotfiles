@@ -1,12 +1,51 @@
 # Omnigent diff watcher
 
-Private sidecar that watches Phabricator diffs for explicitly opted-in
-Omnigent sessions. It uses the published Omnigent `0.5.1` REST and policy
-surfaces and requires no Omnigent source changes.
+Private sidecar that watches things on behalf of explicitly opted-in Omnigent
+sessions and wakes them when something changes. It uses the published Omnigent
+`0.5.1` REST and policy surfaces and requires no Omnigent source changes.
 
 Subscription does not require an approval prompt. The operation is
-session-scoped, idempotent, reversible with `diff_watch_unsubscribe`, and can
-only attach validated Phabricator diff IDs.
+session-scoped, idempotent, and reversible.
+
+## Two surfaces
+
+The engine is shared; the interfaces are not, deliberately.
+
+| | `diff_watch_*` | `watch_*` |
+| --- | --- | --- |
+| Subject | validated Phabricator diff IDs | any namespaced `<prefix>:<id>` |
+| How it is read | built in | an argv the caller supplies |
+| Events | the four diff kinds below | `changed` |
+| Declared through | `omnigent.diff.*` session labels | `watch_requests` table |
+| Skill | `phabricator-diff-watch` | `watch-anything` |
+
+The diff surface stays opinionated about diffs — it takes no source and no
+command, and its events describe review and CI specifically, which is the
+interface worth having for the common case. The generic surface assumes
+nothing about its subject, at the cost of the caller having to say how to read
+it.
+
+They take different routes for a concrete reason: a diff watch rides session
+labels, and a label value is capped at 256 characters, which an arbitrary argv
+overruns. A generic watch is therefore written straight to the database by the
+MCP tool and reconciled from `watch_requests`.
+
+### Generic watches
+
+A command watch runs its argv directly — never through a shell, so no part of
+a subject or spec is interpreted as shell syntax — hashes the output, and
+raises a `changed` event when the hash moves. Storing an argv is not a
+privilege escalation, since an agent that can subscribe can already run
+commands, but it is a longer-lived one: the argv is recorded in the database
+and readable through `watch_status`.
+
+Two behaviours differ from a diff watch:
+
+- **The interval is held constant** (`interval_seconds`, 30s–24h, default 60s).
+  The idle ladder that backs a quiet diff off to daily polling would defeat a
+  watch whose whole job is catching a change promptly.
+- **`extract` is usually necessary.** Without it the whole output is the value,
+  so a timestamp or request id anywhere in it re-fires every poll.
 
 ## Events
 
@@ -16,6 +55,7 @@ only attach validated Phabricator diff IDs.
 | `ci_failure`     | A signal reports `FAILED`, as soon as it does.              |
 | `ai_review`      | An automated reviewer has an unresolved finding.            |
 | `ci_green`       | A version's run finishes with nothing failing.              |
+| `changed`        | A generic watch's command produces different output.        |
 
 Three things are deliberately true here, each of which was once false:
 
@@ -45,9 +85,13 @@ arctic`. Arctic findings the author already dismissed or addressed are
   updating `omnigent.diff.watch`.
 - `diff_watch_subscribe` accepts explicit `diffs` for an existing diff or stack;
   diffs submitted by the current session continue to associate automatically.
-- The hub-only service reconciles session labels through `GET /v1/sessions`,
-  polls each active diff once, and stores cursors/batches in
-  `~/.omnigent/diff-watcher.sqlite3`.
+- The hub-only service reconciles session labels through `GET /v1/sessions`
+  and generic watches from `watch_requests`, polls each active subject once,
+  and stores cursors/batches in `~/.omnigent/diff-watcher.sqlite3`.
+- A source implements `domain.WatchSource`: it is handed a subject, an opaque
+  cursor, and an optional spec, and returns a `PollResult`. Everything below
+  that line — leasing, fingerprint diffing, batching, liveness, delivery — is
+  source-neutral and never learns what the subject is.
 - Delivery posts one concise message to the existing hidden
   `POST /v1/sessions/{id}/events` route. A stable batch marker is checked in
   session items before every retry.

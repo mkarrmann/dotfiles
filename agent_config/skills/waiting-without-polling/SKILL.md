@@ -35,6 +35,11 @@ the *same* mistake — the turn is the unit of cost, not the sleep.
 | A comparison, exit code, threshold | backgrounded condition loop | 0 |
 | Judgment ("does this look wrong?") | a recurring pass, proposed to the user | ~205k/turn |
 | Phabricator diff / CI | `phabricator-diff-watch` | 0 |
+| Anything else a command can report | `watch-anything` | 0 |
+
+Prefer a watch over a backgrounded loop whenever the wait may outlive the
+session or the turn: a backgrounded process dies with the session, while a
+watch lives in the sidecar and wakes whatever session registered it.
 
 Most watching is mechanical. Reach for a model only when interpreting the
 result genuinely needs one — and note the two compose well: a free mechanical
