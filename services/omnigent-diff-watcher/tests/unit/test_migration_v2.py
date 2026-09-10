@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from omnigent_diff_watcher.repository import V1_SCHEMA, WatcherRepository
+from omnigent_diff_watcher.repository import SCHEMA_VERSION, V1_SCHEMA, WatcherRepository
 
 
 def _v1_database(path: Path) -> None:
@@ -45,7 +45,7 @@ def test_v1_batches_are_rekeyed_to_their_session(tmp_path: Path) -> None:
 
     repository = WatcherRepository(path)
 
-    assert repository.schema_version() == 3
+    assert repository.schema_version() == SCHEMA_VERSION
     batch = repository.open_batch_for_session("conv_a")
     assert batch is not None
     assert batch.batch_id == "dwb_old"
@@ -83,12 +83,12 @@ def test_migration_is_idempotent_across_reopens(tmp_path: Path) -> None:
     WatcherRepository(path)
     reopened = WatcherRepository(path)
 
-    assert reopened.schema_version() == 3
+    assert reopened.schema_version() == SCHEMA_VERSION
     batch = reopened.open_batch_for_session("conv_a")
     assert batch is not None and batch.subjects == ("D90000001",)
 
 
 def test_fresh_database_lands_on_the_current_schema_directly(tmp_path: Path) -> None:
     repository = WatcherRepository(tmp_path / "fresh.sqlite3")
-    assert repository.schema_version() == 3
+    assert repository.schema_version() == SCHEMA_VERSION
     assert repository.open_batch_for_session("conv_missing") is None

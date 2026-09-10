@@ -16,6 +16,7 @@ from omnigent_diff_watcher.phabricator_source import (
     normalize_snapshot,
 )
 from omnigent_diff_watcher.repository import (
+    SCHEMA_VERSION,
     NewerSchemaError,
     SubscriptionConstraintError,
     WatcherRepository,
@@ -81,7 +82,7 @@ def _new_comment_snapshot(clock: FakeClock) -> DiffSnapshot:
 
 def test_schema_migration_and_newer_schema_rejection(tmp_path: Path) -> None:
     path = tmp_path / "watcher.sqlite3"
-    assert WatcherRepository(path).schema_version() == 3
+    assert WatcherRepository(path).schema_version() == SCHEMA_VERSION
     assert path.stat().st_mode & 0o777 == 0o600
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA user_version=99")

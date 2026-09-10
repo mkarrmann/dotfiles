@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from omnigent_diff_watcher.repository import V1_SCHEMA, WatcherRepository
+from omnigent_diff_watcher.repository import SCHEMA_VERSION, V1_SCHEMA, WatcherRepository
 
 
 def _populated_v1_database(path: Path) -> None:
@@ -50,7 +50,7 @@ def test_v3_renames_the_key_without_losing_rows(tmp_path: Path) -> None:
     _populated_v1_database(path)
 
     repository = WatcherRepository(path)
-    assert repository.schema_version() == 3
+    assert repository.schema_version() == SCHEMA_VERSION
 
     connection = sqlite3.connect(path)
     try:
@@ -108,7 +108,7 @@ def test_v3_is_idempotent_across_reopens(tmp_path: Path) -> None:
     WatcherRepository(path)
     reopened = WatcherRepository(path)
 
-    assert reopened.schema_version() == 3
+    assert reopened.schema_version() == SCHEMA_VERSION
     connection = sqlite3.connect(path)
     try:
         assert connection.execute("SELECT subject, source FROM watched_subjects").fetchall() == [
@@ -141,4 +141,4 @@ def test_a_non_owner_refuses_to_migrate_a_stale_database(tmp_path: Path) -> None
         connection.close()
 
     WatcherRepository(path)
-    assert WatcherRepository(path, migrate=False).schema_version() == 3
+    assert WatcherRepository(path, migrate=False).schema_version() == SCHEMA_VERSION

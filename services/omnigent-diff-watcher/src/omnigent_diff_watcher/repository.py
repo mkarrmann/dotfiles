@@ -21,7 +21,7 @@ from .domain import (
     WatchedSubject,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # The v1 DDL, kept as a constant so the v1 -> v2 migration test exercises the
 # real historical schema instead of a copy that can drift from it.
@@ -191,6 +191,9 @@ class WatcherRepository:
                 current = 2
             if current < 3:
                 self._migrate_to_generic_subjects()
+                current = 3
+            if current < 4:
+                self._migrate_to_request_declared_watches()
 
     def _migrate_to_session_batches(self) -> None:
         """v1 -> v2: re-key batches from one subscription to one session.
@@ -348,6 +351,58 @@ class WatcherRepository:
                 raise RuntimeError(
                     f"diff-watcher v3 migration left {len(violations)} FK violations"
                 )
+        finally:
+            connection.close()
+
+    def _migrate_to_request_declared_watches(self) -> None:
+        """v3 -> v4: give every live subscription the request row that declares it.
+
+        Until now a diff watch was declared by two session *labels* and
+        reconciled from ``GET /v1/sessions``; only generic watches were recorded
+        in ``watch_requests``. That label path is gone -- watches are declared
+        by the MCP tool, which writes a request row -- so reconciliation reads
+        this table and nothing else.
+
+        Without this backfill every diff watch created under the old scheme
+        would keep its subscription but have nothing to re-bind it, and would
+        silently stop at the next restart. Silence is the one failure a
+        notifier must not have, so the rows are synthesised here from state the
+        database already holds.
+
+        ``event_types`` comes from the subscription, ``source`` and ``spec``
+        from the subject, and the timestamps from the subscription's own
+        creation so a backfilled row is indistinguishable from one the tool
+        would have written. Idempotent: rows that already exist are left alone,
+        which also makes it a no-op for the generic watches that always had one.
+        """
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO watch_requests
+                    (session_id, source, subject, spec, event_types, state,
+                     created_at, updated_at)
+                SELECT s.session_id,
+                       COALESCE(w.source, 'phabricator'),
+                       s.subject,
+                       w.spec,
+                       s.event_types,
+                       'active',
+                       s.created_at,
+                       s.updated_at
+                  FROM subscriptions s
+                  LEFT JOIN watched_subjects w ON w.subject = s.subject
+                 WHERE s.state != 'retired'
+                   AND NOT EXISTS (
+                       SELECT 1 FROM watch_requests r
+                        WHERE r.session_id = s.session_id
+                          AND r.subject = s.subject
+                   )
+                """
+            )
+            connection.execute("PRAGMA user_version=4")
+            connection.commit()
         finally:
             connection.close()
 
