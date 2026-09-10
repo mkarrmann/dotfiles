@@ -1,8 +1,9 @@
 # Omnigent diff watcher
 
 Private sidecar that watches things on behalf of explicitly opted-in Omnigent
-sessions and wakes them when something changes. It uses the published Omnigent
-`0.5.1` REST and policy surfaces and requires no Omnigent source changes.
+sessions and wakes them when something changes. It uses only the published
+Omnigent REST surface and requires no Omnigent source changes and no policy
+modules.
 
 Subscription does not require an approval prompt. The operation is
 session-scoped, idempotent, and reversible.
@@ -13,10 +14,9 @@ The engine is shared; the interfaces are not, deliberately.
 
 | | `diff_watch_*` | `watch_*` |
 | --- | --- | --- |
-| Subject | validated Phabricator diff IDs | any namespaced `<prefix>:<id>` |
+| Subject | Phabricator diff IDs, named explicitly | any namespaced `<prefix>:<id>` |
 | How it is read | built in | an argv the caller supplies |
 | Events | the four diff kinds below | `changed` |
-| Declared through | `omnigent.diff.*` session labels | `watch_requests` table |
 | Skill | `phabricator-diff-watch` | `watch-anything` |
 
 The diff surface stays opinionated about diffs — it takes no source and no
@@ -25,24 +25,29 @@ interface worth having for the common case. The generic surface assumes
 nothing about its subject, at the cost of the caller having to say how to read
 it.
 
-They take different routes for a concrete reason: a diff watch rides session
-labels, and a label value is capped at 256 characters, which an arbitrary argv
-overruns. A generic watch is therefore written straight to the database by the
-MCP tool and reconciled from `watch_requests`.
+The route is identical. Every tool takes the `session_id` it should wake,
+validates it against the server, binds the watch synchronously, and records a
+`watch_requests` row scoped by source. Nothing is harness-specific.
 
-That route costs it reach. `diff_watch_*` never learns its own session -- it
-returns an intent string and a server-side policy, which does know the session,
-writes the label -- so it works from any harness. A generic watch writes the
-row itself and must therefore identify the session, which only a native
-harness's bridge directory allows; a streamed SDK session gets no session id in
-its MCP environment. So `watch_*` is **native-only**, it says so when called
-from anywhere else, and the agent specs (which launch this server with no
-`--native` flag) deliberately do not advertise it.
+### Why identity is an argument
 
-Lifting that would mean either Omnigent passing a session id to stdio MCP
-servers, or a server-side policy writing `watch_requests` the way
-`capture_diff` writes labels -- the latter is the same shape as the diff route
-and would work today, at the cost of a second policy module.
+MCP carries no session context in any transport: stdio `env` and HTTP `headers`
+are fixed at deploy time, there is no `_meta` plumbing, and Omnigent's MCP pool
+shares one server process across every session using an agent. A tool could
+therefore only learn its own session by scraping the harness's private bridge
+directory, which existed for two harnesses, coupled this code to Omnigent's
+internal directory names, and could match two bridges at once and bind a watch
+to the wrong session.
+
+Agents get the id from `sys_session_get_info` instead — one cheap call, every
+harness. A subagent should pass that call's `parent_session_id`, or the wake is
+delivered to a session that no longer exists.
+
+The id comes from the model, so it is validated with `GET /v1/sessions/{id}`
+before anything is written. That catches a typo, an unknown id, and a closed or
+archived session. It does not catch a deliberate wrong-but-live id, which would
+wake another session of the same user on the same machine, from an agent that
+already has that user's shell.
 
 ### Generic watches
 
@@ -89,19 +94,14 @@ arctic`. Arctic findings the author already dismissed or addressed are
 
 ## Architecture
 
-- `omnigent-diff-watch-mcp` exposes subscribe, unsubscribe, and status intent
-  tools through the agent's normal stdio MCP configuration. A native harness
-  launches it with `--native-codex` or `--native-claude`, which sends each
-  result through the session's authenticated local Omnigent policy endpoint
-  and returns the authoritative policy response; the streamed SDK harnesses
-  get that rewrite for free and need no flag.
-- `capture_diff.py` binds those tool results to the authenticated session by
-  updating `omnigent.diff.watch`.
-- `diff_watch_subscribe` accepts explicit `diffs` for an existing diff or stack;
-  diffs submitted by the current session continue to associate automatically.
-- The hub-only service reconciles session labels through `GET /v1/sessions`
-  and generic watches from `watch_requests`, polls each active subject once,
-  and stores cursors/batches in `~/.omnigent/diff-watcher.sqlite3`.
+- `omnigent-diff-watch-mcp` exposes both surfaces through the agent's normal
+  stdio MCP configuration, with no flags and no per-harness variants. Each tool
+  validates its `session_id`, binds the watch, and writes a `watch_requests`
+  row.
+- The hub-only service re-binds `watch_requests` rows that have no live
+  subscription, polls each active subject once, and stores cursors and batches
+  in `~/.omnigent/diff-watcher.sqlite3`. Set
+  `OMNIGENT_DIFF_WATCHER_DATABASE` to point both processes at another file.
 - A source implements `domain.WatchSource`: it is handed a subject, an opaque
   cursor, and an optional spec, and returns a `PollResult`. Everything below
   that line — leasing, fingerprint diffing, batching, liveness, delivery — is
@@ -127,6 +127,9 @@ Two processes run this code, and they pick up changes at different moments.
 The sidecar loads it once at start, so a change to the engine or a source needs
 `systemctl --user restart omnigent-diff-watcher` — and only the sidecar may
 migrate the schema, so that restart is also what applies a new schema version.
+Schema v4 backfills a `watch_requests` row for every live subscription, so the
+diff watches created under the old session-label scheme keep working across the
+upgrade instead of silently lapsing.
 The MCP server is spawned per agent session, so a change to the *tools* is not
 visible to sessions already running; their tool schemas are whatever was on
 disk when they started. Module-level edits need a fresh session, though the

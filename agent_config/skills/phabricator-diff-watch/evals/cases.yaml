@@ -3,7 +3,7 @@ cases:
     prompt: I submitted D90000001 from this workspace and will handle follow-up.
     expected_calls: [diff_watch__diff_watch_subscribe]
   - name: explicit_watch_request
-    prompt: Watch the diff associated with this session for comments and CI.
+    prompt: Watch D90000001 for comments and CI.
     expected_calls: [diff_watch__diff_watch_subscribe]
   - name: read_only_review
     prompt: Review D90000002, which belongs to another engineer.

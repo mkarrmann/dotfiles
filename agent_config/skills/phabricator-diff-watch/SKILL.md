@@ -15,12 +15,8 @@ description: >-
 Subscribe with the available `diff_watch_subscribe` tool only when all of these
 hold. The harnesses namespace it differently: the Omnigent SDK harnesses use
 `diff_watch__diff_watch_subscribe`, and the native ones (Claude Code and Codex)
-use `mcp__diff_watch__diff_watch_subscribe`. Match on the suffix.
-
-If none of those tools exists, say so instead of improvising. Do NOT write the
-`omnigent.diff.*` session labels by hand: the subscribe tool binds changes to
-the authenticated session, and a missing tool means this harness is not
-registered yet—which is a bug to report, not to work around.
+use `mcp__diff_watch__diff_watch_subscribe`. Match on the suffix. If no such
+tool exists, say so instead of improvising a polling loop.
 
 - You just created or submitted a diff, or the user explicitly requested a
   watch.
@@ -31,22 +27,43 @@ registered yet—which is a bug to report, not to work around.
   option instead of subscribing.
 - At least one diff is not terminal.
 
-Subscribing covers **every** diff already associated with this session, so a
-stack needs one call, not one per diff. Diffs created or updated by this session
-are recognized from the real Phabricator URLs in commit or `jf submit` output.
-When the user asks to watch existing diffs, pass their validated IDs through the
-subscribe tool's `diffs` argument; do not rely on merely printing or reading a
-diff URL to associate it.
+## Calling it
+
+Two arguments matter, and **neither is inferred**:
+
+```
+diff_watch_subscribe(
+  session_id = "<from sys_session_get_info>",
+  diffs      = ["D116563979", "D116338876"],   # the whole stack, one call
+  events     = None,                            # optional subset
+)
+```
+
+- **`session_id`** is the session to wake. Call `sys_session_get_info` and pass
+  the `session_id` it reports. If you are a subagent that will not outlive the
+  watch, pass its `parent_session_id` instead — otherwise the wake goes to a
+  session that no longer exists.
+- **`diffs`** is required. Name every diff in the stack; one call covers all of
+  them. Read the ids out of your own `jf submit` / `conf submit` output. Nothing
+  is scraped from tool output on your behalf — an earlier version of this system
+  did that and bound a session to a diff number that appeared in a test fixture.
+
+Each diff is read once during the call, so an id that does not resolve is
+reported back immediately rather than failing silently in the background. A
+stack where one diff has already landed still subscribes the rest; the failures
+are named in the reply.
 
 Do not subscribe for a read-only review, temporary research or sub-agent work,
 handed-off work, an unrelated diff merely seen in output, or a committed,
 abandoned, or reverted diff. Do not resubscribe on later turns.
 
 Use the default event set unless the user requests a subset of
-`review_comment`, `ci_failure`, `ai_review`, or `ci_green`. Use the corresponding
-`diff_watch_status` tool to check this session's preference and
-`diff_watch_unsubscribe` when the user asks to stop or responsibility is handed
-off; normal diff completion retires automatically.
+`review_comment`, `ci_failure`, `ai_review`, or `ci_green`. `diff_watch_status`
+lists what a session is watching and `diff_watch_unsubscribe` stops one diff or
+all of them — both also take `session_id`. Normal diff completion retires
+automatically.
+
+## When a wake arrives
 
 When a `[Diff watcher ...]` message arrives, treat its counts as a stale hint.
 One wake covers the whole stack and names each affected diff. Load
@@ -55,3 +72,6 @@ before editing. Address actionable findings in the existing workspace, run
 focused tests, and amend the affected diffs. Attribute each finding to the diff
 that introduced it rather than the tip. Do not subscribe again during the
 wake-up turn.
+
+See also [[watch-anything]] for the same machinery pointed at anything that is
+not a diff.
