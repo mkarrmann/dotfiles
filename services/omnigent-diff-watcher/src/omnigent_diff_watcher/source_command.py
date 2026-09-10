@@ -138,12 +138,22 @@ async def _run_command(
     if timeout_seconds <= 0 or output_limit_bytes <= 0:
         raise ValueError("review source limits must be positive")
 
-    process = await asyncio.create_subprocess_exec(
-        *argv,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=dict(env),
-    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=dict(env),
+        )
+    except OSError as exc:
+        # The spawn itself failed -- no such executable, not executable, or a
+        # process limit. Distinct from a command that ran and exited non-zero,
+        # and easy to miss: a watch on a missing binary would otherwise raise a
+        # bare OSError out of poll(), past the engine's failure handling.
+        raise SourceCommandError(
+            SourceCommandErrorCategory.EXIT,
+            f"watch command could not be started: {exc}",
+        ) from exc
     assert process.stdout is not None
     assert process.stderr is not None
 

@@ -167,3 +167,23 @@ def test_timeout_round_trips_and_defaults_for_older_specs() -> None:
     # A spec stored before this field existed still loads.
     legacy = _json.dumps({"argv": ["true"], "interval_seconds": 60.0})
     assert CommandSpec.from_json(legacy).timeout_seconds == 30.0
+
+
+async def test_a_missing_executable_is_a_source_error_not_a_bare_oserror() -> None:
+    """A command that cannot even be spawned must fail like any other bad poll.
+
+    ``cat /missing-file`` exits non-zero and was already covered; a missing
+    *binary* fails in ``create_subprocess_exec`` itself, and the bare OSError
+    escaped ``poll()`` entirely -- past the engine's backoff, and out of the
+    MCP tool as a FileNotFoundError instead of an actionable message. Found by
+    running the real tool against the real server.
+    """
+    import pytest
+
+    from omnigent_diff_watcher.command_source import CommandSource, CommandSpec
+    from omnigent_diff_watcher.source_models import ReviewSourceError
+
+    source = CommandSource(env={"PATH": "/usr/bin:/bin"})
+    spec = CommandSpec(["/nonexistent/definitely-not-here"]).to_json()
+    with pytest.raises(ReviewSourceError):
+        await source.poll("jk:demo", None, spec)
