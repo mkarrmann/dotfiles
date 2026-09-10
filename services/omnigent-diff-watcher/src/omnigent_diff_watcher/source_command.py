@@ -74,6 +74,34 @@ async def run_snapshot_command(
         ) from exc
 
 
+async def run_text_command(
+    argv: Sequence[str],
+    *,
+    env: Mapping[str, str],
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    output_limit_bytes: int = DEFAULT_OUTPUT_LIMIT_BYTES,
+) -> str:
+    """Run an argv-only command and return its bounded stdout as text.
+
+    The JSON path above is for sources with a structured contract. A command
+    watch has none: whatever the command prints *is* the observed value, and
+    the watcher only ever hashes it.
+    """
+    stdout = await _run_command(
+        argv,
+        env=env,
+        timeout_seconds=timeout_seconds,
+        output_limit_bytes=output_limit_bytes,
+    )
+    try:
+        return stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SourceCommandError(
+            SourceCommandErrorCategory.MALFORMED,
+            "watch command returned output that is not valid UTF-8",
+        ) from exc
+
+
 async def run_json_command(
     argv: Sequence[str],
     *,
@@ -82,6 +110,29 @@ async def run_json_command(
     output_limit_bytes: int = DEFAULT_OUTPUT_LIMIT_BYTES,
 ) -> object:
     """Run an argv-only command and return bounded decoded JSON."""
+    stdout = await _run_command(
+        argv,
+        env=env,
+        timeout_seconds=timeout_seconds,
+        output_limit_bytes=output_limit_bytes,
+    )
+    try:
+        return _decode_json_output(stdout)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise SourceCommandError(
+            SourceCommandErrorCategory.MALFORMED,
+            "review source returned invalid JSON",
+        ) from exc
+
+
+async def _run_command(
+    argv: Sequence[str],
+    *,
+    env: Mapping[str, str],
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    output_limit_bytes: int = DEFAULT_OUTPUT_LIMIT_BYTES,
+) -> bytes:
+    """Run an argv-only command and return bounded stdout, or raise."""
     if not argv or any(not isinstance(arg, str) or not arg for arg in argv):
         raise ValueError("review source argv must contain non-empty strings")
     if timeout_seconds <= 0 or output_limit_bytes <= 0:
@@ -143,13 +194,7 @@ async def run_json_command(
             category,
             summary,
         )
-    try:
-        return _decode_json_output(stdout)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise SourceCommandError(
-            SourceCommandErrorCategory.MALFORMED,
-            "review source returned invalid JSON",
-        ) from exc
+    return stdout
 
 
 def _decode_json_output(stdout: bytes) -> object:
