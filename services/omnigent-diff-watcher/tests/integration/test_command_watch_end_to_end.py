@@ -14,6 +14,7 @@ import pytest
 from omnigent_diff_watcher.command_source import CommandSource, CommandSpec
 from omnigent_diff_watcher.domain import (
     COMMAND_EVENT_KINDS,
+    DIFF_EVENT_KINDS,
     EventKind,
     SessionSnapshot,
     SubscriptionState,
@@ -254,3 +255,74 @@ async def test_status_shows_the_command_a_watch_will_keep_running(
     assert f"cat {value}" in status
     assert "every 120s" in status
     assert r"(\d+)" in status
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_reaches_a_watch_whose_request_was_already_cancelled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An orphan -- cancelled request, surviving subscription -- must be reachable.
+
+    That is the exact state an older build of the tool left behind, and it was
+    hit for real in production. Deriving targets from the stored requests would
+    find nothing here and leave the watch polling with no way to stop it from
+    the tool; deriving them from the subscriptions, scoped by source, reaches
+    it.
+    """
+    from omnigent_diff_watcher import mcp_server
+
+    value = tmp_path / "knob"
+    value.write_text("false\n")
+    clock = FakeClock()
+    delivery = RecordingDeliveryService()
+    repository, watcher = _watcher(tmp_path, clock, delivery)
+
+    spec = _spec(value)
+    repository.request_watch(
+        "session-1", "command", SUBJECT, COMMAND_EVENT_KINDS, spec=spec, now=1000.0
+    )
+    await watcher.subscribe(
+        "session-1", SUBJECT, COMMAND_EVENT_KINDS, source_name="command", spec=spec
+    )
+    # Orphan it: the request goes, the subscription stays.
+    assert repository.cancel_watch_requests("session-1", now=1100.0) == 1
+    orphan = repository.subscription("session-1", SUBJECT)
+    assert orphan is not None and orphan.state is SubscriptionState.ACTIVE
+
+    monkeypatch.setattr(mcp_server, "_watch_repository", lambda: (repository, "session-1"))
+    mcp_server.watch_unsubscribe()
+
+    stopped = repository.subscription("session-1", SUBJECT)
+    assert stopped is not None
+    assert stopped.state is SubscriptionState.RETIRED
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_never_reaches_a_diff_watch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scoping by source is the only thing keeping these surfaces apart."""
+    from omnigent_diff_watcher import mcp_server
+    from tests.support import fixture, subscribe_snapshot
+
+    clock = FakeClock()
+    delivery = RecordingDeliveryService()
+    repository, _watcher_unused = _watcher(tmp_path, clock, delivery)
+
+    diff = fixture("active")
+    subscribe_snapshot(
+        repository,
+        "session-1",
+        diff.subject,
+        DIFF_EVENT_KINDS,
+        diff,
+        now=1000.0,
+        next_poll_at=1060.0,
+    )
+
+    monkeypatch.setattr(mcp_server, "_watch_repository", lambda: (repository, "session-1"))
+    mcp_server.watch_unsubscribe()
+
+    survivor = repository.subscription("session-1", diff.subject)
+    assert survivor is not None
+    assert survivor.state is SubscriptionState.ACTIVE

@@ -49,6 +49,11 @@ _NATIVE_MODE: str | None = None
 _NATIVE_HARNESS = {"codex": "codex-native", "claude": "claude-native"}
 _NOT_NATIVE = "diff watch requires an Omnigent native {} session"
 
+# Sources the watch_* surface owns. Scoping unsubscribe by source is what keeps
+# it from reaching a diff watch, so a new generic source must be added here or
+# its watches become impossible to stop from the tool.
+GENERIC_SOURCES = frozenset({"command"})
+
 
 def _codex_bridge_dir() -> Path:
     codex_home = os.environ.get("CODEX_HOME")
@@ -422,24 +427,25 @@ def watch_unsubscribe(subject: WatchSubject | None = None) -> str:
     # request alone would merely stop it being re-bound, leaving it polling and
     # waking this session indefinitely.
     #
-    # Read the requests before cancelling them -- they are how we know which
-    # subjects are ours, so a bare unsubscribe cannot reach a diff watch.
+    # Targets come from the subscriptions themselves, scoped by source, rather
+    # than from the stored requests. Scoping is what stops a bare unsubscribe
+    # reaching a diff watch, and reading subscriptions directly also reaches an
+    # orphan -- a subscription whose request was already cancelled without it,
+    # which is the exact state an older build of this tool used to leave behind.
     targets = [
-        row_subject
-        for _session, _source, row_subject, _spec, _kinds in repository.active_watch_requests(
-            session_id
+        row
+        for row in repository.subscriptions_for_session(
+            session_id,
+            states=(SubscriptionState.ACTIVE, SubscriptionState.SUSPENDED),
+            sources=GENERIC_SOURCES,
         )
-        if subject is None or row_subject == subject
+        if subject is None or row.subject == subject
     ]
     cancelled = repository.cancel_watch_requests(session_id, now=now, subject=subject)
 
-    retired = 0
-    for row_subject in targets:
-        existing = repository.subscription(session_id, row_subject)
-        if existing is None or existing.state is SubscriptionState.RETIRED:
-            continue
-        repository.retire_subscription(existing.id, "unsubscribed", now=now)
-        retired += 1
+    for row in targets:
+        repository.retire_subscription(row.id, "unsubscribed", now=now)
+    retired = len(targets)
 
     scope = subject if subject is not None else "all subjects"
     return f"Cancelled {cancelled} and stopped {retired} watch(es) for {scope}."
