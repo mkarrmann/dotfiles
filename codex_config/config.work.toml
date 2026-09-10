@@ -1,5 +1,3 @@
 # Native work sessions report Phabricator diffs to the Omnigent watcher.
 [mcp_servers.diff_watch]
 command = "omnigent-diff-watch-mcp"
-args = ["--native-codex"]
-env_vars = ["CODEX_HOME"]

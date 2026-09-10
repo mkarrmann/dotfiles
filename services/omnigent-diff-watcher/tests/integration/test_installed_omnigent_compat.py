@@ -65,6 +65,9 @@ print(json.dumps(result))
                 "diff_watch_subscribe",
                 "diff_watch_unsubscribe",
                 "diff_watch_status",
+                "watch_subscribe",
+                "watch_unsubscribe",
+                "watch_status",
             ],
         }
     ]
@@ -75,45 +78,3 @@ print(json.dumps(result))
         "polly": expected,
         "debby": expected,
     }
-
-
-@pytest.mark.skipif(not OMNIGENT_PYTHON.exists(), reason="published Omnigent is not installed")
-def test_native_codex_policy_hook_forwards_diff_watch_tools() -> None:
-    # Both module paths are accepted: Omnigent moved this into the `native`
-    # subpackage, and we never import it ourselves -- what this test pins is
-    # the behaviour, that a namespaced diff_watch tool still reaches the policy
-    # engine with its name intact on both phases. A relocation is not a compat
-    # break; the symbol disappearing entirely is, and still fails here.
-    script = """
-import json
-try:
-    from omnigent.native.native_policy_hook import hook_payload_to_evaluation_request
-except ModuleNotFoundError:
-    from omnigent.native_policy_hook import hook_payload_to_evaluation_request
-
-events = {}
-for hook_event in ("PreToolUse", "PostToolUse"):
-    events[hook_event] = hook_payload_to_evaluation_request(
-        hook_event,
-        {
-            "hook_event_name": hook_event,
-            "tool_name": "mcp__diff_watch__diff_watch_subscribe",
-            "tool_input": {},
-            "tool_output": "Diff-watch preference requested for: ci_failure,review_comment",
-        },
-    )
-print(json.dumps(events))
-"""
-    result = subprocess.run(
-        [str(OMNIGENT_PYTHON), "-c", script],
-        check=True,
-        text=True,
-        capture_output=True,
-    )
-    events = json.loads(result.stdout)
-    assert events["PreToolUse"]["event"]["data"]["name"] == (
-        "mcp__diff_watch__diff_watch_subscribe"
-    )
-    assert events["PostToolUse"]["event"]["request_data"]["name"] == (
-        "mcp__diff_watch__diff_watch_subscribe"
-    )

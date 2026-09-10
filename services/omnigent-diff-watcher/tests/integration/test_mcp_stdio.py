@@ -1,8 +1,16 @@
+"""The real stdio MCP server, driven by a real MCP client.
+
+This is the only test that exercises the server the way a harness does:
+subprocess, stdio transport, JSON schemas, and the tool bodies end to end
+against a real database. Everything harness-specific used to live here --
+policy relays, bridge directories, ``--native`` flags -- and none of it exists
+any more, because a watch now carries the session it should wake.
+"""
+
 from __future__ import annotations
 
 import json
 import os
-import socket
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -12,23 +20,31 @@ from threading import Thread
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.types import TextContent
+from mcp.types import CallToolResult, TextContent
+
+from omnigent_diff_watcher.repository import WatcherRepository
+
+LIVE_SESSION = "a989d27536ab4b1b912b0e07efc2ee21"
+SUBJECT = "jk:presto/presto_batch:demo_knob"
 
 
 @contextmanager
-def _policy_relay(
-    response_data: str,
-) -> Iterator[tuple[ThreadingHTTPServer, list[dict[str, object]]]]:
-    requests: list[dict[str, object]] = []
+def _omnigent(closed: str | None = None) -> Iterator[str]:
+    """A stand-in Omnigent that answers session lookups."""
 
     class Handler(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:  # noqa: N802
-            length = int(self.headers["Content-Length"])
-            request = json.loads(self.rfile.read(length))
-            assert isinstance(request, dict)
-            request["_path"] = self.path
-            requests.append(request)
-            payload = json.dumps({"result": "POLICY_ACTION_ALLOW", "data": response_data}).encode()
+        def do_GET(self) -> None:  # noqa: N802
+            session_id = self.path.rsplit("/", 1)[-1]
+            if session_id == LIVE_SESSION:
+                body = {"id": session_id, "status": "running", "archived": False}
+            elif session_id == closed:
+                body = {"id": session_id, "status": "closed", "archived": False}
+            else:
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            payload = json.dumps(body).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
@@ -42,283 +58,138 @@ def _policy_relay(
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield server, requests
+        yield f"http://127.0.0.1:{server.server_port}"
     finally:
         server.shutdown()
         server.server_close()
         thread.join()
 
 
-async def test_real_stdio_server_lists_and_calls_intent_tools() -> None:
-    parameters = StdioServerParameters(
+@contextmanager
+def _server(database: Path, server_url: str) -> Iterator[StdioServerParameters]:
+    yield StdioServerParameters(
         command=sys.executable,
         args=["-m", "omnigent_diff_watcher.mcp_server"],
+        env={
+            **os.environ,
+            "OMNIGENT_DIFF_WATCHER_DATABASE": str(database),
+            "OMNIGENT_URL": server_url,
+        },
     )
-    async with (
-        stdio_client(parameters) as (reader, writer),
-        ClientSession(reader, writer) as session,
-    ):
-        await session.initialize()
-        tools = await session.list_tools()
-        assert {tool.name for tool in tools.tools} == {
-            "diff_watch_subscribe",
-            "diff_watch_unsubscribe",
-            "diff_watch_status",
-            "watch_subscribe",
-            "watch_unsubscribe",
-            "watch_status",
-        }
-        result = await session.call_tool(
-            "diff_watch_subscribe",
-            {"events": ["review_comment"], "diffs": ["D111179041"]},
-        )
-        assert result.isError is False
-        content = result.content[0]
-        assert isinstance(content, TextContent)
-        assert content.text == "Diff-watch preference requested for: review_comment"
 
 
-async def test_native_codex_stdio_server_returns_policy_bound_status(tmp_path: Path) -> None:
-    codex_home = tmp_path / ".omnigent/codex-native/bridge/codex-home"
-    codex_home.mkdir(parents=True)
-    with _policy_relay("Diff watch: off; associated diff: D116563979.") as (
-        server,
-        requests,
-    ):
-        host = str(server.server_address[0])
-        port = int(server.server_address[1])
-        (codex_home.parent / "tool_relay.json").write_text(
-            json.dumps(
-                {
-                    "url": f"http://{host}:{port}",
-                    "token": "test-token",
-                    "session_id": "test-session",
-                }
-            )
-        )
-        parameters = StdioServerParameters(
-            command=sys.executable,
-            args=["-m", "omnigent_diff_watcher.mcp_server", "--native-codex"],
-            env={**os.environ, "CODEX_HOME": str(codex_home)},
-        )
+def _text(result: CallToolResult) -> str:
+    content = result.content[0]
+    assert isinstance(content, TextContent)
+    return content.text
+
+
+async def test_a_generic_watch_round_trips_through_the_real_stdio_server(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "watcher.sqlite3"
+    WatcherRepository(database)  # the sidecar owns migration; create the schema
+    value = tmp_path / "knob"
+    value.write_text("false\n")
+
+    with _omnigent() as url, _server(database, url) as parameters:
         async with (
             stdio_client(parameters) as (reader, writer),
             ClientSession(reader, writer) as session,
         ):
             await session.initialize()
-            result = await session.call_tool("diff_watch_status", {})
+            assert {tool.name for tool in (await session.list_tools()).tools} == {
+                "diff_watch_subscribe",
+                "diff_watch_unsubscribe",
+                "diff_watch_status",
+                "watch_subscribe",
+                "watch_unsubscribe",
+                "watch_status",
+            }
 
-    content = result.content[0]
-    assert isinstance(content, TextContent)
-    assert content.text == "Diff watch: off; associated diff: D116563979."
-    event = requests[0]["event"]
-    assert isinstance(event, dict)
-    assert event["type"] == "PHASE_TOOL_RESULT"
-    request_data = event["request_data"]
-    assert isinstance(request_data, dict)
-    assert request_data["name"] == "mcp__diff_watch__diff_watch_status"
+            subscribed = await session.call_tool(
+                "watch_subscribe",
+                {
+                    "session_id": LIVE_SESSION,
+                    "subject": SUBJECT,
+                    "command": ["cat", str(value)],
+                },
+            )
+            assert subscribed.isError is False, _text(subscribed)
+            assert SUBJECT in _text(subscribed)
+            assert LIVE_SESSION in _text(subscribed)
+
+            listed = await session.call_tool("watch_status", {"session_id": LIVE_SESSION})
+            assert SUBJECT in _text(listed)
+            assert f"cat {value}" in _text(listed)
+
+            stopped = await session.call_tool("watch_unsubscribe", {"session_id": LIVE_SESSION})
+            assert "1 watch(es)" in _text(stopped)
+
+    # The watch really landed in the shared database, and really stopped.
+    repository = WatcherRepository(database, migrate=False)
+    subscription = repository.subscription(LIVE_SESSION, SUBJECT)
+    assert subscription is not None
+    assert subscription.state.value == "retired"
 
 
-async def test_native_codex_subscribe_forwards_existing_diffs_and_all_events(
+async def test_an_unknown_session_is_refused_before_anything_is_written(
     tmp_path: Path,
 ) -> None:
-    codex_home = tmp_path / ".omnigent/codex-native/bridge/codex-home"
-    codex_home.mkdir(parents=True)
-    response = (
-        "Diff-watch notifications requested for D94275133, D111179041: "
-        "ai_review,ci_failure,ci_green,review_comment."
-    )
-    with _policy_relay(response) as (server, requests):
-        host = str(server.server_address[0])
-        port = int(server.server_address[1])
-        (codex_home.parent / "tool_relay.json").write_text(
-            json.dumps(
-                {
-                    "url": f"http://{host}:{port}",
-                    "token": "test-token",
-                    "session_id": "test-session",
-                }
-            )
-        )
-        parameters = StdioServerParameters(
-            command=sys.executable,
-            args=["-m", "omnigent_diff_watcher.mcp_server", "--native-codex"],
-            env={**os.environ, "CODEX_HOME": str(codex_home)},
-        )
+    """The address comes from the model, so a typo must not become a watch.
+
+    Without validation the row would be written, polled forever, and wake
+    nobody -- and the caller would have been told it was watching.
+    """
+    database = tmp_path / "watcher.sqlite3"
+    WatcherRepository(database)
+    value = tmp_path / "knob"
+    value.write_text("false\n")
+    bogus = "deadbeefdeadbeefdeadbeefdeadbeef"
+
+    with _omnigent() as url, _server(database, url) as parameters:
         async with (
             stdio_client(parameters) as (reader, writer),
             ClientSession(reader, writer) as session,
         ):
             await session.initialize()
             result = await session.call_tool(
-                "diff_watch_subscribe",
+                "watch_subscribe",
                 {
-                    "diffs": ["D94275133", "D111179041"],
-                    "events": ["review_comment", "ci_failure", "ai_review", "ci_green"],
+                    "session_id": bogus,
+                    "subject": SUBJECT,
+                    "command": ["cat", str(value)],
                 },
             )
+            assert result.isError is True
+            assert "sys_session_get_info" in _text(result)
 
-    content = result.content[0]
-    assert isinstance(content, TextContent)
-    assert content.text == response
-    event = requests[0]["event"]
-    assert isinstance(event, dict)
-    request_data = event["request_data"]
-    assert isinstance(request_data, dict)
-    assert request_data["arguments"] == {
-        "diffs": ["D94275133", "D111179041"],
-        "events": ["ai_review", "ci_failure", "ci_green", "review_comment"],
-    }
+    repository = WatcherRepository(database, migrate=False)
+    assert repository.subscription(bogus, SUBJECT) is None
+    assert repository.active_watch_requests(bogus) == []
 
 
-def _claude_bridge(tmp_path: Path, claude_session: str, omni_session: str) -> Path:
-    """Build a Claude bridge directory the way the Omnigent bridge lays it out."""
-    bridge = tmp_path / f"omnigent-{os.getuid()}/claude-native/{omni_session}"
-    bridge.mkdir(parents=True)
-    # state.json holds the CLAUDE session id; bridge.json holds the OMNIGENT
-    # one. Conflating them would address the policy call to a nonexistent
-    # session, so the fixture keeps them deliberately different.
-    (bridge / "state.json").write_text(json.dumps({"claude_session_id": claude_session}))
-    (bridge / "bridge.json").write_text(json.dumps({"active_session_id": omni_session}))
-    return bridge
+async def test_a_closed_session_is_refused(tmp_path: Path) -> None:
+    """A watch on a session that can no longer be woken is pure waste."""
+    database = tmp_path / "watcher.sqlite3"
+    WatcherRepository(database)
+    value = tmp_path / "knob"
+    value.write_text("false\n")
+    closed = "0e891a642a8b4f499c6b2eb642cff66c"
 
-
-async def test_native_claude_stdio_server_returns_policy_bound_status(
-    tmp_path: Path,
-) -> None:
-    """Claude native resolves its bridge from CLAUDE_CODE_SESSION_ID.
-
-    Unlike Codex there is no CODEX_HOME pointing into the bridge directory --
-    Claude's is passed only as --bridge-dir to Omnigent's own MCP server, so a
-    separately-registered server has to match on the session id Claude Code
-    exports to every MCP process it spawns. Several bridges coexist, so the
-    fixture includes a decoy to prove the match is on identity, not on "the
-    only directory present".
-    """
-    _claude_bridge(tmp_path, "decoy-claude-session", "conv_decoy")
-    bridge = _claude_bridge(tmp_path, "claude-abc", "conv_live")
-
-    with _policy_relay("Diff watch: ci_failure; associated diff: D116561995.") as (
-        server,
-        requests,
-    ):
-        host = str(server.server_address[0])
-        port = int(server.server_address[1])
-        (bridge / "permission_hook.json").write_text(
-            json.dumps({"ap_server_url": f"http://{host}:{port}", "ap_auth_headers": {}})
-        )
-        parameters = StdioServerParameters(
-            command=sys.executable,
-            args=["-m", "omnigent_diff_watcher.mcp_server", "--native-claude"],
-            env={
-                **os.environ,
-                "TMPDIR": str(tmp_path),
-                "CLAUDE_CODE_SESSION_ID": "claude-abc",
-                "OMNIGENT_URL": "http://127.0.0.1:6767",
-            },
-        )
+    with _omnigent(closed=closed) as url, _server(database, url) as parameters:
         async with (
             stdio_client(parameters) as (reader, writer),
             ClientSession(reader, writer) as session,
         ):
             await session.initialize()
-            result = await session.call_tool("diff_watch_status", {})
-
-    assert result.isError is False
-    content = result.content[0]
-    assert isinstance(content, TextContent)
-    assert content.text == "Diff watch: ci_failure; associated diff: D116561995."
-    # Addressed by the Omnigent session id from bridge.json, not the Claude one.
-    assert requests[0]["_path"] == "/v1/sessions/conv_live/policies/evaluate"
-    event = requests[0]["event"]
-    assert isinstance(event, dict)
-    assert event["context"] == {"harness": "claude-native"}
-
-
-async def test_native_claude_without_a_matching_bridge_is_refused(tmp_path: Path) -> None:
-    """An unrecognised session must fail, never fall through to another bridge."""
-    _claude_bridge(tmp_path, "someone-elses-session", "conv_other")
-    parameters = StdioServerParameters(
-        command=sys.executable,
-        args=["-m", "omnigent_diff_watcher.mcp_server", "--native-claude"],
-        env={
-            **os.environ,
-            "TMPDIR": str(tmp_path),
-            "CLAUDE_CODE_SESSION_ID": "claude-unknown",
-            "OMNIGENT_URL": "http://127.0.0.1:6767",
-        },
-    )
-    async with (
-        stdio_client(parameters) as (reader, writer),
-        ClientSession(reader, writer) as session,
-    ):
-        await session.initialize()
-        result = await session.call_tool("diff_watch_status", {})
-
-    assert result.isError is True
-    content = result.content[0]
-    assert isinstance(content, TextContent)
-    assert "no Omnigent Claude bridge directory matches" in content.text
-
-
-def _closed_loopback_port() -> int:
-    """Return a loopback port with nothing listening on it."""
-    probe = socket.socket()
-    probe.bind(("127.0.0.1", 0))
-    port = int(probe.getsockname()[1])
-    probe.close()
-    return port
-
-
-async def test_native_codex_falls_back_to_the_server_when_the_relay_is_stale(
-    tmp_path: Path,
-) -> None:
-    """A stale relay advertisement must not strand the tool.
-
-    ``tool_relay.json`` is written per runner and survives that runner's
-    death, so a session whose runner restarted advertises a dead port while
-    ``policy_hook.json`` still points at the live server. Observed in
-    production: the relay port refused connections and every diff-watch call
-    failed closed even though the server was reachable.
-    """
-    codex_home = tmp_path / ".omnigent/codex-native/bridge/codex-home"
-    codex_home.mkdir(parents=True)
-    bridge = codex_home.parent
-    (bridge / "tool_relay.json").write_text(
-        json.dumps(
-            {
-                "url": f"http://127.0.0.1:{_closed_loopback_port()}",
-                "token": "stale-token",
-                "session_id": "conv_stale",
-            }
-        )
-    )
-    (bridge / "state.json").write_text(json.dumps({"session_id": "conv_live"}))
-
-    with _policy_relay("Diff watch: ci_failure,review_comment; associated diff: D1.") as (
-        server,
-        requests,
-    ):
-        host = str(server.server_address[0])
-        port = int(server.server_address[1])
-        (bridge / "policy_hook.json").write_text(
-            json.dumps({"ap_server_url": f"http://{host}:{port}", "ap_auth_headers": {}})
-        )
-        parameters = StdioServerParameters(
-            command=sys.executable,
-            args=["-m", "omnigent_diff_watcher.mcp_server", "--native-codex"],
-            env={**os.environ, "CODEX_HOME": str(codex_home)},
-        )
-        async with (
-            stdio_client(parameters) as (reader, writer),
-            ClientSession(reader, writer) as session,
-        ):
-            await session.initialize()
-            result = await session.call_tool("diff_watch_status", {})
-
-    assert result.isError is False
-    content = result.content[0]
-    assert isinstance(content, TextContent)
-    assert content.text == "Diff watch: ci_failure,review_comment; associated diff: D1."
-    # Routed to the session-scoped server endpoint, not the dead relay.
-    assert requests[0]["_path"] == "/v1/sessions/conv_stale/policies/evaluate"
+            result = await session.call_tool(
+                "watch_subscribe",
+                {
+                    "session_id": closed,
+                    "subject": SUBJECT,
+                    "command": ["cat", str(value)],
+                },
+            )
+            assert result.isError is True
+            assert "closed or archived" in _text(result)

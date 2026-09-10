@@ -6,7 +6,6 @@ import re
 import subprocess
 import sys
 import tomllib
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -15,11 +14,6 @@ import yaml
 DOTFILES = Path(__file__).resolve().parents[4]
 OMNIGENT_PYTHON = Path.home() / ".local/share/uv/tools/omnigent/bin/python"
 sys.path.insert(0, str(DOTFILES))
-
-from omnigent_config.policy_modules.capture_diff import (  # type: ignore[import-not-found]  # noqa: E402
-    capture_labels_policy,
-    diff_watch_preference_policy,
-)
 
 SKILL = DOTFILES / "agent_config/skills/phabricator-diff-watch/SKILL.md"
 
@@ -31,21 +25,6 @@ def _skill_parts() -> tuple[dict[str, object], str]:
     metadata = yaml.safe_load(match.group(1))
     assert isinstance(metadata, dict)
     return metadata, match.group(2)
-
-
-def _tool_event(name: str, arguments: object | None = None) -> dict[str, object]:
-    return {
-        "type": "tool_result",
-        "target": f"diff_watch__{name}",
-        "data": {"result": "intent recorded"},
-        "request_data": {"name": f"diff_watch__{name}", "arguments": arguments or {}},
-        "context": {
-            "labels": {
-                "omnigent.diff.number": "D90000001",
-                "omnigent.diff.watch": "ci_failure,review_comment",
-            }
-        },
-    }
 
 
 def test_skill_is_bounded_and_references_the_real_tools() -> None:
@@ -82,10 +61,8 @@ def test_personal_agent_specs_use_supported_stdio_mcp_tools() -> None:
         raw = yaml.safe_load((DOTFILES / f"omnigent_config/agents/{name}/config.yaml").read_text())
         tools = raw["tools"]
         assert "plugins" not in tools
-        # Diff tools only. An agent spec launches the MCP server with no
-        # --native flag, and the generic watch_* tools cannot identify their
-        # session without a native bridge directory, so listing them here
-        # would offer the agent tools that always fail.
+        # Both surfaces. Every tool takes the session to wake as an argument,
+        # so nothing here depends on the harness being native.
         assert tools["diff_watch"] == {
             "type": "mcp",
             "command": "omnigent-diff-watch-mcp",
@@ -93,6 +70,9 @@ def test_personal_agent_specs_use_supported_stdio_mcp_tools() -> None:
                 "diff_watch_subscribe",
                 "diff_watch_unsubscribe",
                 "diff_watch_status",
+                "watch_subscribe",
+                "watch_unsubscribe",
+                "watch_status",
             ],
         }
 
@@ -114,11 +94,9 @@ def test_native_codex_config_registers_the_diff_watch_mcp() -> None:
     assert "diff_watch" not in template.get("mcp_servers", {})
 
     work = tomllib.loads((DOTFILES / "codex_config/config.work.toml").read_text())
-    assert work["mcp_servers"]["diff_watch"] == {
-        "command": "omnigent-diff-watch-mcp",
-        "args": ["--native-codex"],
-        "env_vars": ["CODEX_HOME"],
-    }
+    # No args and no env_vars: identity is a tool argument now, so the server
+    # needs nothing from the harness.
+    assert work["mcp_servers"]["diff_watch"] == {"command": "omnigent-diff-watch-mcp"}
 
 
 def test_native_claude_mcp_definition_is_claude_scoped() -> None:
@@ -132,7 +110,7 @@ def test_native_claude_mcp_definition_is_claude_scoped() -> None:
         (DOTFILES / "agent_config/plugins/custom-mcps/mcps/diff-watch.json").read_text()
     )
     assert spec["agents"] == ["claude"]
-    assert spec["mcpServers"]["diff_watch"]["args"] == ["--native-claude"]
+    assert "args" not in spec["mcpServers"]["diff_watch"]
     # Absolute, because ~/dotfiles/bin is not on the PATH of an MCP server
     # spawned by Claude Code.
     assert spec["mcpServers"]["diff_watch"]["command"].startswith("~/dotfiles/bin/")
@@ -171,7 +149,7 @@ def test_sync_mcps_writes_where_claude_code_actually_reads(tmp_path: Path) -> No
 
     user_scope = json.loads((tmp_path / ".claude.json").read_text())
     assert "diff_watch" in user_scope["mcpServers"]
-    assert user_scope["mcpServers"]["diff_watch"]["args"] == ["--native-claude"]
+    assert "args" not in user_scope["mcpServers"]["diff_watch"]
     assert user_scope["projects"] == {"keep": 1}, "unrelated state must survive"
 
     settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
@@ -209,80 +187,6 @@ def test_sync_updates_canonical_codex_home_from_a_native_session() -> None:
     script = (DOTFILES / "sync.sh").read_text()
     assert '"$HOME"/.omnigent/codex-native/*/codex-home)' in script
     assert 'codex_home="$HOME/.codex"' in script
-
-
-def test_server_config_uses_only_existing_policy_extension_surface() -> None:
-    config = yaml.safe_load((DOTFILES / "omnigent_config/server.yaml").read_text())
-    assert "server_plugins" not in config
-    assert "approve_diff_watch_subscription" not in config["policies"]
-    preference = config["policies"]["diff_watch_preferences"]
-    assert preference["function"] == "capture_diff.diff_watch_preference_policy"
-    assert preference["set_labels"] == [
-        "omnigent.diff.watch",
-        "omnigent.diff.number",
-    ]
-
-
-def test_preference_policy_binds_subscribe_status_and_unsubscribe_to_labels() -> None:
-    subscribe = diff_watch_preference_policy(
-        _tool_event("diff_watch_subscribe", {"events": ["review_comment"]})
-    )
-    assert subscribe is not None
-    assert subscribe["set_labels"] == {"omnigent.diff.watch": "review_comment"}
-    assert "D90000001" in subscribe["data"]
-
-    status = diff_watch_preference_policy(_tool_event("diff_watch_status"))
-    assert status is not None
-    assert "ci_failure,review_comment" in status["data"]
-
-    unsubscribe = diff_watch_preference_policy(_tool_event("diff_watch_unsubscribe"))
-    assert unsubscribe is not None
-    assert unsubscribe["set_labels"] == {"omnigent.diff.watch": "off"}
-
-
-def test_subscribe_without_a_captured_diff_does_not_write_preference() -> None:
-    event = _tool_event("diff_watch_subscribe")
-    event["context"] = {"labels": {}}
-    result = diff_watch_preference_policy(event)
-    assert result is not None
-    assert "set_labels" not in result
-    assert "no associated" in result["data"]
-    assert 'diffs: ["D12345"]' in result["data"]
-
-
-def test_subscribe_associates_an_explicit_existing_stack() -> None:
-    event = _tool_event(
-        "diff_watch_subscribe",
-        {
-            "diffs": ["D94275133", "D111179037", "D111179038", "D111179041"],
-            "events": ["review_comment", "ci_failure", "ai_review", "ci_green"],
-        },
-    )
-    event["context"] = {"labels": {"omnigent.diff.number": "D94275133"}}
-
-    result = diff_watch_preference_policy(event)
-
-    assert result is not None
-    assert result["set_labels"] == {
-        "omnigent.diff.watch": "ai_review,ci_failure,ci_green,review_comment",
-        "omnigent.diff.number": "D94275133,D111179037,D111179038,D111179041",
-    }
-    for diff_id in ("D94275133", "D111179037", "D111179038", "D111179041"):
-        assert diff_id in result["data"]
-
-
-def test_subscribe_rejects_an_invalid_explicit_diff() -> None:
-    event = _tool_event(
-        "diff_watch_subscribe",
-        {"diffs": ["D111179041", "not-a-diff"]},
-    )
-    event["context"] = {"labels": {}}
-
-    result = diff_watch_preference_policy(event)
-
-    assert result is not None
-    assert "set_labels" not in result
-    assert "every diff must look like D12345" in result["data"]
 
 
 def test_service_and_mcp_runtime_are_source_control_wired() -> None:
@@ -336,6 +240,9 @@ def test_packaged_agent_overlays_add_diff_watch_without_losing_agent_tools(
                 "diff_watch_subscribe",
                 "diff_watch_unsubscribe",
                 "diff_watch_status",
+                "watch_subscribe",
+                "watch_unsubscribe",
+                "watch_status",
             ],
         }
 
@@ -351,200 +258,3 @@ def test_sync_leaves_hub_owned_watcher_to_reconciliation() -> None:
         "esac", maxsplit=1
     )[0]
     assert "omnigent-diff-watcher.service" in generic_enable_case
-
-
-def test_preference_policy_reports_every_diff_in_a_stack() -> None:
-    event = _tool_event("diff_watch_subscribe")
-    event["context"] = {
-        "labels": {
-            "omnigent.diff.number": "D90000001,D90000002,D90000003",
-            "omnigent.diff.watch": "ci_failure,review_comment",
-        }
-    }
-    subscribe = diff_watch_preference_policy(event)
-    assert subscribe is not None
-    assert subscribe["set_labels"] == {
-        "omnigent.diff.watch": "ai_review,ci_failure,ci_green,review_comment"
-    }
-    for diff_id in ("D90000001", "D90000002", "D90000003"):
-        assert diff_id in subscribe["data"]
-
-
-def test_preference_policy_ignores_malformed_entries_in_the_diff_label() -> None:
-    event = _tool_event("diff_watch_status")
-    event["context"] = {
-        "labels": {
-            "omnigent.diff.number": "D90000001,,notadiff,D0,D90000001,D90000002",
-            "omnigent.diff.watch": "ci_failure",
-        }
-    }
-    status = diff_watch_preference_policy(event)
-    assert status is not None
-    # Deduped, D0 and the non-diff token dropped, first-seen order preserved.
-    assert "D90000001, D90000002" in status["data"]
-    assert "notadiff" not in status["data"]
-
-
-def _capture_event(text: str, labels: dict[str, str] | None = None) -> dict[str, object]:
-    return {
-        "type": "tool_result",
-        "target": "Bash",
-        "data": {"result": text},
-        "context": {"labels": labels or {}},
-    }
-
-
-def _diff_capture() -> Callable[[dict[str, object]], dict[str, object] | None]:
-    """Build the evaluator from the real server config, not a local copy."""
-    config = yaml.safe_load((DOTFILES / "omnigent_config/server.yaml").read_text())
-    arguments = config["policies"]["capture_diff"]["function"]["arguments"]
-    evaluator: Callable[[dict[str, object]], dict[str, object] | None] = capture_labels_policy(
-        **arguments
-    )
-    return evaluator
-
-
-def _captured_diffs(result: dict[str, object] | None) -> str:
-    """Extract the diff label a capture evaluator wrote."""
-    assert result is not None
-    labels = result["set_labels"]
-    assert isinstance(labels, dict)
-    value = labels["omnigent.diff.number"]
-    assert isinstance(value, str)
-    return value
-
-
-def _revision(diff_id: str) -> str:
-    return f"Differential Revision: https://phabricator.intern.facebook.com/{diff_id}"
-
-
-def test_capture_accumulates_every_diff_a_single_submit_prints() -> None:
-    evaluate = _diff_capture()
-    result = evaluate(
-        _capture_event("\n".join(_revision(d) for d in ("D115903821", "D115903820", "D115903819")))
-    )
-    assert _captured_diffs(result) == "D115903821,D115903820,D115903819"
-
-
-def test_capture_accepts_current_jf_submit_result_lines() -> None:
-    evaluate = _diff_capture()
-    result = evaluate(
-        _capture_event(
-            "\n".join(
-                (
-                    "      - created: https://www.internalfb.com/diff/D116563979 "
-                    "with draft version 416630625",
-                    "      - updated: https://www.internalfb.com/diff/D116338876",
-                    "      - skipped: https://www.internalfb.com/diff/D115903819",
-                )
-            )
-        )
-    )
-    assert _captured_diffs(result) == "D116563979,D116338876,D115903819"
-
-
-def test_capture_accepts_the_conf_submit_result_line() -> None:
-    """Configerator submits through `conf submit`, not `jf submit`.
-
-    It announces the diff as "Review your change here:", which matches neither
-    the commit-message form nor jf's created/updated/skipped lines, so every
-    configerator diff went uncaptured and its session got no CI watching.
-    """
-    evaluate = _diff_capture()
-    result = evaluate(
-        _capture_event(
-            "[22.3s] Creating code review for mutation 6298091012\n"
-            "Review your change here: https://www.internalfb.com/diff/D116561641\n"
-        )
-    )
-    assert _captured_diffs(result) == "D116561641"
-
-
-def test_capture_ignores_a_diff_url_in_the_command_itself() -> None:
-    """A diff URL in the request is being written, not announced.
-
-    Regression: verifying this policy with a fixture containing a
-    `Differential Revision:` line bound D99999999 -- a diff that does not
-    exist -- to the live session, because the request used to be searched
-    alongside the output. Drafted commit messages and docs hit the same path,
-    and since the label is a capped evict-oldest set, a false capture can
-    displace a real diff.
-    """
-    evaluate = _diff_capture()
-    event = _capture_event("1 files updated\n")
-    event["request_data"] = {
-        "name": "Bash",
-        "arguments": {
-            "command": 'sl commit -m "Differential Revision: https://www.internalfb.com/D99999999"'
-        },
-    }
-    assert evaluate(event) is None
-
-
-def test_capture_still_reads_results_under_a_nonstandard_payload_shape() -> None:
-    """Dropping the request must not cost the data-shape fallback."""
-    evaluate = _diff_capture()
-    event: dict[str, object] = {
-        "type": "tool_result",
-        "target": "Bash",
-        "data": {"stdout": "Review your change here: https://www.internalfb.com/diff/D42"},
-        "context": {"labels": {}},
-    }
-    assert _captured_diffs(evaluate(event)) == "D42"
-
-
-def test_capture_ignores_diff_urls_in_documentation() -> None:
-    """A full diff URL with no submit marker must not bind the session.
-
-    This is why the marker cannot be dropped in favour of matching the URL
-    alone: `https://.../diff/D<n>` occurs in checked-in skill docs and in
-    installed plugin references, which agents read routinely.
-    """
-    evaluate = _diff_capture()
-    for prose in (
-        "For example, see https://www.internalfb.com/diff/D12345678 for a stack.",
-        "Reviewed at https://www.internalfb.com/diff/D999 by the oncall.",
-        "| D116561641 | https://www.internalfb.com/diff/D116561641 | landed |",
-    ):
-        assert evaluate(_capture_event(prose)) is None, prose
-
-
-def test_capture_appends_to_an_existing_stack_without_duplicating() -> None:
-    evaluate = _diff_capture()
-    result = evaluate(
-        _capture_event(
-            "\n".join(_revision(d) for d in ("D115903821", "D116338876")),
-            {"omnigent.diff.number": "D115903821,D115903820"},
-        )
-    )
-    assert _captured_diffs(result) == "D115903821,D115903820,D116338876"
-
-
-def test_capture_abstains_when_the_stack_is_already_complete() -> None:
-    evaluate = _diff_capture()
-    event = _capture_event(_revision("D115903821"), {"omnigent.diff.number": "D115903821"})
-    assert evaluate(event) is None
-
-
-def test_capture_ignores_bare_diff_numbers_in_documentation() -> None:
-    """Regression: a bare ``D\\d+`` pattern bound sessions to doc placeholders.
-
-    The capture policy inspects every tool's output, so example diff numbers in
-    skill and CLI documentation latched onto the label permanently under the old
-    first-match-wins rule.
-    """
-    evaluate = _diff_capture()
-    assert evaluate(_capture_event('  "diff_num": "D12345678",')) is None
-    assert evaluate(_capture_event("Differential Revision: D12345678")) is None
-    assert evaluate(_capture_event("see Differential Revision: D12345 for an example")) is None
-
-
-def test_capture_drops_oldest_entries_at_the_label_cap() -> None:
-    evaluate = _diff_capture()
-    existing = ",".join(f"D9000{index:04d}" for index in range(30))
-    assert len(existing) > 256
-    result = evaluate(_capture_event(_revision("D115903821"), {"omnigent.diff.number": existing}))
-    value = _captured_diffs(result)
-    assert len(value) <= 256
-    assert value.endswith("D115903821")
-    assert not value.startswith("D90000000")

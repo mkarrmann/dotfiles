@@ -12,7 +12,7 @@ from omnigent_diff_watcher.watcher import DiffWatcher
 from tests.support import FakeClock, FakeReviewSource, fixture
 
 
-async def test_label_subscription_batches_and_posts_one_existing_api_event(
+async def test_a_subscription_batches_and_posts_one_existing_api_event(
     tmp_path: Path,
 ) -> None:
     posts: list[dict[str, object]] = []
@@ -28,10 +28,7 @@ async def test_label_subscription_batches_and_posts_one_existing_api_event(
             json={
                 "id": "conv_watch",
                 "status": "idle",
-                "labels": {
-                    "omnigent.diff.number": "D90000001",
-                    "omnigent.diff.watch": "ci_failure,review_comment",
-                },
+                "labels": {},
                 "runner_id": "runner",
                 "runner_online": True,
                 "pending_elicitations": [],

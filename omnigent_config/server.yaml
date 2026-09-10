@@ -9,52 +9,11 @@
 # Extra policy modules to import at startup (dotted module paths, resolved via
 # PYTHONPATH). Their POLICY_REGISTRY entries are merged into the registry.
 policy_modules:
-  - capture_diff
   - no_foreground_wait
 
 # Server-wide default policies, appended after per-agent policies for EVERY
-# session. `type: function` self-selects its phase (a tool_result capture here),
-# so no `on:` is needed.
+# session. `type: function` self-selects its phase, so no `on:` is needed.
 policies:
-  # No ASK gate: watcher preferences are session-scoped, idempotent, and
-  # reversible. Explicit DENY policies still apply normally.
-  diff_watch_preferences:
-    type: function
-    function: capture_diff.diff_watch_preference_policy
-    set_labels:
-      - omnigent.diff.watch
-      - omnigent.diff.number
-
-  capture_diff:
-    type: function
-    function:
-      path: capture_diff.capture_labels_policy
-      arguments:
-        patterns:
-          # Phabricator diffs created by any tool -> omnigent.diff.number.
-          #
-          # The leading marker is an allowlist of submit-success wordings and it
-          # is load-bearing: every submit path must be listed here or its diffs
-          # are never captured, and that session silently gets no CI or review
-          # watching. Currently:
-          #   Differential Revision:      commit message, so any later sl log
-          #   created:/updated:/skipped:  jf submit
-          #   Review your change here:    conf submit (configerator)
-          #
-          # Neither half of the pattern is sufficient on its own. A bare `D\d+`
-          # latches onto example diff numbers in prose. A bare URL is no better:
-          # `https://.../diff/D<n>` appears in checked-in skill docs and in
-          # several installed plugin references, any of which an agent may read
-          # through a tool whose output this policy sees.
-          omnigent.diff.number: '(?:Differential Revision:|Review your change here:|(?:created|updated|skipped):)\s*https?://\S*?/(D[1-9][0-9]*)\b'
-        # One session routinely owns a whole stack, and a single `jf submit`
-        # prints every diff in it, so this label is a comma-separated set.
-        accumulate:
-          - omnigent.diff.number
-    # Whitelist of label keys this policy may write.
-    set_labels:
-      - omnigent.diff.number
-
   # Refuse a shell command that blocks the turn on a long sleep — waiting in-turn
   # spends a model turn to produce nothing, and every harness can detach instead.
   # Enforced here rather than as per-harness PreToolUse hooks because one policy

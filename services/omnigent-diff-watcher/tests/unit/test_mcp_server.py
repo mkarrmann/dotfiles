@@ -5,28 +5,9 @@ from typing import get_args
 import pytest
 
 from omnigent_diff_watcher.domain import DIFF_EVENT_KINDS
-from omnigent_diff_watcher.mcp_server import (
-    _ALL_EVENTS,
-    EventName,
-    diff_watch_status,
-    diff_watch_subscribe,
-    diff_watch_unsubscribe,
-    mcp,
-)
+from omnigent_diff_watcher.mcp_server import _ALL_EVENTS, EventName, mcp
 
-
-def test_intent_tools_return_bounded_non_identity_results() -> None:
-    assert diff_watch_subscribe() == (
-        "Diff-watch preference requested for: ai_review,ci_failure,ci_green,review_comment"
-    )
-    assert diff_watch_subscribe(["review_comment"]) == (
-        "Diff-watch preference requested for: review_comment"
-    )
-    assert diff_watch_subscribe(["ci_green"], ["D111179041"]) == (
-        "Diff-watch preference requested for: ci_green"
-    )
-    assert "unsubscribe requested" in diff_watch_unsubscribe()
-    assert "session policy" in diff_watch_status()
+SESSION = "a989d27536ab4b1b912b0e07efc2ee21"
 
 
 def test_published_event_names_match_the_watcher_domain() -> None:
@@ -39,16 +20,6 @@ def test_published_event_names_match_the_watcher_domain() -> None:
     """
     assert set(_ALL_EVENTS) == {kind.value for kind in DIFF_EVENT_KINDS}
     assert set(get_args(EventName)) == {kind.value for kind in DIFF_EVENT_KINDS}
-
-
-def test_subscribe_rejects_an_empty_selection() -> None:
-    with pytest.raises(ValueError, match="at least one"):
-        diff_watch_subscribe([])
-
-
-def test_subscribe_rejects_an_empty_diff_selection() -> None:
-    with pytest.raises(ValueError, match="at least one diff ID"):
-        diff_watch_subscribe(diffs=[])
 
 
 async def test_mcp_exposes_the_diff_and_generic_watch_surfaces() -> None:
@@ -65,28 +36,52 @@ async def test_mcp_exposes_the_diff_and_generic_watch_surfaces() -> None:
         "watch_unsubscribe",
         "watch_status",
     }
-    # The diff surface must not grow generic knobs.
     diff_subscribe = next(tool for tool in tools if tool.name == "diff_watch_subscribe")
-    assert "command" not in diff_subscribe.inputSchema.get("properties", {})
-    assert "source" not in diff_subscribe.inputSchema.get("properties", {})
-    subscribe = next(tool for tool in tools if tool.name == "diff_watch_subscribe")
-    assert "session_id" not in subscribe.inputSchema.get("properties", {})
-    diffs = subscribe.inputSchema.get("properties", {}).get("diffs", {})
-    assert diffs["anyOf"][0]["items"]["pattern"] == "^D[1-9][0-9]*$"
-    assert diffs["anyOf"][0]["minItems"] == 1
-    assert diffs["anyOf"][0]["maxItems"] == 20
+    properties = diff_subscribe.inputSchema.get("properties", {})
+    # The diff surface must not grow generic knobs.
+    assert "command" not in properties
+    assert "source" not in properties
+    assert properties["diffs"]["items"]["pattern"] == "^D[1-9][0-9]*$"
+    assert properties["diffs"]["minItems"] == 1
 
 
-def test_generic_watches_refuse_outside_a_native_session() -> None:
-    """The generic surface is native-only, and has to say so.
+async def test_every_tool_takes_the_session_to_wake() -> None:
+    """The wake address is the one thing a watch cannot infer.
 
-    diff_watch_* works from any harness because a server-side policy binds its
-    result. A generic watch writes to the database itself, so it must identify
-    the session, which a streamed SDK session cannot supply -- and the failure
-    has to name that rather than claim a Codex session is required.
+    It is required on every tool, including the read-only ones: a status or
+    unsubscribe call with no session would have to guess whose watches it means.
+    Discovering it instead worked for exactly two harnesses -- see the module
+    docstring -- so a missing ``session_id`` here is a return to that.
+    """
+    for tool in await mcp.list_tools():
+        schema = tool.inputSchema
+        assert "session_id" in schema.get("properties", {}), tool.name
+        assert "session_id" in schema.get("required", []), tool.name
+
+
+def test_nothing_in_the_surface_is_harness_specific() -> None:
+    """No bridge-directory resolution may come back.
+
+    Identity used to be discovered by scanning the harness's private bridge
+    directory, which worked for two harnesses, coupled the tool to Omnigent's
+    internal directory names, and could match two bridges at once. Taking the
+    address as an argument is what replaced all of it.
     """
     from omnigent_diff_watcher import mcp_server
 
-    assert mcp_server._NATIVE_MODE is None
-    with pytest.raises(RuntimeError, match="require an Omnigent native"):
-        mcp_server.watch_subscribe("jk:demo", ["true"])
+    for banned in (
+        "_claude_bridge_dir",
+        "_codex_bridge_dir",
+        "_native_bridge_dir",
+        "_policy_endpoints",
+        "_native_policy_result",
+        "_NATIVE_MODE",
+    ):
+        assert not hasattr(mcp_server, banned), banned
+
+
+async def test_subscribe_rejects_an_empty_event_selection() -> None:
+    from omnigent_diff_watcher.mcp_server import diff_watch_subscribe
+
+    with pytest.raises(ValueError, match="at least one"):
+        await diff_watch_subscribe(SESSION, ["D111179041"], [])

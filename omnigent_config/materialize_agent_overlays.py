@@ -11,10 +11,9 @@ from pathlib import Path
 import yaml
 
 _PACKAGED_AGENTS = {"polly", "debby"}
-# Only the diff surface. These bundles launch the MCP server with no --native
-# flag, and the generic watch_* tools cannot identify their session without a
-# native bridge directory, so advertising them here would offer an agent tools
-# that always fail. See mcp_server._watch_repository.
+# Both surfaces, for every agent. Neither needs a native harness: each tool
+# takes the session to wake as an argument, so nothing in the MCP server is
+# harness-specific.
 _DIFF_WATCH = {
     "type": "mcp",
     "command": "omnigent-diff-watch-mcp",
@@ -22,6 +21,9 @@ _DIFF_WATCH = {
         "diff_watch_subscribe",
         "diff_watch_unsubscribe",
         "diff_watch_status",
+        "watch_subscribe",
+        "watch_unsubscribe",
+        "watch_status",
     ],
 }
 

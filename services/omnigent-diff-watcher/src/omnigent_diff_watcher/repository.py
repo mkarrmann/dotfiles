@@ -516,13 +516,30 @@ class WatcherRepository:
         return results
 
     def cancel_watch_requests(
-        self, session_id: str, *, now: float, subject: str | None = None
+        self,
+        session_id: str,
+        *,
+        now: float,
+        subject: str | None = None,
+        sources: Iterable[str] | None = None,
     ) -> int:
+        """Cancel a session's watch requests, optionally scoped by source.
+
+        ``sources`` is what stops one surface's unsubscribe from cancelling the
+        other's requests: without it a bare ``diff_watch_unsubscribe`` would
+        retire only the diff subscriptions but cancel every request the session
+        owns, and the generic watches would silently stop being re-bound.
+        """
         query = "UPDATE watch_requests SET state = 'cancelled', updated_at = ? WHERE session_id = ?"
         parameters: tuple[object, ...] = (now, session_id)
         if subject is not None:
             query += " AND subject = ?"
             parameters += (subject,)
+        if sources is not None:
+            names = tuple(sources)
+            placeholders = ",".join("?" for _ in names)
+            query += f" AND source IN ({placeholders})"
+            parameters += names
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(query + " AND state = 'active'", parameters)

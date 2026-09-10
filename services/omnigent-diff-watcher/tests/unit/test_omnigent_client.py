@@ -9,40 +9,12 @@ from omnigent_diff_watcher.domain import EventDeliveryStatus
 from omnigent_diff_watcher.omnigent_client import (
     OmnigentClient,
     OmnigentDeliveryService,
-    desired_watch,
 )
 
 
 def _client(handler: httpx.MockTransport) -> tuple[OmnigentClient, httpx.AsyncClient]:
     raw = httpx.AsyncClient(transport=handler, base_url="http://server")
     return OmnigentClient("http://unused", client=raw), raw
-
-
-async def test_lists_every_session_page() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        after = request.url.params.get("after")
-        if after is None:
-            return httpx.Response(
-                200,
-                json={
-                    "data": [{"id": "conv_one", "labels": {}}],
-                    "has_more": True,
-                    "last_id": "conv_one",
-                },
-            )
-        return httpx.Response(
-            200,
-            json={"data": [{"id": "conv_two", "labels": {}}], "has_more": False},
-        )
-
-    client, raw = _client(httpx.MockTransport(handler))
-    try:
-        assert [item["id"] for item in await client.list_sessions()] == [
-            "conv_one",
-            "conv_two",
-        ]
-    finally:
-        await raw.aclose()
 
 
 @pytest.mark.parametrize(
@@ -154,57 +126,3 @@ async def test_delivery_posts_the_existing_hidden_event_shape_once() -> None:
         }
     finally:
         await raw.aclose()
-
-
-def test_desired_watch_requires_a_diff_and_valid_preferences() -> None:
-    assert desired_watch({"labels": {"omnigent.diff.number": "D1"}}) is None
-    assert desired_watch(
-        {
-            "labels": {
-                "omnigent.diff.number": "D1",
-                "omnigent.diff.watch": "ci_failure,review_comment",
-            }
-        }
-    ) == (("D1",), frozenset({"ci_failure", "review_comment"}))
-    assert (
-        desired_watch(
-            {
-                "labels": {
-                    "omnigent.diff.number": "D1",
-                    "omnigent.diff.watch": "unknown",
-                }
-            }
-        )
-        is None
-    )
-
-
-def test_desired_watch_returns_every_diff_in_a_stack() -> None:
-    assert desired_watch(
-        {
-            "labels": {
-                "omnigent.diff.number": "D115903821,D115903820,D115903819",
-                "omnigent.diff.watch": "ci_failure",
-            }
-        }
-    ) == (("D115903821", "D115903820", "D115903819"), frozenset({"ci_failure"}))
-
-
-def test_desired_watch_drops_malformed_and_duplicate_diff_entries() -> None:
-    assert desired_watch(
-        {
-            "labels": {
-                "omnigent.diff.number": " D1 ,,junk,D0,D1,D2",
-                "omnigent.diff.watch": "ci_failure",
-            }
-        }
-    ) == (("D1", "D2"), frozenset({"ci_failure"}))
-
-
-def test_desired_watch_is_none_when_no_entry_is_a_valid_diff() -> None:
-    assert (
-        desired_watch(
-            {"labels": {"omnigent.diff.number": "junk,D0", "omnigent.diff.watch": "ci_failure"}}
-        )
-        is None
-    )

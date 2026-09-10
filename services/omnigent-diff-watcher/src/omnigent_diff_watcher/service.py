@@ -1,4 +1,4 @@
-"""Standalone scheduler and session-label reconciliation."""
+"""Standalone scheduler and watch-request reconciliation."""
 
 from __future__ import annotations
 
@@ -8,15 +8,24 @@ import time
 
 from .command_source import SOURCE_NAME as COMMAND_SOURCE_NAME
 from .command_source import CommandSource
-from .domain import EventKind, SubscriptionState
-from .omnigent_client import OmnigentClient, OmnigentDeliveryService, desired_watch
-from .phabricator_source import SOURCE_NAME as PHABRICATOR_SOURCE_NAME
+from .domain import SubscriptionState
+from .omnigent_client import OmnigentClient, OmnigentDeliveryService
 from .phabricator_source import PhabricatorReviewSource, bounded_source_environment
 from .repository import WatcherRepository
 from .settings import ServiceSettings
 from .watcher import DiffWatcher, SubscriptionError
 
 _logger = logging.getLogger(__name__)
+
+# A binding that fails is retried on a doubling delay rather than every cycle.
+# Reconciliation is desired-state, so nothing records that a subject could not
+# be bound and the next cycle simply tries again -- which for a permanently
+# unusable subject means forever, at one HTTP call and one `jf` subprocess per
+# cycle. Deliberately not a classification of which errors are permanent: the
+# same decay serves a terminal diff and a Phabricator outage, and misjudging
+# "permanent" is how a subject that later becomes readable never binds.
+RECONCILE_BACKOFF_BASE_SECONDS = 60.0
+RECONCILE_BACKOFF_MAX_SECONDS = 6 * 60 * 60.0
 
 
 class DiffWatcherService:
@@ -44,6 +53,30 @@ class DiffWatcherService:
             },
         )
         self._next_reconcile = 0.0
+        # (session_id, subject) -> (consecutive failures, earliest next attempt).
+        # In memory rather than a table: the cost being avoided is a long-lived
+        # process retrying every 15s, and a restart re-attempting each binding
+        # once is the correct behaviour anyway.
+        self._deferred_bindings: dict[tuple[str, str], tuple[int, float]] = {}
+
+    def _binding_deferred(self, session_id: str, subject: str, now: float) -> bool:
+        entry = self._deferred_bindings.get((session_id, subject))
+        return entry is not None and now < entry[1]
+
+    def _defer_binding(self, session_id: str, subject: str, now: float) -> float:
+        failures, _ = self._deferred_bindings.get((session_id, subject), (0, 0.0))
+        failures += 1
+        delay = float(
+            min(
+                RECONCILE_BACKOFF_BASE_SECONDS * 2 ** (failures - 1),
+                RECONCILE_BACKOFF_MAX_SECONDS,
+            )
+        )
+        self._deferred_bindings[(session_id, subject)] = (failures, now + delay)
+        return delay
+
+    def _binding_succeeded(self, session_id: str, subject: str) -> None:
+        self._deferred_bindings.pop((session_id, subject), None)
 
     async def run(self) -> None:
         try:
@@ -72,90 +105,35 @@ class DiffWatcherService:
         await self.watcher.run_iteration()
 
     async def reconcile_subscriptions(self) -> None:
-        await self.reconcile_requested_watches()
-        sessions = await self.client.list_sessions()
-        for item in sessions:
-            session_id = item.get("id")
-            if not isinstance(session_id, str):
-                continue
-            desired = desired_watch(item)
-            # Scoped to diffs: a session's labels describe only its stack, so
-            # retiring "everything the labels no longer claim" must not reach a
-            # generic watch, which is declared through watch_requests instead.
-            existing_all = await asyncio.to_thread(
-                self.repository.subscriptions_for_session,
-                session_id,
-                sources=(PHABRICATOR_SOURCE_NAME,),
-            )
-            existing_by_diff = {row.subject: row for row in existing_all}
-            if desired is None:
-                for row in existing_all:
-                    if row.state is SubscriptionState.RETIRED:
-                        continue
-                    await asyncio.to_thread(
-                        self.repository.retire_subscription,
-                        row.id,
-                        # Matches repository.unsubscribe, which this replaced
-                        # when the sweep became source-scoped.
-                        "unsubscribed",
-                        now=time.time(),
-                    )
-                continue
-            subjects, raw_events = desired
-            event_types = frozenset(EventKind(value) for value in raw_events)
+        """Re-bind whatever the recorded watch requests still ask for.
 
-            # Retire diffs the session no longer claims, without disturbing the
-            # ones it still does. A stack shrinks as its diffs land.
-            for row in existing_all:
-                if row.subject in subjects or row.state is SubscriptionState.RETIRED:
-                    continue
-                await asyncio.to_thread(
-                    self.repository.retire_subscription,
-                    row.id,
-                    "preference_removed",
-                    now=time.time(),
-                )
+        Every watch is registered synchronously by the MCP tool, which binds it
+        before returning, so this is a *recovery* pass rather than the path a
+        watch normally takes: it re-establishes subscriptions after a restart,
+        and picks up rows written while the sidecar was down.
 
-            for subject in subjects:
-                existing = existing_by_diff.get(subject)
-                if (
-                    existing is not None
-                    and existing.event_types == event_types
-                    and existing.state is not SubscriptionState.RETIRED
-                ):
-                    continue
-                if (
-                    existing is not None
-                    and existing.state is SubscriptionState.RETIRED
-                    and existing.retired_reason not in {"unsubscribed", "preference_removed"}
-                ):
-                    continue
-                try:
-                    await self.watcher.subscribe(session_id, subject, event_types)
-                except SubscriptionError as exc:
-                    # One unusable diff (terminal, missing, or a stale label
-                    # entry) must not stop the rest of the stack from binding.
-                    #
-                    # TODO(mkarrmann): a permanently unusable label entry is
-                    # retried every reconcile cycle forever -- nothing records
-                    # the failure, so the next cycle tries again. The live log
-                    # has 58k of these, 31k for a single placeholder D99999999,
-                    # each costing an HTTP call and a `jf` subprocess every 15s.
-                    # Predates the generic-watch work (the count is against the
-                    # old wording). Wants a negative cache or a retired marker
-                    # for terminal/missing subjects, keyed so a diff that later
-                    # becomes readable can still bind.
-                    _logger.warning(
-                        "could not reconcile session=%s diff=%s: %s", session_id, subject, exc
-                    )
-
-    async def reconcile_requested_watches(self) -> None:
-        """Bind generic watches a session recorded through the MCP tool.
-
-        Unlike the label path this is additive: a request stays the desired
-        state until the session cancels it or the session itself dies, so a
-        watch survives the session going quiet.
+        It replaced a sweep over session labels. That sweep was how a watch used
+        to be declared at all, and it is why the watcher needed to poll
+        ``GET /v1/sessions`` and parse two labels off every session in the
+        install.
         """
+        wanted = await self.reconcile_requested_watches()
+        # A binding nobody wants any more takes its backoff entry with it, so a
+        # session that re-registers later starts fresh rather than inheriting a
+        # six-hour deferral.
+        for key in self._deferred_bindings.keys() - wanted:
+            del self._deferred_bindings[key]
+
+    async def reconcile_requested_watches(self) -> set[tuple[str, str]]:
+        """Bind the watches sessions have recorded, whatever their source.
+
+        Additive: a request stays the desired state until the session cancels it
+        or the session itself dies, so a watch survives the session going quiet.
+
+        :returns: The ``(session_id, subject)`` bindings still wanted, so the
+            caller can expire backoff entries for the ones that are not.
+        """
+        wanted: set[tuple[str, str]] = set()
         for (
             session_id,
             source_name,
@@ -163,12 +141,14 @@ class DiffWatcherService:
             spec,
             event_types,
         ) in await asyncio.to_thread(self.repository.active_watch_requests):
+            wanted.add((session_id, subject))
             existing = await asyncio.to_thread(self.repository.subscription, session_id, subject)
             if (
                 existing is not None
                 and existing.event_types == event_types
                 and existing.state is not SubscriptionState.RETIRED
             ):
+                self._binding_succeeded(session_id, subject)
                 continue
             # A watch retired for cause (its session died, delivery went
             # terminal) must not be resurrected on the next cycle.
@@ -184,6 +164,8 @@ class DiffWatcherService:
                     subject=subject,
                 )
                 continue
+            if self._binding_deferred(session_id, subject, time.time()):
+                continue
             try:
                 await self.watcher.subscribe(
                     session_id,
@@ -193,12 +175,17 @@ class DiffWatcherService:
                     spec=spec,
                 )
             except SubscriptionError as exc:
+                delay = self._defer_binding(session_id, subject, time.time())
                 _logger.warning(
-                    "could not bind watch session=%s subject=%s: %s",
+                    "could not bind watch session=%s subject=%s: %s (retrying in %.0fs)",
                     session_id,
                     subject,
                     exc,
+                    delay,
                 )
+            else:
+                self._binding_succeeded(session_id, subject)
+        return wanted
 
     def _next_delay(self) -> float:
         now = time.time()

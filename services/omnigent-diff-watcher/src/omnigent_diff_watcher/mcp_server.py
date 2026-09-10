@@ -1,26 +1,71 @@
-"""Stateless MCP intent tools; Omnigent policy binds results to a session."""
+"""MCP tools that register watches against the watcher's own database.
+
+Every tool takes the Omnigent ``session_id`` it should wake, because that is
+the only thing a watch needs from its caller that the caller cannot state
+directly. Agents get it from Omnigent's own ``sys_session_get_info``.
+
+Asking for it, rather than discovering it, is what makes this work in every
+harness. The MCP protocol carries no session context in any transport --
+stdio ``env`` and HTTP ``headers`` are static, there is no ``_meta``
+plumbing, and Omnigent's pool shares one server process across sessions -- so
+a tool can only learn its own session by scraping the harness's private bridge
+directory, which exists for exactly two harnesses. An explicit address costs
+one cheap tool call and works everywhere.
+
+It is also more capable: ``sys_session_get_info`` returns ``parent_session_id``
+alongside the session's own, so a subagent can register a watch that wakes its
+*parent*. Self-discovery could only ever bind the wake to the subagent, which
+is usually gone by the time it fires.
+
+The trade is that the address comes from the model, so a session could name
+another of its own. Every id is validated against the server before anything
+is written, which catches a typo or a dead session; a deliberate wrong-but-live
+id would wake a different session of the same user, on the same machine, from
+an agent that already has that user's shell. Nuisance, not escalation.
+"""
 
 from __future__ import annotations
 
 import argparse
-import json
+import asyncio
 import os
-import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
-from urllib.parse import quote, urlparse
 
 import httpx
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
+from .domain import EventDeliveryResult, SessionSnapshot
+
 if TYPE_CHECKING:
     from .repository import WatcherRepository
+    from .settings import ServiceSettings
+    from .watcher import DiffWatcher
 
 mcp = FastMCP("diff-watch", log_level="ERROR")
+
 # Spelled out rather than derived from EventKind so the published tool schema
 # stays a literal; tests pin the two together.
 EventName = Literal["review_comment", "ci_failure", "ai_review", "ci_green"]
+_ALL_EVENTS: tuple[EventName, ...] = (
+    "review_comment",
+    "ci_failure",
+    "ai_review",
+    "ci_green",
+)
+
+SessionId = Annotated[
+    str,
+    Field(
+        pattern=r"^[A-Za-z0-9_-]{8,128}$",
+        description=(
+            "The Omnigent session to wake. Call sys_session_get_info and pass "
+            "its session_id -- or its parent_session_id if you are a subagent "
+            "that will not outlive the watch."
+        ),
+    ),
+]
 DiffId = Annotated[
     str,
     Field(
@@ -33,273 +78,9 @@ DiffIds = Annotated[
     Field(
         min_length=1,
         max_length=20,
-        description="Existing Phabricator diffs to associate with this session.",
+        description="The Phabricator diffs to watch.",
     ),
 ]
-_ALL_EVENTS: tuple[EventName, ...] = (
-    "review_comment",
-    "ci_failure",
-    "ai_review",
-    "ci_green",
-)
-
-# ``None`` outside a native harness (the streamed SDK harnesses get the policy's
-# rewritten result for free); otherwise the harness whose bridge layout applies.
-_NATIVE_MODE: str | None = None
-_NATIVE_HARNESS = {"codex": "codex-native", "claude": "claude-native"}
-_NOT_NATIVE = "diff watch requires an Omnigent native {} session"
-
-# Sources the watch_* surface owns. Scoping unsubscribe by source is what keeps
-# it from reaching a diff watch, so a new generic source must be added here or
-# its watches become impossible to stop from the tool.
-GENERIC_SOURCES = frozenset({"command"})
-
-
-def _codex_bridge_dir() -> Path:
-    codex_home = os.environ.get("CODEX_HOME")
-    if not codex_home:
-        raise RuntimeError(_NOT_NATIVE.format("Codex"))
-    path = Path(codex_home).expanduser()
-    if path.name != "codex-home" or path.parent.parent.name != "codex-native":
-        raise RuntimeError(_NOT_NATIVE.format("Codex"))
-    return path.parent
-
-
-def _claude_bridge_dir() -> Path:
-    """Locate this session's Claude bridge directory.
-
-    Unlike Codex -- where ``CODEX_HOME`` points into the bridge directory --
-    the Claude bridge passes its path only as ``--bridge-dir`` to Omnigent's
-    own MCP server, so a separately-registered server cannot read it from the
-    environment. What Claude Code *does* export to every MCP server it spawns
-    is ``CLAUDE_CODE_SESSION_ID``, and the bridge records that same id in
-    ``state.json``. Match on it rather than guessing: several bridge
-    directories coexist, one per concurrent session.
-
-    Identity therefore still comes from the harness and an owner-only (0700)
-    directory, never from the model -- the trust boundary is unchanged.
-    """
-    claude_session = os.environ.get("CLAUDE_CODE_SESSION_ID")
-    if not claude_session or not os.environ.get("OMNIGENT_URL"):
-        raise RuntimeError(_NOT_NATIVE.format("Claude"))
-    # Both roots: Omnigent builds this path from the system temp dir, but the
-    # agent process does not necessarily share our TMPDIR, so "/tmp" is kept
-    # as a second candidate rather than assumed to be the same directory.
-    roots = dict.fromkeys([tempfile.gettempdir(), "/tmp"])
-    for root in roots:
-        base = Path(root) / f"omnigent-{os.getuid()}" / "claude-native"
-        if not base.is_dir():
-            continue
-        for candidate in sorted(base.iterdir()):
-            state = _read_json_object(candidate / "state.json")
-            seen = state.get("seen_claude_session_ids")
-            if state.get("claude_session_id") == claude_session or (
-                isinstance(seen, list) and claude_session in seen
-            ):
-                return candidate
-    raise RuntimeError(
-        "no Omnigent Claude bridge directory matches this session "
-        f"({claude_session}); the session may predate the bridge"
-    )
-
-
-def _native_bridge_dir() -> Path:
-    if _NATIVE_MODE == "claude":
-        return _claude_bridge_dir()
-    return _codex_bridge_dir()
-
-
-def _read_json_object(path: Path) -> dict[str, object]:
-    """Read a bridge JSON file, returning an empty mapping when unusable."""
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _loopback_url(value: object) -> str | None:
-    """Return *value* when it is an http(s) loopback base URL, else ``None``."""
-    if not isinstance(value, str) or not value:
-        return None
-    parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"}:
-        return None
-    if parsed.hostname not in {"127.0.0.1", "localhost"}:
-        return None
-    return value.rstrip("/")
-
-
-def _server_endpoint(
-    hook: dict[str, object], session_id: object
-) -> tuple[str, dict[str, str]] | None:
-    """Build the direct ``/policies/evaluate`` endpoint from a hook file."""
-    server_url = _loopback_url(hook.get("ap_server_url"))
-    if not server_url or not isinstance(session_id, str) or not session_id:
-        return None
-    headers: dict[str, str] = {}
-    raw_headers = hook.get("ap_auth_headers")
-    if isinstance(raw_headers, dict):
-        headers = {str(k): str(v) for k, v in raw_headers.items()}
-    component = quote(session_id, safe="")
-    return (f"{server_url}/v1/sessions/{component}/policies/evaluate", headers)
-
-
-def _claude_policy_endpoints(bridge_dir: Path) -> list[tuple[str, dict[str, str]]]:
-    """Policy endpoints for a native Claude session.
-
-    The Claude bridge has no ``tool_relay.json`` -- it advertises the Omnigent
-    server directly in ``permission_hook.json`` -- so there is a single
-    endpoint and nothing to fall back to. The session id lives in
-    ``bridge.json``; ``state.json`` here holds the *Claude* session id, which
-    is a different identifier and must not be used as the Omnigent one.
-    """
-    hook = _read_json_object(bridge_dir / "permission_hook.json")
-    bridge = _read_json_object(bridge_dir / "bridge.json")
-    session_id = bridge.get("active_session_id") or bridge.get("conversation_id")
-    endpoint = _server_endpoint(hook, session_id)
-    return [endpoint] if endpoint else []
-
-
-def _policy_endpoints(bridge_dir: Path) -> list[tuple[str, dict[str, str]]]:
-    """Return ``(url, headers)`` policy endpoints in precedence order.
-
-    The runner's loopback relay is preferred because its token does not
-    expire, matching ``omnigent.native_policy_hook``. The direct server is
-    kept as a fallback: the relay advertisement is per-runner and goes stale
-    when a runner restarts, while ``policy_hook.json`` is rewritten each time.
-    """
-    if _NATIVE_MODE == "claude":
-        return _claude_policy_endpoints(bridge_dir)
-
-    relay = _read_json_object(bridge_dir / "tool_relay.json")
-    state = _read_json_object(bridge_dir / "state.json")
-    hook = _read_json_object(bridge_dir / "policy_hook.json")
-
-    session_id = relay.get("session_id") or state.get("session_id")
-    endpoints: list[tuple[str, dict[str, str]]] = []
-
-    relay_url = _loopback_url(relay.get("url"))
-    relay_token = relay.get("token")
-    if relay_url and isinstance(relay_token, str) and relay_token:
-        endpoints.append(
-            (f"{relay_url}/policies/evaluate", {"Authorization": f"Bearer {relay_token}"})
-        )
-
-    direct = _server_endpoint(hook, session_id)
-    if direct:
-        endpoints.append(direct)
-
-    return endpoints
-
-
-def _native_policy_result(
-    tool_name: str,
-    arguments: dict[str, object],
-    intent_result: str,
-) -> str:
-    if _NATIVE_MODE is None:
-        return intent_result
-
-    endpoints = _policy_endpoints(_native_bridge_dir())
-    if not endpoints:
-        raise RuntimeError("Omnigent policy routing is not advertised for this session")
-
-    request = {
-        "event": {
-            "type": "PHASE_TOOL_RESULT",
-            "target": "",
-            "data": {"result": intent_result},
-            "context": {"harness": _NATIVE_HARNESS[_NATIVE_MODE]},
-            "request_data": {
-                "name": f"mcp__diff_watch__{tool_name}",
-                "arguments": arguments,
-            },
-        }
-    }
-
-    last_error = "no policy endpoint was reachable"
-    for url, headers in endpoints:
-        try:
-            with httpx.Client(timeout=30.0, trust_env=False) as client:
-                response = client.post(url, headers=headers, json=request)
-                response.raise_for_status()
-                result = response.json()
-        except (httpx.HTTPError, json.JSONDecodeError) as exc:
-            # Transport-level failure: a stale relay advertisement must not
-            # strand the tool while the server itself is reachable.
-            last_error = f"{type(exc).__name__}: {exc}"
-            continue
-        if not isinstance(result, dict):
-            raise RuntimeError("Omnigent policy evaluation returned a malformed response")
-        if result.get("result") == "POLICY_ACTION_DENY":
-            reason = result.get("reason")
-            raise RuntimeError(
-                reason if isinstance(reason, str) else "Diff watch was denied by policy"
-            )
-        data = result.get("data")
-        return data if isinstance(data, str) and data else intent_result
-
-    raise RuntimeError(f"Omnigent policy evaluation failed for diff watch ({last_error})")
-
-
-@mcp.tool()
-def diff_watch_subscribe(
-    events: list[EventName] | None = None,
-    diffs: DiffIds | None = None,
-) -> str:
-    """Subscribe this session to review and CI updates for associated diffs.
-
-    Pass ``diffs`` when watching existing diffs. Diffs created or updated by
-    this session are associated automatically and do not need to be repeated.
-    """
-    selected = sorted(set(_ALL_EVENTS if events is None else events))
-    if not selected:
-        raise ValueError("at least one event type is required")
-    if diffs is not None and not diffs:
-        raise ValueError("at least one diff ID is required when diffs is provided")
-    arguments: dict[str, object] = {"events": selected}
-    if diffs is not None:
-        arguments["diffs"] = list(dict.fromkeys(diffs))
-    return _native_policy_result(
-        "diff_watch_subscribe",
-        arguments,
-        "Diff-watch preference requested for: " + ",".join(selected),
-    )
-
-
-@mcp.tool()
-def diff_watch_unsubscribe() -> str:
-    """Stop diff notifications for the current Omnigent session."""
-    return _native_policy_result(
-        "diff_watch_unsubscribe",
-        {},
-        "Diff-watch unsubscribe requested.",
-    )
-
-
-@mcp.tool()
-def diff_watch_status() -> str:
-    """Read the current session's diff-watch preference."""
-    return _native_policy_result(
-        "diff_watch_status",
-        {},
-        "Diff-watch status is supplied by the Omnigent session policy.",
-    )
-
-
-# -- Generic watch surface ------------------------------------------------
-#
-# Deliberately a separate tool set from diff_watch_*. Those stay opinionated
-# about diffs -- no source, no argv, events fixed to the four diff kinds --
-# because that is the interface worth having for the common case. These make no
-# assumption about what is being watched, at the cost of the caller having to
-# say how to read it.
-#
-# They also take a different route. A diff watch is a session *label*, capped at
-# 256 characters, which an arbitrary argv overruns; a generic watch is written
-# straight to the watcher database, which the sidecar reconciles.
-
 WatchSubject = Annotated[
     str,
     Field(
@@ -323,71 +104,297 @@ WatchArgv = Annotated[
     ),
 ]
 
-
 DEFAULT_DATABASE_PATH = "~/.omnigent/diff-watcher.sqlite3"
+DEFAULT_SERVER_URL = "http://127.0.0.1:6767"
+# Binding a stack means one Phabricator read per diff, and they are slow. Bound
+# the fan-out rather than issuing twenty at once; the sidecar polls at 2.
+_BIND_CONCURRENCY = 4
 
 
-def _database_path() -> Path:
-    """Locate the watcher database the sidecar reconciles from.
+def _service_settings() -> ServiceSettings | None:
+    """Load the sidecar's own settings, or ``None`` when they are not readable.
 
     The repo checkout is the normal case, but this server can also be launched
     from an installed package where ``config.toml`` is not alongside the code.
-    Falling back to the documented default beats refusing to subscribe --
-    settings.py uses the same default when the key is absent.
     """
     from .settings import ServiceSettings
 
     config = Path(__file__).resolve().parents[2] / "config.toml"
     if config.is_file():
         try:
-            return ServiceSettings.load(config).database_path
+            return ServiceSettings.load(config)
         except (OSError, ValueError):
-            pass
+            return None
+    return None
+
+
+def _database_path() -> Path:
+    """The database this session's watches are written to.
+
+    Two processes must agree on this file -- this server writes it and the
+    sidecar polls it -- so the override is an environment variable rather than
+    an argument: a stdio MCP server's argv is fixed by whoever registered it,
+    while the environment can be set alongside the sidecar's own.
+    """
+    override = os.environ.get("OMNIGENT_DIFF_WATCHER_DATABASE")
+    if override:
+        return Path(override).expanduser()
+    settings = _service_settings()
+    if settings is not None:
+        return settings.database_path
     return Path(DEFAULT_DATABASE_PATH).expanduser()
 
 
-def _watch_repository() -> tuple[WatcherRepository, str]:
-    """Open the watcher database and resolve this session's Omnigent id.
+def _server_url() -> str:
+    settings = _service_settings()
+    return settings.server_url if settings is not None else DEFAULT_SERVER_URL
 
-    Native only, unlike ``diff_watch_*``. Those tools never learn their own
-    session: they return an intent string and a server-side policy, which does
-    know the session, writes the label. A generic watch cannot take that route
-    -- an argv overruns the 256-character label cap -- so it writes to the
-    database itself and therefore has to identify the session, which it can
-    only do from a native harness's bridge directory. A streamed SDK session
-    gets no session id in its MCP environment at all.
+
+async def _validate_session(session_id: str) -> None:
+    """Confirm *session_id* is a live Omnigent session before writing anything.
+
+    The address is supplied by the caller, so a typo or a session that has since
+    closed would otherwise become a watch that polls forever and wakes nobody.
+
+    ``trust_env=False``: an ambient ``http_proxy`` sends loopback traffic to a
+    corporate proxy, which answers 403 and makes a perfectly good session look
+    invalid.
+
+    :raises ValueError: If the session is unknown, closed, or archived.
     """
+    url = f"{_server_url().rstrip('/')}/v1/sessions/{session_id}"
+    try:
+        async with httpx.AsyncClient(timeout=15.0, trust_env=False) as client:
+            response = await client.get(url)
+    except httpx.HTTPError as exc:
+        raise ValueError(
+            f"could not reach Omnigent to validate session {session_id}: {exc}"
+        ) from exc
+    if response.status_code == 404:
+        raise ValueError(
+            f"no Omnigent session {session_id}. Call sys_session_get_info and "
+            "pass the session_id it reports."
+        )
+    if response.status_code >= 400:
+        raise ValueError(f"Omnigent rejected a lookup of session {session_id}")
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError(f"Omnigent returned no usable record for session {session_id}")
+    if payload.get("archived") or payload.get("status") in {"closed", "deleted"}:
+        raise ValueError(f"session {session_id} is closed or archived; nothing could be woken")
+
+
+class _AddressedSession:
+    """A ``SessionService`` for an address already validated by the tool.
+
+    ``DiffWatcher.subscribe`` re-checks that the session is not terminal, which
+    normally costs a round trip. :func:`_validate_session` has just made it, so
+    this answers from that result instead of making a second identical call.
+    """
+
+    async def get(self, session_id: str) -> SessionSnapshot:
+        return SessionSnapshot(session_id=session_id, labels={})
+
+
+class _UnusedDelivery:
+    """``DiffWatcher`` requires a delivery service; ``subscribe`` never uses one.
+
+    Waking a session is the sidecar's job and happens in the sidecar's process.
+    Raising rather than silently no-op'ing means a future code path that starts
+    delivering from here fails loudly instead of dropping wakes on the floor.
+    """
+
+    async def deliver_message(
+        self,
+        session_id: str,
+        delivery_id: str,
+        content: str,
+    ) -> EventDeliveryResult:
+        raise RuntimeError("the MCP server does not deliver watch notifications")
+
+
+def _repository() -> WatcherRepository:
+    # migrate=False: the sidecar owns the schema. See WatcherRepository.__init__.
     from .repository import WatcherRepository
 
-    if _NATIVE_MODE is None:
-        raise RuntimeError(
-            "generic watches require an Omnigent native Claude or Codex session; "
-            "this session cannot be identified from the MCP server. Use "
-            "diff_watch_subscribe for diffs, which works from any harness."
-        )
-    bridge_dir = _native_bridge_dir()
-    if _NATIVE_MODE == "claude":
-        bridge = _read_json_object(bridge_dir / "bridge.json")
-        session_id = bridge.get("active_session_id") or bridge.get("conversation_id")
-    else:
-        relay = _read_json_object(bridge_dir / "tool_relay.json")
-        state = _read_json_object(bridge_dir / "state.json")
-        session_id = relay.get("session_id") or state.get("session_id")
-    if not isinstance(session_id, str) or not session_id:
-        raise RuntimeError("could not resolve this Omnigent session")
-    # migrate=False: the sidecar owns the schema. See WatcherRepository.__init__.
-    return WatcherRepository(_database_path(), migrate=False), session_id
+    return WatcherRepository(_database_path(), migrate=False)
+
+
+def _watch_engine(repository: WatcherRepository) -> DiffWatcher:
+    """Build the same engine the sidecar uses, for one synchronous subscribe.
+
+    Sharing ``DiffWatcher.subscribe`` rather than re-implementing it is the
+    point: binding reads the subject for a baseline and applies the
+    active-subject limit, and a second implementation of that would drift from
+    the one the sidecar enforces.
+    """
+    from .command_source import SOURCE_NAME as COMMAND_SOURCE_NAME
+    from .command_source import CommandSource
+    from .phabricator_source import PhabricatorReviewSource, bounded_source_environment
+    from .watcher import DiffWatcher
+
+    settings = _service_settings()
+    environment = bounded_source_environment()
+    return DiffWatcher(
+        repository,
+        PhabricatorReviewSource(),
+        _AddressedSession(),
+        _UnusedDelivery(),
+        config=settings.watcher if settings is not None else None,
+        sources={COMMAND_SOURCE_NAME: CommandSource(env=environment)},
+    )
+
+
+async def _bind(
+    repository: WatcherRepository,
+    session_id: str,
+    subjects: list[str],
+    event_types: frozenset[str],
+    *,
+    source_name: str,
+    spec: str | None,
+) -> tuple[list[str], list[str]]:
+    """Subscribe *subjects*, returning ``(bound, failures)``.
+
+    One unreadable subject does not sink the rest: a stack routinely contains a
+    diff that has just landed, and refusing the whole call over it would be
+    worse than reporting it.
+    """
+    from .domain import EventKind
+    from .watcher import SubscriptionError
+
+    kinds = frozenset(EventKind(value) for value in event_types)
+    engine = _watch_engine(repository)
+    limit = asyncio.Semaphore(_BIND_CONCURRENCY)
+
+    async def bind_one(subject: str) -> tuple[str, str | None]:
+        async with limit:
+            try:
+                await engine.subscribe(
+                    session_id, subject, kinds, source_name=source_name, spec=spec
+                )
+            except SubscriptionError as exc:
+                return subject, str(exc)
+            return subject, None
+
+    bound: list[str] = []
+    failures: list[str] = []
+    for subject, error in await asyncio.gather(*(bind_one(s) for s in subjects)):
+        if error is None:
+            bound.append(subject)
+        else:
+            failures.append(f"{subject} ({error})")
+    return bound, failures
+
+
+def _record(
+    repository: WatcherRepository,
+    session_id: str,
+    subjects: list[str],
+    event_types: frozenset[str],
+    *,
+    source_name: str,
+    spec: str | None,
+) -> None:
+    """Persist the request rows that re-bind these watches after a restart."""
+    import time
+
+    from .domain import EventKind
+
+    kinds = frozenset(EventKind(value) for value in event_types)
+    now = time.time()
+    for subject in subjects:
+        repository.request_watch(session_id, source_name, subject, kinds, spec=spec, now=now)
+
+
+# -- Diff watches ---------------------------------------------------------
 
 
 @mcp.tool()
-def watch_subscribe(
+async def diff_watch_subscribe(
+    session_id: SessionId,
+    diffs: DiffIds,
+    events: list[EventName] | None = None,
+) -> str:
+    """Wake a session when its diffs get review comments, CI results, or AI findings.
+
+    Name the diffs explicitly -- they are not inferred. Every diff is read once,
+    here, so an id that does not resolve is reported now rather than failing
+    silently in the background.
+    """
+    from .phabricator_source import SOURCE_NAME as PHABRICATOR_SOURCE_NAME
+
+    selected = sorted(set(_ALL_EVENTS if events is None else events))
+    if not selected:
+        raise ValueError("at least one event type is required")
+    subjects = list(dict.fromkeys(diffs))
+
+    await _validate_session(session_id)
+    repository = _repository()
+    kinds = frozenset(selected)
+    bound, failures = await _bind(
+        repository,
+        session_id,
+        subjects,
+        kinds,
+        source_name=PHABRICATOR_SOURCE_NAME,
+        spec=None,
+    )
+    if not bound:
+        raise ValueError("could not watch any of those diffs: " + "; ".join(failures))
+    _record(
+        repository,
+        session_id,
+        bound,
+        kinds,
+        source_name=PHABRICATOR_SOURCE_NAME,
+        spec=None,
+    )
+    answer = f"Watching {', '.join(bound)} for {', '.join(selected)}."
+    if failures:
+        answer += " Could not watch: " + "; ".join(failures) + "."
+    return answer
+
+
+@mcp.tool()
+async def diff_watch_unsubscribe(session_id: SessionId, diff: DiffId | None = None) -> str:
+    """Stop watching one diff, or every diff, for a session."""
+    from .phabricator_source import SOURCE_NAME as PHABRICATOR_SOURCE_NAME
+    from .watch_api import cancel_watches
+
+    return cancel_watches(
+        _repository(), session_id, diff, sources=frozenset({PHABRICATOR_SOURCE_NAME})
+    )
+
+
+@mcp.tool()
+async def diff_watch_status(session_id: SessionId) -> str:
+    """List the diffs a session is watching, and for which events."""
+    from .phabricator_source import SOURCE_NAME as PHABRICATOR_SOURCE_NAME
+    from .watch_api import describe_watches
+
+    return describe_watches(_repository(), session_id, sources=frozenset({PHABRICATOR_SOURCE_NAME}))
+
+
+# -- Generic watches ------------------------------------------------------
+#
+# Deliberately a separate tool set from diff_watch_*. Those stay opinionated
+# about diffs -- no source, no argv, events fixed to the four diff kinds --
+# because that is the interface worth having for the common case. These make no
+# assumption about what is being watched, at the cost of the caller having to
+# say how to read it. The route is now identical for both.
+
+
+@mcp.tool()
+async def watch_subscribe(
+    session_id: SessionId,
     subject: WatchSubject,
     command: WatchArgv,
     extract: str | None = None,
     interval_seconds: float = 60.0,
     timeout_seconds: float = 30.0,
 ) -> str:
-    """Wake this session when the output of a command changes.
+    """Wake a session when the output of a command changes.
 
     Use for anything that has no purpose-built watcher: a JustKnob rollout, a
     config value, a job's status. Prefer ``diff_watch_subscribe`` for diffs.
@@ -398,129 +405,79 @@ def watch_subscribe(
     expression, optionally with one capture group -- when the output carries a
     timestamp or request id that would otherwise change on every poll.
 
-    The first reading is the baseline and never wakes anyone. Subscribe *before*
-    the change you are waiting for can happen, or you will baseline the value
-    you were watching for.
+    The command is run once, here, to establish that baseline -- so a command
+    that cannot run is reported now rather than failing silently in the
+    background. Subscribe *before* the change you are waiting for can happen,
+    or you will baseline the value you were watching for.
 
     ``timeout_seconds`` (1..120, and never more than ``interval_seconds``)
     bounds each run. Raise it for a slow probe -- a `meta`/`jf` round trip, or a
     command that asks a model to judge whether a condition has been met.
     """
-    import time
+    import shlex
 
-    from .command_source import SOURCE_NAME, CommandSpec
+    from .command_source import SOURCE_NAME as COMMAND_SOURCE_NAME
+    from .command_source import CommandSpec
     from .domain import COMMAND_EVENT_KINDS
 
     spec = CommandSpec(command, extract, interval_seconds, timeout_seconds)
-    repository, session_id = _watch_repository()
-    repository.request_watch(
+    await _validate_session(session_id)
+    repository = _repository()
+    kinds = frozenset(kind.value for kind in COMMAND_EVENT_KINDS)
+
+    # Bind first, and only record the request once binding succeeded. Writing
+    # the request first would report success for a watch that the sidecar then
+    # fails to bind -- the failure is logged in another process and backs off,
+    # so the session that asked would never learn of it.
+    bound, failures = await _bind(
+        repository,
         session_id,
-        SOURCE_NAME,
-        subject,
-        COMMAND_EVENT_KINDS,
+        [subject],
+        kinds,
+        source_name=COMMAND_SOURCE_NAME,
         spec=spec.to_json(),
-        now=time.time(),
+    )
+    if not bound:
+        raise ValueError(f"could not start watching {'; '.join(failures)}")
+    _record(
+        repository,
+        session_id,
+        bound,
+        kinds,
+        source_name=COMMAND_SOURCE_NAME,
+        spec=spec.to_json(),
     )
     return (
-        f"Watching {subject}: {' '.join(spec.argv)} every {spec.interval_seconds:g}s. "
-        "This session will be woken when its output changes."
+        f"Watching {subject}: {shlex.join(spec.argv)} every {spec.interval_seconds:g}s. "
+        f"Session {session_id} will be woken when its output changes."
     )
 
 
 @mcp.tool()
-def watch_unsubscribe(subject: WatchSubject | None = None) -> str:
-    """Stop one generic watch, or all of them, for the current session."""
-    import time
+async def watch_unsubscribe(session_id: SessionId, subject: WatchSubject | None = None) -> str:
+    """Stop one generic watch, or all of them, for a session."""
+    from .watch_api import GENERIC_SOURCES, cancel_watches
 
-    from .domain import SubscriptionState
-
-    repository, session_id = _watch_repository()
-    now = time.time()
-
-    # Retiring the subscription is what actually stops the watch: the poller
-    # only claims subjects that still have an active subscriber. Cancelling the
-    # request alone would merely stop it being re-bound, leaving it polling and
-    # waking this session indefinitely.
-    #
-    # Targets come from the subscriptions themselves, scoped by source, rather
-    # than from the stored requests. Scoping is what stops a bare unsubscribe
-    # reaching a diff watch, and reading subscriptions directly also reaches an
-    # orphan -- a subscription whose request was already cancelled without it,
-    # which is the exact state an older build of this tool used to leave behind.
-    targets = [
-        row
-        for row in repository.subscriptions_for_session(
-            session_id,
-            states=(SubscriptionState.ACTIVE, SubscriptionState.SUSPENDED),
-            sources=GENERIC_SOURCES,
-        )
-        if subject is None or row.subject == subject
-    ]
-    cancelled = repository.cancel_watch_requests(session_id, now=now, subject=subject)
-
-    for row in targets:
-        repository.retire_subscription(row.id, "unsubscribed", now=now)
-    retired = len(targets)
-
-    scope = subject if subject is not None else "all subjects"
-    return f"Cancelled {cancelled} and stopped {retired} watch(es) for {scope}."
+    return cancel_watches(_repository(), session_id, subject, sources=GENERIC_SOURCES)
 
 
 @mcp.tool()
-def watch_status() -> str:
-    """List the generic watches this session has registered, and how each reads.
+async def watch_status(session_id: SessionId) -> str:
+    """List a session's generic watches, and the exact command each will run.
 
     The command is shown, not just the subject: it is stored and re-run on an
     interval long after the turn that registered it, so it has to be auditable
     from here rather than only by reading the database.
     """
-    import shlex
+    from .watch_api import GENERIC_SOURCES, describe_watches
 
-    from .command_source import SOURCE_NAME as COMMAND_SOURCE_NAME
-    from .command_source import CommandSpec
-
-    repository, session_id = _watch_repository()
-    rows = repository.active_watch_requests(session_id)
-    if not rows:
-        return "This session has no generic watches."
-    lines = []
-    for _session, source, subject, spec_json, _kinds in rows:
-        detail = ""
-        if source == COMMAND_SOURCE_NAME:
-            try:
-                spec = CommandSpec.from_json(spec_json)
-            except ValueError:
-                detail = " — unreadable spec; the watch will fail to poll"
-            else:
-                detail = (
-                    f" — {shlex.join(spec.argv)}"
-                    f" every {spec.interval_seconds:g}s"
-                    f", timeout {spec.timeout_seconds:g}s"
-                )
-                if spec.extract is not None:
-                    # Quoted but not repr'd: repr escapes the backslashes, so a
-                    # pattern reads back as something the caller never typed.
-                    detail += f", matching '{spec.extract}'"
-        lines.append(f"{subject} via {source}{detail}")
-    return "Active watches:\n" + "\n".join(lines)
+    return describe_watches(_repository(), session_id, sources=GENERIC_SOURCES)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    # A native harness runs the vendor TUI, which does not hand the policy's
-    # rewritten tool result back to the model, so the server must make the
-    # policy round trip itself and return the policy's own answer. The two
-    # flags are kept separate rather than folded into one --native because the
-    # bridge layouts differ; they are mutually exclusive.
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--native-codex", action="store_true")
-    mode.add_argument("--native-claude", action="store_true")
-    args = parser.parse_args()
-    global _NATIVE_MODE
-    if args.native_codex:
-        _NATIVE_MODE = "codex"
-    elif args.native_claude:
-        _NATIVE_MODE = "claude"
+    # No --native flags any more: identity is an argument, so there is nothing
+    # harness-specific left in this process.
+    argparse.ArgumentParser().parse_args()
     mcp.run(transport="stdio")
 
 

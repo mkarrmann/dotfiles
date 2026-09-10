@@ -5,11 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Mapping
 
 import httpx
 
-from .domain import EventDeliveryResult, EventDeliveryStatus, EventKind, SessionSnapshot
+from .domain import EventDeliveryResult, EventDeliveryStatus, SessionSnapshot
 
 _logger = logging.getLogger(__name__)
 
@@ -33,27 +32,6 @@ class OmnigentClient:
     async def close(self) -> None:
         if self._owns_client:
             await self._client.aclose()
-
-    async def list_sessions(self) -> list[dict[str, object]]:
-        sessions: list[dict[str, object]] = []
-        after: str | None = None
-        while True:
-            params: dict[str, str | int] = {"limit": 1000, "order": "asc"}
-            if after is not None:
-                params["after"] = after
-            response = await self._client.get("/v1/sessions", params=params)
-            response.raise_for_status()
-            payload = response.json()
-            if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
-                raise OmnigentAPIError("session list response was malformed")
-            page = [_string_dict(item, "session") for item in payload["data"]]
-            sessions.extend(page)
-            if payload.get("has_more") is not True:
-                return sessions
-            last_id = payload.get("last_id")
-            if not isinstance(last_id, str) or not last_id or last_id == after:
-                raise OmnigentAPIError("session list pagination did not advance")
-            after = last_id
 
     async def get(self, session_id: str) -> SessionSnapshot:
         response = await self._client.get(f"/v1/sessions/{session_id}")
@@ -194,39 +172,12 @@ class OmnigentDeliveryService:
         return EventDeliveryResult(EventDeliveryStatus.DEFERRED)
 
 
-def desired_watch(item: Mapping[str, object]) -> tuple[tuple[str, ...], frozenset[str]] | None:
-    """Resolve a session's labels into the diffs it wants watched.
-
-    ``omnigent.diff.number`` is a comma-separated ordered set so one session can
-    own a whole stack; the watch preference applies to every diff in it. Returns
-    ``None`` when the session wants no watch at all, which the caller treats as
-    "retire everything for this session".
-    """
-    labels = _labels(item.get("labels"))
-    preference = labels.get("omnigent.diff.watch")
-    if preference in {None, "", "off"}:
-        return None
-    diff_ids = _diff_ids(labels.get("omnigent.diff.number"))
-    if not diff_ids:
-        return None
-    event_types = frozenset(part for part in preference.split(",") if part)
-    if not event_types or event_types - {kind.value for kind in EventKind}:
-        return None
-    return diff_ids, event_types
-
-
-def _diff_ids(value: object) -> tuple[str, ...]:
-    if not isinstance(value, str):
-        return ()
-    seen: list[str] = []
-    for part in value.split(","):
-        candidate = part.strip()
-        if _DIFF_ID.fullmatch(candidate) and candidate not in seen:
-            seen.append(candidate)
-    return tuple(seen)
-
-
 def _labels(value: object) -> dict[str, str]:
+    """Session labels, string-valued only.
+
+    Watches are no longer declared through labels, but liveness still reads
+    ``omnigent.closed`` -- a closed session must stop being polled and woken.
+    """
     if not isinstance(value, dict):
         return {}
     return {str(key): item for key, item in value.items() if isinstance(item, str)}

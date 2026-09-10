@@ -19,7 +19,7 @@ The guidance still reaches it through the ``waiting-without-polling`` skill.
 
 What counts as a blocking wait lives in :mod:`foreground_wait`.
 
-Contract (mirrors ``capture_diff.py``, verified against omnigent 0.5.1):
+Contract (verified against omnigent 0.5.1):
 - Declared as a *factory* in ``POLICY_REGISTRY``; the server calls it once at
   build time with ``arguments`` from server config, and the returned closure is
   the per-event evaluator.
