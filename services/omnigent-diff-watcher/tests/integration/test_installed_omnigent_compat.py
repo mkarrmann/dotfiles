@@ -65,9 +65,6 @@ print(json.dumps(result))
                 "diff_watch_subscribe",
                 "diff_watch_unsubscribe",
                 "diff_watch_status",
-                "watch_subscribe",
-                "watch_unsubscribe",
-                "watch_status",
             ],
         }
     ]

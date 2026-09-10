@@ -347,9 +347,24 @@ def _database_path() -> Path:
 
 
 def _watch_repository() -> tuple[WatcherRepository, str]:
-    """Open the watcher database and resolve this session's Omnigent id."""
+    """Open the watcher database and resolve this session's Omnigent id.
+
+    Native only, unlike ``diff_watch_*``. Those tools never learn their own
+    session: they return an intent string and a server-side policy, which does
+    know the session, writes the label. A generic watch cannot take that route
+    -- an argv overruns the 256-character label cap -- so it writes to the
+    database itself and therefore has to identify the session, which it can
+    only do from a native harness's bridge directory. A streamed SDK session
+    gets no session id in its MCP environment at all.
+    """
     from .repository import WatcherRepository
 
+    if _NATIVE_MODE is None:
+        raise RuntimeError(
+            "generic watches require an Omnigent native Claude or Codex session; "
+            "this session cannot be identified from the MCP server. Use "
+            "diff_watch_subscribe for diffs, which works from any harness."
+        )
     bridge_dir = _native_bridge_dir()
     if _NATIVE_MODE == "claude":
         bridge = _read_json_object(bridge_dir / "bridge.json")

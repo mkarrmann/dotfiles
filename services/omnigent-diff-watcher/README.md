@@ -30,6 +30,20 @@ labels, and a label value is capped at 256 characters, which an arbitrary argv
 overruns. A generic watch is therefore written straight to the database by the
 MCP tool and reconciled from `watch_requests`.
 
+That route costs it reach. `diff_watch_*` never learns its own session -- it
+returns an intent string and a server-side policy, which does know the session,
+writes the label -- so it works from any harness. A generic watch writes the
+row itself and must therefore identify the session, which only a native
+harness's bridge directory allows; a streamed SDK session gets no session id in
+its MCP environment. So `watch_*` is **native-only**, it says so when called
+from anywhere else, and the agent specs (which launch this server with no
+`--native` flag) deliberately do not advertise it.
+
+Lifting that would mean either Omnigent passing a session id to stdio MCP
+servers, or a server-side policy writing `watch_requests` the way
+`capture_diff` writes labels -- the latter is the same shape as the diff route
+and would work today, at the cost of a second policy module.
+
 ### Generic watches
 
 A command watch runs its argv directly — never through a shell, so no part of

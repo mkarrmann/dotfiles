@@ -11,9 +11,10 @@ from pathlib import Path
 import yaml
 
 _PACKAGED_AGENTS = {"polly", "debby"}
-# Both watch surfaces: diff_watch_* for Phabricator diffs, watch_* for anything
-# else a command can report. This is an allowlist, so a tool omitted here is
-# silently invisible to the agent rather than broken.
+# Only the diff surface. These bundles launch the MCP server with no --native
+# flag, and the generic watch_* tools cannot identify their session without a
+# native bridge directory, so advertising them here would offer an agent tools
+# that always fail. See mcp_server._watch_repository.
 _DIFF_WATCH = {
     "type": "mcp",
     "command": "omnigent-diff-watch-mcp",
@@ -21,9 +22,6 @@ _DIFF_WATCH = {
         "diff_watch_subscribe",
         "diff_watch_unsubscribe",
         "diff_watch_status",
-        "watch_subscribe",
-        "watch_unsubscribe",
-        "watch_status",
     ],
 }
 

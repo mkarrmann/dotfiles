@@ -27,10 +27,15 @@ events. This one knows nothing about its subject and only reports "it changed".
 
 ## Subscribing
 
-The tool is `watch_subscribe`. Harnesses namespace it differently: the Omnigent
-SDK harnesses use `diff_watch__watch_subscribe`, the native ones (Claude Code
-and Codex) use `mcp__diff_watch__watch_subscribe`. Match on the suffix. If no
-such tool exists, say so rather than improvising a polling loop.
+The tool is `mcp__diff_watch__watch_subscribe`; match on the suffix.
+
+**Native sessions only** — Claude Code or Codex under Omnigent. A generic watch
+writes to the watcher database itself, so it has to identify its own session,
+and only a native harness exposes the bridge directory that makes that
+possible. `diff_watch_*` has no such limit: it returns an intent string and a
+server-side policy, which does know the session, records it. If the tool is
+absent or refuses, say so rather than improvising a polling loop — and for a
+diff, reach for `phabricator-diff-watch`, which works from any harness.
 
 ```
 watch_subscribe(

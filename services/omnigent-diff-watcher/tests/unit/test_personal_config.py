@@ -82,10 +82,10 @@ def test_personal_agent_specs_use_supported_stdio_mcp_tools() -> None:
         raw = yaml.safe_load((DOTFILES / f"omnigent_config/agents/{name}/config.yaml").read_text())
         tools = raw["tools"]
         assert "plugins" not in tools
-        # An agent spec filters MCP tools by an explicit allowlist, so a tool
-        # missing here is silently invisible to that agent rather than broken.
-        # Both surfaces must be listed: diff_watch_* for diffs, watch_* for
-        # everything else.
+        # Diff tools only. An agent spec launches the MCP server with no
+        # --native flag, and the generic watch_* tools cannot identify their
+        # session without a native bridge directory, so listing them here
+        # would offer the agent tools that always fail.
         assert tools["diff_watch"] == {
             "type": "mcp",
             "command": "omnigent-diff-watch-mcp",
@@ -93,9 +93,6 @@ def test_personal_agent_specs_use_supported_stdio_mcp_tools() -> None:
                 "diff_watch_subscribe",
                 "diff_watch_unsubscribe",
                 "diff_watch_status",
-                "watch_subscribe",
-                "watch_unsubscribe",
-                "watch_status",
             ],
         }
 
@@ -339,9 +336,6 @@ def test_packaged_agent_overlays_add_diff_watch_without_losing_agent_tools(
                 "diff_watch_subscribe",
                 "diff_watch_unsubscribe",
                 "diff_watch_status",
-                "watch_subscribe",
-                "watch_unsubscribe",
-                "watch_status",
             ],
         }
 

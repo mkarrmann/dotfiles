@@ -75,3 +75,18 @@ async def test_mcp_exposes_the_diff_and_generic_watch_surfaces() -> None:
     assert diffs["anyOf"][0]["items"]["pattern"] == "^D[1-9][0-9]*$"
     assert diffs["anyOf"][0]["minItems"] == 1
     assert diffs["anyOf"][0]["maxItems"] == 20
+
+
+def test_generic_watches_refuse_outside_a_native_session() -> None:
+    """The generic surface is native-only, and has to say so.
+
+    diff_watch_* works from any harness because a server-side policy binds its
+    result. A generic watch writes to the database itself, so it must identify
+    the session, which a streamed SDK session cannot supply -- and the failure
+    has to name that rather than claim a Codex session is required.
+    """
+    from omnigent_diff_watcher import mcp_server
+
+    assert mcp_server._NATIVE_MODE is None
+    with pytest.raises(RuntimeError, match="require an Omnigent native"):
+        mcp_server.watch_subscribe("jk:demo", ["true"])
