@@ -106,8 +106,18 @@ def test_dvsc_uses_non_interactive_default_permissions() -> None:
 
 
 def test_native_codex_config_registers_the_diff_watch_mcp() -> None:
-    config = tomllib.loads((DOTFILES / "codex_config/config.template.toml").read_text())
-    assert config["mcp_servers"]["diff_watch"] == {
+    """Codex gets the watcher from the work profile, not the shared template.
+
+    ``config.work.toml`` is merged over the template only when the work profile
+    is active (see ``agent_config/codex_config.py``), which is what keeps a
+    Meta-internal MCP server off a personal machine. Asserting the template
+    does *not* carry it is the half that keeps it that way.
+    """
+    template = tomllib.loads((DOTFILES / "codex_config/config.template.toml").read_text())
+    assert "diff_watch" not in template.get("mcp_servers", {})
+
+    work = tomllib.loads((DOTFILES / "codex_config/config.work.toml").read_text())
+    assert work["mcp_servers"]["diff_watch"] == {
         "command": "omnigent-diff-watch-mcp",
         "args": ["--native-codex"],
         "env_vars": ["CODEX_HOME"],

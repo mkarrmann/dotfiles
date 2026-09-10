@@ -82,9 +82,17 @@ print(json.dumps(result))
 
 @pytest.mark.skipif(not OMNIGENT_PYTHON.exists(), reason="published Omnigent is not installed")
 def test_native_codex_policy_hook_forwards_diff_watch_tools() -> None:
+    # Both module paths are accepted: Omnigent moved this into the `native`
+    # subpackage, and we never import it ourselves -- what this test pins is
+    # the behaviour, that a namespaced diff_watch tool still reaches the policy
+    # engine with its name intact on both phases. A relocation is not a compat
+    # break; the symbol disappearing entirely is, and still fails here.
     script = """
 import json
-from omnigent.native_policy_hook import hook_payload_to_evaluation_request
+try:
+    from omnigent.native.native_policy_hook import hook_payload_to_evaluation_request
+except ModuleNotFoundError:
+    from omnigent.native_policy_hook import hook_payload_to_evaluation_request
 
 events = {}
 for hook_event in ("PreToolUse", "PostToolUse"):
