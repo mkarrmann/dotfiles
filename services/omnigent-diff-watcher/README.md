@@ -109,6 +109,15 @@ uv run ruff format --check src tests
 uv run mypy --strict src tests
 ```
 
+Two processes run this code, and they pick up changes at different moments.
+The sidecar loads it once at start, so a change to the engine or a source needs
+`systemctl --user restart omnigent-diff-watcher` — and only the sidecar may
+migrate the schema, so that restart is also what applies a new schema version.
+The MCP server is spawned per agent session, so a change to the *tools* is not
+visible to sessions already running; their tool schemas are whatever was on
+disk when they started. Module-level edits need a fresh session, though the
+lazily imported modules inside each tool are read at first call.
+
 Run one reconciliation/poll cycle against the configured server:
 
 ```bash

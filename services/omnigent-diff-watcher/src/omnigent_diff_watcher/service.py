@@ -135,6 +135,16 @@ class DiffWatcherService:
                 except SubscriptionError as exc:
                     # One unusable diff (terminal, missing, or a stale label
                     # entry) must not stop the rest of the stack from binding.
+                    #
+                    # TODO(mkarrmann): a permanently unusable label entry is
+                    # retried every reconcile cycle forever -- nothing records
+                    # the failure, so the next cycle tries again. The live log
+                    # has 58k of these, 31k for a single placeholder D99999999,
+                    # each costing an HTTP call and a `jf` subprocess every 15s.
+                    # Predates the generic-watch work (the count is against the
+                    # old wording). Wants a negative cache or a retired marker
+                    # for terminal/missing subjects, keyed so a diff that later
+                    # becomes readable can still bind.
                     _logger.warning(
                         "could not reconcile session=%s diff=%s: %s", session_id, subject, exc
                     )
