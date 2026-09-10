@@ -193,3 +193,36 @@ async def test_a_closed_session_is_refused(tmp_path: Path) -> None:
             )
             assert result.isError is True
             assert "closed or archived" in _text(result)
+
+
+async def test_a_stale_native_flag_does_not_stop_the_server(tmp_path: Path) -> None:
+    """An installed config can still pass --native-codex, and must not break.
+
+    The Codex config is assembled by a recursive dict merge that never deletes
+    keys, so dropping `args` from the source leaves it in ~/.codex/config.toml
+    -- here, and on every machine this repo cannot re-sync. Rejecting the flag
+    made argparse exit before serving, so the tools just vanished from native
+    Codex with nothing in the session to explain why. Found by checking the
+    installed config after a real rollout, not by a test.
+    """
+    database = tmp_path / "watcher.sqlite3"
+    WatcherRepository(database)
+
+    with _omnigent() as url:
+        parameters = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "omnigent_diff_watcher.mcp_server", "--native-codex"],
+            env={
+                **os.environ,
+                "OMNIGENT_DIFF_WATCHER_DATABASE": str(database),
+                "OMNIGENT_URL": url,
+            },
+        )
+        async with (
+            stdio_client(parameters) as (reader, writer),
+            ClientSession(reader, writer) as session,
+        ):
+            await session.initialize()
+            names = {tool.name for tool in (await session.list_tools()).tools}
+    assert "watch_subscribe" in names
+    assert "diff_watch_subscribe" in names

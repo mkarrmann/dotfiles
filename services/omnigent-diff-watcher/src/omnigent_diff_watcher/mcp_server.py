@@ -475,9 +475,21 @@ async def watch_status(session_id: SessionId) -> str:
 
 
 def main() -> None:
-    # No --native flags any more: identity is an argument, so there is nothing
-    # harness-specific left in this process.
-    argparse.ArgumentParser().parse_args()
+    # Identity is a tool argument now, so nothing here is harness-specific and
+    # the flags that used to select a bridge layout do nothing.
+    #
+    # They are still ACCEPTED, because removing them from the source config
+    # does not remove them from an installed one: the Codex config is built by
+    # a recursive dict merge that never deletes keys (agent_config/codex_config.py),
+    # so `args = ["--native-codex"]` survives in ~/.codex/config.toml, and on
+    # every other machine this repo cannot re-sync remotely. Rejecting the flag
+    # made argparse exit before serving, which does not read as "stale config"
+    # from inside a session -- the tools are simply absent. Ignoring it costs
+    # nothing and fails open.
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--native-codex", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--native-claude", action="store_true", help=argparse.SUPPRESS)
+    parser.parse_args()
     mcp.run(transport="stdio")
 
 
