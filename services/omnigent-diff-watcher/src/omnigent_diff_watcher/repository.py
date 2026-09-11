@@ -698,9 +698,15 @@ class WatcherRepository:
     ) -> list[tuple[str, str]]:
         """Retire watches that have gone quiet. Returns ``(session, subject)``.
 
-        Idleness is measured from the last delivery, falling back to creation,
-        so a subject that keeps producing events keeps its watch alive and only
-        a silent one ages out.
+        Idleness is measured from the last delivery, falling back to the
+        baseline, so a subject that keeps producing events keeps its watch alive
+        and only a silent one ages out.
+
+        The fallback is ``baseline_at`` rather than ``created_at`` because
+        resurrecting a retired subscription resets the baseline and clears the
+        last delivery but leaves ``created_at`` alone. Measuring from creation
+        meant an agent could re-subscribe to a long-quiet diff, be told it was
+        watching, and have the watch retired again on the next tick.
 
         Cancelling the request in the same transaction is load-bearing: the
         reconcile loop re-binds every active request, and a re-bound
@@ -713,7 +719,7 @@ class WatcherRepository:
             rows = connection.execute(
                 "SELECT id, session_id, subject FROM subscriptions "
                 "WHERE state IN ('active', 'suspended') "
-                "AND COALESCE(last_delivery_at, created_at) < ?",
+                "AND COALESCE(last_delivery_at, baseline_at) < ?",
                 (cutoff,),
             ).fetchall()
             for row in rows:

@@ -162,6 +162,29 @@ def test_a_retired_watch_stops_being_polled(tmp_path: Path) -> None:
     assert _claim(repository, due + 1) == []
 
 
+def test_resubscribing_after_an_age_out_restarts_the_clock(tmp_path: Path) -> None:
+    """Re-subscribing must survive the next sweep.
+
+    Resurrecting a retired subscription resets baseline_at and clears
+    last_delivery_at, but leaves created_at at the original value -- so
+    measuring idleness from created_at retired the watch again on the very next
+    tick, seconds after the agent was told it was watching. baseline_at is the
+    right fallback precisely because it is reset on resurrection.
+    """
+    repository = _repository(tmp_path)
+    subject = _diff_watch(repository, now=1000.0)
+    aged_out = 1000.0 + WEEK + 1
+    repository.retire_idle_watches(now=aged_out, max_idle_seconds=WEEK)
+
+    _diff_watch(repository, now=aged_out)
+
+    assert repository.retire_idle_watches(now=aged_out + DAY, max_idle_seconds=WEEK) == []
+    survivor = repository.subscription(SESSION, subject)
+    assert survivor is not None
+    assert survivor.state is SubscriptionState.ACTIVE
+    assert _active_requests(repository) == {subject}
+
+
 def test_the_age_out_is_source_agnostic(tmp_path: Path) -> None:
     """A command watch on a rollout that shipped weeks ago is just as stale.
 

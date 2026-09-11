@@ -6,7 +6,6 @@ unsubscribe away from a generic watch. Every bug these cover has happened.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from pathlib import Path
 
 from omnigent_diff_watcher.command_source import SOURCE_NAME as COMMAND_SOURCE_NAME
@@ -14,16 +13,12 @@ from omnigent_diff_watcher.command_source import CommandSpec
 from omnigent_diff_watcher.domain import (
     COMMAND_EVENT_KINDS,
     DIFF_EVENT_KINDS,
-    EventKind,
-    Lifecycle,
-    NormalizedEvent,
-    PollResult,
     SubscriptionState,
 )
 from omnigent_diff_watcher.phabricator_source import SOURCE_NAME as PHABRICATOR_SOURCE_NAME
 from omnigent_diff_watcher.repository import WatcherRepository
 from omnigent_diff_watcher.watch_api import GENERIC_SOURCES, cancel_watches, describe_watches
-from tests.support import fixture, subscribe_snapshot
+from tests.support import command_poll, fixture, subscribe_snapshot
 
 SESSION = "conv_test"
 KNOB = "jk:presto/presto_batch:demo_knob"
@@ -47,39 +42,11 @@ def _generic_watch(repository: WatcherRepository, *, request: bool = True) -> No
         SESSION,
         KNOB,
         COMMAND_EVENT_KINDS,
-        _command_poll(),
+        command_poll(KNOB),
         now=1000.0,
         next_poll_at=1060.0,
         max_active_subjects=100,
         spec=_spec(),
-    )
-
-
-def _command_poll() -> PollResult:
-    moment = datetime.now(UTC)
-    return PollResult(
-        subject=KNOB,
-        source=COMMAND_SOURCE_NAME,
-        lifecycle=Lifecycle.ACTIVE,
-        state_label="active",
-        latest_version_id=None,
-        last_activity_at=moment,
-        observed_at=moment,
-        cursor=None,
-        status="ok",
-        events={
-            EventKind.CHANGED: (
-                NormalizedEvent(
-                    subject=KNOB,
-                    kind=EventKind.CHANGED,
-                    external_id="value",
-                    version_id="",
-                    fingerprint="seed",
-                    changed_at=moment,
-                ),
-            )
-        },
-        ok_kinds=COMMAND_EVENT_KINDS,
     )
 
 

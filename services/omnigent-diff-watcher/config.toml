@@ -15,3 +15,4 @@ suspended_liveness_probe_seconds = 21600
 completed_retention_seconds = 2592000
 max_active_subjects = 100
 delivery_retry_seconds = 300
+idle_retire_seconds = 604800
