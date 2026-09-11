@@ -32,7 +32,10 @@ return {
 		"mfussenegger/nvim-jdtls",
 		cond = function() return vim.fn.executable(JDTLS_BIN) == 1 end,
 		opts = function(_, opts)
-			opts.cmd = { JDTLS_BIN }
+			-- Cap the heap. Without -Xmx the JVM takes its ergonomic default of a quarter of
+			-- RAM, which is ~30G on a 223G devvm; indexing the whole Presto reactor grows to
+			-- fill whatever it is given, and the server never restarts on its own.
+			opts.cmd = { JDTLS_BIN, "--jvm-arg=-Xmx8G" }
 
 			opts.root_dir = function(path)
 				-- Walk up to find the topmost pom.xml (Maven reactor root).
