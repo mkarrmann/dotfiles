@@ -77,6 +77,36 @@ class CodexConfigTest(unittest.TestCase):
         self.assertFalse(data["mcp_servers"]["scuba"]["enabled"])
         self.assertEqual(data["mcp_servers"]["quoted.server"]["command"], "local-server")
 
+    def test_source_declared_server_drops_a_key_the_source_removed(self):
+        """A recursive merge cannot express a removal.
+
+        diff_watch stopped taking ``--native-codex`` and CODEX_HOME, but both
+        survived in the installed config and kept being passed to a server that
+        had started rejecting them, so it exited before serving a single tool.
+        The source table is authoritative for the servers it declares.
+        """
+        self.path.write_text(
+            '[mcp_servers.diff_watch]\ncommand = "watch"\n'
+            'args = ["--native"]\nenv_vars = ["CODEX_HOME"]\n'
+        )
+        self.run_sync()
+        data = config.read_config(self.path)
+        self.assertEqual(
+            data["mcp_servers"]["diff_watch"],
+            {"command": "watch", "args": ["--native"]},
+        )
+
+    def test_an_unmanaged_server_in_the_installed_config_is_left_alone(self):
+        """Only servers the source declares are replaced; a hand-added one is
+        state the generator has no opinion about and must not delete."""
+        self.path.write_text('[mcp_servers.handwritten]\ncommand = "mine"\nargs = ["-x"]\n')
+        self.run_sync()
+        data = config.read_config(self.path)
+        self.assertEqual(
+            data["mcp_servers"]["handwritten"],
+            {"command": "mine", "args": ["-x"]},
+        )
+
     def test_legacy_migration_preserves_settings_and_original(self):
         legacy = self.config_dir / "config.toml"
         original = (

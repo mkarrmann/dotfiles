@@ -172,6 +172,17 @@ def generate_config(dotfiles: Path, mcps: dict, *, work: bool = True, retired=()
         for key in (*STATE_TABLES, "mcp_servers")
         if key in current
     }
+    # Replace a source-declared server outright instead of merging it onto the
+    # installed copy. `merge` cannot express a removal, so a key dropped from
+    # the source -- an `args` the server has stopped accepting -- would
+    # otherwise survive in the generated config forever and keep being passed.
+    # This mirrors what apply_mcps already does for the custom-mcps bundle.
+    # `local` is layered afterwards, so explicit overrides still win.
+    managed = set(defaults.get("mcp_servers", {}))
+    if managed and "mcp_servers" in state:
+        state["mcp_servers"] = {
+            name: spec for name, spec in state["mcp_servers"].items() if name not in managed
+        }
     result = merge(merge(state, defaults), local)
     result.setdefault("projects", {}).setdefault(str(dotfiles), {"trust_level": "trusted"})
     result = apply_mcps(result, mcps, local, retired)
