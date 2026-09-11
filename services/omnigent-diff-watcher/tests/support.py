@@ -5,11 +5,15 @@ from collections import deque
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from omnigent_diff_watcher.command_source import SOURCE_NAME as COMMAND_SOURCE_NAME
 from omnigent_diff_watcher.domain import (
+    COMMAND_EVENT_KINDS,
     DIFF_EVENT_KINDS,
     EventDeliveryResult,
     EventDeliveryStatus,
     EventKind,
+    Lifecycle,
+    NormalizedEvent,
     PollResult,
     SessionSnapshot,
     Subscription,
@@ -65,6 +69,40 @@ def subscribe_snapshot(
         next_poll_at=next_poll_at,
         max_active_subjects=max_active_subjects,
         spec=spec,
+    )
+
+
+def command_poll(subject: str, *, fingerprint: str = "seed") -> PollResult:
+    """A baseline reading for a generic command watch.
+
+    The command source has no snapshot fixtures -- its reading is whatever the
+    argv printed -- so tests that need a non-diff subscription build one here
+    rather than each inventing its own shape.
+    """
+    moment = datetime.now(UTC)
+    return PollResult(
+        subject=subject,
+        source=COMMAND_SOURCE_NAME,
+        lifecycle=Lifecycle.ACTIVE,
+        state_label="active",
+        latest_version_id=None,
+        last_activity_at=moment,
+        observed_at=moment,
+        cursor=None,
+        status="ok",
+        events={
+            EventKind.CHANGED: (
+                NormalizedEvent(
+                    subject=subject,
+                    kind=EventKind.CHANGED,
+                    external_id="value",
+                    version_id="",
+                    fingerprint=fingerprint,
+                    changed_at=moment,
+                ),
+            )
+        },
+        ok_kinds=COMMAND_EVENT_KINDS,
     )
 
 

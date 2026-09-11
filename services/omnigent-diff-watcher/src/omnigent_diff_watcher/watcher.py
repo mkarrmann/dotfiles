@@ -160,6 +160,16 @@ class DiffWatcher:
     async def run_iteration(self) -> None:
         """Run one deterministic scheduler cycle without sleeping."""
         now = self.clock.now().timestamp()
+        # Age out quiet watches first, so one that is about to be retired does
+        # not spend a liveness probe or a source poll on its way out.
+        for session_id, subject in await asyncio.to_thread(
+            self.repository.retire_idle_watches,
+            now=now,
+            max_idle_seconds=self.config.idle_retire_seconds,
+        ):
+            _logger.info(
+                "diff watcher retired idle watch on %s for session %s", subject, session_id
+            )
         # Retire/suspend sessions before claiming an external source poll. This
         # keeps a lifecycle deadline that coincides with a diff deadline from
         # spending one final network request on a dead session.

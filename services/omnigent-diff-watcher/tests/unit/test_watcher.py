@@ -533,3 +533,28 @@ async def test_retiring_the_last_diff_cancels_the_session_batch(tmp_path: Path) 
 
     watcher.repository.retire_subscription(only.id, "committed", now=clock.now().timestamp())
     assert watcher.repository.open_batch_for_session("session-1") is None
+
+
+@pytest.mark.asyncio
+async def test_run_iteration_ages_out_a_watch_that_never_says_anything(
+    tmp_path: Path,
+) -> None:
+    """The scheduler must actually call the age-out, at the configured default.
+
+    Pinned here as well as at the repository level because the sweep is the
+    only caller: without it the reaping exists and never runs, which is
+    indistinguishable from the bug it fixes.
+    """
+    clock = FakeClock()
+    source = FakeReviewSource(fixture("active"), fixture("active"))
+    sessions = FakeSessionService(SessionSnapshot("session-1", {}))
+    watcher = _watcher(tmp_path, source, sessions, RecordingDeliveryService(), clock)
+    await watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
+
+    clock.advance(watcher.config.idle_retire_seconds + 1)
+    await watcher.run_iteration()
+
+    row = watcher.repository.subscription("session-1", "D90000001")
+    assert row is not None
+    assert row.state is SubscriptionState.RETIRED
+    assert row.retired_reason == "idle"

@@ -290,8 +290,19 @@ Retire immediately when:
 - the diff is committed, abandoned, or reverted; or
 - two authoritative observations classify the subject as missing.
 
+Retire on age when a watch has delivered nothing for seven days
+(`idle_retire_seconds`). The conditions above all need an *event* — a diff that
+finishes, or a session that closes. Neither happens to a diff abandoned in
+review, and Omnigent almost never closes a session, so without this a forgotten
+watch polls forever: production reached 26 of 29 watches older than a week, the
+oldest 24 days. Idleness is measured from the last delivery rather than from
+creation, so an eight-day-old diff still producing review comments keeps its
+watch and only a silent one ages out.
+
 A retirement for cause also cancels the recorded `watch_requests` row, so the
-recovery pass cannot resurrect the watch on its next cycle.
+recovery pass cannot resurrect the watch on its next cycle. For the age-out
+this is not merely tidy but load-bearing: a re-bound subscription is created
+fresh, so retiring without cancelling would age out and re-bind forever.
 
 Runner loss alone is temporary. After 24 hours unreachable, suspend external
 diff polling and probe only Omnigent liveness every six hours. Recovery pulls

@@ -256,6 +256,11 @@ class WatcherConfig:
     completed_retention_seconds: float = 30 * 24 * 60 * 60
     max_active_subjects: int = 100
     delivery_retry_seconds: float = 5 * 60
+    # How long a watch may go without telling its session anything before it is
+    # retired. Terminal retirement only covers a subject that finishes; a diff
+    # that is simply abandoned in review stays ACTIVE forever, and so did its
+    # watch, because an Omnigent session is rarely closed either.
+    idle_retire_seconds: float = 7 * 24 * 60 * 60
     poll_interval_override_seconds: float | None = None
 
     def __post_init__(self) -> None:
@@ -270,6 +275,7 @@ class WatcherConfig:
             self.completed_retention_seconds,
             self.max_active_subjects,
             self.delivery_retry_seconds,
+            self.idle_retire_seconds,
         )
         if any(value <= 0 for value in numeric):
             raise ValueError("watcher limits and intervals must be positive")

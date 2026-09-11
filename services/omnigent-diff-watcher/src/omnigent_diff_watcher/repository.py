@@ -693,6 +693,45 @@ class WatcherRepository:
             connection.commit()
             return True
 
+    def retire_idle_watches(
+        self, *, now: float, max_idle_seconds: float
+    ) -> list[tuple[str, str]]:
+        """Retire watches that have gone quiet. Returns ``(session, subject)``.
+
+        Idleness is measured from the last delivery, falling back to creation,
+        so a subject that keeps producing events keeps its watch alive and only
+        a silent one ages out.
+
+        Cancelling the request in the same transaction is load-bearing: the
+        reconcile loop re-binds every active request, and a re-bound
+        subscription is created fresh, so retiring on its own would produce a
+        watch that ages out and comes straight back, forever.
+        """
+        cutoff = now - max_idle_seconds
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT id, session_id, subject FROM subscriptions "
+                "WHERE state IN ('active', 'suspended') "
+                "AND COALESCE(last_delivery_at, created_at) < ?",
+                (cutoff,),
+            ).fetchall()
+            for row in rows:
+                subscription_id = int(row["id"])
+                connection.execute(
+                    "UPDATE subscriptions SET state = 'retired', retired_reason = 'idle', "
+                    "updated_at = ? WHERE id = ?",
+                    (now, subscription_id),
+                )
+                self._detach_subscription_from_batches(connection, subscription_id, now)
+                connection.execute(
+                    "UPDATE watch_requests SET state = 'cancelled', updated_at = ? "
+                    "WHERE session_id = ? AND subject = ? AND state = 'active'",
+                    (now, row["session_id"], row["subject"]),
+                )
+            connection.commit()
+        return [(str(row["session_id"]), str(row["subject"])) for row in rows]
+
     def retire_subscription(self, subscription_id: int, reason: str, *, now: float) -> None:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")

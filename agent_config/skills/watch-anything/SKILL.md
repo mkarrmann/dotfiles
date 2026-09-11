@@ -117,6 +117,9 @@ unless the condition genuinely cannot be expressed mechanically:
   A command that cannot run at all is caught at subscribe time instead —
   `watch_subscribe` runs it once to take the baseline and fails the tool call
   rather than registering a watch that could never fire.
+- **A watch that never fires expires.** Seven days without a single delivery
+  ages it out, so a watch for something further away than that will be gone
+  before the thing happens. Watch a nearer-term proxy, or re-subscribe.
 - **Latency is not the interval.** A wake can lag the change by up to the
   interval plus the batch window (5 min) plus the minimum delivery gap
   (10 min). Fine for a rollout; wrong for anything that needs seconds.

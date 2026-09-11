@@ -71,7 +71,9 @@ Use the default event set unless the user requests a subset of
 `review_comment`, `ci_failure`, `ai_review`, or `ci_green`. `diff_watch_status`
 lists what a session is watching and `diff_watch_unsubscribe` stops one diff or
 all of them — both also take `session_id`. Normal diff completion retires
-automatically.
+automatically, and so does a week of silence: a watch that has delivered
+nothing for seven days is aged out, so a long-quiet diff you still care about
+needs a fresh subscribe rather than an assumption that the old one held.
 
 ## When a wake arrives
 
