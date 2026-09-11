@@ -321,6 +321,32 @@ def list_valid_snapshots(config: HubConfig) -> list[Path]:
     return sorted(valid, reverse=True)
 
 
+def newest_valid_snapshot(config: HubConfig) -> Path | None:
+    """The most recent archive whose checksum verifies, or ``None``.
+
+    Separate from :func:`list_valid_snapshots` because verifying is expensive
+    in the one place it is called most: the snapshot store lives on a FUSE
+    network mount, each archive is ~160 MB, and the timer adds one every few
+    minutes. Checksumming the whole store to answer "what is the newest good
+    snapshot" made ``local-status`` -- and so ``omnigent-onboard-check``, and so
+    ``init.sh`` -- block for minutes in uninterruptible disk sleep.
+
+    Archive names are timestamp-prefixed, so reverse lexical order is newest
+    first and the common case reads exactly one file.
+    """
+    ensure_storage(config)
+    if not config.snapshots_dir.exists():
+        return None
+    for sidecar in sorted(config.snapshots_dir.glob("*.tar.gz.sha256"), reverse=True):
+        archive = sidecar.with_suffix("")
+        try:
+            if archive.is_file() and sha256_file(archive) == read_sidecar(sidecar):
+                return archive
+        except SnapshotError:
+            continue
+    return None
+
+
 def prune_snapshots(config: HubConfig, *, recent_count: int = 12, daily_count: int = 7) -> None:
     snapshots = list_valid_snapshots(config)
     keep = set(snapshots[:recent_count])

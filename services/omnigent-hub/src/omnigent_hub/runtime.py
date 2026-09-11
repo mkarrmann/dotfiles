@@ -17,8 +17,8 @@ from omnigent_hub.models import ActiveHubRecord, ValidationError
 from omnigent_hub.snapshot import (
     bridge_version,
     hub_version,
-    list_valid_snapshots,
     load_manifest_from_archive,
+    newest_valid_snapshot,
     omnigent_version,
     watcher_version,
 )
@@ -403,10 +403,13 @@ def local_status(config: HubConfig) -> dict[str, Any]:
     newest_snapshot: dict[str, Any] | None = None
     snapshot_error: str | None = None
     try:
-        snapshots = list_valid_snapshots(config)
-        if snapshots:
-            newest_snapshot = load_manifest_from_archive(config, snapshots[0])
-            newest_snapshot["archive_path"] = str(snapshots[0])
+        # Only the newest is reported, so only the newest is verified. See
+        # newest_valid_snapshot: the store is on a FUSE mount and checksumming
+        # all of it here is what made this call hang for minutes.
+        newest = newest_valid_snapshot(config)
+        if newest is not None:
+            newest_snapshot = load_manifest_from_archive(config, newest)
+            newest_snapshot["archive_path"] = str(newest)
             created = _parse_utc(str(newest_snapshot["created_at"]))
             newest_snapshot["age_seconds"] = max(
                 0, int((datetime.now(UTC) - created).total_seconds())

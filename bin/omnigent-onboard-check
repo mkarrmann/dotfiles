@@ -107,7 +107,13 @@ if grep -Eqs '^[[:space:]]*model_provider[[:space:]]*=' \
     /etc/codex/managed_config.toml /etc/codex/managed_config_corp.toml; then
   _tools_dir="$(uv tool dir 2>/dev/null || echo "$HOME/.local/share/uv/tools")"
   "${OMNIGENT_PY:-$_tools_dir/omnigent/bin/python3}" - <<'PY'
-from omnigent.codex_native_app_server import resolve_native_codex_launch
+# Moved in omnigent 0.13.0 from omnigent.codex_native_app_server. Both paths
+# are tried so this assertion keeps holding across an upgrade in either
+# direction rather than turning a module rename into a failed converge.
+try:
+    from omnigent.harnesses.codex_native.app_server import resolve_native_codex_launch
+except ImportError:  # omnigent < 0.13
+    from omnigent.codex_native_app_server import resolve_native_codex_launch
 
 # What the shim buys: Codex reads as logged in (so no startup error is
 # pre-recorded to race thread/started) with no provider override pinned (so the

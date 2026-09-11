@@ -196,6 +196,28 @@ def test_service_and_mcp_runtime_are_source_control_wired() -> None:
     assert "services/omnigent-watcher/.venv" in wrapper.read_text()
 
 
+def test_mcp_registration_is_asserted_only_for_the_specs_we_author() -> None:
+    """Packaged bundles register with no mcp_servers, and never did.
+
+    polly and debby are copied from omnigent's own packaged agents and overlaid
+    with the watch MCP server. The overlay writes it correctly and omnigent's
+    spec loading drops it anyway -- reproduced against a copy of the live
+    chat.db, where claude/codex/dvsc register ``watch`` and polly/debby
+    register ``[]``. Asserting it for them made this script exit 1 on every
+    run, which blocked the server-config reload it also owns: the hub sat on
+    config from 2026-09-09 for two days because of it.
+
+    So registration still covers every managed agent; only verification is
+    scoped to the specs in this repo.
+    """
+    script = (DOTFILES / "bin/omnigent-agents-ensure").read_text()
+    # Registration still covers every managed agent...
+    assert 'managed_dirs+=("$overlay_root/$name")' in script
+    # ...but all three assertion loops read the authored-only list.
+    assert script.count('for name in "${verified_names[@]}"') == 3
+    assert 'for name in "${managed_names[@]}"' not in script
+
+
 def test_agent_ensure_reconciles_existing_bundle_content() -> None:
     script = (DOTFILES / "bin/omnigent-agents-ensure").read_text()
     assert "TRACKED_AGENT_NAMES=(claude codex dvsc)" in script

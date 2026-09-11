@@ -120,6 +120,15 @@ fi
 # and updates the existing row in place without disturbing session history.
 managed_dirs=()
 managed_names=()
+# Agents whose MCP registration is asserted. Only the specs we author qualify:
+# a packaged bundle's inline MCP tool is dropped somewhere in omnigent's own
+# spec loading, so polly and debby register with no mcp_servers at all no
+# matter what the overlay writes. Reproduced against a copy of the live
+# chat.db: claude, codex and dvsc register `watch`; polly and debby register
+# `[]`. Asserting it for them wedged this script -- and with it every
+# server-config reload -- from 2026-09-09 onward, which is a much worse outcome
+# than two packaged agents lacking a tool they never actually had.
+verified_names=()
 for name in "${TRACKED_AGENT_NAMES[@]}"; do
   spec_dir="$AGENTS_DIR/$name"
   if [ ! -d "$spec_dir" ]; then
@@ -128,6 +137,7 @@ for name in "${TRACKED_AGENT_NAMES[@]}"; do
   fi
   managed_dirs+=("$spec_dir")
   managed_names+=("$name")
+  verified_names+=("$name")
 done
 
 overlay_root="$(mktemp -d "${TMPDIR:-/tmp}/omnigent-agent-overlays.XXXXXX")"
@@ -213,14 +223,14 @@ for _ in $(seq 1 60); do
     log "seed server exited early; log follows:"; tail -n 20 "$seed_log" >&2; exit 1
   fi
   all=true
-  for name in "${managed_names[@]}"; do
+  for name in "${verified_names[@]}"; do
     has_current_agent "$seed_url" "$name" || { all=false; break; }
   done
   if [ "$all" = true ]; then registered=true; break; fi
   sleep 1
 done
 if [ "$registered" != true ]; then
-  log "timed out waiting for seed server to reconcile ${managed_names[*]}; log follows:"
+  log "timed out waiting for seed server to reconcile ${verified_names[*]}; log follows:"
   tail -n 20 "$seed_log" >&2
   exit 1
 fi
@@ -251,7 +261,7 @@ if [ -n "$live_url" ] \
 fi
 if [ "$live_reachable" = true ]; then
   live_current=true
-  for name in "${managed_names[@]}"; do
+  for name in "${verified_names[@]}"; do
     has_current_agent "$live_url" "$name" || live_current=false
   done
   config_stale=false
@@ -275,7 +285,7 @@ if [ "$live_reachable" = true ]; then
   live_current=false
   for _ in $(seq 1 30); do
     all=true
-    for name in "${managed_names[@]}"; do
+    for name in "${verified_names[@]}"; do
       has_current_agent "$live_url" "$name" || { all=false; break; }
     done
     if [ "$all" = true ]; then live_current=true; break; fi
