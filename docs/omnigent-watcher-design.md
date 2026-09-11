@@ -82,7 +82,33 @@ accepts an `mcpServers` key and ignores it. Servers written there never reach
 `claude mcp list`, no tool is advertised, and nothing reports the absence. The
 user scope Claude Code reads is top-level `mcpServers` in `~/.claude.json`.
 
-### 4.2 Session identity is an argument
+### 4.2 The tools are hub clients
+
+Watching happens on the active hub: the sidecar, its database, and the sessions
+it wakes are all there, and every omnigent unit carries
+`ExecCondition=omnigent-hub gate`. The MCP tools run wherever the agent runs.
+
+`omnigent_watcher.http_api` closes that gap. It exposes `POST /v1/watches`,
+`POST /v1/watches/cancel`, and `GET /v1/watches`, and is mounted into the hub's
+Omnigent server by dotted module path through the server config's
+`debug_router_modules` key — the same out-of-tree extension shape as
+`policy_modules`. Clients reach it over the `127.0.0.1:6767` forward that
+already carries session validation, so there is no second port to forward or
+health-check.
+
+Before this the tools opened the SQLite database by path, which silently meant
+"whichever machine I am on". On the hub that was the real database. On every
+other devserver it was an empty file no sidecar would ever poll: the watch was
+accepted, recorded, and never fired. The failure was invisible from the hub,
+which is the only place it was ever exercised — including by its own tests,
+which handed the tool a local database and so could not tell the two apart.
+
+The trade is that the Omnigent server now imports the watcher package, so a
+watcher schema change needs the server restarted alongside the sidecar. The
+alternative — the sidecar serving its own port — would have duplicated the
+tunnel-recovery logic that makes the existing forward reliable.
+
+### 4.3 Session identity is an argument
 
 Every tool takes the `session_id` it should wake. Agents obtain it from
 Omnigent's own `sys_session_get_info`, which reports the calling session's id
@@ -134,7 +160,7 @@ operations. dvsc also uses ACP's `bypassPermissions` default so an ALLOW or
 policy abstention does not fall through to a redundant client prompt; explicit
 DENY or ASK policies continue to take precedence.
 
-### 4.3 Watcher sidecar
+### 4.4 Watcher sidecar
 
 `omnigent-watcher.service` runs only on the active Omnigent hub. It:
 
@@ -151,7 +177,7 @@ DENY or ASK policies continue to take precedence.
 The service database is `~/.omnigent/watcher.sqlite3`, mode `0600`, WAL
 enabled. It never writes Omnigent's database.
 
-### 4.4 Hub controller
+### 4.5 Hub controller
 
 The existing hub controller starts/stops the watcher with the other active-hub
 tail services. Quiesced handoff stops it before the final snapshot. Snapshot

@@ -24,8 +24,11 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
-# Put out-of-tree policy modules on the import path.
-Environment=PYTHONPATH=%h/dotfiles/omnigent_config/policy_modules
+# Out-of-tree policy modules, and the watcher package whose HTTP router is
+# mounted through server.yaml's debug_router_modules. The watcher is imported
+# rather than reached over a second port so it rides the existing 6767 forward;
+# the cost is that a watcher schema change needs this server restarted too.
+Environment=PYTHONPATH=%h/dotfiles/omnigent_config/policy_modules:%h/dotfiles/services/omnigent-watcher/src
 # Vendored tiktoken BPE — its download host does not resolve here, and any
 # server-side token counting fails closed without it.
 # See omnigent_config/tiktoken-cache/README.md.

@@ -11,6 +11,18 @@
 policy_modules:
   - no_foreground_wait
 
+# Out-of-tree HTTP routers, mounted by dotted module path at startup.
+#
+# The watcher's tools run wherever the agent runs, but watching happens on the
+# hub: the sidecar, its database, and the sessions it wakes are all here, and
+# every omnigent unit carries ExecCondition=omnigent-hub gate. The tools used
+# to open the database by path, which on any other devserver meant an empty
+# file no sidecar ever polls -- a watch that was accepted and then never fired.
+# Mounting the watcher's API here puts it behind the same 127.0.0.1:6767
+# forward the tools already use, so no second tunnel needs health-checking.
+debug_router_modules:
+  - omnigent_watcher.http_api
+
 # Server-wide default policies, appended after per-agent policies for EVERY
 # session. `type: function` self-selects its phase, so no `on:` is needed.
 policies:

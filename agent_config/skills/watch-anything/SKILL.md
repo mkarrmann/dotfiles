@@ -29,6 +29,10 @@ events. This one knows nothing about its subject and only reports "it changed".
 
 The tool is `mcp__watch__subscribe`; match on the suffix.
 
+If a tool reports that it cannot reach the hub, that is what it means: the
+watcher lives on the active hub and this machine reaches it through the
+omnigent-client-proxy forward. Report it rather than working around it.
+
 **If the tool is absent or its connection is dead, stop and say so.** Do not
 substitute anything for it — not a polling loop, and not driving
 `omnigent-watch-mcp` yourself over stdio. The stdio route does work, which
@@ -126,6 +130,10 @@ unless the condition genuinely cannot be expressed mechanically:
 - **The command runs with a reduced environment** (`PATH`, `HOME`, proxy and
   credential vars) and a 30-second timeout, with output capped. A command that
   needs an unusual variable will fail; wrap it in a script that sets it.
+- **The command runs on the hub, not on your devserver.** Watching is a
+  hub-side service; your machine only registers the watch. A script or path
+  that exists only in your checkout will not resolve there — name something on
+  a shared path, or something that reaches the same answer from anywhere.
 
 ## Prefer purpose-built alerting
 

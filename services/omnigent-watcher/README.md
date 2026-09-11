@@ -29,6 +29,24 @@ The route is identical. Every tool takes the `session_id` it should wake,
 validates it against the server, binds the watch synchronously, and records a
 `watch_requests` row scoped by source. Nothing is harness-specific.
 
+### Where it runs
+
+The sidecar, its database, and the sessions it wakes are all on the active hub
+— every omnigent unit carries `ExecCondition=omnigent-hub gate`. The MCP tools
+run wherever the agent runs, so they are HTTP clients: `omnigent_watcher.http_api`
+is mounted into the hub's Omnigent server through the `debug_router_modules`
+key in `omnigent_config/server.yaml`, and reached over the same
+`127.0.0.1:6767` forward the tools already use to validate a session.
+
+They used to open the database by path instead, which meant "whichever machine
+I am on". On the hub that was the real database; anywhere else it was an empty
+file no sidecar would ever poll, so a watch was accepted and then never fired.
+Nothing detected it, because the hub is where it was tested.
+
+The cost is that the Omnigent server imports this package, so a schema change
+needs both restarted. The alternative was a second forwarded port, duplicating
+the tunnel-recovery logic that makes the existing forward reliable.
+
 ### Why identity is an argument
 
 MCP carries no session context in any transport: stdio `env` and HTTP `headers`

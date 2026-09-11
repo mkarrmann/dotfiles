@@ -27,8 +27,6 @@ an agent that already has that user's shell. Nuisance, not escalation.
 from __future__ import annotations
 
 import argparse
-import asyncio
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
 
@@ -36,12 +34,10 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
-from .domain import EventDeliveryResult, SessionSnapshot
+from .phabricator_source import SOURCE_NAME as PHABRICATOR_SOURCE
 
 if TYPE_CHECKING:
-    from .repository import WatcherRepository
     from .settings import ServiceSettings
-    from .watcher import Watcher
 
 mcp = FastMCP("watch", log_level="ERROR")
 
@@ -127,28 +123,6 @@ def _service_settings() -> ServiceSettings | None:
     return None
 
 
-def _database_path() -> Path:
-    """The database this session's watches are written to.
-
-    Two processes must agree on this file -- this server writes it and the
-    sidecar polls it -- so the override is an environment variable rather than
-    an argument: a stdio MCP server's argv is fixed by whoever registered it,
-    while the environment can be set alongside the sidecar's own.
-    """
-    from .database import DEFAULT_DATABASE_PATH, resolve
-
-    override = os.environ.get("OMNIGENT_WATCHER_DATABASE")
-    if override:
-        return Path(override).expanduser()
-    settings = _service_settings()
-    configured = (
-        settings.database_path if settings is not None else Path(DEFAULT_DATABASE_PATH).expanduser()
-    )
-    # Read-only resolution: the sidecar owns the rename, so until it has run
-    # once this still finds the file under its old name.
-    return resolve(configured)
-
-
 def _server_url() -> str:
     settings = _service_settings()
     return settings.server_url if settings is not None else DEFAULT_SERVER_URL
@@ -188,127 +162,47 @@ async def _validate_session(session_id: str) -> None:
         raise ValueError(f"session {session_id} is closed or archived; nothing could be woken")
 
 
-class _AddressedSession:
-    """A ``SessionService`` for an address already validated by the tool.
+def _strings(value: object) -> list[str]:
+    """Coerce a JSON array from the hub into a list of strings."""
+    return [str(item) for item in value] if isinstance(value, list) else []
 
-    ``Watcher.subscribe`` re-checks that the session is not terminal, which
-    normally costs a round trip. :func:`_validate_session` has just made it, so
-    this answers from that result instead of making a second identical call.
+
+async def _call(method: str, path: str, **kwargs: object) -> dict[str, object]:
+    """Call the watcher API on the hub, and translate its failures honestly.
+
+    Every failure mode here used to be a confusing local one. A client with no
+    route to the hub said its database was at the wrong schema; a hub without
+    the router mounted said nothing at all. Both now name what is actually
+    wrong and what would fix it.
     """
-
-    async def get(self, session_id: str) -> SessionSnapshot:
-        return SessionSnapshot(session_id=session_id, labels={})
-
-
-class _UnusedDelivery:
-    """``Watcher`` requires a delivery service; ``subscribe`` never uses one.
-
-    Waking a session is the sidecar's job and happens in the sidecar's process.
-    Raising rather than silently no-op'ing means a future code path that starts
-    delivering from here fails loudly instead of dropping wakes on the floor.
-    """
-
-    async def deliver_message(
-        self,
-        session_id: str,
-        delivery_id: str,
-        content: str,
-    ) -> EventDeliveryResult:
-        raise RuntimeError("the MCP server does not deliver watch notifications")
-
-
-def _repository() -> WatcherRepository:
-    # migrate=False: the sidecar owns the schema. See WatcherRepository.__init__.
-    from .repository import WatcherRepository
-
-    return WatcherRepository(_database_path(), migrate=False)
-
-
-def _watch_engine(repository: WatcherRepository) -> Watcher:
-    """Build the same engine the sidecar uses, for one synchronous subscribe.
-
-    Sharing ``Watcher.subscribe`` rather than re-implementing it is the
-    point: binding reads the subject for a baseline and applies the
-    active-subject limit, and a second implementation of that would drift from
-    the one the sidecar enforces.
-    """
-    from .command_source import CommandSource
-    from .phabricator_source import PhabricatorReviewSource, bounded_source_environment
-    from .watcher import Watcher
-
-    settings = _service_settings()
-    return Watcher(
-        repository,
-        (
-            PhabricatorReviewSource(),
-            CommandSource(env=bounded_source_environment()),
-        ),
-        _AddressedSession(),
-        _UnusedDelivery(),
-        config=settings.watcher if settings is not None else None,
-    )
-
-
-async def _bind(
-    repository: WatcherRepository,
-    session_id: str,
-    subjects: list[str],
-    event_types: frozenset[str],
-    *,
-    source_name: str,
-    spec: str | None,
-) -> tuple[list[str], list[str]]:
-    """Subscribe *subjects*, returning ``(bound, failures)``.
-
-    One unreadable subject does not sink the rest: a stack routinely contains a
-    diff that has just landed, and refusing the whole call over it would be
-    worse than reporting it.
-    """
-    from .domain import EventKind
-    from .watcher import SubscriptionError
-
-    kinds = frozenset(EventKind(value) for value in event_types)
-    engine = _watch_engine(repository)
-    limit = asyncio.Semaphore(_BIND_CONCURRENCY)
-
-    async def bind_one(subject: str) -> tuple[str, str | None]:
-        async with limit:
-            try:
-                await engine.subscribe(
-                    session_id, subject, kinds, source_name=source_name, spec=spec
-                )
-            except SubscriptionError as exc:
-                return subject, str(exc)
-            return subject, None
-
-    bound: list[str] = []
-    failures: list[str] = []
-    for subject, error in await asyncio.gather(*(bind_one(s) for s in subjects)):
-        if error is None:
-            bound.append(subject)
-        else:
-            failures.append(f"{subject} ({error})")
-    return bound, failures
-
-
-def _record(
-    repository: WatcherRepository,
-    session_id: str,
-    subjects: list[str],
-    event_types: frozenset[str],
-    *,
-    source_name: str,
-    spec: str | None,
-) -> None:
-    """Persist the request rows that re-bind these watches after a restart."""
-    import time
-
-    from .domain import EventKind
-
-    kinds = frozenset(EventKind(value) for value in event_types)
-    now = time.time()
-    for subject in subjects:
-        repository.request_watch(session_id, source_name, subject, kinds, spec=spec, now=now)
+    url = f"{_server_url().rstrip('/')}{path}"
+    try:
+        async with httpx.AsyncClient(timeout=180.0, trust_env=False) as client:
+            response = await client.request(method, url, **kwargs)  # type: ignore[arg-type]
+    except httpx.HTTPError as exc:
+        raise ValueError(
+            f"could not reach the Omnigent hub at {_server_url()} ({exc}). Watching runs on "
+            "the hub; this host reaches it through the omnigent-client-proxy forward."
+        ) from exc
+    if response.status_code == 404:
+        raise ValueError(
+            "the hub's Omnigent server has no watcher API. It is mounted through the "
+            "debug_router_modules key in omnigent_config/server.yaml and loaded at "
+            "startup, so the hub needs a config sync and a server restart."
+        )
+    if response.status_code >= 400:
+        detail: object = response.text
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict) and payload.get("detail"):
+            detail = payload["detail"]
+        raise ValueError(str(detail))
+    result = response.json()
+    if not isinstance(result, dict):
+        raise ValueError("the watcher API returned a malformed response")
+    return result
 
 
 # -- Diff watches ---------------------------------------------------------
@@ -322,38 +216,29 @@ async def diff_subscribe(
 ) -> str:
     """Wake a session when its diffs get review comments, CI results, or AI findings.
 
-    Name the diffs explicitly -- they are not inferred. Every diff is read once,
-    here, so an id that does not resolve is reported now rather than failing
-    silently in the background.
+    Name the diffs explicitly -- they are not inferred. Every diff is read once
+    during the call, so an id that does not resolve is reported now rather than
+    failing silently in the background.
     """
-    from .phabricator_source import SOURCE_NAME as PHABRICATOR_SOURCE_NAME
-
     selected = sorted(set(_ALL_EVENTS if events is None else events))
     if not selected:
         raise ValueError("at least one event type is required")
-    subjects = list(dict.fromkeys(diffs))
 
     await _validate_session(session_id)
-    repository = _repository()
-    kinds = frozenset(selected)
-    bound, failures = await _bind(
-        repository,
-        session_id,
-        subjects,
-        kinds,
-        source_name=PHABRICATOR_SOURCE_NAME,
-        spec=None,
+    result = await _call(
+        "POST",
+        "/v1/watches",
+        json={
+            "session_id": session_id,
+            "source": PHABRICATOR_SOURCE,
+            "subjects": list(dict.fromkeys(diffs)),
+            "events": selected,
+        },
     )
+    bound = _strings(result.get("bound"))
+    failures = _strings(result.get("failures"))
     if not bound:
         raise ValueError("could not watch any of those diffs: " + "; ".join(failures))
-    _record(
-        repository,
-        session_id,
-        bound,
-        kinds,
-        source_name=PHABRICATOR_SOURCE_NAME,
-        spec=None,
-    )
     answer = f"Watching {', '.join(bound)} for {', '.join(selected)}."
     if failures:
         answer += " Could not watch: " + "; ".join(failures) + "."
@@ -363,30 +248,32 @@ async def diff_subscribe(
 @mcp.tool()
 async def diff_unsubscribe(session_id: SessionId, diff: DiffId | None = None) -> str:
     """Stop watching one diff, or every diff, for a session."""
-    from .phabricator_source import SOURCE_NAME as PHABRICATOR_SOURCE_NAME
-    from .watch_api import cancel_watches
-
-    return cancel_watches(
-        _repository(), session_id, diff, sources=frozenset({PHABRICATOR_SOURCE_NAME})
+    result = await _call(
+        "POST",
+        "/v1/watches/cancel",
+        json={"session_id": session_id, "sources": [PHABRICATOR_SOURCE], "subject": diff},
     )
+    return str(result.get("detail", ""))
 
 
 @mcp.tool()
 async def diff_status(session_id: SessionId) -> str:
     """List the diffs a session is watching, and for which events."""
-    from .phabricator_source import SOURCE_NAME as PHABRICATOR_SOURCE_NAME
-    from .watch_api import describe_watches
-
-    return describe_watches(_repository(), session_id, sources=frozenset({PHABRICATOR_SOURCE_NAME}))
+    result = await _call(
+        "GET",
+        "/v1/watches",
+        params={"session_id": session_id, "sources": PHABRICATOR_SOURCE},
+    )
+    return str(result.get("detail", ""))
 
 
 # -- Generic watches ------------------------------------------------------
 #
-# Deliberately a separate tool set from watch_*. Those stay opinionated
+# Deliberately a separate tool set from the diff ones. Those stay opinionated
 # about diffs -- no source, no argv, events fixed to the four diff kinds --
 # because that is the interface worth having for the common case. These make no
 # assumption about what is being watched, at the cost of the caller having to
-# say how to read it. The route is now identical for both.
+# say how to read it. The route is identical for both.
 
 
 @mcp.tool()
@@ -403,66 +290,68 @@ async def subscribe(
     Use for anything that has no purpose-built watcher: a JustKnob rollout, a
     config value, a job's status. Prefer ``diff_subscribe`` for diffs.
 
-    The command runs on an interval in a background service, not in this
-    session, so waiting costs no model turns. Its output is hashed; the session
-    is woken only when the hash changes. Pass ``extract`` -- a regular
+    The command runs on an interval in a background service on the hub, not in
+    this session, so waiting costs no model turns. Its output is hashed; the
+    session is woken only when the hash changes. Pass ``extract`` -- a regular
     expression, optionally with one capture group -- when the output carries a
     timestamp or request id that would otherwise change on every poll.
 
-    The command is run once, here, to establish that baseline -- so a command
-    that cannot run is reported now rather than failing silently in the
+    The command is run once during the call to establish that baseline, so a
+    command that cannot run is reported now rather than failing silently in the
     background. Subscribe *before* the change you are waiting for can happen,
     or you will baseline the value you were watching for.
 
     ``timeout_seconds`` (1..120, and never more than ``interval_seconds``)
     bounds each run. Raise it for a slow probe -- a `meta`/`jf` round trip, or a
     command that asks a model to judge whether a condition has been met.
+
+    The command runs on the hub, not on this machine. A path or binary that
+    only exists on your devserver will not resolve there.
     """
     import shlex
 
-    from .command_source import SOURCE_NAME as COMMAND_SOURCE_NAME
+    from .command_source import SOURCE_NAME as COMMAND_SOURCE
     from .command_source import CommandSpec
     from .domain import COMMAND_EVENT_KINDS
 
+    # Validated here too so a malformed argv fails immediately and precisely
+    # rather than after a round trip; the hub validates it again.
     spec = CommandSpec(command, extract, interval_seconds, timeout_seconds)
     await _validate_session(session_id)
-    repository = _repository()
-    kinds = frozenset(kind.value for kind in COMMAND_EVENT_KINDS)
-
-    # Bind first, and only record the request once binding succeeded. Writing
-    # the request first would report success for a watch that the sidecar then
-    # fails to bind -- the failure is logged in another process and backs off,
-    # so the session that asked would never learn of it.
-    bound, failures = await _bind(
-        repository,
-        session_id,
-        [subject],
-        kinds,
-        source_name=COMMAND_SOURCE_NAME,
-        spec=spec.to_json(),
+    result = await _call(
+        "POST",
+        "/v1/watches",
+        json={
+            "session_id": session_id,
+            "source": COMMAND_SOURCE,
+            "subjects": [subject],
+            "events": sorted(kind.value for kind in COMMAND_EVENT_KINDS),
+            "spec": spec.to_json(),
+        },
     )
-    if not bound:
-        raise ValueError(f"could not start watching {'; '.join(failures)}")
-    _record(
-        repository,
-        session_id,
-        bound,
-        kinds,
-        source_name=COMMAND_SOURCE_NAME,
-        spec=spec.to_json(),
-    )
+    if not _strings(result.get("bound")):
+        raise ValueError(f"could not start watching {'; '.join(_strings(result.get('failures')))}")
     return (
-        f"Watching {subject}: {shlex.join(spec.argv)} every {spec.interval_seconds:g}s. "
-        f"Session {session_id} will be woken when its output changes."
+        f"Watching {subject}: {shlex.join(spec.argv)} every {spec.interval_seconds:g}s "
+        f"on the hub. Session {session_id} will be woken when its output changes."
     )
 
 
 @mcp.tool()
 async def unsubscribe(session_id: SessionId, subject: WatchSubject | None = None) -> str:
     """Stop one generic watch, or all of them, for a session."""
-    from .watch_api import GENERIC_SOURCES, cancel_watches
+    from .watch_api import GENERIC_SOURCES
 
-    return cancel_watches(_repository(), session_id, subject, sources=GENERIC_SOURCES)
+    result = await _call(
+        "POST",
+        "/v1/watches/cancel",
+        json={
+            "session_id": session_id,
+            "sources": sorted(GENERIC_SOURCES),
+            "subject": subject,
+        },
+    )
+    return str(result.get("detail", ""))
 
 
 @mcp.tool()
@@ -471,11 +360,16 @@ async def status(session_id: SessionId) -> str:
 
     The command is shown, not just the subject: it is stored and re-run on an
     interval long after the turn that registered it, so it has to be auditable
-    from here rather than only by reading the database.
+    from here rather than only by reading the hub's database.
     """
-    from .watch_api import GENERIC_SOURCES, describe_watches
+    from .watch_api import GENERIC_SOURCES
 
-    return describe_watches(_repository(), session_id, sources=GENERIC_SOURCES)
+    result = await _call(
+        "GET",
+        "/v1/watches",
+        params={"session_id": session_id, "sources": ",".join(sorted(GENERIC_SOURCES))},
+    )
+    return str(result.get("detail", ""))
 
 
 def main() -> None:

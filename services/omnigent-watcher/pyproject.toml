@@ -5,6 +5,10 @@ description = "Opt-in Phabricator review and CI watcher for Omnigent sessions."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    # Only http_api.py needs it, and that module runs inside the Omnigent
+    # server, which already provides it. Declared anyway so the package is
+    # importable and type-checkable on its own.
+    "fastapi>=0.115.0,<1",
     "httpx>=0.28.0,<1",
     "mcp>=1.26.0,<2",
     "pydantic>=2.11.0,<3",
@@ -21,6 +25,7 @@ dev = [
     "pytest-asyncio>=1.0.0",
     "pyyaml>=6.0.0",
     "respx>=0.22.0",
+    "uvicorn>=0.30.0",
     "ruff>=0.12.0",
     "types-pyyaml>=6.0.0",
 ]
