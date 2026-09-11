@@ -267,6 +267,21 @@ def test_packaged_agent_overlays_add_watch_without_losing_agent_tools(
         }
 
 
+def test_init_retires_the_old_unit_by_liveness_not_by_file() -> None:
+    """sync.sh prunes the old unit file before init.sh ever looks at it.
+
+    systemd then reports omnigent-diff-watcher.service as "not-found" while it
+    is still active, running the pre-rename code out of a directory that no
+    longer exists. That is the state this hit in production, and a guard keyed
+    on `list-unit-files` -- which returns nothing once the symlink is gone --
+    can never fire in it. Two watchers ran at once as a result.
+    """
+    script = (DOTFILES / "init.sh").read_text()
+    assert "systemctl --user is-active --quiet omnigent-diff-watcher.service" in script
+    assert "list-unit-files omnigent-diff-watcher" not in script
+    assert "systemctl --user stop omnigent-diff-watcher.service" in script
+
+
 def test_init_restarts_only_an_active_watcher_after_sync() -> None:
     script = (DOTFILES / "init.sh").read_text()
     assert "systemctl --user try-restart omnigent-watcher.service" in script

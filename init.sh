@@ -124,15 +124,21 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
       # and its last validated route must remain usable while reconciliation waits.
       systemctl --user try-restart omnigent-client-proxy.service 2>/dev/null || true
       # The watcher was omnigent-diff-watcher.service until it was renamed to
-      # match what it actually is. Retire the old unit before touching the new
-      # one: sync.sh removes the dangling unit-file link, but an enabled and
-      # running instance survives that, and two watchers polling one database
-      # is not a state worth reasoning about. Both are no-ops once done.
-      if systemctl --user list-unit-files omnigent-diff-watcher.service &>/dev/null &&
-         [[ -n "$(systemctl --user list-unit-files --no-legend omnigent-diff-watcher.service 2>/dev/null)" ]]; then
-        systemctl --user disable --now omnigent-diff-watcher.service 2>/dev/null || true
-        echo "retired omnigent-diff-watcher.service (renamed to omnigent-watcher.service)"
+      # match what it actually is. Retire the old one before touching the new
+      # one, or two watchers run at once.
+      #
+      # Keyed on the unit being LOADED, not on its file existing. sync.sh runs
+      # first and prunes the dangling unit-file symlink, which leaves systemd
+      # reporting the unit as "not-found" while it is still active and running
+      # the old code from a directory that no longer exists -- exactly the
+      # state this found in production. A file-existence guard can therefore
+      # never fire here.
+      if systemctl --user is-active --quiet omnigent-diff-watcher.service; then
+        systemctl --user stop omnigent-diff-watcher.service 2>/dev/null || true
+        echo "stopped omnigent-diff-watcher.service (renamed to omnigent-watcher.service)"
       fi
+      systemctl --user disable omnigent-diff-watcher.service 2>/dev/null || true
+      rm -f "$HOME/.config/systemd/user/default.target.wants/omnigent-diff-watcher.service"
       # A code pull updates the watcher's venv and sources in place. Restart only
       # when it is already active so the owner loads the new code; try-restart is a
       # no-op on the standby, whose gate and reconciler keep it stopped.
