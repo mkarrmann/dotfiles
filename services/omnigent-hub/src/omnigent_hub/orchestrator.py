@@ -280,7 +280,7 @@ class HandoffOrchestrator:
         target_versions = target_status.get("versions")
         if not isinstance(source_versions, dict) or not isinstance(target_versions, dict):
             raise HandoffError("version preflight returned an invalid status payload")
-        for component in ("omnigent", "bridge", "diff_watcher", "hub"):
+        for component in ("omnigent", "bridge", "watcher", "hub"):
             source_version = source_versions.get(component)
             target_version = target_versions.get(component)
             if (
@@ -421,8 +421,8 @@ def _status_warnings(record: ActiveHubRecord | None, hosts: dict[str, Any]) -> l
                     warnings.append(f"CRITICAL: {host} Omnigent version differs from snapshot")
                 if versions.get("bridge") != snapshot.get("bridge_version"):
                     warnings.append(f"CRITICAL: {host} bridge version differs from snapshot")
-                if versions.get("diff_watcher") != snapshot.get("diff_watcher_version"):
-                    warnings.append(f"CRITICAL: {host} diff watcher version differs from snapshot")
+                if versions.get("watcher") != snapshot.get("watcher_version"):
+                    warnings.append(f"CRITICAL: {host} watcher version differs from snapshot")
         elif payload.get("snapshot_error"):
             warnings.append(f"WARNING: {host} cannot validate a recovery snapshot")
         services = payload.get("services")

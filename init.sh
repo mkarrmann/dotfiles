@@ -43,14 +43,14 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
     (cd "$hub_project" && uv sync --frozen --all-groups) ||
       echo "WARNING: omnigent-hub dependency sync failed" >&2
   fi
-  diff_watcher_project="$DOTFILES_DIR/services/omnigent-diff-watcher"
-  if [[ -f "$diff_watcher_project/uv.lock" ]] && command -v uv &>/dev/null; then
-    (cd "$diff_watcher_project" && uv sync --frozen --all-groups) ||
-      echo "WARNING: omnigent-diff-watcher dependency sync failed" >&2
-    if [[ -x "$diff_watcher_project/.venv/bin/omnigent-diff-watcher" ]]; then
-      "$diff_watcher_project/.venv/bin/omnigent-diff-watcher" \
-        --config "$diff_watcher_project/config.toml" status --json >/dev/null ||
-        echo "WARNING: omnigent-diff-watcher state bootstrap failed" >&2
+  watcher_project="$DOTFILES_DIR/services/omnigent-watcher"
+  if [[ -f "$watcher_project/uv.lock" ]] && command -v uv &>/dev/null; then
+    (cd "$watcher_project" && uv sync --frozen --all-groups) ||
+      echo "WARNING: omnigent-watcher dependency sync failed" >&2
+    if [[ -x "$watcher_project/.venv/bin/omnigent-watcher" ]]; then
+      "$watcher_project/.venv/bin/omnigent-watcher" \
+        --config "$watcher_project/config.toml" status --json >/dev/null ||
+        echo "WARNING: omnigent-watcher state bootstrap failed" >&2
     fi
   fi
 
@@ -123,10 +123,20 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
       # candidate may temporarily lack a delegated Persistent Storage credential,
       # and its last validated route must remain usable while reconciliation waits.
       systemctl --user try-restart omnigent-client-proxy.service 2>/dev/null || true
+      # The watcher was omnigent-diff-watcher.service until it was renamed to
+      # match what it actually is. Retire the old unit before touching the new
+      # one: sync.sh removes the dangling unit-file link, but an enabled and
+      # running instance survives that, and two watchers polling one database
+      # is not a state worth reasoning about. Both are no-ops once done.
+      if systemctl --user list-unit-files omnigent-diff-watcher.service &>/dev/null &&
+         [[ -n "$(systemctl --user list-unit-files --no-legend omnigent-diff-watcher.service 2>/dev/null)" ]]; then
+        systemctl --user disable --now omnigent-diff-watcher.service 2>/dev/null || true
+        echo "retired omnigent-diff-watcher.service (renamed to omnigent-watcher.service)"
+      fi
       # A code pull updates the watcher's venv and sources in place. Restart only
       # when it is already active so the owner loads the new code; try-restart is a
       # no-op on the standby, whose gate and reconciler keep it stopped.
-      systemctl --user try-restart omnigent-diff-watcher.service 2>/dev/null || true
+      systemctl --user try-restart omnigent-watcher.service 2>/dev/null || true
 
       if "$DOTFILES_DIR/bin/omnigent-server-url" --is-candidate; then
         "$DOTFILES_DIR/bin/omnigent-retire-legacy-standby" ||

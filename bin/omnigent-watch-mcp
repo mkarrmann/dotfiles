@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+binary="$HOME/dotfiles/services/omnigent-watcher/.venv/bin/omnigent-watch-mcp"
+if [[ ! -x "$binary" ]]; then
+  echo "omnigent-watch-mcp: runtime is not installed; run ~/dotfiles/init.sh" >&2
+  exit 127
+fi
+exec "$binary" "$@"

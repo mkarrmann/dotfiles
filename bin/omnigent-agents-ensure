@@ -97,9 +97,9 @@ for agent in d.get("data") or []:
     if agent.get("name") != name:
         continue
     for server in agent.get("mcp_servers") or []:
-        if (server.get("name") == "diff_watch"
+        if (server.get("name") == "watch"
                 and server.get("transport") == "stdio"
-                and server.get("command") == "omnigent-diff-watch-mcp"):
+                and server.get("command") == "omnigent-watch-mcp"):
             sys.exit(0)
 sys.exit(1)'
 }
@@ -269,7 +269,7 @@ if [ "$live_reachable" = true ]; then
     fi
     log "restarting quiescent server to load changed agent bundles and policies…"
     systemctl --user restart omnigent-server.service
-    systemctl --user try-restart omnigent-diff-watcher.service 2>/dev/null || true
+    systemctl --user try-restart omnigent-watcher.service 2>/dev/null || true
   fi
 
   live_current=false

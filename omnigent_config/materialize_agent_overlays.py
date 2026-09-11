@@ -16,20 +16,20 @@ _PACKAGED_AGENTS = {"polly", "debby"}
 # harness-specific.
 _DIFF_WATCH = {
     "type": "mcp",
-    "command": "omnigent-diff-watch-mcp",
+    "command": "omnigent-watch-mcp",
     "tools": [
-        "diff_watch_subscribe",
-        "diff_watch_unsubscribe",
-        "diff_watch_status",
-        "watch_subscribe",
-        "watch_unsubscribe",
-        "watch_status",
+        "diff_subscribe",
+        "diff_unsubscribe",
+        "diff_status",
+        "subscribe",
+        "unsubscribe",
+        "status",
     ],
 }
 
 
 def materialize(output_root: Path, names: list[str]) -> None:
-    """Copy packaged agent bundles and add the shared diff-watch MCP server."""
+    """Copy packaged agent bundles and add the shared watch MCP server."""
     output_root.mkdir(parents=True, exist_ok=True)
     examples = files("omnigent").joinpath("resources", "examples")
     for name in names:
@@ -43,7 +43,7 @@ def materialize(output_root: Path, names: list[str]) -> None:
         tools = config.setdefault("tools", {})
         if not isinstance(tools, dict):
             raise TypeError(f"{name} tools config is not a mapping")
-        tools["diff_watch"] = _DIFF_WATCH
+        tools["watch"] = _DIFF_WATCH
         config_path.write_text(
             yaml.safe_dump(config, sort_keys=False, default_flow_style=False),
             encoding="utf-8",

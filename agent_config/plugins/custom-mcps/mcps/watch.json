@@ -1,0 +1,12 @@
+{
+  "description": "Wake an Omnigent session when something changes. watch_* subscribes to review, CI-failure, AI-review, and green-CI notifications for named Phabricator diffs; watch_* watches anything else a command can report, such as a JustKnob rollout or a job's status. Both take the session_id to wake, from sys_session_get_info.",
+  "agents": [
+    "claude"
+  ],
+  "mcpServers": {
+    "watch": {
+      "type": "stdio",
+      "command": "~/dotfiles/bin/omnigent-watch-mcp"
+    }
+  }
+}

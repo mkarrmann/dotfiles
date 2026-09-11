@@ -27,7 +27,7 @@ class CodexConfigTest(unittest.TestCase):
             '[features]\nshared_flag = true\n'
         )
         (self.config_dir / 'config.work.toml').write_text(
-            '[mcp_servers.diff_watch]\ncommand = "watch"\nargs = ["--native"]\n'
+            '[mcp_servers.watch]\ncommand = "watch"\nargs = ["--native"]\n'
         )
         self.mcps = self.dotfiles / "agent_config/plugins/custom-mcps/mcps"
         self.mcps.mkdir(parents=True)
@@ -36,7 +36,7 @@ class CodexConfigTest(unittest.TestCase):
             '"quoted.server": {"command": "managed"}}}'
         )
         (self.mcps / 'diff-watch.json').write_text(
-            '{"agents": ["claude"], "mcpServers": {"diff_watch": {"command": "watch"}}}'
+            '{"agents": ["claude"], "mcpServers": {"watch": {"command": "watch"}}}'
         )
         self.codex_home = self.home / ".codex"
         self.codex_home.mkdir()
@@ -60,7 +60,7 @@ class CodexConfigTest(unittest.TestCase):
     def test_local_root_nested_and_array_overrides_survive_mcp_sync(self):
         self.local.write_text(
             'model = "local"\n[features]\nshared_flag = false\nlocal_flag = true\n'
-            '[mcp_servers.diff_watch]\nargs = []\n'
+            '[mcp_servers.watch]\nargs = []\n'
             '[mcp_servers.scuba]\nenabled = false\n'
             '[mcp_servers."quoted.server"]\ncommand = "local-server"\n'
             f'[projects."{self.dotfiles}"]\ntrust_level = "untrusted"\n'
@@ -73,26 +73,26 @@ class CodexConfigTest(unittest.TestCase):
         self.assertEqual(data["model"], "local")
         self.assertEqual(data["features"], {"shared_flag": False, "local_flag": True})
         self.assertEqual(data["projects"][str(self.dotfiles)]["trust_level"], "untrusted")
-        self.assertEqual(data["mcp_servers"]["diff_watch"]["args"], [])
+        self.assertEqual(data["mcp_servers"]["watch"]["args"], [])
         self.assertFalse(data["mcp_servers"]["scuba"]["enabled"])
         self.assertEqual(data["mcp_servers"]["quoted.server"]["command"], "local-server")
 
     def test_source_declared_server_drops_a_key_the_source_removed(self):
         """A recursive merge cannot express a removal.
 
-        diff_watch stopped taking ``--native-codex`` and CODEX_HOME, but both
+        watch stopped taking ``--native-codex`` and CODEX_HOME, but both
         survived in the installed config and kept being passed to a server that
         had started rejecting them, so it exited before serving a single tool.
         The source table is authoritative for the servers it declares.
         """
         self.path.write_text(
-            '[mcp_servers.diff_watch]\ncommand = "watch"\n'
+            '[mcp_servers.watch]\ncommand = "watch"\n'
             'args = ["--native"]\nenv_vars = ["CODEX_HOME"]\n'
         )
         self.run_sync()
         data = config.read_config(self.path)
         self.assertEqual(
-            data["mcp_servers"]["diff_watch"],
+            data["mcp_servers"]["watch"],
             {"command": "watch", "args": ["--native"]},
         )
 
@@ -216,7 +216,7 @@ name = "second"
         self.run_sync()
         claude = self.home / '.claude.json'
         claude.write_text(json.dumps({'mcpServers': {'scuba': {'command': 'old'},
-                                                   'diff_watch': {'command': 'watch'},
+                                                   'watch': {'command': 'watch'},
                                                    'personal': {'command': 'personal'}},
                                      'other': 42}))
         stale = self.home / '.claude/settings.json'
@@ -244,7 +244,7 @@ name = "second"
         self.env['DOTFILES_PROFILE'] = 'work'
         self.run_sync()
         servers = config.read_config(self.path)['mcp_servers']
-        self.assertIn('diff_watch', servers)
+        self.assertIn('watch', servers)
         self.assertIn('scuba', servers)
         self.assertIn('personal', servers)
 

@@ -1,0 +1,18 @@
+database_path = "~/.omnigent/watcher.sqlite3"
+delivery_mode = "enabled"
+delivery_session_allowlist = []
+reconcile_interval_seconds = 15
+scheduler_error_retry_seconds = 30
+
+[watcher]
+batch_window_seconds = 300
+minimum_delivery_interval_seconds = 600
+poll_concurrency = 2
+poll_lease_seconds = 120
+unavailable_suspend_seconds = 86400
+liveness_probe_seconds = 300
+suspended_liveness_probe_seconds = 21600
+completed_retention_seconds = 2592000
+max_active_subjects = 100
+delivery_retry_seconds = 300
+idle_retire_seconds = 604800

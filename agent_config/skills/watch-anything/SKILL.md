@@ -11,13 +11,13 @@ description: >-
   babysit, monitor, watch, poll, wait for, keep an eye on, let me know when,
   notify me when, check back, until it flips, until it rolls out, canary,
   rollout, JustKnob, JK.
-  Also use when a message beginning with [Diff watcher] wakes the session.
+  Also use when a message beginning with [Watcher] wakes the session.
 ---
 
 # Watch anything
 
 Wake this session when the output of a command changes. The command runs in the
-diff-watcher sidecar on an interval, not in this session, so the wait costs no
+watcher sidecar on an interval, not in this session, so the wait costs no
 model turns and survives the session going idle.
 
 This is the general case. For a Phabricator diff or its CI, use
@@ -27,11 +27,11 @@ events. This one knows nothing about its subject and only reports "it changed".
 
 ## Subscribing
 
-The tool is `mcp__diff_watch__watch_subscribe`; match on the suffix.
+The tool is `mcp__watch__subscribe`; match on the suffix.
 
 **If the tool is absent or its connection is dead, stop and say so.** Do not
 substitute anything for it — not a polling loop, and not driving
-`omnigent-diff-watch-mcp` yourself over stdio. The stdio route does work, which
+`omnigent-watch-mcp` yourself over stdio. The stdio route does work, which
 is the trap: it registers a real watch while leaving this session unable to
 list or stop it, and it hides a broken deployment that would otherwise get
 fixed. This has happened.
@@ -42,7 +42,7 @@ session stays dead here no matter how healthy it is. **A new session is the
 fix**, and saying that is more useful than working around it.
 
 ```
-watch_subscribe(
+subscribe(
   session_id = "<from sys_session_get_info>",
   subject  = "jk:presto/presto_batch:py_client_apply_bcp_client_info",
   command  = ["jk", "get", "presto/presto_batch:py_client_apply_bcp_client_info"],
@@ -69,8 +69,8 @@ watch_subscribe(
 - **`interval_seconds`** is held constant. Unlike a diff watch, a command watch
   does not back off when nothing is happening.
 
-`watch_status(session_id)` lists a session's watches and the exact command each
-will keep running; `watch_unsubscribe(session_id, subject=None)` stops one or
+`status(session_id)` lists a session's watches and the exact command each
+will keep running; `unsubscribe(session_id, subject=None)` stops one or
 all of them.
 
 ## Judgment: keep it out of the poll
@@ -113,9 +113,9 @@ unless the condition genuinely cannot be expressed mechanically:
   value — for example `extract` on a command that prints `MATCH`/`NOMATCH`.
 - **A failing command is not a change.** Non-zero exit routes into backoff and
   does not wake anyone, so a watch on a command that *starts* breaking goes
-  quiet rather than lying. Check `watch_status` if a watch seems too silent.
+  quiet rather than lying. Check `status` if a watch seems too silent.
   A command that cannot run at all is caught at subscribe time instead —
-  `watch_subscribe` runs it once to take the baseline and fails the tool call
+  `subscribe` runs it once to take the baseline and fails the tool call
   rather than registering a watch that could never fire.
 - **A watch that never fires expires.** Seven days without a single delivery
   ages it out, so a watch for something further away than that will be gone

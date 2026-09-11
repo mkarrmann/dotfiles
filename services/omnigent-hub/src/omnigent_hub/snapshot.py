@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from omnigent_hub.config import HubConfig
+from omnigent_hub.config import LEGACY_WATCHER_DB_NAME, WATCHER_DB_NAME, HubConfig
 from omnigent_hub.models import ActiveHubRecord
 from omnigent_hub.storage import ensure_storage, write_json_atomic
 
@@ -62,8 +62,8 @@ def bridge_version(project: Path) -> str:
     return _source_version(project, component="Google Chat bridge")
 
 
-def diff_watcher_version(project: Path) -> str:
-    return _source_version(project, component="Omnigent diff watcher")
+def watcher_version(project: Path) -> str:
+    return _source_version(project, component="Omnigent watcher")
 
 
 def hub_version(project: Path) -> str:
@@ -199,11 +199,16 @@ def create_snapshot(
         state.mkdir(mode=0o700)
         chat_copy = state / "chat.db"
         bridge_copy = state / "google-chat.sqlite3"
-        watcher_copy = state / "diff-watcher.sqlite3"
+        watcher_copy = state / WATCHER_DB_NAME
 
         sqlite_backup(config.chat_db, chat_copy)
         sqlite_backup(config.bridge_db, bridge_copy)
-        sqlite_backup(config.diff_watcher_db, watcher_copy)
+        # A host that has not restarted its sidecar since the rename still has
+        # the old filename; capture whichever exists, always under the new one.
+        watcher_source = (
+            config.watcher_db if config.watcher_db.exists() else config.legacy_watcher_db
+        )
+        sqlite_backup(watcher_source, watcher_copy)
         credentials = credential_summary(chat_copy)
         chat_summary = sqlite_summary(chat_copy)
         bridge_summary = sqlite_summary(bridge_copy)
@@ -220,7 +225,7 @@ def create_snapshot(
             "snapshot_kind": "quiesced" if quiesced else "online",
             "omnigent_version": omnigent_version(config.omnigent_bin),
             "bridge_version": bridge_version(config.bridge_project),
-            "diff_watcher_version": diff_watcher_version(config.diff_watcher_project),
+            "watcher_version": watcher_version(config.watcher_project),
             "credentials": credentials,
             "databases": {
                 "chat.db": {
@@ -231,7 +236,7 @@ def create_snapshot(
                     "sha256": sha256_file(bridge_copy),
                     **bridge_summary,
                 },
-                "diff-watcher.sqlite3": {
+                WATCHER_DB_NAME: {
                     "sha256": sha256_file(watcher_copy),
                     **watcher_summary,
                 },
@@ -357,7 +362,7 @@ def validate_snapshot(
         if require_local_versions:
             current_omnigent = omnigent_version(config.omnigent_bin)
             current_bridge = bridge_version(config.bridge_project)
-            current_watcher = diff_watcher_version(config.diff_watcher_project)
+            current_watcher = watcher_version(config.watcher_project)
             if manifest.get("omnigent_version") != current_omnigent:
                 raise SnapshotError(
                     "Omnigent version mismatch: "
@@ -368,16 +373,20 @@ def validate_snapshot(
                     "Google Chat bridge version mismatch: "
                     f"snapshot={manifest.get('bridge_version')!r}, local={current_bridge!r}"
                 )
-            if manifest.get("diff_watcher_version") != current_watcher:
+            if manifest.get("watcher_version") != current_watcher:
                 raise SnapshotError(
-                    "diff watcher version mismatch: "
-                    f"snapshot={manifest.get('diff_watcher_version')!r}, "
+                    "watcher version mismatch: "
+                    f"snapshot={manifest.get('watcher_version')!r}, "
                     f"local={current_watcher!r}"
                 )
         databases = manifest.get("databases")
         if not isinstance(databases, dict):
             raise SnapshotError("snapshot manifest has no databases object")
-        for name in ("chat.db", "google-chat.sqlite3", "diff-watcher.sqlite3"):
+        # A snapshot written before the rename names the watcher database
+        # diff-watcher.sqlite3. Accepting both keeps an existing archive
+        # restorable instead of stranding it behind a cosmetic change.
+        watcher_key = WATCHER_DB_NAME if WATCHER_DB_NAME in databases else LEGACY_WATCHER_DB_NAME
+        for name in ("chat.db", "google-chat.sqlite3", watcher_key):
             details = databases.get(name)
             if not isinstance(details, dict) or not isinstance(details.get("sha256"), str):
                 raise SnapshotError(f"snapshot manifest is missing checksum for {name}")
@@ -410,7 +419,8 @@ def restore_snapshot(config: HubConfig, archive: Path) -> dict[str, Any]:
         for current in (
             config.chat_db,
             config.bridge_db,
-            config.diff_watcher_db,
+            config.watcher_db,
+            config.legacy_watcher_db,
             config.artifacts_dir,
         ):
             if current.exists():
@@ -418,23 +428,28 @@ def restore_snapshot(config: HubConfig, archive: Path) -> dict[str, Any]:
         for suffix in ("-wal", "-shm"):
             (config.data_dir / f"chat.db{suffix}").unlink(missing_ok=True)
             (config.data_dir / f"google-chat.sqlite3{suffix}").unlink(missing_ok=True)
-            (config.data_dir / f"diff-watcher.sqlite3{suffix}").unlink(missing_ok=True)
+            (config.data_dir / f"{WATCHER_DB_NAME}{suffix}").unlink(missing_ok=True)
+            (config.data_dir / f"{LEGACY_WATCHER_DB_NAME}{suffix}").unlink(missing_ok=True)
         config.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         shutil.move(str(state / "chat.db"), config.chat_db)
         shutil.move(str(state / "google-chat.sqlite3"), config.bridge_db)
-        shutil.move(str(state / "diff-watcher.sqlite3"), config.diff_watcher_db)
+        restored_watcher = state / WATCHER_DB_NAME
+        if not restored_watcher.exists():
+            restored_watcher = state / LEGACY_WATCHER_DB_NAME
+        shutil.move(str(restored_watcher), config.watcher_db)
         shutil.move(str(state / "artifacts"), config.artifacts_dir)
         os.chmod(config.chat_db, 0o600)
         os.chmod(config.bridge_db, 0o600)
-        os.chmod(config.diff_watcher_db, 0o600)
+        os.chmod(config.watcher_db, 0o600)
         sqlite_summary(config.chat_db)
         sqlite_summary(config.bridge_db)
-        sqlite_summary(config.diff_watcher_db)
+        sqlite_summary(config.watcher_db)
     except Exception:
         for installed in (
             config.chat_db,
             config.bridge_db,
-            config.diff_watcher_db,
+            config.watcher_db,
+            config.legacy_watcher_db,
             config.artifacts_dir,
         ):
             if installed.is_dir():

@@ -220,7 +220,7 @@ class InitProfileTest(ProfileFixture):
             self.dotfiles / "bin/omnigent-hub",
             recorder + '\nif [[ "$1" == discover ]]; then exit "${TEST_DISCOVER_EXIT:-0}"; fi',
         )
-        for project in ("omnigent-hub", "omnigent-diff-watcher"):
+        for project in ("omnigent-hub", "omnigent-watcher"):
             project_path = self.dotfiles / "services" / project
             project_path.mkdir(parents=True)
             (project_path / "uv.lock").touch()

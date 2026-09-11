@@ -102,7 +102,7 @@ class FakeRemote:
                 "versions": {
                     "omnigent": omnigent,
                     "bridge": "sha256:bridge",
-                    "diff_watcher": watcher,
+                    "watcher": watcher,
                     "hub": hub,
                 }
             }
@@ -393,12 +393,12 @@ def test_planned_handoff_rejects_hub_controller_drift(
         )
 
 
-def test_planned_handoff_rejects_diff_watcher_drift(
+def test_planned_handoff_rejects_watcher_drift(
     hub_config: HubConfig,
 ) -> None:
     remote = FakeRemote(active_record(), mismatch_target_watcher_version=True)
 
-    with pytest.raises(HandoffError, match="diff_watcher version mismatch"):
+    with pytest.raises(HandoffError, match="watcher version mismatch"):
         HandoffOrchestrator(hub_config, remote).handoff(
             "standby.example.com",
             unexpected=False,

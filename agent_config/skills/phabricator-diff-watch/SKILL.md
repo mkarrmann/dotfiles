@@ -7,19 +7,19 @@ description: >-
   or report new review comments or CI results for the session's diffs. Prefer
   this over an in-turn CI polling loop: the sidecar polls out of process and
   survives the session going idle.
-  Also use when a message beginning with [Diff watcher] wakes the session.
+  Also use when a message beginning with [Watcher] wakes the session.
 ---
 
 # Phabricator diff watch
 
-Subscribe with the available `diff_watch_subscribe` tool only when all of these
+Subscribe with the available `diff_subscribe` tool only when all of these
 hold. The harnesses namespace it differently: the Omnigent SDK harnesses use
-`diff_watch__diff_watch_subscribe`, and the native ones (Claude Code and Codex)
-use `mcp__diff_watch__diff_watch_subscribe`. Match on the suffix.
+`watch__diff_subscribe`, and the native ones (Claude Code and Codex)
+use `mcp__watch__diff_subscribe`. Match on the suffix.
 
 **If the tool is absent or its connection is dead, stop and say so.** Do not
 substitute anything for it — not a polling loop, and not driving
-`omnigent-diff-watch-mcp` yourself over stdio. The stdio route does work, which
+`omnigent-watch-mcp` yourself over stdio. The stdio route does work, which
 is the trap: it registers a real watch while leaving this session unable to
 list or stop it, and it hides a broken deployment. A harness binds its MCP
 servers once, at session start, so a server repaired *during* this session
@@ -39,7 +39,7 @@ stays dead here; **a new session is the fix**.
 Two arguments matter, and **neither is inferred**:
 
 ```
-diff_watch_subscribe(
+diff_subscribe(
   session_id = "<from sys_session_get_info>",
   diffs      = ["D116563979", "D116338876"],   # the whole stack, one call
   events     = None,                            # optional subset
@@ -68,8 +68,8 @@ handed-off work, an unrelated diff merely seen in output, or a committed,
 abandoned, or reverted diff. Do not resubscribe on later turns.
 
 Use the default event set unless the user requests a subset of
-`review_comment`, `ci_failure`, `ai_review`, or `ci_green`. `diff_watch_status`
-lists what a session is watching and `diff_watch_unsubscribe` stops one diff or
+`review_comment`, `ci_failure`, `ai_review`, or `ci_green`. `diff_status`
+lists what a session is watching and `diff_unsubscribe` stops one diff or
 all of them — both also take `session_id`. Normal diff completion retires
 automatically, and so does a week of silence: a watch that has delivered
 nothing for seven days is aged out, so a long-quiet diff you still care about
@@ -77,7 +77,7 @@ needs a fresh subscribe rather than an assumption that the old one held.
 
 ## When a wake arrives
 
-When a `[Diff watcher ...]` message arrives, treat its counts as a stale hint.
+When a `[Watcher ...]` message arrives, treat its counts as a stale hint.
 One wake covers the whole stack and names each affected diff. Load
 [[diff-comments]] for current review feedback and [[ci-signals]] for current CI
 before editing. Address actionable findings in the existing workspace, run

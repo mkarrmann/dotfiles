@@ -7,7 +7,7 @@ omnigent-hub-reconcile.service
 omnigent-logrotate.service
 omnigent-snapshot.service
 omnigent-client-proxy.service
-omnigent-diff-watcher.service
+omnigent-watcher.service
 omnigent-google-chat.service
 omnigent-prodnet.service
 omnigent-server.service

@@ -813,7 +813,7 @@ if [[ "$DOTFILES_PROFILE" == work && "$(uname -s)" == "Linux" ]] && command -v s
       omnigent-prodnet.service \
       omnigent-client-proxy.service \
       omnigent-google-chat.service \
-      omnigent-diff-watcher.service \
+      omnigent-watcher.service \
       omnigent-snapshot.timer; do
     rm -f "$HOME/.config/systemd/user/default.target.wants/$unit_name" \
           "$HOME/.config/systemd/user/timers.target.wants/$unit_name"
@@ -830,7 +830,7 @@ if [[ "$DOTFILES_PROFILE" == work && "$(uname -s)" == "Linux" ]] && command -v s
            "$HOME/.local/state/omnigent-host" \
            "$HOME/.local/state/omnigent-prodnet" \
            "$HOME/.local/state/omnigent-client-proxy" \
-           "$HOME/.local/state/omnigent-diff-watcher" \
+           "$HOME/.local/state/omnigent-watcher" \
            "$HOME/.local/state/omnigent-hub"
 
   # Omnigent env for systemd --user units (nvs@ nvim -> CodeCompanion, and
@@ -862,7 +862,7 @@ if [[ "$DOTFILES_PROFILE" == work && "$(uname -s)" == "Linux" ]] && command -v s
     # Timer activation owns this oneshot; starting it during every dotfiles
     # reconciliation would create an unnecessary extra archive.
     case "$unit_name" in
-      omnigent-server.service|omnigent-prodnet.service|omnigent-client-proxy.service|omnigent-google-chat.service|omnigent-diff-watcher.service|omnigent-snapshot.service|omnigent-hub-reconcile.service|omnigent-logrotate.service)
+      omnigent-server.service|omnigent-prodnet.service|omnigent-client-proxy.service|omnigent-google-chat.service|omnigent-watcher.service|omnigent-snapshot.service|omnigent-hub-reconcile.service|omnigent-logrotate.service)
         continue
         ;;
     esac

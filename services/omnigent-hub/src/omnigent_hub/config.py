@@ -7,6 +7,11 @@ from pathlib import Path
 
 from omnigent_hub.models import Topology, ValidationError
 
+WATCHER_DB_NAME = "watcher.sqlite3"
+# The name the watcher database had while the service was called
+# omnigent-diff-watcher. The sidecar renames it on its next start.
+LEGACY_WATCHER_DB_NAME = "diff-watcher.sqlite3"
+
 
 @dataclass(frozen=True, slots=True)
 class HubConfig:
@@ -36,12 +41,22 @@ class HubConfig:
         return self.data_dir / "google-chat.sqlite3"
 
     @property
-    def diff_watcher_db(self) -> Path:
-        return self.data_dir / "diff-watcher.sqlite3"
+    def watcher_db(self) -> Path:
+        return self.data_dir / WATCHER_DB_NAME
 
     @property
-    def diff_watcher_project(self) -> Path:
-        return self.dotfiles / "services/omnigent-diff-watcher"
+    def legacy_watcher_db(self) -> Path:
+        """Where the watcher database lived before the service was renamed.
+
+        The sidecar renames it on its next start. Until then this host still
+        has the old name, and a snapshot taken in that window must capture the
+        file that actually exists.
+        """
+        return self.data_dir / LEGACY_WATCHER_DB_NAME
+
+    @property
+    def watcher_project(self) -> Path:
+        return self.dotfiles / "services/omnigent-watcher"
 
     @property
     def artifacts_dir(self) -> Path:

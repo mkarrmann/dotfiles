@@ -38,7 +38,7 @@ def load_mcps() -> dict:
     """Map server name -> spec, carrying a private ``_agents`` allowlist.
 
     An MCP file may set a top-level ``"agents": [...]`` to restrict itself to
-    some agents. For example, native Codex gets a different diff_watch
+    some agents. For example, native Codex gets a different watch
     invocation from config.work.toml, so its definition here is limited
     to the other agents.
     """
