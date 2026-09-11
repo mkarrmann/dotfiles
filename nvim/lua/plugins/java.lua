@@ -94,6 +94,10 @@ return {
 					},
 					import = {
 						maven = { enabled = true },
+						-- jdtls defaults this on. fbsource carries thousands of Gradle projects,
+						-- and Gradle forks a fresh daemon per distinct org.gradle.jvmargs, so
+						-- importing them spawns dozens of multi-GB JVMs.
+						gradle = { enabled = false },
 					},
 					maven = {
 						downloadSources = true,
@@ -121,9 +125,18 @@ return {
 				return config
 			end
 
+			-- Attaching without a reactor root leaves jdtls to root itself at the process cwd,
+			-- which for a session started at the workspace root is the directory holding every
+			-- repo, so it indexes all of them.
 			local function attach_jdtls()
+				if vim.bo.filetype ~= "java" then
+					return
+				end
 				local fname = vim.api.nvim_buf_get_name(0)
 				local root_dir = opts.root_dir(fname)
+				if not root_dir then
+					return
+				end
 				local config = extend_or_override({
 					cmd = opts.full_cmd(opts),
 					root_dir = root_dir,
