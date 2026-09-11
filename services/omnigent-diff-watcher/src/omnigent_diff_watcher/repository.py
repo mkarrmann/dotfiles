@@ -21,7 +21,7 @@ from .domain import (
     WatchedSubject,
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # The v1 DDL, kept as a constant so the v1 -> v2 migration test exercises the
 # real historical schema instead of a copy that can drift from it.
@@ -194,6 +194,9 @@ class WatcherRepository:
                 current = 3
             if current < 4:
                 self._migrate_to_request_declared_watches()
+                current = 4
+            if current < 5:
+                self._migrate_to_sourceless_defaults()
 
     def _migrate_to_session_batches(self) -> None:
         """v1 -> v2: re-key batches from one subscription to one session.
@@ -314,6 +317,9 @@ class WatcherRepository:
                 ALTER TABLE watched_diffs RENAME TO watched_subjects;
                 ALTER TABLE watched_subjects RENAME COLUMN diff_id TO subject;
                 ALTER TABLE watched_subjects RENAME COLUMN ci_state TO source_status;
+                -- Historical: at v3 every existing row was a Phabricator
+                -- diff, and a NOT NULL column needs a value for them. v5 drops
+                -- the default, so do not carry it into new schema.
                 ALTER TABLE watched_subjects
                     ADD COLUMN source TEXT NOT NULL DEFAULT 'phabricator';
                 ALTER TABLE watched_subjects ADD COLUMN cursor TEXT;
@@ -350,6 +356,76 @@ class WatcherRepository:
             if violations:
                 raise RuntimeError(
                     f"diff-watcher v3 migration left {len(violations)} FK violations"
+                )
+        finally:
+            connection.close()
+
+    def _migrate_to_sourceless_defaults(self) -> None:
+        """v4 -> v5: stop assuming an unlabelled subject is a Phabricator diff.
+
+        ``source`` carried ``DEFAULT 'phabricator'`` from the v3 migration,
+        where it was true of every existing row. It is not true of the table any
+        more, and a default that names one source makes a row that forgot to say
+        what it is silently become a diff. Every insert already names its
+        source, so dropping the default turns a future omission into a NOT NULL
+        error instead of a wrong answer.
+
+        The rebuild also drops ``comments_cursor`` and ``ci_cursor``. v3
+        collapsed them into the source-owned ``cursor`` and stopped reading
+        them, but left them in place -- two diff-shaped columns on a table whose
+        whole point is that it does not know what a diff is.
+
+        Foreign keys are disabled for the rebuild (SQLite's documented
+        procedure) and cannot be toggled inside a transaction, so this uses its
+        own connection rather than ``_connect``.
+        """
+        connection = sqlite3.connect(self.path, timeout=10)
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA busy_timeout=10000")
+            connection.execute("PRAGMA foreign_keys=OFF")
+            # Counted before, and compared after. A rebuild must not *introduce*
+            # a violation, but failing on one it inherited would turn somebody
+            # else's stale row into a migration that can never complete, and a
+            # sidecar that crash-loops on startup.
+            before = len(connection.execute("PRAGMA foreign_key_check").fetchall())
+            connection.executescript(
+                """
+                BEGIN IMMEDIATE;
+                CREATE TABLE watched_subjects_v5 (
+                    subject TEXT PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    lifecycle TEXT NOT NULL,
+                    latest_version_id TEXT,
+                    last_activity_at REAL NOT NULL,
+                    next_poll_at REAL NOT NULL,
+                    cursor TEXT,
+                    spec TEXT,
+                    source_status TEXT NOT NULL,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    lease_owner TEXT,
+                    lease_until REAL,
+                    last_success_at REAL,
+                    missing_count INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO watched_subjects_v5
+                    (subject, source, lifecycle, latest_version_id, last_activity_at,
+                     next_poll_at, cursor, spec, source_status, failure_count,
+                     lease_owner, lease_until, last_success_at, missing_count)
+                SELECT subject, source, lifecycle, latest_version_id, last_activity_at,
+                       next_poll_at, cursor, spec, source_status, failure_count,
+                       lease_owner, lease_until, last_success_at, missing_count
+                  FROM watched_subjects;
+                DROP TABLE watched_subjects;
+                ALTER TABLE watched_subjects_v5 RENAME TO watched_subjects;
+                PRAGMA user_version=5;
+                COMMIT;
+                """
+            )
+            after = len(connection.execute("PRAGMA foreign_key_check").fetchall())
+            if after > before:
+                raise RuntimeError(
+                    f"watcher v5 migration introduced {after - before} FK violations"
                 )
         finally:
             connection.close()
@@ -636,9 +712,14 @@ class WatcherRepository:
         if sources is not None:
             names = tuple(sources)
             placeholders = ",".join("?" for _ in names)
+            # No fallback source. ``subscriptions.subject`` is a foreign key
+            # into watched_subjects and foreign keys are enforced, so the
+            # subquery cannot miss; if it somehow did, NULL IN (...) excludes
+            # the row, which is the safe direction. Defaulting to 'phabricator'
+            # here would have scoped an unknown subject to the diff surface.
             sql += (
-                " AND COALESCE((SELECT ws.source FROM watched_subjects ws "
-                f"WHERE ws.subject = s.subject), 'phabricator') IN ({placeholders})"
+                " AND (SELECT ws.source FROM watched_subjects ws "
+                f"WHERE ws.subject = s.subject) IN ({placeholders})"
             )
             params += names
         sql += " ORDER BY s.id"
@@ -1067,8 +1148,15 @@ class WatcherRepository:
             per_diff: dict[str, dict[EventKind, int]] = {}
             sources: dict[str, str] = {}
             for event_row in connection.execute(
+                # batch_events has no foreign key into watched_subjects, so a
+                # subject pruned while its batch was open leaves the join empty.
+                # That reads as an unknown source rather than a diff: the wake
+                # wording is only diff-specific when every subject is a diff, so
+                # an unknown one degrades to neutral wording instead of telling
+                # a session to go read the CI state of something that is not a
+                # diff.
                 "SELECT be.subject AS subject, be.kind AS kind, COUNT(*) AS count, "
-                "COALESCE(ws.source, 'phabricator') AS source FROM batch_events be "
+                "COALESCE(ws.source, '') AS source FROM batch_events be "
                 "LEFT JOIN watched_subjects ws ON ws.subject = be.subject "
                 "WHERE be.batch_id = ? GROUP BY be.subject, be.kind ORDER BY be.subject",
                 (batch_id,),
@@ -1097,7 +1185,7 @@ class WatcherRepository:
             summary = render_batch_summary(
                 batch_id,
                 [
-                    (sources.get(subject, "phabricator"), subject, bucket)
+                    (sources.get(subject, ""), subject, bucket)
                     for subject, bucket in per_diff.items()
                 ],
             )

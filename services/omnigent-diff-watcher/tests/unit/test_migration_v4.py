@@ -26,7 +26,8 @@ def _v3_database(path: Path) -> None:
             (subject, lifecycle, last_activity_at, next_poll_at, source_status, source, spec)
         VALUES
             ('D90000001', 'active', 1000.0, 1060.0, 'passed', 'phabricator', NULL),
-            ('jk:demo', 'active', 1000.0, 1060.0, 'ok', 'command', '{"argv": ["true"]}');
+            ('jk:demo', 'active', 1000.0, 1060.0, 'ok', 'command', '{"argv": ["true"]}'),
+            ('D90000002', 'active', 1000.0, 1060.0, 'passed', 'phabricator', NULL);
         INSERT INTO subscriptions
             (session_id, subject, event_types, state, baseline_at, last_liveness_at,
              created_at, updated_at)

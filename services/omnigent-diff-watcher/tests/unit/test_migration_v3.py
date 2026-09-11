@@ -8,6 +8,7 @@ the source that has always produced them.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -56,12 +57,23 @@ def test_v3_renames_the_key_without_losing_rows(tmp_path: Path) -> None:
     try:
         watch = connection.execute(
             "SELECT subject, source, lifecycle, latest_version_id, "
-            "comments_cursor, failure_count FROM watched_subjects"
+            "cursor, failure_count FROM watched_subjects"
         ).fetchall()
         # Every pre-existing watch is a Phabricator diff by construction, and
         # its polling state must survive verbatim -- a migration should not
-        # reset a backoff streak or re-fetch from a lost cursor.
-        assert watch == [("D90000001", "phabricator", "active", "v7", "cursor-abc", 2)]
+        # reset a backoff streak or re-fetch from a lost cursor. The legacy
+        # per-section columns were folded into the source-owned cursor by v3
+        # and dropped outright by v5, so the JSON is where the value lives now.
+        assert len(watch) == 1
+        subject, source, lifecycle, version, cursor, failures = watch[0]
+        assert (subject, source, lifecycle, version, failures) == (
+            "D90000001",
+            "phabricator",
+            "active",
+            "v7",
+            2,
+        )
+        assert json.loads(cursor)["comments"] == "cursor-abc"
 
         assert connection.execute("SELECT session_id, subject FROM subscriptions").fetchall() == [
             ("conv_a", "D90000001")
