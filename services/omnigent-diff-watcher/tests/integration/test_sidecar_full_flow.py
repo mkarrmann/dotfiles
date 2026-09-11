@@ -6,6 +6,7 @@ from pathlib import Path
 import httpx
 
 from omnigent_diff_watcher.domain import DEFAULT_EVENT_TYPES, WatcherConfig
+from omnigent_diff_watcher.logic import PHABRICATOR_SOURCE
 from omnigent_diff_watcher.omnigent_client import OmnigentClient, OmnigentDeliveryService
 from omnigent_diff_watcher.repository import WatcherRepository
 from omnigent_diff_watcher.watcher import DiffWatcher
@@ -65,7 +66,7 @@ async def test_a_subscription_batches_and_posts_one_existing_api_event(
     repository = WatcherRepository(tmp_path / "watcher.sqlite3")
     watcher = DiffWatcher(
         repository,
-        source,
+        (source,),
         client,
         OmnigentDeliveryService(client, mode="enabled", allowlist=frozenset()),
         clock=clock,
@@ -76,7 +77,9 @@ async def test_a_subscription_batches_and_posts_one_existing_api_event(
             delivery_retry_seconds=1,
         ),
     )
-    await watcher.subscribe("conv_watch", active.subject, DEFAULT_EVENT_TYPES)
+    await watcher.subscribe(
+        "conv_watch", active.subject, DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
 
     clock.advance(2)
     await watcher.run_iteration()

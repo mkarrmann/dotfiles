@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterable
 from datetime import datetime
 
 from .domain import (
@@ -41,22 +41,22 @@ class DiffWatcher:
     def __init__(
         self,
         repository: WatcherRepository,
-        source: WatchSource,
+        sources: Iterable[WatchSource],
         sessions: SessionService,
         delivery: DeliveryService,
         *,
         clock: Clock | None = None,
         config: WatcherConfig | None = None,
         owner: str | None = None,
-        sources: Mapping[str, WatchSource] | None = None,
     ) -> None:
+        # Every source registers the same way. There is deliberately no default
+        # and no privileged positional one: this engine has no opinion about
+        # what it watches, and a fallback source silently routes an unlabelled
+        # subject to whichever implementation happened to be listed first.
+        self.sources: dict[str, WatchSource] = {source.name: source for source in sources}
+        if not self.sources:
+            raise ValueError("a watcher needs at least one source")
         self.repository = repository
-        # The positional source stays the default so every existing caller --
-        # and every diff-only deployment -- keeps working unchanged.
-        self.source = source
-        self.sources: dict[str, WatchSource] = {source.name: source}
-        if sources:
-            self.sources.update(sources)
         self.sessions = sessions
         self.delivery = delivery
         self.clock = clock or SystemClock()
@@ -64,10 +64,8 @@ class DiffWatcher:
         self.owner = owner or uuid.uuid4().hex
         self.last_source_error_category: str | None = None
 
-    def source_for(self, name: str | None) -> WatchSource:
-        """Resolve a watch's source, falling back to the default."""
-        if name is None:
-            return self.source
+    def source_for(self, name: str) -> WatchSource:
+        """Resolve a watch's source by name."""
         resolved = self.sources.get(name)
         if resolved is None:
             raise SubscriptionError(f"no watch source named {name!r} is configured")
@@ -79,7 +77,7 @@ class DiffWatcher:
         subject: str,
         event_types: frozenset[EventKind],
         *,
-        source_name: str | None = None,
+        source_name: str,
         spec: str | None = None,
     ) -> tuple[Subscription, bool]:
         existing = await asyncio.to_thread(self.repository.subscription, session_id, subject)
@@ -92,7 +90,7 @@ class DiffWatcher:
                 >= self.config.max_active_subjects
             )
         ):
-            raise SubscriptionError("diff watcher active-diff limit reached")
+            raise SubscriptionError("watcher active-subject limit reached")
         session = await self.sessions.get(session_id)
         if session.terminal:
             raise SubscriptionError("session is closed or no longer exists")

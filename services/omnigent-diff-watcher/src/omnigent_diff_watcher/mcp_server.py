@@ -228,20 +228,20 @@ def _watch_engine(repository: WatcherRepository) -> DiffWatcher:
     active-subject limit, and a second implementation of that would drift from
     the one the sidecar enforces.
     """
-    from .command_source import SOURCE_NAME as COMMAND_SOURCE_NAME
     from .command_source import CommandSource
     from .phabricator_source import PhabricatorReviewSource, bounded_source_environment
     from .watcher import DiffWatcher
 
     settings = _service_settings()
-    environment = bounded_source_environment()
     return DiffWatcher(
         repository,
-        PhabricatorReviewSource(),
+        (
+            PhabricatorReviewSource(),
+            CommandSource(env=bounded_source_environment()),
+        ),
         _AddressedSession(),
         _UnusedDelivery(),
         config=settings.watcher if settings is not None else None,
-        sources={COMMAND_SOURCE_NAME: CommandSource(env=environment)},
     )
 
 

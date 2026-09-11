@@ -12,6 +12,7 @@ from omnigent_diff_watcher.domain import (
     SubscriptionState,
     WatcherConfig,
 )
+from omnigent_diff_watcher.logic import PHABRICATOR_SOURCE
 from omnigent_diff_watcher.repository import (
     WatcherRepository,
 )
@@ -75,7 +76,7 @@ def _watcher(
 ) -> DiffWatcher:
     return DiffWatcher(
         WatcherRepository(tmp_path / "watcher.sqlite3"),
-        source,
+        (source,),
         sessions,
         delivery,
         clock=clock,
@@ -93,9 +94,13 @@ async def test_subscribe_baselines_and_repeated_call_does_not_reset(
     sessions = FakeSessionService(SessionSnapshot("session-1", {}))
     watcher = _watcher(tmp_path, source, sessions, RecordingDeliveryService(), clock)
 
-    first, created = await watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
+    first, created = await watcher.subscribe(
+        "session-1", "D90000001", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
     clock.advance(10)
-    second, created_again = await watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
+    second, created_again = await watcher.subscribe(
+        "session-1", "D90000001", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
 
     assert created is True
     assert created_again is False
@@ -118,7 +123,9 @@ async def test_subscribe_rejects_terminal_and_failed_requested_baseline(
         clock,
     )
     with pytest.raises(SubscriptionError, match="terminal"):
-        await watcher.subscribe("session-1", "D90000004", DEFAULT_EVENT_TYPES)
+        await watcher.subscribe(
+            "session-1", "D90000004", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+        )
 
     watcher = _watcher(
         tmp_path,
@@ -128,7 +135,9 @@ async def test_subscribe_rejects_terminal_and_failed_requested_baseline(
         clock,
     )
     with pytest.raises(SubscriptionError, match="could not establish a baseline"):
-        await watcher.subscribe("session-1", "D90000006", DEFAULT_EVENT_TYPES)
+        await watcher.subscribe(
+            "session-1", "D90000006", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+        )
 
 
 @pytest.mark.asyncio
@@ -139,7 +148,9 @@ async def test_comment_and_ci_burst_delivers_one_message_once(tmp_path: Path) ->
     sessions = FakeSessionService(SessionSnapshot("session-1", {}))
     delivery = RecordingDeliveryService(EventDeliveryStatus.ACCEPTED)
     watcher = _watcher(tmp_path, source, sessions, delivery, clock)
-    subscription, _ = await watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
+    subscription, _ = await watcher.subscribe(
+        "session-1", "D90000001", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
 
     clock.advance(70)
     await watcher.run_iteration()
@@ -187,7 +198,9 @@ async def test_delivery_outcomes_make_correct_durable_transition(
     sessions = FakeSessionService(SessionSnapshot("session-1", {}))
     delivery = RecordingDeliveryService(outcome)
     watcher = _watcher(tmp_path, source, sessions, delivery, clock)
-    subscription, _ = await watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
+    subscription, _ = await watcher.subscribe(
+        "session-1", "D90000001", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
     clock.advance(70)
     await watcher.run_iteration()
     batch = watcher.repository.open_batch_for(subscription.id)
@@ -215,7 +228,9 @@ async def test_busy_session_defers_without_delivery_and_keeps_batch(
     sessions = FakeSessionService(SessionSnapshot("session-1", {}, can_accept_input=False))
     delivery = RecordingDeliveryService()
     watcher = _watcher(tmp_path, source, sessions, delivery, clock)
-    subscription, _ = await watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
+    subscription, _ = await watcher.subscribe(
+        "session-1", "D90000001", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
     clock.advance(70)
     await watcher.run_iteration()
     clock.advance(6)
@@ -244,7 +259,9 @@ async def test_partial_refresh_defers_batch_until_all_sources_are_authoritative(
     sessions = FakeSessionService(SessionSnapshot("session-1", {}))
     delivery = RecordingDeliveryService()
     watcher = _watcher(tmp_path, source, sessions, delivery, clock)
-    subscription, _ = await watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
+    subscription, _ = await watcher.subscribe(
+        "session-1", "D90000001", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
 
     clock.advance(70)
     await watcher.run_iteration()
@@ -277,7 +294,9 @@ async def test_repeated_partial_failures_increase_backoff_streak(
         RecordingDeliveryService(),
         clock,
     )
-    await watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
+    await watcher.subscribe(
+        "session-1", "D90000001", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
 
     clock.advance(70)
     await watcher.run_iteration()
@@ -312,7 +331,9 @@ async def test_authoritative_terminal_and_two_missing_polls_retire(
         RecordingDeliveryService(),
         clock,
     )
-    await terminal_watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
+    await terminal_watcher.subscribe(
+        "session-1", "D90000001", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
     clock.advance(70)
     await terminal_watcher.run_iteration()
     terminal_subscription = terminal_watcher.repository.subscription("session-1", "D90000001")
@@ -327,7 +348,9 @@ async def test_authoritative_terminal_and_two_missing_polls_retire(
         RecordingDeliveryService(),
         clock,
     )
-    await missing_watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
+    await missing_watcher.subscribe(
+        "session-1", "D90000001", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
     clock.advance(70)
     await missing_watcher.run_iteration()
     first_missing = missing_watcher.repository.subscription("session-1", "D90000001")
@@ -354,8 +377,12 @@ async def test_two_subscribers_share_poll_and_get_separate_batches(
         SessionSnapshot("session-2", {}),
     )
     watcher = _watcher(tmp_path, source, sessions, RecordingDeliveryService(), clock)
-    first, _ = await watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
-    second, _ = await watcher.subscribe("session-2", "D90000001", DEFAULT_EVENT_TYPES)
+    first, _ = await watcher.subscribe(
+        "session-1", "D90000001", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
+    second, _ = await watcher.subscribe(
+        "session-2", "D90000001", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
     clock.advance(70)
     await watcher.run_iteration()
 
@@ -371,7 +398,9 @@ async def test_unavailable_session_suspends_then_recovers(tmp_path: Path) -> Non
     unavailable = SessionSnapshot("session-1", {}, reachable=False)
     sessions = FakeSessionService(unavailable)
     watcher = _watcher(tmp_path, source, sessions, RecordingDeliveryService(), clock)
-    await watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
+    await watcher.subscribe(
+        "session-1", "D90000001", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
 
     clock.advance(7)
     await watcher.run_iteration()
@@ -420,7 +449,9 @@ async def test_terminal_sessions_retire(snapshot: SessionSnapshot, tmp_path: Pat
         RecordingDeliveryService(),
         clock,
     )
-    await watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
+    await watcher.subscribe(
+        "session-1", "D90000001", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
     sessions.snapshots["session-1"] = snapshot
     clock.advance(70)
     await watcher.run_iteration()
@@ -467,8 +498,12 @@ async def test_a_stack_going_red_produces_one_wake_naming_every_diff(
     sessions = FakeSessionService(SessionSnapshot("session-1", {}))
     watcher = _watcher(tmp_path, source, sessions, delivery, clock)  # type: ignore[arg-type]
 
-    await watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
-    await watcher.subscribe("session-1", "D90000002", DEFAULT_EVENT_TYPES)
+    await watcher.subscribe(
+        "session-1", "D90000001", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
+    await watcher.subscribe(
+        "session-1", "D90000002", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
 
     # Both diffs now pick up findings.
     source.snapshots["D90000001"] = _new_snapshot(clock)
@@ -502,8 +537,12 @@ async def test_retiring_one_diff_keeps_the_rest_of_the_stack_wake(
     sessions = FakeSessionService(SessionSnapshot("session-1", {}))
     watcher = _watcher(tmp_path, source, sessions, delivery, clock)  # type: ignore[arg-type]
 
-    first, _ = await watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
-    await watcher.subscribe("session-1", "D90000002", DEFAULT_EVENT_TYPES)
+    first, _ = await watcher.subscribe(
+        "session-1", "D90000001", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
+    await watcher.subscribe(
+        "session-1", "D90000002", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
     source.snapshots["D90000001"] = _new_snapshot(clock)
     source.snapshots["D90000002"] = _new_snapshot(clock).model_copy(update={"subject": "D90000002"})
     clock.advance(70)
@@ -526,7 +565,9 @@ async def test_retiring_the_last_diff_cancels_the_session_batch(tmp_path: Path) 
     source = FakeReviewSource(fixture("active"), _new_snapshot(clock))
     sessions = FakeSessionService(SessionSnapshot("session-1", {}))
     watcher = _watcher(tmp_path, source, sessions, RecordingDeliveryService(), clock)
-    only, _ = await watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
+    only, _ = await watcher.subscribe(
+        "session-1", "D90000001", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
     clock.advance(70)
     await watcher.run_iteration()
     assert watcher.repository.open_batch_for_session("session-1") is not None
@@ -549,7 +590,9 @@ async def test_run_iteration_ages_out_a_watch_that_never_says_anything(
     source = FakeReviewSource(fixture("active"), fixture("active"))
     sessions = FakeSessionService(SessionSnapshot("session-1", {}))
     watcher = _watcher(tmp_path, source, sessions, RecordingDeliveryService(), clock)
-    await watcher.subscribe("session-1", "D90000001", DEFAULT_EVENT_TYPES)
+    await watcher.subscribe(
+        "session-1", "D90000001", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
 
     clock.advance(watcher.config.idle_retire_seconds + 1)
     await watcher.run_iteration()
@@ -558,3 +601,37 @@ async def test_run_iteration_ages_out_a_watch_that_never_says_anything(
     assert row is not None
     assert row.state is SubscriptionState.RETIRED
     assert row.retired_reason == "idle"
+
+
+async def test_no_source_is_privileged(tmp_path: Path) -> None:
+    """Every source registers the same way, and an unknown name is an error.
+
+    The engine used to take one source positionally and treat it as the
+    fallback for any watch whose source was unnamed, which quietly made
+    Phabricator the default for a component that has no opinion about what it
+    watches. A subject can now only reach the source it names.
+    """
+    clock = FakeClock()
+    watcher = _watcher(
+        tmp_path,
+        FakeReviewSource(fixture("active")),
+        FakeSessionService(SessionSnapshot("session-1", {})),
+        RecordingDeliveryService(),
+        clock,
+    )
+
+    assert set(watcher.sources) == {PHABRICATOR_SOURCE}
+    with pytest.raises(SubscriptionError, match="no watch source named"):
+        await watcher.subscribe(
+            "session-1", "D90000001", DEFAULT_EVENT_TYPES, source_name="command"
+        )
+
+
+def test_a_watcher_needs_at_least_one_source(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="at least one source"):
+        DiffWatcher(
+            WatcherRepository(tmp_path / "watcher.sqlite3"),
+            (),
+            FakeSessionService(SessionSnapshot("session-1", {})),
+            RecordingDeliveryService(),
+        )

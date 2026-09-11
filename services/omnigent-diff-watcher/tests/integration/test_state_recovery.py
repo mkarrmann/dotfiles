@@ -113,7 +113,7 @@ async def test_two_scheduler_instances_do_not_overlap_one_diff(tmp_path: Path) -
     sessions = FakeSessionService(SessionSnapshot("session-1", {}))
     first = DiffWatcher(
         WatcherRepository(path),
-        source,
+        (source,),
         sessions,
         RecordingDeliveryService(),
         clock=clock,
@@ -121,7 +121,7 @@ async def test_two_scheduler_instances_do_not_overlap_one_diff(tmp_path: Path) -
     )
     second = DiffWatcher(
         WatcherRepository(path),
-        source,
+        (source,),
         sessions,
         RecordingDeliveryService(),
         clock=clock,
@@ -153,7 +153,7 @@ async def test_poll_cancellation_releases_lease_for_restart(tmp_path: Path) -> N
     source = _BlockingSource()
     watcher = DiffWatcher(
         repository,
-        source,
+        (source,),
         FakeSessionService(SessionSnapshot("session-1", {})),
         RecordingDeliveryService(),
         clock=clock,

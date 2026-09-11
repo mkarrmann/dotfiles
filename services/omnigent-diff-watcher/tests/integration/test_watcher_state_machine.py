@@ -15,6 +15,7 @@ from omnigent_diff_watcher.domain import (
     SubscriptionState,
     WatcherConfig,
 )
+from omnigent_diff_watcher.logic import PHABRICATOR_SOURCE
 from omnigent_diff_watcher.repository import (
     WatcherRepository,
 )
@@ -143,7 +144,7 @@ def make_watcher(
     )
     return DiffWatcher(
         WatcherRepository(path or (tmp_path / "watcher.db")),
-        source,
+        (source,),
         sessions,
         delivery,
         clock=clock,
@@ -167,7 +168,9 @@ async def test_subscribe_validates_baseline_and_terminal_session(
         clock,
     )
     with pytest.raises(SubscriptionError, match="closed"):
-        await watcher.subscribe("session-1", base.subject, DEFAULT_EVENT_TYPES)
+        await watcher.subscribe(
+            "session-1", base.subject, DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+        )
 
     partial = load_snapshot("partial_failure.json")
     watcher = make_watcher(
@@ -179,7 +182,9 @@ async def test_subscribe_validates_baseline_and_terminal_session(
         path=tmp_path / "partial.db",
     )
     with pytest.raises(SubscriptionError, match="could not establish a baseline"):
-        await watcher.subscribe("session-1", partial.subject, DEFAULT_EVENT_TYPES)
+        await watcher.subscribe(
+            "session-1", partial.subject, DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+        )
 
 
 @pytest.mark.asyncio
@@ -197,8 +202,12 @@ async def test_two_subscribers_share_one_poll_and_get_separate_batches(
         RecordingDelivery(EventDeliveryStatus.ACCEPTED),
         clock,
     )
-    first, _ = await watcher.subscribe("session-1", base.subject, DEFAULT_EVENT_TYPES)
-    second, _ = await watcher.subscribe("session-2", base.subject, DEFAULT_EVENT_TYPES)
+    first, _ = await watcher.subscribe(
+        "session-1", base.subject, DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
+    second, _ = await watcher.subscribe(
+        "session-2", base.subject, DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
     clock.advance(400)
     await watcher.run_iteration()
 
@@ -254,7 +263,9 @@ async def test_delivery_outcomes_are_durable(
         clock,
         path=tmp_path / f"{expected_state}-{type(outcome).__name__}.db",
     )
-    subscription, _ = await watcher.subscribe("session-1", base.subject, DEFAULT_EVENT_TYPES)
+    subscription, _ = await watcher.subscribe(
+        "session-1", base.subject, DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
     apply_snapshot(
         watcher.repository,
         event_snapshot(base),
@@ -287,7 +298,9 @@ async def test_restart_from_delivering_reuses_batch_id(tmp_path: Path) -> None:
         clock,
         path=path,
     )
-    subscription, _ = await first.subscribe("session-1", base.subject, DEFAULT_EVENT_TYPES)
+    subscription, _ = await first.subscribe(
+        "session-1", base.subject, DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
     apply_snapshot(
         first.repository,
         event_snapshot(base),
@@ -327,7 +340,9 @@ async def test_busy_session_defers_and_ten_minimum_interval_coalesces(
         EventDeliveryStatus.ACCEPTED,
     )
     watcher = make_watcher(tmp_path, FakeSource(base), sessions, delivery, clock)
-    subscription, _ = await watcher.subscribe("session-1", base.subject, DEFAULT_EVENT_TYPES)
+    subscription, _ = await watcher.subscribe(
+        "session-1", base.subject, DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
     apply_snapshot(
         watcher.repository,
         event_snapshot(base),
@@ -376,7 +391,9 @@ async def test_unavailable_session_suspends_then_recovers(tmp_path: Path) -> Non
         RecordingDelivery(EventDeliveryStatus.ACCEPTED),
         clock,
     )
-    await watcher.subscribe("session-1", base.subject, DEFAULT_EVENT_TYPES)
+    await watcher.subscribe(
+        "session-1", base.subject, DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
     await watcher._check_liveness("session-1")
     clock.advance(41)
     await watcher._check_liveness("session-1")
@@ -408,7 +425,9 @@ async def test_poll_cancellation_releases_lease(tmp_path: Path) -> None:
         RecordingDelivery(EventDeliveryStatus.ACCEPTED),
         clock,
     )
-    await watcher.subscribe("session-1", base.subject, DEFAULT_EVENT_TYPES)
+    await watcher.subscribe(
+        "session-1", base.subject, DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
+    )
     source.snapshots.append(base)
     source.block = asyncio.Event()
     watch = watcher.repository.claim_watch(

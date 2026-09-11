@@ -41,7 +41,7 @@ def _watcher(
     repository = WatcherRepository(tmp_path / "watcher.sqlite3")
     return repository, DiffWatcher(
         repository,
-        FakeReviewSource(),
+        (FakeReviewSource(), CommandSource(env=ENV)),
         FakeSessionService(SessionSnapshot(session_id="session-1", labels={})),
         delivery,
         clock=clock,
@@ -49,7 +49,6 @@ def _watcher(
             batch_window_seconds=0.01,
             minimum_delivery_interval_seconds=0.01,
         ),
-        sources={"command": CommandSource(env=ENV)},
     )
 
 

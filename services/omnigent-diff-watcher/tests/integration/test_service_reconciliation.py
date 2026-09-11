@@ -118,13 +118,12 @@ class FakeTime:
 def _diff_service(tmp_path: Path, client: object, outcomes: int) -> DiffWatcherService:
     """A service whose Phabricator source is a fake that is always terminal.
 
-    Both the positional source and the ``sources`` map are replaced: a watch
-    request names its source, so reconciliation resolves through the map and
-    would otherwise reach the real ``meta phabricator.diff``.
+    Registered by name, like any source: a watch request names its source, so
+    reconciliation resolves through the map and would otherwise reach the real
+    ``meta phabricator.diff``.
     """
     service = DiffWatcherService(_settings(tmp_path), client=client)  # type: ignore[arg-type]
     fake = FakeReviewSource(*(fixture("committed") for _ in range(outcomes)))
-    service.watcher.source = fake
     service.watcher.sources[fake.name] = fake
     service.repository.request_watch(
         "conv_stack",
@@ -156,7 +155,7 @@ async def test_an_unusable_diff_is_not_retried_every_cycle(
 
     client = FakeOmnigentClient()
     service = _diff_service(tmp_path, client, outcomes=20)
-    source = service.watcher.source
+    source = service.watcher.sources[PHABRICATOR_SOURCE_NAME]
     assert isinstance(source, FakeReviewSource)
 
     await service.reconcile_subscriptions()

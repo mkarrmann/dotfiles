@@ -6,7 +6,6 @@ import asyncio
 import logging
 import time
 
-from .command_source import SOURCE_NAME as COMMAND_SOURCE_NAME
 from .command_source import CommandSource
 from .domain import SubscriptionState
 from .omnigent_client import OmnigentClient, OmnigentDeliveryService
@@ -40,7 +39,10 @@ class DiffWatcherService:
         self.repository = WatcherRepository(settings.database_path)
         self.watcher = DiffWatcher(
             self.repository,
-            PhabricatorReviewSource(),
+            (
+                PhabricatorReviewSource(),
+                CommandSource(env=bounded_source_environment()),
+            ),
             self.client,
             OmnigentDeliveryService(
                 self.client,
@@ -48,9 +50,6 @@ class DiffWatcherService:
                 allowlist=settings.delivery_session_allowlist,
             ),
             config=settings.watcher,
-            sources={
-                COMMAND_SOURCE_NAME: CommandSource(env=bounded_source_environment()),
-            },
         )
         self._next_reconcile = 0.0
         # (session_id, subject) -> (consecutive failures, earliest next attempt).

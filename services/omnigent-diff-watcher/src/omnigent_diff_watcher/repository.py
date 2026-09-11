@@ -693,9 +693,7 @@ class WatcherRepository:
             connection.commit()
             return True
 
-    def retire_idle_watches(
-        self, *, now: float, max_idle_seconds: float
-    ) -> list[tuple[str, str]]:
+    def retire_idle_watches(self, *, now: float, max_idle_seconds: float) -> list[tuple[str, str]]:
         """Retire watches that have gone quiet. Returns ``(session, subject)``.
 
         Idleness is measured from the last delivery, falling back to the
