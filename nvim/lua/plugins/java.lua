@@ -32,10 +32,17 @@ return {
 		"mfussenegger/nvim-jdtls",
 		cond = function() return vim.fn.executable(JDTLS_BIN) == 1 end,
 		opts = function(_, opts)
-			-- Cap the heap. Without -Xmx the JVM takes its ergonomic default of a quarter of
-			-- RAM, which is ~30G on a 223G devvm; indexing the whole Presto reactor grows to
-			-- fill whatever it is given, and the server never restarts on its own.
-			opts.cmd = { JDTLS_BIN, "--jvm-arg=-Xmx8G" }
+			-- Bound the heap and let it shrink again. Without -Xmx the JVM takes its ergonomic
+			-- default of a quarter of RAM, ~30G here; G1 then never feels pressure, and with
+			-- G1PeriodicGCInterval defaulting to 0 it has no idle trigger either, so committed
+			-- heap is a high-water mark that only ever rises. 16G is sized off a measured 11.8G
+			-- old-gen occupancy; the periodic cycle uncommits unused regions back to the OS, so
+			-- steady state tracks the live set rather than the ceiling.
+			opts.cmd = {
+				JDTLS_BIN,
+				"--jvm-arg=-Xmx16G",
+				"--jvm-arg=-XX:G1PeriodicGCInterval=900000",
+			}
 
 			opts.root_dir = function(path)
 				-- Walk up to find the topmost pom.xml (Maven reactor root).
