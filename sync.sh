@@ -504,21 +504,8 @@ tmp=$(jq --arg profile "$DOTFILES_PROFILE" '
           "command": "python3 ~/.claude/hooks/show-edit-diff.py"
         }
       ]
-    },
-    {
-      "matcher": "Bash",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "python3 ~/.claude/hooks/omnigent-capture-diff.py",
-          "timeout": 10
-        }
-      ]
     }
   ] |
-  (if $profile == "desktop" then
-    .hooks.PostToolUse |= map(select(.matcher != "Bash"))
-   else . end) |
   .hooks.Stop = [
     {
       "hooks": [

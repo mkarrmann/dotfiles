@@ -377,7 +377,6 @@ class SyncProfileTest(ProfileFixture):
                 self.assertTrue(settings["enabledPlugins"]["personal@example"])
                 self.assertEqual(settings["env"]["PERSONAL_SETTING"], "keep")
                 self.assertEqual(settings["statusLine"]["command"], "~/.claude/statusline.sh")
-                self.assertNotIn("omnigent-capture-diff", json.dumps(settings["hooks"]))
 
     def test_work_sync_restores_host_unit_after_desktop_profile(self):
         self.env["DOTFILES_PROFILE"] = "desktop"
@@ -400,7 +399,11 @@ class SyncProfileTest(ProfileFixture):
         settings = json.loads(self.settings.read_text())
         self.assertTrue(settings["enabledPlugins"]["meta-lsp@claude-templates"])
         self.assertTrue(settings["enabledPlugins"]["personal@example"])
-        self.assertIn("omnigent-capture-diff", json.dumps(settings["hooks"]))
+        # The capture-diff hook repopulated tool_result payloads for the
+        # capture_diff policy. That policy is gone and no tool_result policy
+        # replaced it, so re-registering the hook would spawn a subprocess per
+        # Bash call for no consumer.
+        self.assertNotIn("omnigent-capture-diff", json.dumps(settings["hooks"]))
 
     def test_work_mac_sync_keeps_launchd_and_internal_helpers(self):
         self.env["DOTFILES_PROFILE"] = "work"
