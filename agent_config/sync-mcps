@@ -33,6 +33,15 @@ MCP_DIR = CFG / "plugins" / "custom-mcps" / "mcps"
 VENDORED_SKILLS = CFG / "skills" / "meta-powertools-vendored"
 GLOBAL_RULES = CFG / "global-development-preferences.md"
 
+# Servers this repo used to manage and no longer defines. Deleting the json
+# only stops the sync writing it; nothing revisits a name already installed, so
+# a rename leaves the old server registered against a command that no longer
+# exists and every session start fails to spawn it. Retiring is by name rather
+# than by diffing what is installed because the configs also hold personal
+# servers this script must never touch. Entries can go once no config still
+# carries them; keeping one costs a dict pop per run.
+RETIRED = frozenset({"diff_watch"})
+
 
 def load_mcps() -> dict:
     """Map server name -> spec, carrying a private ``_agents`` allowlist.
@@ -221,7 +230,7 @@ def main() -> int:
     profile_helper = Path(__file__).resolve().parents[1] / "bin/dotfiles-profile"
     profile = subprocess.check_output([str(profile_helper)], text=True).strip()
     work = profile == "work"
-    retired = set() if work else set(mcps)
+    retired = RETIRED | (set() if work else set(mcps))
     if target in ("all", "claude"):
         sync_claude(for_agent(mcps, "claude") if work else {}, retired)
     if target in ("all", "codex"):

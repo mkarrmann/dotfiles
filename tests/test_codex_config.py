@@ -211,6 +211,21 @@ name = "second"
         data["control\x7f"] = "\x7f"
         self.assertEqual(config.tomllib.loads(config.dumps(data)), data)
 
+    def test_work_sync_drops_a_retired_server_and_keeps_personal_ones(self):
+        """Deleting an mcps/*.json does not unregister what it already installed."""
+        claude = self.home / '.claude.json'
+        claude.write_text(json.dumps({'mcpServers': {
+            'diff_watch': {'command': '/gone/omnigent-diff-watch-mcp'},
+            'personal': {'command': 'personal'}}}))
+        self.path.write_text('[mcp_servers.diff_watch]\ncommand = "omnigent-diff-watch-mcp"\n')
+        result = subprocess.run([sys.executable, str(ROOT / 'agent_config/sync-mcps'), 'all'],
+                                env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        servers = json.loads(claude.read_text())['mcpServers']
+        self.assertNotIn('diff_watch', servers)
+        self.assertIn('personal', servers)
+        self.assertNotIn('diff_watch', config.read_config(self.path)['mcp_servers'])
+
     def test_desktop_retracts_work_mcps_and_preserves_personal_config(self):
         self.local.write_text('model = "personal"\n[mcp_servers.personal]\ncommand = "personal"\n')
         self.run_sync()
