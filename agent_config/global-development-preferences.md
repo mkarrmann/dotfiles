@@ -99,6 +99,10 @@ Never modify or terminate a process that the agent did not start during the curr
 - DO prioritize solving and verifying problems in the minimal amount of wall time (without sacrificing wall time). In particular, be prepared to escape early and search for alternatives if a step is taking longer than expected, and always look for ways to parallelize your work. Parallelization will include aggressive use of subagents, running different commands in parallel, and ensure individual tool calls (e.g. running unit tests) are configured to run in a parallel manner which minimizes wall time.
 - DO take ownership of code you submit. Submitting is not a handoff — you remain responsible for the change until it lands or I explicitly take it back, and that responsibility includes follow-ups. Where the platform makes it possible, watch for and respond to CI signals and automated-reviewer feedback as they arrive, and drive the change toward a reviewable state without being prompted. Treat "is there anything to respond to?" as a question you answer by looking, not by asking me; report what you found and did. Where the mechanism for watching or responding is platform-specific, the applicable workspace or repository instructions define it and authorize its use.
 
+### Forked subagents for one-off questions
+
+- DO: For one-off questions — clarifying a detail, looking something up, elaborating on one point — fork a subagent to research and report back instead of working it inline. Keep the main thread conversational; report the finding concisely with the usual evidence (exact code links and snippets).
+
 ## Do Not's
 
 - DO NOT make unnecessary code comments. Code snippets rarely require comments. In general, code itself should be the source of truth, and should be written so it is understandable by anyone with sufficient context. The only time to add comments is:
