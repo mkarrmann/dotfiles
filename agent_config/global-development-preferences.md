@@ -101,7 +101,7 @@ Never modify or terminate a process that the agent did not start during the curr
 
 ### Forked subagents for one-off questions
 
-- DO: For one-off questions — clarifying a detail, looking something up, elaborating on one point — fork a subagent to research and report back instead of working it inline. Keep the main thread conversational; report the finding concisely with the usual evidence (exact code links and snippets).
+- DO: For one-off questions — clarifying a detail, looking something up, elaborating on one point — fork a subagent to research and report back instead of working it inline. Report the finding concisely with the usual evidence (exact code links and snippets). The goal is more iterations — sub-threads of conversation that establish mutual understanding — without spending main-thread context on the dig.
 
 ## Do Not's
 
