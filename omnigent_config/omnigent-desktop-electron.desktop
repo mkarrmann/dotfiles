@@ -38,13 +38,16 @@
 #   first retile, and why an instance alone on its workspace survived. Proven by
 #   a WAYLAND_DEBUG trace plus an A/B run: an unpacked copy with that line
 #   changed to `|| 1` survived forced retiles while the unpatched copy died.
-#   Not fixed upstream as of omnigent-ai/omnigent main 3d7dd102 (2026-09-08) or
-#   tag v0.12.0; the Linux updater feed still serves 0.10.0. --ozone-platform=x11
-#   sidesteps both triggers by running under XWayland (verified: the installed
-#   binary survived six forced resize/move commands with it). Cost: XWayland
-#   upscaling at scale 1.2 is blurrier than native, and sway now identifies the
-#   windows by X11 class/instance "omnigent" instead of app_id (the matchers in
-#   bin-linux/sway-windows-lib.sh accept both).
+#   Not fixed upstream as of omnigent-ai/omnigent main 3d7dd102 (2026-09-08),
+#   and the 0.13.0 Linux build (released 2026-09-09, the current pin) still
+#   ships the `?? 1` line (checked in its app.asar on 2026-09-13).
+#   --ozone-platform=x11 sidesteps both triggers by running under XWayland
+#   (verified: the installed binary survived six forced resize/move commands
+#   with it). Cost: XWayland upscaling at scale 1.2 is blurrier than native,
+#   sway identifies the windows by X11 class/instance "omnigent" instead of
+#   app_id (the matchers in bin-linux/sway-windows-lib.sh accept both), and the
+#   per-workspace New Window keystroke has to go in via XTEST/xdotool rather
+#   than wtype (see new_window_injector there).
 #
 # Remove --ozone-platform=x11 once BOTH hold:
 #   1. upstream web/electron/src/update_overlay.js no longer repositions with
@@ -53,7 +56,7 @@
 #      or the overlay is no longer a separate window at all; and
 #   2. that fix is in a Linux build you actually run, i.e. a version newer than
 #      the one served by https://omnigent.ai/_desktop/updates/latest-linux.yml
-#      at the time of writing (0.10.0), and desktop-app.env is bumped to it.
+#      at the time of writing (0.13.0), and desktop-app.env is bumped to it.
 #   Test (Trigger 2): launch the package Exec plus only the fractional-scale
 #   flag with core dumps off, wait ~5 s for the overlay, then
 #     swaymsg '[app_id="omnigent" title="^Omnigent$"] resize set height 60 ppt'

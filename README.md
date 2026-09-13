@@ -144,7 +144,7 @@ Two Linux-specific constraints are load-bearing:
   `omnigent_config/omnigent-desktop-electron.desktop`. Without them the GUI
   dies with SIGTRAP under sway: on a first launch on a fractionally scaled
   output, and on the first parent resize after its update overlay reports an
-  empty height (an upstream `update_overlay.js` bug, unfixed as of 0.12.0).
+  empty height (an upstream `update_overlay.js` bug, still present in 0.13.0).
   The entry's HACK note has the diagnosis and the removal conditions.
 - Windows are launched directly from the script (`setsid`), not through
   `swaymsg exec`: sway's command parser splits on `;` and mishandles an
@@ -164,7 +164,8 @@ Two Linux-specific constraints are load-bearing:
   window is still mapping when the keystroke is sent. An install that cannot
   open more windows (old version, missing tool, a keystroke that opened
   nothing) is reported once and the remaining Omnigent slots are skipped
-  rather than each waiting out a timeout.
+  rather than each waiting out a timeout. To move an installed app to the
+  pinned version: `~/bin/omnigent-desktop-app-ensure --upgrade`.
 
 Regression checks. The first needs no compositor; the second starts a private
 headless sway (pinned to `WLR_BACKENDS=headless`, stub apps only, under its own

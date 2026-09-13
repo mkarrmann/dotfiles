@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
-# Install the pinned Linux GUI on personal desktops, leaving upgrades explicit.
+# Install the pinned Linux GUI on personal desktops, leaving upgrades explicit:
+# an installed package is left alone unless --upgrade asks for it to be moved
+# to the pin (in either direction -- the pin is also the rollback target).
 set -euo pipefail
+
+UPGRADE=false
+case "${1:-}" in
+  "") ;;
+  --upgrade) UPGRADE=true ;;
+  *) echo "Usage: omnigent-desktop-app-ensure [--upgrade]" >&2; exit 2 ;;
+esac
 
 DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
 if [[ "$("$DOTFILES/bin/dotfiles-profile")" != desktop || "$(uname -s)" != Linux ]]; then
@@ -15,21 +24,29 @@ if [[ "$(dpkg --print-architecture)" != amd64 ]]; then
   exit 0
 fi
 
+# shellcheck disable=SC1091
+source "$DOTFILES/omnigent_config/desktop-app.env"
+
 package=omnigent-desktop-electron
 installed="$(dpkg-query -W -f='${Status} ${Version}' "$package" 2>/dev/null || true)"
+replacing=""
 if [[ "$installed" == 'install ok installed '* ]]; then
-  echo "[omnigent-app] ${installed#install ok installed } already installed; leaving it unchanged"
-  exit 0
+  replacing="${installed#install ok installed }"
+  if [[ "$UPGRADE" != true ]]; then
+    echo "[omnigent-app] $replacing already installed; leaving it unchanged (--upgrade moves it to the pinned $OMNIGENT_DESKTOP_APP_VERSION)"
+    exit 0
+  fi
+  if [[ "$replacing" == "$OMNIGENT_DESKTOP_APP_VERSION" ]]; then
+    echo "[omnigent-app] $replacing is already the pinned version"
+    exit 0
+  fi
 fi
 
 if [[ ! -t 0 || ! -t 1 ]]; then
-  printf '[omnigent-app] installation needs an interactive terminal for sudo/apt. Run:\n  %q\n' \
-    "$DOTFILES/bin/omnigent-desktop-app-ensure"
+  printf '[omnigent-app] installation needs an interactive terminal for sudo/apt. Run:\n  %q%s\n' \
+    "$DOTFILES/bin/omnigent-desktop-app-ensure" "$([[ "$UPGRADE" == true ]] && echo ' --upgrade')"
   exit 0
 fi
-
-# shellcheck disable=SC1091
-source "$DOTFILES/omnigent_config/desktop-app.env"
 for tool in curl sha256sum dpkg-deb sudo; do
   command -v "$tool" >/dev/null 2>&1 || { echo "ERROR: $tool is required to install the Omnigent app" >&2; exit 1; }
 done
@@ -49,5 +66,11 @@ if [[ "$(dpkg-deb -f "$download" Package)" != "$package" ||
   exit 1
 fi
 chmod 644 "$download"
-sudo apt install "$download"
-echo "[omnigent-app] installed; open Omnigent and connect to http://127.0.0.1:6767"
+if [[ -n "$replacing" ]]; then
+  echo "[omnigent-app] replacing $replacing with $OMNIGENT_DESKTOP_APP_VERSION"
+  sudo apt install --allow-downgrades "$download"
+  echo "[omnigent-app] installed; a running Omnigent keeps the old code until it is restarted"
+else
+  sudo apt install "$download"
+  echo "[omnigent-app] installed; open Omnigent and connect to http://127.0.0.1:6767"
+fi

@@ -119,16 +119,13 @@ class OmnigentDesktopAppTest(unittest.TestCase):
             "TEST_CALLS": str(self.calls),
         }
 
-    def run_helper(self, *, interactive=False):
+    def run_helper(self, *args, interactive=False):
+        argv = [str(self.helper), *args]
         if not interactive:
-            return subprocess.run(
-                [str(self.helper)], env=self.env, capture_output=True, text=True, timeout=10
-            )
+            return subprocess.run(argv, env=self.env, capture_output=True, text=True, timeout=10)
         master, slave = pty.openpty()
         try:
-            process = subprocess.Popen(
-                [str(self.helper)], env=self.env, stdin=slave, stdout=slave, stderr=slave
-            )
+            process = subprocess.Popen(argv, env=self.env, stdin=slave, stdout=slave, stderr=slave)
             os.close(slave)
             slave = None
             try:
@@ -204,10 +201,47 @@ class OmnigentDesktopAppTest(unittest.TestCase):
                 self.assert_success(self.run_helper(interactive=True))
                 self.assert_no_install()
 
+    def test_upgrade_moves_an_installed_version_to_the_pin(self):
+        for version in ("0.0.1", "999.0.0"):
+            with self.subTest(version=version):
+                self.calls.unlink(missing_ok=True)
+                self.env["TEST_INSTALLED_VERSION"] = version
+                self.assert_success(self.run_helper("--upgrade", interactive=True))
+                installs = self.recorded("apt")
+                self.assertEqual(len(installs), 1)
+                self.assertEqual(installs[0][1:3], ["install", "--allow-downgrades"])
+                self.assertTrue(Path(installs[0][-1]).is_absolute())
+                self.assertEqual(list(self.downloads.iterdir()), [])
+
+    def test_upgrade_at_the_pinned_version_does_nothing(self):
+        self.env["TEST_INSTALLED_VERSION"] = VERSION
+        self.assert_success(self.run_helper("--upgrade", interactive=True))
+        self.assert_no_install()
+
+    def test_upgrade_verifies_the_download_like_a_fresh_install(self):
+        self.env["TEST_INSTALLED_VERSION"] = "0.0.1"
+        self.env["TEST_BAD_CHECKSUM"] = "1"
+        result = self.run_helper("--upgrade", interactive=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.recorded("apt"), [])
+        self.assertEqual(list(self.downloads.iterdir()), [])
+
+    def test_unknown_argument_is_rejected(self):
+        result = self.run_helper("--force", interactive=True)
+        self.assertEqual(result.returncode, 2)
+        self.assert_no_install()
+
     def test_unattended_setup_prints_manual_command_without_downloading(self):
         result = self.run_helper()
         self.assert_success(result)
         self.assertIn("omnigent-desktop-app-ensure", result.stdout + result.stderr)
+        self.assert_no_install()
+
+    def test_unattended_upgrade_prints_the_upgrade_command(self):
+        self.env["TEST_INSTALLED_VERSION"] = "0.0.1"
+        result = self.run_helper("--upgrade")
+        self.assert_success(result)
+        self.assertIn("omnigent-desktop-app-ensure --upgrade", result.stdout + result.stderr)
         self.assert_no_install()
 
     def test_removed_package_with_remaining_config_is_installed(self):
