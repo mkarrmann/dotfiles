@@ -9,6 +9,8 @@ from collections.abc import Iterable
 from contextlib import suppress
 from pathlib import Path
 
+from .command_source import SOURCE_NAME as COMMAND_SOURCE_NAME
+from .command_source import CommandSpec
 from .domain import (
     Batch,
     BatchState,
@@ -21,7 +23,7 @@ from .domain import (
     WatchedSubject,
 )
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # The v1 DDL, kept as a constant so the v1 -> v2 migration test exercises the
 # real historical schema instead of a copy that can drift from it.
@@ -197,6 +199,32 @@ class WatcherRepository:
                 current = 4
             if current < 5:
                 self._migrate_to_sourceless_defaults()
+                current = 5
+            if current < 6:
+                self._migrate_to_delivery_generations()
+
+    def _migrate_to_delivery_generations(self) -> None:
+        """Legacy attempts have unknown occurrences; tolerate duplicates to avoid lost feedback."""
+        with self._connect() as connection:
+            connection.executescript(
+                """
+                BEGIN IMMEDIATE;
+                ALTER TABLE source_events ADD COLUMN generation INTEGER NOT NULL DEFAULT 1;
+                ALTER TABLE batch_events ADD COLUMN generation INTEGER NOT NULL DEFAULT 1;
+                ALTER TABLE subscription_events ADD COLUMN generation INTEGER NOT NULL DEFAULT 1;
+                DROP INDEX one_open_batch_per_session;
+                UPDATE batches SET state = 'delivering'
+                    WHERE state = 'open' AND summary IS NOT NULL;
+                UPDATE batch_events SET generation = 0 WHERE batch_id IN
+                    (SELECT batch_id FROM batches WHERE state = 'delivering');
+                CREATE UNIQUE INDEX one_open_batch_per_session ON batches(session_id)
+                    WHERE state = 'open';
+                CREATE UNIQUE INDEX one_delivery_per_session ON batches(session_id)
+                    WHERE state = 'delivering';
+                PRAGMA user_version=6;
+                COMMIT;
+                """
+            )
 
     def _migrate_to_session_batches(self) -> None:
         """v1 -> v2: re-key batches from one subscription to one session.
@@ -515,6 +543,24 @@ class WatcherRepository:
         """Baseline source state and idempotently activate one subscription."""
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            watch = connection.execute(
+                "SELECT source, spec FROM watched_subjects WHERE subject = ?", (subject,)
+            ).fetchone()
+            if watch is not None:
+                if watch["source"] != result.source:
+                    raise SubscriptionConstraintError("subject already belongs to another source")
+                if result.source == COMMAND_SOURCE_NAME:
+                    try:
+                        same_spec = (
+                            CommandSpec.from_json(watch["spec"]).to_json()
+                            == CommandSpec.from_json(spec).to_json()
+                        )
+                    except ValueError as exc:
+                        raise SubscriptionConstraintError(str(exc)) from exc
+                    if not same_spec:
+                        raise SubscriptionConstraintError(
+                            "subject already has a different command spec; use a new subject"
+                        )
             existing = connection.execute(
                 "SELECT * FROM subscriptions WHERE session_id = ? AND subject = ?",
                 (session_id, subject),
@@ -576,10 +622,12 @@ class WatcherRepository:
             )
             for event_type in baseline_types:
                 connection.execute(
-                    "INSERT OR IGNORE INTO subscription_events "
-                    "(subscription_id, kind, external_id, fingerprint, handled_at) "
-                    "SELECT ?, kind, external_id, fingerprint, ? FROM source_events "
-                    "WHERE subject = ? AND kind = ? AND actionable = 1",
+                    "INSERT INTO subscription_events "
+                    "(subscription_id, kind, external_id, fingerprint, handled_at, generation) "
+                    "SELECT ?, kind, external_id, fingerprint, ?, generation FROM source_events "
+                    "WHERE subject = ? AND kind = ? AND actionable = 1 "
+                    "ON CONFLICT(subscription_id, kind, external_id, fingerprint) DO UPDATE SET "
+                    "handled_at = excluded.handled_at, generation = excluded.generation",
                     (subscription_id, now, subject, event_type),
                 )
             connection.commit()
@@ -910,6 +958,7 @@ class WatcherRepository:
                         event["kind"],
                         event["external_id"],
                         event["fingerprint"],
+                        int(event["generation"]),
                     )
                 ]
                 if not qualifying:
@@ -942,14 +991,15 @@ class WatcherRepository:
                     )
                     cursor = connection.execute(
                         "INSERT OR IGNORE INTO batch_events "
-                        "(batch_id, subject, kind, external_id, fingerprint) "
-                        "VALUES (?, ?, ?, ?, ?)",
+                        "(batch_id, subject, kind, external_id, fingerprint, generation) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
                         (
                             batch_id,
                             result.subject,
                             event["kind"],
                             event["external_id"],
                             event["fingerprint"],
+                            event["generation"],
                         ),
                     )
                     added += max(cursor.rowcount, 0)
@@ -968,13 +1018,21 @@ class WatcherRepository:
         # cleared, so a transient source error cannot look like a resolution.
         for kind in result.ok_kinds:
             events = result.events.get(kind, ())
-            connection.execute(
-                "UPDATE source_events SET actionable = 0, last_seen_at = ? "
-                "WHERE subject = ? AND kind = ?",
-                (now, result.subject, kind.value),
-            )
+            previous_ids = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT external_id FROM source_events WHERE subject = ? AND kind = ?",
+                    (result.subject, kind.value),
+                )
+            }
             for event in events:
                 self._upsert_source_event(connection, event, now=now)
+            missing_ids = previous_ids - {event.external_id for event in events}
+            connection.executemany(
+                "UPDATE source_events SET actionable = 0, last_seen_at = ? "
+                "WHERE subject = ? AND kind = ? AND external_id = ?",
+                [(now, result.subject, kind.value, external_id) for external_id in missing_ids],
+            )
             connection.execute(
                 "DELETE FROM subscription_events WHERE kind = ? "
                 "AND subscription_id IN (SELECT id FROM subscriptions WHERE subject = ?) "
@@ -991,7 +1049,8 @@ class WatcherRepository:
         now: float,
     ) -> None:
         existing = connection.execute(
-            "SELECT fingerprint, first_seen_at, last_changed_at FROM source_events "
+            "SELECT fingerprint, version_id, actionable, generation, first_seen_at, "
+            "last_changed_at FROM source_events "
             "WHERE subject = ? AND kind = ? AND external_id = ?",
             (event.subject, event.kind.value, event.external_id),
         ).fetchone()
@@ -999,18 +1058,26 @@ class WatcherRepository:
         # timestamps may be skewed or rounded, so a newly observed fingerprint
         # must still compare newer than a subscription baseline.
         changed_at = max(event.changed_at.timestamp(), now)
-        if existing is not None and existing["fingerprint"] == event.fingerprint:
+        unchanged = (
+            existing is not None
+            and existing["fingerprint"] == event.fingerprint
+            and existing["version_id"] == event.version_id
+            and bool(existing["actionable"])
+        )
+        if unchanged:
+            assert existing is not None
             changed_at = float(existing["last_changed_at"])
+        generation = int(existing["generation"]) + int(not unchanged) if existing is not None else 1
         first_seen_at = float(existing["first_seen_at"]) if existing is not None else now
         connection.execute(
             "INSERT INTO source_events "
             "(subject, kind, external_id, version_id, fingerprint, actionable, "
-            "first_seen_at, last_changed_at, last_seen_at) "
-            "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?) "
+            "first_seen_at, last_changed_at, last_seen_at, generation) "
+            "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?) "
             "ON CONFLICT(subject, kind, external_id) DO UPDATE SET "
             "version_id = excluded.version_id, fingerprint = excluded.fingerprint, "
             "actionable = 1, last_changed_at = excluded.last_changed_at, "
-            "last_seen_at = excluded.last_seen_at",
+            "last_seen_at = excluded.last_seen_at, generation = excluded.generation",
             (
                 event.subject,
                 event.kind.value,
@@ -1020,6 +1087,7 @@ class WatcherRepository:
                 first_seen_at,
                 changed_at,
                 now,
+                generation,
             ),
         )
 
@@ -1030,29 +1098,60 @@ class WatcherRepository:
         kind: str,
         external_id: str,
         fingerprint: str,
+        generation: int,
+        *,
+        ignore_open_batch_id: str | None = None,
     ) -> bool:
+        if kind == EventKind.CHANGED:
+            # A value may return to an earlier state. Compare it with the last
+            # baseline/delivery, including histories written by older workers.
+            handled = connection.execute(
+                "SELECT fingerprint, generation FROM subscription_events "
+                "WHERE subscription_id = ? AND kind = ? AND external_id = ? "
+                "ORDER BY generation DESC, handled_at DESC, rowid DESC LIMIT 1",
+                (subscription_id, kind, external_id),
+            ).fetchone()
+            attempted = connection.execute(
+                "SELECT be.fingerprint, be.generation FROM batch_events be "
+                "JOIN batches b ON b.batch_id = be.batch_id "
+                "JOIN subscriptions s ON s.session_id = b.session_id AND s.subject = be.subject "
+                "WHERE s.id = ? AND b.state = 'delivering' AND be.kind = ? "
+                "AND be.external_id = ?",
+                (subscription_id, kind, external_id),
+            ).fetchone()
+            if attempted is not None and (
+                handled is None
+                or int(attempted["generation"]) == 0
+                or int(attempted["generation"]) >= int(handled["generation"])
+            ):
+                handled = attempted
+            if handled is not None and handled["fingerprint"] == fingerprint:
+                return True
+        else:
+            handled = connection.execute(
+                "SELECT 1 FROM subscription_events WHERE subscription_id = ? AND kind = ? "
+                "AND external_id = ? AND fingerprint = ? AND generation = ?",
+                (subscription_id, kind, external_id, fingerprint, generation),
+            ).fetchone()
+            if handled is not None:
+                return True
         row = connection.execute(
-            # The second arm asks "is this already pending in my session's open
-            # batch?". Batches are session-scoped, so it must also match the
-            # event's diff -- otherwise a sibling diff's event would suppress
-            # this one.
-            "SELECT 1 FROM subscription_events WHERE subscription_id = ? AND kind = ? "
-            "AND external_id = ? AND fingerprint = ? UNION ALL "
+            # Pending snapshots are scoped to both the session and subject.
             "SELECT 1 FROM batch_events be JOIN batches b ON b.batch_id = be.batch_id "
             "JOIN subscriptions s ON s.session_id = b.session_id "
             "WHERE s.id = ? AND be.subject = s.subject "
             "AND b.state IN ('open', 'delivering') "
+            "AND (? IS NULL OR b.batch_id != ?) "
             "AND be.kind = ? "
-            "AND be.external_id = ? AND be.fingerprint = ? LIMIT 1",
+            "AND be.external_id = ? AND be.fingerprint = ? AND be.generation = ? LIMIT 1",
             (
                 subscription_id,
+                ignore_open_batch_id,
+                ignore_open_batch_id,
                 kind,
                 external_id,
                 fingerprint,
-                subscription_id,
-                kind,
-                external_id,
-                fingerprint,
+                generation,
             ),
         ).fetchone()
         return row is not None
@@ -1060,8 +1159,7 @@ class WatcherRepository:
     @staticmethod
     def _open_batch_id(connection: sqlite3.Connection, session_id: str) -> str | None:
         row = connection.execute(
-            "SELECT batch_id FROM batches WHERE session_id = ? "
-            "AND state IN ('open', 'delivering') LIMIT 1",
+            "SELECT batch_id FROM batches WHERE session_id = ? AND state = 'open' LIMIT 1",
             (session_id,),
         ).fetchone()
         return str(row[0]) if row is not None else None
@@ -1088,12 +1186,24 @@ class WatcherRepository:
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT * FROM batches WHERE session_id = ? "
-                "AND state IN ('open', 'delivering') LIMIT 1",
+                "AND state IN ('open', 'delivering') ORDER BY state = 'open' DESC LIMIT 1",
                 (session_id,),
             ).fetchone()
             if row is None:
                 return None
             return self._batch(row, self._batch_diff_ids(connection, str(row["batch_id"])))
+
+    def delivering_batch_for_session(self, session_id: str) -> Batch | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM batches WHERE session_id = ? AND state = 'delivering'",
+                (session_id,),
+            ).fetchone()
+            return (
+                self._batch(row, self._batch_diff_ids(connection, str(row["batch_id"])))
+                if row is not None
+                else None
+            )
 
     def open_batch_for(self, subscription_id: int) -> Batch | None:
         """The open batch that would carry this subscription's events.
@@ -1105,7 +1215,7 @@ class WatcherRepository:
             row = connection.execute(
                 "SELECT b.* FROM batches b JOIN subscriptions s "
                 "ON s.session_id = b.session_id WHERE s.id = ? "
-                "AND b.state IN ('open', 'delivering') LIMIT 1",
+                "AND b.state IN ('open', 'delivering') ORDER BY b.state = 'open' DESC LIMIT 1",
                 (subscription_id,),
             ).fetchone()
             if row is None:
@@ -1115,8 +1225,11 @@ class WatcherRepository:
     def due_batches(self, now: float) -> list[Batch]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM batches WHERE state IN ('open', 'delivering') "
-                "AND flush_at <= ? AND next_attempt_at <= ? ORDER BY flush_at",
+                "SELECT * FROM batches b WHERE state IN ('open', 'delivering') "
+                "AND flush_at <= ? AND next_attempt_at <= ? "
+                "AND (state = 'delivering' OR NOT EXISTS (SELECT 1 FROM batches d "
+                "WHERE d.session_id = b.session_id AND d.state = 'delivering')) "
+                "ORDER BY state = 'delivering' DESC, flush_at",
                 (now, now),
             ).fetchall()
             return [
@@ -1125,26 +1238,27 @@ class WatcherRepository:
             ]
 
     def prepare_batch(self, batch_id: str, *, now: float) -> dict[EventKind, int] | None:
-        """Prune stale members, freeze a summary, and mark delivering."""
+        """Freeze the first attempt; reuse its snapshot unchanged for retries."""
         from .logic import render_batch_summary
 
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
-                "DELETE FROM batch_events WHERE batch_id = ? AND NOT EXISTS ("
-                "SELECT 1 FROM source_events se WHERE se.subject = batch_events.subject "
-                "AND se.kind = batch_events.kind AND se.external_id = batch_events.external_id "
-                "AND se.fingerprint = batch_events.fingerprint AND se.actionable = 1)",
-                (batch_id,),
-            )
             row = connection.execute(
-                "SELECT session_id FROM batches WHERE batch_id = ? "
+                "SELECT session_id, state, summary FROM batches WHERE batch_id = ? "
                 "AND state IN ('open', 'delivering')",
                 (batch_id,),
             ).fetchone()
             if row is None:
                 connection.commit()
                 return None
+            if row["state"] == BatchState.OPEN:
+                if connection.execute(
+                    "SELECT 1 FROM batches WHERE session_id = ? AND state = 'delivering'",
+                    (row["session_id"],),
+                ).fetchone():
+                    connection.commit()
+                    return None
+                self._prune_open_batch(connection, batch_id)
             per_diff: dict[str, dict[EventKind, int]] = {}
             sources: dict[str, str] = {}
             for event_row in connection.execute(
@@ -1182,61 +1296,247 @@ class WatcherRepository:
                 )
                 connection.commit()
                 return None
-            summary = render_batch_summary(
+            summary = row["summary"] or render_batch_summary(
                 batch_id,
                 [
                     (sources.get(subject, ""), subject, bucket)
                     for subject, bucket in per_diff.items()
                 ],
             )
-            connection.execute(
-                "UPDATE batches SET state = 'delivering', summary = ?, updated_at = ? "
-                "WHERE batch_id = ?",
-                (summary, now, batch_id),
-            )
+            if row["state"] == BatchState.OPEN:
+                connection.execute(
+                    "UPDATE batches SET state = 'delivering', summary = ?, updated_at = ? "
+                    "WHERE batch_id = ?",
+                    (summary, now, batch_id),
+                )
             connection.commit()
             return totals
+
+    @staticmethod
+    def _current_batch_events(connection: sqlite3.Connection, batch_id: str) -> list[sqlite3.Row]:
+        return connection.execute(
+            "SELECT be.*, be.rowid AS member_rowid, s.id AS subscription_id "
+            "FROM batch_events be JOIN batches b ON b.batch_id = be.batch_id "
+            "JOIN subscriptions s ON s.session_id = b.session_id AND s.subject = be.subject "
+            "JOIN source_events se ON se.subject = be.subject AND se.kind = be.kind "
+            "AND se.external_id = be.external_id AND se.fingerprint = be.fingerprint "
+            "AND se.generation = be.generation "
+            "WHERE be.batch_id = ? AND se.actionable = 1 AND s.state != 'retired' "
+            "AND EXISTS (SELECT 1 FROM json_each(s.event_types) WHERE value = be.kind)",
+            (batch_id,),
+        ).fetchall()
+
+    @staticmethod
+    def _prune_open_batch(connection: sqlite3.Connection, batch_id: str) -> None:
+        valid = {
+            int(row["member_rowid"])
+            for row in WatcherRepository._current_batch_events(connection, batch_id)
+        }
+        stale = [
+            (int(row[0]),)
+            for row in connection.execute(
+                "SELECT rowid FROM batch_events WHERE batch_id = ?", (batch_id,)
+            )
+            if int(row[0]) not in valid
+        ]
+        connection.executemany("DELETE FROM batch_events WHERE rowid = ?", stale)
+
+    def batch_is_current(self, batch_id: str) -> bool:
+        """Whether retrying this attempt still describes the complete pending state."""
+        with self._connect() as connection:
+            batch = connection.execute(
+                "SELECT session_id FROM batches WHERE batch_id = ? AND state = 'delivering'",
+                (batch_id,),
+            ).fetchone()
+            if batch is None:
+                return False
+            total = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM batch_events WHERE batch_id = ?", (batch_id,)
+                ).fetchone()[0]
+            )
+            if not total or len(self._current_batch_events(connection, batch_id)) != total:
+                return False
+            pending = self._open_batch_id(connection, str(batch["session_id"]))
+            return pending is None or not self._current_batch_events(connection, pending)
+
+    def supersede_batch(self, batch_id: str, *, now: float) -> Batch | None:
+        """Replace an obsolete attempt with current feedback under a fresh marker."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            replacement = self._replace_attempt_locked(connection, batch_id, now=now)
+            connection.commit()
+        return self.batch(replacement) if replacement is not None else None
+
+    def reset_unsent_batch(self, batch_id: str, *, now: float) -> Batch | None:
+        """Release a first attempt known not to have reached the remote session."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            replacement = self._replace_attempt_locked(
+                connection, batch_id, now=now, definitely_unsent=True
+            )
+            connection.commit()
+        return self.batch(replacement) if replacement is not None else None
+
+    @staticmethod
+    def _replace_attempt_locked(
+        connection: sqlite3.Connection,
+        batch_id: str,
+        *,
+        now: float,
+        definitely_unsent: bool = False,
+    ) -> str | None:
+        attempt = connection.execute(
+            "SELECT * FROM batches WHERE batch_id = ? AND state = 'delivering'", (batch_id,)
+        ).fetchone()
+        if attempt is None:
+            return None
+        session_id = str(attempt["session_id"])
+        connection.execute(
+            "UPDATE batches SET state = 'cancelled', updated_at = ? WHERE batch_id = ?",
+            (now, batch_id),
+        )
+        pending_id = WatcherRepository._open_batch_id(connection, session_id)
+        if pending_id is None:
+            pending_id = f"dwb_{uuid.uuid4().hex}"
+            connection.execute(
+                "INSERT INTO batches (batch_id, session_id, state, first_event_at, flush_at, "
+                "next_attempt_at, created_at, updated_at) VALUES (?, ?, 'open', ?, ?, ?, ?, ?)",
+                (
+                    pending_id,
+                    session_id,
+                    attempt["first_event_at"],
+                    attempt["flush_at"],
+                    attempt["next_attempt_at"],
+                    now,
+                    now,
+                ),
+            )
+        else:
+            connection.execute(
+                "UPDATE batches SET first_event_at = MIN(first_event_at, ?), "
+                "flush_at = MIN(flush_at, ?), next_attempt_at = MIN(next_attempt_at, ?), "
+                "updated_at = ? WHERE batch_id = ?",
+                (
+                    attempt["first_event_at"],
+                    attempt["flush_at"],
+                    attempt["next_attempt_at"],
+                    now,
+                    pending_id,
+                ),
+            )
+        current = connection.execute(
+            "SELECT se.* FROM batch_events be JOIN source_events se "
+            "ON se.subject = be.subject AND se.kind = be.kind AND se.external_id = be.external_id "
+            "JOIN subscriptions s ON s.session_id = ? AND s.subject = se.subject "
+            "WHERE be.batch_id = ? AND se.actionable = 1 AND s.state != 'retired' "
+            "AND EXISTS (SELECT 1 FROM json_each(s.event_types) WHERE value = se.kind)",
+            (session_id, batch_id),
+        ).fetchall()
+        for event in current:
+            connection.execute(
+                "DELETE FROM batch_events WHERE batch_id = ? AND subject = ? "
+                "AND kind = ? AND external_id = ?",
+                (pending_id, event["subject"], event["kind"], event["external_id"]),
+            )
+            connection.execute(
+                "INSERT INTO batch_events "
+                "(batch_id, subject, kind, external_id, fingerprint, generation) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    pending_id,
+                    event["subject"],
+                    event["kind"],
+                    event["external_id"],
+                    event["fingerprint"],
+                    event["generation"],
+                ),
+            )
+        WatcherRepository._prune_open_batch(connection, pending_id)
+        if definitely_unsent:
+            for event in WatcherRepository._current_batch_events(connection, pending_id):
+                if WatcherRepository._fingerprint_seen(
+                    connection,
+                    int(event["subscription_id"]),
+                    str(event["kind"]),
+                    str(event["external_id"]),
+                    str(event["fingerprint"]),
+                    int(event["generation"]),
+                    ignore_open_batch_id=pending_id,
+                ):
+                    connection.execute(
+                        "DELETE FROM batch_events WHERE rowid = ?", (event["member_rowid"],)
+                    )
+        if not connection.execute(
+            "SELECT 1 FROM batch_events WHERE batch_id = ? LIMIT 1", (pending_id,)
+        ).fetchone():
+            connection.execute(
+                "UPDATE batches SET state = 'cancelled', updated_at = ? WHERE batch_id = ?",
+                (now, pending_id),
+            )
+            return None
+        return pending_id
 
     def defer_batch(self, batch_id: str, *, now: float, retry_at: float) -> None:
         with self._connect() as connection:
             connection.execute(
-                "UPDATE batches SET state = 'open', retry_count = retry_count + 1, "
+                "UPDATE batches SET retry_count = retry_count + 1, "
                 "next_attempt_at = ?, updated_at = ? WHERE batch_id = ? "
                 "AND state IN ('open', 'delivering')",
                 (retry_at, now, batch_id),
             )
 
-    def deliver_batch(self, batch_id: str, *, now: float) -> None:
+    def deliver_batch(
+        self, batch_id: str, *, now: float, delivered_at: float | None = None
+    ) -> None:
+        accepted_at = now if delivered_at is None else min(delivered_at, now)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT session_id FROM batches WHERE batch_id = ?",
+                "SELECT session_id FROM batches WHERE batch_id = ? "
+                "AND state IN ('open', 'delivering')",
                 (batch_id,),
             ).fetchone()
             if row is not None:
                 session_id = str(row["session_id"])
+                connection.execute(
+                    "DELETE FROM subscription_events WHERE kind = ? AND EXISTS ("
+                    "SELECT 1 FROM batch_events be JOIN subscriptions s "
+                    "ON s.session_id = ? AND s.subject = be.subject "
+                    "WHERE be.batch_id = ? AND s.id = subscription_events.subscription_id "
+                    "AND be.kind = subscription_events.kind "
+                    "AND be.external_id = subscription_events.external_id)",
+                    (EventKind.CHANGED.value, session_id, batch_id),
+                )
                 # Each event is handled by the subscription owning its diff, so
                 # a re-observed finding is suppressed per diff, not per session.
                 connection.execute(
-                    "INSERT OR IGNORE INTO subscription_events "
-                    "(subscription_id, kind, external_id, fingerprint, handled_at) "
-                    "SELECT s.id, be.kind, be.external_id, be.fingerprint, ? "
+                    "INSERT INTO subscription_events "
+                    "(subscription_id, kind, external_id, fingerprint, handled_at, generation) "
+                    "SELECT s.id, be.kind, be.external_id, be.fingerprint, ?, be.generation "
                     "FROM batch_events be JOIN subscriptions s "
                     "ON s.session_id = ? AND s.subject = be.subject "
-                    "WHERE be.batch_id = ?",
-                    (now, session_id, batch_id),
+                    "WHERE be.batch_id = ? AND s.state != 'retired' "
+                    "AND (be.kind = ? OR EXISTS (SELECT 1 FROM source_events se "
+                    "WHERE se.subject = be.subject AND se.kind = be.kind "
+                    "AND se.external_id = be.external_id AND se.fingerprint = be.fingerprint "
+                    "AND se.generation = be.generation AND se.actionable = 1)) "
+                    "ON CONFLICT(subscription_id, kind, external_id, fingerprint) DO UPDATE SET "
+                    "handled_at = excluded.handled_at, generation = excluded.generation",
+                    (accepted_at, session_id, batch_id, EventKind.CHANGED.value),
                 )
                 connection.execute(
                     "UPDATE batches SET state = 'delivered', delivered_at = ?, updated_at = ? "
                     "WHERE batch_id = ?",
-                    (now, now, batch_id),
+                    (accepted_at, now, batch_id),
                 )
                 # One wake covers the session, so the minimum-interval throttle
                 # advances for every diff it watches.
                 connection.execute(
-                    "UPDATE subscriptions SET last_delivery_at = ?, updated_at = ? "
+                    "UPDATE subscriptions SET last_delivery_at = "
+                    "MAX(COALESCE(last_delivery_at, ?), ?), updated_at = ? "
                     "WHERE session_id = ? AND state != 'retired'",
-                    (now, now, session_id),
+                    (accepted_at, accepted_at, now, session_id),
                 )
             connection.commit()
 
@@ -1351,8 +1651,10 @@ class WatcherRepository:
             if poll is not None:
                 candidates.append(float(poll))
             batch = connection.execute(
-                "SELECT MIN(MAX(flush_at, next_attempt_at)) FROM batches "
-                "WHERE state IN ('open', 'delivering')"
+                "SELECT MIN(MAX(flush_at, next_attempt_at)) FROM batches b "
+                "WHERE state = 'delivering' OR (state = 'open' AND NOT EXISTS "
+                "(SELECT 1 FROM batches d WHERE d.session_id = b.session_id "
+                "AND d.state = 'delivering'))"
             ).fetchone()[0]
             if batch is not None:
                 candidates.append(float(batch))
@@ -1603,15 +1905,32 @@ class WatcherRepository:
         ).fetchone()
         if row is None:
             return
+        attempts = connection.execute(
+            "SELECT b.batch_id FROM batches b JOIN batch_events be ON be.batch_id = b.batch_id "
+            "WHERE b.session_id = ? AND b.state = 'delivering' AND be.subject = ?",
+            (str(row["session_id"]), str(row["subject"])),
+        ).fetchall()
+        for attempt in attempts:
+            live = connection.execute(
+                "SELECT 1 FROM batch_events be JOIN subscriptions s ON s.subject = be.subject "
+                "WHERE be.batch_id = ? AND s.session_id = ? AND s.state != 'retired' "
+                "AND EXISTS (SELECT 1 FROM json_each(s.event_types) WHERE value = be.kind) LIMIT 1",
+                (attempt[0], row["session_id"]),
+            ).fetchone()
+            if live is None:
+                connection.execute(
+                    "UPDATE batches SET state = 'cancelled', updated_at = ? WHERE batch_id = ?",
+                    (now, attempt[0]),
+                )
         connection.execute(
             "DELETE FROM batch_events WHERE subject = ? AND batch_id IN "
             "(SELECT batch_id FROM batches WHERE session_id = ? "
-            "AND state IN ('open', 'delivering'))",
+            "AND state = 'open')",
             (str(row["subject"]), str(row["session_id"])),
         )
         connection.execute(
             "UPDATE batches SET state = 'cancelled', updated_at = ? "
-            "WHERE session_id = ? AND state IN ('open', 'delivering') "
+            "WHERE session_id = ? AND state = 'open' "
             "AND NOT EXISTS (SELECT 1 FROM batch_events WHERE batch_id = batches.batch_id)",
             (now, str(row["session_id"])),
         )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 
 import httpx
@@ -73,12 +74,17 @@ class OmnigentClient:
         )
 
     async def has_delivery_marker(self, session_id: str, delivery_id: str) -> bool:
+        return await self.delivery_receipt(session_id, delivery_id) is not None
+
+    async def delivery_receipt(
+        self, session_id: str, delivery_id: str
+    ) -> EventDeliveryResult | None:
         response = await self._client.get(
             f"/v1/sessions/{session_id}/items",
             params={"limit": 1000, "order": "desc"},
         )
         if response.status_code == 404:
-            return False
+            return None
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
@@ -102,8 +108,17 @@ class OmnigentClient:
                 and any(marker in block["text"] for marker in markers)
                 for block in content
             ):
-                return True
-        return False
+                created_at = raw_item.get("created_at")
+                accepted_at = (
+                    float(created_at)
+                    if isinstance(created_at, (int, float))
+                    and not isinstance(created_at, bool)
+                    and math.isfinite(created_at)
+                    and created_at > 0
+                    else None
+                )
+                return EventDeliveryResult(EventDeliveryStatus.ALREADY_ACCEPTED, accepted_at)
+        return None
 
     async def post_message(self, session_id: str, content: str) -> httpx.Response:
         return await self._client.post(
@@ -132,6 +147,13 @@ class OmnigentDeliveryService:
         self._mode = mode
         self._allowlist = allowlist
 
+    async def delivery_receipt(
+        self, session_id: str, delivery_id: str
+    ) -> EventDeliveryResult | None:
+        if self._mode == "log_only":
+            return None
+        return await self._client.delivery_receipt(session_id, delivery_id)
+
     async def deliver_message(
         self,
         session_id: str,
@@ -142,14 +164,18 @@ class OmnigentDeliveryService:
             _logger.info("would deliver batch=%s session=%s", delivery_id, session_id)
             return EventDeliveryResult(EventDeliveryStatus.ACCEPTED)
         if self._allowlist and session_id not in self._allowlist:
-            return EventDeliveryResult(EventDeliveryStatus.DEFERRED)
-        session = await self._client.get(session_id)
+            return EventDeliveryResult(EventDeliveryStatus.NOT_SENT)
+        try:
+            receipt = await self._client.delivery_receipt(session_id, delivery_id)
+            if receipt is not None:
+                return receipt
+            session = await self._client.get(session_id)
+        except (httpx.HTTPError, OmnigentAPIError):
+            return EventDeliveryResult(EventDeliveryStatus.NOT_SENT)
         if session.terminal:
             return EventDeliveryResult(EventDeliveryStatus.TERMINAL)
         if not session.can_accept_input:
-            return EventDeliveryResult(EventDeliveryStatus.DEFERRED)
-        if await self._client.has_delivery_marker(session_id, delivery_id):
-            return EventDeliveryResult(EventDeliveryStatus.ALREADY_ACCEPTED)
+            return EventDeliveryResult(EventDeliveryStatus.NOT_SENT)
         try:
             response = await self._client.post_message(session_id, content)
         except httpx.TransportError:
@@ -159,6 +185,12 @@ class OmnigentDeliveryService:
         if response.status_code in {409, 423, 429} or response.status_code >= 500:
             return EventDeliveryResult(EventDeliveryStatus.DEFERRED)
         response.raise_for_status()
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict) and payload.get("denied") is True:
+            return EventDeliveryResult(EventDeliveryStatus.NOT_SENT)
         return EventDeliveryResult(EventDeliveryStatus.ACCEPTED)
 
     async def _verify_uncertain_delivery(
@@ -169,9 +201,10 @@ class OmnigentDeliveryService:
         for delay in (0.1, 0.5, 1.0):
             await asyncio.sleep(delay)
             try:
-                if await self._client.has_delivery_marker(session_id, delivery_id):
-                    return EventDeliveryResult(EventDeliveryStatus.ALREADY_ACCEPTED)
-            except httpx.HTTPError:
+                receipt = await self._client.delivery_receipt(session_id, delivery_id)
+                if receipt is not None:
+                    return receipt
+            except (httpx.HTTPError, OmnigentAPIError):
                 continue
         return EventDeliveryResult(EventDeliveryStatus.DEFERRED)
 

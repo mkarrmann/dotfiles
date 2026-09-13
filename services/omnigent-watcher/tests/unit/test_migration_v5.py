@@ -7,11 +7,20 @@ from pathlib import Path
 
 import pytest
 
-from omnigent_watcher.repository import SCHEMA_VERSION, WatcherRepository
+from omnigent_watcher.repository import SCHEMA_VERSION, V1_SCHEMA, WatcherRepository
+
+
+class _V4Repository(WatcherRepository):
+    def _migrate(self) -> None:
+        with self._connect() as connection:
+            connection.executescript(V1_SCHEMA)
+        self._migrate_to_session_batches()
+        self._migrate_to_generic_subjects()
+        self._migrate_to_request_declared_watches()
 
 
 def _v4_database(path: Path) -> None:
-    WatcherRepository(path)
+    _V4Repository(path)
     connection = sqlite3.connect(path)
     connection.executescript(
         """

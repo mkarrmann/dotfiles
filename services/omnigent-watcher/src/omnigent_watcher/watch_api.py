@@ -12,10 +12,11 @@ from __future__ import annotations
 import shlex
 import time
 from collections.abc import Iterable
+from datetime import UTC, datetime
 
 from .command_source import SOURCE_NAME as COMMAND_SOURCE_NAME
 from .command_source import CommandSpec
-from .domain import SubscriptionState
+from .domain import EventKind, SubscriptionState
 from .repository import WatcherRepository
 
 __all__ = ["GENERIC_SOURCES", "cancel_watches", "describe_watches"]
@@ -69,35 +70,125 @@ def describe_watches(
     *,
     sources: Iterable[str],
 ) -> str:
-    """List a session's watches within *sources*, and how each one reads.
+    """Describe recorded requests, subscriptions, and source progress.
 
     A command watch shows its argv: it is stored and re-run on an interval long
     after the turn that registered it, so it has to be auditable from the tool
     rather than only by reading the database.
     """
     scoped = frozenset(sources)
-    rows = [row for row in repository.active_watch_requests(session_id) if row[1] in scoped]
-    if not rows:
+    requests = {
+        subject: (source, spec, kinds)
+        for _session, source, subject, spec, kinds in repository.active_watch_requests(session_id)
+        if source in scoped
+    }
+    subscriptions = {
+        row.subject: row for row in repository.subscriptions_for_session(session_id, sources=scoped)
+    }
+    subjects = dict.fromkeys((*requests, *subscriptions))
+    if not subjects:
         return "This session has no watches of that kind."
-    lines = []
-    for _session, source, subject, spec_json, kinds in rows:
-        detail = ""
-        if source == COMMAND_SOURCE_NAME:
-            try:
-                spec = CommandSpec.from_json(spec_json)
-            except ValueError:
-                detail = " — unreadable spec; the watch will fail to poll"
-            else:
-                detail = (
-                    f" — {shlex.join(spec.argv)}"
-                    f" every {spec.interval_seconds:g}s"
-                    f", timeout {spec.timeout_seconds:g}s"
-                )
-                if spec.extract is not None:
-                    # Quoted but not repr'd: repr escapes the backslashes, so a
-                    # pattern reads back as something the caller never typed.
-                    detail += f", matching '{spec.extract}'"
+
+    lines = ["Recorded watches (not a worker health check):"]
+    for subject in subjects:
+        request = requests.get(subject)
+        subscription = subscriptions.get(subject)
+        watch = repository.watch(subject)
+        if request is not None:
+            source, spec_json, kinds = request
+            if watch is None or watch.source != source:
+                subscription = None
         else:
-            detail = " — " + ", ".join(sorted(kind.value for kind in kinds))
-        lines.append(f"{subject} via {source}{detail}")
-    return "Active watches:\n" + "\n".join(lines)
+            if subscription is None or watch is None:
+                continue
+            source, spec_json, kinds = watch.source, watch.spec, subscription.event_types
+
+        if subscription is None:
+            state = "pending (not bound)"
+        else:
+            state = subscription.state.value
+            if subscription.retired_reason is not None:
+                state += f" ({subscription.retired_reason})"
+            if subscription.state is SubscriptionState.RETIRED:
+                if request is not None:
+                    state += "; request pending"
+            elif request is None:
+                state += "; no durable request"
+            if watch is not None:
+                if request is not None and (
+                    not _same_spec(source, spec_json, watch.spec)
+                    or kinds != subscription.event_types
+                ):
+                    state += "; requested settings differ from bound watch"
+                spec_json, kinds = watch.spec, subscription.event_types
+
+        detail = _source_detail(source, spec_json, kinds)
+        lines.append(f"{subject} via {source} — state: {state}{detail}")
+        if subscription is None or watch is None:
+            continue
+        progress = [
+            f"last result: {_timestamp(watch.last_success_at)}",
+            f"consecutive failures: {watch.failure_count}",
+        ]
+        if subscription.state is SubscriptionState.ACTIVE:
+            next_action = "retry" if watch.failure_count else "poll"
+            progress.append(f"next {next_action} scheduled: {_timestamp(watch.next_poll_at)}")
+        if subscription.unavailable_since is not None:
+            progress.append(
+                f"session unavailable since: {_timestamp(subscription.unavailable_since)}"
+            )
+        progress.append(f"last session delivery: {_timestamp(subscription.last_delivery_at)}")
+        lines.append("  " + "; ".join(progress))
+
+    batches = {
+        batch.batch_id: batch
+        for batch in (
+            repository.delivering_batch_for_session(session_id),
+            repository.open_batch_for_session(session_id),
+        )
+        if batch is not None and subjects.keys() & set(batch.subjects)
+    }
+    for batch in batches.values():
+        lines.append(
+            f"Pending session notification: {batch.state.value}; deferrals: {batch.retry_count}; "
+            f"next attempt scheduled: {_timestamp(batch.next_attempt_at)}; batch: {batch.batch_id}"
+        )
+    lines.append(
+        "Last result includes baseline and partial reads. "
+        "Last poll attempt and error category are not persisted."
+    )
+    return "\n".join(lines)
+
+
+def _timestamp(moment: float | None) -> str:
+    if moment is None:
+        return "none recorded"
+    return datetime.fromtimestamp(moment, UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _same_spec(source: str, requested: str | None, bound: str | None) -> bool:
+    if requested == bound:
+        return True
+    if source != COMMAND_SOURCE_NAME:
+        return False
+    try:
+        return CommandSpec.from_json(requested).to_json() == CommandSpec.from_json(bound).to_json()
+    except ValueError:
+        return False
+
+
+def _source_detail(source: str, spec_json: str | None, kinds: frozenset[EventKind]) -> str:
+    if source != COMMAND_SOURCE_NAME:
+        return " — " + ", ".join(sorted(kind.value for kind in kinds))
+    try:
+        spec = CommandSpec.from_json(spec_json)
+    except ValueError:
+        return " — unreadable command spec"
+    detail = (
+        f" — {shlex.join(spec.argv)}"
+        f" every {spec.interval_seconds:g}s"
+        f", timeout {spec.timeout_seconds:g}s"
+    )
+    if spec.extract is not None:
+        detail += f", matching '{spec.extract}'"
+    return detail

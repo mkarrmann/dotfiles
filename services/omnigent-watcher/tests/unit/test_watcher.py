@@ -181,9 +181,9 @@ async def test_comment_and_ci_burst_delivers_one_message_once(tmp_path: Path) ->
             BatchState.DELIVERED,
             SubscriptionState.ACTIVE,
         ),
-        (EventDeliveryStatus.DEFERRED, BatchState.OPEN, SubscriptionState.ACTIVE),
+        (EventDeliveryStatus.DEFERRED, BatchState.DELIVERING, SubscriptionState.ACTIVE),
         (EventDeliveryStatus.TERMINAL, None, SubscriptionState.RETIRED),
-        (RuntimeError("transport"), BatchState.OPEN, SubscriptionState.ACTIVE),
+        (RuntimeError("transport"), BatchState.DELIVERING, SubscriptionState.ACTIVE),
     ],
 )
 async def test_delivery_outcomes_make_correct_durable_transition(

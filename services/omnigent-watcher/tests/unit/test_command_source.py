@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from omnigent_watcher.command_source import (
@@ -9,8 +11,11 @@ from omnigent_watcher.command_source import (
     CommandSource,
     CommandSpec,
 )
-from omnigent_watcher.domain import EventKind, Lifecycle
-from omnigent_watcher.source_models import ReviewSourceError
+from omnigent_watcher.domain import COMMAND_EVENT_KINDS, EventKind, Lifecycle, SessionSnapshot
+from omnigent_watcher.repository import WatcherRepository
+from omnigent_watcher.source_models import ReviewSourceError, SourceErrorCategory
+from omnigent_watcher.watcher import SubscriptionError, Watcher
+from tests.support import FakeClock, FakeSessionService, RecordingDeliveryService
 
 ENV = {"PATH": "/usr/bin:/bin"}
 
@@ -70,6 +75,93 @@ async def test_extract_ignores_noise_that_would_otherwise_wake_every_poll() -> N
         first.events[EventKind.CHANGED][0].fingerprint
         == second.events[EventKind.CHANGED][0].fingerprint
     )
+
+
+@pytest.mark.parametrize("output", ["unrelated-output", "status="])
+async def test_an_unsuccessful_extraction_is_a_malformed_source_error(output: str) -> None:
+    with pytest.raises(ReviewSourceError) as error:
+        await _source().poll("job:extract", None, _spec("printf", output, extract=r"status=(\w+)?"))
+    assert error.value.category is SourceErrorCategory.MALFORMED
+
+
+@pytest.mark.parametrize(
+    ("extract", "output"),
+    [(None, ""), (None, " \n"), (r"status=(.*)", "status="), (r"^", "status=ready")],
+)
+def test_an_intentionally_empty_value_remains_valid(extract: str | None, output: str) -> None:
+    assert CommandSpec(["true"], extract=extract).observed_value(output) == ""
+
+
+async def test_subscribe_rejects_an_unmatched_extraction_before_storing_a_watch(
+    tmp_path: Path,
+) -> None:
+    repository = WatcherRepository(tmp_path / "watcher.sqlite3")
+    watcher = Watcher(
+        repository,
+        (_source(),),
+        FakeSessionService(SessionSnapshot(session_id="session-1", labels={})),
+        RecordingDeliveryService(),
+    )
+    with pytest.raises(SubscriptionError, match="could not read the subject.*malformed"):
+        await watcher.subscribe(
+            "session-1",
+            "job:extract",
+            COMMAND_EVENT_KINDS,
+            source_name=SOURCE_NAME,
+            spec=_spec("printf", "unexpected-output", extract=r"status=(\w+)"),
+        )
+    assert repository.watch("job:extract") is None
+    assert repository.subscription("session-1", "job:extract") is None
+
+
+@pytest.mark.parametrize("output", ["unrelated-output", "status="])
+async def test_an_extraction_failure_backs_off_without_changing_the_last_observation(
+    tmp_path: Path,
+    output: str,
+) -> None:
+    value = tmp_path / "status"
+    value.write_text("status=running")
+    clock = FakeClock()
+    delivery = RecordingDeliveryService()
+    repository = WatcherRepository(tmp_path / "watcher.sqlite3")
+    watcher = Watcher(
+        repository,
+        (_source(),),
+        FakeSessionService(SessionSnapshot(session_id="session-1", labels={})),
+        delivery,
+        clock=clock,
+    )
+    await watcher.subscribe(
+        "session-1",
+        "job:extract",
+        COMMAND_EVENT_KINDS,
+        source_name=SOURCE_NAME,
+        spec=_spec("cat", str(value), extract=r"status=(\w+)?"),
+    )
+    baseline = repository.watch("job:extract")
+    assert baseline is not None
+    value.write_text(output)
+    clock.advance(120)
+    await watcher.run_iteration()
+
+    failed = repository.watch("job:extract")
+    assert failed is not None
+    assert failed.failure_count == 1
+    assert failed.next_poll_at > clock.now().timestamp() + 60
+    assert failed.last_success_at == baseline.last_success_at
+    assert failed.cursor == baseline.cursor
+    assert watcher.last_source_error_category == "malformed"
+    assert repository.open_batch_for_session("session-1") is None
+    assert delivery.calls == []
+
+    value.write_text("status=running")
+    clock.advance(failed.next_poll_at - clock.now().timestamp() + 1)
+    await watcher.run_iteration()
+    recovered = repository.watch("job:extract")
+    assert recovered is not None
+    assert recovered.failure_count == 0
+    assert repository.open_batch_for_session("session-1") is None
+    assert delivery.calls == []
 
 
 async def test_a_failing_command_is_a_failed_poll_not_a_change() -> None:

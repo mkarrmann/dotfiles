@@ -43,12 +43,20 @@ class EventDeliveryStatus(StrEnum):
     ACCEPTED = "accepted"
     ALREADY_ACCEPTED = "already_accepted"
     DEFERRED = "deferred"
+    NOT_SENT = "not_sent"
     TERMINAL = "terminal"
 
 
 @dataclass(frozen=True)
 class EventDeliveryResult:
+    """NOT_SENT applies only to this call; DEFERRED may have reached the session.
+
+    A receipt's acceptance time preserves throttling across delayed local
+    acknowledgement. None means the remote API supplied no usable timestamp.
+    """
+
     status: EventDeliveryStatus
+    accepted_at: float | None = None
 
 
 class Clock(Protocol):
@@ -236,6 +244,12 @@ class SessionService(Protocol):
 
 
 class DeliveryService(Protocol):
+    async def delivery_receipt(
+        self, session_id: str, delivery_id: str
+    ) -> EventDeliveryResult | None:
+        """Look up acceptance; raise if unavailable, return None if not found."""
+        ...
+
     async def deliver_message(
         self,
         session_id: str,

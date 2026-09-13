@@ -18,7 +18,7 @@ from omnigent_watcher.domain import (
 from omnigent_watcher.phabricator_source import SOURCE_NAME as PHABRICATOR_SOURCE_NAME
 from omnigent_watcher.repository import WatcherRepository
 from omnigent_watcher.watch_api import GENERIC_SOURCES, cancel_watches, describe_watches
-from tests.support import command_poll, fixture, subscribe_snapshot
+from tests.support import apply_snapshot, command_poll, fixture, subscribe_snapshot
 
 SESSION = "conv_test"
 KNOB = "jk:presto/presto_batch:demo_knob"
@@ -136,6 +136,8 @@ def test_status_shows_the_command_a_watch_will_keep_running(tmp_path: Path) -> N
     assert KNOB in status
     assert "cat /tmp/knob" in status
     assert "every 120s" in status
+    assert "state: pending (not bound)" in status
+    assert "Active watches:" not in status
     # Quoted, not repr'd: repr escapes the backslash and shows a pattern the
     # caller never typed.
     assert r"(\d+)" in status
@@ -151,3 +153,225 @@ def test_status_is_scoped_to_its_own_surface(tmp_path: Path) -> None:
 
     diffs = describe_watches(repository, SESSION, sources=DIFF_SOURCES)
     assert subject in diffs and KNOB not in diffs
+
+
+def test_status_shows_bound_state_and_recorded_progress(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    _generic_watch(repository)
+
+    status = describe_watches(repository, SESSION, sources=GENERIC_SOURCES)
+
+    assert "state: active" in status
+    assert "last result: 1970-01-01T00:16:40Z" in status
+    assert "consecutive failures: 0" in status
+    assert "next poll scheduled: 1970-01-01T00:17:40Z" in status
+    assert "last session delivery: none recorded" in status
+    assert "not a worker health check" in status
+    assert "Last result includes baseline and partial reads" in status
+
+
+def test_status_shows_failure_streak_and_retry_without_inventing_error_details(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    _generic_watch(repository)
+    for now in (1100.0, 1200.0):
+        assert repository.claim_watch(KNOB, now=now, owner="test", lease_seconds=60) is not None
+        repository.poll_failed(KNOB, "test", next_poll_at=now + 60)
+
+    status = describe_watches(repository, SESSION, sources=GENERIC_SOURCES)
+
+    assert "state: active" in status
+    assert "consecutive failures: 2" in status
+    assert "next retry scheduled: 1970-01-01T00:21:00Z" in status
+    assert "last result: 1970-01-01T00:16:40Z" in status
+    assert "Last poll attempt and error category are not persisted" in status
+
+
+def test_status_does_not_label_a_partial_result_as_a_successful_poll(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    subject = _watch(repository)
+    apply_snapshot(
+        repository,
+        fixture("partial_failure").model_copy(update={"subject": subject}),
+        now=2100.0,
+        next_poll_at=2160.0,
+        batch_window_seconds=30.0,
+    )
+    repository.partial_poll_failed(subject, next_poll_at=2160.0)
+
+    status = describe_watches(repository, SESSION, sources=DIFF_SOURCES)
+
+    assert "last result: 1970-01-01T00:35:00Z" in status
+    assert "consecutive failures: 1" in status
+    assert "Last result includes baseline and partial reads" in status
+    assert "successful poll" not in status
+
+
+def test_status_shows_suspension_and_why_a_session_is_unavailable(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    _generic_watch(repository)
+    for now in (1100.0, 1200.0):
+        repository.suspend_or_retire_session(
+            SESSION, now=now, terminal_reason=None, suspend_after=60.0
+        )
+
+    status = describe_watches(repository, SESSION, sources=GENERIC_SOURCES)
+
+    assert "state: suspended" in status
+    assert "session unavailable since: 1970-01-01T00:18:20Z" in status
+    assert "next poll scheduled" not in status
+
+
+def test_status_keeps_retired_history_visible_after_cancellation(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    _generic_watch(repository)
+    cancel_watches(repository, SESSION, sources=GENERIC_SOURCES, now=2000.0)
+
+    status = describe_watches(repository, SESSION, sources=GENERIC_SOURCES)
+
+    assert KNOB in status
+    assert "state: retired (unsubscribed)" in status
+    assert "true every 60s" in status
+    assert "next poll scheduled" not in status
+    assert "request pending" not in status
+
+
+def test_status_shows_an_orphaned_subscription_without_a_durable_request(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    _generic_watch(repository, request=False)
+
+    status = describe_watches(repository, SESSION, sources=GENERIC_SOURCES)
+
+    assert "state: active; no durable request" in status
+    assert "true every 60s" in status
+
+
+def test_status_audits_the_bound_command_when_a_request_differs(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    _generic_watch(repository)
+    repository.request_watch(
+        SESSION,
+        COMMAND_SOURCE_NAME,
+        KNOB,
+        COMMAND_EVENT_KINDS,
+        spec=CommandSpec(["false"], None, 120.0).to_json(),
+        now=1100.0,
+    )
+
+    status = describe_watches(repository, SESSION, sources=GENERIC_SOURCES)
+
+    assert "requested settings differ from bound watch" in status
+    assert "true every 60s" in status
+    assert "false every 120s" not in status
+
+
+def test_status_accepts_equivalent_legacy_command_settings(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    _generic_watch(repository)
+    repository.request_watch(
+        SESSION,
+        COMMAND_SOURCE_NAME,
+        KNOB,
+        COMMAND_EVENT_KINDS,
+        spec='{"argv": ["true"], "interval_seconds": 60}',
+        now=1100.0,
+    )
+
+    status = describe_watches(repository, SESSION, sources=GENERIC_SOURCES)
+
+    assert "requested settings differ" not in status
+    assert "true every 60s, timeout 30s" in status
+
+
+def test_status_reports_pending_notification_and_session_delivery(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    _generic_watch(repository)
+    repository.apply_poll(
+        command_poll(KNOB, fingerprint="changed"),
+        now=2000.0,
+        next_poll_at=2060.0,
+        batch_window_seconds=5.0,
+    )
+    batch = repository.open_batch_for_session(SESSION)
+    assert batch is not None
+    repository.defer_batch(batch.batch_id, now=2005.0, retry_at=2300.0)
+
+    pending = describe_watches(repository, SESSION, sources=GENERIC_SOURCES)
+
+    assert "Pending session notification: open; deferrals: 1" in pending
+    assert "next attempt scheduled: 1970-01-01T00:38:20Z" in pending
+
+    repository.deliver_batch(batch.batch_id, now=2310.0)
+    delivered = describe_watches(repository, SESSION, sources=GENERIC_SOURCES)
+
+    assert "last session delivery: 1970-01-01T00:38:30Z" in delivered
+    assert "Pending session notification" not in delivered
+
+
+def test_status_does_not_reveal_another_sessions_watch(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    _generic_watch(repository)
+
+    status = describe_watches(repository, "conv_other", sources=GENERIC_SOURCES)
+
+    assert status == "This session has no watches of that kind."
+
+
+def test_status_lists_an_attempted_notification_only_once(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    _generic_watch(repository)
+    repository.apply_poll(
+        command_poll(KNOB, fingerprint="changed"),
+        now=2000.0,
+        next_poll_at=2060.0,
+        batch_window_seconds=5.0,
+    )
+    batch = repository.open_batch_for_session(SESSION)
+    assert batch is not None
+    assert repository.prepare_batch(batch.batch_id, now=2005.0) is not None
+
+    status = describe_watches(repository, SESSION, sources=GENERIC_SOURCES)
+
+    assert "Pending session notification: delivering" in status
+    assert status.count(batch.batch_id) == 1
+    assert status.count("Pending session notification:") == 1
+
+
+def test_status_shows_attempted_and_queued_notifications_scoped_by_source(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    _generic_watch(repository)
+    _watch(repository)
+    repository.apply_poll(
+        command_poll(KNOB, fingerprint="changed"),
+        now=2000.0,
+        next_poll_at=2060.0,
+        batch_window_seconds=5.0,
+    )
+    attempted = repository.open_batch_for_session(SESSION)
+    assert attempted is not None
+    assert repository.prepare_batch(attempted.batch_id, now=2005.0) is not None
+    repository.defer_batch(attempted.batch_id, now=2005.0, retry_at=2300.0)
+    repository.apply_poll(
+        command_poll(KNOB, fingerprint="changed-again"),
+        now=2100.0,
+        next_poll_at=2160.0,
+        batch_window_seconds=5.0,
+    )
+    queued = repository.open_batch_for_session(SESSION)
+    assert queued is not None and queued.batch_id != attempted.batch_id
+
+    status = describe_watches(repository, SESSION, sources=GENERIC_SOURCES)
+
+    assert "Pending session notification: delivering; deferrals: 1" in status
+    assert "next attempt scheduled: 1970-01-01T00:38:20Z" in status
+    assert "Pending session notification: open; deferrals: 0" in status
+    assert "next attempt scheduled: 1970-01-01T00:35:05Z" in status
+    assert status.count(attempted.batch_id) == 1
+    assert status.count(queued.batch_id) == 1
+    assert status.count("Pending session notification:") == 2
+
+    diff_status = describe_watches(repository, SESSION, sources=DIFF_SOURCES)
+    assert "Pending session notification:" not in diff_status
+    assert attempted.batch_id not in diff_status
+    assert queued.batch_id not in diff_status

@@ -8,6 +8,8 @@ import uuid
 from collections.abc import Iterable
 from datetime import datetime
 
+from .command_source import SOURCE_NAME as COMMAND_SOURCE_NAME
+from .command_source import CommandSpec
 from .domain import (
     Batch,
     Clock,
@@ -95,12 +97,18 @@ class Watcher:
         if session.terminal:
             raise SubscriptionError("session is closed or no longer exists")
         source = self.source_for(source_name)
-        # An existing watch keeps the spec it was created with; a second
-        # subscriber to the same subject shares its poll rather than silently
-        # redefining how it is read.
-        spec = watch.spec if watch is not None else spec
+        if watch is not None and watch.source != source.name:
+            raise SubscriptionError("subject already belongs to another source")
+        if watch is not None and source.name != COMMAND_SOURCE_NAME:
+            spec = watch.spec
         try:
             source.validate_subject(subject, spec)
+            if source.name == COMMAND_SOURCE_NAME:
+                spec = CommandSpec.from_json(spec).to_json()
+                if watch is not None and CommandSpec.from_json(watch.spec).to_json() != spec:
+                    raise SubscriptionError(
+                        "subject already has a different command spec; use a new subject"
+                    )
         except ValueError as exc:
             raise SubscriptionError(str(exc)) from exc
         unsupported = event_types - source.event_kinds
@@ -183,20 +191,9 @@ class Watcher:
             if await self._batch_ready_for_refresh(batch, now):
                 ready_batches.add(batch.batch_id)
         refresh_results: dict[str, bool] = {}
-        for subject in dict.fromkeys(
-            subject
-            for batch in due_before
-            if batch.batch_id in ready_batches
-            for subject in batch.subjects
-        ):
-            watch = await asyncio.to_thread(
-                self.repository.claim_watch,
-                subject,
-                now=now,
-                owner=self.owner,
-                lease_seconds=self.config.poll_lease_seconds,
-            )
-            refresh_results[subject] = await self._poll_watch(watch) if watch is not None else False
+        for batch in due_before:
+            if batch.batch_id in ready_batches:
+                await self._refresh_batch(batch, now, refresh_results)
 
         claimed = await asyncio.to_thread(
             self.repository.claim_due_watches,
@@ -209,7 +206,7 @@ class Watcher:
 
         async def poll_one(watch: WatchedSubject) -> None:
             async with semaphore:
-                await self._poll_watch(watch)
+                refresh_results[watch.subject] = await self._poll_watch(watch)
 
         if claimed:
             await asyncio.gather(*(poll_one(watch) for watch in claimed))
@@ -219,7 +216,19 @@ class Watcher:
                 continue
             # Any diff in the batch failing to refresh defers the whole wake:
             # a stale count for one diff would misreport the stack.
-            if any(refresh_results.get(subject) is False for subject in batch.subjects):
+            if not await self._refresh_batch(batch, now, refresh_results):
+                await self._defer(batch, now)
+                continue
+            await self._flush_batch(batch)
+
+        # Acknowledging or superseding an attempt can expose an already-due
+        # successor. Its batching window began when that feedback arrived.
+        for batch in await asyncio.to_thread(self.repository.due_batches, now):
+            if batch.batch_id in ready_batches:
+                continue
+            if not await self._batch_ready_for_refresh(batch, now):
+                continue
+            if not await self._refresh_batch(batch, now, refresh_results):
                 await self._defer(batch, now)
                 continue
             await self._flush_batch(batch)
@@ -230,7 +239,41 @@ class Watcher:
             retention_seconds=self.config.completed_retention_seconds,
         )
 
+    async def _refresh_batch(self, batch: Batch, now: float, results: dict[str, bool]) -> bool:
+        live = await asyncio.to_thread(
+            self.repository.subscriptions_for_session,
+            batch.session_id,
+            states=(SubscriptionState.ACTIVE,),
+        )
+        subjects = {row.subject for row in live} & set(batch.subjects)
+        for subject in sorted(subjects):
+            if subject in results:
+                continue
+            watch = await asyncio.to_thread(
+                self.repository.claim_watch,
+                subject,
+                now=now,
+                owner=self.owner,
+                lease_seconds=self.config.poll_lease_seconds,
+            )
+            results[subject] = await self._poll_watch(watch) if watch is not None else False
+        return all(results[subject] for subject in subjects)
+
     async def _batch_ready_for_refresh(self, batch: Batch, now: float) -> bool:
+        if batch.summary is not None:
+            try:
+                receipt = await self.delivery.delivery_receipt(batch.session_id, batch.batch_id)
+            except Exception:  # noqa: BLE001 - an unknown receipt must remain retryable
+                await self._defer(batch, now)
+                return False
+            if receipt is not None:
+                await asyncio.to_thread(
+                    self.repository.deliver_batch,
+                    batch.batch_id,
+                    now=now,
+                    delivered_at=receipt.accepted_at,
+                )
+                return False
         session = await self.sessions.get(batch.session_id)
         if session.terminal:
             await self._retire_session(batch.session_id, "session_terminal", now)
@@ -364,6 +407,11 @@ class Watcher:
 
     async def _flush_batch(self, batch: Batch) -> None:
         now = self.clock.now().timestamp()
+        if batch.summary is not None and not await asyncio.to_thread(
+            self.repository.batch_is_current, batch.batch_id
+        ):
+            await asyncio.to_thread(self.repository.supersede_batch, batch.batch_id, now=now)
+            return
         session = await self.sessions.get(batch.session_id)
         if session.terminal:
             await self._retire_session(batch.session_id, "session_terminal", now)
@@ -429,10 +477,24 @@ class Watcher:
             await asyncio.to_thread(
                 self.repository.deliver_batch,
                 current.batch_id,
-                now=now,
+                now=self.clock.now().timestamp(),
+                delivered_at=result.accepted_at,
             )
         elif result.status is EventDeliveryStatus.TERMINAL:
             await self._retire_session(current.session_id, "delivery_terminal", now)
+        elif result.status is EventDeliveryStatus.NOT_SENT and batch.summary is None:
+            # This attempt never sent anything. A later failed preflight cannot
+            # establish that an earlier attempt with this ID was also unsent.
+            await asyncio.to_thread(
+                self.repository.reset_unsent_batch,
+                current.batch_id,
+                now=now,
+            )
+            pending = await asyncio.to_thread(
+                self.repository.open_batch_for_session, current.session_id
+            )
+            if pending is not None:
+                await self._defer(pending, now)
         else:
             await self._defer(current, now)
 

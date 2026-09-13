@@ -85,6 +85,11 @@ class RecordingDelivery:
         self.outcomes = deque(outcomes)
         self.calls: list[tuple[str, str, str]] = []
 
+    async def delivery_receipt(
+        self, session_id: str, delivery_id: str
+    ) -> EventDeliveryResult | None:
+        return None
+
     async def deliver_message(
         self, session_id: str, delivery_id: str, content: str
     ) -> EventDeliveryResult:
@@ -241,9 +246,9 @@ def test_two_repository_instances_cannot_overlap_one_poll(tmp_path: Path) -> Non
     [
         (EventDeliveryStatus.ACCEPTED, "delivered", SubscriptionState.ACTIVE),
         (EventDeliveryStatus.ALREADY_ACCEPTED, "delivered", SubscriptionState.ACTIVE),
-        (EventDeliveryStatus.DEFERRED, "open", SubscriptionState.ACTIVE),
+        (EventDeliveryStatus.DEFERRED, "delivering", SubscriptionState.ACTIVE),
         (EventDeliveryStatus.TERMINAL, "cancelled", SubscriptionState.RETIRED),
-        (RuntimeError("transport"), "open", SubscriptionState.ACTIVE),
+        (RuntimeError("transport"), "delivering", SubscriptionState.ACTIVE),
     ],
 )
 async def test_delivery_outcomes_are_durable(

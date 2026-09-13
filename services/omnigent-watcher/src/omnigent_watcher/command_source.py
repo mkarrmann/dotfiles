@@ -6,11 +6,11 @@ output, and reports a change when the hash moves. That is the whole contract,
 and it is what makes "wake me when X changes" work for an X the watcher has
 never heard of.
 
-The command is stored as an argv list and executed with ``execve``, never
-through a shell, so no part of a subject or spec is ever interpreted as shell
-syntax. Storing it is not a privilege escalation -- an agent that can subscribe
-can already run commands -- but it *is* a longer-lived one, so the argv is
-recorded in the database and readable through the status tool.
+The command is stored as an argv list and executed directly, without an
+implicit shell. A caller can still explicitly request a shell in that argv.
+This delegates a trusted command to the watcher server, where the daemon's
+credentials and restrictions may differ from the subscribing agent's. The
+argv is recorded in the database and readable through the status tool.
 """
 
 from __future__ import annotations
@@ -174,8 +174,11 @@ class CommandSpec:
             return stdout.strip()
         match = re.search(self.extract, stdout)
         if match is None:
-            return ""
-        return (match.group(1) if match.re.groups else match.group(0)).strip()
+            raise ReviewSourceError(SourceErrorCategory.MALFORMED)
+        value = match.group(1) if match.re.groups else match.group(0)
+        if value is None:
+            raise ReviewSourceError(SourceErrorCategory.MALFORMED)
+        return value.strip()
 
 
 class CommandSource:

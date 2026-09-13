@@ -7,6 +7,8 @@ subscriber's own context.
 
 from __future__ import annotations
 
+import sqlite3
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,7 @@ from omnigent_watcher.domain import (
     WatcherConfig,
 )
 from omnigent_watcher.repository import WatcherRepository
+from omnigent_watcher.source_models import fingerprint
 from omnigent_watcher.watcher import SubscriptionError, Watcher
 from tests.support import (
     FakeClock,
@@ -140,6 +143,100 @@ async def test_one_change_wakes_once_not_once_per_poll(tmp_path: Path) -> None:
         await watcher.run_iteration()
 
     assert len(delivery.calls) == 1
+
+
+@pytest.mark.parametrize("legacy_history", [False, True])
+async def test_values_can_recur_after_delivery_and_worker_restart(
+    tmp_path: Path, legacy_history: bool
+) -> None:
+    value = tmp_path / "state"
+    value.write_text("A\n")
+    clock = FakeClock()
+    delivery = RecordingDeliveryService()
+    repository, watcher = _watcher(tmp_path, clock, delivery)
+    subscription, _ = await watcher.subscribe(
+        "session-1", SUBJECT, COMMAND_EVENT_KINDS, source_name="command", spec=_spec(value)
+    )
+
+    for observed, expected in (("B", 1), ("A", 2), ("B", 3), ("B", 3), ("C", 4), ("C", 4)):
+        value.write_text(observed + "\n")
+        _repository, watcher = _watcher(tmp_path, clock, delivery)
+        clock.advance(120)
+        await watcher.run_iteration()
+        clock.advance(60)
+        await watcher.run_iteration()
+        assert len(delivery.calls) == expected
+        if legacy_history and expected == 1:
+            with sqlite3.connect(repository.path) as connection:
+                connection.execute(
+                    "INSERT INTO subscription_events "
+                    "(subscription_id, kind, external_id, fingerprint, handled_at) "
+                    "VALUES (?, 'changed', 'value', ?, ?)",
+                    (subscription.id, fingerprint("A"), subscription.baseline_at),
+                )
+
+
+async def test_return_to_acknowledged_value_before_flush_cancels_notification(
+    tmp_path: Path,
+) -> None:
+    value = tmp_path / "state"
+    value.write_text("A\n")
+    clock = FakeClock()
+    delivery = RecordingDeliveryService()
+    repository, watcher = _watcher(tmp_path, clock, delivery)
+    await watcher.subscribe(
+        "session-1", SUBJECT, COMMAND_EVENT_KINDS, source_name="command", spec=_spec(value)
+    )
+    value.write_text("B\n")
+    clock.advance(120)
+    await watcher.run_iteration()
+    assert repository.open_batch_for_session("session-1") is not None
+
+    value.write_text("A\n")
+    clock.advance(60)
+    await watcher.run_iteration()
+    assert delivery.calls == []
+    assert repository.open_batch_for_session("session-1") is None
+
+    value.write_text("B\n")
+    clock.advance(120)
+    await watcher.run_iteration()
+    clock.advance(60)
+    await watcher.run_iteration()
+    assert len(delivery.calls) == 1
+
+
+async def test_subscribers_keep_independent_acknowledged_values(tmp_path: Path) -> None:
+    value = tmp_path / "state"
+    value.write_text("A\n")
+    clock = FakeClock()
+    delivery = RecordingDeliveryService()
+    _repository, watcher = _watcher(tmp_path, clock, delivery)
+    watcher.sessions = FakeSessionService(
+        SessionSnapshot("session-1", {}), SessionSnapshot("session-2", {})
+    )
+    await watcher.subscribe(
+        "session-1", SUBJECT, COMMAND_EVENT_KINDS, source_name="command", spec=_spec(value)
+    )
+    value.write_text("B\n")
+    clock.advance(120)
+    await watcher.subscribe(
+        "session-2", SUBJECT, COMMAND_EVENT_KINDS, source_name="command", spec=_spec(value)
+    )
+    clock.advance(60)
+    await watcher.run_iteration()
+    assert Counter(call[0] for call in delivery.calls) == {"session-1": 1}
+
+    for observed, expected in (
+        ("A", {"session-1": 2, "session-2": 1}),
+        ("B", {"session-1": 3, "session-2": 2}),
+    ):
+        value.write_text(observed + "\n")
+        clock.advance(120)
+        await watcher.run_iteration()
+        clock.advance(60)
+        await watcher.run_iteration()
+        assert Counter(call[0] for call in delivery.calls) == expected
 
 
 @pytest.mark.asyncio

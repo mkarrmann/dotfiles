@@ -223,6 +223,11 @@ class RecordingDeliveryService:
         self.outcomes = deque(outcomes or (EventDeliveryStatus.ACCEPTED,))
         self.calls: list[tuple[str, str, str]] = []
 
+    async def delivery_receipt(
+        self, session_id: str, delivery_id: str
+    ) -> EventDeliveryResult | None:
+        return None
+
     async def deliver_message(
         self,
         session_id: str,

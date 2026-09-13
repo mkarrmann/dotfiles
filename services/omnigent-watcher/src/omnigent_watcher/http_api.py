@@ -69,6 +69,11 @@ class _UnusedDelivery:
     from here fails loudly instead of dropping wakes.
     """
 
+    async def delivery_receipt(
+        self, session_id: str, delivery_id: str
+    ) -> EventDeliveryResult | None:
+        raise RuntimeError("the watcher HTTP API does not deliver notifications")
+
     async def deliver_message(
         self, session_id: str, delivery_id: str, content: str
     ) -> EventDeliveryResult:

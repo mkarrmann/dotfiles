@@ -12,12 +12,20 @@ import json
 import sqlite3
 from pathlib import Path
 
-from omnigent_watcher.repository import SCHEMA_VERSION, WatcherRepository
+from omnigent_watcher.repository import SCHEMA_VERSION, V1_SCHEMA, WatcherRepository
+
+
+class _V3Repository(WatcherRepository):
+    def _migrate(self) -> None:
+        with self._connect() as connection:
+            connection.executescript(V1_SCHEMA)
+        self._migrate_to_session_batches()
+        self._migrate_to_generic_subjects()
 
 
 def _v3_database(path: Path) -> None:
     """A v3 database holding one label-declared diff watch and one generic one."""
-    repository = WatcherRepository(path)
+    repository = _V3Repository(path)
     connection = sqlite3.connect(path)
     connection.executescript(
         """
