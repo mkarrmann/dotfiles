@@ -708,7 +708,7 @@ AGENT_CONFIG_DIR="$DOTFILES_DIR/agent_config" "$DOTFILES_DIR/agent_config/sync-m
   echo "WARNING: agent_config/sync-mcps failed" >&2
 
 # Omnigent: propagate the shared configuration (omnigent_config/config.shared.yaml,
-# plus config.hub.yaml on hub candidates) into this machine's live
+# plus config.server.yaml on desktops and hub candidates) into this machine's live
 # ~/.omnigent/config.yaml -- client preferences and the server's policies alike,
 # since the hub unit and a desktop's managed local server both read that file.
 # Every profile. Deep-merges only the declared keys, preserving machine-specific
@@ -802,11 +802,13 @@ fi
 # NOT restart, reconcile, remount, or otherwise disturb anything already
 # running — that live convergence belongs to init.sh and the reconcile timer.
 if [[ "$DOTFILES_PROFILE" == work && "$(uname -s)" == "Linux" ]] && command -v systemctl &>/dev/null; then
-  # Switching back from desktop restores only our own alternate host unit.
-  host_unit="$HOME/.config/systemd/user/omnigent-host.service"
-  if [[ -L "$host_unit" && "$(readlink -f "$host_unit")" == "$DOTFILES_DIR/systemd/desktop/omnigent-host.service" ]]; then
-    ln -sfn "$DOTFILES_DIR/systemd/omnigent-host.service" "$host_unit"
-  fi
+  # Switching back from desktop restores only our own alternate units.
+  for unit_name in omnigent-host.service omnigent-watcher.service; do
+    profile_unit="$HOME/.config/systemd/user/$unit_name"
+    if [[ -L "$profile_unit" && "$(readlink -f "$profile_unit")" == "$DOTFILES_DIR/systemd/desktop/$unit_name" ]]; then
+      ln -sfn "$DOTFILES_DIR/systemd/$unit_name" "$profile_unit"
+    fi
+  done
   sync_link_dir "$DOTFILES_DIR/systemd" "$HOME/.config/systemd/user" "*.service"
   sync_link_dir "$DOTFILES_DIR/systemd" "$HOME/.config/systemd/user" "*.timer"
   # Hub ownership is dynamic. Only the reconcile timer starts at boot; it
@@ -891,9 +893,12 @@ if [[ "$DOTFILES_PROFILE" == work && "$(uname -s)" == "Linux" ]] && command -v s
     || echo "WARNING: failed to enable omnigent-logrotate.timer" >&2
 fi
 
-if [[ "$DOTFILES_PROFILE" == desktop && "$(uname -s)" == Linux ]]; then
+if [[ "$DOTFILES_PROFILE" == desktop ]]; then
   "$DOTFILES_DIR/bin/omnigent-desktop-ensure" --stage ||
     echo "WARNING: desktop Omnigent service staging failed" >&2
+fi
+
+if [[ "$DOTFILES_PROFILE" == desktop && "$(uname -s)" == Linux ]]; then
   # Launcher override for the packaged GUI; see the comment in the file.
   mkdir -p "$HOME/.local/share/applications"
   link_one "$DOTFILES_DIR/omnigent_config/omnigent-desktop-electron.desktop" \

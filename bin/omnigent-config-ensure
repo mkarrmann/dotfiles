@@ -3,7 +3,7 @@
 # configuration into this machine's live ~/.omnigent/config.yaml:
 #
 #   omnigent_config/config.shared.yaml   every machine
-#   omnigent_config/config.hub.yaml      hub candidates only (topology.env)
+#   omnigent_config/config.server.yaml  desktops and work hub candidates
 #
 # config.yaml is the ONE file every Omnigent process here reads -- the CLI and
 # host daemon for client preferences, the server (hub unit or a desktop's
@@ -32,7 +32,7 @@ log() { printf '[config-ensure] %s\n' "$*"; }
 
 DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
 SHARED="$DOTFILES/omnigent_config/config.shared.yaml"
-HUB="$DOTFILES/omnigent_config/config.hub.yaml"
+SERVER="$DOTFILES/omnigent_config/config.server.yaml"
 DATA_DIR="${OMNIGENT_DATA_DIR:-${OMNIGENT_CONFIG_HOME:-$HOME/.omnigent}}"
 CONFIG="$DATA_DIR/config.yaml"
 
@@ -51,11 +51,14 @@ if [[ ! -x "$OMNIGENT_PY" ]]; then
 fi
 
 overlays=("$SHARED")
-# --is-candidate is answered from static topology alone (no routing cache), so
-# it is safe to ask on a desktop, where it is simply false.
-if [[ -f "$HUB" ]] \
-    && "$DOTFILES/bin/omnigent-server-url" --is-candidate >/dev/null 2>&1; then
-  overlays+=("$HUB")
+# Desktops own their local server. Work clients use the active hub's API;
+# --is-candidate checks static topology without consulting the routing cache.
+profile="$("$DOTFILES/bin/dotfiles-profile")"
+if [[ -f "$SERVER" ]] && {
+    [[ "$profile" == desktop ]] ||
+    "$DOTFILES/bin/omnigent-server-url" --is-candidate >/dev/null 2>&1;
+  }; then
+  overlays+=("$SERVER")
 fi
 
 "$OMNIGENT_PY" - "$CONFIG" "${overlays[@]}" <<'PY'

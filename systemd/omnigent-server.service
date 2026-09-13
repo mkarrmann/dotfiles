@@ -26,7 +26,7 @@ Type=simple
 Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 # Out-of-tree policy modules (policy_modules in omnigent_config/config.shared.yaml),
 # and the watcher package whose HTTP router is mounted through the
-# debug_router_modules key in omnigent_config/config.hub.yaml. The watcher is
+# debug_router_modules key in omnigent_config/config.server.yaml. The watcher is
 # imported rather than reached over a second port so it rides the existing 6767
 # forward; the cost is that a watcher schema change needs this server restarted too.
 Environment=PYTHONPATH=%h/dotfiles/omnigent_config/policy_modules:%h/dotfiles/services/omnigent-watcher/src
@@ -80,7 +80,7 @@ ExecCondition=%h/dotfiles/services/omnigent-hub/.venv/bin/omnigent-hub gate
 # debug_router_modules, ...; the flags above win over database_uri and
 # artifact_location) and ignores the client keys. bin/omnigent-config-ensure
 # merges those keys in from omnigent_config/config.shared.yaml and
-# config.hub.yaml; bin/omnigent-server-config-stale knows they are read only
+# config.server.yaml; bin/omnigent-server-config-stale knows they are read only
 # at boot.
 ExecStart=%h/.local/bin/omnigent server --host 127.0.0.1 --port ${OMNIGENT_PORT} --database-uri sqlite:///%h/.omnigent/chat.db --artifact-location %h/.omnigent/artifacts --config %h/.omnigent/config.yaml
 Restart=always

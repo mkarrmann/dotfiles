@@ -82,44 +82,33 @@ def test_dvsc_uses_non_interactive_default_permissions() -> None:
     assert raw["executor"]["config"]["permission_mode"] == "bypassPermissions"
 
 
-def test_native_codex_config_registers_the_watch_mcp() -> None:
-    """Codex gets the watcher from the work profile, not the shared template.
-
-    ``config.work.toml`` is merged over the template only when the work profile
-    is active (see ``agent_config/codex_config.py``), which is what keeps a
-    Meta-internal MCP server off a personal machine. Asserting the template
-    does *not* carry it is the half that keeps it that way.
-    """
+def test_native_codex_uses_the_shared_mcp_definition() -> None:
+    """The canonical JSON supplies watch in every profile and native agent."""
     template = tomllib.loads((DOTFILES / "codex_config/config.template.toml").read_text())
     assert "watch" not in template.get("mcp_servers", {})
 
     work = tomllib.loads((DOTFILES / "codex_config/config.work.toml").read_text())
-    # No args and no env_vars: identity is a tool argument now, so the server
-    # needs nothing from the harness.
-    assert work["mcp_servers"]["watch"] == {"command": "omnigent-watch-mcp"}
+    assert "watch" not in work.get("mcp_servers", {})
 
 
-def test_native_claude_mcp_definition_is_claude_scoped() -> None:
-    """Claude gets watch; Codex must not get it from here as well.
-
-    Codex is registered through codex_config/config.template.toml, and a
-    second copy emitted into the same ~/.codex/config.toml would be a
-    duplicate [mcp_servers.watch] table.
-    """
+def test_native_watch_mcp_definition_is_portable() -> None:
     spec = json.loads((DOTFILES / "agent_config/plugins/custom-mcps/mcps/watch.json").read_text())
-    assert spec["agents"] == ["claude"]
+    assert "agents" not in spec
+    assert set(spec["profiles"]) == {"desktop", "work"}
     assert "args" not in spec["mcpServers"]["watch"]
     # Absolute, because ~/dotfiles/bin is not on the PATH of an MCP server
     # spawned by Claude Code.
     assert spec["mcpServers"]["watch"]["command"].startswith("~/dotfiles/bin/")
 
 
-def _run_sync_mcps(target: str, home: Path) -> str:
+def _run_sync_mcps(target: str, home: Path, profile: str = "work") -> str:
     result = subprocess.run(
         [sys.executable, str(DOTFILES / "agent_config/sync-mcps"), target],
         env={
             **os.environ,
             "HOME": str(home),
+            "CODEX_HOME": str(home / ".codex"),
+            "DOTFILES_PROFILE": profile,
             "AGENT_CONFIG_DIR": str(DOTFILES / "agent_config"),
         },
         capture_output=True,
@@ -129,7 +118,8 @@ def _run_sync_mcps(target: str, home: Path) -> str:
     return result.stdout
 
 
-def test_sync_mcps_writes_where_claude_code_actually_reads(tmp_path: Path) -> None:
+@pytest.mark.parametrize("profile", ["desktop", "work"])
+def test_sync_mcps_writes_where_claude_code_actually_reads(tmp_path: Path, profile: str) -> None:
     """The registration must land in ~/.claude.json, not settings.json.
 
     settings.json accepts an mcpServers key and ignores it: nothing appears in
@@ -143,7 +133,7 @@ def test_sync_mcps_writes_where_claude_code_actually_reads(tmp_path: Path) -> No
         json.dumps({"model": "keep-me", "mcpServers": {"watch": {"command": "stale"}}})
     )
 
-    _run_sync_mcps("claude", tmp_path)
+    _run_sync_mcps("claude", tmp_path, profile)
 
     user_scope = json.loads((tmp_path / ".claude.json").read_text())
     assert "watch" in user_scope["mcpServers"]
@@ -155,17 +145,19 @@ def test_sync_mcps_writes_where_claude_code_actually_reads(tmp_path: Path) -> No
     assert settings["model"] == "keep-me"
 
 
-def test_sync_mcps_keeps_watch_out_of_the_codex_config(tmp_path: Path) -> None:
-    """Codex already registers watch via its template; a second copy
-    would produce a duplicate [mcp_servers.watch] table."""
+@pytest.mark.parametrize("profile", ["desktop", "work"])
+def test_sync_mcps_registers_watch_in_codex(tmp_path: Path, profile: str) -> None:
     (tmp_path / ".codex").mkdir()
     (tmp_path / ".codex" / "config.toml").write_text('model = "keep"\n')
 
-    _run_sync_mcps("codex", tmp_path)
+    _run_sync_mcps("codex", tmp_path, profile)
 
     config = tomllib.loads((tmp_path / ".codex" / "config.toml").read_text())
-    assert "watch" not in config["mcp_servers"]
-    assert config["mcp_servers"], "the unrestricted MCPs still sync to codex"
+    assert config["mcp_servers"]["watch"] == {
+        "command": str(tmp_path / "dotfiles/bin/omnigent-watch-mcp")
+    }
+    assert config["model"] == "keep"
+    assert ("scuba" in config["mcp_servers"]) == (profile == "work")
 
 
 def test_sync_mcps_drops_unexpanded_env_refs(tmp_path: Path) -> None:

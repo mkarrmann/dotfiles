@@ -27,6 +27,21 @@ export DOTFILES_DIR DOTFILES_PROFILE
 "$DOTFILES_DIR/bin/codecompanion-fork-ensure" \
   || echo "WARNING: CodeCompanion fork bootstrap failed; Lazy may be unable to install it" >&2
 
+# The MCP client runs on every machine; the worker runs beside the server.
+watcher_project="$DOTFILES_DIR/services/omnigent-watcher"
+if [[ -f "$watcher_project/uv.lock" ]] && command -v uv &>/dev/null; then
+  (cd "$watcher_project" && uv sync --frozen --all-groups) ||
+    echo "WARNING: omnigent-watcher dependency sync failed" >&2
+  if [[ -x "$watcher_project/.venv/bin/omnigent-watcher" ]] && {
+      [[ "$DOTFILES_PROFILE" == desktop ]] ||
+      "$DOTFILES_DIR/bin/omnigent-server-url" --is-candidate >/dev/null 2>&1;
+    }; then
+    "$watcher_project/.venv/bin/omnigent-watcher" \
+      --config "$watcher_project/config.toml" status --json >/dev/null ||
+      echo "WARNING: omnigent-watcher state bootstrap failed" >&2
+  fi
+fi
+
 # Cross-agent plugin install: uninstalls dropped plugins, cleans orphan caches,
 # installs everything in plugins.list across all agents. No-op if agent-market
 # is not on PATH (skips with a single warning).
@@ -43,17 +58,6 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
     (cd "$hub_project" && uv sync --frozen --all-groups) ||
       echo "WARNING: omnigent-hub dependency sync failed" >&2
   fi
-  watcher_project="$DOTFILES_DIR/services/omnigent-watcher"
-  if [[ -f "$watcher_project/uv.lock" ]] && command -v uv &>/dev/null; then
-    (cd "$watcher_project" && uv sync --frozen --all-groups) ||
-      echo "WARNING: omnigent-watcher dependency sync failed" >&2
-    if [[ -x "$watcher_project/.venv/bin/omnigent-watcher" ]]; then
-      "$watcher_project/.venv/bin/omnigent-watcher" \
-        --config "$watcher_project/config.toml" status --json >/dev/null ||
-        echo "WARNING: omnigent-watcher state bootstrap failed" >&2
-    fi
-  fi
-
   # Resolve routing before the config and agent helpers consume it. The Mac
   # uses its existing localhost proxy and does not need the Linux routing cache.
   routing_ready=true
@@ -108,6 +112,35 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
   if [[ "$routing_ready" == true ]]; then
     "$DOTFILES_DIR/bin/omnigent-agents-ensure" ||
       echo "WARNING: omnigent-agents-ensure failed (managed agents may be stale in the picker)" >&2
+  fi
+
+  # A work Mac is a client. Retire only a desktop worker we installed, during
+  # explicit convergence; sync.sh leaves running jobs alone.
+  if [[ "$(uname -s)" == Darwin ]]; then
+    watcher_plist="$HOME/Library/LaunchAgents/com.mkarrmann.omnigent-watcher.plist"
+    if python3 - "$watcher_plist" "$DOTFILES_DIR" <<'PY'
+from pathlib import Path
+import plistlib
+import sys
+
+path = Path(sys.argv[1])
+try:
+    config = plistlib.loads(path.read_bytes())
+except (OSError, ValueError):
+    raise SystemExit(1)
+arguments = config.get("ProgramArguments") if isinstance(config, dict) else None
+expected = str(Path(sys.argv[2]) / "services/omnigent-watcher/.venv/bin/omnigent-watcher")
+raise SystemExit(0 if not path.is_symlink() and isinstance(arguments, list) and arguments[:1] == [expected] else 1)
+PY
+    then
+      watcher_job="gui/$UID/com.mkarrmann.omnigent-watcher"
+      if launchctl print "$watcher_job" >/dev/null 2>&1 &&
+          ! launchctl bootout "$watcher_job"; then
+        echo "WARNING: failed to stop desktop Omnigent watcher" >&2
+      else
+        rm -f "$watcher_plist"
+      fi
+    fi
   fi
 
   # ---------------------------------------------------------------------------

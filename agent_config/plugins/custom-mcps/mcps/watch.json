@@ -1,7 +1,8 @@
 {
-  "description": "Wake an Omnigent session when something changes. watch_* subscribes to review, CI-failure, AI-review, and green-CI notifications for named Phabricator diffs; watch_* watches anything else a command can report, such as a JustKnob rollout or a job's status. Both take the session_id to wake, from sys_session_get_info.",
-  "agents": [
-    "claude"
+  "description": "Wake an Omnigent session when a command reports a change: job completion, deployment status, file changes, or another custom event. subscribe, status, and unsubscribe manage generic watches; diff_subscribe, diff_status, and diff_unsubscribe handle Phabricator watches at work. Each takes the session_id to wake.",
+  "profiles": [
+    "desktop",
+    "work"
   ],
   "mcpServers": {
     "watch": {

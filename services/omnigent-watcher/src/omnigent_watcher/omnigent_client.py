@@ -27,7 +27,7 @@ class OmnigentClient:
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(base_url=server_url, timeout=30)
+        self._client = client or httpx.AsyncClient(base_url=server_url, timeout=30, trust_env=False)
 
     async def close(self) -> None:
         if self._owns_client:

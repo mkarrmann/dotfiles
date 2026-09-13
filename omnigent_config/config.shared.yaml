@@ -15,8 +15,8 @@
 #   server:  reconciled per work host by omnigent-host-ensure / omnigent-dvsc-ensure.
 #   acp:     the dvsc-core agent entry is merged by omnigent-dvsc-ensure.
 #
-# Server keys that only make sense beside the hub's sidecars live in
-# config.hub.yaml, which the same script merges on hub candidates only.
+# Extensions installed beside servers live in config.server.yaml, which the
+# same script merges on desktops and work hub candidates.
 #
 # To change a preference everywhere, edit this file and run sync.sh (or
 # bin/omnigent-config-ensure directly) on each machine. The server reads its

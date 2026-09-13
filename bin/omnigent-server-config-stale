@@ -3,7 +3,7 @@
 # BEFORE the last edit to a source file whose content it only reads at startup.
 #
 # The server parses its --config (~/.omnigent/config.yaml, merged from
-# omnigent_config/config.shared.yaml and, on hub candidates, config.hub.yaml)
+# omnigent_config/config.shared.yaml and config.server.yaml on server hosts)
 # and imports the PYTHONPATH policy modules once, at boot. There is no reload
 # endpoint (the REST surface is GET/POST /v1/policies and DELETE
 # /v1/policies/{id}, and config-sourced policies come back with "id": null, so
@@ -60,10 +60,9 @@ started_at="$(systemctl --user show "$unit" \
 started_epoch="$(date -d "$started_at" +%s 2>/dev/null)" || exit 1
 
 sources=("$DOTFILES/omnigent_config/config.shared.yaml"
-         "$DOTFILES"/omnigent_config/policy_modules/*.py)
-if "$DOTFILES/bin/omnigent-server-url" --is-candidate >/dev/null 2>&1; then
-  sources+=("$DOTFILES/omnigent_config/config.hub.yaml")
-fi
+         "$DOTFILES/omnigent_config/config.server.yaml"
+         "$DOTFILES"/omnigent_config/policy_modules/*.py
+         "$DOTFILES"/services/omnigent-watcher/src/omnigent_watcher/*.py)
 
 for path in "${sources[@]}"; do
   [ -f "$path" ] || continue

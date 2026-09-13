@@ -1,26 +1,13 @@
-"""The watcher's HTTP surface, mounted into the Omnigent server on the hub.
+"""The watcher's HTTP surface, mounted into the session's Omnigent server.
 
-Watching is a hub-side activity. The sidecar that polls, the database it polls
-from, and the sessions it wakes all live on the active hub, and only the hub
-runs the sidecar at all -- every unit carries ``ExecCondition=omnigent-hub
-gate``. The MCP tools, by contrast, run wherever the agent runs.
+The sidecar and database live beside that server: locally on desktop, or on
+the active hub at work. MCP clients use the same server URL as session tools
+and never open a local database. A client-local database would accept watches
+that no worker ever polls.
 
-Until this existed the tools opened the database by *path*, which silently
-meant "whichever machine I am on". On the hub that happened to be the real
-database; on every other devserver it was an empty file no sidecar would ever
-poll, so a watch registered there was accepted and then never fired. The
-failure was invisible from the hub, which is where it kept being tested.
-
-So the tools became HTTP clients and the work moved here. This module is
-mounted by dotted path through the server's ``debug_router_modules`` key (see
-``omnigent_config/config.hub.yaml``), which reaches clients over the same
-``127.0.0.1:6767`` forward the tools already use to validate a session. No new
-tunnel, no second port to health-check.
-
-The cost, stated plainly: the Omnigent server now imports this package, so a
-watcher schema change means restarting the server as well as the sidecar. The
-alternative was a second forwarded port, which would have duplicated the
-tunnel-recovery logic that makes the existing forward reliable.
+``omnigent_config/config.server.yaml`` mounts this module through
+``debug_router_modules``. Both server and worker load the watcher package, so
+schema changes require both to pick up the new code.
 
 Trust: the server binds loopback only and this router inherits that posture,
 the same as every other route on 6767. The caller has already validated the
@@ -118,9 +105,7 @@ def _repository() -> WatcherRepository:
     try:
         return WatcherRepository(resolve(configured), migrate=False)
     except StaleSchemaError as exc:
-        # Now an honest error: this runs on the hub, beside the sidecar that
-        # can and does migrate, so restarting it is advice the operator can
-        # actually follow.
+        # The worker owns schema migration on this same server.
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 

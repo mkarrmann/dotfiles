@@ -220,10 +220,10 @@ class TestServerWiring(unittest.TestCase):
     def test_handler_path_matches_registry(self) -> None:
         self.assertIn(policy_mod.POLICY_REGISTRY[0]["handler"], self.yaml)
 
-    def test_hub_overlay_carries_no_policies(self) -> None:
-        hub = (ROOT / "omnigent_config" / "config.hub.yaml").read_text()
-        self.assertNotIn("no_foreground_wait", hub)
-        self.assertNotRegex(hub, r"(?m)^policies:")
+    def test_server_overlay_carries_no_policies(self) -> None:
+        server = (ROOT / "omnigent_config" / "config.server.yaml").read_text()
+        self.assertNotIn("no_foreground_wait", server)
+        self.assertNotRegex(server, r"(?m)^policies:")
 
     def test_every_server_unit_puts_policy_modules_on_pythonpath(self) -> None:
         for unit in ("systemd/omnigent-server.service", "systemd/desktop/omnigent-host.service"):

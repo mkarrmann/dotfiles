@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import plistlib
 import shutil
 import subprocess
 import tempfile
@@ -248,7 +249,7 @@ class InitProfileTest(ProfileFixture):
                 ):
                     self.assertTrue(any(line.startswith(helper + " ") for line in calls), calls)
                 # Omnigent config is universal, but the hub infrastructure is not.
-                universal = ("omnigent-desktop-ensure ", "omnigent-desktop-app-ensure ", "omnigent-config-ensure ", "omnigent-agents-ensure ")
+                universal = ("omnigent-desktop-ensure ", "omnigent-desktop-app-ensure ", "omnigent-config-ensure ", "omnigent-agents-ensure ", "omnigent-watcher ", "uv sync --frozen --all-groups ")
                 forbidden = ("omnigent-", "bootstrap-plugins ", "systemctl ", "launchctl ", "uv ", "curl ", "git ")
                 self.assertFalse(any(line.startswith(forbidden) for line in calls if not line.startswith(universal)), calls)
                 self.assertEqual(
@@ -260,10 +261,24 @@ class InitProfileTest(ProfileFixture):
                 install = next(index for index, line in enumerate(calls) if line.startswith("omnigent-desktop-ensure "))
                 config = next(index for index, line in enumerate(calls) if line.startswith("omnigent-config-ensure "))
                 agents = next(index for index, line in enumerate(calls) if line.startswith("omnigent-agents-ensure "))
+                watcher = next(index for index, line in enumerate(calls) if line.startswith("omnigent-watcher "))
+                self.assertLess(watcher, install, calls)
+                self.assertEqual(sum(line.startswith("uv sync --frozen --all-groups ") for line in calls), 1, calls)
                 self.assertLess(install, config, calls)
                 self.assertLess(config, agents, calls)
                 self.assertTrue(all("profile=desktop" in line for line in calls), calls)
                 self.assertTrue(all(line.endswith(f"dotfiles={self.dotfiles}") for line in calls), calls)
+
+    def test_watcher_schema_is_bootstrapped_only_on_work_hub_candidates(self):
+        for candidate in (False, True):
+            with self.subTest(candidate=candidate):
+                self.env["DOTFILES_PROFILE"] = "work"
+                self.log.write_text("")
+                self.stub(self.dotfiles / "bin/omnigent-server-url", f"exit {0 if candidate else 1}")
+                self.assert_success(self.run_script(self.script))
+                calls = self.calls()
+                self.assertEqual(any(line.startswith("omnigent-watcher ") for line in calls), candidate, calls)
+                self.assertEqual(sum(line.startswith("uv sync --frozen --all-groups ") for line in calls), 2, calls)
 
     def test_work_discovers_routing_before_dependents(self):
         self.env["DOTFILES_PROFILE"] = "work"
@@ -286,6 +301,8 @@ class InitProfileTest(ProfileFixture):
         self.assertTrue(any(line.startswith("omnigent-hub discover ") for line in calls), calls)
         forbidden = ("omnigent-dvsc-ensure ", "omnigent-agents-ensure ", "omnigent-google-chat-ensure ", "omnigent-onboard-check ", "omnigent-hub reconcile-services ")
         self.assertFalse(any(line.startswith(forbidden) for line in calls), calls)
+        self.assertFalse(any(line.startswith("omnigent-watcher ") for line in calls), calls)
+        self.assertEqual(sum(line.startswith("uv sync --frozen --all-groups ") for line in calls), 2, calls)
 
     def test_failed_discovery_still_provisions_declared_editor_sessions(self):
         self.env["DOTFILES_PROFILE"] = "work"
@@ -314,8 +331,29 @@ class InitProfileTest(ProfileFixture):
             self.assertTrue(any(line.startswith(helper + " ") for line in calls), calls)
         forbidden = ("systemctl ", "omnigent-hub discover ", "omnigent-hub cache-routing ", "omnigent-onboard-check ", "aws-agent-toolkit-ensure ")
         self.assertFalse(any(line.startswith(forbidden) for line in calls), calls)
+        self.assertFalse(any(line.startswith("omnigent-watcher ") for line in calls), calls)
+        self.assertEqual(sum(line.startswith("uv sync --frozen --all-groups ") for line in calls), 2, calls)
         self.assertTrue(any(line.startswith("gh-ensure ") for line in calls), calls)
         self.assertTrue(all(line.endswith(f"dotfiles={self.dotfiles}") for line in calls), calls)
+
+    def test_work_mac_retires_only_the_managed_desktop_watch_job(self):
+        self.env["TEST_PLATFORM"] = "Darwin"
+        self.env["DOTFILES_PROFILE"] = "work"
+        watcher = self.home / "Library/LaunchAgents/com.mkarrmann.omnigent-watcher.plist"
+        watcher.parent.mkdir(parents=True)
+        watcher.write_bytes(plistlib.dumps({
+            "ProgramArguments": [str(self.dotfiles / "services/omnigent-watcher/.venv/bin/omnigent-watcher")],
+        }))
+        self.assert_success(self.run_script(self.script))
+        self.assertFalse(watcher.exists())
+        self.assertTrue(any(line.startswith("launchctl bootout ") and "com.mkarrmann.omnigent-watcher" in line for line in self.calls()))
+
+        foreign = plistlib.dumps({"Label": "com.mkarrmann.omnigent-watcher", "ProgramArguments": ["/custom/watch"]})
+        watcher.write_bytes(foreign)
+        self.log.write_text("")
+        self.assert_success(self.run_script(self.script))
+        self.assertEqual(watcher.read_bytes(), foreign)
+        self.assertFalse(any("com.mkarrmann.omnigent-watcher" in line for line in self.calls()))
 
 
 class SyncProfileTest(ProfileFixture):
@@ -337,6 +375,7 @@ class SyncProfileTest(ProfileFixture):
             "sketchybar/sketchybarrc", "orchest_plugins.json",
             "systemd/omnigent-host.service", "systemd/omnigent-hub-reconcile.timer",
             "systemd/desktop/omnigent-host.service",
+            "systemd/omnigent-watcher.service", "systemd/desktop/omnigent-watcher.service",
             "omnigent_config/omnigent-desktop-electron.desktop",
             "launchd/com.mkarrmann.omnigent-host.plist",
             "launchd/com.mkarrmann.omnigent-tls.plist",
@@ -386,7 +425,16 @@ class SyncProfileTest(ProfileFixture):
                         (self.home / ".config/systemd/user/omnigent-host.service").resolve(),
                         self.dotfiles / "systemd/desktop/omnigent-host.service",
                     )
-                self.assertFalse((self.home / "Library/LaunchAgents").exists())
+                    self.assertEqual(
+                        (self.home / ".config/systemd/user/omnigent-watcher.service").resolve(),
+                        self.dotfiles / "systemd/desktop/omnigent-watcher.service",
+                    )
+                    self.assertFalse((self.home / "Library/LaunchAgents").exists())
+                else:
+                    self.assertEqual(
+                        [path.name for path in (self.home / "Library/LaunchAgents").iterdir()],
+                        ["com.mkarrmann.omnigent-watcher.plist"],
+                    )
                 self.assertFalse((self.home / ".config/environment.d/omnigent.conf").exists())
                 self.assertFalse((self.home / ".hgrc").exists())
                 settings = json.loads(self.settings.read_text())
@@ -395,15 +443,18 @@ class SyncProfileTest(ProfileFixture):
                 self.assertEqual(settings["env"]["PERSONAL_SETTING"], "keep")
                 self.assertEqual(settings["statusLine"]["command"], "~/.claude/statusline.sh")
 
-    def test_work_sync_restores_host_unit_after_desktop_profile(self):
+    def test_work_sync_restores_host_and_watcher_units_after_desktop_profile(self):
         self.env["DOTFILES_PROFILE"] = "desktop"
         self.assert_success(self.run_script(self.script))
         host_unit = self.home / ".config/systemd/user/omnigent-host.service"
         self.assertEqual(host_unit.resolve(), self.dotfiles / "systemd/desktop/omnigent-host.service")
+        watcher_unit = self.home / ".config/systemd/user/omnigent-watcher.service"
+        self.assertEqual(watcher_unit.resolve(), self.dotfiles / "systemd/desktop/omnigent-watcher.service")
         self.env["DOTFILES_PROFILE"] = "work"
         result = self.run_script(self.script)
         self.assert_success(result)
         self.assertEqual(host_unit.resolve(), self.dotfiles / "systemd/omnigent-host.service")
+        self.assertEqual(watcher_unit.resolve(), self.dotfiles / "systemd/omnigent-watcher.service")
         self.assertNotIn("SHADOWED", result.stdout)
 
     def test_work_sync_keeps_internal_services_and_settings(self):
@@ -437,6 +488,18 @@ class SyncProfileTest(ProfileFixture):
         self.assertFalse((self.home / ".config/environment.d/omnigent.conf").exists())
         settings = json.loads(self.settings.read_text())
         self.assertTrue(settings["enabledPlugins"]["meta-lsp@claude-templates"])
+
+    def test_work_mac_sync_does_not_retire_the_staged_desktop_watch_job(self):
+        self.env["TEST_PLATFORM"] = "Darwin"
+        self.env["DOTFILES_PROFILE"] = "desktop"
+        self.assert_success(self.run_script(self.script))
+        watcher = self.home / "Library/LaunchAgents/com.mkarrmann.omnigent-watcher.plist"
+        self.assertTrue(watcher.is_file())
+        self.env["DOTFILES_PROFILE"] = "work"
+        self.log.write_text("")
+        self.assert_success(self.run_script(self.script))
+        self.assertTrue(watcher.exists())
+        self.assertFalse(any("com.mkarrmann.omnigent-watcher" in line for line in self.calls()))
 
 
 if __name__ == "__main__":

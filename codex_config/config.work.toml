@@ -1,3 +1,1 @@
-# Native work sessions report Phabricator diffs to the Omnigent watcher.
-[mcp_servers.watch]
-command = "omnigent-watch-mcp"
+# Work-only Codex defaults. Portable MCPs are managed by agent_config/sync-mcps.

@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -27,7 +28,7 @@ class CodexConfigTest(unittest.TestCase):
             '[features]\nshared_flag = true\n'
         )
         (self.config_dir / 'config.work.toml').write_text(
-            '[mcp_servers.watch]\ncommand = "watch"\nargs = ["--native"]\n'
+            '# Work-only defaults.\n'
         )
         self.mcps = self.dotfiles / "agent_config/plugins/custom-mcps/mcps"
         self.mcps.mkdir(parents=True)
@@ -35,8 +36,9 @@ class CodexConfigTest(unittest.TestCase):
             '{"mcpServers": {"scuba": {"command": "~/bin/scuba-mcp-launcher"},'
             '"quoted.server": {"command": "managed"}}}'
         )
-        (self.mcps / 'diff-watch.json').write_text(
-            '{"agents": ["claude"], "mcpServers": {"watch": {"command": "watch"}}}'
+        shutil.copyfile(
+            ROOT / "agent_config/plugins/custom-mcps/mcps/watch.json",
+            self.mcps / "watch.json",
         )
         self.codex_home = self.home / ".codex"
         self.codex_home.mkdir()
@@ -45,6 +47,11 @@ class CodexConfigTest(unittest.TestCase):
         self.env = dict(os.environ, HOME=str(self.home), CODEX_HOME=str(self.codex_home),
                         DOTFILES_PROFILE="work",
                         AGENT_CONFIG_DIR=str(self.dotfiles / "agent_config"))
+        for name in ("OPENCODE_CONFIG_DIR", "XDG_CONFIG_HOME"):
+            self.env.pop(name, None)
+
+    def watcher_spec(self):
+        return {"command": str(self.home / "dotfiles/bin/omnigent-watch-mcp")}
 
     def run_sync(self, generate=True, success=True):
         command = [sys.executable, str(ROOT / "agent_config/sync-mcps"), "codex"]
@@ -77,7 +84,7 @@ class CodexConfigTest(unittest.TestCase):
         self.assertFalse(data["mcp_servers"]["scuba"]["enabled"])
         self.assertEqual(data["mcp_servers"]["quoted.server"]["command"], "local-server")
 
-    def test_source_declared_server_drops_a_key_the_source_removed(self):
+    def test_watcher_sync_drops_obsolete_native_arguments_and_environment(self):
         """A recursive merge cannot express a removal.
 
         watch stopped taking ``--native-codex`` and CODEX_HOME, but both
@@ -85,16 +92,26 @@ class CodexConfigTest(unittest.TestCase):
         had started rejecting them, so it exited before serving a single tool.
         The source table is authoritative for the servers it declares.
         """
+        for generate in (True, False):
+            with self.subTest(generate=generate):
+                self.path.write_text(
+                    '[mcp_servers.watch]\ncommand = "watch"\n'
+                    'args = ["--native"]\nenv_vars = ["CODEX_HOME"]\n'
+                )
+                self.run_sync(generate=generate)
+                data = config.read_config(self.path)
+                self.assertEqual(data["mcp_servers"]["watch"], self.watcher_spec())
+
+    def test_work_template_server_drops_a_key_the_source_removed(self):
+        (self.config_dir / 'config.work.toml').write_text(
+            '[mcp_servers.native]\ncommand = "native"\n'
+        )
         self.path.write_text(
-            '[mcp_servers.watch]\ncommand = "watch"\n'
-            'args = ["--native"]\nenv_vars = ["CODEX_HOME"]\n'
+            '[mcp_servers.native]\ncommand = "old"\nargs = ["obsolete"]\n'
         )
         self.run_sync()
-        data = config.read_config(self.path)
-        self.assertEqual(
-            data["mcp_servers"]["watch"],
-            {"command": "watch", "args": ["--native"]},
-        )
+        self.assertEqual(config.read_config(self.path)["mcp_servers"]["native"],
+                         {"command": "native"})
 
     def test_an_unmanaged_server_in_the_installed_config_is_left_alone(self):
         """Only servers the source declares are replaced; a hand-added one is
@@ -226,7 +243,7 @@ name = "second"
         self.assertIn('personal', servers)
         self.assertNotIn('diff_watch', config.read_config(self.path)['mcp_servers'])
 
-    def test_desktop_retracts_work_mcps_and_preserves_personal_config(self):
+    def test_profiles_keep_watch_across_agents_and_preserve_personal_config(self):
         self.local.write_text('model = "personal"\n[mcp_servers.personal]\ncommand = "personal"\n')
         self.run_sync()
         claude = self.home / '.claude.json'
@@ -248,20 +265,58 @@ name = "second"
                                 env=self.env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         codex = config.read_config(self.path)
-        self.assertEqual(codex['mcp_servers'], {'personal': {'command': 'personal'}})
+        self.assertEqual(codex['mcp_servers'], {
+            'personal': {'command': 'personal'}, 'watch': self.watcher_spec()})
         self.assertEqual(codex['model'], 'personal')
         self.assertEqual(json.loads(claude.read_text()),
-                         {'mcpServers': {'personal': {'command': 'personal'}}, 'other': 42})
+                         {'mcpServers': {'personal': {'command': 'personal'},
+                                         'watch': {'type': 'stdio', **self.watcher_spec()}},
+                          'other': 42})
         self.assertNotIn('mcpServers', json.loads(stale.read_text()))
         meta = json.loads(metacode.read_text())
-        self.assertEqual(meta['mcp'], {'personal': {'type': 'local'}})
+        self.assertEqual(meta['mcp'], {
+            'personal': {'type': 'local'},
+            'watch': {'type': 'local', 'command': [self.watcher_spec()['command']]}})
         self.assertEqual(meta['skills']['paths'], ['/personal/skills'])
         self.env['DOTFILES_PROFILE'] = 'work'
         self.run_sync()
+        result = subprocess.run([sys.executable, str(ROOT / 'agent_config/sync-mcps'), 'all'],
+                                env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
         servers = config.read_config(self.path)['mcp_servers']
-        self.assertIn('watch', servers)
+        self.assertEqual(servers['watch'], self.watcher_spec())
         self.assertIn('scuba', servers)
         self.assertIn('personal', servers)
+        self.assertEqual(json.loads(claude.read_text())['mcpServers']['watch'],
+                         {'type': 'stdio', **self.watcher_spec()})
+        self.assertEqual(json.loads(metacode.read_text())['mcp']['watch'],
+                         {'type': 'local', 'command': [self.watcher_spec()['command']]})
+
+    def test_metacode_uses_config_directory_override_before_xdg(self):
+        default = self.home / '.config/opencode/opencode.json'
+        default.parent.mkdir(parents=True)
+        default.write_text('{"untouched": true}\n')
+        for variable, directory in (
+            ('XDG_CONFIG_HOME', self.home / 'xdg'),
+            ('OPENCODE_CONFIG_DIR', self.home / 'custom-opencode'),
+        ):
+            with self.subTest(variable=variable):
+                self.env[variable] = str(directory)
+                path = directory / ('opencode/opencode.json' if variable == 'XDG_CONFIG_HOME'
+                                    else 'opencode.json')
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('{"other": 42}\n')
+                self.env['DOTFILES_PROFILE'] = 'desktop'
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / 'agent_config/sync-mcps'), 'metacode'],
+                    env=self.env, capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                data = json.loads(path.read_text())
+                self.assertEqual(data['mcp']['watch'],
+                                 {'type': 'local', 'command': [self.watcher_spec()['command']]})
+                self.assertEqual(data['other'], 42)
+                self.assertEqual(json.loads(default.read_text()), {'untouched': True})
 
 
 if __name__ == "__main__":

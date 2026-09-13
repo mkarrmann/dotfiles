@@ -163,32 +163,26 @@ async def _validate_session(session_id: str) -> None:
 
 
 def _strings(value: object) -> list[str]:
-    """Coerce a JSON array from the hub into a list of strings."""
+    """Coerce a JSON array from the server into a list of strings."""
     return [str(item) for item in value] if isinstance(value, list) else []
 
 
 async def _call(method: str, path: str, **kwargs: object) -> dict[str, object]:
-    """Call the watcher API on the hub, and translate its failures honestly.
-
-    Every failure mode here used to be a confusing local one. A client with no
-    route to the hub said its database was at the wrong schema; a hub without
-    the router mounted said nothing at all. Both now name what is actually
-    wrong and what would fix it.
-    """
+    """Call the session server's watcher API and identify missing setup."""
     url = f"{_server_url().rstrip('/')}{path}"
     try:
         async with httpx.AsyncClient(timeout=180.0, trust_env=False) as client:
             response = await client.request(method, url, **kwargs)  # type: ignore[arg-type]
     except httpx.HTTPError as exc:
         raise ValueError(
-            f"could not reach the Omnigent hub at {_server_url()} ({exc}). Watching runs on "
-            "the hub; this host reaches it through the omnigent-client-proxy forward."
+            f"could not reach the Omnigent server at {_server_url()} ({exc}). Watching runs "
+            "beside that server: locally on desktop, or on the active work hub."
         ) from exc
     if response.status_code == 404:
         raise ValueError(
-            "the hub's Omnigent server has no watcher API. It is mounted through the "
-            "debug_router_modules key in omnigent_config/config.hub.yaml and loaded at "
-            "startup, so the hub needs a config sync and a server restart."
+            "the Omnigent server has no watcher API. It is mounted through the "
+            "debug_router_modules key in omnigent_config/config.server.yaml and loaded at "
+            "startup. The server needs watcher setup and a restart to load that configuration."
         )
     if response.status_code >= 400:
         detail: object = response.text
@@ -287,11 +281,11 @@ async def subscribe(
 ) -> str:
     """Wake a session when the output of a command changes.
 
-    Use for anything that has no purpose-built watcher: a JustKnob rollout, a
-    config value, a job's status. Prefer ``diff_subscribe`` for diffs.
+    Use for anything that has no purpose-built watcher: a build, job, file,
+    deployment, or config value. Prefer ``diff_subscribe`` for Phabricator diffs.
 
-    The command runs on an interval in a background service on the hub, not in
-    this session, so waiting costs no model turns. Its output is hashed; the
+    The command runs on an interval beside the Omnigent server, not in this
+    session, so waiting costs no model turns. Its output is hashed; the
     session is woken only when the hash changes. Pass ``extract`` -- a regular
     expression, optionally with one capture group -- when the output carries a
     timestamp or request id that would otherwise change on every poll.
@@ -305,8 +299,9 @@ async def subscribe(
     bounds each run. Raise it for a slow probe -- a `meta`/`jf` round trip, or a
     command that asks a model to judge whether a condition has been met.
 
-    The command runs on the hub, not on this machine. A path or binary that
-    only exists on your devserver will not resolve there.
+    On desktop the command runs locally. On work machines it runs on the
+    active hub. Use absolute paths available there. After subscribing, finish
+    the turn or continue other work; the wake waits until the session is idle.
     """
     import shlex
 
@@ -333,7 +328,7 @@ async def subscribe(
         raise ValueError(f"could not start watching {'; '.join(_strings(result.get('failures')))}")
     return (
         f"Watching {subject}: {shlex.join(spec.argv)} every {spec.interval_seconds:g}s "
-        f"on the hub. Session {session_id} will be woken when its output changes."
+        f"on the Omnigent server. Session {session_id} will be woken when its output changes."
     )
 
 
@@ -360,7 +355,7 @@ async def status(session_id: SessionId) -> str:
 
     The command is shown, not just the subject: it is stored and re-run on an
     interval long after the turn that registered it, so it has to be auditable
-    from here rather than only by reading the hub's database.
+    from here rather than only by reading the server's database.
     """
     from .watch_api import GENERIC_SOURCES
 

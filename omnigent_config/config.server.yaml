@@ -1,0 +1,18 @@
+# Omnigent extensions installed beside each server.
+#
+# Merged into ~/.omnigent/config.yaml by bin/omnigent-config-ensure, after
+# config.shared.yaml, on desktops and work hub candidates. Work clients
+# connect to the hub's router and do not need a local server extension.
+
+# Out-of-tree HTTP routers, mounted by dotted module path at startup.
+#
+# The watcher's tools run wherever the agent runs, but watching happens on the
+# server: the worker, its database, and the sessions it wakes are all here.
+# At work the hub gate keeps the worker on the active owner. The tools used
+# to open the database by path, which on any other devserver meant an empty
+# file no sidecar ever polls -- a watch that was accepted and then never fired.
+# Mounting the watcher's API here puts it behind the same 127.0.0.1:6767
+# forward the tools already use, so no second tunnel needs health-checking.
+# Both server units put services/omnigent-watcher/src on PYTHONPATH.
+debug_router_modules:
+  - omnigent_watcher.http_api

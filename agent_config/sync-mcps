@@ -15,7 +15,7 @@ Devmate inherits from Claude via DOTSYNC_DEVSERVER — no separate config.
 For Codex we replace managed tables by name and then merge local MCP
 overrides. --generate-config also renders the shared Codex template and
 migrates the retired dotfiles config symlink, preserving local settings.
-Desktop runs retract the managed work MCPs while retaining personal servers.
+Desktop runs retain portable MCPs and retract work MCPs, preserving personal servers.
 
 Usage: sync-mcps [claude|codex|metacode|all]   (default: all)
        sync-mcps codex --generate-config
@@ -44,17 +44,17 @@ RETIRED = frozenset({"diff_watch"})
 
 
 def load_mcps() -> dict:
-    """Map server name -> spec, carrying a private ``_agents`` allowlist.
+    """Map server name -> spec, carrying private agent and profile allowlists.
 
     An MCP file may set a top-level ``"agents": [...]`` to restrict itself to
-    some agents. For example, native Codex gets a different watch
-    invocation from config.work.toml, so its definition here is limited
-    to the other agents.
+    some agents. Definitions default to the work profile; portable servers
+    opt into both profiles with ``"profiles": ["desktop", "work"]``.
     """
     out = {}
     for p in sorted(MCP_DIR.glob("*.json")):
         data = json.loads(p.read_text())
         agents = data.get("agents")
+        profiles = data.get("profiles", ["work"])
         for name, spec in data.get("mcpServers", {}).items():
             spec = dict(spec)
             # These files are source; the configs they generate are per
@@ -77,8 +77,18 @@ def load_mcps() -> dict:
                 spec.pop("env", None)
             if agents is not None:
                 spec["_agents"] = list(agents)
+            spec["_profiles"] = list(profiles)
             out[name] = spec
     return out
+
+
+def for_profile(mcps: dict, profile: str) -> dict:
+    """Select the managed servers enabled on this machine."""
+    return {
+        name: {k: v for k, v in spec.items() if k != "_profiles"}
+        for name, spec in mcps.items()
+        if profile in spec["_profiles"]
+    }
 
 
 def for_agent(mcps: dict, agent: str) -> dict:
@@ -146,7 +156,9 @@ def sync_claude(mcps: dict, retired=()) -> None:
 
 
 def sync_metacode(mcps: dict, retired=(), *, work: bool = True) -> None:
-    path = HOME / ".config" / "opencode" / "opencode.json"
+    xdg_config = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
+    config_dir = Path(os.environ.get("OPENCODE_CONFIG_DIR") or xdg_config / "opencode")
+    path = config_dir / "opencode.json"
     if not path.exists():
         print(f"skip metacode: {path} not found")
         return
@@ -230,14 +242,15 @@ def main() -> int:
     profile_helper = Path(__file__).resolve().parents[1] / "bin/dotfiles-profile"
     profile = subprocess.check_output([str(profile_helper)], text=True).strip()
     work = profile == "work"
-    retired = RETIRED | (set() if work else set(mcps))
+    selected = for_profile(mcps, profile)
+    retired = RETIRED | (set(mcps) - set(selected))
     if target in ("all", "claude"):
-        sync_claude(for_agent(mcps, "claude") if work else {}, retired)
+        sync_claude(for_agent(selected, "claude"), retired)
     if target in ("all", "codex"):
-        sync_codex(for_agent(mcps, "codex") if work else {}, generate=generate,
+        sync_codex(for_agent(selected, "codex"), generate=generate,
                    work=work, retired=retired)
     if target in ("all", "metacode"):
-        sync_metacode(for_agent(mcps, "metacode") if work else {}, retired, work=work)
+        sync_metacode(for_agent(selected, "metacode"), retired, work=work)
     return 0
 
 
