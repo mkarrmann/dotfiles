@@ -1,0 +1,376 @@
+#!/usr/bin/env python3
+"""Route nvim-show to the Neovim that shares a sway workspace with the caller.
+
+The relationship that matters on this desktop is spatial: every managed
+workspace holds one terminal (running Neovim) and one Omnigent window, and an
+agent's session is "in" whichever Omnigent window is showing it. So the editor
+to use is the one beside that window, whatever directory either of them is in.
+
+Chain, each link verified against Omnigent desktop 0.13.0 / sway 1.11:
+
+  OMNIGENT_RUNNER_PRIMARY_SESSION_ID      the runner exports it into every tool call
+    -> Omnigent window showing /c/<id>    Chromium's debug endpoint (`/json`) lists
+                                          each window's live URL, and follows the
+                                          web app's in-page navigation
+    -> sway container                     by window title: sway sees the X11/Wayland
+                                          title, which is the page's document.title
+    -> the terminal on that workspace     any view there whose process tree holds a
+                                          Neovim with a default server socket
+    -> its socket                         printed for nvim-show, plus a focus command
+
+The debug endpoint exists only because the launcher override passes
+--remote-debugging-port=0 (see omnigent_config/omnigent-desktop-electron.desktop);
+Chromium then writes the chosen port to <user data>/DevToolsActivePort.
+
+Titles are matched exactly first. If that is ambiguous (two windows with the same
+title, or the title changed between the two reads) the target's document.title is
+set to a nonce over the debug WebSocket, located in sway, and restored.
+
+Contract with bin/nvim-show: key=value lines on stdout (server, label, focus);
+exit 0 resolved, 1 no opinion (reason on stderr), 2 misuse. Environment:
+NVIM_SHOW_HINT/NVIM_SHOW_AGENT are passed but not needed here.
+"""
+
+from __future__ import annotations
+
+import base64
+import glob
+import json
+import os
+import shlex
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+IDENTITY = os.environ.get("NVIM_SHOW_OMNIGENT_IDENTITY", "omnigent").lower()
+DATA_DIR = os.environ.get(
+    "OMNIGENT_DESKTOP_USER_DATA_DIR",
+    os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "Omnigent"),
+)
+HTTP_TIMEOUT = 2.0
+SWAY_TIMEOUT = 5
+
+
+def give_up(reason: str) -> None:
+    print(f"nvim-show-resolver: {reason}", file=sys.stderr)
+    sys.exit(1)
+
+
+# --- sway --------------------------------------------------------------------
+
+
+def sway_socket() -> str:
+    sock = os.environ.get("SWAYSOCK")
+    if sock and os.path.exists(sock):
+        return sock
+    # The runner that launches agents is a systemd user service, so it does not
+    # inherit sway's environment. sway names its socket by pid under the runtime
+    # dir; a stale one from a previous session fails the get_tree probe below.
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    candidates = sorted(glob.glob(os.path.join(runtime, "sway-ipc.*.sock")), key=os.path.getmtime, reverse=True)
+    for candidate in candidates:
+        try:
+            swaymsg(candidate, "-t", "get_version")
+            return candidate
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            continue
+    give_up("no reachable sway socket (SWAYSOCK unset and nothing live under %s)" % runtime)
+    raise AssertionError
+
+
+def swaymsg(sock: str, *args: str) -> str:
+    return subprocess.run(
+        ["swaymsg", "-s", sock, *args],
+        check=True, capture_output=True, text=True, timeout=SWAY_TIMEOUT,
+    ).stdout
+
+
+def views(tree: dict) -> list[dict]:
+    """Every view (node with a pid) with its workspace name attached."""
+    found: list[dict] = []
+
+    def walk(node: dict, workspace: str | None) -> None:
+        if node.get("type") == "workspace":
+            workspace = node.get("name")
+        if node.get("pid") is not None:
+            entry = dict(node)
+            entry["workspace"] = workspace
+            found.append(entry)
+        for child in node.get("nodes", []) + node.get("floating_nodes", []):
+            walk(child, workspace)
+
+    walk(tree, None)
+    return found
+
+
+def identity_of(view: dict) -> str:
+    props = view.get("window_properties") or {}
+    return (view.get("app_id") or props.get("class") or "").lower()
+
+
+def focused_workspace(tree: dict) -> str | None:
+    for view in views(tree):
+        if view.get("focused"):
+            return view["workspace"]
+    return None
+
+
+# --- Omnigent's debug endpoint ------------------------------------------------
+
+
+def debug_port() -> int:
+    path = os.path.join(DATA_DIR, "DevToolsActivePort")
+    try:
+        with open(path) as handle:
+            return int(handle.readline().strip())
+    except (OSError, ValueError):
+        give_up(
+            f"{path} is missing: Omnigent desktop is not running with "
+            "--remote-debugging-port=0 (the launcher override adds it; restart the app)"
+        )
+        raise AssertionError
+
+
+def pages(port: int) -> list[dict]:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=HTTP_TIMEOUT) as response:
+            targets = json.load(response)
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        give_up(f"Omnigent's debug endpoint on port {port} did not answer ({exc}); restart the app")
+        raise AssertionError
+    return [t for t in targets if t.get("type") == "page" and t.get("url", "").startswith("http")]
+
+
+def session_path(url: str) -> str:
+    return urllib.parse.urlsplit(url).path.rstrip("/")
+
+
+class DevTools:
+    """One Chrome DevTools Protocol call over a page's WebSocket, stdlib only."""
+
+    def __init__(self, ws_url: str) -> None:
+        parts = urllib.parse.urlsplit(ws_url)
+        self.sock = socket.create_connection((parts.hostname, parts.port), timeout=HTTP_TIMEOUT)
+        key = base64.b64encode(os.urandom(16)).decode()
+        request = (
+            f"GET {parts.path} HTTP/1.1\r\nHost: {parts.netloc}\r\nUpgrade: websocket\r\n"
+            f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        )
+        self.sock.sendall(request.encode())
+        head = b""
+        while b"\r\n\r\n" not in head:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise OSError("WebSocket handshake closed")
+            head += chunk
+        if not head.startswith(b"HTTP/1.1 101"):
+            raise OSError(f"WebSocket handshake refused: {head.split(b'\\r\\n', 1)[0]!r}")
+        self.buffer = head.split(b"\r\n\r\n", 1)[1]
+
+    def close(self) -> None:
+        self.sock.close()
+
+    def _read(self, size: int) -> bytes:
+        while len(self.buffer) < size:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise OSError("WebSocket closed")
+            self.buffer += chunk
+        data, self.buffer = self.buffer[:size], self.buffer[size:]
+        return data
+
+    def _frame(self) -> tuple[int, bytes]:
+        first, second = self._read(2)
+        opcode, length = first & 0x0F, second & 0x7F
+        if length == 126:
+            length = int.from_bytes(self._read(2), "big")
+        elif length == 127:
+            length = int.from_bytes(self._read(8), "big")
+        mask = self._read(4) if second & 0x80 else b""
+        payload = self._read(length)
+        if mask:
+            payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        return opcode, payload
+
+    def call(self, method: str, params: dict) -> dict:
+        body = json.dumps({"id": 1, "method": method, "params": params}).encode()
+        mask = os.urandom(4)
+        header = bytes([0x81])
+        if len(body) < 126:
+            header += bytes([0x80 | len(body)])
+        elif len(body) < 65536:
+            header += bytes([0x80 | 126]) + len(body).to_bytes(2, "big")
+        else:
+            header += bytes([0x80 | 127]) + len(body).to_bytes(8, "big")
+        self.sock.sendall(header + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(body)))
+        while True:
+            opcode, payload = self._frame()
+            if opcode == 0x8:
+                raise OSError("WebSocket closed by peer")
+            if opcode != 0x1:
+                continue
+            message = json.loads(payload)
+            if message.get("id") == 1:
+                if "error" in message:
+                    raise OSError(f"{method}: {message['error']}")
+                return message.get("result", {})
+
+    def evaluate(self, expression: str):
+        result = self.call("Runtime.evaluate", {"expression": expression, "returnByValue": True})
+        return (result.get("result") or {}).get("value")
+
+
+# --- matching -----------------------------------------------------------------
+
+
+def omnigent_views(tree: dict) -> list[dict]:
+    return [v for v in views(tree) if identity_of(v) == IDENTITY]
+
+
+def match_by_title(tree: dict, title: str) -> list[dict]:
+    return [v for v in omnigent_views(tree) if v.get("name") == title]
+
+
+def match_by_nonce(sock: str, page: dict) -> dict | None:
+    """Stamp the page's title with a nonce, find it in sway, put the title back."""
+    ws_url = page.get("webSocketDebuggerUrl")
+    if not ws_url:
+        return None
+    nonce = f"nvim-show:{os.getpid()}:{time.time_ns()}"
+    try:
+        devtools = DevTools(ws_url)
+    except OSError as exc:
+        print(f"nvim-show-resolver: debug WebSocket unavailable ({exc})", file=sys.stderr)
+        return None
+    try:
+        original = devtools.evaluate("document.title")
+        devtools.evaluate(f"document.title = {json.dumps(nonce)}; document.title")
+        found = None
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            hits = match_by_title(json.loads(swaymsg(sock, "-t", "get_tree")), nonce)
+            if hits:
+                found = hits[0]
+                break
+            time.sleep(0.05)
+        devtools.evaluate(f"document.title = {json.dumps(original or '')}; document.title")
+        return found
+    except OSError as exc:
+        print(f"nvim-show-resolver: nonce probe failed ({exc})", file=sys.stderr)
+        return None
+    finally:
+        devtools.close()
+
+
+def descendants(root: int) -> list[int]:
+    children: dict[int, list[int]] = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat") as handle:
+                stat = handle.read()
+        except OSError:
+            continue
+        # comm may contain spaces or parens; the fields of interest follow it.
+        ppid = int(stat[stat.rindex(")") + 2:].split()[1])
+        children.setdefault(ppid, []).append(int(entry))
+    order: list[int] = []
+    stack = [root]
+    while stack:
+        pid = stack.pop()
+        order.append(pid)
+        stack.extend(reversed(children.get(pid, [])))
+    return order
+
+
+def runtime_dirs(pid: int) -> list[str]:
+    dirs = []
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as handle:
+            for item in handle.read().split(b"\0"):
+                if item.startswith(b"XDG_RUNTIME_DIR="):
+                    dirs.append(item.split(b"=", 1)[1].decode())
+    except OSError:
+        pass
+    for candidate in (os.environ.get("XDG_RUNTIME_DIR"), f"/run/user/{os.getuid()}"):
+        if candidate and candidate not in dirs:
+            dirs.append(candidate)
+    return dirs
+
+
+def nvim_sockets_under(pid: int) -> list[str]:
+    """Default server sockets ($XDG_RUNTIME_DIR/nvim.PID.0) of Neovims below pid."""
+    found = []
+    for child in descendants(pid):
+        for runtime in runtime_dirs(child):
+            candidate = os.path.join(runtime, f"nvim.{child}.0")
+            if os.path.exists(candidate) and candidate not in found:
+                found.append(candidate)
+    return found
+
+
+def server_live(address: str) -> bool:
+    try:
+        return subprocess.run(
+            ["nvim", "--server", address, "--remote-expr", "1"],
+            capture_output=True, timeout=SWAY_TIMEOUT,
+        ).returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def main() -> int:
+    if len(sys.argv) > 1:
+        print("usage: nvim-show-resolver (driven by nvim-show through the environment)", file=sys.stderr)
+        return 2
+    session_id = os.environ.get("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "")
+    if not session_id:
+        give_up("OMNIGENT_RUNNER_PRIMARY_SESSION_ID is not set: not running under an Omnigent session")
+
+    wanted = f"/c/{session_id}"
+    showing = [p for p in pages(debug_port()) if session_path(p.get("url", "")) == wanted]
+    if not showing:
+        give_up(f"session {session_id[:8]} is not open in any Omnigent window")
+
+    sock = sway_socket()
+    tree = json.loads(swaymsg(sock, "-t", "get_tree"))
+
+    # A session open in two windows sits on two workspaces; the one on the focused
+    # workspace is the one being looked at.
+    focused = focused_workspace(tree)
+    resolved: list[dict] = []
+    for page in showing:
+        hits = match_by_title(tree, page.get("title", ""))
+        if len(hits) != 1:
+            hit = match_by_nonce(sock, page)
+            hits = [hit] if hit else []
+            tree = json.loads(swaymsg(sock, "-t", "get_tree"))
+        resolved.extend(hits)
+    if not resolved:
+        give_up(f"session {session_id[:8]} is open in Omnigent but its window could not be found in sway")
+    window = next((v for v in resolved if v["workspace"] == focused), resolved[0])
+    workspace = window["workspace"]
+
+    for view in views(tree):
+        if view["workspace"] != workspace or view["id"] == window["id"]:
+            continue
+        for address in nvim_sockets_under(view["pid"]):
+            if not server_live(address):
+                continue
+            label = f"ws {workspace}: {view.get('app_id') or identity_of(view) or view['pid']}"
+            focus = f"swaymsg -s {shlex.quote(sock)} {shlex.quote(f'[con_id={view['id']}] focus')}"
+            print(f"server={address}")
+            print(f"label={label}")
+            print(f"focus={focus}")
+            return 0
+    give_up(f"no Neovim is running on workspace {workspace}, where session {session_id[:8]} is shown")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -17,7 +17,8 @@
 #   * Omnigent's update overlay must never satisfy a slot.
 #   * The Omnigent desktop entry carries --disable-features=WaylandFractionalScaleV1
 #     and --ozone-platform=x11; losing either means the GUI dies with SIGTRAP
-#     (on a fresh profile, or on the first parent resize, respectively).
+#     (on a fresh profile, or on the first parent resize, respectively). It also
+#     carries --remote-debugging-port=0, which nvim-show-resolver depends on.
 set -uo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -255,12 +256,13 @@ out=$(XDG_DATA_HOME="$TMP/missing" XDG_DATA_DIRS="$TMP/sys" desktop_entry_exec x
 check "falls back to the packaged entry" "/usr/bin/packaged" "$out"
 
 # The real entry must keep carrying both SIGTRAP workarounds (see the HACK note
-# in omnigent_config/omnigent-desktop-electron.desktop for when each can go).
+# in omnigent_config/omnigent-desktop-electron.desktop for when each can go) and
+# the debug port that bin-linux/nvim-show-resolver reads window URLs from.
 real=$(desktop_entry_exec omnigent-desktop-electron.desktop 2>/dev/null || true)
 if [[ -z "$real" ]]; then
   echo "  skip: Omnigent desktop entry not installed on this host"
 else
-  for flag in --disable-features=WaylandFractionalScaleV1 --ozone-platform=x11; do
+  for flag in --disable-features=WaylandFractionalScaleV1 --ozone-platform=x11 --remote-debugging-port=0; do
     if [[ "$real" == *"$flag"* ]]; then
       pass "the installed Omnigent entry keeps $flag"
     else

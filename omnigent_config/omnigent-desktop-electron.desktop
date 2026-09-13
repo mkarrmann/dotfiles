@@ -1,8 +1,9 @@
 [Desktop Entry]
 # HACK: overrides the package's launcher entry (same file id in
 # ~/.local/share/applications wins over /usr/share/applications). It is a copy
-# of /usr/share/applications/omnigent-desktop-electron.desktop with two flags
-# added to Exec. Because it shadows the package file entirely, any upstream
+# of /usr/share/applications/omnigent-desktop-electron.desktop with three flags
+# added to Exec: two crash workarounds (next paragraph) and
+# --remote-debugging-port=0 (last paragraph). Because it shadows the package file entirely, any upstream
 # change to Exec/Icon/MimeType is masked: re-diff against the package entry on
 # every bump of OMNIGENT_DESKTOP_APP_VERSION in desktop-app.env.
 #
@@ -70,9 +71,21 @@
 #     (ulimit -c 0; /opt/Omnigent/omnigent-desktop-electron)
 #   A window means the hack is obsolete; "Trace/breakpoint trap" means keep it.
 # Both tests are only meaningful while --ozone-platform=x11 is NOT passed.
-# Remove this file (and its link in sync.sh) once neither flag is needed.
+#
+# --remote-debugging-port=0 is not a workaround but a feature hook: it is how
+# bin-linux/nvim-show-resolver learns which Omnigent window is showing an
+# agent's session. Chromium picks a free loopback port (0), writes it to
+# ~/.config/Omnigent/DevToolsActivePort, and serves each window's live URL at
+# /json; the web app's in-page navigation keeps that URL current. Loopback only,
+# and Chromium refuses WebSocket clients with a browser Origin unless
+# --remote-allow-origins is also given, so web pages cannot reach it; any local
+# process can, which is the same trust the unauthenticated server on
+# 127.0.0.1:6767 already extends. Drop it if the Electron shell ever exposes
+# window-to-session state some other way (an X11 property, an IPC command).
+#
+# Remove this file (and its link in sync.sh) once none of the flags is needed.
 Name=Omnigent
-Exec=/opt/Omnigent/omnigent-desktop-electron --disable-features=WaylandFractionalScaleV1 --ozone-platform=x11 %U
+Exec=/opt/Omnigent/omnigent-desktop-electron --disable-features=WaylandFractionalScaleV1 --ozone-platform=x11 --remote-debugging-port=0 %U
 Terminal=false
 Type=Application
 Icon=omnigent-desktop-electron

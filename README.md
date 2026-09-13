@@ -197,6 +197,16 @@ Two Linux-specific constraints are load-bearing:
   `bin/nvim-show` itself only knows the `nvim-show-resolver` contract; the nvs
   session list stays the devserver equivalent. Covered end to end by
   `tests/test-nvim-show-resolver-e2e.sh` in a headless sway.
+- `nvim-show` routes to the editor beside the caller, not by directory:
+  `bin-linux/nvim-show-resolver` asks Omnigent's Chromium debug endpoint
+  (`--remote-debugging-port=0` in the launcher override, port read from
+  `~/.config/Omnigent/DevToolsActivePort`) which window is showing the agent's
+  session, finds that window in sway by title (a title nonce if titles collide),
+  and picks the Neovim running on the same workspace, found through the
+  terminal's process tree. `--focus` then brings that terminal tab forward.
+  `bin/nvim-show` itself only knows the `nvim-show-resolver` contract; the nvs
+  session list stays the devserver equivalent. Covered end to end by
+  `tests/test-nvim-show-resolver-e2e.sh` in a headless sway.
 - Additional Omnigent windows need Omnigent ≥ 0.13.0 and `xdotool`
   (`sudo apt install xdotool`). The app is single-instance, a deep link reuses
   an existing window, and a second launch only focuses one, so the
