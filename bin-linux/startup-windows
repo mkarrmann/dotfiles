@@ -251,16 +251,33 @@ current_term_app_ids() {
 
 # ── Window creation ──────────────────────────────────────────────────
 
-# Launch through sway's own `exec` so the process is detached from this script
-# and inherits the compositor's environment.
+# Launch detached from this script, argv passed through untouched.
+#
+# Not `swaymsg exec`. This script already runs in the compositor's
+# environment (sway execs it from the config and from the $mod+Shift+r
+# binding), so a direct launch inherits exactly what sway's exec would have
+# handed the child -- minus sway's command parser, which is the point. sway
+# splits a command on unquoted `;`/`,`, and its escape handling (argsep in
+# common/stringop.c, 1.11) does not consume the escape after an escaped
+# quote, so `\'\;` reads as a live separator: the terminal command was cut in
+# half exactly there, the remainder failed as a sway command, and zsh got a
+# `while` with no `done`. Handing the argv to setsid applies no quoting and
+# interprets none.
+#
+# Output stays on the inherited stderr so app logs reach the journal at
+# login; from a terminal it is silenced, as it was under sway's exec. The lock
+# marker must not be inherited: a reconciler started from inside a launched
+# terminal would otherwise believe it already holds the lock.
 launch() {
-  local quoted
-  quoted=$(printf '%q ' "$@")
   if [[ "$DRY_RUN" == true ]]; then
-    echo "  DRY-RUN launch: $quoted"
+    echo "  DRY-RUN launch: $(printf '%q ' "$@")"
     return 0
   fi
-  sway_cmd "exec $quoted"
+  if [[ -t 2 ]]; then
+    env -u SWAY_STARTUP_WINDOWS_LOCKED setsid -f -- "$@" </dev/null >/dev/null 2>&1
+  else
+    env -u SWAY_STARTUP_WINDOWS_LOCKED setsid -f -- "$@" </dev/null
+  fi
 }
 
 launch_desktop_entry() {
@@ -273,7 +290,9 @@ launch_desktop_entry() {
     echo "  DRY-RUN launch: $exec_line"
     return 0
   fi
-  sway_cmd "exec $exec_line"
+  # An Exec line is shell-quoted by the desktop entry spec, so it still needs
+  # one shell -- the one sway's exec used to supply.
+  launch sh -c "exec $exec_line"
 }
 
 create_term() {

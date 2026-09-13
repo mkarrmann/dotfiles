@@ -74,7 +74,7 @@ reset_windows() {
   pids=$(all_pids); [[ -n "$pids" ]] && kill $pids 2>/dev/null
   for i in $(seq 1 20); do [[ "$(window_count)" == 0 ]] && break; sleep 0.3; done
   pids=$(all_pids); [[ -n "$pids" ]] && kill -9 $pids 2>/dev/null
-  rm -f "$TMP/count."*
+  rm -f "$TMP/count."* "$TMP/alpha.ran"
 }
 
 cleanup() {
@@ -130,10 +130,18 @@ chmod +x "$TMP/bin/wtype"
 printf '[Desktop Entry]\nExec=%s %%U\nType=Application\n' "$TMP/bin/omnigent-stub" > "$TMP/data/applications/omnigent-desktop-electron.desktop"
 printf '[Desktop Entry]\nExec=%s %%U\nType=Application\n' "$TMP/bin/obsidian-stub"  > "$TMP/data/applications/obsidian.desktop"
 
+# The workspace-1 terminal command is hostile to every layer between the
+# table and zsh on purpose: `;` (sway's own command separator, which once cut
+# the real command in half), both quote kinds, a backslash, a non-ASCII
+# character. Truncated or re-quoted anywhere, zsh fails to parse it and the
+# marker is never written. The marker's content records whether the startup
+# lock's environment marker leaked into the launched process.
+HOSTILE_CMD="true 'a b' \"c;d\" \\; — ; echo \"\${SWAY_STARTUP_WINDOWS_LOCKED:-unset}\" > alpha.ran; sleep 600"
+
 layout_main() {
   cat > "$TMP/layout.sh" <<EOF
 WORKSPACES=(
-  "1|term|alpha|~|sleep 600"
+  $(printf '%q' "1|term|alpha|$TMP|$HOSTILE_CMD")
   "1|chrome"
   "1|omnigent"
   "2|term|beta|~|sleep 600"
@@ -224,6 +232,10 @@ check "workspace 1 is one tab group of 3" "3" "$(ws_tabbed 1)"
 check "workspace 2 is one tab group of 3" "3" "$(ws_tabbed 2)"
 check "dashboard holds the pane, claimed" "obsidian.stub[sw:9:obsidian.stub]" "$(ws_order 9)"
 check "dashboard is laid out side by side, not tabbed" "0" "$(ws_tabbed 9)"
+for _ in $(seq 1 40); do [[ -s "$TMP/alpha.ran" ]] && break; sleep 0.25; done
+[[ -s "$TMP/alpha.ran" ]] && pass "terminal command ran intact through every launch layer" \
+                          || fail "terminal command never ran (truncated or re-quoted on the way to zsh?)"
+check "launched terminal did not inherit the startup lock marker" "unset" "$(cat "$TMP/alpha.ran" 2>/dev/null)"
 
 # ── 2. idempotent ──────────────────────────────────────────────────────
 echo "== idempotent re-run =="

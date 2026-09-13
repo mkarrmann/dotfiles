@@ -146,6 +146,11 @@ Two Linux-specific constraints are load-bearing:
   output, and on the first parent resize after its update overlay reports an
   empty height (an upstream `update_overlay.js` bug, unfixed as of 0.12.0).
   The entry's HACK note has the diagnosis and the removal conditions.
+- Windows are launched directly from the script (`setsid`), not through
+  `swaymsg exec`: sway's command parser splits on `;` and mishandles an
+  escaped quote followed by an escaped separator, which once cut the
+  terminal command in half. The e2e suite runs a deliberately hostile command
+  through the whole path to keep it that way.
 - Additional Omnigent windows need `wtype` (`sudo apt install wtype`). The app
   is single-instance, a deep link reuses an existing window, and a second
   launch only focuses one, so the Server ▸ New Window accelerator
