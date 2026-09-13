@@ -241,14 +241,27 @@ class InitProfileTest(ProfileFixture):
                 result = self.run_script(self.script)
                 self.assert_success(result)
                 calls = self.calls()
-                for helper in ("sync.sh", "codecompanion-fork-ensure", "omnigent-desktop-ensure", "stylua-ensure", "marksman-ensure", "gh-ensure", "aws-agent-toolkit-ensure"):
+                for helper in (
+                    "sync.sh", "codecompanion-fork-ensure", "omnigent-desktop-ensure",
+                    "omnigent-config-ensure", "omnigent-agents-ensure",
+                    "stylua-ensure", "marksman-ensure", "gh-ensure", "aws-agent-toolkit-ensure",
+                ):
                     self.assertTrue(any(line.startswith(helper + " ") for line in calls), calls)
+                # Omnigent config is universal, but the hub infrastructure is not.
+                universal = ("omnigent-desktop-ensure ", "omnigent-desktop-app-ensure ", "omnigent-config-ensure ", "omnigent-agents-ensure ")
                 forbidden = ("omnigent-", "bootstrap-plugins ", "systemctl ", "launchctl ", "uv ", "curl ", "git ")
-                self.assertFalse(any(line.startswith(forbidden) for line in calls if not line.startswith(("omnigent-desktop-ensure ", "omnigent-desktop-app-ensure "))), calls)
+                self.assertFalse(any(line.startswith(forbidden) for line in calls if not line.startswith(universal)), calls)
                 self.assertEqual(
                     any(line.startswith("omnigent-desktop-app-ensure ") for line in calls),
                     platform == "Linux",
                 )
+                # The install comes first: on a fresh machine omnigent-desktop-ensure
+                # is what puts omnigent (and its python) in place for the other two.
+                install = next(index for index, line in enumerate(calls) if line.startswith("omnigent-desktop-ensure "))
+                config = next(index for index, line in enumerate(calls) if line.startswith("omnigent-config-ensure "))
+                agents = next(index for index, line in enumerate(calls) if line.startswith("omnigent-agents-ensure "))
+                self.assertLess(install, config, calls)
+                self.assertLess(config, agents, calls)
                 self.assertTrue(all("profile=desktop" in line for line in calls), calls)
                 self.assertTrue(all(line.endswith(f"dotfiles={self.dotfiles}") for line in calls), calls)
 
@@ -359,7 +372,11 @@ class SyncProfileTest(ProfileFixture):
                 result = self.run_script(self.script)
                 self.assert_success(result)
                 calls = self.calls()
-                self.assertFalse(any(line.startswith(("omnigent-", "systemctl ", "launchctl ")) for line in calls), calls)
+                # Shared Omnigent config reaches every profile; hub helpers do not.
+                self.assertTrue(any(line.startswith("omnigent-config-ensure ") for line in calls), calls)
+                self.assertTrue(any(line.startswith("omnigent-server-config-stale ") for line in calls), calls)
+                self.assertFalse(any(line.startswith("omnigent-codex-login-ensure ") for line in calls), calls)
+                self.assertFalse(any(line.startswith(("systemctl ", "launchctl ")) for line in calls), calls)
                 self.assertTrue(any(line.startswith("sync-mcps ") for line in calls), calls)
                 self.assertTrue(all("profile=desktop" in line for line in calls), calls)
                 self.assertTrue((self.home / ".zshrc").is_symlink())

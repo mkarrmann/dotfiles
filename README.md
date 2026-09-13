@@ -20,6 +20,35 @@ devserver bootstrap sources, work MCPs, Linux services, and Mac client jobs.
 On Linux it discovers routing before running dependent Omnigent setup; failure
 skips those dependent steps, while declared Neovim sessions can still start.
 
+### Omnigent config is universal
+
+`omnigent_config/` applies on every profile; only the hub's sidecars are
+work-only. Every Omnigent process on a machine reads `~/.omnigent/config.yaml`
+(the CLI and host for client preferences, the server for its policies), so
+`bin/omnigent-config-ensure` (from `sync.sh` and `init.sh`, both profiles)
+deep-merges `omnigent_config/config.shared.yaml` into it everywhere, and
+`config.hub.yaml` on the two hub candidates in `topology.env`. The work hub
+unit passes that file as `--config`; the managed local server a desktop's
+`omnigent host --server ''` spawns passes it by itself. Both units put
+`omnigent_config/policy_modules` on `PYTHONPATH` so `policy_modules` resolve.
+The server reads those keys only at boot: `bin/omnigent-server-config-stale`
+reports a server older than the sources on this profile's unit.
+
+`bin/omnigent-agents-ensure` (from `init.sh`, both profiles) registers the
+agent specs under `omnigent_config/agents/` plus the packaged polly/debby
+overlays into the `~/.omnigent/chat.db` this machine's server owns: the active
+hub at work, the managed local server on a Linux desktop. `dvsc` is Meta's
+devmate and is registered at work only. After a bundle or config change the
+server must restart to see it; the script does so only when nothing is
+disturbed -- at work after the hub quiescence check (the server restart leaves
+runners alone), on a desktop only when no session is connected, because there
+the server lives inside `omnigent-host.service` and restarting it ends every
+live session -- and otherwise prints the command and exits 1. What stays
+work-only: `agents/dvsc`, the watcher whose `watch` tool the specs declare (a
+desktop session simply lacks the tool; the runner logs a warning), the
+hub/reconcile/snapshot/Google Chat services, `runtime_ext` (Sapling), and
+`topology.env`.
+
 Both profiles install the GitHub CLI into `~/.local/bin` (`bin/gh-ensure`).
 Desktop `init.sh` also installs the AWS CLI and, once `aws login` has been run
 on that machine, the AWS Agent Toolkit: the `aws-mcp` server and AWS's default
@@ -75,7 +104,9 @@ unrelated custom units are preserved. Host units can switch between the two
 managed profiles; a custom host unit is reported as a conflict. Re-running
 desktop init restarts the host and can interrupt active Omnigent sessions.
 For just this setup, run `bin/omnigent-desktop-ensure` (or `--stage` to only
-stage the unit). Installed packages and session history are retained.
+stage the unit). Installed packages and session history are retained. Desktop
+init then runs `bin/omnigent-config-ensure` and `bin/omnigent-agents-ensure`
+against the freshly started host (see "Omnigent config is universal" above).
 
 Regression checks use temporary homes and stubbed installers/service managers:
 
@@ -84,6 +115,7 @@ python3 -m unittest discover -s tests -p test_dotfiles_profiles.py
 python3 -m unittest discover -s tests -p test_codex_config.py
 python3 -m unittest discover -s tests -p test_omnigent_desktop.py
 python3 -m unittest discover -s tests -p test_omnigent_desktop_app.py
+python3 -m unittest discover -s tests -p test_omnigent_agents_ensure.py
 python3 -m unittest discover -s tests -p test_no_foreground_wait.py
 ```
 
@@ -155,6 +187,16 @@ Two Linux-specific constraints are load-bearing:
   escaped quote followed by an escaped separator, which once cut the
   terminal command in half. The e2e suite runs a deliberately hostile command
   through the whole path to keep it that way.
+- `nvim-show` routes to the editor beside the caller, not by directory:
+  `bin-linux/nvim-show-resolver` asks Omnigent's Chromium debug endpoint
+  (`--remote-debugging-port=0` in the launcher override, port read from
+  `~/.config/Omnigent/DevToolsActivePort`) which window is showing the agent's
+  session, finds that window in sway by title (a title nonce if titles collide),
+  and picks the Neovim running on the same workspace, found through the
+  terminal's process tree. `--focus` then brings that terminal tab forward.
+  `bin/nvim-show` itself only knows the `nvim-show-resolver` contract; the nvs
+  session list stays the devserver equivalent. Covered end to end by
+  `tests/test-nvim-show-resolver-e2e.sh` in a headless sway.
 - Additional Omnigent windows need Omnigent ≥ 0.13.0 and `xdotool`
   (`sudo apt install xdotool`). The app is single-instance, a deep link reuses
   an existing window, and a second launch only focuses one, so the

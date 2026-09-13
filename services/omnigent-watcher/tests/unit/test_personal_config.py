@@ -220,7 +220,9 @@ def test_mcp_registration_is_asserted_only_for_the_specs_we_author() -> None:
 
 def test_agent_ensure_reconciles_existing_bundle_content() -> None:
     script = (DOTFILES / "bin/omnigent-agents-ensure").read_text()
+    # dvsc is registered at work only; a desktop registers the other two.
     assert "TRACKED_AGENT_NAMES=(claude codex dvsc)" in script
+    assert "TRACKED_AGENT_NAMES=(claude codex)" in script
     assert "PACKAGED_AGENT_NAMES=(polly debby)" in script
     assert 'managed_dirs+=("$spec_dir")' in script
     assert 'for d in "${managed_dirs[@]}"' in script

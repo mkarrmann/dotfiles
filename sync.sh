@@ -707,27 +707,29 @@ fi
 AGENT_CONFIG_DIR="$DOTFILES_DIR/agent_config" "$DOTFILES_DIR/agent_config/sync-mcps" all || \
   echo "WARNING: agent_config/sync-mcps failed" >&2
 
-# Omnigent: propagate shared, machine-agnostic client preferences
-# (omnigent_config/config.shared.yaml) into this machine's live
-# ~/.omnigent/config.yaml. Deep-merges only the declared keys, preserving
-# machine-specific host:/server:/acp:. Self-skips before omnigent is
-# installed (fresh bootstrap re-runs it from init.sh stage 2).
-if [[ "$DOTFILES_PROFILE" == work ]]; then
-  "$DOTFILES_DIR/bin/omnigent-config-ensure" ||
-    echo "WARNING: omnigent-config-ensure failed (shared prefs not applied)" >&2
+# Omnigent: propagate the shared configuration (omnigent_config/config.shared.yaml,
+# plus config.hub.yaml on hub candidates) into this machine's live
+# ~/.omnigent/config.yaml -- client preferences and the server's policies alike,
+# since the hub unit and a desktop's managed local server both read that file.
+# Every profile. Deep-merges only the declared keys, preserving machine-specific
+# host:/server:/acp:. Self-skips before omnigent is installed (fresh bootstrap
+# re-runs it from init.sh stage 2).
+"$DOTFILES_DIR/bin/omnigent-config-ensure" ||
+  echo "WARNING: omnigent-config-ensure failed (shared config not applied)" >&2
 
-  # Omnigent: report (never fix) a server running config older than the config on
-  # disk. server.yaml and the policy modules are read only at boot and there is no
-  # reload endpoint, so an edit to either sits inert until the next restart -- with
-  # nothing anywhere to say so. Restarting belongs to init.sh, which gates on hub
-  # quiescence; this file only stages, so it warns and moves on.
-  if [[ -x "$DOTFILES_DIR/bin/omnigent-server-config-stale" ]]; then
-    if stale_detail="$("$DOTFILES_DIR/bin/omnigent-server-config-stale")"; then
-      echo "WARNING: $stale_detail" >&2
-      echo "         run init.sh (or bin/omnigent-agents-ensure) while sessions are idle to load it" >&2
-    fi
+# Omnigent: report (never fix) a server running config older than the config on
+# disk. The server reads config.yaml and the policy modules only at boot and there
+# is no reload endpoint, so an edit to either sits inert until the next restart --
+# with nothing anywhere to say so. Restarting belongs to init.sh, which gates on
+# nothing running; this file only stages, so it warns and moves on.
+if [[ -x "$DOTFILES_DIR/bin/omnigent-server-config-stale" ]]; then
+  if stale_detail="$("$DOTFILES_DIR/bin/omnigent-server-config-stale")"; then
+    echo "WARNING: $stale_detail" >&2
+    echo "         run init.sh (or bin/omnigent-agents-ensure) while sessions are idle to load it" >&2
   fi
+fi
 
+if [[ "$DOTFILES_PROFILE" == work ]]; then
   # Omnigent: make a managed Codex install (Meta's AI Gateway, mTLS, no auth.json)
   # read as logged in, so a codex-native session created with a first prompt does
   # not fail that turn against a thread that was about to start. Self-skips off

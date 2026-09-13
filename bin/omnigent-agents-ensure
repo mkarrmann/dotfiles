@@ -1,27 +1,41 @@
 #!/usr/bin/env bash
 # omnigent-agents-ensure — reconcile the source-controlled Omnigent agent
-# bundles (claude-sdk, codex, and dvsc) so they show up in the CodeCompanion
-# picker with their current tools and prompts. The existing model/effort
-# pickers key off each agent's harness family.
+# bundles (claude-sdk, codex, and at work dvsc) plus the packaged polly/debby
+# overlays into the agent store of the server THIS machine owns, so they show
+# up in the CodeCompanion picker with their current tools and prompts. The
+# existing model/effort pickers key off each agent's harness family.
+#
+# Which server that is follows the dotfiles profile:
+#   work     the active hub (omnigent-server.service on ~/.omnigent/chat.db).
+#            Standbys, peer devservers, and the Mac never open a local chat.db.
+#   desktop  the managed local server that omnigent-host.service spawns, on
+#            the same ~/.omnigent/chat.db (omnigent/host/local_server.py).
+#            dvsc is Meta's devmate over ACP and has no runtime here, so it is
+#            not registered.
 #
 # This is the bundle-reconciliation sibling of omnigent-dvsc-ensure: dvsc needs
 # an extra acp: config merge (its harness is acp:dvsc-core), so it keeps its own
 # script; agent-store reconciliation happens here for all tracked agents in ONE
-# throwaway server boot.
-# Omnigent's ``--agent`` registration is content-aware:
+# throwaway server boot. Omnigent's ``--agent`` registration is content-aware:
 # it preserves the stable agent row and updates its bundle only when the
 # materialized content hash changes.
 #
-# Idempotent and portable: safe to re-run, and self-skips where omnigent isn't
-# installed or this host isn't the active Linux hub. Wired into init.sh.
+# Neither the hub unit nor the managed local server has an `--agent` hook, so —
+# exactly like omnigent-dvsc-ensure — we register by briefly booting a
+# throwaway server (a free port, the SAME chat.db) with one `--agent` per
+# managed bundle; it writes changed builtin bundles in place, then exits.
 #
-# The managed `omnigent server start` has no `--agent` hook, so — exactly like
-# omnigent-dvsc-ensure — we register by briefly booting a throwaway server (a
-# free port, the SAME chat.db) with one `--agent` per managed bundle; it writes
-# changed builtin bundles in place, then exits. When a running server still has
-# the old parsed bundle cached, this script restarts it only after the hub
-# quiescence check passes. Clients, the standby, and macOS never open a local
-# chat.db.
+# A running server keeps the old parsed bundle cached, and reads its config
+# (bin/omnigent-server-config-stale) only at boot, so after a change it must
+# restart -- which this script does only when that disturbs nothing:
+#   work     after omnigent-hub's quiescence check (no active turn). Restarting
+#            omnigent-server.service leaves the host and its runners alone.
+#   desktop  only when no session is connected at all. The server lives inside
+#            omnigent-host.service, and restarting that ends every live session.
+# Otherwise it prints the restart to run and exits 1.
+#
+# Idempotent and portable: safe to re-run, and self-skips where omnigent isn't
+# installed or this host owns no server. Wired into init.sh on both profiles.
 #
 # Env overrides: OMNIGENT_BIN, DOTFILES_DIR, OMNIGENT_DATA_DIR,
 # OMNIGENT_SERVER_URL.
@@ -44,19 +58,7 @@ AGENTS_DIR="$DOTFILES/omnigent_config/agents"
 _tools_dir="$(uv tool dir 2>/dev/null || echo "$HOME/.local/share/uv/tools")"
 OMNIGENT_PY="${OMNIGENT_PY:-$_tools_dir/omnigent/bin/python3}"
 
-# Source-controlled bundles plus packaged upstream bundles that receive the
-# shared personal MCP overlay at registration time.
-TRACKED_AGENT_NAMES=(claude codex dvsc)
-PACKAGED_AGENT_NAMES=(polly debby)
-
-SERVER_URL="${OMNIGENT_SERVER_URL:-}"
-if [ -z "$SERVER_URL" ]; then
-  if command -v omnigent-server-url >/dev/null 2>&1; then
-    SERVER_URL="$(omnigent-server-url)"
-  elif [ -x "$DOTFILES/bin/omnigent-server-url" ]; then
-    SERVER_URL="$("$DOTFILES/bin/omnigent-server-url")"
-  fi
-fi
+PROFILE="$("$DOTFILES/bin/dotfiles-profile")"
 
 # Skip cleanly on machines without a usable omnigent install.
 if ! command -v "$OMNIGENT_BIN" >/dev/null 2>&1; then
@@ -68,17 +70,54 @@ if [ ! -x "$OMNIGENT_PY" ]; then
   exit 0
 fi
 
-# Only the active Linux hub owns the authoritative database. A Mac may retain a
-# legacy ~/.omnigent/chat.db; standbys and peer devservers reconcile config
-# without mutating a local database copy.
+# Only a Linux host that owns a server database seeds it. A Mac may retain a
+# legacy ~/.omnigent/chat.db from the old local deployment, and a personal Mac
+# runs the native `omnigent start` lifecycle rather than a systemd unit.
 if [[ "$(uname -s)" != "Linux" ]]; then
   log "client host detected; skipping local agent-store seed"
   exit 0
 fi
-if ! "$DOTFILES/bin/omnigent-server-url" --is-hub >/dev/null 2>&1; then
-  log "non-active hub/client detected; skipping local agent-store seed"
-  exit 0
-fi
+# Source-controlled bundles plus packaged upstream bundles that receive the
+# shared personal MCP overlay at registration time.
+case "$PROFILE" in
+  work)
+    if ! "$DOTFILES/bin/omnigent-server-url" --is-hub >/dev/null 2>&1; then
+      log "non-active hub/client detected; skipping local agent-store seed"
+      exit 0
+    fi
+    TRACKED_AGENT_NAMES=(claude codex dvsc)
+    SERVER_UNIT=omnigent-server.service
+    ;;
+  desktop)
+    TRACKED_AGENT_NAMES=(claude codex)
+    SERVER_UNIT=omnigent-host.service
+    ;;
+  *)
+    log "unknown dotfiles profile '$PROFILE'"
+    exit 1
+    ;;
+esac
+PACKAGED_AGENT_NAMES=(polly debby)
+
+# `omnigent server status` knows the managed local server (it records a
+# pidfile) and the number of sessions connected to it. The HA hub is
+# systemd-managed, so there the resolved active-hub URL is authoritative.
+managed_status() {
+  "$OMNIGENT_BIN" server status --json 2>/dev/null || echo '{}'
+}
+managed_field() {
+  printf '%s' "$1" | python3 -c 'import sys,json
+value = (json.load(sys.stdin) or {}).get(sys.argv[1])
+print("" if value is None else value)' "$2" 2>/dev/null || true
+}
+live_server_url() {
+  local url
+  url="$(managed_field "$(managed_status)" url)"
+  if [ -z "$url" ] && [ "$PROFILE" = work ]; then
+    url="${OMNIGENT_SERVER_URL:-$("$DOTFILES/bin/omnigent-server-url")}"
+  fi
+  printf '%s' "$url"
+}
 
 # True iff GET <url>/v1/agents exposes the watcher MCP surface for agent "$2".
 # The API summary omits individual tool names, but name + transport + command
@@ -103,16 +142,6 @@ for agent in d.get("data") or []:
             sys.exit(0)
 sys.exit(1)'
 }
-
-# The HA server is systemd-managed, so `omnigent server status` may not know its
-# URL; the resolved active-hub URL is authoritative in that topology.
-status_json="$("$OMNIGENT_BIN" server status --json 2>/dev/null || echo '{}')"
-managed_url="$(printf '%s' "$status_json" \
-  | python3 -c 'import sys,json;print((json.load(sys.stdin) or {}).get("url") or "")' 2>/dev/null || true)"
-live_url="$managed_url"
-if [ -z "$live_url" ]; then
-  live_url="$SERVER_URL"
-fi
 
 # Reconcile every tracked spec, even when its name is already registered.
 # Existence alone does not imply that the stored content-addressed bundle is
@@ -162,7 +191,7 @@ fi
 # checking for one known MCP server cannot tell whether an arbitrary bundle
 # edit reached the live process cache. bundle_location is content-addressed and
 # version increments on replacement, making the DB row the authoritative
-# change detector on the hub that owns this database.
+# change detector on the host that owns this database.
 agent_bundle_state() {
   python3 - "$DATA_DIR/chat.db" "${managed_names[@]}" <<'PY'
 import sqlite3
@@ -245,15 +274,29 @@ if [ "$bundle_state_before" != "$bundle_state_after" ]; then
   bundles_changed=true
 fi
 
+# On a desktop the unit may be mid-boot (init.sh restarts it just before this
+# runs); give the managed server a moment to record itself before concluding
+# that nothing is running and skipping the live verification below.
+live_url="$(live_server_url)"
+if [ -z "$live_url" ] && [ "$PROFILE" = desktop ]; then
+  for _ in $(seq 1 30); do
+    systemctl --user is-active --quiet "$SERVER_UNIT" 2>/dev/null || break
+    sleep 1
+    live_url="$(live_server_url)"
+    [ -z "$live_url" ] || break
+  done
+fi
+
 # Existing agent rows can remain stale in the running server's in-memory cache
 # after the content-addressed database row is updated. Restart only when that
-# happens and only after the normal hub quiescence guard confirms no turn is
-# active. A fresh registration is visible immediately and needs no restart.
+# happens and only when the restart disturbs nothing (see the header). A fresh
+# registration is visible immediately and needs no restart.
 #
-# The server's OWN config (server.yaml + the PYTHONPATH policy modules) is read
-# only at boot and is checked here too, via omnigent-server-config-stale. It is
-# not covered by the bundle hash above -- policies leave no trace in chat.db --
-# so a policy-only edit used to reach the disk and never the process.
+# The server's OWN config (~/.omnigent/config.yaml + the PYTHONPATH policy
+# modules) is read only at boot and is checked here too, via
+# omnigent-server-config-stale. It is not covered by the bundle hash above --
+# policies leave no trace in chat.db -- so a policy-only edit used to reach the
+# disk and never the process.
 live_reachable=false
 if [ -n "$live_url" ] \
     && curl -sf --noproxy '*' --max-time 5 "$live_url/health" >/dev/null 2>&1; then
@@ -269,21 +312,41 @@ if [ "$live_reachable" = true ]; then
       && "$DOTFILES/bin/omnigent-server-config-stale"; then
     config_stale=true
   fi
-  if { [ "$bundles_changed" = true ] || [ "$live_current" != true ] \
-        || [ "$config_stale" = true ]; } \
-      && systemctl --user is-active --quiet omnigent-server.service; then
-    if [ ! -x "$DOTFILES/bin/omnigent-hub" ] \
-        || ! "$DOTFILES/bin/omnigent-hub" quiesce-check --json >/dev/null; then
-      log "server config/agent bundles updated, but the active server is busy; rerun after current turns finish"
+  if [ "$bundles_changed" = true ] || [ "$live_current" != true ] \
+      || [ "$config_stale" = true ]; then
+    if ! systemctl --user is-active --quiet "$SERVER_UNIT"; then
+      log "server config/agent bundles updated, but $SERVER_UNIT is not active under systemd; restart the server at $live_url yourself"
       exit 1
     fi
-    log "restarting quiescent server to load changed agent bundles and policies…"
-    systemctl --user restart omnigent-server.service
-    systemctl --user try-restart omnigent-watcher.service 2>/dev/null || true
+    case "$PROFILE" in
+      work)
+        if [ ! -x "$DOTFILES/bin/omnigent-hub" ] \
+            || ! "$DOTFILES/bin/omnigent-hub" quiesce-check --json >/dev/null; then
+          log "server config/agent bundles updated, but the active server is busy; rerun after current turns finish"
+          exit 1
+        fi
+        log "restarting quiescent server to load changed agent bundles and policies…"
+        systemctl --user restart "$SERVER_UNIT"
+        systemctl --user try-restart omnigent-watcher.service 2>/dev/null || true
+        ;;
+      desktop)
+        connected="$(managed_field "$(managed_status)" live_sessions)"
+        if [ "$connected" != 0 ]; then
+          log "server config/agent bundles updated, but ${connected:-an unknown number of} session(s) are connected to the local server and restarting $SERVER_UNIT ends every one of them; when they are done, run:"
+          log "  systemctl --user restart $SERVER_UNIT"
+          exit 1
+        fi
+        log "restarting the idle local host to load changed agent bundles and policies…"
+        systemctl --user restart "$SERVER_UNIT"
+        ;;
+    esac
   fi
 
+  # A host restart re-spawns the managed server, so resolve the URL afresh
+  # each attempt rather than trusting the one recorded before the restart.
   live_current=false
-  for _ in $(seq 1 30); do
+  for _ in $(seq 1 60); do
+    live_url="$(live_server_url)"
     all=true
     for name in "${verified_names[@]}"; do
       has_current_agent "$live_url" "$name" || { all=false; break; }

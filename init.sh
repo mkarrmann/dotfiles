@@ -85,12 +85,12 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
       echo "WARNING: omnigent-dvsc-ensure failed (dvsc ACP config may be stale)" >&2
   fi
 
-  # Omnigent: propagate shared, machine-agnostic client preferences into
-  # ~/.omnigent/config.yaml. Runs here as well as in sync.sh so a fresh
-  # bootstrap (where the stage-1 sync ran before omnigent was installed and
-  # self-skipped) still applies them once the install above completes.
+  # Omnigent: propagate the shared configuration into ~/.omnigent/config.yaml.
+  # Runs here as well as in sync.sh so a fresh bootstrap (where the stage-1
+  # sync ran before omnigent was installed and self-skipped) still applies it
+  # once the install above completes.
   "$DOTFILES_DIR/bin/omnigent-config-ensure" ||
-    echo "WARNING: omnigent-config-ensure failed (shared prefs not applied)" >&2
+    echo "WARNING: omnigent-config-ensure failed (shared config not applied)" >&2
 
   # Omnigent: shim the managed-Codex login probe. Runs here as well as in sync.sh
   # for the same reason as config-ensure above — the stage-1 sync self-skips when
@@ -102,7 +102,8 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
   # dvsc, and packaged Polly/Debby) so they show in the CodeCompanion omnigent
   # picker (<leader>aM / <leader>aA). The picker's model/effort steps key off each
   # agent's harness family, so registering the specs is the whole job. Idempotent
-  # and self-skips off the active Linux hub. See bin/omnigent-agents-ensure and
+  # and self-skips off the active Linux hub; restarts the hub server only after
+  # the quiescence check. See bin/omnigent-agents-ensure and
   # omnigent_config/agents/{claude,codex,dvsc}/.
   if [[ "$routing_ready" == true ]]; then
     "$DOTFILES_DIR/bin/omnigent-agents-ensure" ||
@@ -212,6 +213,19 @@ else
     "$DOTFILES_DIR/bin/coredump-size-cap-ensure" ||
       echo "WARNING: coredump size cap installation failed" >&2
   fi
+
+  # Omnigent config is universal: the managed local server that the host above
+  # spawns reads the same ~/.omnigent/config.yaml the hub unit does, and its
+  # chat.db takes the same agent bundles. Both run after omnigent-desktop-ensure
+  # because that is what installs omnigent on a fresh machine (sync.sh's earlier
+  # pass self-skipped without it). The host was just (re)started, so
+  # omnigent-agents-ensure normally finds it idle and, when a bundle changed,
+  # restarts it once more to load the new definitions; when sessions have
+  # already reconnected it prints the restart instead.
+  "$DOTFILES_DIR/bin/omnigent-config-ensure" ||
+    echo "WARNING: omnigent-config-ensure failed (shared config not applied)" >&2
+  "$DOTFILES_DIR/bin/omnigent-agents-ensure" ||
+    echo "WARNING: omnigent-agents-ensure failed (managed agents may be stale in the picker)" >&2
 fi
 
 # ---------------------------------------------------------------------------
