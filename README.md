@@ -22,17 +22,30 @@ skips those dependent steps, while declared Neovim sessions can still start.
 
 ### Omnigent config is universal
 
-`omnigent_config/` applies on every profile; only the hub's sidecars are
-work-only. Every Omnigent process on a machine reads `~/.omnigent/config.yaml`
+`omnigent_config/` applies on every profile. Every Omnigent process on a
+machine reads `~/.omnigent/config.yaml`
 (the CLI and host for client preferences, the server for its policies), so
 `bin/omnigent-config-ensure` (from `sync.sh` and `init.sh`, both profiles)
 deep-merges `omnigent_config/config.shared.yaml` into it everywhere, and
-`config.hub.yaml` on the two hub candidates in `topology.env`. The work hub
+`config.server.yaml` on desktops and the two hub candidates in `topology.env`.
+The work hub
 unit passes that file as `--config`; the managed local server a desktop's
 `omnigent host --server ''` spawns passes it by itself. Both units put
-`omnigent_config/policy_modules` on `PYTHONPATH` so `policy_modules` resolve.
+`omnigent_config/policy_modules` and `services/omnigent-watcher/src` on
+`PYTHONPATH` so the policies and watcher HTTP router resolve.
 The server reads those keys only at boot: `bin/omnigent-server-config-stale`
 reports a server older than the sources on this profile's unit.
+
+Generic watch subscriptions are available on every profile. `init.sh` installs
+the MCP runtime everywhere; the worker runs beside the server: the active
+work hub, the desktop's Linux systemd service, or the desktop's macOS launchd
+job. Work clients, including the Mac, reach the active hub over their existing
+local forward. Watch commands execute on that server machine. Desktop
+`omnigent-desktop-ensure --stage` prepares service files without activation;
+the full helper cycles the local server and host, closing connected local
+sessions, then starts the worker. Desktop Mac uses native agent MCP settings;
+managed agent-store registration remains Linux-only. See
+[the watcher documentation](services/omnigent-watcher/README.md).
 
 `bin/omnigent-agents-ensure` (from `init.sh`, both profiles) registers the
 agent specs under `omnigent_config/agents/` plus the packaged polly/debby
@@ -44,9 +57,8 @@ disturbed -- at work after the hub quiescence check (the server restart leaves
 runners alone), on a desktop only when no session is connected, because there
 the server lives inside `omnigent-host.service` and restarting it ends every
 live session -- and otherwise prints the command and exits 1. What stays
-work-only: `agents/dvsc`, the watcher whose `watch` tool the specs declare (a
-desktop session simply lacks the tool; the runner logs a warning), the
-hub/reconcile/snapshot/Google Chat services, `runtime_ext` (Sapling), and
+work-only: `agents/dvsc`, the hub/reconcile/snapshot/Google Chat services,
+`runtime_ext` (Sapling), and
 `topology.env`.
 
 Both profiles install the GitHub CLI into `~/.local/bin` (`bin/gh-ensure`).

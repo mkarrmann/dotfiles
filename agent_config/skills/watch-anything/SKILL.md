@@ -1,149 +1,147 @@
 ---
 name: watch-anything
 description: >-
-  Use when asked to babysit, monitor, watch, or report back on something that
-  is not a Phabricator diff — a JustKnob or config rollout, a canary, a
-  Chronos job, a deploy, a queue depth, a value in a dashboard or CLI — and
-  whenever waiting for a condition that a command can report. Registers an
-  out-of-process watch that wakes the session when the command's output
-  changes, instead of spending model turns re-checking. Use
-  phabricator-diff-watch instead for diffs and their CI. Trigger keywords:
-  babysit, monitor, watch, poll, wait for, keep an eye on, let me know when,
-  notify me when, check back, until it flips, until it rolls out, canary,
-  rollout, JustKnob, JK.
-  Also use when a message beginning with [Watcher] wakes the session.
+  Use for persistent Omnigent command watches when native notifications are
+  unavailable or lack the required lifetime, and when a generic [Watcher ...]
+  notification arrives. Suitable for delayed job or sampled status follow-up.
+  Read waiting-without-polling to choose a mechanism; use
+  phabricator-diff-watch for Meta diff CI and review feedback.
 ---
 
 # Watch anything
 
-Wake this session when the output of a command changes. The command runs in the
-watcher sidecar on an interval, not in this session, so the wait costs no
-model turns and survives the session going idle.
+Use Omnigent's command watcher for a persistent wait that needs to wake the
+same Omnigent session later. The worker runs cheap probes outside model turns;
+subscription, notification handling, and any model invoked by the probe still
+cost tokens. The worker and session server must remain available for delivery.
 
-This is the general case. For a Phabricator diff or its CI, use
-`phabricator-diff-watch` instead — that surface knows what a diff is and gives
-you review comments, CI failures, and automated-review findings as distinct
-events. This one knows nothing about its subject and only reports "it changed".
+## When this custom tool helps
+
+Prefer harness-native completion notifications, monitors, or event channels
+when they meet the task's needs. See [[waiting-without-polling]]. A build you
+just launched usually needs its native completion notification, not this tool.
+
+This tool is useful when an external job may finish after the harness process
+exits, or the current harness lacks a suitable notification mechanism. Its
+requests and pending notifications are stored outside the harness and can
+survive worker restarts, provided the target Omnigent session remains usable.
+For example, watch a particular export job's status on the server and resume
+its owning conversation when a new terminal status appears.
+
+For Meta diff follow-up, use [[phabricator-diff-watch]]. That integration
+understands CI failures, CI green, human comments, and AI-review findings
+across a stack; a generic output comparison has none of that context.
+
+This is a sampled state watcher, with minutes of latency. Recurrence works:
+`A → B (delivered) → A` can notify again. Transitions between polls are missed,
+and `A → B → A` before delivery may be coalesced away. Use a native monitor or
+event source when every transition matters.
+Unsubscribe after the task completes; generic watches do not infer completion.
 
 ## Subscribing
 
 The tool is `mcp__watch__subscribe`; match on the suffix.
 
-If a tool reports that it cannot reach the hub, that is what it means: the
-watcher lives on the active hub and this machine reaches it through the
-omnigent-client-proxy forward. Report it rather than working around it.
+Commands run beside the Omnigent server that owns the session: locally on a
+desktop, on the active hub for work sessions. They do not necessarily run on
+the agent's machine. Use cheap read-only commands and absolute paths available
+on that server, with credentials that work in the worker's environment.
 
-**If the tool is absent or its connection is dead, stop and say so.** Do not
-substitute anything for it — not a polling loop, and not driving
-`omnigent-watch-mcp` yourself over stdio. The stdio route does work, which
-is the trap: it registers a real watch while leaving this session unable to
-list or stop it, and it hides a broken deployment that would otherwise get
-fixed. This has happened.
+If this tool is absent or its connection is dead, report the missing capability.
+Use a suitable native alternative if it meets the task's needs; disclose a
+shorter lifetime or narrower coverage. Do not silently replace it with repeated
+model polling, or manually drive `omnigent-watch-mcp` over stdio or its HTTP API.
+That can create a persistent watch the session cannot list or stop through its
+tools, while hiding broken registration.
 
-The usual cause is not a broken server. A harness binds its MCP servers once,
-at session start, so a server that was installed or repaired *during* this
-session stays dead here no matter how healthy it is. **A new session is the
-fix**, and saying that is more useful than working around it.
+Check runtime, worker/API, and MCP registration before recommending a new
+session. A repaired registration may need a fresh native session; a missing
+runtime needs setup. Do not install or restart services without authorization.
 
 ```
 subscribe(
   session_id = "<from sys_session_get_info>",
-  subject  = "jk:presto/presto_batch:py_client_apply_bcp_client_info",
-  command  = ["jk", "get", "presto/presto_batch:py_client_apply_bcp_client_info"],
-  extract  = r"(\d+/\d+|true|false)",     # optional
-  interval_seconds = 60,                   # optional, 30s..24h
+  subject  = "job:export-123",
+  command  = ["cat", "/absolute/path/to/export-123-status"],
+  extract  = r"status=(\w+)",             # match the actual output
+  interval_seconds = 60,                  # optional, 30s..24h
 )
 ```
 
-- **`session_id`** is the **Omnigent** session to wake — call
-  `sys_session_get_info` and pass the `session_id` it reports. It is not your
-  harness's own session id: a Claude Code or Codex session id is a different
-  identifier, sitting right there in your environment, and passing it is the
-  natural mistake. The tool rejects it, but only after a round trip. If you are
-  a subagent that will not outlive the watch, pass `parent_session_id` instead
-  — otherwise the wake goes to a session that no longer exists, which is the
-  one way to register a watch that fires correctly and still reaches nobody.
-- **`subject`** must be namespaced `<prefix>:<identifier>`. It is the watch's
-  identity, and the namespace is what keeps it from colliding with a diff id.
-- **`command`** is an argv list, run directly — never through a shell. Pipes,
-  redirection, globs, and `&&` are not available. Put those in a script and
-  name the script.
-- **`extract`** is a regular expression, optionally with one capture group.
-  Use it whenever the output carries anything incidental.
-- **`interval_seconds`** is held constant. Unlike a diff watch, a command watch
-  does not back off when nothing is happening.
+- **`session_id`** is the Omnigent ID from `sys_session_get_info`, not the
+  harness's own thread ID. A short-lived helper should target
+  `parent_session_id` when the parent owns follow-up. A durable child can own
+  its own watch, but do not assume its later externally triggered turns will
+  automatically notify the parent; target the actual owner.
+- **`subject`** must be namespaced `<prefix>:<identifier>` and identify the
+  particular job or dependency. It shares one command specification across
+  sessions on the server; conflicting commands, extraction, intervals, or
+  timeouts are rejected. Use a new unique name to change the specification.
+- **`command`** is argv, executed directly rather than through a shell. Put
+  pipes or other shell syntax in a script if needed.
+- **`extract`** selects the stable value, optionally using one capture group.
+  Exclude timestamps and request IDs. No match or a nonparticipating optional
+  capture is a probe error that preserves the previous value and backs off.
+  A capture that actually matched an empty string is valid.
+- **`interval_seconds`** is the nominal delay for successful command polls,
+  with ±10% scheduling jitter; quiet subjects do not use the diff watcher's
+  slower idle ladder.
 
-`status(session_id)` lists a session's watches and the exact command each
-will keep running; `unsubscribe(session_id, subject=None)` stops one or
-all of them.
+`status(session_id)` shows recorded subscription state, command, failure count,
+poll/retry schedule, result time, session delivery time, and any attempted and
+queued notifications. It is not a worker health check; result times include
+baseline and partial reads, and last poll-attempt timestamps and error categories
+are not persisted.
+`unsubscribe(session_id, subject=None)` stops one or all generic watches.
 
-## Judgment: keep it out of the poll
+Check for an already-satisfied condition and handle it immediately. Subscribe
+before triggering the work when possible; otherwise recheck after registering
+to close the check/subscribe race. Subscription reads a silent baseline:
+printing `MATCH` for an already-completed job does not itself cause a wake.
 
-A watch answers "did this change", not "is this bad". Put the judgment *after*
-the wake, not inside the poll:
+## Handling a wake
 
-1. The watch fingerprints something cheap and mechanical — 0 tokens per poll.
-2. It wakes the session once, when that thing actually moves.
-3. **The woken session delegates the analysis to a subagent**, so reading logs
-   and metrics does not land in the main context.
+Continue other work or finish the subscribing turn. Delivery is deferred while
+the session is busy, so holding its turn open can delay the notification.
 
-That two-stage shape is why the trigger can be free and the analysis can be
-expensive: you pay for judgment once, on a real change, instead of on every
-poll. Prefer it.
+On a wake, confirm the task still needs follow-up, read the current state of
+the named subject, and apply its completion criteria. Retries check for earlier
+acceptance first; absent a receipt, they refresh the source and replace obsolete
+attempts. Newer observed state remains queued separately, so acknowledgment of
+an older attempt does not handle it. Notifications can still race changes or
+cancellation and can repeat. For substantial log or metric analysis,
+delegate a bounded investigation to a subagent; a simple completion check
+needs no extra agent. Stop the watch when done or when ownership ends.
 
-You *can* invert it and make the command itself a judge — `command` is an argv,
-so `["claude", "-p", "...print CHANGED or SAME"]` is legal, and
-`timeout_seconds` goes up to 120 to accommodate it. Three reasons not to,
-unless the condition genuinely cannot be expressed mechanically:
+Keep model judgment after the notification. Do not put a model invocation into
+each probe just to ask whether anything changed: it restores model polling and
+can introduce false changes from wording drift. When recurring judgment is
+necessary, follow the scheduled-pass guidance in [[waiting-without-polling]].
 
-- Every poll is a model call, which is the cost the watch existed to avoid.
-- The fingerprint is of the model's *output*, so any wording drift is a
-  spurious wake. Constrain it to a single bare token, and pair it with
-  `extract`.
-- A model that cannot reach its condition tends to answer anyway, so a broken
-  probe reads as a change rather than as a failure.
+## Operational limits
 
-## Traps
+- **Probe failures are not change events.** Non-zero exit routes into backoff
+  without waking the agent. Subscription catches a command that cannot run
+  initially, but later failures can leave a watch silent.
+- **Seven days without a session delivery retires a watch.** The timer starts
+  at its baseline if nothing was delivered, and expiry can discard deferred
+  feedback. Any watcher delivery to the session advances its live watches'
+  timers; repeating an active subscription does not. Do not use this as an
+  indefinite reminder.
+- **Minutes of latency are expected.** The poll interval, five-minute batch
+  window, ten-minute minimum delivery spacing, and busy/unreachable-session
+  deferral all affect latency. This is unsuitable for urgent alerts or quick
+  build feedback.
+- **Outages can lose transitions.** A stopped worker does not sample; server
+  or session unavailability delays delivery and can suspend polling. Stored
+  requests and pending batches require the same usable session when resumed.
+- **Duplicate suppression is best effort.** Retries search the latest 1,000
+  session items for a batch marker. A missing marker cannot prove the earlier
+  attempt was never accepted, so a replacement can repeat feedback. Cancellation
+  cannot retract an accepted or in-flight message.
+- **Commands have a reduced environment and bounded output.** The default
+  timeout is 30 seconds; `timeout_seconds` can be 1..120 and cannot exceed the
+  polling interval. Commands requiring additional environment need a wrapper.
 
-- **`extract` is usually mandatory in practice.** A timestamp, request id,
-  duration, or row count anywhere in the output makes the fingerprint change on
-  every poll, and the watch wakes you every interval forever. Run the command
-  twice by hand first and diff the output.
-- **Subscribe before the change can happen.** The first reading is the
-  baseline and never wakes anyone, so a watch registered after a rollout has
-  already flipped baselines the value you were waiting for and stays silent
-  forever. This has actually happened. If the value may already have moved,
-  watch for a comparison against the expected value rather than for the raw
-  value — for example `extract` on a command that prints `MATCH`/`NOMATCH`.
-- **A failing command is not a change.** Non-zero exit routes into backoff and
-  does not wake anyone, so a watch on a command that *starts* breaking goes
-  quiet rather than lying. Check `status` if a watch seems too silent.
-  A command that cannot run at all is caught at subscribe time instead —
-  `subscribe` runs it once to take the baseline and fails the tool call
-  rather than registering a watch that could never fire.
-- **A watch that never fires expires.** Seven days without a single delivery
-  ages it out, so a watch for something further away than that will be gone
-  before the thing happens. Watch a nearer-term proxy, or re-subscribe.
-- **Latency is not the interval.** A wake can lag the change by up to the
-  interval plus the batch window (5 min) plus the minimum delivery gap
-  (10 min). Fine for a rollout; wrong for anything that needs seconds.
-- **The command runs with a reduced environment** (`PATH`, `HOME`, proxy and
-  credential vars) and a 30-second timeout, with output capped. A command that
-  needs an unusual variable will fail; wrap it in a script that sets it.
-- **The command runs on the hub, not on your devserver.** Watching is a
-  hub-side service; your machine only registers the watch. A script or path
-  that exists only in your checkout will not resolve there — name something on
-  a shared path, or something that reaches the same answer from anywhere.
-
-## Prefer purpose-built alerting
-
-For production signals, an agent watching a value is a worse-engineered alert.
-ODS and Scuba alerting exist, and rollout systems carry their own health checks
-— a Configerator canary runs `customHealthCheckHook` and aborts on host-level
-failure with nobody watching. Reach for those first, and use a watch for the
-judgment a threshold cannot express, or for a one-off you do not want to build
-an alert for.
-
-See also [[waiting-without-polling]] for the general rule and for the
-harness-level mechanisms (backgrounded condition loops, `/loop`) that are
-cheaper still when the wait is short and the session is staying open anyway.
+Prefer production alerting and automated health checks for service health.
+Use an agent notification for interpretation or follow-up that needs judgment.

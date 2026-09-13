@@ -11,10 +11,21 @@ is the inverse — plugins kept uninstalled everywhere. MCPs live under
 Running `init.sh` (designed to be re-run; idempotent) handles:
 
 Work plugins and internal MCPs below are enabled only in the `work` profile.
+The generic Omnigent `watch` MCP is available in both `desktop` and `work`.
 `bin/dotfiles-profile` performs the same detection for standalone `sync-mcps`
 runs as for `init.sh`/`sync.sh`; see the repository README for overrides.
 Desktop runs remove managed internal MCP registrations from existing configs
 without removing unrelated personal servers.
+
+Global rules and the `waiting-without-polling` skill encourage completion
+notifications and event-driven follow-up instead of repeated model status
+checks. Prefer harness-native background tasks, monitors, and channels when
+their coverage and lifetime fit. The custom Omnigent watcher is useful for
+persistent waits and specialized Meta CI/review subscriptions; installing it
+does not make it mandatory for ordinary builds or tests. `watch-anything`
+documents the generic tool's limits. For Meta feedback, the custom integration
+is the default.
+`phabricator-diff-watch` specifies what evidence is needed before replacing it.
 
 1. **Symlinks** every `skills/*/SKILL.md` and every
    `skills/meta-powertools-vendored/*/SKILL.md` subdir into
@@ -27,12 +38,17 @@ without removing unrelated personal servers.
    These are parsed and merged recursively: local scalars and arrays replace
    shared values, and local table entries override matching shared entries.
    The generated file is replaced atomically; invalid TOML leaves it intact.
-3. **MCPs** — calls `agent_config/sync-mcps all`, which writes the 7
+3. **MCPs** — calls `agent_config/sync-mcps all`, which writes the enabled
    MCP definitions from `plugins/custom-mcps/mcps/*.json` into each
    agent's native config (Claude `~/.claude.json.mcpServers`, Codex
    `[mcp_servers.X]`, Metacode `opencode.json.mcp`). For Metacode it
    also adds the vendored-skills dir to `skills.paths` (Metacode loads
-   skills from paths, not symlinks).
+   skills from paths, not symlinks). Definitions default to the work profile;
+   portable servers declare `"profiles": ["desktop", "work"]`. An optional
+   `"agents"` list restricts a definition to named agents; otherwise it reaches
+   Claude, Codex, and Metacode. `watch.json` is the shared watcher definition
+   for all three. Metacode uses `OPENCODE_CONFIG_DIR`, falling back to
+   `$XDG_CONFIG_HOME/opencode` or `~/.config/opencode`.
 4. **Plugins** — calls `agent_config/bootstrap-plugins`, which uninstalls
    everything in `drop-plugins.list` from every agent, cleans orphan
    plugin caches under `~/.claude/plugins/cache/agent-market/` and
@@ -43,9 +59,8 @@ So: pull dotfiles → run `init.sh` → every devserver lines up.
 
 Not managed here, by design: the `aws-mcp` server and `aws-*` skills that
 `bin/aws-agent-toolkit-ensure` installs on desktop machines. The MCP registry
-above is all-or-nothing by profile (every entry is a work tool, retired on
-desktop), which is backwards for a personal AWS account, and the skills are
-versioned downloads from AWS's catalog rather than authored content. `sync-mcps`
+above owns the authored MCP definitions, while the toolkit provisions AWS
+account access and versioned skill downloads from AWS's catalog. `sync-mcps`
 leaves `mcpServers` entries it does not own alone, and `sync.sh` prunes only
 skill symlinks that point into dotfiles, so the toolkit's files survive syncs.
 
@@ -60,7 +75,8 @@ Examples live in `codex_config/config.local.example.toml`.
 
 Generation combines the shared template and managed MCP definitions, then
 applies local overrides. The work profile also loads `config.work.toml` and
-registers internal MCPs; desktop generation retracts those managed servers.
+registers internal MCPs; desktop generation retracts those internal servers
+and retains the portable watcher.
 It preserves existing `projects`, `tui`, `notice`,
 `features`, `plugins`, and `hooks` tables and unmanaged MCP definitions;
 explicit template/local entries take precedence. Put durable preference

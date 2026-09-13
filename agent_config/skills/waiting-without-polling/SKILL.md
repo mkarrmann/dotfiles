@@ -1,115 +1,116 @@
 ---
 name: waiting-without-polling
 description: >-
-  Use before waiting on anything that completes later — a rollout or canary,
-  a CI run, a build, a deploy, a Chronos job, a JustKnob or config mutation,
-  a long test — and whenever asked to babysit, monitor, watch, keep an eye on,
-  poll, or report back when something lands, finishes, or goes green. Covers
-  how to wait without spending model turns: backgrounded condition loops that
-  wake you on exit, /loop for recurring judgment passes, the Phabricator diff
-  watcher, and the per-harness mechanics for Claude Code, Codex, and
-  Omnigent-hosted sessions. Trigger keywords: babysit, monitor, watch, poll,
-  wait for, keep an eye on, let me know when, notify me when, check back,
-  until it lands, until CI is green, sleep, background, canary, rollout.
+  Use before waiting for a build, test, CI result, job, deployment, or other
+  changing condition, and when asked to monitor, babysit, or report back.
+  Prefer harness-native completion notifications, monitors, and event
+  subscriptions over repeated model status checks. Explains when Omnigent's
+  persistent watcher or specialized Phabricator feedback is useful.
 ---
 
 # Waiting without polling
 
-## The rule
+## Prefer notification over repeated model check-ins
 
-**Never block a turn waiting, and never re-poll in your own context.** Both spend
-a full model turn to learn nothing.
+Arrange for useful information to wake the agent, then continue other work or
+finish the turn. Avoid cycles of status tool calls, sleeps, and model turns
+that only discover "still running". Moving those same model checks into a
+scheduled prompt does not remove the waste.
 
-Measured, in one Presto canary-watch session: a turn costs ~205k tokens
-(dominated by re-reading the growing transcript). Eight `sleep`-and-recheck
-turns cost **~1.4M tokens and 75 minutes of dead wall-clock**, and returned only
-a timestamp. Backgrounding the same wait costs nothing.
+A quiet script can poll mechanically without involving the model. Prefer
+upstream events when available; otherwise let code compare state and notify
+only when action may be needed. Setup and wake turns still use tokens, and
+the observer still consumes compute/API calls. Savings depend on the checks
+avoided, context size, and caching; there is no universal token cost per turn.
 
-Note both halves. Dropping `sleep` but still issuing a check every few turns is
-the _same_ mistake — the turn is the unit of cost, not the sleep.
+## Choose the mechanism that fits
 
-## Pick the cheapest thing that can decide
+**Harness-native equivalents are encouraged.** Prefer an existing completion
+notification, background task, monitor, or event channel when it covers the
+required information, lifetime, execution host, and latency. Do not require
+Omnigent's custom tool simply because it is installed.
 
-| Deciding the condition needs…      | Use                                    | Cost       |
-| ---------------------------------- | -------------------------------------- | ---------- |
-| A comparison, exit code, threshold | backgrounded condition loop            | 0          |
-| Judgment ("does this look wrong?") | a recurring pass, proposed to the user | ~205k/turn |
-| Phabricator diff / CI              | `phabricator-diff-watch`               | 0          |
-| Anything else a command can report | `watch-anything`                       | 0          |
+| Situation | Suitable approach and why |
+| --- | --- |
+| A build or test the agent just launched | Native background execution with completion notification; process exit already provides the signal. |
+| A file, log, or external job during an open session | Native monitor/event channel, or a bounded quiet script that notifies on completion; no model check-ins while unchanged. |
+| A producer already emits a webhook or event stream | An available native channel/integration; use the producer's signal instead of adding status polling. |
+| An external job may outlive the harness process | Omnigent `watch-anything`, when the probe and its documented limitations fit; persistent requests can later wake the same usable Omnigent session. |
+| Submitted Meta diffs need CI and review follow-up | Use `phabricator-diff-watch` by default. A generic notification tool alone does not establish CI/review coverage. Follow that skill's evidence requirements before substituting another integration. |
+| Deciding when to act itself requires judgment | Propose a bounded scheduled model pass such as `/loop`; use it when a mechanical notification cannot answer the question, not as a substitute for an available completion event. |
 
-Prefer a watch over a backgrounded loop whenever the wait may outlive the
-session or the turn: a backgrounded process dies with the session, while a
-watch lives in the sidecar and wakes whatever session registered it.
+The extra value of Omnigent's watcher is persisted requests and pending delivery
+through the session server, plus specialized event sources. It is useful when
+native facilities are absent or tied to a shorter-lived process. Merely ending
+a turn is not enough reason to choose it: native background work can survive
+final responses. Check whether the observer survives the actual harness
+exit/resume boundary.
 
-Most watching is mechanical. Reach for a model only when interpreting the
-result genuinely needs one — and note the two compose well: a free mechanical
-trigger gating an expensive judgment pass.
+Omnigent's generic tool polls sampled command output; it is not a universal
+event bus. It supports recurring changes after acknowledgment, but sampling
+and batching can miss intermediate transitions. Its current defaults are a
+60-second nominal poll interval (30-second configured minimum, ±10% jitter),
+five-minute batching, and a ten-minute gap between session notifications; busy
+or unreachable sessions can defer them further. It retires after seven days
+without a session delivery, even with deferred feedback, and needs the same
+usable Omnigent session. See [[watch-anything]] for probe, retry, downtime,
+and status limitations before relying on that lifetime.
 
-## Recipes
+## Harness examples
 
-### Claude Code — backgrounded loop (the default)
+### Claude Code
 
-`run_in_background: true` on Bash. The harness re-invokes you when the process
-exits, so the wait is free.
+- For a launched build/test or a bounded condition script, use Bash's
+  `run_in_background: true` when available; completion produces a notification.
+  Interactive main-session background commands can outlive a final response,
+  but stop when Claude exits. Noninteractive `-p` runs have a shorter lifetime.
+- `Monitor` can deliver command-output lines or WebSocket messages to the
+  conversation. Have the observer emit relevant changes, not every poll's
+  unchanged status or every noisy log line.
+- Channels can push external events into an open conversation. Availability
+  varies by installed version, provider, and configuration; inspect actual
+  tools before choosing one.
 
-```bash
-base=$(some-check)
-while [ $i -lt 144 ]; do          # always bound it; 144 x 5min = 12h
-  sleep 300; i=$((i+1))
-  now=$(some-check)
-  [ -z "$now" ] && continue        # transient failure is not a change
-  [ "$now" != "$base" ] && { echo "CHANGED: $base -> $now"; exit 0; }
-done
-echo "no change after 12h"
-```
+See [background commands and Monitor](https://code.claude.com/docs/en/tools-reference),
+[Channels](https://code.claude.com/docs/en/channels), and
+[scheduled task lifetime limits](https://code.claude.com/docs/en/scheduled-tasks#limitations).
+Background Bash and Monitor tasks are not restored on resume; some scheduled
+prompts are, but they still invoke the model on their schedule.
 
-### Codex
+### Codex and other harnesses
 
-No auto-wake on exit. Detach and push into the thread instead:
+Use the background execution and notification facilities actually advertised
+by the current harness. A tool waiting for completion does not require model
+inference while it waits; do not convert it into repeated short status checks.
+A detached PID or output file alone does not arrange a future agent turn.
 
-```bash
-setsid nohup sh -c 'until cond; do sleep 300; done;
-  codex queue --thread "$THREAD" --message "condition met"' &
-```
+Codex's [App Server](https://learn.chatgpt.com/docs/app-server) provides APIs for
+feeding external tool output into a thread, but an API primitive is not an
+already-configured notification tool. Do not invent a CLI command or manually
+wire an app-server bridge as a routine waiting workaround. In Omnigent, use
+`watch-anything` when native notification is insufficient and the condition
+fits that skill. Outside Omnigent, its watcher cannot target a native thread ID.
 
-Or hold the process in a `unified_exec` session.
+## Make the wait useful and bounded
 
-### Recurring judgment passes
+- Check whether the condition is already satisfied and act immediately if so.
+  Establish a change watch before starting work when possible, and recheck
+  after registration if needed to close the check/subscribe race. A comparison
+  that already prints `MATCH` is still a silent baseline for a change watcher.
+- Distinguish a probe failure from an unchanged value. Bound background scripts
+  and define what happens on failure or timeout, as well as on success.
+- Avoid duplicate native/custom observers for the same condition. Record enough
+  context to know what the eventual notification means and what to do next.
+- After registering, continue other work or finish the turn. Omnigent defers
+  delivery while a session is busy; holding it open can delay its own wake.
+- Read current state when notified; notifications may be delayed, batched, or
+  race further changes. Retries check prior acceptance and refresh obsolete
+  feedback, but duplicate suppression is best effort.
+  Cancel the observer when done or when the task is handed off.
+- If no suitable mechanism is available, explain the missing capability and
+  limits. Do not silently start repeated model polling or restart/install
+  infrastructure without authorization.
 
-`/loop` exists for this ("check the deploy every 5 minutes" is its documented
-example). **Propose it; do not self-start it** — at ~205k/turn a 5-minute loop
-costs ~2.5M tokens/hour, which is the user's spend decision.
-
-Pair it with a backgrounded watcher rather than replacing one: per
-`ScheduleWakeup`'s own guidance, never short-interval-poll work that already
-notifies on completion — use a long fallback (1200s+) as a heartbeat instead.
-
-## Traps
-
-- **Capture the baseline before the thing can change.** A watcher started after
-  a change has already propagated records the _new_ value as its baseline and
-  never fires. This has actually happened: a JustKnob watcher missed its own
-  rollout because it began after the value flipped locally. If the baseline
-  might already be stale, compare against a known-expected value, not against
-  whatever you read first.
-- **Distinguish "no change" from "check failed."** An empty or erroring probe is
-  not a value; `continue`, don't treat it as a difference.
-- **Always bound the loop** so a stuck watcher dies rather than lingering.
-- **A foreground `sleep` of 60s or more is refused** in any Omnigent-hosted
-  session, by `omnigent_config/policy_modules/no_foreground_wait.py`. It is a
-  backstop, not the guidance: it fires after you have already spent the turn, it
-  only sees `sleep` rather than the re-poll-across-turns half of the problem,
-  and a session started outside Omnigent is not gated at all.
-
-## Prefer purpose-built alerting
-
-For production signals, an agent watching a dashboard is a worse-engineered
-alert. Meta already has ODS and Scuba alerting, and rollout systems carry their
-own health checks — a Configerator canary runs `customHealthCheckHook` and
-aborts on host-level failure without anyone watching. Reach for those first, and
-use an agent for the judgment a threshold cannot express.
-
-Beware the inverse, too: a naive threshold alert on a cohort metric will fire
-falsely. Comparing a treated cohort against "everything else" mixes populations;
-compare within a matched control and stratify, or Simpson's paradox will hand
-you a confident wrong answer.
+For production health signals, prefer the service's alerting and automated
+health checks. Wake an agent when interpretation or follow-up needs judgment;
+use deterministic automation when it can complete the task itself.

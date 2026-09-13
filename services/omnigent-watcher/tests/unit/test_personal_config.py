@@ -42,7 +42,7 @@ def test_skill_is_bounded_and_references_the_real_tools() -> None:
     assert "[[diff-comments]]" in body
     assert "[[ci-signals]]" in body
     assert "conv_" not in body
-    assert "stale hint" in body
+    assert "hint to read current feedback" in body
 
 
 def test_skill_eval_cases_cover_positive_negative_wake_and_cleanup() -> None:
