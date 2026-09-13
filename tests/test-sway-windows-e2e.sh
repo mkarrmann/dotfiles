@@ -232,6 +232,8 @@ check "workspace 1 is one tab group of 3" "3" "$(ws_tabbed 1)"
 check "workspace 2 is one tab group of 3" "3" "$(ws_tabbed 2)"
 check "dashboard holds the pane, claimed" "obsidian.stub[sw:9:obsidian.stub]" "$(ws_order 9)"
 check "dashboard is laid out side by side, not tabbed" "0" "$(ws_tabbed 9)"
+grep -q 'NOTE: one output active; the dashboard is workspace 9' "$TMP/run.log" \
+  && pass "single-output fallback is reported" || fail "no single-output NOTE in the run log"
 for _ in $(seq 1 40); do [[ -s "$TMP/alpha.ran" ]] && break; sleep 0.25; done
 [[ -s "$TMP/alpha.ran" ]] && pass "terminal command ran intact through every launch layer" \
                           || fail "terminal command never ran (truncated or re-quoted on the way to zsh?)"

@@ -146,6 +146,10 @@ Two Linux-specific constraints are load-bearing:
   output, and on the first parent resize after its update overlay reports an
   empty height (an upstream `update_overlay.js` bug, still present in 0.13.0).
   The entry's HACK note has the diagnosis and the removal conditions.
+- With the second monitor unplugged, sway puts workspace 9 on the remaining
+  output (the Mac script's `external > any non-main > main` fallback), so the
+  dashboard is simply `$mod+9` behind the managed workspaces; the run log says
+  so with a NOTE.
 - Windows are launched directly from the script (`setsid`), not through
   `swaymsg exec`: sway's command parser splits on `;` and mishandles an
   escaped quote followed by an escaped separator, which once cut the

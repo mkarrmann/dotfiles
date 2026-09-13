@@ -569,6 +569,13 @@ if [[ "$SKIP_DASHBOARD" != true ]]; then
     IFS='|' read -r app_id cmd <<< "$pane"
     reconcile_dashboard_pane "$app_id" "$cmd" || true
   done
+  # With the dashboard's output unplugged, sway falls back to the remaining
+  # one (the same policy as the Mac's select_target_monitor), so the dashboard
+  # is a workspace behind the managed ones rather than a second screen. Say so,
+  # or it looks like it was never built.
+  if [[ "$(sway_ipc -t get_outputs | jq '[.[] | select(.active)] | length')" == 1 ]]; then
+    echo "NOTE: one output active; the dashboard is workspace $DASHBOARD_WS on it (\$mod+$DASHBOARD_WS), not a second screen."
+  fi
 fi
 
 # ── Sweep ────────────────────────────────────────────────────────────
