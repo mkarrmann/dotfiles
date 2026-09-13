@@ -13,7 +13,7 @@ failure was invisible from the hub, which is where it kept being tested.
 
 So the tools became HTTP clients and the work moved here. This module is
 mounted by dotted path through the server's ``debug_router_modules`` key (see
-``omnigent_config/server.yaml``), which reaches clients over the same
+``omnigent_config/config.hub.yaml``), which reaches clients over the same
 ``127.0.0.1:6767`` forward the tools already use to validate a session. No new
 tunnel, no second port to health-check.
 

@@ -1,22 +1,35 @@
-# Shared, machine-agnostic Omnigent client preferences.
+# Shared, machine-agnostic Omnigent configuration.
 #
-# These keys are deep-merged into each machine's live ~/.omnigent/config.yaml by
-# bin/omnigent-config-ensure (run from sync.sh and init.sh). Only the keys
-# declared here are touched; every machine-specific key is preserved:
+# Every Omnigent process on a machine reads ~/.omnigent/config.yaml: the CLI
+# and host daemon take their client preferences from it, and the SERVER takes
+# its policies from it -- the work hub's systemd unit passes it as --config,
+# and the managed local server that a desktop's `omnigent host --server ""`
+# spawns passes it by default (omnigent/host/local_server.py). So this one
+# file is the portable source for both sides.
+#
+# bin/omnigent-config-ensure (run from sync.sh and init.sh on EVERY profile)
+# deep-merges the keys declared here into that file. Only the keys declared
+# here are touched; every machine-specific key is preserved:
 #
 #   host:    written by the omnigent host daemon (host_id, hostname) -- per machine.
-#   server:  reconciled per host by omnigent-host-ensure / omnigent-dvsc-ensure.
+#   server:  reconciled per work host by omnigent-host-ensure / omnigent-dvsc-ensure.
 #   acp:     the dvsc-core agent entry is merged by omnigent-dvsc-ensure.
 #
-# So put ONLY portable user preferences here. To change a preference everywhere,
-# edit this file and run sync.sh (or bin/omnigent-config-ensure directly) on
-# each machine.
+# Server keys that only make sense beside the hub's sidecars live in
+# config.hub.yaml, which the same script merges on hub candidates only.
+#
+# To change a preference everywhere, edit this file and run sync.sh (or
+# bin/omnigent-config-ensure directly) on each machine. The server reads its
+# keys once at boot: bin/omnigent-server-config-stale reports when the running
+# server predates an edit here, and init.sh (via omnigent-agents-ensure)
+# restarts it once nothing is running.
 
 providers:
-  # Meta's claude CLI carries its own auth (managed-settings apiKeyHelper ->
-  # clicat CAT, Vertex upstream), so a `subscription` entry is the whole story:
-  # no base_url, no key. Declared EXPLICITLY because omnigent otherwise only
-  # discovers it by ambient detection, which requires CLAUDE_CODE_USE_VERTEX +
+  # `kind: subscription, cli: claude` means "use whatever login the claude CLI
+  # itself carries": at Meta that is the managed-settings apiKeyHelper (clicat
+  # CAT, Vertex upstream); on a personal machine it is the claude.ai login. No
+  # base_url, no key, on either. Declared EXPLICITLY because omnigent otherwise
+  # only discovers it by ambient detection, which requires CLAUDE_CODE_USE_VERTEX +
   # ANTHROPIC_VERTEX_PROJECT_ID + CLOUD_ML_REGION (omnigent/onboarding/ambient.py).
   # Those are exported by the claude wrapper, NOT by a login shell -- so the
   # omnigent REPL detected nothing and reported "(provider unresolved)" on
@@ -40,3 +53,32 @@ runner:
 
 tui:
   theme: dark
+
+# ---------------------------------------------------------------------------
+# Server keys. Read by `omnigent server` alone; inert for the CLI and host.
+# ---------------------------------------------------------------------------
+
+# Extra policy modules to import at startup (dotted module paths). They are
+# resolved through PYTHONPATH, which the unit that owns the server sets to
+# omnigent_config/policy_modules: systemd/omnigent-server.service on the hub,
+# systemd/desktop/omnigent-host.service on a desktop (the server is that
+# host's child). Their POLICY_REGISTRY entries are merged into the registry.
+policy_modules:
+  - no_foreground_wait
+
+# Server-wide default policies, appended after per-agent policies for EVERY
+# session. `type: function` self-selects its phase, so no `on:` is needed.
+policies:
+  # Refuse a shell command that blocks the turn on a long sleep — waiting in-turn
+  # spends a model turn to produce nothing, and every harness can detach instead.
+  # Enforced here rather than as per-harness PreToolUse hooks because one policy
+  # covers everything Omnigent fronts; hooks would miss native Codex entirely,
+  # which runs under a private CODEX_HOME that never reads ~/.codex/hooks.json.
+  # A session started outside Omnigent is not gated; the waiting-without-polling
+  # skill still reaches it.
+  no_foreground_wait:
+    type: function
+    function:
+      path: no_foreground_wait.block_foreground_wait
+      arguments:
+        action: deny

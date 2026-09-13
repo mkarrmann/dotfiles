@@ -35,7 +35,7 @@ The sidecar, its database, and the sessions it wakes are all on the active hub
 — every omnigent unit carries `ExecCondition=omnigent-hub gate`. The MCP tools
 run wherever the agent runs, so they are HTTP clients: `omnigent_watcher.http_api`
 is mounted into the hub's Omnigent server through the `debug_router_modules`
-key in `omnigent_config/server.yaml`, and reached over the same
+key in `omnigent_config/config.hub.yaml`, and reached over the same
 `127.0.0.1:6767` forward the tools already use to validate a session.
 
 They used to open the database by path instead, which meant "whichever machine

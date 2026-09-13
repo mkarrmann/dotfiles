@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
-# omnigent-config-ensure — propagate shared, machine-agnostic Omnigent client
-# preferences (omnigent_config/config.shared.yaml) into this machine's live
-# ~/.omnigent/config.yaml.
+# omnigent-config-ensure — propagate the source-controlled Omnigent
+# configuration into this machine's live ~/.omnigent/config.yaml:
 #
-# The config.yaml is a machine-LOCAL file: the host daemon writes host: (host_id
-# + hostname), omnigent-host-ensure / omnigent-dvsc-ensure reconcile the per-host
-# server: URL, and omnigent-dvsc-ensure merges the acp: dvsc-core entry. So we
-# cannot symlink a shared file over it. Instead we deep-merge ONLY the keys
-# declared in config.shared.yaml, preserving every machine-specific key. This is
-# the YAML analogue of the settings.json jq-merge in sync.sh.
+#   omnigent_config/config.shared.yaml   every machine
+#   omnigent_config/config.hub.yaml      hub candidates only (topology.env)
+#
+# config.yaml is the ONE file every Omnigent process here reads -- the CLI and
+# host daemon for client preferences, the server (hub unit or a desktop's
+# managed local server) for its policies -- and it is machine-LOCAL: the host
+# daemon writes host: (host_id + hostname), omnigent-host-ensure /
+# omnigent-dvsc-ensure reconcile the per-host server: URL, and
+# omnigent-dvsc-ensure merges the acp: dvsc-core entry. So we cannot symlink a
+# shared file over it. Instead we deep-merge ONLY the keys declared in the
+# overlays, preserving every machine-specific key. This is the YAML analogue of
+# the settings.json jq-merge in sync.sh.
 #
 # Idempotent and portable: safe to re-run, and self-skips where omnigent (its
-# bundled pyyaml) isn't installed. Wired into sync.sh and init.sh.
+# bundled pyyaml) isn't installed. Wired into sync.sh and init.sh on every
+# profile.
 #
 # Env overrides: DOTFILES_DIR, OMNIGENT_DATA_DIR / OMNIGENT_CONFIG_HOME,
 # OMNIGENT_PY.
@@ -26,6 +32,7 @@ log() { printf '[config-ensure] %s\n' "$*"; }
 
 DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
 SHARED="$DOTFILES/omnigent_config/config.shared.yaml"
+HUB="$DOTFILES/omnigent_config/config.hub.yaml"
 DATA_DIR="${OMNIGENT_DATA_DIR:-${OMNIGENT_CONFIG_HOME:-$HOME/.omnigent}}"
 CONFIG="$DATA_DIR/config.yaml"
 
@@ -43,19 +50,21 @@ if [[ ! -x "$OMNIGENT_PY" ]]; then
   exit 0
 fi
 
-"$OMNIGENT_PY" - "$SHARED" "$CONFIG" <<'PY'
+overlays=("$SHARED")
+# --is-candidate is answered from static topology alone (no routing cache), so
+# it is safe to ask on a desktop, where it is simply false.
+if [[ -f "$HUB" ]] \
+    && "$DOTFILES/bin/omnigent-server-url" --is-candidate >/dev/null 2>&1; then
+  overlays+=("$HUB")
+fi
+
+"$OMNIGENT_PY" - "$CONFIG" "${overlays[@]}" <<'PY'
 import os
 import sys
 
 import yaml
 
-shared_path, config_path = sys.argv[1], sys.argv[2]
-
-with open(shared_path) as f:
-    shared = yaml.safe_load(f) or {}
-if not isinstance(shared, dict):
-    print("[config-ensure] shared config is not a mapping; skipping")
-    raise SystemExit(0)
+config_path, *overlay_paths = sys.argv[1:]
 
 cfg = {}
 if os.path.exists(config_path):
@@ -85,13 +94,22 @@ def deep_merge(base, overlay, path=""):
     return changed
 
 
-changed = deep_merge(cfg, shared)
+changed = False
+for overlay_path in overlay_paths:
+    with open(overlay_path) as f:
+        overlay = yaml.safe_load(f) or {}
+    if not isinstance(overlay, dict):
+        print(f"[config-ensure] {os.path.basename(overlay_path)} is not a mapping; skipping")
+        continue
+    if deep_merge(cfg, overlay):
+        changed = True
+
 if not changed:
-    print("[config-ensure] config.yaml: shared preferences already applied")
+    print("[config-ensure] config.yaml: shared configuration already applied")
     raise SystemExit(0)
 
 os.makedirs(os.path.dirname(config_path), exist_ok=True)
 with open(config_path, "w") as f:
     yaml.safe_dump(cfg, f, sort_keys=False, default_flow_style=False)
-print("[config-ensure] config.yaml: shared preferences reconciled")
+print("[config-ensure] config.yaml: shared configuration reconciled")
 PY

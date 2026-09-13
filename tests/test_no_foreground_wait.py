@@ -2,8 +2,9 @@
 
 Covers the foreground-wait gate: the detection rule and the Omnigent policy that
 enforces it. Imports the modules the way the server does — by name, off the
-policy-module directory that ``systemd/omnigent-server.service`` puts on
-PYTHONPATH — so a break in that path shows up here rather than at server start.
+policy-module directory that ``systemd/omnigent-server.service`` and
+``systemd/desktop/omnigent-host.service`` put on PYTHONPATH — so a break in
+that path shows up here rather than at server start.
 """
 
 from __future__ import annotations
@@ -204,16 +205,34 @@ class TestPolicy(unittest.TestCase):
 
 
 class TestServerWiring(unittest.TestCase):
-    """server.yaml must actually reference what the module exports."""
+    """config.shared.yaml must actually reference what the module exports.
+
+    The policy is universal, so it must sit in the overlay every machine
+    merges, not in the hub-only one.
+    """
 
     def setUp(self) -> None:
-        self.yaml = (ROOT / "omnigent_config" / "server.yaml").read_text()
+        self.yaml = (ROOT / "omnigent_config" / "config.shared.yaml").read_text()
 
     def test_module_is_registered(self) -> None:
         self.assertRegex(self.yaml, r"(?m)^\s*-\s*no_foreground_wait\s*$")
 
     def test_handler_path_matches_registry(self) -> None:
         self.assertIn(policy_mod.POLICY_REGISTRY[0]["handler"], self.yaml)
+
+    def test_hub_overlay_carries_no_policies(self) -> None:
+        hub = (ROOT / "omnigent_config" / "config.hub.yaml").read_text()
+        self.assertNotIn("no_foreground_wait", hub)
+        self.assertNotRegex(hub, r"(?m)^policies:")
+
+    def test_every_server_unit_puts_policy_modules_on_pythonpath(self) -> None:
+        for unit in ("systemd/omnigent-server.service", "systemd/desktop/omnigent-host.service"):
+            with self.subTest(unit=unit):
+                text = (ROOT / unit).read_text()
+                self.assertRegex(
+                    text,
+                    r"(?m)^Environment=PYTHONPATH=(?:.*:)?%h/dotfiles/omnigent_config/policy_modules(?::|$)",
+                )
 
 
 if __name__ == "__main__":

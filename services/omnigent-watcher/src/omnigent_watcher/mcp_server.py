@@ -187,7 +187,7 @@ async def _call(method: str, path: str, **kwargs: object) -> dict[str, object]:
     if response.status_code == 404:
         raise ValueError(
             "the hub's Omnigent server has no watcher API. It is mounted through the "
-            "debug_router_modules key in omnigent_config/server.yaml and loaded at "
+            "debug_router_modules key in omnigent_config/config.hub.yaml and loaded at "
             "startup, so the hub needs a config sync and a server restart."
         )
     if response.status_code >= 400:

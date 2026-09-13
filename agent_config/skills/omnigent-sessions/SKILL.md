@@ -31,7 +31,7 @@ systemd `--user` unit (`~/dotfiles/systemd/omnigent-server.service`):
 omnigent server --host 127.0.0.1 --port 6767 \
     --database-uri sqlite:///~/.omnigent/chat.db \
     --artifact-location ~/.omnigent/artifacts \
-    --config ~/dotfiles/omnigent_config/server.yaml
+    --config ~/.omnigent/config.yaml
 ```
 
 - **The DB (`~/.omnigent/chat.db`) exists ONLY on the hub devserver.** The hub

@@ -1,23 +1,34 @@
 #!/usr/bin/env bash
 # omnigent-server-config-stale — exit 0 iff the running Omnigent server booted
-# BEFORE the last edit to a file it only reads at startup.
+# BEFORE the last edit to a source file whose content it only reads at startup.
 #
-# The server parses --config server.yaml and imports the PYTHONPATH policy
-# modules once, at boot. There is no reload endpoint (the REST surface is
-# GET/POST /v1/policies and DELETE /v1/policies/{id}, and config-sourced
-# policies come back with "id": null, so they cannot even be removed through
-# the API). An edit to either therefore has NO effect until the next restart.
+# The server parses its --config (~/.omnigent/config.yaml, merged from
+# omnigent_config/config.shared.yaml and, on hub candidates, config.hub.yaml)
+# and imports the PYTHONPATH policy modules once, at boot. There is no reload
+# endpoint (the REST surface is GET/POST /v1/policies and DELETE
+# /v1/policies/{id}, and config-sourced policies come back with "id": null, so
+# they cannot even be removed through the API). An edit to any of them
+# therefore has NO effect until the next restart.
 #
 # This is invisible to every other drift signal we have: agent bundles live in
 # chat.db and are content-hashed by omnigent-agents-ensure, but a policy edit
 # leaves no trace the live process can be asked about. Observed failure: an ASK
-# gate deleted from server.yaml kept parking approval cards on every diff-watch
-# subscribe for a day, because the server that still had it loaded had been up
-# since before the deletion.
+# gate deleted from the server config kept parking approval cards on every
+# diff-watch subscribe for a day, because the server that still had it loaded
+# had been up since before the deletion.
+#
+# The witnesses are the dotfiles SOURCES, not the merged config.yaml: other
+# helpers rewrite that file on every run (omnigent-dvsc-ensure, the host
+# daemon), so its mtime says nothing about the keys the server reads. The
+# corollary is that this check assumes omnigent-config-ensure has already
+# merged the sources; sync.sh and init.sh run it first.
 #
 # systemd holds the authoritative boot instant, so anything newer than
-# ExecMainStartTimestamp is by definition not loaded. Reports at most one file
-# (the check is a boolean; the first witness is enough to act on).
+# ExecMainStartTimestamp is by definition not loaded. Which unit owns the
+# server follows the profile: omnigent-server.service on the work hub, and on
+# a desktop omnigent-host.service, whose managed local server is its child.
+# Reports at most one file (the check is a boolean; the first witness is enough
+# to act on).
 #
 # Exit codes: 0 = stale (restart needed), 1 = current, or not applicable
 # (server not running / not this host / timestamp unreadable).
@@ -34,21 +45,32 @@ quiet=false
 
 DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
 
-command -v systemctl >/dev/null 2>&1 || exit 1
-systemctl --user is-active --quiet omnigent-server.service || exit 1
+case "$("$DOTFILES/bin/dotfiles-profile")" in
+  work) unit=omnigent-server.service ;;
+  desktop) unit=omnigent-host.service ;;
+  *) exit 1 ;;
+esac
 
-started_at="$(systemctl --user show omnigent-server.service \
+command -v systemctl >/dev/null 2>&1 || exit 1
+systemctl --user is-active --quiet "$unit" || exit 1
+
+started_at="$(systemctl --user show "$unit" \
   --property=ExecMainStartTimestamp --value 2>/dev/null || true)"
 [ -n "$started_at" ] || exit 1
 started_epoch="$(date -d "$started_at" +%s 2>/dev/null)" || exit 1
 
-for path in "$DOTFILES/omnigent_config/server.yaml" \
-            "$DOTFILES"/omnigent_config/policy_modules/*.py; do
+sources=("$DOTFILES/omnigent_config/config.shared.yaml"
+         "$DOTFILES"/omnigent_config/policy_modules/*.py)
+if "$DOTFILES/bin/omnigent-server-url" --is-candidate >/dev/null 2>&1; then
+  sources+=("$DOTFILES/omnigent_config/config.hub.yaml")
+fi
+
+for path in "${sources[@]}"; do
   [ -f "$path" ] || continue
   if [ "$(stat -c %Y "$path")" -gt "$started_epoch" ]; then
     if [ "$quiet" != true ]; then
-      printf 'omnigent server is running config from %s; newer on disk: %s\n' \
-        "$started_at" "${path#"$DOTFILES/"}"
+      printf 'omnigent server (%s) is running config from %s; newer on disk: %s\n' \
+        "$unit" "$started_at" "${path#"$DOTFILES/"}"
     fi
     exit 0
   fi
