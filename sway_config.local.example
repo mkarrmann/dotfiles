@@ -10,15 +10,15 @@ set $main 'Dell Inc. DELL U3225QE FSYR984'
 # Samsung LU28R55
 set $top  'Samsung Electric Company LU28R55 HCJRA03329'
 
-# logical height is 2160 / 1.2 = 1800
-set $scale 1.2
-set $stack_y 1800
+# Integer scale: every window, XWayland included, renders pixel-exact. The
+# stacked layout uses the full 2160 logical rows of the top panel.
+set $scale 1
+set $stack_y 2160
 
 # Top monitor (above)
 output $top {
     pos 0 0
     scale $scale
-    scale_filter smart
     mode 3840x2160@59.997Hz
 }
 
@@ -26,7 +26,6 @@ output $top {
 output $main {
     pos 0 $stack_y
     scale $scale
-    scale_filter smart
     mode 3840x2160@119.999Hz
 }
 
