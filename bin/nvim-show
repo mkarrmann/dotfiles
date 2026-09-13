@@ -8,41 +8,52 @@ set -euo pipefail
 #   nvim-show --clear                           drop this agent's annotations
 #
 # Options: --server ADDR  --session NAME  --agent KEY  --title LABEL  --no-jump
+#          --focus
 #
 # --list input is a JSON array of {"file","line","col","text"}; "text" becomes
 # both the location-list entry and an inline virtual-text annotation.
 #
 # Each calling agent owns one tabpage, keyed by its harness session id
-# ($CC_SESSION_ID for Claude), so concurrent agents never share a view. See
-# nvim/lua/lib/show-in-nvim.lua.
+# ($CC_SESSION_ID for Claude, the Omnigent session id under an Omnigent runner),
+# so concurrent agents never share a view. See nvim/lua/lib/show-in-nvim.lua.
 #
 # ---------------------------------------------------------------------------
 # Target resolution
 #
-# Two layers. The portable layer needs nothing but a running Neovim; the nvs
-# layer adds workspace-accurate routing on machines that run `nvs` headless
-# servers, and disables itself silently everywhere else.
+# Three layers. The portable layer needs nothing but a running Neovim. The
+# environment layer is one executable, nvim-show-resolver, that a platform may
+# put on PATH to say which editor belongs to the caller (bin-linux/ routes by
+# the sway workspace the caller's Omnigent window is on). The nvs layer adds
+# routing by declared workdir on machines that run `nvs` headless servers.
+# Each optional layer disables itself silently where it does not apply.
 #
 # Unambiguous targets -- if named but unreachable, this fails rather than
 # quietly opening somewhere else:
 #   1. --server ADDR              socket path or host:port          (portable)
 #   2. --session NAME             an nvs session, by port formula   (nvs)
 #   3. $NVIM                      you are inside a Neovim terminal  (portable)
-#   4. longest workdir-prefix match of the shown path against this host's nvs
+#   4. nvim-show-resolver         $NVIM_SHOW_RESOLVER (empty disables), else
+#      the first on PATH; prints server=/label=/focus= lines, or exits 1
+#      to pass                                                  (environment)
+#   5. longest workdir-prefix match of the shown path against this host's nvs
 #      session list, so a file in ~/checkout2 opens in that checkout's editor
-#   5. the same match against $PWD                                  (nvs)
+#   6. the same match against $PWD                                  (nvs)
 #
 # Fallbacks -- each is skipped when it is not reachable:
-#   6. the target this agent last resolved to; an agent owns one tab, so
+#   7. the target this agent last resolved to; an agent owns one tab, so
 #      --clear and later jumps stay with it                         (portable)
-#   7. $NVIM_SHOW_SERVER          address pin                       (portable)
-#   8. $NVS_TARGET_SESSION        nvs session pin                   (nvs)
-#   9. the sole running Neovim, discovered from its default server socket
+#   8. $NVIM_SHOW_SERVER          address pin                       (portable)
+#   9. $NVS_TARGET_SESSION        nvs session pin                   (nvs)
+#  10. the sole running Neovim, discovered from its default server socket
 #      under $XDG_RUNTIME_DIR (or $TMPDIR/nvim.$USER). Ambiguous when more
 #      than one is running, and then it says so.                    (portable)
 #
-# Steps 2, 4, 5 and 8 need bin/nvs-sessions-file and a declared session list;
-# without them the command still works through the portable steps alone.
+# Steps 2, 5, 6 and 9 need bin/nvs-sessions-file and a declared session list;
+# without them the command still works through the other steps alone.
+#
+# --focus runs the resolver's focus command after a successful show, so the
+# editor's window is brought forward where the platform knows how (sway: the
+# terminal tab beside the Omnigent window). It is remembered with the target.
 
 script_dir=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 
@@ -53,6 +64,7 @@ usage: nvim-show FILE [LINE [COL]] [--text NOTE]
        nvim-show --clear
 
 options: --server ADDR  --session NAME  --agent KEY  --title LABEL  --no-jump
+         --focus
 EOF
   exit 64
 }
@@ -65,6 +77,7 @@ agent=""
 title=""
 text=""
 jump="true"
+focus="false"
 positional=()
 
 while [[ $# -gt 0 ]]; do
@@ -84,6 +97,7 @@ while [[ $# -gt 0 ]]; do
     --title)   title="${2:?--title needs a label}"; shift 2 ;;
     --text)    text="${2:?--text needs a note}"; shift 2 ;;
     --no-jump) jump="false"; shift ;;
+    --focus)   focus="true"; shift ;;
     -h|--help) usage ;;
     --)        shift; positional+=("$@"); break ;;
     -)         positional+=("$1"); shift ;;
@@ -120,8 +134,9 @@ case "$action" in
     ;;
 esac
 
-# Agent identity. Claude Code exports both of these into every Bash tool call.
-agent="${agent:-${CC_SESSION_ID:-${CLAUDE_CODE_CURRENT_SESSION_ID:-${OMNIGENT_SESSION_ID:-}}}}"
+# Agent identity. Claude Code exports the first two into every Bash tool call;
+# an Omnigent runner exports its session id into every harness it launches.
+agent="${agent:-${CC_SESSION_ID:-${CLAUDE_CODE_CURRENT_SESSION_ID:-${OMNIGENT_SESSION_ID:-${OMNIGENT_RUNNER_PRIMARY_SESSION_ID:-}}}}}"
 if [[ -z $agent ]]; then
   echo "nvim-show: cannot determine the calling agent's session id — pass --agent KEY" >&2
   exit 1
@@ -241,6 +256,51 @@ session_for_path() {
   printf '%s\n' "$best_name"
 }
 
+# --- environment layer: one executable that knows this machine's editors -----
+
+# The resolver speaks key=value lines: server (required), label, focus (a shell
+# command that brings the editor forward). Exit 0 resolves; exit 1 passes, with
+# its reason on stderr kept for the final error; anything else is a hard error.
+resolver_server=""
+resolver_label=""
+resolver_focus=""
+resolver_notes=""
+run_resolver() {
+  local resolver output status line key value
+  # Set-but-empty disables the layer, so a test (or a shell) can opt out of
+  # whatever resolver the machine has on PATH.
+  if [[ -n ${NVIM_SHOW_RESOLVER+set} ]]; then
+    resolver="$NVIM_SHOW_RESOLVER"
+  else
+    resolver=$(command -v nvim-show-resolver 2>/dev/null || true)
+  fi
+  [[ -n $resolver ]] || return 1
+  output=$(NVIM_SHOW_HINT="$hint" NVIM_SHOW_AGENT="$agent" "$resolver" 2>"$payload_file.err") && status=0 || status=$?
+  resolver_notes=$(cat "$payload_file.err" 2>/dev/null || true)
+  rm -f "$payload_file.err"
+  if (( status == 1 )); then
+    return 1
+  elif (( status != 0 )); then
+    echo "nvim-show: resolver $resolver failed (exit $status)" >&2
+    [[ -z $resolver_notes ]] || printf '%s\n' "$resolver_notes" >&2
+    exit 1
+  fi
+  while IFS= read -r line; do
+    key="${line%%=*}"
+    value="${line#*=}"
+    case "$key" in
+      server) resolver_server="$value" ;;
+      label)  resolver_label="$value" ;;
+      focus)  resolver_focus="$value" ;;
+    esac
+  done <<< "$output"
+  if [[ -z $resolver_server ]]; then
+    echo "nvim-show: resolver $resolver printed no server= line" >&2
+    exit 1
+  fi
+  resolver_label="${resolver_label:-$resolver_server}"
+}
+
 # --- portable layer ----------------------------------------------------------
 
 memory_dir="${XDG_STATE_HOME:-$HOME/.local/state}/nvim-show"
@@ -248,20 +308,22 @@ memory_file="$memory_dir/${agent//[^A-Za-z0-9._-]/_}"
 
 remembered_label=""
 remembered_server=""
+remembered_focus=""
 read_memory() {
-  local label="" addr=""
+  local label="" addr="" focus_cmd=""
   [[ -r $memory_file ]] || return 1
-  { read -r label || true; read -r addr || true; } < "$memory_file"
+  { read -r label || true; read -r addr || true; read -r focus_cmd || true; } < "$memory_file"
   [[ -n $label ]] || return 1
   # Files written before addresses were recorded hold a bare nvs session name.
   [[ -n $addr ]] || addr="localhost:$(port_for "$label")"
   remembered_label="$label"
   remembered_server="$addr"
+  remembered_focus="$focus_cmd"
 }
 
 remember_target() {
   mkdir -p "$memory_dir" 2>/dev/null || return 0
-  printf '%s\n%s\n' "$1" "$2" > "$memory_file" 2>/dev/null || true
+  printf '%s\n%s\n%s\n' "$1" "$2" "${3:-}" > "$memory_file" 2>/dev/null || true
   # One file per agent session id, so retire the ones no longer in use.
   find "$memory_dir" -maxdepth 1 -type f -mtime +7 -delete 2>/dev/null || true
 }
@@ -291,6 +353,7 @@ discover_servers() {
 
 resolved_server=""
 resolved_label=""
+resolved_focus=""
 resolve_target() {
   local name pinned
 
@@ -311,6 +374,12 @@ resolve_target() {
     resolved_server="$NVIM"
     return 0
   fi
+  if run_resolver; then
+    resolved_label="$resolver_label"
+    resolved_server="$resolver_server"
+    resolved_focus="$resolver_focus"
+    return 0
+  fi
   name=$(session_for_path "$hint" || true)
   [[ -n $name ]] || name=$(session_for_path "$PWD" || true)
   if [[ -n $name ]]; then
@@ -323,6 +392,7 @@ resolve_target() {
   if read_memory && server_live "$remembered_server"; then
     resolved_label="$remembered_label"
     resolved_server="$remembered_server"
+    resolved_focus="$remembered_focus"
     return 0
   fi
   if [[ -n ${NVIM_SHOW_SERVER:-} ]] && server_live "$NVIM_SHOW_SERVER"; then
@@ -349,6 +419,7 @@ resolve_target() {
 if ! resolve_target; then
   {
     echo "nvim-show: cannot determine which Neovim to use."
+    [[ -z $resolver_notes ]] || printf '  %s\n' "$resolver_notes"
     if (( ${#discovered[@]} > 1 )); then
       echo "  Several are running; name one with --server ADDR:"
       printf '    %s\n' "${discovered[@]}"
@@ -377,12 +448,19 @@ result=$(nvim --server "$resolved_server" --remote-expr "$expression") || {
 
 case "$result" in
   ok)
-    remember_target "$resolved_label" "$resolved_server"
+    remember_target "$resolved_label" "$resolved_server" "$resolved_focus"
     case "$action" in
       show)  echo "nvim-show: $resolved_label <- $hint:$line:$col" ;;
       list)  echo "nvim-show: $resolved_label <- location list '$title'" ;;
       clear) echo "nvim-show: $resolved_label <- cleared '$title'" ;;
     esac
+    if [[ $focus == true ]]; then
+      if [[ -z $resolved_focus ]]; then
+        echo "nvim-show: --focus: no focus command is known for '$resolved_label'" >&2
+      elif ! bash -c "$resolved_focus" >/dev/null 2>&1; then
+        echo "nvim-show: --focus: '$resolved_focus' failed" >&2
+      fi
+    fi
     ;;
   *)
     echo "nvim-show: ${result#error: }" >&2

@@ -7,6 +7,11 @@ set -euo pipefail
 # reads a fixture list rather than the real one.
 
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
+# Hermetic against the machine running the test: an agent session exports an
+# Omnigent session id, and a synced desktop has a real nvim-show-resolver on
+# PATH that would route into the live editors.
+unset OMNIGENT_RUNNER_PRIMARY_SESSION_ID
+export NVIM_SHOW_RESOLVER=
 tmp_dir=$(mktemp -d)
 tmp_dir=$(cd "$tmp_dir" && pwd -P)
 real_nvim=$(command -v nvim)
@@ -31,7 +36,7 @@ mkdir -p "$work" "$outside" "$tmp_dir/home/.config/nvs"
 for name in a b c; do
   printf 'line1\nline2\nline3\nline4\nline5\n' > "$work/$name.txt"
 done
-printf 'stray\n' > "$outside/stray.txt"
+printf 'stray\nstray2\nstray3\nstray4\n' > "$outside/stray.txt"
 
 cat > "$tmp_dir/home/.config/nvs/sessions.$(hostname -s)" <<EOF
 # fixture session list
@@ -270,6 +275,90 @@ for pid in "${bare_pids[@]}"; do
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
 done
+
+
+# --- environment layer: nvim-show-resolver ------------------------------------
+
+# A resolver is any executable speaking key=value lines. This fake resolves to
+# the throwaway server and records whether its focus command ran.
+fake_resolver="$tmp_dir/fake-resolver"
+cat > "$fake_resolver" <<EOF
+#!/usr/bin/env bash
+echo "resolver saw hint=\$NVIM_SHOW_HINT agent=\$NVIM_SHOW_AGENT" >&2
+case "\${FAKE_RESOLVER_MODE:-resolve}" in
+  resolve)
+    echo "server=localhost:$port"
+    echo "label=fake-editor"
+    echo "focus=touch $tmp_dir/focused"
+    ;;
+  pass) echo "fake resolver has no opinion" >&2; exit 1 ;;
+  broken) echo "fake resolver exploded" >&2; exit 2 ;;
+esac
+EOF
+chmod +x "$fake_resolver"
+
+resolved() { # AGENT extra-env... -- nvim-show args...
+  local agent="$1"; shift
+  local envs=()
+  while [[ $# -gt 0 && $1 != -- ]]; do envs+=("$1"); shift; done
+  shift
+  env HOME="$bare_home" XDG_STATE_HOME="$state" XDG_RUNTIME_DIR="$empty_runtime" \
+    CC_SESSION_ID="$agent" AGENT=claude_code NVIM_SHOW_RESOLVER="$fake_resolver" "${envs[@]}" \
+    "$repo_root/bin/nvim-show" "$@"
+}
+
+# The resolver beats every inferred rule: no nvs list, no socket, no memory.
+(cd "$outside" && resolved res-one -- "$outside/stray.txt" 2) > "$tmp_dir/out" 2>&1 \
+  || fail "resolver-backed show failed: $(cat "$tmp_dir/out")"
+grep -q "fake-editor <- " "$tmp_dir/out" || fail "did not report the resolver's label"
+assert_eq "$(probe res-one | cut -d'|' -f1,2)" "stray.txt|2" "resolver-backed jump"
+[[ -e $tmp_dir/focused ]] && fail "focus command ran without --focus"
+assert_eq "$(sed -n 3p "$state/nvim-show/res-one")" "touch $tmp_dir/focused" "the focus command is remembered"
+
+# --focus runs it after a successful show.
+resolved res-one -- --focus "$outside/stray.txt" 3 > /dev/null
+[[ -e $tmp_dir/focused ]] || fail "--focus did not run the resolver's focus command"
+rm -f "$tmp_dir/focused"
+
+# A resolver that passes (exit 1) is skipped: the remembered target still
+# serves this agent, focus command included ...
+resolved res-one FAKE_RESOLVER_MODE=pass -- --focus "$outside/stray.txt" 4 > /dev/null \
+  || fail "remembered target did not cover a passing resolver"
+assert_eq "$(probe res-one | cut -d'|' -f1,2)" "stray.txt|4" "remembered target after resolver pass"
+[[ -e $tmp_dir/focused ]] || fail "--focus did not use the remembered focus command"
+# ... and a fresh agent fails with the resolver's reason in the message.
+if resolved res-two FAKE_RESOLVER_MODE=pass -- "$outside/stray.txt" 1 > "$tmp_dir/out" 2>&1; then
+  fail "a passing resolver with nothing else resolved anyway"
+fi
+grep -q "fake resolver has no opinion" "$tmp_dir/out" || fail "resolver's reason missing from the error"
+
+# A resolver that fails outright (exit >= 2) is an error, never a silent skip.
+if resolved res-three FAKE_RESOLVER_MODE=broken -- "$outside/stray.txt" 1 > "$tmp_dir/out" 2>&1; then
+  fail "a broken resolver was ignored"
+fi
+grep -q "resolver .* failed (exit 2)" "$tmp_dir/out" || fail "broken resolver not reported: $(cat "$tmp_dir/out")"
+grep -q "fake resolver exploded" "$tmp_dir/out" || fail "broken resolver's stderr not shown"
+
+# Explicit targets still win over the resolver.
+resolved res-four -- --server "localhost:$port" "$work/a.txt" 1 > "$tmp_dir/out" 2>&1
+grep -q "fake-editor" "$tmp_dir/out" && fail "--server did not take precedence over the resolver"
+
+# Without the env pin the resolver is found by name on PATH.
+mkdir -p "$tmp_dir/pathbin"
+ln -s "$fake_resolver" "$tmp_dir/pathbin/nvim-show-resolver"
+(cd "$outside" && env -u NVIM_SHOW_RESOLVER PATH="$tmp_dir/pathbin:$PATH" HOME="$bare_home" \
+  XDG_STATE_HOME="$state" XDG_RUNTIME_DIR="$empty_runtime" CC_SESSION_ID=res-five AGENT=claude_code \
+  "$repo_root/bin/nvim-show" "$outside/stray.txt" 1) > "$tmp_dir/out" 2>&1 \
+  || fail "PATH resolver not used: $(cat "$tmp_dir/out")"
+grep -q "fake-editor <- " "$tmp_dir/out" || fail "PATH resolver's label not reported"
+
+# An Omnigent runner identifies the agent by its session id when Claude's own
+# variables are absent.
+env -u CC_SESSION_ID -u CLAUDE_CODE_CURRENT_SESSION_ID -u OMNIGENT_SESSION_ID \
+  OMNIGENT_RUNNER_PRIMARY_SESSION_ID=omni-one HOME="$bare_home" XDG_STATE_HOME="$state" \
+  XDG_RUNTIME_DIR="$empty_runtime" AGENT=claude_code NVIM_SHOW_RESOLVER="$fake_resolver" \
+  "$repo_root/bin/nvim-show" "$work/a.txt" 2 > /dev/null || fail "Omnigent session id not accepted as identity"
+assert_eq "$(probe omni-one | cut -d'|' -f1,2)" "a.txt|2" "identity from OMNIGENT_RUNNER_PRIMARY_SESSION_ID"
 
 
 # --- the module is wired for delivery ----------------------------------------
