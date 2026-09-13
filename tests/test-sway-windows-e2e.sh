@@ -151,7 +151,7 @@ WORKSPACES=(
 DASHBOARD_WS=${1:-9}
 DASHBOARD_PANES=("obsidian.stub|__desktop_entry__ obsidian.desktop")
 CHROME_CMD=("$TMP/bin/chrome-stub")
-OMNIGENT_NEW_WINDOW_KEYS=()
+OMNIGENT_NEW_WINDOW_MIN_VERSION=""
 EOF
 }
 layout_retired() {   # slot "1|chrome" deleted, terminal slot alpha renamed to gamma
@@ -166,7 +166,7 @@ WORKSPACES=(
 DASHBOARD_WS=9
 DASHBOARD_PANES=("obsidian.stub|__desktop_entry__ obsidian.desktop")
 CHROME_CMD=("$TMP/bin/chrome-stub")
-OMNIGENT_NEW_WINDOW_KEYS=()
+OMNIGENT_NEW_WINDOW_MIN_VERSION=""
 EOF
 }
 layout_prefix() {    # custom terminal app_id prefix
@@ -180,7 +180,7 @@ WORKSPACES=(
 DASHBOARD_WS=9
 DASHBOARD_PANES=()
 CHROME_CMD=("$TMP/bin/chrome-stub")
-OMNIGENT_NEW_WINDOW_KEYS=()
+OMNIGENT_NEW_WINDOW_MIN_VERSION=""
 EOF
 }
 layout_steal() {
@@ -236,6 +236,10 @@ for _ in $(seq 1 40); do [[ -s "$TMP/alpha.ran" ]] && break; sleep 0.25; done
 [[ -s "$TMP/alpha.ran" ]] && pass "terminal command ran intact through every launch layer" \
                           || fail "terminal command never ran (truncated or re-quoted on the way to zsh?)"
 check "launched terminal did not inherit the startup lock marker" "unset" "$(cat "$TMP/alpha.ran" 2>/dev/null)"
+grep -q '^\[omnigent:2\] creating' "$TMP/run.log" && \
+  [[ "$(grep -n -E '^\[(term:beta|chrome:2|omnigent:2)\]' "$TMP/run.log" | tail -1)" == *"[omnigent:2]"* ]] \
+  && pass "Omnigent slots are reconciled after every other slot" \
+  || fail "Omnigent slots were not reconciled last: $(grep -n -E '^\[(term|chrome|omnigent):' "$TMP/run.log" | tr '\n' ' ')"
 
 # ── 2. idempotent ──────────────────────────────────────────────────────
 echo "== idempotent re-run =="

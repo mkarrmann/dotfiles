@@ -151,12 +151,20 @@ Two Linux-specific constraints are load-bearing:
   escaped quote followed by an escaped separator, which once cut the
   terminal command in half. The e2e suite runs a deliberately hostile command
   through the whole path to keep it that way.
-- Additional Omnigent windows need `wtype` (`sudo apt install wtype`). The app
-  is single-instance, a deep link reuses an existing window, and a second
-  launch only focuses one, so the Server ▸ New Window accelerator
-  (Ctrl+Shift+N) is synthesized — the same thing the Mac script does by
-  clicking that menu item via AppleScript. Without `wtype` you get one Omnigent
-  window and a warning per additional slot.
+- Additional Omnigent windows need Omnigent ≥ 0.13.0 and `xdotool`
+  (`sudo apt install xdotool`). The app is single-instance, a deep link reuses
+  an existing window, and a second launch only focuses one, so the
+  Server ▸ New Window accelerator (Ctrl+Shift+N, added in 0.13.0 — 0.10.0's
+  menu item had none) is synthesized, the same thing the Mac script does by
+  clicking that menu item via AppleScript. Omnigent runs as an XWayland client
+  (see the launcher override), and `wtype`'s virtual keyboard loses its
+  modifiers on the way through XWayland, so the keystroke goes in via XTEST
+  (`xdotool`); `wtype` is used only if the app is ever run as a native Wayland
+  client again. Omnigent slots are reconciled after every other slot so no
+  window is still mapping when the keystroke is sent. An install that cannot
+  open more windows (old version, missing tool, a keystroke that opened
+  nothing) is reported once and the remaining Omnigent slots are skipped
+  rather than each waiting out a timeout.
 
 Regression checks. The first needs no compositor; the second starts a private
 headless sway (pinned to `WLR_BACKENDS=headless`, stub apps only, under its own

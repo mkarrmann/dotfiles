@@ -104,7 +104,16 @@ DASHBOARD_PANES=(
 
 CHROME_CMD=(google-chrome --profile-directory=Default --new-window)
 OMNIGENT_DESKTOP_ENTRY="omnigent-desktop-electron.desktop"
-OMNIGENT_NEW_WINDOW_KEYS=(-M ctrl -M shift -k n -m shift -m ctrl)
+# Server > New Window is CmdOrCtrl+Shift+N from desktop 0.13.0 (upstream
+# 55717242, 2026-08-31). 0.10.0's menu item had no accelerator at all, so on
+# an older install no keystroke can open a window and the extra slots are
+# skipped up front instead of each waiting out a timeout. Empty disables the
+# check (the e2e suite runs against stubs, not the package).
+OMNIGENT_NEW_WINDOW_MIN_VERSION=0.13.0
+# The keystroke, per injector; which one runs is decided per window by
+# new_window_injector in sway-windows-lib.sh.
+OMNIGENT_NEW_WINDOW_XDOTOOL_ARGS=(key --clearmodifiers ctrl+shift+n)
+OMNIGENT_NEW_WINDOW_WTYPE_ARGS=(-M ctrl -M shift -k n -m shift -m ctrl)
 
 # Machine-local layout override, sourced LAST so it can reassign any of the
 # settings above (WORKSPACES, DASHBOARD_PANES, DASHBOARD_WS, CHROME_CMD, ...).
@@ -186,17 +195,25 @@ for dep in jq ghostty; do
   command -v "$dep" >/dev/null 2>&1 || { echo "ERROR: $dep not found." >&2; exit 1; }
 done
 
-# wtype is how a SECOND Omnigent window gets created: the app is
+# A SECOND Omnigent window can only come from a keystroke: the app is
 # single-instance, its deep link REUSES a window already on the same origin
 # (web/electron/src/deepLink.js chooseDeepLinkStrategy), and a plain second
 # launch only focuses the existing window (main.js second-instance handler).
-# The Server > New Window menu item is the only entry point, and its
-# accelerator is CmdOrCtrl+Shift+N -- so we synthesize it, exactly as the Mac
-# script clicks the same menu item via AppleScript.
-HAVE_WTYPE=true
-if ! command -v wtype >/dev/null 2>&1; then
-  HAVE_WTYPE=false
-fi
+# The Server > New Window menu item is the only entry point, so its
+# accelerator is synthesized, exactly as the Mac script clicks the same menu
+# item via AppleScript. The injector (xdotool or wtype) is chosen per window
+# and its absence is reported where it is needed.
+#
+# The installed version decides whether that accelerator exists at all.
+OMNIGENT_INSTALLED_VERSION=""
+omnigent_new_window_supported() {
+  [[ -n "$OMNIGENT_NEW_WINDOW_MIN_VERSION" ]] || return 0
+  # Not a Debian install (AppImage, a dev build): nothing to compare against,
+  # so let the keystroke try and the per-run fail-fast below catch it.
+  OMNIGENT_INSTALLED_VERSION=$(dpkg-query -W -f='${Version}' omnigent-desktop-electron 2>/dev/null) || return 0
+  [[ -n "$OMNIGENT_INSTALLED_VERSION" ]] || return 0
+  dpkg --compare-versions "$OMNIGENT_INSTALLED_VERSION" ge "$OMNIGENT_NEW_WINDOW_MIN_VERSION"
+}
 
 # Fail fast on a malformed terminal app_id rather than letting ghostty fall
 # back to its default class, which would silently collapse every managed
@@ -374,6 +391,58 @@ reconcile_term() {
   place "$id" "$ws" "term:$slot"
 }
 
+# Open one more Omnigent window by sending Server > New Window's accelerator
+# to an existing one.
+#
+# The keystroke goes to whatever has keyboard focus, so focus is put on the
+# anchor and confirmed right before injecting. A Ctrl+Shift+N that lands
+# elsewhere is not a no-op: in a terminal it opens a stray one, and on
+# ghostty's "process exited" screen it closes the window -- which is how the
+# workspace-2 terminal vanished on 2026-09-13.
+#
+# One failure retires the path for the rest of the run. Every slot after it
+# would wait out the same timeout for the same reason (the running instance
+# predates the accelerator, the injector cannot reach the window), and six of
+# those is two minutes added to every login.
+OMNIGENT_NEW_WINDOW_STATE=""   # "" | unsupported | failed
+open_omnigent_window() {
+  local label="$1" anchor injector focused
+  case "$OMNIGENT_NEW_WINDOW_STATE" in
+    unsupported)
+      warn "[$label] skipped: this install cannot open additional Omnigent windows (see above)"; return 1 ;;
+    failed)
+      warn "[$label] skipped: an earlier New Window keystroke opened nothing this run"; return 1 ;;
+  esac
+  if ! omnigent_new_window_supported; then
+    OMNIGENT_NEW_WINDOW_STATE=unsupported
+    warn "[$label] Omnigent $OMNIGENT_INSTALLED_VERSION has no New Window accelerator (needs >= $OMNIGENT_NEW_WINDOW_MIN_VERSION);" \
+         "bump omnigent_config/desktop-app.env and run omnigent-desktop-app-ensure --upgrade"
+    return 1
+  fi
+  anchor=$(echo "$SNAPSHOT" | jq -r "[.[] | select($OMNIGENT_MATCH_JQ)] | sort_by(.id) | first | .id // empty")
+  [[ -n "$anchor" ]] || { warn "[$label] no Omnigent window to focus"; return 1; }
+  injector=$(new_window_injector "$SNAPSHOT" "$anchor")
+  if ! command -v "$injector" >/dev/null 2>&1; then
+    OMNIGENT_NEW_WINDOW_STATE=unsupported
+    warn "[$label] $injector is not installed; cannot open an additional Omnigent window (sudo apt install $injector)"
+    return 1
+  fi
+  if [[ "$DRY_RUN" == true ]]; then
+    echo "  DRY-RUN $injector New Window at Omnigent window $anchor"
+    return 0
+  fi
+  sway_cmd "[con_id=$anchor] focus" || {
+    warn "[$label] could not focus Omnigent window $anchor; not sending the accelerator"; return 1; }
+  sleep 0.4
+  focused=$(focused_window_id)
+  [[ "$focused" == "$anchor" ]] || {
+    warn "[$label] focus is on ${focused:-nothing}, not Omnigent window $anchor; not sending the accelerator"; return 1; }
+  case "$injector" in
+    xdotool) xdotool "${OMNIGENT_NEW_WINDOW_XDOTOOL_ARGS[@]}" 2>/dev/null ;;
+    wtype)   wtype "${OMNIGENT_NEW_WINDOW_WTYPE_ARGS[@]}" 2>/dev/null ;;
+  esac || { warn "[$label] $injector failed"; return 1; }
+}
+
 # Chrome and Omnigent slots: reuse whatever already holds the mark, else adopt
 # an unclaimed window, else create one.
 reconcile_marked() {
@@ -393,7 +462,7 @@ reconcile_marked() {
     echo "[$type:$ws] adopting unclaimed window $id"
   else
     echo "[$type:$ws] creating..."
-    local before
+    local before via_keystroke=false
     before=$(window_ids_matching "$SNAPSHOT" "$match" "$invalid")
     case "$type" in
       chrome)
@@ -401,33 +470,15 @@ reconcile_marked() {
       omnigent)
         if ! omnigent_has_window; then
           launch_desktop_entry "$OMNIGENT_DESKTOP_ENTRY" || return 1
-        elif [[ "$HAVE_WTYPE" == true ]]; then
-          # Focus the app, then synthesize its New Window accelerator.
-          local anchor
-          anchor=$(echo "$SNAPSHOT" | jq -r "[.[] | select($match)] | sort_by(.id) | first | .id // empty")
-          [[ -n "$anchor" ]] || { warn "[$type:$ws] no Omnigent window to focus"; return 1; }
-          [[ "$DRY_RUN" == true ]] || {
-            # The accelerator goes to whatever has focus. Ctrl+Shift+N in a
-            # terminal opens a stray terminal, so confirm focus actually
-            # landed on the Omnigent window before sending anything.
-            sway_cmd "[con_id=$anchor] focus" || {
-              warn "[$type:$ws] could not focus Omnigent window $anchor; not sending the accelerator"; return 1; }
-            sleep 0.4
-            local focused
-            focused=$(focused_window_id)
-            [[ "$focused" == "$anchor" ]] || {
-              warn "[$type:$ws] focus is on ${focused:-nothing}, not Omnigent window $anchor; not sending the accelerator"; return 1; }
-            wtype "${OMNIGENT_NEW_WINDOW_KEYS[@]}" 2>/dev/null || {
-              warn "[$type:$ws] wtype failed"; return 1; }
-          }
         else
-          warn "[$type:$ws] wtype is not installed; cannot open an additional Omnigent window (sudo apt install wtype)"
-          return 1
+          via_keystroke=true
+          open_omnigent_window "$type:$ws" || return 1
         fi
         ;;
     esac
     [[ "$DRY_RUN" == true ]] && return 0
     id=$(wait_for_new_window "$match" "$before" "$invalid" 25) || {
+      [[ "$via_keystroke" == true ]] && OMNIGENT_NEW_WINDOW_STATE=failed
       warn "[$type:$ws] new window never appeared"; return 1; }
   fi
 
@@ -440,12 +491,8 @@ reconcile_marked() {
 
 refresh
 
-if [[ "$HAVE_WTYPE" != true ]]; then
-  echo "NOTE: wtype is not installed. The first Omnigent window will be created," \
-       "but per-workspace copies need it: sudo apt install wtype" >&2
-fi
-
-for entry in "${WORKSPACES[@]}"; do
+reconcile_entry() {
+  local entry="$1" ws type rest slot workdir cmd
   IFS='|' read -r ws type rest <<< "$entry"
   case "$type" in
     term)
@@ -460,6 +507,17 @@ for entry in "${WORKSPACES[@]}"; do
       reconcile_marked "$ws" omnigent "$OMNIGENT_MATCH_JQ" "$OMNIGENT_INVALID_TITLE_RE" || true
       ;;
   esac
+}
+
+# Omnigent slots go last, whatever the table order. Their extra windows come
+# from a keystroke sent to the focused window, and a window still mapping
+# from an earlier slot can take focus between the check and the keystroke.
+# Once everything else is up there is nothing left to race.
+for entry in "${WORKSPACES[@]}"; do
+  if [[ "$entry" != *"|omnigent" ]]; then reconcile_entry "$entry"; fi
+done
+for entry in "${WORKSPACES[@]}"; do
+  if [[ "$entry" == *"|omnigent" ]]; then reconcile_entry "$entry"; fi
 done
 
 # ── Dashboard ────────────────────────────────────────────────────────

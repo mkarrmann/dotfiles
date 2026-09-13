@@ -269,6 +269,50 @@ else
   done
 fi
 
+echo "== New Window injector follows the window's backend =="
+# An XWayland client (the launcher override's --ozone-platform=x11) carries its
+# identity in .class with a null app_id; a native Wayland client the reverse.
+# wtype's virtual keyboard loses its modifiers through XWayland (verified
+# 2026-09-13: Ctrl+Shift+N arrived as a typed "N"), so the X11 window must get
+# XTEST via xdotool, and a Wayland window must not.
+INJ=$(cat <<'JSON'
+[
+  {"id":1,"ws":"1","app_id":null,"class":"omnigent","title":"Omnigent","marks":[],"pid":1},
+  {"id":2,"ws":"1","app_id":"omnigent","class":null,"title":"Omnigent","marks":[],"pid":2}
+]
+JSON
+)
+check "XWayland Omnigent -> xdotool" "xdotool" "$(new_window_injector "$INJ" 1)"
+check "native Wayland Omnigent -> wtype" "wtype" "$(new_window_injector "$INJ" 2)"
+
+echo "== New Window accelerator version gate =="
+# 0.10.0's Server > New Window item had no accelerator; it exists from 0.13.0.
+# The gate reads the installed package so an old install skips the keystroke
+# path outright instead of timing out once per slot.
+STARTUP="$ROOT/bin-linux/startup-windows"
+body=$(extract_fn "$STARTUP" omnigent_new_window_supported)
+[[ -n "$body" ]] || { echo "could not extract omnigent_new_window_supported from $STARTUP" >&2; exit 1; }
+eval "$body"
+mkdir -p "$TMP/dpkg-bin"
+cat > "$TMP/dpkg-bin/dpkg-query" <<'EOF'
+#!/bin/bash
+[[ -n "${FAKE_OMNIGENT_VERSION:-}" ]] || exit 1
+printf '%s' "$FAKE_OMNIGENT_VERSION"
+EOF
+chmod +x "$TMP/dpkg-bin/dpkg-query"
+gate() { # MIN INSTALLED -> "yes"/"no"
+  ( export PATH="$TMP/dpkg-bin:$PATH" FAKE_OMNIGENT_VERSION="$2"
+    OMNIGENT_NEW_WINDOW_MIN_VERSION="$1"
+    omnigent_new_window_supported && echo yes || echo no )
+}
+check "0.10.0 is below the 0.13.0 minimum" "no" "$(gate 0.13.0 0.10.0)"
+check "0.13.0 meets the minimum" "yes" "$(gate 0.13.0 0.13.0)"
+check "a later release meets the minimum" "yes" "$(gate 0.13.0 0.14.1)"
+check "an empty minimum disables the gate" "yes" "$(gate "" 0.10.0)"
+check "no Debian package installed: let the keystroke try" "yes" "$(gate 0.13.0 "")"
+check "the shipped minimum is the accelerator's first release" "0.13.0" \
+  "$(grep -m1 '^OMNIGENT_NEW_WINDOW_MIN_VERSION=' "$STARTUP" | cut -d= -f2)"
+
 echo
 if [[ "$failures" -gt 0 ]]; then
   echo "$failures test(s) failed." >&2

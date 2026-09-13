@@ -318,6 +318,27 @@ unclaimed_id_with_app_identity() {
     | sort_by(.id) | first | .id // empty'
 }
 
+# new_window_injector SNAPSHOT ID -> the tool that can deliver a keystroke to
+# window ID: xdotool for an XWayland client (identity in .class, app_id null),
+# wtype for a native Wayland one.
+#
+# Two tools because the backends do not share an input path. wtype drives a
+# virtual keyboard on the Wayland seat, and its keymap does not survive the
+# trip through XWayland: verified 2026-09-13 against Omnigent 0.13.0 under
+# --ozone-platform=x11, Ctrl+Shift+N arrived as a plain "N" typed into the
+# page (atx/wtype#62). XTEST, which is what xdotool uses, opened the window
+# every time. A native Wayland client is the mirror image: XTEST cannot reach
+# it at all.
+new_window_injector() {
+  local snapshot="$1" id="$2"
+  if echo "$snapshot" | jq -e --argjson i "$id" \
+      '[.[] | select(.id == $i)] | first | (.app_id == null and .class != null)' >/dev/null 2>&1; then
+    echo xdotool
+  else
+    echo wtype
+  fi
+}
+
 # focused_window_id -> id of the focused window, or empty.
 focused_window_id() {
   sway_ipc -t get_tree | jq -r '
