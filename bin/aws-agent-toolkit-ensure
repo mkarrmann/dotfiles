@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the AWS CLI and wire the AWS Agent Toolkit -- the `aws-mcp` MCP
-# server plus AWS's default `aws-*` skills -- into every AI agent whose config
-# directory exists on this machine (Claude Code, Codex, Cursor, Metacode, ...).
+# server plus a chosen set of AWS's `aws-*` skills -- into every AI agent whose
+# config directory exists on this machine (Claude Code, Codex, Cursor, ...).
 #
 # Why this is a helper and not entries in agent_config/: sync-mcps' registry is
 # all-or-nothing by profile. Every managed MCP there is a Meta-internal tool,
@@ -18,13 +18,24 @@
 # setup; re-running once set up refreshes the skills to the catalog's current
 # versions, which is the intended upgrade path.
 #
+# Which skills stay installed is decided by agent_config/aws-skills.list, not
+# by the wizard: `aws configure agent-toolkit --yes` has no way to configure
+# the MCP server without also installing AWS's full default skill set (23 as of
+# 2026-09), so the wizard runs as-is and the list is reconciled afterwards with
+# `aws agent-toolkit remove-skill` / `add-skill`, which target every detected
+# agent at once. The catalog is public: listing, removal, and addition all
+# work without a session (verified 2026-09-14 against an expired login), so
+# only the wizard itself waits for `aws login`.
+#
 # The toolkit region is fixed at us-east-1 whatever the account's default:
 # it is the only region the Agent Toolkit service is offered in.
 #
 # Override the profile for a one-off with AWS_TOOLKIT_PROFILE=name.
 set -euo pipefail
 
+DOTFILES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 PROFILE="${AWS_TOOLKIT_PROFILE:-default}"
+SKILLS_LIST="${AWS_SKILLS_LIST:-$DOTFILES_DIR/agent_config/aws-skills.list}"
 TOOLKIT_REGION="us-east-1"
 INSTALLER_URL="https://awscli.amazonaws.com/v2/install.sh"
 
@@ -43,11 +54,62 @@ if ! command -v aws >/dev/null 2>&1; then
 fi
 echo "[aws] $(aws --version)"
 
-if ! aws sts get-caller-identity --profile "$PROFILE" >/dev/null 2>&1; then
+if aws sts get-caller-identity --profile "$PROFILE" >/dev/null 2>&1; then
+  echo "[aws] configuring Agent Toolkit (profile=$PROFILE, region=$TOOLKIT_REGION)"
+  aws configure agent-toolkit --yes --region "$TOOLKIT_REGION" --profile "$PROFILE"
+else
   echo "[aws] no valid session for profile '$PROFILE'; skipping Agent Toolkit setup"
   echo "      run: aws login --profile $PROFILE   then re-run init.sh or this script"
-  exit 0
 fi
 
-echo "[aws] configuring Agent Toolkit (profile=$PROFILE, region=$TOOLKIT_REGION)"
-aws configure agent-toolkit --yes --region "$TOOLKIT_REGION" --profile "$PROFILE"
+# Reconcile installed skills against the list. Names are unioned across
+# agents: remove-skill/add-skill without --agent act on every detected agent,
+# so a skill present in only some of them is still brought in line.
+wanted=()
+if [[ -f "$SKILLS_LIST" ]]; then
+  while IFS= read -r name; do
+    wanted+=("$name")
+  done < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$SKILLS_LIST" | grep -v '^$' | sort -u)
+fi
+# A preinstalled CLI that predates the toolkit (distro packages lag by a
+# year or more) has no `agent-toolkit` subcommand. Nothing of ours can be
+# installed by it either, so there is nothing to reconcile: report and stop.
+if ! installed_json="$(aws agent-toolkit list-installed-skills --output json 2>/dev/null)"; then
+  echo "[aws] this aws has no working agent-toolkit subcommand; skipping skill reconcile"
+  exit 0
+fi
+installed=()
+while IFS= read -r name; do
+  [[ -n "$name" ]] && installed+=("$name")
+done < <(printf '%s' "$installed_json" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+print("\n".join(sorted({skill["name"] for skill in doc.get("skills", [])})))
+')
+
+in_list() {
+  local needle="$1"; shift
+  local item
+  for item in "$@"; do
+    [[ "$item" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
+for name in ${installed[@]+"${installed[@]}"}; do
+  if ! in_list "$name" ${wanted[@]+"${wanted[@]}"}; then
+    echo "[aws] removing skill $name (not in $SKILLS_LIST)"
+    aws agent-toolkit remove-skill --skill-name "$name"
+  fi
+done
+failed=0
+for name in ${wanted[@]+"${wanted[@]}"}; do
+  if ! in_list "$name" ${installed[@]+"${installed[@]}"}; then
+    echo "[aws] adding skill $name (listed in $SKILLS_LIST)"
+    if ! aws agent-toolkit add-skill --skill-name "$name" --region "$TOOLKIT_REGION" --profile "$PROFILE"; then
+      echo "[aws] could not add skill $name (unknown name, or catalog unreachable)" >&2
+      failed=1
+    fi
+  fi
+done
+exit "$failed"

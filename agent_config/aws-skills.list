@@ -1,0 +1,11 @@
+# AWS Agent Toolkit skills to keep installed, one catalog name per line
+# (`aws agent-toolkit list-available-skills`). bin/aws-agent-toolkit-ensure
+# removes every installed aws skill not listed here and installs any listed
+# one that is missing, in every agent the toolkit detects.
+#
+# Empty means none: the aws-mcp server stays configured and fetches the same
+# skills on demand (search_documentation -> retrieve_skill). A static skill
+# only buys implicit triggering, and each one costs 100-270 tokens of Codex's
+# skill budget every turn (see agent_config/README.md, "Codex's budget is
+# smaller"); the wizard's default set of 23 alone overruns it and gets every
+# description shortened.

@@ -69,8 +69,10 @@ and explains which effort values each harness accepts.
 
 Both profiles install the GitHub CLI into `~/.local/bin` (`bin/gh-ensure`).
 Desktop `init.sh` also installs the AWS CLI and, once `aws login` has been run
-on that machine, the AWS Agent Toolkit: the `aws-mcp` server and AWS's default
-`aws-*` skills, written into every detected agent (`bin/aws-agent-toolkit-ensure`).
+on that machine, the AWS Agent Toolkit: the `aws-mcp` server written into every
+detected agent, plus only the `aws-*` skills named in
+`agent_config/aws-skills.list` (`bin/aws-agent-toolkit-ensure`). An empty list
+installs none; the MCP server fetches skills on demand instead.
 Credentials never live in dotfiles; before login the toolkit step skips with
 instructions, and re-running after setup refreshes the skills.
 

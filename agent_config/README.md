@@ -159,6 +159,43 @@ skills that never need advertising.
 `skillListingMaxDescChars` is left at its 1536 default — the longest
 description today is 1,135 chars, so nothing is truncated.
 
+### Codex's budget is smaller, and AWS skills are gated by `aws-skills.list`
+
+Codex caps its skill catalog at 2% of the model context window
+(`codex-rs/ext/skills/src/render.rs`, `SKILL_METADATA_CONTEXT_WINDOW_PERCENT`),
+~5,400 tokens on gpt-6-astra's 272k window. Unlike Claude Code it truncates
+rather than evicts, handing out description characters round-robin so every
+skill keeps the same short prefix; the "Skill descriptions were shortened"
+notice means that happened. Write descriptions with the trigger words first,
+since the tail is what goes.
+
+Codex reads `~/.agents/skills` as well as `~/.codex/skills`, and the AWS
+Agent Toolkit wizard installs its full default set (23 skills, ~4,500
+tokens) there and into `~/.claude/skills`. `bin/aws-agent-toolkit-ensure`
+therefore reconciles installed AWS skills against `aws-skills.list` after
+the wizard, removing everything not named and adding listed ones that are
+missing. An empty list means none: the `aws-mcp` server retrieves the same
+skills on demand (`search_documentation` → `retrieve_skill`), so a static
+copy only buys implicit triggering at 100-270 tokens per skill per turn.
+Name a skill there only when it must trigger implicitly, and re-run the
+helper. Plugin skills (`~/.codex/plugins`) are not part of this catalog, so
+disabling plugins does not buy room.
+
+To measure rather than estimate: `codex debug prompt-input` renders the
+exact catalog the model sees, and every truncating render is logged to
+`~/.codex/logs_2.sqlite` (target `codex_skills_extension::render_observability`)
+with the budget, skill count, and characters cut.
+
+Codex can also disable one skill at a time in `config.toml` — supported by
+path or by name:
+
+    [[skills.config]]
+    name = "aws-iam"
+    enabled = false
+
+but there is no per-root or glob form, and it does nothing for Claude Code,
+so the list is the lever here.
+
 ### Frontmatter is mandatory
 
 Every `SKILL.md` needs YAML frontmatter with both `name:` and
