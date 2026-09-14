@@ -277,5 +277,7 @@ curl -s --noproxy '*' "$BASE/v1/sessions/$CONV" | jq -r '
 
 ## Related
 
+- [[omnigent-models]] — which models a subagent can run on this host, and how
+  to pass `model` / `reasoning_effort` when spawning one.
 - [[personal-development-setup-and-env]] — how dotfiles wires up services like
   this one.

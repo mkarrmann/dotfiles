@@ -9,6 +9,7 @@
 # each entry costs a line of context in every unrelated session.
 
 neovim-meta
+omnigent-models
 omnigent-sessions
 personal-development-setup-and-env
 screenshot-workflow

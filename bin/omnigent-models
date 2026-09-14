@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""omnigent-models — list the models a harness can actually run on THIS host.
+
+    omnigent-models [HARNESS] [--json] [--host HOST_ID] [--url URL]
+
+Omnigent probes each installed harness binary for its live model catalog (for
+Codex, ``codex app-server`` ``model/list``) and caches it per host under
+``~/.omnigent/cache/model-catalogs/``. That catalog is the only listing that
+reflects what the provider offers HERE: Astra on a personal ChatGPT login, the
+gateway-routed set at work. It is served by
+``GET /v1/hosts/{host_id}/harnesses/{harness}/model-options``, which this
+script reads and prints as ids plus each model's reasoning-effort ladder.
+
+Why it exists: an agent running inside an Omnigent session has no tool that
+returns this. ``sys_list_models`` lists the caller's declared sub-agent workers
+(none, for the agents here) from their PROVIDER, and a subscription login
+reports an empty list by design. So the answer already exists on disk and over
+HTTP, and this is the one command that surfaces it. The host route accepts only
+the native harness names, but the ``codex`` and ``claude`` SDK agents launch the
+same binaries, so their names are mapped onto the probed catalogs.
+
+The host defaults to this machine, read from ``~/.omnigent/config.yaml``. A
+child session created from inside a session inherits its parent's runner, so
+that is the host a subagent will run on.
+
+Exit 0 with rows; 1 when the server refuses or the probe fails (the message is
+the server's own detail); 2 on usage.
+
+Env: OMNIGENT_URL (server), OMNIGENT_DATA_DIR / OMNIGENT_CONFIG_HOME (config).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+# SDK harness -> the native harness whose probed catalog is the same binary's.
+CATALOG_HARNESS = {
+    "codex": "codex-native",
+    "codex-sdk": "codex-native",
+    "codex-native": "codex-native",
+    "claude": "claude-native",
+    "claude-sdk": "claude-native",
+    "claude-native": "claude-native",
+}
+
+
+def data_dir() -> Path:
+    for var in ("OMNIGENT_DATA_DIR", "OMNIGENT_CONFIG_HOME"):
+        if os.environ.get(var):
+            return Path(os.environ[var])
+    return Path.home() / ".omnigent"
+
+
+def local_host_id() -> str | None:
+    """The host daemon writes ``host: {host_id: ...}``; pyyaml may be absent."""
+    path = data_dir() / "config.yaml"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(r"^host:\s*\n(?:[ \t]+.*\n)*?[ \t]+host_id:[ \t]*([0-9a-f]+)", text, re.M)
+    return match.group(1) if match else None
+
+
+def server_url() -> str:
+    """Every client here uses a stable loopback endpoint; see omnigent-server-url."""
+    if os.environ.get("OMNIGENT_URL"):
+        return os.environ["OMNIGENT_URL"].rstrip("/")
+    dotfiles = Path(os.environ.get("DOTFILES_DIR") or Path.home() / "dotfiles")
+    helper = dotfiles / "bin/omnigent-server-url"
+    if helper.exists():
+        try:
+            out = subprocess.run([str(helper)], capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            out = None
+        if out is not None and out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip().rstrip("/")
+    return "http://127.0.0.1:6767"
+
+
+def fetch(url: str) -> tuple[int, object]:
+    # The corp proxy intercepts loopback; never route through it.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(url, timeout=90) as response:
+            return response.status, json.load(response)
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.load(exc)
+        except (ValueError, OSError):
+            body = {"detail": exc.reason}
+        return exc.code, body
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return 0, {"detail": f"cannot reach {url}: {exc}"}
+
+
+def efforts(row: dict) -> list[str]:
+    ladder = []
+    for entry in row.get("supportedReasoningEfforts") or []:
+        if isinstance(entry, dict):
+            entry = entry.get("reasoningEffort")
+        if isinstance(entry, str) and entry:
+            ladder.append(entry)
+    return ladder
+
+
+def render(harness: str, host_id: str, url: str, rows: list[dict]) -> str:
+    lines = [f"{harness} models on host {host_id} ({url}):"]
+    width = max((len(str(r.get("id"))) for r in rows), default=0)
+    for row in rows:
+        ladder = efforts(row)
+        marker = "default" if row.get("isDefault") else ""
+        detail = ""
+        if ladder:
+            detail = "efforts: " + " ".join(ladder)
+            if row.get("defaultReasoningEffort"):
+                detail += f" (default {row['defaultReasoningEffort']})"
+        lines.append(f"  {str(row.get('id')):<{width}}  {marker:<7}  {detail}".rstrip())
+    if not rows:
+        lines.append("  (empty catalog)")
+    lines.append(
+        "Pass an id verbatim as `model`; pick `reasoning_effort` from that model's ladder."
+    )
+    return "\n".join(lines)
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="omnigent-models", add_help=True)
+    parser.add_argument("harness", nargs="?", default="codex")
+    parser.add_argument("--json", action="store_true", help="print the raw model rows")
+    parser.add_argument("--host", help="host id (default: this machine's, from config.yaml)")
+    parser.add_argument("--url", help="server URL (default: $OMNIGENT_URL or the loopback hub)")
+    args = parser.parse_args(argv)
+
+    harness = CATALOG_HARNESS.get(args.harness, args.harness)
+    host_id = args.host or local_host_id()
+    if not host_id:
+        print(
+            f"omnigent-models: no host_id in {data_dir() / 'config.yaml'}; "
+            "is the omnigent host running here? (or pass --host)",
+            file=sys.stderr,
+        )
+        return 1
+    url = (args.url or server_url()).rstrip("/")
+    status, payload = fetch(f"{url}/v1/hosts/{host_id}/harnesses/{harness}/model-options")
+    rows = payload.get("models") if isinstance(payload, dict) else None
+    if status != 200 or not isinstance(rows, list):
+        detail = payload.get("detail") if isinstance(payload, dict) else payload
+        print(f"omnigent-models: {harness} on host {host_id}: {detail}", file=sys.stderr)
+        return 1
+    if args.json:
+        json.dump(rows, sys.stdout, indent=1)
+        print()
+    else:
+        print(render(harness, host_id, url, rows))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

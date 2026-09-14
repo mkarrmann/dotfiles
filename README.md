@@ -61,6 +61,12 @@ work-only: `agents/dvsc`, the hub/reconcile/snapshot/Google Chat services,
 `runtime_ext` (Sapling), and
 `topology.env`.
 
+An agent about to spawn a subagent can list the models this host's Codex or
+Claude binary offers with `bin/omnigent-models [codex|claude]`, which reads
+Omnigent's per-host probed catalog (the built-in `sys_list_models` tool is
+empty here by design). The global `omnigent-models` skill points agents at it
+and explains which effort values each harness accepts.
+
 Both profiles install the GitHub CLI into `~/.local/bin` (`bin/gh-ensure`).
 Desktop `init.sh` also installs the AWS CLI and, once `aws login` has been run
 on that machine, the AWS Agent Toolkit: the `aws-mcp` server and AWS's default
@@ -128,6 +134,7 @@ python3 -m unittest discover -s tests -p test_codex_config.py
 python3 -m unittest discover -s tests -p test_omnigent_desktop.py
 python3 -m unittest discover -s tests -p test_omnigent_desktop_app.py
 python3 -m unittest discover -s tests -p test_omnigent_agents_ensure.py
+python3 -m unittest discover -s tests -p test_omnigent_models.py
 python3 -m unittest discover -s tests -p test_no_foreground_wait.py
 ```
 
