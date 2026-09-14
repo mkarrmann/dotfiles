@@ -11,6 +11,7 @@
 neovim-meta
 omnigent-models
 omnigent-sessions
+omnigent-visual-output
 personal-development-setup-and-env
 screenshot-workflow
 show-in-nvim
