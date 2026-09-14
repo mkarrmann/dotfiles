@@ -15,6 +15,10 @@ description: >-
 
 # Omnigent models: what a subagent can run here
 
+This applies whichever harness you are: a Claude agent spawning Codex, a Codex
+agent spawning Claude, or either spawning its own kind. The spawning tools are
+the same for all of them.
+
 `sys_list_models` is empty on this deployment and will stay empty: it lists the
 calling agent's declared sub-agent workers (none, for Matt's agents) and reads
 their models from the *provider*, which for a CLI subscription login reports
@@ -80,6 +84,15 @@ accepts is narrower for the SDK harnesses (omnigent/util/reasoning_effort.py):
 | `codex` (SDK agent)        | none minimal low medium high xhigh; `max` and `ultra` fold to `xhigh` |
 | `codex-native`             | the printed ladder, incl. `max` / `ultra` |
 | `claude-sdk` / `claude-native` | low medium high xhigh max (rows print no ladder) |
+
+## Claude ids are family aliases
+
+`omnigent-models claude` prints what Claude Code itself accepts: family
+aliases (`opus`, `sonnet`, `haiku`, `fable`, and `[1m]` context variants). Pass
+one verbatim as `model` and Claude Code resolves it to that family's current
+default, which can move across CLI upgrades. When a fixed model matters, a
+canonical id (e.g. `claude-opus-5[1m]`, `claude-sonnet-5`) passes through the
+same way and does not float.
 
 ## Choosing
 
