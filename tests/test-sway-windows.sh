@@ -214,10 +214,37 @@ rc=$?
 check "gives up after the deadline (exit 1, not a hang)" "1" "$rc"
 
 echo "== layout order =="
-check "workspace 1 orders terminal, chrome, omnigent" \
-  "10 11 12" "$(ordered_ids "$SNAP" 1 | tr '\n' ' ' | sed 's/ $//')"
-check "unmanaged windows are excluded from the layout" \
-  "" "$(ordered_ids "$SNAP" 1 | grep -x 14 || true)"
+check "workspace 1 orders terminal, chrome, omnigent, then whatever else is tiled" \
+  "10 11 12 14" "$(ordered_ids "$SNAP" 1 | tr '\n' ' ' | sed 's/ $//')"
+check "the update overlay never joins a layout" \
+  "" "$(ordered_ids "$SNAP" 1 | grep -x 13 || true)"
+check "only the ranked slots when asked for them" \
+  "10 11 12" "$(ordered_ids "$SNAP" 1 3 | tr '\n' ' ' | sed 's/ $//')"
+
+# The sidebar is the mark holder, else the lowest-id Orchest-titled window;
+# it is never a stack member. An unmanaged floating window (a dialog) is left
+# floating; a managed one that was floated is put back in the stack.
+SIDE_SNAP=$(cat <<'JSON'
+[
+  {"id":20,"ws":"1","app_id":"sway-ws.term.local","class":null,"title":"nvim","marks":[],"pid":1,"floating":false},
+  {"id":21,"ws":"1","app_id":null,"class":"Google-chrome","title":"Docs","marks":["sw:1:chrome"],"pid":2,"floating":false},
+  {"id":22,"ws":"1","app_id":null,"class":"orchest","title":"Workspace — Orchest [abcd1234]","marks":[],"pid":3,"floating":false},
+  {"id":23,"ws":"1","app_id":null,"class":"orchest","title":"Fix the build — Orchest [0000ffff]","marks":["sw:1:orchest"],"pid":3,"floating":false},
+  {"id":24,"ws":"1","app_id":"org.gnome.Calculator","class":null,"title":"Calculator","marks":[],"pid":5,"floating":true},
+  {"id":25,"ws":"1","app_id":"omnigent","class":null,"title":"chat","marks":["sw:1:omnigent"],"pid":6,"floating":true}
+]
+JSON
+)
+check "the marked Orchest window is the sidebar even when another has a lower id" \
+  "23" "$(sidebar_id_of "$SIDE_SNAP" 1)"
+check "without a mark, the lowest-id Orchest-titled window is the sidebar" \
+  "22" "$(sidebar_id_of "$(jq -c 'map(.marks -= ["sw:1:orchest"])' <<< "$SIDE_SNAP")" 1)"
+check "the sidebar is excluded; a spare Orchest window and a floated managed slot are stacked" \
+  "20 21 25 22" "$(ordered_ids "$SIDE_SNAP" 1 | tr '\n' ' ' | sed 's/ $//')"
+check "an unmanaged floating window is left floating" \
+  "" "$(ordered_ids "$SIDE_SNAP" 1 | grep -x 24 || true)"
+check "the sweep spares Orchest windows by title, marked or not" \
+  "20 21 24 25" "$(stray_window_ids "$SIDE_SNAP" '^1$' "" "" "$ORCHEST_SIDEBAR_TITLE_RE" | sort -n | tr '\n' ' ' | sed 's/ $//')"
 
 echo "== ghostty app_id validity =="
 # ghostty silently falls back to com.mitchellh.ghostty on an invalid class, so

@@ -18,6 +18,10 @@ set -euo pipefail
 #     instead of duplicating windows,
 #   - sweeping unclaimed windows to an overflow workspace.
 #
+# Each standard workspace ends up as [ Orchest sidebar | stack ] with the
+# stack holding the table's windows in order; see arrange-workspaces. A window
+# that appears later joins the stack through sway-auto-stack.
+#
 # There is no late-window polling pass here, unlike the Mac. Claims live in
 # the compositor as marks, so a window that arrives after a run is simply
 # adopted by the next run ($mod+Shift+r); the script is cheap enough to rerun
@@ -115,6 +119,16 @@ OMNIGENT_NEW_WINDOW_MIN_VERSION=0.13.0
 OMNIGENT_NEW_WINDOW_XDOTOOL_ARGS=(key --clearmodifiers ctrl+shift+n)
 OMNIGENT_NEW_WINDOW_WTYPE_ARGS=(-M ctrl -M shift -k n -m shift -m ctrl)
 
+# Orchest: one sidebar window per managed workspace, opened and claimed by
+# orchest-open-workspaces (the Mac's --orchest-prod/--orchest-dev flag is the
+# ORCHEST_MODE setting here, so a layout override can choose). The sidebar
+# split and the stack layout come from sway-windows-lib.sh; an override can
+# reassign them the same way.
+ORCHEST_DIR="${ORCHEST_DIR:-$HOME/dev/orchest}"
+ORCHEST_ENABLED=$([[ -d "$ORCHEST_DIR" ]] && echo true || echo false)
+ORCHEST_MODE=prod
+ORCHEST_PORT="${ORCHEST_PORT:-3100}"
+
 # Machine-local layout override, sourced LAST so it can reassign any of the
 # settings above (WORKSPACES, DASHBOARD_PANES, DASHBOARD_WS, CHROME_CMD, ...).
 # Same pattern as the sway display config: the repo carries the layout every
@@ -141,10 +155,21 @@ if [[ "$PRINT_LAYOUT" == true ]]; then
     [[ "$type" == term ]] || continue
     IFS='|' read -r slot workdir _ <<< "$rest"
     printf '%s\t%s\t%s\n' "$ws" "$slot" "${workdir/#\~/$HOME}"
-  done | jq -Rn --arg sweep "$SWEEP_WORKSPACE" --arg dashboard "$DASHBOARD_WS" '
+  done | jq -Rn --arg sweep "$SWEEP_WORKSPACE" --arg dashboard "$DASHBOARD_WS" \
+      --arg dashboardLayout "$DASHBOARD_LAYOUT" --arg terminalAppIdPrefix "$TERM_APP_ID_PREFIX" \
+      --arg stackLayout "$STACK_LAYOUT" \
+      --argjson sidebarPercent "$SIDEBAR_PERCENT" --argjson sidebarMinWidth "$SIDEBAR_MIN_WIDTH" \
+      --argjson orchestEnabled "$ORCHEST_ENABLED" --arg orchestDir "${ORCHEST_DIR/#\~/$HOME}" '
     {
       sweepWorkspace: $sweep,
       dashboardWorkspace: $dashboard,
+      dashboardLayout: $dashboardLayout,
+      terminalAppIdPrefix: $terminalAppIdPrefix,
+      stackLayout: $stackLayout,
+      sidebarPercent: $sidebarPercent,
+      sidebarMinWidth: $sidebarMinWidth,
+      orchestEnabled: $orchestEnabled,
+      orchestDir: $orchestDir,
       terminals: [inputs | split("\t") | { workspace: .[0], slot: .[1], workdir: .[2] }]
     }'
   exit 0
@@ -166,9 +191,13 @@ fi
 #     leaked it into every child: a long-lived one kept the lock after the
 #     script exited and every later run quietly reported "already running".
 LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/sway-startup-windows.$(basename "${SWAYSOCK:-default}").lock"
-if [[ -z "${SWAY_STARTUP_WINDOWS_LOCKED:-}" ]]; then
+if [[ "${SWAY_STARTUP_WINDOWS_LOCKED:-}" != 1 ||
+      "${SWAY_WINDOWS_LOCK_SOCKET:-${SWAYSOCK:-default}}" != "${SWAYSOCK:-default}" ]]; then
   rc=0
-  SWAY_STARTUP_WINDOWS_LOCKED=1 flock -n -E 75 -o "$LOCK_FILE" "$BASH" "${BASH_SOURCE[0]}" "${ORIG_ARGS[@]}" || rc=$?
+  # A short wait, not -n: sway-auto-stack probes this lock by taking it for a
+  # moment, and a probe must never make a real run report "already running".
+  SWAY_STARTUP_WINDOWS_LOCKED=1 SWAY_WINDOWS_LOCK_SOCKET="${SWAYSOCK:-default}" \
+    flock -w 2 -E 75 -o "$LOCK_FILE" "$BASH" "${BASH_SOURCE[0]}" "${ORIG_ARGS[@]}" || rc=$?
   if [[ "$rc" -eq 75 ]]; then
     echo "startup-windows is already running; exiting."
     exit 0
@@ -255,6 +284,7 @@ current_claim_marks() {
     IFS='|' read -r app_id _ <<< "$pane"
     echo "sw:${DASHBOARD_WS}:${app_id}"
   done
+  while IFS= read -r ws; do sidebar_mark "$ws"; done < <(managed_workspaces)
 }
 current_term_app_ids() {
   local entry ws type rest slot
@@ -291,9 +321,9 @@ launch() {
     return 0
   fi
   if [[ -t 2 ]]; then
-    env -u SWAY_STARTUP_WINDOWS_LOCKED setsid -f -- "$@" </dev/null >/dev/null 2>&1
+    env -u SWAY_STARTUP_WINDOWS_LOCKED -u SWAY_WINDOWS_LOCK_SOCKET setsid -f -- "$@" </dev/null >/dev/null 2>&1
   else
-    env -u SWAY_STARTUP_WINDOWS_LOCKED setsid -f -- "$@" </dev/null
+    env -u SWAY_STARTUP_WINDOWS_LOCKED -u SWAY_WINDOWS_LOCK_SOCKET setsid -f -- "$@" </dev/null
   fi
 }
 
@@ -578,12 +608,29 @@ if [[ "$SKIP_DASHBOARD" != true ]]; then
   fi
 fi
 
+# ── Orchest sidebars ─────────────────────────────────────────────────
+# After the application windows: Orchest's workspace activation must not race
+# the focus-sensitive Omnigent New Window accelerator. A failure here is a
+# warning, as on the Mac: the sweep below spares Orchest windows by title, so
+# a sidebar that is present but unclaimed stays put, and every other window
+# still gets swept and laid out.
+if [[ "$ORCHEST_ENABLED" == true ]]; then
+  orchest_args=("--$ORCHEST_MODE")
+  [[ "$DRY_RUN" == false ]] || orchest_args+=(--dry-run)
+  while IFS= read -r ws; do orchest_args+=("$ws"); done < <(managed_workspaces)
+  ORCHEST_DIR="$ORCHEST_DIR" ORCHEST_PORT="$ORCHEST_PORT" \
+    "$SCRIPT_DIR/orchest-open-workspaces" "${orchest_args[@]}" \
+    || warn "Orchest sidebars did not converge; the layout is built without them"
+fi
+
 # ── Sweep ────────────────────────────────────────────────────────────
 # Anything on a managed workspace that is not a slot the table declares today
 # goes to the overflow workspace, and its stale claims are removed so a later
 # slot can adopt it as an ordinary unclaimed window. Omnigent's update overlay
 # is parked in the scratchpad by a for_window rule in sway_config, so it is
-# not seen here at all.
+# not seen here at all. Orchest windows are spared by title as well as by
+# mark: one that Orchest opened after the pass above has no claim yet, and
+# parking it on Z would teach Orchest that Z is its workspace.
 
 if [[ "$DRY_RUN" != true ]]; then
   refresh
@@ -597,7 +644,8 @@ if [[ "$DRY_RUN" != true ]]; then
       [[ -n "$stale" ]] || continue
       sway_cmd "[con_id=$id] unmark \"$stale\"" || true
     done < <(sw_marks_of "$SNAPSHOT" "$id")
-  done < <(stray_window_ids "$SNAPSHOT" "^($managed_re)$" "$(current_claim_marks)" "$(current_term_app_ids)")
+  done < <(stray_window_ids "$SNAPSHOT" "^($managed_re)$" "$(current_claim_marks)" "$(current_term_app_ids)" \
+             "$ORCHEST_SIDEBAR_TITLE_RE")
   [[ "$swept" -gt 0 ]] && echo "Swept ${swept} stray window(s) to ${SWEEP_WORKSPACE}."
 fi
 
@@ -611,8 +659,10 @@ if [[ "$DRY_RUN" != true ]]; then
   # that it depends on has to be forwarded, or it silently falls back to its
   # defaults -- a moved dashboard gets tabbed, a custom terminal prefix makes
   # it report "no managed windows" and succeed.
-  DASHBOARD_LAYOUT="$DASHBOARD_LAYOUT" TERM_APP_ID_PREFIX="$TERM_APP_ID_PREFIX" \
-    "$SCRIPT_DIR/arrange-workspaces" --dashboard-ws "$DASHBOARD_WS" "${arrange_targets[@]}" \
+  DASHBOARD_LAYOUT="$DASHBOARD_LAYOUT" TERM_APP_ID_PREFIX="$TERM_APP_ID_PREFIX" STACK_LAYOUT="$STACK_LAYOUT" \
+    SIDEBAR_PERCENT="$SIDEBAR_PERCENT" SIDEBAR_MIN_WIDTH="$SIDEBAR_MIN_WIDTH" \
+    "$SCRIPT_DIR/arrange-workspaces" --dashboard-ws "$DASHBOARD_WS" --sweep-ws "$SWEEP_WORKSPACE" \
+    "${arrange_targets[@]}" \
     || warn "arrange-workspaces did not converge"
   sway_cmd "workspace number 1" || true
 fi

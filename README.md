@@ -158,7 +158,15 @@ anything.
 | 9   | second-monitor dashboard (Obsidian)            |
 | Z   | overflow / stray sweep (`$mod+z`)              |
 
-Each workspace is one tabbed container ordered terminal, Chrome, Omnigent.
+Each standard workspace is laid out as `[ Orchest sidebar | stack ]`: the
+Orchest workspace window on the left at 12% of the output (300px floor), and
+every other window in one `stacking` container (sway's vertical accordion)
+ordered terminal, Chrome, Omnigent, then anything moved there by hand. Orchest
+is launched and its windows claimed by `bin-linux/orchest-open-workspaces`, the
+counterpart of the Mac script of the same name. The stack layout is one
+constant (`STACK_LAYOUT` in `bin-linux/sway-windows-lib.sh`); `tabbed` is the
+alternative if the stacked title rows grate.
+
 Workspace-to-monitor pinning is machine-local (`~/.config/sway/config.d/`, see
 `sway_config.local.example`), so the dashboard lands on the second monitor
 without the script doing any monitor arithmetic of its own — unlike
@@ -184,8 +192,25 @@ supplies what AeroSpace does not:
   window inherits the first's `--class`), so they are claimed by sway marks.
   Marks are globally unique in sway, which makes double-claiming impossible and
   lets a re-run read back the previous run's claims.
-- Layout is `layout tabbed`, which is idempotent and absorbs late-arriving
-  windows, so there is no flatten-and-rebuild pass.
+- `bin-linux/arrange-workspaces` addresses every window by container id, so
+  it never focuses or switches workspaces: a rebuild is invisible from another
+  workspace, and a keybind move does not flip the view. A workspace already in
+  shape is left byte-identical. Two sway behaviours (from `sway/commands/layout.c`
+  and `sway/tree/container.c`) dictate the rebuild order it uses: `layout` on a
+  root-level window wraps every child of the workspace, and `split` on a
+  workspace's only child sets the workspace layout instead of nesting.
+- The Orchest sidebar is claimed as `sw:<ws>:orchest`; the sweep also spares
+  any window titled `Orchest [` so a sidebar that arrived after the pass is
+  not parked on Z (which would teach Orchest that Z is its workspace). Under
+  sway the app is an XWayland client with class `@orchest/desktop` and one pid
+  for every window; its Overview window (title `Orchest`, no id) opens on the
+  focused workspace at launch and is swept to Z like any stray. The prod build
+  is launched as the checkout's own `node_modules/.bin/electron` and the CLI
+  as `node apps/cli/bin/orchest.js`: sway's exec environment has no `pnpm` on
+  PATH. An Orchest failure is a warning; everything else is still swept and
+  laid out. Electron's default File/Edit/View menu bar is suppressed in the
+  Orchest checkout itself (`Menu.setApplicationMenu(null)`, apps/desktop
+  `main.ts`), since a 300px column cannot afford it.
 
 Two Linux-specific constraints are load-bearing:
 

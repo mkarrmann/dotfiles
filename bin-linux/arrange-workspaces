@@ -3,27 +3,33 @@ set -euo pipefail
 
 # Lay out the managed sway workspaces.
 #
-#   standard workspaces -> one tabbed container, ordered term, chrome, omnigent
-#   dashboard workspace -> panes side by side (splith)
+#   standard workspace -> [ Orchest sidebar | stack ]   (or just [ stack ])
+#                         root splith; the sidebar is SIDEBAR_PERCENT of the
+#                         output (floor SIDEBAR_MIN_WIDTH px); the stack is one
+#                         STACK_LAYOUT container holding every other window,
+#                         terminal first, then Chrome, then Omnigent, then any
+#                         other claimed slot, then whatever else is there.
+#   dashboard workspace -> every pane a direct child, DASHBOARD_LAYOUT (splith or splitv).
+#   sweep workspace     -> left alone.
 #
-# This is deliberately tiny compared to bin-macos/arrange-workspaces (~900
-# lines). That script has to flatten and rebuild each workspace tree, retry
-# until it converges, and work around AeroSpace normalizing single-child
-# containers away. sway needs none of it, which three properties verified
-# against sway 1.11 make true:
+# The Linux counterpart of bin-macos/arrange-workspaces, and still a fraction
+# of its size, because every step here is a criteria-addressed sway command:
+# nothing is focused, no workspace is switched, nothing is navigated by
+# direction. That is what lets $mod+Shift+r and Alt+Shift+N run without
+# flipping the visible workspace, and what makes the result deterministic.
 #
-#   1. `move container to workspace N` on a window ALREADY on N re-inserts it
-#      relative to the focused container. Moving each window and then focusing
-#      it makes the declared order fall out directly -- no directional
-#      navigation and nothing spatial to reason about.
-#   2. `layout tabbed` is idempotent -- re-running it on an already-tabbed
-#      workspace is a no-op, so this can run on every login without churn.
-#   3. A window that appears later joins the existing tabbed container by
-#      itself, so a late arrival does not require a rebuild.
+# A workspace already in shape is left untouched (the tree JSON is identical
+# before and after); only a workspace whose shape is wrong is rebuilt. The
+# rebuild is: float every window out of the tiling tree, which reaps whatever
+# stray containers they were in, re-tile them, build the stack around the
+# first member and move the others into it by mark, swap the sidebar to the
+# left, resize. `move container to workspace <its own workspace>` is a no-op
+# and `split none` cannot flatten a workspace's only child, so the float trick
+# is the flatten. sway keeps a one-child stack container, so the Mac's
+# borrow-a-scaffold-window hack has no counterpart.
 #
-# Ordering is derived from window properties rather than duplicating
-# startup-windows' table: terminals carry the sway-ws.term. app_id prefix, and
-# the other slots carry an sw:<ws>:<type> mark.
+# The stack container is marked sw:<ws>:stack so sway-auto-stack can send a
+# window that appears later straight into it.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=./sway-windows-lib.sh
@@ -31,9 +37,11 @@ source "$SCRIPT_DIR/sway-windows-lib.sh"
 
 DASHBOARD_WS="${DASHBOARD_WS:-9}"
 DASHBOARD_LAYOUT="${DASHBOARD_LAYOUT:-splith}"
+SWEEP_WS="${SWEEP_WORKSPACE:-Z}"
+ARRANGE_ATTEMPTS="${ARRANGE_ATTEMPTS:-3}"
 
 usage() {
-  echo "Usage: arrange-workspaces [--dashboard-ws N] WORKSPACE..."
+  echo "Usage: arrange-workspaces [--dashboard-ws N] [--sweep-ws Z] WORKSPACE..."
   exit "${1:-0}"
 }
 
@@ -41,6 +49,7 @@ workspaces=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dashboard-ws) DASHBOARD_WS="$2"; shift 2 ;;
+    --sweep-ws) SWEEP_WS="$2"; shift 2 ;;
     -h|--help) usage 0 ;;
     -*) echo "Unknown option: $1" >&2; usage 2 ;;
     *) workspaces+=("$1"); shift ;;
@@ -51,109 +60,333 @@ done
 sway_ipc -t get_version >/dev/null 2>&1 || {
   echo "ERROR: cannot reach sway." >&2; exit 1; }
 
-failures=0
+# The tree reports layouts under different names than the commands take.
+tree_layout_name() {
+  case "$1" in stacking) echo stacked ;; *) echo "$1" ;; esac
+}
 
-# Managed windows of WS, in layout order.
+# Windows of WS that belong in its stack (or, on the dashboard, its panes),
+# in layout order. Excludes the sidebar (see sidebar_id_of) and Omnigent's
+# update overlay. Unmanaged floating windows -- dialogs, pickers -- are left
+# floating; a managed one that was floated is re-tiled.
 #
-# rank 0 terminal (app_id sway-ws.term.<slot>)
+# rank 0 terminal  (app_id TERM_APP_ID_PREFIX<slot>)
 # rank 1 chrome    (mark sw:<ws>:chrome)
 # rank 2 omnigent  (mark sw:<ws>:omnigent)
-# rank 3 any other sw: mark (dashboard panes, future slots)
-# Ties break by window id so the order is stable between runs.
+# rank 3 any other sw:<ws>: claim (dashboard panes, future slots)
+# rank 4 anything else that is tiled (a window moved here by hand)
+# Ties break by window id so the order is stable between runs. MAX_RANK
+# limits the output to the ranks whose order this script enforces.
 ordered_ids() {
-  local snapshot="$1" ws="$2"
-  echo "$snapshot" | jq -r --arg ws "$ws" --arg prefix "$TERM_APP_ID_PREFIX" '
+  local snapshot="$1" ws="$2" max_rank="${3:-4}" sidebar
+  sidebar=$(sidebar_id_of "$snapshot" "$ws")
+  echo "$snapshot" | jq -r --arg ws "$ws" --arg prefix "$TERM_APP_ID_PREFIX" \
+      --arg sidebar "${sidebar:-none}" --arg overlay_re "$OMNIGENT_INVALID_TITLE_RE" \
+      --argjson max "$max_rank" '
     [ .[]
       | select(.ws == $ws)
+      | select((.id | tostring) != $sidebar)
+      | select((.title // "") | test($overlay_re) | not)
       | . as $w
       | ( if (($w.app_id // "") | startswith($prefix)) then 0
-          elif ($w.marks | any(. == "sw:\($ws):chrome")) then 1
-          elif ($w.marks | any(. == "sw:\($ws):omnigent")) then 2
-          elif ($w.marks | any(startswith("sw:"))) then 3
-          else empty end ) as $rank
+          elif ($w.marks | index("sw:\($ws):chrome")) then 1
+          elif ($w.marks | index("sw:\($ws):omnigent")) then 2
+          elif ($w.marks | any(startswith("sw:\($ws):"))) then 3
+          else 4 end ) as $rank
+      | select($rank <= $max)
+      | select($rank < 4 or (($w.floating // false) | not))
       | { id: $w.id, rank: $rank } ]
     | sort_by(.rank, .id) | .[].id'
 }
 
-arrange_workspace() {
-  local ws="$1" layout="$2"
-  local snapshot ids count first id
+TREE=""
+SNAPSHOT=""
+refresh() {
+  TREE=$(sway_ipc -t get_tree) || return 1
+  [[ -n "$TREE" ]] || return 1
+  SNAPSHOT=$(printf '%s' "$TREE" | jq -c "$SWAY_WINS_JQ wins")
+}
 
-  snapshot=$(snapshot_windows) || { echo "WARNING: [$ws] snapshot failed" >&2; return 1; }
-  ids=$(ordered_ids "$snapshot" "$ws")
-  count=$(printf '%s\n' "$ids" | grep -c . || true)
+ws_node() {
+  jq -c --arg ws "$1" '[recurse(.nodes[]?) | select(.type == "workspace" and .name == $ws)] | first // empty' <<< "$TREE"
+}
 
-  if [[ "$count" -eq 0 ]]; then
-    echo "[$ws] no managed windows; leaving alone"
+# Direct children of container/workspace ID, in order.
+children_of() {
+  jq -r --argjson c "$1" '[recurse(.nodes[]?) | select(.id == $c)] | first | .nodes[]?.id' <<< "$TREE"
+}
+
+parent_of() {
+  jq -r --argjson c "$1" '[recurse(.nodes[]?) | select(.nodes? and any(.nodes[]; .id == $c))] | first | .id // empty' <<< "$TREE"
+}
+
+cmd() {
+  local ws="$1"; shift
+  sway_cmd "$@" || { echo "  [$ws] failed: $*" >&2; return 1; }
+}
+
+ids_json() { printf '%s\n' "$@" | jq -c -R -s 'split("\n") | map(select(. != "") | tonumber)'; }
+
+# Reorder the children of container CID to WANT (which must list them all)
+# with swaps: a swap moves nothing else in the tree, so a shape that is right
+# is left right.
+swap_sort() {
+  local ws="$1" cid="$2"; shift 2
+  local -a want=("$@") cur
+  local i j tmp
+  mapfile -t cur < <(children_of "$cid")
+  [[ ${#cur[@]} -eq ${#want[@]} ]] || return 1
+  for (( i = 0; i < ${#want[@]}; i++ )); do
+    [[ "${cur[$i]}" == "${want[$i]}" ]] && continue
+    for (( j = i + 1; j < ${#cur[@]}; j++ )); do
+      [[ "${cur[$j]}" == "${want[$i]}" ]] && break
+    done
+    [[ "$j" -lt ${#cur[@]} ]] || return 1
+    cmd "$ws" "[con_id=${want[$i]}] swap container with con_id ${cur[$i]}" || return 1
+    tmp="${cur[$i]}"; cur[$i]="${cur[$j]}"; cur[$j]="$tmp"
+  done
+}
+
+# Float every listed window out of the tiling tree. Emptied containers are
+# reaped on the way out; re-tiling one window then leaves it the workspace's
+# only tiled child.
+float_all() {
+  local ws="$1"; shift
+  local id
+  for id in "$@"; do cmd "$ws" "[con_id=$id] floating enable" || return 1; done
+}
+
+# Two sway behaviours (sway/tree/container.c container_split, and
+# sway/commands/layout.c) make the rebuild order below the only one that
+# works without focusing anything:
+#   - `split` on a workspace's ONLY tiled child does not create a container;
+#     it sets the workspace's own layout. That is the one way to pin the
+#     workspace to splith from a criteria-addressed command.
+#   - `layout` addressed at a root-level window wraps EVERY child of the
+#     workspace into a new container of that layout.
+# So the first stack member is re-tiled alone, the workspace layout is set
+# through it, and the stack container is created around it either by
+# splitting beside the re-tiled sidebar or, with no sidebar, by that wrap.
+pin_workspace_layout() {
+  local ws="$1" only_child="$2" layout="$3"
+  case "$layout" in
+    splith) cmd "$ws" "[con_id=$only_child] split h" ;;
+    splitv) cmd "$ws" "[con_id=$only_child] split v" ;;
+    *) echo "  [$ws] a workspace layout must be splith or splitv, not $layout" >&2; return 1 ;;
+  esac
+}
+
+# The sidebar's target width on this workspace's output.
+sidebar_target_px() {
+  local ws_width="$1" px
+  px=$(( ws_width * SIDEBAR_PERCENT / 100 ))
+  (( px < SIDEBAR_MIN_WIDTH )) && px=$SIDEBAR_MIN_WIDTH
+  (( px > ws_width / 2 )) && px=$(( ws_width / 2 ))
+  echo "$px"
+}
+
+# ── standard workspace ───────────────────────────────────────────────
+
+# Standard-workspace shape check. Prints JSON {shape, stack, order, sidebar_width, ws_width}.
+standard_state() {
+  local ws="$1" sidebar="$2" members_json="$3" node
+  node=$(ws_node "$ws")
+  jq -c --arg sidebar "${sidebar:-}" --argjson members "$members_json" \
+        --arg layout "$(tree_layout_name "$STACK_LAYOUT")" --arg stack_mark "$(stack_mark "$ws")" '
+    def leaf: .pid != null;
+    . as $ws
+    | ($ws.nodes) as $kids
+    | ( if $sidebar == "" then
+          { ok: (($kids | length) == 1 and ($kids[0] | leaf | not)), stack: $kids[0] }
+        else
+          { ok: (($kids | length) == 2 and ($kids[0].id | tostring) == $sidebar and ($kids[1] | leaf | not)),
+            stack: $kids[1] }
+        end ) as $s
+    | ($s.stack // {}) as $p
+    | { shape: ($s.ok and $ws.layout == "splith" and $p.layout == $layout
+                and all($p.nodes[]?; leaf)
+                and (([$p.nodes[]?.id] | sort) == ($members | sort))),
+        stack: ($p.id // null),
+        stack_marked: (($p.marks // []) | index($stack_mark) != null),
+        order: [$p.nodes[]?.id],
+        sidebar_width: (if $sidebar == "" then null else $kids[0].rect.width end),
+        ws_width: $ws.rect.width }' <<< "$node"
+}
+
+# Order the stack: ranked members in rank order, unranked ones after them in
+# their current order.
+stack_order() {
+  local order_json="$1"; shift
+  local -a ranked=("$@")
+  jq -r --argjson ranked "$(ids_json "${ranked[@]}")" '
+    $ranked + [ .[] | select(. as $id | $ranked | index($id) | not) ] | .[]' <<< "$order_json"
+}
+
+order_matches() {
+  local order_json="$1"; shift
+  local want actual
+  want=$(printf '%s\n' "$@" | grep . | paste -sd, -)
+  actual=$(jq -r --argjson ranked "$(ids_json "$@")" \
+    '[ .[] | select(. as $id | $ranked | index($id)) ] | join(",")' <<< "$order_json")
+  [[ "$want" == "$actual" ]]
+}
+
+enforce_sidebar_width() {
+  local ws="$1" sidebar="$2" width="$3" ws_width="$4" target
+  target=$(sidebar_target_px "$ws_width")
+  if (( width < target - 2 || width > target + 2 )); then
+    cmd "$ws" "[con_id=$sidebar] resize set width $target px" || return 1
+  fi
+}
+
+arrange_standard_once() {
+  local ws="$1" sidebar state stack members_json first parent
+  local -a members ranked
+  refresh || { echo "WARNING: [$ws] cannot read the tree" >&2; return 1; }
+  [[ -n "$(ws_node "$ws")" ]] || { echo "[$ws] no such workspace; nothing to arrange"; return 0; }
+
+  sidebar=$(sidebar_id_of "$SNAPSHOT" "$ws")
+  mapfile -t members < <(ordered_ids "$SNAPSHOT" "$ws")
+  mapfile -t ranked < <(ordered_ids "$SNAPSHOT" "$ws" 3)
+  if [[ ${#members[@]} -eq 0 ]]; then
+    echo "[$ws] ${sidebar:+only the sidebar; }nothing to arrange"
     return 0
   fi
+  members_json=$(ids_json "${members[@]}")
+  state=$(standard_state "$ws" "$sidebar" "$members_json")
 
-  # Order by re-inserting each window in turn. sway inserts a moved container
-  # relative to the FOCUSED one, not at the end of the parent, so each window
-  # is focused immediately after its move -- that makes the next one land
-  # directly after it and the declared order fall out exactly.
-  while IFS= read -r id; do
-    [[ -n "$id" ]] || continue
-    # `layout` only acts on tiled containers. A managed window someone floated
-    # would otherwise be skipped silently and the run still report success.
-    sway_cmd "[con_id=$id] floating disable" || echo "WARNING: [$ws] could not tile window $id" >&2
-    move_to_workspace "$id" "$ws" || {
-      echo "WARNING: [$ws] could not order window $id" >&2; continue; }
-    sway_cmd "[con_id=$id] focus" || echo "WARNING: [$ws] could not focus $id" >&2
-  done <<< "$ids"
-
-  first=$(printf '%s\n' "$ids" | grep . | head -1)
-  sway_cmd "layout $layout" || { echo "WARNING: [$ws] could not set layout $layout" >&2; return 1; }
-  # Leave the first slot (the terminal) as the visible tab.
-  sway_cmd "[con_id=$first] focus" || echo "WARNING: [$ws] could not focus $first" >&2
-
-  # Success means the tree actually has the shape we asked for, not that every
-  # command returned 0. A floating leftover or a mis-ordered tab fails here.
-  if ! verify_workspace "$ws" "$layout"; then
-    echo "WARNING: [$ws] tree does not match the requested ${layout} order after arrangement" >&2
-    return 1
+  if [[ "$(jq -r .shape <<< "$state")" == true ]]; then
+    stack=$(jq -r .stack <<< "$state")
+    if ! order_matches "$(jq -c .order <<< "$state")" "${ranked[@]}"; then
+      echo "[$ws] reordering the stack"
+      local -a want
+      mapfile -t want < <(stack_order "$(jq -c .order <<< "$state")" "${ranked[@]}")
+      swap_sort "$ws" "$stack" "${want[@]}" || return 1
+    fi
+    if [[ "$(jq -r .stack_marked <<< "$state")" != true ]]; then
+      cmd "$ws" "[con_id=$stack] mark --add $(sway_quote "$(stack_mark "$ws")")" || return 1
+    fi
+  else
+    echo "[$ws] rebuilding: ${sidebar:+sidebar $sidebar | }stack of ${#members[@]}"
+    first="${members[0]}"
+    float_all "$ws" ${sidebar:+"$sidebar"} "${members[@]}" || return 1
+    cmd "$ws" "[con_id=$first] floating disable" || return 1
+    pin_workspace_layout "$ws" "$first" splith || return 1
+    if [[ -n "$sidebar" ]]; then
+      cmd "$ws" "[con_id=$sidebar] floating disable" || return 1
+      cmd "$ws" "[con_id=$first] split v" || return 1
+    fi
+    cmd "$ws" "[con_id=$first] layout $STACK_LAYOUT" || return 1
+    refresh || return 1
+    stack=$(parent_of "$first")
+    [[ -n "$stack" ]] || { echo "  [$ws] no stack container around $first" >&2; return 1; }
+    cmd "$ws" "[con_id=$stack] mark --add $(sway_quote "$(stack_mark "$ws")")" || return 1
+    local id
+    for id in "${members[@]:1}"; do
+      cmd "$ws" "[con_id=$id] floating disable" || return 1
+      cmd "$ws" "[con_id=$id] move container to mark $(sway_quote "$(stack_mark "$ws")")" || return 1
+    done
+    if [[ -n "$sidebar" ]]; then
+      refresh || return 1
+      if [[ "$(children_of "$(jq -r .id <<< "$(ws_node "$ws")")" | head -1)" != "$sidebar" ]]; then
+        cmd "$ws" "[con_id=$sidebar] swap container with con_id $stack" || return 1
+      fi
+    fi
+    refresh || return 1
+    state=$(standard_state "$ws" "$sidebar" "$members_json")
+    if [[ "$(jq -r .shape <<< "$state")" == true ]] \
+        && ! order_matches "$(jq -c .order <<< "$state")" "${ranked[@]}"; then
+      local -a want
+      mapfile -t want < <(stack_order "$(jq -c .order <<< "$state")" "${ranked[@]}")
+      swap_sort "$ws" "$stack" "${want[@]}" || return 1
+    fi
   fi
-  echo "[$ws] arranged ${count} window(s) as ${layout}"
+
+  if [[ -n "$sidebar" ]]; then
+    refresh || return 1
+    state=$(standard_state "$ws" "$sidebar" "$members_json")
+    enforce_sidebar_width "$ws" "$sidebar" "$(jq -r .sidebar_width <<< "$state")" \
+      "$(jq -r .ws_width <<< "$state")" || return 1
+  fi
+
+  # Success means the tree has the shape asked for, not that every command
+  # returned 0.
+  refresh || return 1
+  state=$(standard_state "$ws" "$sidebar" "$members_json")
+  [[ "$(jq -r .shape <<< "$state")" == true ]] || { echo "  [$ws] shape is still wrong" >&2; return 1; }
+  order_matches "$(jq -c .order <<< "$state")" "${ranked[@]}" || { echo "  [$ws] order is still wrong" >&2; return 1; }
+  if [[ -n "$sidebar" ]]; then
+    local width target
+    width=$(jq -r .sidebar_width <<< "$state"); target=$(sidebar_target_px "$(jq -r .ws_width <<< "$state")")
+    (( width >= target - 2 && width <= target + 2 )) || { echo "  [$ws] sidebar is ${width}px, wanted ${target}px" >&2; return 1; }
+  fi
+  echo "[$ws] ${sidebar:+sidebar | }stack of ${#members[@]} (${STACK_LAYOUT})"
 }
 
-# A workspace is correct when its managed windows sit in one container of the
-# requested layout, in the requested order.
-verify_workspace() {
-  local ws="$1" layout="$2" snapshot expected actual
-  snapshot=$(snapshot_windows) || return 1
-  expected=$(ordered_ids "$snapshot" "$ws" | paste -sd, -)
-  [[ -n "$expected" ]] || return 0
+# ── dashboard ────────────────────────────────────────────────────────
 
-  # Floating windows live in floating_nodes and never appear in a layout
-  # container, so the order check below would miss one -- reject it outright.
-  if sway_ipc -t get_tree | jq -e --arg ws "$ws" --argjson want "[${expected}]" '
-      [ recurse(.nodes[]?) | select(.type == "workspace" and .name == $ws) ] | first
-      | [ .floating_nodes[]? | recurse(.nodes[]?) | select(.pid != null) | .id ]
-      | any(. as $id | $want | index($id))' >/dev/null 2>&1; then
-    return 1
-  fi
-
-  # The managed windows must sit together, in order, as direct children of one
-  # container with the requested layout. A window the user opened there too is
-  # tolerated: startup-windows sweeps those before arranging, but a standalone
-  # run should not call the layout broken because of one.
-  actual=$(sway_ipc -t get_tree | jq -r --arg ws "$ws" --arg layout "$layout" \
-      --argjson want "[${expected}]" '
-    [ recurse(.nodes[]?) | select(.type == "workspace" and .name == $ws) ] | first
-    | [ recurse(.nodes[]?; . != null)
-        | select(.layout == $layout)
-        | [ .nodes[]? | select(.pid != null) | .id ] ]
-    | map(select(any(.[]; . == $want[0]))) | first // []
-    | map(select(. as $id | $want | index($id)))
-    | join(",")')
-
-  [[ "$actual" == "$expected" ]]
+dashboard_state() {
+  local ws="$1" members_json="$2"
+  jq -c --argjson members "$members_json" --arg layout "$(tree_layout_name "$DASHBOARD_LAYOUT")" '
+    { shape: (.layout == $layout and all(.nodes[]?; .pid != null)
+              and (([.nodes[]?.id] | sort) == ($members | sort))),
+      id: .id, order: [.nodes[]?.id] }' <<< "$(ws_node "$ws")"
 }
 
+arrange_dashboard_once() {
+  local ws="$1" state members_json
+  local -a members
+  refresh || { echo "WARNING: [$ws] cannot read the tree" >&2; return 1; }
+  [[ -n "$(ws_node "$ws")" ]] || { echo "[$ws] no such workspace; nothing to arrange"; return 0; }
+  mapfile -t members < <(ordered_ids "$SNAPSHOT" "$ws")
+  [[ ${#members[@]} -gt 0 ]] || { echo "[$ws] no panes; nothing to arrange"; return 0; }
+  members_json=$(ids_json "${members[@]}")
+  state=$(dashboard_state "$ws" "$members_json")
+
+  if [[ "$(jq -r .shape <<< "$state")" != true ]]; then
+    echo "[$ws] rebuilding the dashboard: ${#members[@]} pane(s), $DASHBOARD_LAYOUT"
+    float_all "$ws" "${members[@]}" || return 1
+    cmd "$ws" "[con_id=${members[0]}] floating disable" || return 1
+    pin_workspace_layout "$ws" "${members[0]}" "$DASHBOARD_LAYOUT" || return 1
+    local id
+    for id in "${members[@]:1}"; do cmd "$ws" "[con_id=$id] floating disable" || return 1; done
+    refresh || return 1
+    state=$(dashboard_state "$ws" "$members_json")
+  fi
+  if [[ "$(jq -c .order <<< "$state")" != "$members_json" ]]; then
+    swap_sort "$ws" "$(jq -r .id <<< "$state")" "${members[@]}" || return 1
+  fi
+
+  refresh || return 1
+  state=$(dashboard_state "$ws" "$members_json")
+  [[ "$(jq -r .shape <<< "$state")" == true && "$(jq -c .order <<< "$state")" == "$members_json" ]] \
+    || { echo "  [$ws] dashboard shape is still wrong" >&2; return 1; }
+  echo "[$ws] dashboard of ${#members[@]} pane(s) ($DASHBOARD_LAYOUT)"
+}
+
+# ── main ─────────────────────────────────────────────────────────────
+
+arrange_workspace() {
+  local ws="$1" attempt
+  for (( attempt = 1; attempt <= ARRANGE_ATTEMPTS; attempt++ )); do
+    if [[ "$ws" == "$DASHBOARD_WS" ]]; then
+      arrange_dashboard_once "$ws" && return 0
+    else
+      arrange_standard_once "$ws" && return 0
+    fi
+    [[ "$attempt" -lt "$ARRANGE_ATTEMPTS" ]] && sleep 0.5
+  done
+  echo "WARNING: [$ws] did not converge after ${ARRANGE_ATTEMPTS} attempt(s)" >&2
+  return 1
+}
+
+failures=0
 for ws in "${workspaces[@]}"; do
-  layout=tabbed
-  [[ "$ws" == "$DASHBOARD_WS" ]] && layout="$DASHBOARD_LAYOUT"
-  arrange_workspace "$ws" "$layout" || failures=$(( failures + 1 ))
+  if [[ "$ws" == "$SWEEP_WS" ]]; then
+    echo "[$ws] overflow workspace has no managed layout; leaving unchanged"
+    continue
+  fi
+  arrange_workspace "$ws" || failures=$(( failures + 1 ))
 done
 
 if [[ "$failures" -gt 0 ]]; then

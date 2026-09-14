@@ -22,7 +22,7 @@
 set -uo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-for dep in sway swaymsg ghostty jq flock zsh; do
+for dep in sway swaymsg ghostty foot jq flock zsh; do
   command -v "$dep" >/dev/null 2>&1 || { echo "SKIP: $dep not found"; exit 0; }
 done
 
@@ -57,12 +57,21 @@ ws_order() {
     | [recurse(.nodes[]?,.floating_nodes[]?)|select(.pid!=null)]
     | map("\(.app_id)[\(.marks|join(","))]") | join(" -> ")'
 }
-# largest tab group on WS (window count), 0 if none
-ws_tabbed() {
+# largest stack on WS (window count), 0 if none
+ws_stacked() {
   tree | jq -r --arg ws "$1" '
     [.nodes[]|.nodes[]?|select(.type=="workspace" and .name==$ws)]|first // {}
-    | [recurse(.nodes[]?)|select(.layout=="tabbed")|[.nodes[]?|select(.pid!=null)]|length] | max // 0'
+    | [recurse(.nodes[]?)|select(.layout=="stacked")|[.nodes[]?|select(.pid!=null)]|length] | max // 0'
 }
+# ws_shape WS -> "layout[child child ...]" with containers as layout[...], windows as app_id
+ws_shape() {
+  tree | jq -r --arg ws "$1" '
+    [.nodes[]|.nodes[]?|select(.type=="workspace" and .name==$ws)]|first // {}
+    | def f: if .pid then .app_id else "\(.layout|sub("split";""))[" + ([.nodes[]|f]|join(" ")) + "]" end;
+      "\(.layout|sub("split";""))[" + ([.nodes[]?|f]|join(" ")) + "]"'
+}
+ws_sidebar_width() { tree | jq -r --arg ws "$1" '[.nodes[]|.nodes[]?|select(.type=="workspace" and .name==$ws)]|first|.nodes[0].rect.width'; }
+focused_ws() { swaymsg -t get_workspaces | jq -r '.[]|select(.focused)|.name'; }
 ws_layout() { tree | jq -r --arg ws "$1" '[.nodes[]|.nodes[]?|select(.type=="workspace" and .name==$ws)]|first|.layout // "none"'; }
 ws_floating() { tree | jq -r --arg ws "$1" '[.nodes[]|.nodes[]?|select(.type=="workspace" and .name==$ws)]|first // {} | [.floating_nodes[]?|recurse(.nodes[]?)|select(.pid!=null)|.id]|join(",")'; }
 id_by_mark() { tree | jq -r --arg m "$1" '[recurse(.nodes[]?,.floating_nodes[]?)|select(.pid!=null and (.marks|index($m)))]|first|.id // empty'; }
@@ -152,6 +161,7 @@ DASHBOARD_WS=${1:-9}
 DASHBOARD_PANES=("obsidian.stub|__desktop_entry__ obsidian.desktop")
 CHROME_CMD=("$TMP/bin/chrome-stub")
 OMNIGENT_NEW_WINDOW_MIN_VERSION=""
+ORCHEST_ENABLED=false
 EOF
 }
 layout_retired() {   # slot "1|chrome" deleted, terminal slot alpha renamed to gamma
@@ -167,6 +177,7 @@ DASHBOARD_WS=9
 DASHBOARD_PANES=("obsidian.stub|__desktop_entry__ obsidian.desktop")
 CHROME_CMD=("$TMP/bin/chrome-stub")
 OMNIGENT_NEW_WINDOW_MIN_VERSION=""
+ORCHEST_ENABLED=false
 EOF
 }
 layout_prefix() {    # custom terminal app_id prefix
@@ -181,6 +192,7 @@ DASHBOARD_WS=9
 DASHBOARD_PANES=()
 CHROME_CMD=("$TMP/bin/chrome-stub")
 OMNIGENT_NEW_WINDOW_MIN_VERSION=""
+ORCHEST_ENABLED=false
 EOF
 }
 layout_steal() {
@@ -192,6 +204,7 @@ WORKSPACES=(
 DASHBOARD_WS=9
 DASHBOARD_PANES=("google-chrome.fixed|$TMP/bin/chrome-fixed")
 CHROME_CMD=("$TMP/bin/chrome-fixed")
+ORCHEST_ENABLED=false
 EOF
 }
 
@@ -228,10 +241,10 @@ run_startup; rc=$?
 check "exits 0 with no warnings" "0" "$rc"; [[ "$rc" == 0 ]] || show_log "$TMP/run.log"
 check "workspace 1 order and claims" "$WS1_EXPECT" "$(ws_order 1)"
 check "workspace 2 order and claims" "$WS2_EXPECT" "$(ws_order 2)"
-check "workspace 1 is one tab group of 3" "3" "$(ws_tabbed 1)"
-check "workspace 2 is one tab group of 3" "3" "$(ws_tabbed 2)"
+check "workspace 1 is one stack of 3" "3" "$(ws_stacked 1)"
+check "workspace 2 is one stack of 3" "3" "$(ws_stacked 2)"
 check "dashboard holds the pane, claimed" "obsidian.stub[sw:9:obsidian.stub]" "$(ws_order 9)"
-check "dashboard is laid out side by side, not tabbed" "0" "$(ws_tabbed 9)"
+check "dashboard is laid out side by side, not stacked" "0" "$(ws_stacked 9)"
 grep -q 'NOTE: one output active; the dashboard is workspace 9' "$TMP/run.log" \
   && pass "single-output fallback is reported" || fail "no single-output NOTE in the run log"
 for _ in $(seq 1 40); do [[ -s "$TMP/alpha.ran" ]] && break; sleep 0.25; done
@@ -273,18 +286,13 @@ echo "== floating managed window =="
 cid=$(id_by_mark sw:1:chrome)
 swaymsg "[con_id=$cid] floating enable" >/dev/null; sleep 0.3
 check "setup: the window is floating" "$cid" "$(ws_floating 1)"
-# verify_workspace must reject this state on its own
-extract_fn() { awk -v fn="$2" 'index($0, fn "() {") == 1 { p = 1 } p { print } p && $0 == "}" { exit }' "$1"; }
-( source "$ROOT/bin-linux/sway-windows-lib.sh"
-  eval "$(extract_fn "$ROOT/bin-linux/arrange-workspaces" ordered_ids)"
-  eval "$(extract_fn "$ROOT/bin-linux/arrange-workspaces" verify_workspace)"
-  verify_workspace 1 tabbed ) && fail "verify_workspace accepted a floating managed window" \
-                              || pass "verify_workspace rejects a floating managed window"
 run_arrange --dashboard-ws 9 1 2 9; rc=$?
 check "arranger exits 0" "0" "$rc"; [[ "$rc" == 0 ]] || show_log "$TMP/arrange.log"
+grep -q '^\[1\] rebuilding' "$TMP/arrange.log" && pass "workspace 1 was rebuilt" || fail "workspace 1 was not rebuilt"
+grep -q '^\[2\] stack of 3' "$TMP/arrange.log" && pass "workspace 2 was left alone" || fail "workspace 2 was rebuilt for nothing"
 check "the window is tiled again" "" "$(ws_floating 1)"
-check "and back in the tab group, in order" "$WS1_EXPECT" "$(ws_order 1)"
-check "tab group is whole again" "3" "$(ws_tabbed 1)"
+check "and back in the stack, in order" "$WS1_EXPECT" "$(ws_order 1)"
+check "stack is whole again" "3" "$(ws_stacked 1)"
 
 # ── 6. --no-dashboard ──────────────────────────────────────────────────
 echo "== --no-dashboard =="
@@ -316,7 +324,7 @@ run_startup; rc=$?
 check "exits 0" "0" "$rc"; [[ "$rc" == 0 ]] || show_log "$TMP/run.log"
 check "custom-prefix terminal is placed and ordered first" \
   "custom.term.alpha[] -> google-chrome.stub1[sw:1:chrome] -> Omnigent.stub1[sw:1:omnigent]" "$(ws_order 1)"
-check "and is part of the tab group" "3" "$(ws_tabbed 1)"
+check "and is part of the stack" "3" "$(ws_stacked 1)"
 
 # ── 7. dashboard must not steal a claimed window ───────────────────────
 echo "== dashboard pane vs a claimed window of the same app =="
@@ -334,8 +342,41 @@ reset_windows; layout_main 8
 run_startup; rc=$?
 check "exits 0" "0" "$rc"; [[ "$rc" == 0 ]] || show_log "$TMP/run.log"
 check "pane lands on workspace 8" "obsidian.stub[sw:8:obsidian.stub]" "$(ws_order 8)"
-check "workspace 8 is not tabbed like a standard workspace" "0" "$(ws_tabbed 8)"
-check "standard workspaces unaffected" "3" "$(ws_tabbed 1)"
+check "workspace 8 is not stacked like a standard workspace" "0" "$(ws_stacked 8)"
+check "standard workspaces unaffected" "3" "$(ws_stacked 1)"
+
+# ── 9. Orchest sidebar, late windows, keyboard moves ───────────────────
+# The sidebar is a foot window titled the way Orchest titles its workspace
+# windows; the arranger and the sweep only ever look at that title and mark.
+echo "== Orchest sidebar =="
+reset_windows; layout_main
+run_startup; rc=$?
+check "setup: fresh build" "0" "$rc"; [[ "$rc" == 0 ]] || show_log "$TMP/run.log"
+swaymsg "workspace 1" >/dev/null
+swaymsg "[app_id=Omnigent.stub1] focus" >/dev/null
+foot --app-id=orchest.stub --title='Workspace — Orchest [abcd0001]' sleep 600 >/dev/null 2>&1 &
+for _ in $(seq 1 20); do [[ -n "$(id_by_app orchest.stub)" ]] && break; sleep 0.25; done
+sid=$(id_by_app orchest.stub)
+check "setup: the sidebar stub is on workspace 1, unmarked" "1" "$(ws_of_id "$sid")"
+swaymsg "workspace 2" >/dev/null
+run_startup; rc=$?
+check "exits 0" "0" "$rc"; [[ "$rc" == 0 ]] || show_log "$TMP/run.log"
+check "an unmarked Orchest window is not swept" "1" "$(ws_of_id "$sid")"
+check "workspace 1 is sidebar | stack" "h[orchest.stub stacked[sway-ws.term.alpha google-chrome.stub1 Omnigent.stub1]]" "$(ws_shape 1)"
+check "the sidebar keeps the 300px floor on a 1920px output" "300" "$(ws_sidebar_width 1)"
+swaymsg "[con_id=$sid] mark --add sw:1:orchest" >/dev/null
+run_startup
+check "a marked sidebar survives a re-run in place" "h[orchest.stub stacked[sway-ws.term.alpha google-chrome.stub1 Omnigent.stub1]]" "$(ws_shape 1)"
+
+echo "== a workspace whose name has spaces (marks must be quoted) =="
+swaymsg 'workspace "7: code"' >/dev/null
+foot --app-id=named.one sleep 600 >/dev/null 2>&1 &
+foot --app-id=named.two sleep 600 >/dev/null 2>&1 &
+for _ in $(seq 1 20); do [[ -n "$(id_by_app named.one)" && -n "$(id_by_app named.two)" ]] && break; sleep 0.25; done
+run_arrange --dashboard-ws 9 "7: code"; rc=$?
+check "arranger exits 0" "0" "$rc"; [[ "$rc" == 0 ]] || show_log "$TMP/arrange.log"
+check "the stack is built and marked" "sw:7: code:stack" "$(tree | jq -r '[recurse(.nodes[]?)|select(.type=="workspace" and .name=="7: code")]|first|.nodes[0].marks|join(",")')"
+kill "$(tree | jq -r '[recurse(.nodes[]?,.floating_nodes[]?)|select(.app_id=="named.one" or .app_id=="named.two")]|.[].pid' | tr '\n' ' ')" 2>/dev/null
 
 echo
 if [[ "$failures" -gt 0 ]]; then echo "$failures e2e test(s) failed." >&2; exit 1; fi

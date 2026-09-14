@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Open one Orchest workspace window per sway workspace and claim each as that
+# workspace's sidebar (mark sw:<ws>:orchest). The Linux counterpart of
+# bin-macos/orchest-open-workspaces: launch Orchest if it is not serving on
+# its port, create the "Workspace N" records that are missing, open each one,
+# then wait for two consecutive observations in which every sidebar sits on
+# its workspace, holds its mark, and Orchest itself has persisted that
+# workspace as the record's desktopWorkspaceId.
+#
+# Orchest places its own windows: the desktop app switches to the record's
+# desktop workspace before opening the window (apps/desktop/src/main/windows.ts,
+# openWorkspaceWindowAsync), and its sway provider learns the binding back
+# from where the window actually is. The moves here only repair drift.
+#
+# Nothing here needs pnpm: sway's exec environment does not have it on PATH.
+# The prod app is the checkout's own electron binary and the CLI is run with
+# node through apps/cli/bin/orchest.js.
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(dirname -- "$SCRIPT_PATH")"
+# shellcheck source=./sway-windows-lib.sh
+source "$SCRIPT_DIR/sway-windows-lib.sh"
+
+ORIG_ARGS=("$@")
+MODE=prod
+ACTION=open
+DRY_RUN=false
+WORKSPACES=()
+usage() {
+  echo 'Usage: orchest-open-workspaces [--prod|--dev] [--dry-run] [--verify-only|--reconcile-only] WORKSPACE...'
+  echo '  Workspaces are required; startup-windows supplies its resolved workspace names.'
+  echo '  Default: launch the existing prod build, create/open missing sidebars, repair and verify.'
+  echo '  --reconcile-only repairs existing sidebars without launching or opening anything.'
+  echo '  --verify-only checks placement, marks and persisted bindings without mutations.'
+  echo '  --dry-run prints intended work without connections or writes.'
+}
+die() { echo "[Orchest] ERROR: $*" >&2; exit 1; }
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --prod) MODE=prod ;;
+    --dev) MODE=dev ;;
+    --dry-run) DRY_RUN=true ;;
+    --verify-only|--reconcile-only)
+      [[ "$ACTION" == open ]] || { usage >&2; exit 2; }
+      ACTION="${1#--}"; ACTION="${ACTION%-only}" ;;
+    --) shift; WORKSPACES+=("$@"); break ;;
+    -h|--help) usage; exit 0 ;;
+    -*) usage >&2; exit 2 ;;
+    *) WORKSPACES+=("$1") ;;
+  esac
+  shift
+done
+[[ ${#WORKSPACES[@]} -gt 0 ]] || { usage >&2; exit 2; }
+declare -A seen=()
+for ws in "${WORKSPACES[@]}"; do
+  [[ -n "$ws" && "$ws" != __* && ! "$ws" =~ [[:cntrl:]] ]] || die "Invalid workspace name: $ws"
+  [[ -z "${seen[$ws]:-}" ]] || die "Duplicate workspace argument: $ws"
+  seen[$ws]=1
+done
+
+ORCHEST_DIR="${ORCHEST_DIR:-$HOME/dev/orchest}"
+ORCHEST_PORT="${ORCHEST_PORT:-3100}"
+ORCHEST_LOG="${ORCHEST_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/orchest-startup.log}"
+ORCHEST_READY_TIMEOUT="${ORCHEST_READY_TIMEOUT:-30}"
+ORCHEST_CONVERGE_TIMEOUT="${ORCHEST_CONVERGE_TIMEOUT:-45}"
+ORCHEST_CLI_TIMEOUT="${ORCHEST_CLI_TIMEOUT:-35}"
+DESKTOP_DIR="$ORCHEST_DIR/apps/desktop"
+[[ "$ORCHEST_PORT" == 3100 ]] || die 'ORCHEST_PORT must be 3100: the Orchest desktop and workspace CLI currently hardcode this port.'
+for value in "$ORCHEST_READY_TIMEOUT" "$ORCHEST_CONVERGE_TIMEOUT" "$ORCHEST_CLI_TIMEOUT"; do
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] || die 'Orchest timeouts must be positive integer seconds.'
+done
+
+if [[ "$DRY_RUN" == true ]]; then
+  echo "[Orchest] Check http://127.0.0.1:$ORCHEST_PORT/health for desktop protocol v1."
+  if [[ "$ACTION" == open ]]; then
+    if [[ "$MODE" == prod ]]; then
+      printf '[Orchest] If absent, launch in %q: ORCHEST_PROVIDER=linux-sway node_modules/.bin/electron . (existing out/ build required; no install/build).\n' "$DESKTOP_DIR"
+    else
+      printf '[Orchest] If absent, launch in %q: ORCHEST_PROVIDER=linux-sway pnpm dev.\n' "$ORCHEST_DIR"
+    fi
+  fi
+  for ws in "${WORKSPACES[@]}"; do
+    printf '[Orchest] %s "Workspace %s": match unique Orchest [short-id], workspace=%q, mark=%q, persisted desktopWorkspaceId=%q.\n' "$ACTION" "$ws" "$ws" "sw:$ws:orchest" "$ws"
+  done
+  [[ "$ACTION" != open ]] || echo '[Orchest] Create/reuse labels; ensure desktop workspace exists before opening each missing sidebar; restore original focus.'
+  echo '[Orchest] Require two consecutive converged observations.'
+  exit 0
+fi
+
+for tool in jq curl timeout swaymsg node ss; do
+  command -v "$tool" >/dev/null || die "Required command missing: $tool"
+done
+# Shared with startup-windows: inherited calls return; standalone calls reexec
+# under the same compositor lock. The library closes the fd in child processes.
+sway_windows_lock "$SCRIPT_PATH" "${ORIG_ARGS[@]}"
+[[ -d "$ORCHEST_DIR" ]] || die "Orchest checkout missing: $ORCHEST_DIR"
+
+orchest_cli() {
+  (cd "$ORCHEST_DIR" && timeout --kill-after=1 "$ORCHEST_CLI_TIMEOUT" \
+    node "$ORCHEST_DIR/apps/cli/bin/orchest.js" "$@")
+}
+orchest_health() {
+  local response status body rc=0 listeners
+  response=$(curl --silent --show-error --noproxy '*' --connect-timeout 1 --max-time 2 \
+    --write-out '\n%{http_code}' "http://127.0.0.1:$ORCHEST_PORT/health" 2>/dev/null) || rc=$?
+  if [[ "$rc" == 7 ]]; then
+    listeners=$(ss -H -ltn "sport = :$ORCHEST_PORT") || die 'Cannot check for an existing listener.'
+    [[ -z "$listeners" ]] || die "Port $ORCHEST_PORT has a listener but /health is unreachable; inspect it before retrying."
+    orchest_state=absent
+    return
+  fi
+  [[ "$rc" == 0 ]] || die "Cannot check Orchest health (curl exit $rc); inspect the existing listener before retrying."
+  status="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+  printf '%s' "$body" | jq -se --arg status "$status" '
+    length == 1 and (.[0] | type == "object" and .service == "orchest"
+      and .protocolVersion == 1 and .shell == "desktop"
+      and (.pid | type == "number" and . > 0 and floor == .)
+      and (($status == "200" and .ready == true) or ($status == "503" and .ready == false)))
+  ' >/dev/null 2>&1 || die "Port $ORCHEST_PORT is not a compatible Orchest desktop /health endpoint (HTTP $status). Inspect it; an older build needs an explicit rebuild/restart."
+  orchest_state=starting
+  [[ "$status" != 200 ]] || orchest_state=ready
+}
+
+saved_ws=$(sway_ipc -t get_workspaces | jq -er '[.[] | select(.focused)] | first | .name') \
+  || die 'Cannot read the focused Sway workspace.'
+saved_id=$(focused_window_id) || die 'Cannot read Sway focus.'
+restore_focus() {
+  local rc=$?
+  trap - EXIT
+  if ! sway_cmd "workspace --no-auto-back-and-forth $(sway_quote "$saved_ws")"; then
+    echo "[Orchest] ERROR: Could not restore workspace $saved_ws." >&2
+    rc=1
+  elif [[ -n "$saved_id" ]] && ! sway_cmd "[con_id=$saved_id] focus"; then
+    echo "[Orchest] ERROR: Could not restore window $saved_id." >&2
+    rc=1
+  fi
+  exit "$rc"
+}
+if [[ "$ACTION" != verify ]]; then
+  trap restore_focus EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+fi
+
+orchest_health
+launched_pid=
+if [[ "$orchest_state" == absent ]]; then
+  [[ "$ACTION" == open ]] || die 'Orchest is not running; this mode will not launch it.'
+  if [[ "$MODE" == prod ]]; then
+    for artifact in out/main/index.js out/preload/index.js out/renderer/index.html; do
+      [[ -f "$DESKTOP_DIR/$artifact" ]] || die "Production build missing: $DESKTOP_DIR/$artifact. Build Orchest explicitly before running startup-windows; login never installs or builds dependencies."
+    done
+    [[ -x "$DESKTOP_DIR/node_modules/.bin/electron" ]] || die "Electron dependency missing in $DESKTOP_DIR; prepare Orchest dependencies explicitly before login."
+  else
+    [[ -d "$ORCHEST_DIR/node_modules" ]] || die "Dependencies missing in $ORCHEST_DIR; prepare them explicitly before using --dev."
+    command -v pnpm >/dev/null || die "--dev needs pnpm on PATH."
+  fi
+  mkdir -p -- "$(dirname -- "$ORCHEST_LOG")"
+  echo "[Orchest] Launching $MODE; log: $ORCHEST_LOG"
+  (
+    unset SWAY_STARTUP_WINDOWS_LOCKED SWAY_WINDOWS_LOCK_SOCKET
+    export ORCHEST_PROVIDER=linux-sway
+    if [[ "$MODE" == prod ]]; then
+      cd "$DESKTOP_DIR"
+      exec nohup "$DESKTOP_DIR/node_modules/.bin/electron" .
+    else
+      cd "$ORCHEST_DIR"
+      exec nohup pnpm dev
+    fi
+  ) </dev/null >"$ORCHEST_LOG" 2>&1 &
+  launched_pid=$!
+fi
+deadline=$((SECONDS + ORCHEST_READY_TIMEOUT))
+while [[ "$orchest_state" != ready && "$SECONDS" -lt "$deadline" ]]; do
+  if [[ -n "$launched_pid" ]] && ! jobs -pr | grep -qx "$launched_pid"; then
+    launch_rc=0
+    wait "$launched_pid" || launch_rc=$?
+    die "Launch exited before readiness (status $launch_rc); see $ORCHEST_LOG."
+  fi
+  sleep 0.5
+  orchest_health
+done
+[[ "$orchest_state" == ready ]] || die "Orchest did not become ready within ${ORCHEST_READY_TIMEOUT}s; inspect the existing instance and $ORCHEST_LOG before retrying."
+
+refresh_workspaces() {
+  local candidate
+  candidate=$(orchest_cli workspace list --json) || return 1
+  printf '%s' "$candidate" | jq -e 'type == "array" and all(.[];
+    (.id | type == "string" and length >= 8) and
+    (.label == null or (.label | type == "string")) and
+    (.desktopWorkspaceId == null or (.desktopWorkspaceId | type == "string")))' >/dev/null || return 1
+  workspace_json="$candidate"
+}
+workspace_id() {
+  local matches id
+  matches=$(jq -c --arg label "Workspace $1" '[.[] | select(.label == $label)]' <<< "$workspace_json")
+  [[ $(jq length <<< "$matches") -le 1 ]] || die "Ambiguous label Workspace $1; resolve duplicate Orchest records before retrying."
+  id=$(jq -r '.[0].id // empty' <<< "$matches")
+  if [[ -n "$id" ]]; then
+    [[ $(jq --arg tag "${id:0:8}" '[.[] | select(.id[0:8] == $tag)] | length' <<< "$workspace_json") == 1 ]] \
+      || die "Ambiguous short ID ${id:0:8}; cannot safely identify the sidebar."
+  fi
+  printf '%s' "$id"
+}
+sidebar_id() {
+  local matches
+  matches=$(jq -c --arg tag "Orchest [${1:0:8}]" '[.[] | select(.title | contains($tag))]' <<< "$snapshot")
+  [[ $(jq length <<< "$matches") -le 1 ]] || die "Multiple windows match Orchest [${1:0:8}]; refusing to choose one."
+  jq -r '.[0].id // empty' <<< "$matches"
+}
+binding_for() { jq -r --arg id "$1" '.[] | select(.id == $id) | .desktopWorkspaceId // empty' <<< "$workspace_json"; }
+
+refresh_workspaces || die 'Cannot read Orchest workspace state.'
+for ws in "${WORKSPACES[@]}"; do
+  id=$(workspace_id "$ws") || exit 1
+  [[ "$ACTION" == open ]] || continue
+  if [[ -z "$id" ]]; then
+    orchest_cli workspace create --desktop-workspace "$ws" "Workspace $ws" \
+      || die "Could not create Workspace $ws; inspect state before retrying."
+    refresh_workspaces || die 'Cannot read state after workspace creation.'
+    id=$(workspace_id "$ws") || exit 1
+    [[ -n "$id" ]] || die "Workspace $ws was not observed after creation; inspect state before retrying."
+  fi
+  snapshot=$(snapshot_windows) || die 'Cannot read Sway windows.'
+  window=$(sidebar_id "$id") || exit 1
+  if [[ -z "$window" ]]; then
+    # Empty workspaces disappear when unfocused. Keep the persisted target
+    # active until open completes; the provider rejects nonexistent targets.
+    open_ws=$(binding_for "$id")
+    open_ws="${open_ws:-$ws}"
+    sway_cmd "workspace --no-auto-back-and-forth $(sway_quote "$open_ws")" \
+      || die "Cannot ensure desktop workspace $open_ws exists."
+    orchest_cli workspace open "$id" || die "Could not open Workspace $ws."
+  fi
+done
+
+deadline=$((SECONDS + ORCHEST_CONVERGE_TIMEOUT))
+stable=0
+while [[ "$SECONDS" -lt "$deadline" ]]; do
+  if ! refresh_workspaces || ! snapshot=$(snapshot_windows); then
+    stable=0
+    sleep 0.75
+    continue
+  fi
+  good=true
+  for ws in "${WORKSPACES[@]}"; do
+    id=$(workspace_id "$ws") || exit 1
+    if [[ -z "$id" ]]; then good=false; continue; fi
+    window=$(sidebar_id "$id") || exit 1
+    if [[ -z "$window" ]]; then good=false; continue; fi
+    if [[ "$(workspace_of "$snapshot" "$window")" != "$ws" ]]; then
+      good=false
+      if [[ "$ACTION" != verify ]]; then
+        move_to_workspace "$window" "$ws" || die "Cannot move Workspace $ws sidebar."
+      fi
+    fi
+    if [[ "$(id_with_mark "$snapshot" "$(sidebar_mark "$ws")")" != "$window" ]]; then
+      good=false
+      if [[ "$ACTION" != verify ]]; then
+        mark_window "$window" "$(sidebar_mark "$ws")" || die "Cannot mark Workspace $ws sidebar."
+      fi
+    fi
+    [[ "$(binding_for "$id")" == "$ws" ]] || good=false
+  done
+  if [[ "$good" == true ]]; then
+    stable=$((stable + 1))
+    if [[ "$stable" -ge 2 ]]; then
+      echo '[Orchest] Sidebars, marks and persisted workspace bindings converged.'
+      exit 0
+    fi
+  else
+    stable=0
+  fi
+  sleep 0.75
+done
+die "Sidebar placement, marks or persisted desktopWorkspaceId did not converge within ${ORCHEST_CONVERGE_TIMEOUT}s for: ${WORKSPACES[*]}"

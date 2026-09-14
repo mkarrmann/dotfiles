@@ -29,11 +29,65 @@
 
 SWAY_IPC_TIMEOUT="${SWAY_IPC_TIMEOUT:-8}"
 
+# Every writer of the layout shares one lock per compositor, keyed by the IPC
+# socket: a nested or headless sway is a separate tree with a reconciler of
+# its own.
+sway_windows_lock_file() {
+  echo "${XDG_RUNTIME_DIR:-/tmp}/sway-startup-windows.$(basename "${SWAYSOCK:-default}").lock"
+}
+
+# Re-run SCRIPT under the lock unless this process already holds it. flock -o
+# closes the descriptor before exec so a GUI child launched from under the lock
+# cannot keep it alive after the writer exits. Returns only in the already-locked
+# case; otherwise exits with the child's status.
+sway_windows_lock() {
+  if [[ "${SWAY_STARTUP_WINDOWS_LOCKED:-}" == 1 &&
+        "${SWAY_WINDOWS_LOCK_SOCKET:-${SWAYSOCK:-default}}" == "${SWAYSOCK:-default}" ]]; then
+    return 0
+  fi
+  local status=0
+  SWAY_STARTUP_WINDOWS_LOCKED=1 SWAY_WINDOWS_LOCK_SOCKET="${SWAYSOCK:-default}" \
+    flock -w 30 -E 75 -o "$(sway_windows_lock_file)" "$BASH" "$@" || status=$?
+  [[ "$status" != 75 ]] || echo "ERROR: workspace layout is busy; try again after startup finishes." >&2
+  exit "$status"
+}
+
+# True while a reconciler holds the layout lock.
+sway_windows_locked() {
+  ! flock -n "$(sway_windows_lock_file)" true 2>/dev/null
+}
+
+sway_quote() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '"%s"' "$value"
+}
+
 # app_id prefix for managed terminals. Defined here, not in either script:
 # startup-windows sets it when launching and arrange-workspaces reads it back
 # when ordering, so a divergence between the two would silently drop every
 # terminal out of the layout.
 TERM_APP_ID_PREFIX="${TERM_APP_ID_PREFIX:-sway-ws.term.}"
+
+# Standard-workspace layout: the Orchest sidebar on the left, everything else
+# in one stack (sway's vertical accordion) on the right. The stack's layout is
+# a single constant so it can be flipped to `tabbed` after living with it.
+# `resize set width` is in pixels, so the split is a percentage of the
+# workspace's own output with a floor: Orchest's windows do not shrink below
+# ~300px, and a narrow output would otherwise overlap the sidebar.
+STACK_LAYOUT="${STACK_LAYOUT:-stacking}"
+SIDEBAR_PERCENT="${SIDEBAR_PERCENT:-12}"
+SIDEBAR_MIN_WIDTH="${SIDEBAR_MIN_WIDTH:-300}"
+
+# The sidebar is claimed by the mark sw:<ws>:orchest like any other slot. Its
+# window title is the fallback identity: Orchest names every workspace window
+# "... Orchest [<8-char id>]" (packages/ui/src/TimerWidget.tsx), which is also
+# how the Mac scripts recognise it. The stack container carries sw:<ws>:stack,
+# set by arrange-workspaces, so a later window can be sent straight into it.
+ORCHEST_SIDEBAR_TITLE_RE='Orchest \['
+sidebar_mark() { echo "sw:$1:orchest"; }
+stack_mark() { echo "sw:$1:stack"; }
 
 # swaymsg can block indefinitely if the compositor is wedged. Bound every call
 # so one bad request cannot freeze the whole login sequence, mirroring the
@@ -78,6 +132,7 @@ def wins:
     | select(.pid != null)
     | { id: .id,
         ws: $ws,
+        floating: (.type == "floating_con"),
         app_id: (.app_id // null),
         class: (.window_properties.class // null),
         title: (.name // ""),
@@ -157,7 +212,7 @@ workspace_of() {
 # move_to_workspace ID WS
 move_to_workspace() {
   local id="$1" ws="$2"
-  sway_cmd "[con_id=$id] move container to workspace $ws"
+  sway_cmd "[con_id=$id] move container to workspace $(sway_quote "$ws")"
 }
 
 # wait_for_new_window MATCH_JQ BEFORE_IDS [INVALID_TITLE_RE] [TIMEOUT_S] -> new id
@@ -251,18 +306,23 @@ unclaimed_window_id() {
      | sort_by(.id) | first | .id // empty"
 }
 
-# stray_window_ids SNAPSHOT MANAGED_WS_REGEX KEEP_MARKS KEEP_APP_IDS -> ids to
-# sweep. KEEP_MARKS and KEEP_APP_IDS are newline-separated lists of the claims
-# the CURRENT table declares.
+# stray_window_ids SNAPSHOT MANAGED_WS_REGEX KEEP_MARKS KEEP_APP_IDS [KEEP_TITLE_RE]
+# -> ids to sweep. KEEP_MARKS and KEEP_APP_IDS are newline-separated lists of
+# the claims the CURRENT table declares.
 #
 # A window earns its place on a managed workspace only by holding one of those
 # marks or one of those app_ids. Exempting "any sw: mark" or "any terminal
 # prefix" instead meant a slot deleted from the table -- or a terminal slot
 # renamed -- left its old window in the layout forever, because nothing ever
 # compared a claim against what the table says today.
+#
+# KEEP_TITLE_RE exempts windows by title. An Orchest sidebar is claimed by mark
+# once orchest-open-workspaces has matched it to its workspace, but one that
+# appeared after that pass, or on a run where Orchest failed, has no mark yet;
+# sweeping it to Z would also teach Orchest a wrong desktopWorkspaceId.
 stray_window_ids() {
-  local snapshot="$1" managed_re="$2" keep_marks="$3" keep_app_ids="$4"
-  echo "$snapshot" | jq -r --arg managed "$managed_re" \
+  local snapshot="$1" managed_re="$2" keep_marks="$3" keep_app_ids="$4" keep_title_re="${5:-}"
+  echo "$snapshot" | jq -r --arg managed "$managed_re" --arg title_re "$keep_title_re" \
       --arg marks "$keep_marks" --arg apps "$keep_app_ids" '
     ($marks | split("\n") | map(select(. != ""))) as $keepm
     | ($apps | split("\n") | map(select(. != ""))) as $keepa
@@ -270,7 +330,20 @@ stray_window_ids() {
           | select(any(.marks[]; . as $m | $keepm | index($m)) | not)
           | (.app_id // "") as $a
           | select(($keepa | index($a)) | not)
+          | select($title_re == "" or ((.title // "") | test($title_re) | not))
           | .id'
+}
+
+# sidebar_id_of SNAPSHOT WS -> the window that is (or should become) WS's
+# Orchest sidebar: the holder of sw:WS:orchest, else the lowest-id window on WS
+# whose title names an Orchest workspace.
+sidebar_id_of() {
+  local snapshot="$1" ws="$2"
+  echo "$snapshot" | jq -r --arg ws "$ws" --arg m "$(sidebar_mark "$ws")" \
+      --arg re "$ORCHEST_SIDEBAR_TITLE_RE" '
+    ([.[] | select(.ws == $ws and (.marks | index($m)))] | first)
+    // ([.[] | select(.ws == $ws and ((.title // "") | test($re)))] | sort_by(.id) | first)
+    | .id // empty'
 }
 
 # sw_marks_of SNAPSHOT ID -> the sw: marks a window holds, one per line.
