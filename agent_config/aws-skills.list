@@ -9,3 +9,24 @@
 # skill budget every turn (see agent_config/README.md, "Codex's budget is
 # smaller"); the wizard's default set of 23 alone overruns it and gets every
 # description shortened.
+
+# Networking (VPC, hybrid connectivity, DNS). Edge services -- cloudfront,
+# waf, shieldadvanced, routing-traffic-with-route53-and-cloudfront -- are
+# deliberately left out.
+aws-network-monitoring
+configuring-vpc-endpoints-for-private-aws-service-access
+connecting-vpcs-with-peering
+creating-production-vpc-multi-az
+directconnect
+route53
+sitetositevpn
+transitgateway
+
+# Compute and storage.
+amazon-ec2-image-builder
+amazon-workspaces-agent-access
+launching-ec2-instance-with-best-practices
+securing-s3-buckets
+setting-up-ec2-instance-profiles
+troubleshooting-efs
+troubleshooting-s3-files
