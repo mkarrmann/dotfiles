@@ -10,7 +10,7 @@ repo_root=$(cd "$(dirname "$0")/.." && pwd)
 # Hermetic against the machine running the test: an agent session exports an
 # Omnigent session id, and a synced desktop has a real nvim-show-resolver on
 # PATH that would route into the live editors.
-unset OMNIGENT_RUNNER_PRIMARY_SESSION_ID
+unset OMNIGENT_RUNNER_PRIMARY_SESSION_ID OMNIGENT_SESSION_ID NVIM_SHOW_ANCESTOR_SESSION_IDS
 export NVIM_SHOW_RESOLVER=
 tmp_dir=$(mktemp -d)
 tmp_dir=$(cd "$tmp_dir" && pwd -P)
@@ -211,6 +211,19 @@ if echo 'not json' | show agent-six --list - 2>/dev/null; then
   fail "invalid --list JSON was accepted"
 fi
 
+# Omnigent metadata must preserve both nvs workdir routes and existing tab keys.
+OMNIGENT_SESSION_ID=omni-nvs show agent-one "$work/b.txt" 4 > /dev/null
+assert_eq "$(probe agent-one | cut -d'|' -f1,2)" "b.txt|4" "Omnigent metadata preserves existing agent identity"
+for route in path cwd; do
+  target="$work/a.txt"
+  [[ $route == cwd ]] && target="$outside/stray.txt"
+  (cd "$work" && env -u CC_SESSION_ID -u CLAUDE_CODE_CURRENT_SESSION_ID \
+    HOME="$tmp_dir/home" XDG_STATE_HOME="$state" XDG_RUNTIME_DIR="$empty_runtime" \
+    OMNIGENT_SESSION_ID="omni-nvs-$route" NVIM_SHOW_ANCESTOR_SESSION_IDS='["parent-session"]' \
+    "$repo_root/bin/nvim-show" "$target" 2 > /dev/null)
+  assert_eq "$(probe "omni-nvs-$route" | cut -d'|' -f1,2)" "${target##*/}|2" "Omnigent identity preserves nvs $route routing"
+done
+
 # --- portable layer: no nvs session list at all -------------------------------
 
 # A second Neovim, started the ordinary way, publishes a default server socket.
@@ -359,6 +372,21 @@ env -u CC_SESSION_ID -u CLAUDE_CODE_CURRENT_SESSION_ID -u OMNIGENT_SESSION_ID \
   XDG_RUNTIME_DIR="$empty_runtime" AGENT=claude_code NVIM_SHOW_RESOLVER="$fake_resolver" \
   "$repo_root/bin/nvim-show" "$work/a.txt" 2 > /dev/null || fail "Omnigent session id not accepted as identity"
 assert_eq "$(probe omni-one | cut -d'|' -f1,2)" "a.txt|2" "identity from OMNIGENT_RUNNER_PRIMARY_SESSION_ID"
+
+env -u CC_SESSION_ID -u CLAUDE_CODE_CURRENT_SESSION_ID \
+  OMNIGENT_SESSION_ID=omni-child OMNIGENT_RUNNER_PRIMARY_SESSION_ID=omni-one \
+  HOME="$bare_home" XDG_STATE_HOME="$state" XDG_RUNTIME_DIR="$empty_runtime" \
+  NVIM_SHOW_RESOLVER="$fake_resolver" \
+  "$repo_root/bin/nvim-show" "$work/b.txt" 4 > /dev/null || fail "owning conversation id not accepted"
+assert_eq "$(probe omni-child | cut -d'|' -f1,2)" "b.txt|4" "owning conversation gets its own tab"
+assert_eq "$(probe omni-one | cut -d'|' -f1,2)" "a.txt|2" "runner's primary conversation is untouched"
+
+env -u CC_SESSION_ID -u CLAUDE_CODE_CURRENT_SESSION_ID \
+  OMNIGENT_SESSION_ID=omni-child HOME="$bare_home" XDG_STATE_HOME="$state" \
+  XDG_RUNTIME_DIR="$empty_runtime" NVIM_SHOW_RESOLVER="$fake_resolver" FAKE_RESOLVER_MODE=pass \
+  "$repo_root/bin/nvim-show" --clear > /dev/null || fail "canonical identity could not clear its remembered editor"
+assert_eq "$(probe omni-child | cut -d'|' -f3)" "0" "canonical --clear empties its own annotations"
+assert_eq "$(probe omni-one | cut -d'|' -f3)" "1" "canonical --clear preserves the parent's annotations"
 
 
 # --- the module is wired for delivery ----------------------------------------

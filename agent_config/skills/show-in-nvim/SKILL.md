@@ -1,6 +1,7 @@
 ---
 name: show-in-nvim
-description: Reveal source locations in Matt's running Neovim session instead of only pasting them into chat. Use whenever he asks to show, open, reveal, jump to, pull up, or "take me to" code, a file, a function, a definition, a call site, or a line — and when reporting review findings, bugs, or a set of locations he will want to walk through. Also use to clear previously pushed annotations. Trigger keywords: show me, show me the code, open it, open in nvim, reveal, jump to, pull up, take me there, where is it, put it in my editor, quickfix, location list, annotate.
+description: >-
+  Reveal source locations in Matt's running Neovim session instead of only pasting them into chat. Use whenever he asks to show, open, reveal, jump to, pull up, or "take me to" code, a file, a function, a definition, a call site, or a line — and when reporting review findings, bugs, or a set of locations he will want to walk through. Also use to clear previously pushed annotations. Trigger keywords: show me, show me the code, open it, open in nvim, reveal, jump to, pull up, take me there, where is it, put it in my editor, quickfix, location list, annotate.
 ---
 
 # Show code in Neovim
@@ -28,6 +29,55 @@ findings while he is still reading your summary.
 Always resolve the concrete path and line from context and run the command —
 never print it for Matt to run himself. Paths may be relative; they are resolved
 against the process working directory.
+
+## Omnigent conversation identity
+
+Start with the normal commands above, using the existing inherited identity.
+Do not look up Omnigent metadata when that path succeeds, including on the work
+Mac's devservers where `nvs` resolves the editor by checkout path or working
+directory.
+
+Recover only after a failed command reports one of these:
+
+- `cannot determine the calling agent's session id`
+- `Omnigent conversation identity is unavailable` (this may be an indented
+  resolver note beneath `cannot determine which Neovim to use`)
+- `session … is not open in any Omnigent window` (also an indented resolver
+  note; a subagent's parent may be displayed instead)
+
+When Omnigent tools are available, call `sys_session_get_info()` with no
+`session_id` argument. Keep its returned `session_id` as the caller's identity.
+For a missing-identity failure, retry with that ID first:
+
+```bash
+OMNIGENT_SESSION_ID='<returned session_id>' nvim-show FILE LINE --focus
+```
+
+If the command fails because that conversation has no window, follow
+`parent_session_id` using `sys_session_get_info(session_id=...)` until it is
+null. Collect ancestor IDs nearest parent first, rejecting cycles or failed
+lookups rather than guessing. Retry with that verified chain as a JSON array:
+
+```bash
+OMNIGENT_SESSION_ID='<caller_id>' \
+NVIM_SHOW_ANCESTOR_SESSION_IDS='["<parent_id>","<grandparent_id>"]' \
+nvim-show FILE LINE --focus
+```
+
+The desktop resolver checks the caller's window first, then each ancestor's
+window in order. Keep `OMNIGENT_SESSION_ID` set to the caller, so a child gets
+its own annotations even when using its parent's editor. Preserve any existing
+`--agent` argument or Claude session identity; never replace it with a parent's
+ID. The resolver stops at the first displayed conversation even if its editor
+is unavailable; it does not skip to a more distant ancestor. The existing
+`nvim-show` fallback order below still applies.
+
+Reuse the recovered caller ID and chain for subsequent reveals or clears in
+this conversation. The resolver rechecks which windows are displayed on every
+call; do not manually pin a selected ancestor or socket. Never reuse metadata from
+another conversation or substitute a runner ID. This recovery works across
+agent types that expose Omnigent tools. If those tools are unavailable, report
+the limitation.
 
 ## One jump
 
@@ -79,10 +129,29 @@ own annotations and list.
 ## Which Neovim it picks
 
 Usually you do not have to care — just run the command. It resolves the target
-itself and tells you which one it used. Two cases need you to do something.
+itself and tells you which one it used.
+
+**Sandboxed calls.** Revealing code needs local socket access to Neovim
+and, on the Sway desktop, Omnigent's debug endpoint and the host process tree.
+A sandbox may block those or hide running editors. For a user-requested reveal,
+use the harness's approval mechanism to run the same `nvim-show` command outside
+the sandbox when necessary. Do not disable sandboxing globally. If approval is
+denied, report that limitation; do not infer that Neovim is down.
+
+**Missing session identity on Sway.** Sway desktop routing uses
+`OMNIGENT_SESSION_ID`, with the older `OMNIGENT_RUNNER_PRIMARY_SESSION_ID` as a
+fallback. If neither is available, obtain the ID through the tool above. If
+that is also unavailable, report the missing identity. An invented `--agent`
+key only identifies annotations; it cannot repair Sway routing. Do not infer
+the conversation ID from the currently focused window, which may show another
+conversation.
+
+The work Mac's remote editors use host-local `nvs` working-directory routing
+(steps 5–6 below), not Sway window matching. Missing Omnigent routing metadata
+does not invalidate that path when the caller's annotation identity is available.
 
 **Nothing is running.** It says `cannot determine which Neovim to use`. Ask Matt
-to start one, or for an address to use.
+to start one, or for an address to use, after ruling out sandbox access errors.
 
 **Several are running and none is implied.** It lists them and stops rather than
 guessing. Pass `--server ADDR` with the one he names.
@@ -121,8 +190,10 @@ rather than guessing one from the list it prints; after that, rule 7 carries the
 rest of the conversation.
 
 On the desktop, rule 4 needs your session to be open in an Omnigent window. If
-it reports that it is not, and nothing is remembered (rule 7), ask him to open
-the session in the window he wants to work beside rather than passing a socket.
+it reports that it is not, and nothing is remembered (rule 7), try the verified
+ancestor recovery above. If neither your session nor an ancestor is displayed,
+ask him to open the conversation he wants to work beside rather than passing a
+socket.
 
 Without `--focus` there is no window focus: the tab lights up in his tabline and
 he switches to it. Say what you pushed and where, e.g. "opened

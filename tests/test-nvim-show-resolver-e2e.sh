@@ -31,6 +31,8 @@ fi
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export XDG_CONFIG_HOME="$TMP/config"
 unset WAYLAND_DISPLAY DISPLAY SWAYSOCK NVIM NVIM_SHOW_SERVER NVS_TARGET_SESSION CC_SESSION_ID
+unset CLAUDE_CODE_CURRENT_SESSION_ID OMNIGENT_SESSION_ID OMNIGENT_RUNNER_PRIMARY_SESSION_ID
+unset NVIM_SHOW_ANCESTOR_SESSION_IDS
 SWAY_PID=""
 FAKE_PID=""
 
@@ -144,6 +146,22 @@ probe() { # SOCK AGENT -> "file|line" in that agent's tab, or "missing"
   nvim --server "$1" --remote-expr "luaeval(\"(function(a) for _, t in ipairs(vim.api.nvim_list_tabpages()) do local ok, v = pcall(vim.api.nvim_tabpage_get_var, t, 'show_in_nvim_agent'); if ok and v == a then local w = vim.api.nvim_tabpage_get_win(t); return vim.fn.fnamemodify(vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w)), ':t') .. '|' .. vim.api.nvim_win_get_cursor(w)[1] end end return 'missing' end)(_A)\", \"$2\")"
 }
 
+echo "== missing identity errors explain how to recover =="
+out=$(resolver '' 2>"$TMP/err"); rc=$?
+check "missing conversation identity passes" 1 "$rc"
+identity_error="nvim-show-resolver: Omnigent conversation identity is unavailable (OMNIGENT_SESSION_ID and OMNIGENT_RUNNER_PRIMARY_SESSION_ID are unset)"
+check "missing conversation identity is explicit" "$identity_error" "$(cat "$TMP/err")"
+out=$(show '' "$TMP/work/a.txt" 1 2>&1); rc=$?
+check "missing annotation identity fails before routing" 1 "$rc"
+check "missing annotation identity is explicit" \
+  "nvim-show: cannot determine the calling agent's session id — pass --agent KEY" "$out"
+out=$(CC_SESSION_ID=claude-without-omnigent show '' "$TMP/work/a.txt" 1 2>&1); rc=$?
+check "annotation identity alone cannot choose between desktop editors" 1 "$rc"
+grep -Fq "cannot determine which Neovim to use" <<<"$out" && pass "generic resolution error is reported" \
+  || fail "missing resolution error: $out"
+grep -Fq "  $identity_error" <<<"$out" && pass "resolver identity note reaches the caller" \
+  || fail "missing recovery note: $out"
+
 echo "== the session's window picks the workspace, the workspace picks the editor =="
 out=$(resolver sessionA 2>"$TMP/err"); rc=$?
 check "session A resolves" 0 "$rc"
@@ -164,6 +182,61 @@ check "--focus brought the terminal tab forward" "$(id_on_ws 1 sway-ws.term.w1)"
 check "the target and its focus command are remembered" \
   "ws 1: sway-ws.term.w1|${term_sock[1]}|swaymsg -s $SWAYSOCK '[con_id=$(id_on_ws 1 sway-ws.term.w1)] focus'" \
   "$(paste -sd'|' "$TMP/state/nvim-show/sessionA")"
+
+echo "== owning conversation identity is independent of agent type and runner =="
+out=$(OMNIGENT_SESSION_ID=sessionB show sessionA "$TMP/work/a.txt" 4 --focus 2>&1); rc=$?
+check "owning conversation overrides the runner's primary conversation" 0 "$rc"
+check "the jump landed in the owning conversation's editor" "a.txt|4" "$(probe "${term_sock[2]}" sessionB)"
+check "the primary conversation's editor is untouched" "missing" "$(probe "${term_sock[1]}" sessionB)"
+check "focus follows the owning conversation" "$(id_on_ws 2 sway-ws.term.w2)" "$(focused_id)"
+out=$(OMNIGENT_SESSION_ID=sessionB show '' "$TMP/work/a.txt" 2 2>&1); rc=$?
+check "canonical identity works without legacy identity" 0 "$rc"
+check "canonical-only jump landed" "a.txt|2" "$(probe "${term_sock[2]}" sessionB)"
+out=$(OMNIGENT_SESSION_ID=sessionB NVIM_SHOW_ANCESTOR_SESSION_IDS='' resolver '' 2>"$TMP/err"); rc=$?
+check "empty ancestry is treated as absent" 0 "$rc"
+check "empty ancestry preserves caller routing" "server=${term_sock[2]}" "$(grep '^server=' <<<"$out")"
+out=$(OMNIGENT_SESSION_ID=sessionZ-hidden resolver sessionA 2>"$TMP/err"); rc=$?
+check "a hidden owning conversation does not resolve as the primary conversation" 1 "$rc"
+check "hidden owning conversation reports its own identity" \
+  "nvim-show-resolver: session sessionZ is not open in any Omnigent window" "$(cat "$TMP/err")"
+
+echo "== verified ancestors select windows without changing annotation ownership =="
+out=$(OMNIGENT_SESSION_ID=sessionB NVIM_SHOW_ANCESTOR_SESSION_IDS='["sessionA"]' resolver '' 2>"$TMP/err"); rc=$?
+check "a visible caller wins over its ancestor" 0 "$rc"
+check "the caller's own editor is selected" "server=${term_sock[2]}" "$(grep '^server=' <<<"$out")"
+out=$(OMNIGENT_SESSION_ID=child-session NVIM_SHOW_ANCESTOR_SESSION_IDS='["sessionB","sessionA"]' \
+  show sessionA "$TMP/work/a.txt" 4 --focus 2>&1); rc=$?
+check "a hidden child can use its nearest displayed ancestor" 0 "$rc"
+check "the child owns its tab in the parent's editor" "a.txt|4" "$(probe "${term_sock[2]}" child-session)"
+check "the parent's tab is unchanged" "a.txt|2" "$(probe "${term_sock[2]}" sessionB)"
+check "the more distant ancestor is untouched" "missing" "$(probe "${term_sock[1]}" child-session)"
+check "focus follows the nearest displayed ancestor" "$(id_on_ws 2 sway-ws.term.w2)" "$(focused_id)"
+set_pages "[{\"id\":\"P1\",\"url\":\"http://localhost:6767/c/sessionA\",\"nvim\":\"${omni_sock[1]}\"}]"
+out=$(OMNIGENT_SESSION_ID=child-session NVIM_SHOW_ANCESTOR_SESSION_IDS='["sessionB","sessionA"]' \
+  show '' "$TMP/work/a.txt" 2 2>&1); rc=$?
+check "window visibility is rechecked on subsequent calls" 0 "$rc"
+check "a hidden parent allows the displayed grandparent" "a.txt|2" "$(probe "${term_sock[1]}" child-session)"
+check "the grandparent's annotations are unchanged" "a.txt|3" "$(probe "${term_sock[1]}" sessionA)"
+out=$(OMNIGENT_SESSION_ID=child-session NVIM_SHOW_ANCESTOR_SESSION_IDS='["hidden-parent"]' \
+  resolver sessionA 2>"$TMP/err"); rc=$?
+check "an undisplayed family does not use an unrelated primary session" 1 "$rc"
+check "the unavailable family is explained" \
+  "nvim-show-resolver: session child-se is not open in any Omnigent window (nor are its supplied ancestors)" "$(cat "$TMP/err")"
+for invalid in 'null' '"sessionA"' '[""]' '[1]' 'not-json'; do
+  out=$(OMNIGENT_SESSION_ID=sessionA NVIM_SHOW_ANCESTOR_SESSION_IDS="$invalid" resolver '' 2>"$TMP/err"); rc=$?
+  check "malformed ancestry is rejected: $invalid" 2 "$rc"
+done
+set_pages "[{\"id\":\"P1\",\"url\":\"http://localhost:6767/c/sessionA\",\"nvim\":\"${omni_sock[1]}\"},
+            {\"id\":\"P2\",\"url\":\"http://localhost:6767/c/sessionB\",\"nvim\":\"${omni_sock[2]}\"}]"
+
+term2_id=$(id_on_ws 2 sway-ws.term.w2)
+swaymsg "[con_id=$term2_id] move container to workspace 3" >/dev/null
+out=$(OMNIGENT_SESSION_ID=child-session NVIM_SHOW_ANCESTOR_SESSION_IDS='["sessionB","sessionA"]' \
+  resolver '' 2>"$TMP/err"); rc=$?
+check "a displayed ancestor without an editor is not skipped" 1 "$rc"
+check "the unavailable editor is reported for the nearest displayed ancestor" \
+  "nvim-show-resolver: no Neovim is running on workspace 2, where session sessionB is shown" "$(cat "$TMP/err")"
+swaymsg "[con_id=$term2_id] move container to workspace 2" >/dev/null
 
 echo "== duplicate titles fall back to the nonce probe, and titles are restored =="
 for ws in 1 2; do set_title "$ws" Same; wait_for_name "$ws" omnigent.stub Same; done
@@ -206,6 +279,8 @@ echo "== no debug endpoint =="
 mv "$TMP/ud/DevToolsActivePort" "$TMP/ud/DevToolsActivePort.off"
 out=$(resolver sessionA 2>"$TMP/err"); rc=$?
 check "resolver passes when the port file is missing" 1 "$rc"
+out=$(NVIM_SHOW_ANCESTOR_SESSION_IDS='not-json' resolver sessionA 2>"$TMP/err"); rc=$?
+check "malformed desktop ancestry cannot block non-desktop routing" 1 "$rc"
 grep -q "remote-debugging-port=0" "$TMP/err" && pass "and explains the launcher flag" \
   || fail "unhelpful message: $(cat "$TMP/err")"
 mv "$TMP/ud/DevToolsActivePort.off" "$TMP/ud/DevToolsActivePort"

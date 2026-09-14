@@ -8,7 +8,8 @@ to use is the one beside that window, whatever directory either of them is in.
 
 Chain, each link verified against Omnigent desktop 0.13.0 / sway 1.11:
 
-  OMNIGENT_RUNNER_PRIMARY_SESSION_ID      the runner exports it into every tool call
+  OMNIGENT_SESSION_ID                   the caller supplies the owning conversation
+    (legacy: OMNIGENT_RUNNER_PRIMARY_SESSION_ID)
     -> Omnigent window showing /c/<id>    Chromium's debug endpoint (`/json`) lists
                                           each window's live URL, and follows the
                                           web app's in-page navigation
@@ -29,6 +30,9 @@ set to a nonce over the debug WebSocket, located in sway, and restored.
 Contract with bin/nvim-show: key=value lines on stdout (server, label, focus);
 exit 0 resolved, 1 no opinion (reason on stderr), 2 misuse. Environment:
 NVIM_SHOW_HINT/NVIM_SHOW_AGENT are passed but not needed here.
+NVIM_SHOW_ANCESTOR_SESSION_IDS optionally supplies a JSON array of verified
+ancestor conversation ids, nearest parent first. They are window fallbacks
+only; OMNIGENT_SESSION_ID still identifies the caller's annotations.
 """
 
 from __future__ import annotations
@@ -328,14 +332,33 @@ def main() -> int:
     if len(sys.argv) > 1:
         print("usage: nvim-show-resolver (driven by nvim-show through the environment)", file=sys.stderr)
         return 2
-    session_id = os.environ.get("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "")
+    session_id = os.environ.get("OMNIGENT_SESSION_ID") or os.environ.get(
+        "OMNIGENT_RUNNER_PRIMARY_SESSION_ID", ""
+    )
     if not session_id:
-        give_up("OMNIGENT_RUNNER_PRIMARY_SESSION_ID is not set: not running under an Omnigent session")
+        give_up(
+            "Omnigent conversation identity is unavailable "
+            "(OMNIGENT_SESSION_ID and OMNIGENT_RUNNER_PRIMARY_SESSION_ID are unset)"
+        )
 
-    wanted = f"/c/{session_id}"
-    showing = [p for p in pages(debug_port()) if session_path(p.get("url", "")) == wanted]
+    open_pages = pages(debug_port())
+    try:
+        ancestors = json.loads(os.environ.get("NVIM_SHOW_ANCESTOR_SESSION_IDS") or "[]")
+        if not isinstance(ancestors, list) or any(not isinstance(s, str) or not s for s in ancestors):
+            raise ValueError("expected an array of nonempty conversation ids")
+    except ValueError as exc:
+        print(f"nvim-show-resolver: invalid NVIM_SHOW_ANCESTOR_SESSION_IDS ({exc})", file=sys.stderr)
+        return 2
+
+    showing: list[dict] = []
+    for candidate in [session_id, *ancestors]:
+        showing = [p for p in open_pages if session_path(p.get("url", "")) == f"/c/{candidate}"]
+        if showing:
+            session_id = candidate
+            break
     if not showing:
-        give_up(f"session {session_id[:8]} is not open in any Omnigent window")
+        suffix = " (nor are its supplied ancestors)" if ancestors else ""
+        give_up(f"session {session_id[:8]} is not open in any Omnigent window{suffix}")
 
     sock = sway_socket()
     tree = json.loads(swaymsg(sock, "-t", "get_tree"))
