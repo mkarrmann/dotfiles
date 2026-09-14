@@ -142,7 +142,7 @@ def test_a_non_owner_refuses_to_migrate_a_stale_database(tmp_path: Path) -> None
     path = tmp_path / "watcher.sqlite3"
     _populated_v1_database(path)
 
-    with pytest.raises(StaleSchemaError, match="Restart the diff-watcher service"):
+    with pytest.raises(StaleSchemaError, match="coordinated server/worker upgrade procedure"):
         WatcherRepository(path, migrate=False)
 
     # Untouched: still v1, so the owner can still migrate it correctly later.

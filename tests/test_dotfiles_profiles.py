@@ -249,7 +249,7 @@ class InitProfileTest(ProfileFixture):
                 ):
                     self.assertTrue(any(line.startswith(helper + " ") for line in calls), calls)
                 # Omnigent config is universal, but the hub infrastructure is not.
-                universal = ("omnigent-desktop-ensure ", "omnigent-desktop-app-ensure ", "omnigent-config-ensure ", "omnigent-agents-ensure ", "omnigent-watcher ", "uv sync --frozen --all-groups ")
+                universal = ("omnigent-desktop-ensure ", "omnigent-desktop-app-ensure ", "omnigent-config-ensure ", "omnigent-agents-ensure ", "uv sync --frozen --all-groups ")
                 forbidden = ("omnigent-", "bootstrap-plugins ", "systemctl ", "launchctl ", "uv ", "curl ", "git ")
                 self.assertFalse(any(line.startswith(forbidden) for line in calls if not line.startswith(universal)), calls)
                 self.assertEqual(
@@ -261,15 +261,14 @@ class InitProfileTest(ProfileFixture):
                 install = next(index for index, line in enumerate(calls) if line.startswith("omnigent-desktop-ensure "))
                 config = next(index for index, line in enumerate(calls) if line.startswith("omnigent-config-ensure "))
                 agents = next(index for index, line in enumerate(calls) if line.startswith("omnigent-agents-ensure "))
-                watcher = next(index for index, line in enumerate(calls) if line.startswith("omnigent-watcher "))
-                self.assertLess(watcher, install, calls)
+                self.assertFalse(any(line.startswith("omnigent-watcher ") for line in calls), calls)
                 self.assertEqual(sum(line.startswith("uv sync --frozen --all-groups ") for line in calls), 1, calls)
                 self.assertLess(install, config, calls)
                 self.assertLess(config, agents, calls)
                 self.assertTrue(all("profile=desktop" in line for line in calls), calls)
                 self.assertTrue(all(line.endswith(f"dotfiles={self.dotfiles}") for line in calls), calls)
 
-    def test_watcher_schema_is_bootstrapped_only_on_work_hub_candidates(self):
+    def test_install_phase_does_not_open_the_watcher_database(self):
         for candidate in (False, True):
             with self.subTest(candidate=candidate):
                 self.env["DOTFILES_PROFILE"] = "work"
@@ -277,8 +276,32 @@ class InitProfileTest(ProfileFixture):
                 self.stub(self.dotfiles / "bin/omnigent-server-url", f"exit {0 if candidate else 1}")
                 self.assert_success(self.run_script(self.script))
                 calls = self.calls()
-                self.assertEqual(any(line.startswith("omnigent-watcher ") for line in calls), candidate, calls)
+                self.assertFalse(any(line.startswith("omnigent-watcher ") for line in calls), calls)
                 self.assertEqual(sum(line.startswith("uv sync --frozen --all-groups ") for line in calls), 2, calls)
+
+    def test_failed_server_activation_stops_before_worker_convergence(self):
+        self.env["DOTFILES_PROFILE"] = "work"
+        self.stub(self.dotfiles / "bin/omnigent-server-url", "exit 0")
+        self.stub(self.dotfiles / "bin/omnigent-agents-ensure", self.recorder + "\nexit 1")
+        result = self.run_script(self.script)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("server activation deferred or failed", result.stderr)
+        calls = self.calls()
+        self.assertTrue(any(line.startswith("omnigent-agents-ensure ") for line in calls), calls)
+        self.assertFalse(any(line.startswith("omnigent-watcher ") for line in calls), calls)
+        self.assertFalse(any(line.startswith("systemctl ") for line in calls), calls)
+        self.assertFalse(any(line.startswith("omnigent-hub reconcile-services ") for line in calls), calls)
+
+    def test_worker_restart_follows_successful_server_activation(self):
+        self.env["DOTFILES_PROFILE"] = "work"
+        self.stub(self.dotfiles / "bin/omnigent-server-url", "exit 0")
+        result = self.run_script(self.script)
+        self.assert_success(result)
+        calls = self.calls()
+        server = next(index for index, line in enumerate(calls) if line.startswith("omnigent-agents-ensure "))
+        worker = next(index for index, line in enumerate(calls) if line.startswith("systemctl --user try-restart omnigent-watcher.service "))
+        self.assertLess(server, worker, calls)
+        self.assertFalse(any(line.startswith("omnigent-watcher ") for line in calls), calls)
 
     def test_work_discovers_routing_before_dependents(self):
         self.env["DOTFILES_PROFILE"] = "work"

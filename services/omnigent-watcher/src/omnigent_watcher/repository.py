@@ -166,8 +166,9 @@ class WatcherRepository:
             )
         raise StaleSchemaError(
             f"the watcher database is at schema {current}, but this build expects "
-            f"{SCHEMA_VERSION}. Restart the diff-watcher service so it can migrate: "
-            "systemctl --user restart omnigent-watcher"
+            f"{SCHEMA_VERSION}. Follow the coordinated server/worker upgrade procedure "
+            "in the watcher README; both processes must load matching code before "
+            "the worker migrates."
         )
 
     def _connect(self) -> sqlite3.Connection:
@@ -1777,37 +1778,41 @@ class WatcherRepository:
 
     def counts(self) -> dict[str, int]:
         with self._connect() as connection:
-            result: dict[str, int] = {}
-            for state in SubscriptionState:
-                result[f"subscriptions_{state.value}"] = int(
-                    connection.execute(
-                        "SELECT COUNT(*) FROM subscriptions WHERE state = ?",
-                        (state.value,),
-                    ).fetchone()[0]
-                )
-            result["watched_subjects"] = int(
+            return self.counts_from_connection(connection)
+
+    @staticmethod
+    def counts_from_connection(connection: sqlite3.Connection) -> dict[str, int]:
+        result: dict[str, int] = {}
+        for state in SubscriptionState:
+            result[f"subscriptions_{state.value}"] = int(
                 connection.execute(
-                    "SELECT COUNT(DISTINCT subject) FROM subscriptions WHERE state != 'retired'"
+                    "SELECT COUNT(*) FROM subscriptions WHERE state = ?",
+                    (state.value,),
                 ).fetchone()[0]
             )
-            result["open_batches"] = int(
-                connection.execute(
-                    "SELECT COUNT(*) FROM batches WHERE state IN ('open', 'delivering')"
-                ).fetchone()[0]
-            )
-            result["source_failed_watches"] = int(
-                connection.execute(
-                    "SELECT COUNT(*) FROM watched_subjects WHERE failure_count > 0 "
-                    "AND EXISTS (SELECT 1 FROM subscriptions s "
-                    "WHERE s.subject = watched_subjects.subject AND s.state = 'active')"
-                ).fetchone()[0]
-            )
-            result["source_failure_streak"] = int(
-                connection.execute(
-                    "SELECT COALESCE(MAX(failure_count), 0) FROM watched_subjects"
-                ).fetchone()[0]
-            )
-            return result
+        result["watched_subjects"] = int(
+            connection.execute(
+                "SELECT COUNT(DISTINCT subject) FROM subscriptions WHERE state != 'retired'"
+            ).fetchone()[0]
+        )
+        result["open_batches"] = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM batches WHERE state IN ('open', 'delivering')"
+            ).fetchone()[0]
+        )
+        result["source_failed_watches"] = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM watched_subjects WHERE failure_count > 0 "
+                "AND EXISTS (SELECT 1 FROM subscriptions s "
+                "WHERE s.subject = watched_subjects.subject AND s.state = 'active')"
+            ).fetchone()[0]
+        )
+        result["source_failure_streak"] = int(
+            connection.execute(
+                "SELECT COALESCE(MAX(failure_count), 0) FROM watched_subjects"
+            ).fetchone()[0]
+        )
+        return result
 
     def oldest_pending_age(self, now: float) -> int:
         with self._connect() as connection:

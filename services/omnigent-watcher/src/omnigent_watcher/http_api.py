@@ -35,7 +35,7 @@ from .domain import (
 )
 from .phabricator_source import SOURCE_NAME as PHABRICATOR_SOURCE_NAME
 from .phabricator_source import PhabricatorReviewSource, bounded_source_environment
-from .repository import StaleSchemaError, WatcherRepository
+from .repository import NewerSchemaError, StaleSchemaError, WatcherRepository
 from .settings import ServiceSettings
 from .watcher import SubscriptionError, Watcher
 
@@ -109,7 +109,7 @@ def _repository() -> WatcherRepository:
     )
     try:
         return WatcherRepository(resolve(configured), migrate=False)
-    except StaleSchemaError as exc:
+    except (StaleSchemaError, NewerSchemaError) as exc:
         # The worker owns schema migration on this same server.
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

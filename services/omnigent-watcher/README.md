@@ -272,11 +272,33 @@ coordinated worker and server activation. Native sessions can also retain
 their startup MCP registration and tool schemas; a fresh session may be needed
 after those change. Source edits alone do not update already-loaded modules.
 
+The operator `status` command reads stored counts and schema information without
+initializing or migrating the database. It does not establish worker health.
+
 `init.sh` installs the watcher runtime on both profiles and converges the
 appropriate services. It affects running services; agents must obtain the
 user's authorization for that live operation. A fresh agent session picks up
 the MCP registration after setup. Restarting a session alone cannot fix a
-missing runtime, worker, or server API.
+missing runtime, worker, or server API. The install phase does not bootstrap the
+watcher database. On work machines, a deferred or failed server refresh aborts
+setup before further worker convergence; rerun when the server can be refreshed.
+
+### Upgrading schema 5 to 6
+
+Use a planned maintenance window and the [upgrade procedure](UPGRADING.md).
+Hot upgrades and mixed worker/server versions are not supported. Stop the old
+worker **before updating source or migrating**, stop the server after sessions
+are quiescent, and take a SQLite-aware backup. Start the matching new server
+before starting the new worker that migrates the database. Existing subscriptions
+and baselines are preserved; read-only operator `status --json` must report
+`status: current` and schema 6 afterward.
+
+Only the active work hub or a standalone desktop owns this migration. Work
+clients do not migrate a local database. Do not promote a hub during the upgrade;
+a future owner needs matching code before opening a migrated snapshot. Rollback
+requires the old code and its pre-upgrade database backup and loses watcher
+changes made after that backup. These are operator actions requiring explicit
+authorization, not steps an agent should execute as part of source verification.
 
 The integration tests use temporary databases, test HTTP servers and fake
 session endpoints. They do not register watches with the live server:
@@ -285,7 +307,9 @@ session endpoints. They do not register watches with the live server:
 uv run pytest tests/integration/test_mcp_stdio.py tests/integration/test_command_watch_end_to_end.py
 ```
 
-Run one reconciliation/poll cycle against the configured server:
+An explicitly authorized `once` runs a worker cycle against the configured
+server, including database migration, polling, and possible delivery. It is
+not a read-only health check and must not run alongside the managed worker:
 
 ```bash
 uv run omnigent-watcher --config config.toml once --json

@@ -32,14 +32,6 @@ watcher_project="$DOTFILES_DIR/services/omnigent-watcher"
 if [[ -f "$watcher_project/uv.lock" ]] && command -v uv &>/dev/null; then
   (cd "$watcher_project" && uv sync --frozen --all-groups) ||
     echo "WARNING: omnigent-watcher dependency sync failed" >&2
-  if [[ -x "$watcher_project/.venv/bin/omnigent-watcher" ]] && {
-      [[ "$DOTFILES_PROFILE" == desktop ]] ||
-      "$DOTFILES_DIR/bin/omnigent-server-url" --is-candidate >/dev/null 2>&1;
-    }; then
-    "$watcher_project/.venv/bin/omnigent-watcher" \
-      --config "$watcher_project/config.toml" status --json >/dev/null ||
-      echo "WARNING: omnigent-watcher state bootstrap failed" >&2
-  fi
 fi
 
 # Cross-agent plugin install: uninstalls dropped plugins, cleans orphan caches,
@@ -110,8 +102,10 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
   # the quiescence check. See bin/omnigent-agents-ensure and
   # omnigent_config/agents/{claude,codex,dvsc}/.
   if [[ "$routing_ready" == true ]]; then
-    "$DOTFILES_DIR/bin/omnigent-agents-ensure" ||
-      echo "WARNING: omnigent-agents-ensure failed (managed agents may be stale in the picker)" >&2
+    if ! "$DOTFILES_DIR/bin/omnigent-agents-ensure"; then
+      echo "ERROR: Omnigent server activation deferred or failed; skipping further worker convergence. Rerun init.sh when the server can be refreshed." >&2
+      exit 1
+    fi
   fi
 
   # A work Mac is a client. Retire only a desktop worker we installed, during

@@ -6,12 +6,14 @@ import argparse
 import asyncio
 import json
 import logging
-from collections.abc import Sequence
+import sqlite3
+from collections.abc import Mapping, Sequence
+from contextlib import closing
 from pathlib import Path
 
 from .database import adopt_legacy_database, resolve
 from .phabricator_source import PhabricatorReviewSource
-from .repository import WatcherRepository
+from .repository import SCHEMA_VERSION, WatcherRepository
 from .service import WatcherService
 from .settings import ServiceSettings
 
@@ -53,7 +55,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.command == "once":
         service = WatcherService(settings)
         asyncio.run(_run_once(service))
-        _print_status(service.repository, as_json=args.json)
+        _print_status(service.repository.counts(), as_json=args.json)
         return
     if args.command == "probe":
         payload = asyncio.run(_probe(args.diff_id))
@@ -63,7 +65,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             for key, value in sorted(payload.items()):
                 print(f"{key}: {value}")
         return
-    _print_status(WatcherRepository(resolve(settings.database_path)), as_json=args.json)
+    _print_status(_read_status(resolve(settings.database_path)), as_json=args.json)
 
 
 async def _run_once(service: WatcherService) -> None:
@@ -90,8 +92,33 @@ async def _probe(diff_id: str) -> dict[str, object]:
     }
 
 
-def _print_status(repository: WatcherRepository, *, as_json: bool) -> None:
-    payload = repository.counts()
+def _read_status(path: Path) -> dict[str, object]:
+    """Inspect without creating, migrating, adopting, or chmodding the database.
+
+    SQLite's read-only connection may maintain transient WAL/SHM bookkeeping;
+    it cannot modify the main database or schema.
+    """
+    payload: dict[str, object] = {
+        "database_path": str(path),
+        "expected_schema_version": SCHEMA_VERSION,
+        "schema_version": None,
+        "status": "missing",
+    }
+    if not path.exists():
+        return payload
+    with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+        connection.execute("BEGIN")
+        schema = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        payload["schema_version"] = schema
+        if schema != SCHEMA_VERSION:
+            payload["status"] = "upgrade_required" if schema < SCHEMA_VERSION else "newer_schema"
+            return payload
+        payload["status"] = "current"
+        payload.update(WatcherRepository.counts_from_connection(connection))
+    return payload
+
+
+def _print_status(payload: Mapping[str, object], *, as_json: bool) -> None:
     if as_json:
         print(json.dumps(payload, sort_keys=True))
     else:
