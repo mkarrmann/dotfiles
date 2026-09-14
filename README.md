@@ -167,6 +167,17 @@ counterpart of the Mac script of the same name. The stack layout is one
 constant (`STACK_LAYOUT` in `bin-linux/sway-windows-lib.sh`); `tabbed` is the
 alternative if the stacked title rows grate.
 
+Navigation is the AeroSpace chord set on Alt (`aerospace.toml` main mode):
+Alt+N / Alt+Shift+N switch and move to workspace N, Alt+h/j/k/l focus,
+Alt+j/k cycle the stack and wrap within the workspace (`focus_wrapping
+workspace`), Alt+h/l step between sidebar and stack, Alt+i/u cycle workspaces
+on the current output, Alt+Tab back-and-forth, Alt+f fullscreen, Alt+z the
+overflow workspace. Alt+Shift+N runs `bin-linux/sway-move-to-workspace`, which
+re-arranges both workspaces so the moved window joins the destination's stack
+instead of landing beside its sidebar. Super keeps everything that is not
+navigation (launcher, kill, lock, splits, floating, scratchpad, resize,
+`$mod+Shift+r` rebuild); nothing is bound twice.
+
 Workspace-to-monitor pinning is machine-local (`~/.config/sway/config.d/`, see
 `sway_config.local.example`), so the dashboard lands on the second monitor
 without the script doing any monitor arithmetic of its own — unlike

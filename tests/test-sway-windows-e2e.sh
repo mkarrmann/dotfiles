@@ -386,6 +386,24 @@ check "a window on a workspace without a stack is left alone" "h[loose.app]" "$(
 kill "$(tree | jq -r '[recurse(.nodes[]?,.floating_nodes[]?)|select(.app_id=="loose.app")]|first|.pid')" 2>/dev/null
 kill "$AUTO_PID" 2>/dev/null; wait "$AUTO_PID" 2>/dev/null
 
+echo "== Alt+Shift+N (sway-move-to-workspace) =="
+swaymsg "workspace 1" >/dev/null
+cid=$(id_by_mark sw:1:chrome); swaymsg "[con_id=$cid] focus" >/dev/null
+SWAY_WINDOWS_LAYOUT="$TMP/layout.sh" "$ROOT/bin-linux/sway-move-to-workspace" 2 >"$TMP/move.log" 2>&1; rc=$?
+check "exits 0" "0" "$rc"; [[ "$rc" == 0 ]] || show_log "$TMP/move.log"
+check "the window moved to workspace 2" "2" "$(ws_of_id "$cid")"
+check "and joined workspace 2's stack, after its own windows" "h[stacked[sway-ws.term.beta google-chrome.stub2 Omnigent.stub2 google-chrome.stub1]]" "$(ws_shape 2)"
+check "workspace 1 is still sidebar | stack" "h[orchest.stub stacked[sway-ws.term.alpha Omnigent.stub1]]" "$(ws_shape 1)"
+check "focus stayed on the source workspace" "1" "$(focused_ws)"
+run_startup
+check "the next rebuild brings the claimed window home" "orchest.stub[sw:1:orchest] -> $WS1_EXPECT" "$(ws_order 1)"
+check "and workspace 2 is back to its own three" "3" "$(ws_stacked 2)"
+swaymsg "workspace 1" >/dev/null; swaymsg "[con_id=$cid] focus" >/dev/null
+SWAY_WINDOWS_LAYOUT="$TMP/layout.sh" "$ROOT/bin-linux/sway-move-to-workspace" Z >"$TMP/move.log" 2>&1
+check "moving to the overflow workspace arranges nothing there" "0" "$(grep -c '^\[Z\]' "$TMP/move.log")"
+check "the moved window is on Z" "Z" "$(ws_of_id "$cid")"
+run_startup
+
 echo "== a workspace whose name has spaces (marks must be quoted) =="
 swaymsg 'workspace "7: code"' >/dev/null
 foot --app-id=named.one sleep 600 >/dev/null 2>&1 &
