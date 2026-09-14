@@ -199,6 +199,10 @@ supplies what AeroSpace does not:
   and `sway/tree/container.c`) dictate the rebuild order it uses: `layout` on a
   root-level window wraps every child of the workspace, and `split` on a
   workspace's only child sets the workspace layout instead of nesting.
+- A window that appears later lands next to whatever is focused. When that is
+  the sidebar, `bin-linux/sway-auto-stack` (started by `sway_config`, one per
+  compositor) moves it into the stack, which the arranger marks
+  `sw:<ws>:stack`. This is the Mac's auto-accordion, event-driven.
 - The Orchest sidebar is claimed as `sw:<ws>:orchest`; the sweep also spares
   any window titled `Orchest [` so a sidebar that arrived after the pass is
   not parked on Z (which would teach Orchest that Z is its workspace). Under

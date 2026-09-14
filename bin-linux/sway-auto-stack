@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Send a window that appears on a managed workspace into that workspace's
+# stack. sway inserts a new window next to the focused one, so a window opened
+# while the Orchest sidebar is focused lands beside the sidebar rather than in
+# the stack; this is the Linux counterpart of the Mac's auto-accordion hook,
+# except that it listens on sway's event stream instead of being spawned per
+# window, and it moves one container instead of rebuilding the workspace.
+#
+# Started by sway_config (exec_always). A second copy per compositor exits at
+# once, so a config reload cannot stack up listeners.
+#
+# It stays out of the way of a reconciler: while startup-windows holds the
+# layout lock every window is about to be placed and arranged anyway.
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=./sway-windows-lib.sh
+source "$SCRIPT_DIR/sway-windows-lib.sh"
+
+command -v swaymsg >/dev/null 2>&1 || { echo "ERROR: swaymsg not found." >&2; exit 1; }
+sway_ipc -t get_version >/dev/null 2>&1 || { echo "ERROR: cannot reach sway." >&2; exit 1; }
+
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/sway-auto-stack.$(basename "${SWAYSOCK:-default}").lock"
+flock -n 9 || exit 0
+
+# Orchest windows are never stacked: they are the sidebars. Their title is not
+# final when they map (the renderer sets "Orchest [id]" only after it mounts),
+# so the process is the identity: sway reports the Electron main process, and
+# its command line is the checkout's electron binary.
+ORCHEST_DIR="${ORCHEST_DIR:-$("$SCRIPT_DIR/startup-windows" --print-layout 2>/dev/null | jq -r '.orchestDir // empty')}"
+ORCHEST_DIR="${ORCHEST_DIR:-$HOME/dev/orchest}"
+
+is_orchest_process() {
+  local pid="$1" cmdline
+  cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null) || return 1
+  [[ "$cmdline" == *"$ORCHEST_DIR/"* ]]
+}
+
+# Where the window sits now, from a fresh tree: the event carries the
+# container but not its workspace, and for_window rules (the overlay's move
+# to the scratchpad, for one) may already have acted on it.
+placement() {
+  sway_ipc -t get_tree | jq -c --argjson id "$1" '
+    [ .nodes[] | select(.name != "__i3") | .nodes[]? | select(.type == "workspace")
+      | .name as $ws
+      | ([recurse(.nodes[]?) | select(.marks | index("sw:\($ws):stack"))] | first) as $stack
+      | recurse(.nodes[]?, .floating_nodes[]?)
+      | select(.id == $id)
+      | { ws: $ws, floating: (.type == "floating_con"), title: (.name // ""), pid: .pid,
+          stack: ($stack.id // null),
+          in_stack: (($stack.nodes // []) | any(.id == $id)) }
+    ] | first // empty'
+}
+
+adopt() {
+  local id="$1" info ws
+  sway_windows_locked && return 0
+  info=$(placement "$id") || return 0
+  [[ -n "$info" ]] || return 0
+  [[ "$(jq -r .floating <<< "$info")" == false ]] || return 0
+  [[ "$(jq -r .in_stack <<< "$info")" == false ]] || return 0
+  [[ "$(jq -r .stack <<< "$info")" != null ]] || return 0
+  [[ ! "$(jq -r .title <<< "$info")" =~ $ORCHEST_SIDEBAR_TITLE_RE ]] || return 0
+  is_orchest_process "$(jq -r .pid <<< "$info")" && return 0
+  ws=$(jq -r .ws <<< "$info")
+  sway_cmd "[con_id=$id] move container to mark $(sway_quote "$(stack_mark "$ws")")" || return 0
+  echo "stacked window $id on workspace $ws"
+}
+
+# stdbuf: swaymsg writes each event as one line, but a pipe would otherwise
+# buffer them.
+stdbuf -oL swaymsg -m -t subscribe '["window"]' 2>/dev/null \
+| while IFS= read -r event; do
+  [[ "$(jq -r '.change // empty' <<< "$event" 2>/dev/null)" == new ]] || continue
+  id=$(jq -r '.container.id // empty' <<< "$event")
+  [[ -n "$id" ]] || continue
+  adopt "$id" || true
+done

@@ -275,6 +275,11 @@ bindsym $mod+z workspace Z
 # Rebuild the declared layout on demand.
 bindsym $mod+Shift+r exec $HOME/bin/startup-windows
 
+# Put a window that appears later into its workspace's stack (sway would
+# leave it beside the sidebar when the sidebar is focused). A second copy per
+# compositor exits at once, so exec_always is safe across reloads.
+exec_always $HOME/bin/sway-auto-stack
+
 # Build the layout once per sway start (not exec_always: a config reload must
 # not re-run the reconciler underneath a session you are using).
 exec $HOME/bin/startup-windows

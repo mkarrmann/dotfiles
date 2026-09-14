@@ -368,6 +368,24 @@ swaymsg "[con_id=$sid] mark --add sw:1:orchest" >/dev/null
 run_startup
 check "a marked sidebar survives a re-run in place" "h[orchest.stub stacked[sway-ws.term.alpha google-chrome.stub1 Omnigent.stub1]]" "$(ws_shape 1)"
 
+echo "== a window opened beside the sidebar joins the stack (sway-auto-stack) =="
+SWAY_WINDOWS_LAYOUT="$TMP/layout.sh" "$ROOT/bin-linux/sway-auto-stack" >"$TMP/auto-stack.log" 2>&1 &
+AUTO_PID=$!; sleep 0.5
+swaymsg "workspace 1" >/dev/null; swaymsg "[con_id=$sid] focus" >/dev/null
+swaymsg exec -- "ghostty --class=late.app -e sleep 600" >/dev/null
+for _ in $(seq 1 20); do [[ -n "$(id_by_app late.app)" ]] && break; sleep 0.25; done
+for _ in $(seq 1 12); do [[ "$(ws_shape 1)" == *"late.app]]" ]] && break; sleep 0.25; done
+check "the late window was moved into the stack" "h[orchest.stub stacked[sway-ws.term.alpha google-chrome.stub1 Omnigent.stub1 late.app]]" "$(ws_shape 1)"
+kill "$(tree | jq -r '[recurse(.nodes[]?,.floating_nodes[]?)|select(.app_id=="late.app")]|first|.pid')" 2>/dev/null
+for _ in $(seq 1 20); do [[ -z "$(id_by_app late.app)" ]] && break; sleep 0.25; done
+swaymsg "workspace 7" >/dev/null
+swaymsg exec -- "ghostty --class=loose.app -e sleep 600" >/dev/null
+for _ in $(seq 1 20); do [[ -n "$(id_by_app loose.app)" ]] && break; sleep 0.25; done
+sleep 1
+check "a window on a workspace without a stack is left alone" "h[loose.app]" "$(ws_shape 7)"
+kill "$(tree | jq -r '[recurse(.nodes[]?,.floating_nodes[]?)|select(.app_id=="loose.app")]|first|.pid')" 2>/dev/null
+kill "$AUTO_PID" 2>/dev/null; wait "$AUTO_PID" 2>/dev/null
+
 echo "== a workspace whose name has spaces (marks must be quoted) =="
 swaymsg 'workspace "7: code"' >/dev/null
 foot --app-id=named.one sleep 600 >/dev/null 2>&1 &
