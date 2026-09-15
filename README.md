@@ -157,7 +157,7 @@ anything.
 | 4   | nvim in `~/repos/omnigent` + Chrome + Omnigent |
 | 5   | nvim in `~/work/presto` + Chrome + Omnigent    |
 | 6   | nvim in `~/gatech` + Chrome + Omnigent         |
-| 9   | second-monitor dashboard (Obsidian)            |
+| 9   | second-monitor dashboard (Obsidian, Orchest Overview at 30%) |
 | Z   | overflow / stray sweep (`$mod+z`)              |
 
 Each standard workspace is laid out as `[ Orchest sidebar | stack ]`: the
@@ -228,6 +228,15 @@ supplies what AeroSpace does not:
   laid out. Electron's default File/Edit/View menu bar is suppressed in the
   Orchest checkout itself (`Menu.setApplicationMenu(null)`, apps/desktop
   `main.ts`), since a 300px column cannot afford it.
+- The Overview is the dashboard's Orchest pane, as on the Mac's workspace 11.
+  Its `DASHBOARD_PANES` row carries the `__orchest__` launch sentinel: it is
+  never launched by the dashboard pass but placed and claimed
+  (`sw:9:orchest-overview`) by `orchest-open-workspaces --overview-workspace`,
+  which finds it as the one window of Orchest's pid whose title has no
+  workspace id. Panes are laid out in table order, and a row's optional third
+  field fixes its percentage of the dashboard. Orchest reopens the Overview
+  only at launch, so a closed one is reported by the dashboard pass and comes
+  back with the next Orchest start.
 
 Two Linux-specific constraints are load-bearing:
 

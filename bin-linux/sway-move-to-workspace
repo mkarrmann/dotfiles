@@ -26,9 +26,12 @@ target="$1"
 
 layout=$("$SCRIPT_DIR/startup-windows" --print-layout)
 sweep_ws=$(jq -er '.sweepWorkspace' <<< "$layout")
-export DASHBOARD_WS DASHBOARD_LAYOUT TERM_APP_ID_PREFIX STACK_LAYOUT SIDEBAR_PERCENT SIDEBAR_MIN_WIDTH
+export DASHBOARD_WS DASHBOARD_LAYOUT DASHBOARD_ORDER DASHBOARD_WIDTHS \
+       TERM_APP_ID_PREFIX STACK_LAYOUT SIDEBAR_PERCENT SIDEBAR_MIN_WIDTH
 DASHBOARD_WS=$(jq -er '.dashboardWorkspace' <<< "$layout")
 DASHBOARD_LAYOUT=$(jq -er '.dashboardLayout' <<< "$layout")
+DASHBOARD_ORDER=$(jq -r '[.dashboardPanes[].name] | join(" ")' <<< "$layout")
+DASHBOARD_WIDTHS=$(jq -r '[.dashboardPanes[] | select(.percent != null) | "\(.name):\(.percent)"] | join(" ")' <<< "$layout")
 TERM_APP_ID_PREFIX=$(jq -er '.terminalAppIdPrefix' <<< "$layout")
 STACK_LAYOUT=$(jq -er '.stackLayout' <<< "$layout")
 SIDEBAR_PERCENT=$(jq -er '.sidebarPercent' <<< "$layout")

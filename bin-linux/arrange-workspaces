@@ -9,7 +9,8 @@ set -euo pipefail
 #                         STACK_LAYOUT container holding every other window,
 #                         terminal first, then Chrome, then Omnigent, then any
 #                         other claimed slot, then whatever else is there.
-#   dashboard workspace -> every pane a direct child, DASHBOARD_LAYOUT (splith or splitv).
+#   dashboard workspace -> every pane a direct child, DASHBOARD_LAYOUT (splith or
+#                         splitv), in DASHBOARD_ORDER, sized by DASHBOARD_WIDTHS.
 #   sweep workspace     -> left alone.
 #
 # The Linux counterpart of bin-macos/arrange-workspaces, and still a fraction
@@ -37,6 +38,11 @@ source "$SCRIPT_DIR/sway-windows-lib.sh"
 
 DASHBOARD_WS="${DASHBOARD_WS:-9}"
 DASHBOARD_LAYOUT="${DASHBOARD_LAYOUT:-splith}"
+# Pane names (the sw:<ws>:<name> claim suffixes) in the order they should
+# appear, and "name:percent" widths for the panes that have one; the rest
+# share what is left. Both come from startup-windows' DASHBOARD_PANES table.
+DASHBOARD_ORDER="${DASHBOARD_ORDER:-}"
+DASHBOARD_WIDTHS="${DASHBOARD_WIDTHS:-}"
 SWEEP_WS="${SWEEP_WORKSPACE:-Z}"
 ARRANGE_ATTEMPTS="${ARRANGE_ATTEMPTS:-3}"
 
@@ -73,17 +79,19 @@ tree_layout_name() {
 # rank 0 terminal  (app_id TERM_APP_ID_PREFIX<slot>)
 # rank 1 chrome    (mark sw:<ws>:chrome)
 # rank 2 omnigent  (mark sw:<ws>:omnigent)
-# rank 3 any other sw:<ws>: claim (dashboard panes, future slots)
+# rank 3 any other sw:<ws>: claim (dashboard panes, future slots), in
+#        DASHBOARD_ORDER order
 # rank 4 anything else that is tiled (a window moved here by hand)
-# Ties break by window id so the order is stable between runs. MAX_RANK
-# limits the output to the ranks whose order this script enforces.
+# Remaining ties break by window id so the order is stable between runs.
+# MAX_RANK limits the output to the ranks whose order this script enforces.
 ordered_ids() {
   local snapshot="$1" ws="$2" max_rank="${3:-4}" sidebar
   sidebar=$(sidebar_id_of "$snapshot" "$ws")
   echo "$snapshot" | jq -r --arg ws "$ws" --arg prefix "$TERM_APP_ID_PREFIX" \
       --arg sidebar "${sidebar:-none}" --arg overlay_re "$OMNIGENT_INVALID_TITLE_RE" \
-      --argjson max "$max_rank" '
-    [ .[]
+      --arg order "${DASHBOARD_ORDER:-}" --argjson max "$max_rank" '
+    ($order | split(" ") | map(select(. != ""))) as $order
+    | [ .[]
       | select(.ws == $ws)
       | select((.id | tostring) != $sidebar)
       | select((.title // "") | test($overlay_re) | not)
@@ -95,8 +103,10 @@ ordered_ids() {
           else 4 end ) as $rank
       | select($rank <= $max)
       | select($rank < 4 or (($w.floating // false) | not))
-      | { id: $w.id, rank: $rank } ]
-    | sort_by(.rank, .id) | .[].id'
+      | ( [ $w.marks[] | select(startswith("sw:\($ws):")) | ltrimstr("sw:\($ws):")
+            | . as $name | ($order | index($name)) // 1e9 ] | min // 1e9 ) as $pos
+      | { id: $w.id, rank: $rank, pos: $pos } ]
+    | sort_by(.rank, .pos, .id) | .[].id'
 }
 
 TREE=""
@@ -356,12 +366,50 @@ arrange_dashboard_once() {
   if [[ "$(jq -c .order <<< "$state")" != "$members_json" ]]; then
     swap_sort "$ws" "$(jq -r .id <<< "$state")" "${members[@]}" || return 1
   fi
+  enforce_dashboard_widths "$ws" || return 1
 
   refresh || return 1
   state=$(dashboard_state "$ws" "$members_json")
   [[ "$(jq -r .shape <<< "$state")" == true && "$(jq -c .order <<< "$state")" == "$members_json" ]] \
     || { echo "  [$ws] dashboard shape is still wrong" >&2; return 1; }
+  dashboard_widths_correct "$ws" || { echo "  [$ws] a pane width is still wrong" >&2; return 1; }
   echo "[$ws] dashboard of ${#members[@]} pane(s) ($DASHBOARD_LAYOUT)"
+}
+
+# "name:percent" entries of DASHBOARD_WIDTHS resolved against the tree of
+# WS: "id current target" per pane that is present, target in pixels of the
+# workspace's extent along DASHBOARD_LAYOUT. Pixels rather than ppt so the
+# check and the command agree exactly on what the number means.
+dashboard_width_targets() {
+  local ws="$1" spec name pct node extent axis
+  node=$(ws_node "$ws")
+  axis=width; [[ "$DASHBOARD_LAYOUT" == splitv ]] && axis=height
+  extent=$(jq -r ".rect.$axis" <<< "$node")
+  for spec in $DASHBOARD_WIDTHS; do
+    name="${spec%%:*}"; pct="${spec##*:}"
+    [[ "$pct" =~ ^[0-9]+$ ]] || continue
+    jq -r --arg m "sw:${ws}:${name}" --argjson target "$(( extent * pct / 100 ))" --arg axis "$axis" '
+      .nodes[]? | select(.marks | index($m)) | "\(.id) \(.rect[$axis]) \($target)"' <<< "$node"
+  done
+}
+
+dashboard_widths_correct() {
+  local ws="$1" id current target
+  while read -r id current target; do
+    [[ -n "$id" ]] || continue
+    (( current >= target - 8 && current <= target + 8 )) || return 1
+  done < <(dashboard_width_targets "$ws")
+}
+
+enforce_dashboard_widths() {
+  local ws="$1" id current target axis=width
+  [[ "$DASHBOARD_LAYOUT" == splitv ]] && axis=height
+  while read -r id current target; do
+    [[ -n "$id" ]] || continue
+    (( current >= target - 8 && current <= target + 8 )) && continue
+    cmd "$ws" "[con_id=$id] resize set $axis $target px" || return 1
+    refresh || return 1
+  done < <(dashboard_width_targets "$ws")
 }
 
 # ── main ─────────────────────────────────────────────────────────────

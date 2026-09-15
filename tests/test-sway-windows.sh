@@ -243,6 +243,12 @@ check "the sidebar is excluded; a spare Orchest window and a floated managed slo
   "20 21 25 22" "$(ordered_ids "$SIDE_SNAP" 1 | tr '\n' ' ' | sed 's/ $//')"
 check "an unmanaged floating window is left floating" \
   "" "$(ordered_ids "$SIDE_SNAP" 1 | grep -x 24 || true)"
+DASH_SNAP='[{"id":40,"ws":"9","app_id":"obsidian","class":null,"title":"vault","marks":["sw:9:obsidian"],"pid":1,"floating":false},
+            {"id":39,"ws":"9","app_id":null,"class":"@orchest/desktop","title":"Orchest","marks":["sw:9:orchest-overview"],"pid":2,"floating":false}]'
+check "dashboard panes follow DASHBOARD_ORDER, not window id" \
+  "40 39" "$(DASHBOARD_ORDER="obsidian orchest-overview" ordered_ids "$DASH_SNAP" 9 | tr '\n' ' ' | sed 's/ $//')"
+check "without an order, dashboard panes fall back to window id" \
+  "39 40" "$(DASHBOARD_ORDER="" ordered_ids "$DASH_SNAP" 9 | tr '\n' ' ' | sed 's/ $//')"
 check "the sweep spares Orchest windows by title, marked or not" \
   "20 21 24 25" "$(stray_window_ids "$SIDE_SNAP" '^1$' "" "" "$ORCHEST_SIDEBAR_TITLE_RE" | sort -n | tr '\n' ' ' | sed 's/ $//')"
 

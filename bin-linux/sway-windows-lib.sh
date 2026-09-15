@@ -89,6 +89,15 @@ ORCHEST_SIDEBAR_TITLE_RE='Orchest \['
 sidebar_mark() { echo "sw:$1:orchest"; }
 stack_mark() { echo "sw:$1:stack"; }
 
+# Orchest's Overview window is the dashboard pane of this name: its mark is
+# the dashboard claim sw:<ws>:orchest-overview, and its DASHBOARD_PANES row
+# carries the launch sentinel below, because orchest-open-workspaces is what
+# places it (it is the one Orchest window without a workspace id in its
+# title, and Orchest opens it itself at launch).
+ORCHEST_OVERVIEW_PANE="orchest-overview"
+ORCHEST_OVERVIEW_LAUNCH="__orchest__"
+overview_mark() { echo "sw:$1:${ORCHEST_OVERVIEW_PANE}"; }
+
 # swaymsg can block indefinitely if the compositor is wedged. Bound every call
 # so one bad request cannot freeze the whole login sequence, mirroring the
 # AeroSpace wrapper's contract.

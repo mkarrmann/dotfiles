@@ -96,14 +96,18 @@ SWEEP_WORKSPACE="Z"
 # the compositor's job here, unlike arrange-ws11 which had to resolve the
 # monitor itself. Panes are laid out left-to-right by arrange-workspaces.
 #
-# Format: app_id|launch-command
-# To add a pane, add a row (and see arrange-workspaces DASHBOARD_LAYOUT):
+# Format: app_id|launch-command[|percent]
+# Panes are laid out in this order; a percent fixes that pane's share of the
+# dashboard and the rest split what is left. To add a pane, add a row:
 #   "google-chrome|google-chrome --new-window https://calendar.google.com"
-#   "sway-ws.term.monitor|ghostty --class=sway-ws.term.monitor -e btop"
+#   "sway-ws.term.monitor|ghostty --class=sway-ws.term.monitor -e btop|25"
+# The Orchest Overview is the Mac dashboard's Orchest cell: its window is
+# placed by orchest-open-workspaces, which is what the launch sentinel means.
 DASHBOARD_WS=9
 DASHBOARD_LAYOUT=splith
 DASHBOARD_PANES=(
   "obsidian|__desktop_entry__ obsidian.desktop"
+  "${ORCHEST_OVERVIEW_PANE}|${ORCHEST_OVERVIEW_LAUNCH}|30"
 )
 
 CHROME_CMD=(google-chrome --profile-directory=Default --new-window)
@@ -150,20 +154,25 @@ fi
 # it must work with no compositor running.
 if [[ "$PRINT_LAYOUT" == true ]]; then
   command -v jq >/dev/null 2>&1 || { echo "ERROR: jq not found." >&2; exit 1; }
+  panes_json=$(for pane in "${DASHBOARD_PANES[@]}"; do
+    IFS='|' read -r app_id _ pct <<< "$pane"
+    printf '%s\t%s\n' "$app_id" "$pct"
+  done | jq -Rn '[inputs | split("\t") | { name: .[0], percent: (if .[1] == "" then null else (.[1] | tonumber) end) }]')
   for entry in "${WORKSPACES[@]}"; do
     IFS='|' read -r ws type rest <<< "$entry"
     [[ "$type" == term ]] || continue
     IFS='|' read -r slot workdir _ <<< "$rest"
     printf '%s\t%s\t%s\n' "$ws" "$slot" "${workdir/#\~/$HOME}"
   done | jq -Rn --arg sweep "$SWEEP_WORKSPACE" --arg dashboard "$DASHBOARD_WS" \
-      --arg dashboardLayout "$DASHBOARD_LAYOUT" --arg terminalAppIdPrefix "$TERM_APP_ID_PREFIX" \
-      --arg stackLayout "$STACK_LAYOUT" \
+      --arg dashboardLayout "$DASHBOARD_LAYOUT" --argjson dashboardPanes "$panes_json" \
+      --arg terminalAppIdPrefix "$TERM_APP_ID_PREFIX" --arg stackLayout "$STACK_LAYOUT" \
       --argjson sidebarPercent "$SIDEBAR_PERCENT" --argjson sidebarMinWidth "$SIDEBAR_MIN_WIDTH" \
       --argjson orchestEnabled "$ORCHEST_ENABLED" --arg orchestDir "${ORCHEST_DIR/#\~/$HOME}" '
     {
       sweepWorkspace: $sweep,
       dashboardWorkspace: $dashboard,
       dashboardLayout: $dashboardLayout,
+      dashboardPanes: $dashboardPanes,
       terminalAppIdPrefix: $terminalAppIdPrefix,
       stackLayout: $stackLayout,
       sidebarPercent: $sidebarPercent,
@@ -260,7 +269,17 @@ validate_term_app_ids() {
   done
   return "$bad"
 }
-validate_term_app_ids || {
+validate_dashboard_panes() {
+  local pane app_id cmd pct bad=0
+  for pane in "${DASHBOARD_PANES[@]}"; do
+    IFS='|' read -r app_id cmd pct <<< "$pane"
+    [[ -n "$app_id" && -n "$cmd" ]] || { echo "ERROR: dashboard pane needs app_id|command: $pane" >&2; bad=1; }
+    [[ -z "$pct" || ( "$pct" =~ ^[0-9]+$ && "$pct" -ge 1 && "$pct" -le 99 ) ]] \
+      || { echo "ERROR: dashboard pane percent must be 1-99: $pane" >&2; bad=1; }
+  done
+  return "$bad"
+}
+validate_term_app_ids && validate_dashboard_panes || {
   echo "ERROR: fix the workspace table before running." >&2
   exit 1
 }
@@ -550,6 +569,24 @@ for entry in "${WORKSPACES[@]}"; do
   if [[ "$entry" == *"|omnigent" ]]; then reconcile_entry "$entry"; fi
 done
 
+# ── Orchest ──────────────────────────────────────────────────────────
+# After the application windows: Orchest's workspace activation must not race
+# the focus-sensitive Omnigent New Window accelerator. Before the dashboard:
+# the Overview pane is claimed here and the dashboard pass finds it by mark.
+# A failure here is a warning, as on the Mac: the sweep below spares Orchest
+# windows by title, so a sidebar that is present but unclaimed stays put, and
+# every other window still gets swept and laid out.
+if [[ "$ORCHEST_ENABLED" == true ]]; then
+  orchest_args=("--$ORCHEST_MODE")
+  [[ "$DRY_RUN" == false ]] || orchest_args+=(--dry-run)
+  [[ "$SKIP_DASHBOARD" == true ]] || orchest_args+=(--overview-workspace "$DASHBOARD_WS")
+  while IFS= read -r ws; do orchest_args+=("$ws"); done < <(managed_workspaces)
+  ORCHEST_DIR="$ORCHEST_DIR" ORCHEST_PORT="$ORCHEST_PORT" \
+    "$SCRIPT_DIR/orchest-open-workspaces" "${orchest_args[@]}" \
+    || warn "Orchest placement finished with warnings; the layout is built with what is there"
+  [[ "$DRY_RUN" == true ]] || refresh
+fi
+
 # ── Dashboard ────────────────────────────────────────────────────────
 
 # Same contract as reconcile_marked: the pane's own mark wins, then a window
@@ -570,6 +607,14 @@ reconcile_dashboard_pane() {
   id=$(unclaimed_id_with_app_identity "$SNAPSHOT" "$app_id")
   if [[ -n "$id" ]]; then
     echo "[dash:$app_id] adopting unclaimed window $id"
+  elif [[ "$cmd" == "$ORCHEST_OVERVIEW_LAUNCH" ]]; then
+    # Placed and marked by orchest-open-workspaces above, never launched here.
+    # Without Orchest the row is simply inert; with it, a missing Overview
+    # means it was closed (Orchest does not reopen it on Linux) or the pass
+    # above failed, and the next launch of Orchest brings it back.
+    [[ "$ORCHEST_ENABLED" == true ]] || { echo "[dash:$app_id] Orchest is not enabled; skipping"; return 0; }
+    warn "[dash:$app_id] Orchest did not provide an Overview window"
+    return 1
   else
     echo "[dash:$app_id] creating..."
     if [[ "$cmd" == __desktop_entry__* ]]; then
@@ -596,7 +641,7 @@ reconcile_dashboard_pane() {
 
 if [[ "$SKIP_DASHBOARD" != true ]]; then
   for pane in "${DASHBOARD_PANES[@]}"; do
-    IFS='|' read -r app_id cmd <<< "$pane"
+    IFS='|' read -r app_id cmd _ <<< "$pane"
     reconcile_dashboard_pane "$app_id" "$cmd" || true
   done
   # With the dashboard's output unplugged, sway falls back to the remaining
@@ -606,21 +651,6 @@ if [[ "$SKIP_DASHBOARD" != true ]]; then
   if [[ "$(sway_ipc -t get_outputs | jq '[.[] | select(.active)] | length')" == 1 ]]; then
     echo "NOTE: one output active; the dashboard is workspace $DASHBOARD_WS on it (\$mod+$DASHBOARD_WS), not a second screen."
   fi
-fi
-
-# ── Orchest sidebars ─────────────────────────────────────────────────
-# After the application windows: Orchest's workspace activation must not race
-# the focus-sensitive Omnigent New Window accelerator. A failure here is a
-# warning, as on the Mac: the sweep below spares Orchest windows by title, so
-# a sidebar that is present but unclaimed stays put, and every other window
-# still gets swept and laid out.
-if [[ "$ORCHEST_ENABLED" == true ]]; then
-  orchest_args=("--$ORCHEST_MODE")
-  [[ "$DRY_RUN" == false ]] || orchest_args+=(--dry-run)
-  while IFS= read -r ws; do orchest_args+=("$ws"); done < <(managed_workspaces)
-  ORCHEST_DIR="$ORCHEST_DIR" ORCHEST_PORT="$ORCHEST_PORT" \
-    "$SCRIPT_DIR/orchest-open-workspaces" "${orchest_args[@]}" \
-    || warn "Orchest sidebars did not converge; the layout is built without them"
 fi
 
 # ── Sweep ────────────────────────────────────────────────────────────
@@ -659,7 +689,14 @@ if [[ "$DRY_RUN" != true ]]; then
   # that it depends on has to be forwarded, or it silently falls back to its
   # defaults -- a moved dashboard gets tabbed, a custom terminal prefix makes
   # it report "no managed windows" and succeed.
-  DASHBOARD_LAYOUT="$DASHBOARD_LAYOUT" TERM_APP_ID_PREFIX="$TERM_APP_ID_PREFIX" STACK_LAYOUT="$STACK_LAYOUT" \
+  dashboard_order=""; dashboard_widths=""
+  for pane in "${DASHBOARD_PANES[@]}"; do
+    IFS='|' read -r app_id _ pct <<< "$pane"
+    dashboard_order="${dashboard_order}${dashboard_order:+ }${app_id}"
+    [[ -z "$pct" ]] || dashboard_widths="${dashboard_widths}${dashboard_widths:+ }${app_id}:${pct}"
+  done
+  DASHBOARD_LAYOUT="$DASHBOARD_LAYOUT" DASHBOARD_ORDER="$dashboard_order" DASHBOARD_WIDTHS="$dashboard_widths" \
+    TERM_APP_ID_PREFIX="$TERM_APP_ID_PREFIX" STACK_LAYOUT="$STACK_LAYOUT" \
     SIDEBAR_PERCENT="$SIDEBAR_PERCENT" SIDEBAR_MIN_WIDTH="$SIDEBAR_MIN_WIDTH" \
     "$SCRIPT_DIR/arrange-workspaces" --dashboard-ws "$DASHBOARD_WS" --sweep-ws "$SWEEP_WORKSPACE" \
     "${arrange_targets[@]}" \

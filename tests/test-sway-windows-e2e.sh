@@ -158,7 +158,7 @@ WORKSPACES=(
   "2|omnigent"
 )
 DASHBOARD_WS=${1:-9}
-DASHBOARD_PANES=("obsidian.stub|__desktop_entry__ obsidian.desktop")
+DASHBOARD_PANES=("obsidian.stub|__desktop_entry__ obsidian.desktop" "orchest-overview|__orchest__|30")
 CHROME_CMD=("$TMP/bin/chrome-stub")
 OMNIGENT_NEW_WINDOW_MIN_VERSION=""
 ORCHEST_ENABLED=false
@@ -245,6 +245,9 @@ check "workspace 1 is one stack of 3" "3" "$(ws_stacked 1)"
 check "workspace 2 is one stack of 3" "3" "$(ws_stacked 2)"
 check "dashboard holds the pane, claimed" "obsidian.stub[sw:9:obsidian.stub]" "$(ws_order 9)"
 check "dashboard is laid out side by side, not stacked" "0" "$(ws_stacked 9)"
+grep -q '^\[dash:orchest-overview\] Orchest is not enabled; skipping' "$TMP/run.log" \
+  && pass "the Overview pane row is inert without Orchest" || fail "the Overview pane was not skipped cleanly"
+grep -q 'WARNING.*orchest-overview' "$TMP/run.log" && fail "the inert Overview row produced a warning" || pass "and produced no warning"
 grep -q 'NOTE: one output active; the dashboard is workspace 9' "$TMP/run.log" \
   && pass "single-output fallback is reported" || fail "no single-output NOTE in the run log"
 for _ in $(seq 1 40); do [[ -s "$TMP/alpha.ran" ]] && break; sleep 0.25; done
@@ -403,6 +406,31 @@ SWAY_WINDOWS_LAYOUT="$TMP/layout.sh" "$ROOT/bin-linux/sway-move-to-workspace" Z 
 check "moving to the overflow workspace arranges nothing there" "0" "$(grep -c '^\[Z\]' "$TMP/move.log")"
 check "the moved window is on Z" "Z" "$(ws_of_id "$cid")"
 run_startup
+
+echo "== Overview pane on the dashboard =="
+# The pane is provided by orchest-open-workspaces (a mark), never launched
+# by the dashboard pass; here a foot window stands in for the Overview.
+run_startup
+swaymsg "workspace 9" >/dev/null
+foot --app-id=overview.stub --title='Orchest' sleep 600 >/dev/null 2>&1 &
+for _ in $(seq 1 20); do [[ -n "$(id_by_app overview.stub)" ]] && break; sleep 0.25; done
+ovid=$(id_by_app overview.stub)
+swaymsg "[con_id=$ovid] mark --add sw:9:orchest-overview" >/dev/null
+swaymsg "[con_id=$ovid] move container to workspace 3" >/dev/null; sleep 0.3
+run_startup; rc=$?
+check "exits 0" "0" "$rc"; [[ "$rc" == 0 ]] || show_log "$TMP/run.log"
+check "the marked Overview is brought to the dashboard" "9" "$(ws_of_id "$ovid")"
+check "panes follow the table order: Obsidian then Overview" "h[obsidian.stub overview.stub]" "$(ws_shape 9)"
+check "the Overview takes 30% of a 1920px dashboard" "576" "$(tree | jq -r --argjson i "$ovid" '[recurse(.nodes[]?)|select(.id==$i)]|first|.rect.width')"
+swaymsg "[con_id=$ovid] swap container with con_id $(id_by_mark sw:9:obsidian.stub)" >/dev/null
+swaymsg "[con_id=$ovid] resize set width 900 px" >/dev/null; sleep 0.2
+# A standalone arrange is told the table the way startup-windows tells it.
+DASHBOARD_ORDER="obsidian.stub orchest-overview" DASHBOARD_WIDTHS="orchest-overview:30" run_arrange --dashboard-ws 9 9; rc=$?
+check "arranger exits 0" "0" "$rc"; [[ "$rc" == 0 ]] || show_log "$TMP/arrange.log"
+check "a standalone arrange restores the order and width" "h[obsidian.stub overview.stub]" "$(ws_shape 9)"
+check "width restored" "576" "$(tree | jq -r --argjson i "$ovid" '[recurse(.nodes[]?)|select(.id==$i)]|first|.rect.width')"
+kill "$(tree | jq -r --argjson i "$ovid" '[recurse(.nodes[]?)|select(.id==$i)]|first|.pid')" 2>/dev/null
+for _ in $(seq 1 20); do [[ -z "$(id_by_app overview.stub)" ]] && break; sleep 0.25; done
 
 echo "== a workspace whose name has spaces (marks must be quoted) =="
 swaymsg 'workspace "7: code"' >/dev/null

@@ -14,6 +14,11 @@ set -euo pipefail
 # openWorkspaceWindowAsync), and its sway provider learns the binding back
 # from where the window actually is. The moves here only repair drift.
 #
+# --overview-workspace WS also claims Orchest's Overview window as WS's
+# dashboard pane (mark sw:WS:orchest-overview) and moves it there. Orchest
+# opens that window itself at launch, on whatever workspace is focused; it is
+# the one Orchest window whose title carries no workspace id.
+#
 # Nothing here needs pnpm: sway's exec environment does not have it on PATH.
 # The prod app is the checkout's own electron binary and the CLI is run with
 # node through apps/cli/bin/orchest.js.
@@ -27,13 +32,15 @@ ORIG_ARGS=("$@")
 MODE=prod
 ACTION=open
 DRY_RUN=false
+OVERVIEW_WS=""
 WORKSPACES=()
 usage() {
-  echo 'Usage: orchest-open-workspaces [--prod|--dev] [--dry-run] [--verify-only|--reconcile-only] WORKSPACE...'
+  echo 'Usage: orchest-open-workspaces [--prod|--dev] [--dry-run] [--verify-only|--reconcile-only] [--overview-workspace WS] WORKSPACE...'
   echo '  Workspaces are required; startup-windows supplies its resolved workspace names.'
   echo '  Default: launch the existing prod build, create/open missing sidebars, repair and verify.'
   echo '  --reconcile-only repairs existing sidebars without launching or opening anything.'
   echo '  --verify-only checks placement, marks and persisted bindings without mutations.'
+  echo '  --overview-workspace WS  also place the Overview window on WS as its dashboard pane.'
   echo '  --dry-run prints intended work without connections or writes.'
 }
 die() { echo "[Orchest] ERROR: $*" >&2; exit 1; }
@@ -42,6 +49,9 @@ while [[ $# -gt 0 ]]; do
     --prod) MODE=prod ;;
     --dev) MODE=dev ;;
     --dry-run) DRY_RUN=true ;;
+    --overview-workspace)
+      [[ $# -ge 2 && -n "$2" && ! "$2" =~ [[:cntrl:]] ]] || { usage >&2; exit 2; }
+      OVERVIEW_WS="$2"; shift ;;
     --verify-only|--reconcile-only)
       [[ "$ACTION" == open ]] || { usage >&2; exit 2; }
       ACTION="${1#--}"; ACTION="${ACTION%-only}" ;;
@@ -86,6 +96,7 @@ if [[ "$DRY_RUN" == true ]]; then
   done
   [[ "$ACTION" != open ]] || echo '[Orchest] Create/reuse labels; ensure desktop workspace exists before opening each missing sidebar; restore original focus.'
   echo '[Orchest] Require two consecutive converged observations.'
+  [[ -z "$OVERVIEW_WS" ]] || printf '[Orchest] Overview window (the Orchest pid, no workspace id in its title): workspace=%q, mark=%q.\n' "$OVERVIEW_WS" "$(overview_mark "$OVERVIEW_WS")"
   exit 0
 fi
 
@@ -120,10 +131,12 @@ orchest_health() {
       and (.pid | type == "number" and . > 0 and floor == .)
       and (($status == "200" and .ready == true) or ($status == "503" and .ready == false)))
   ' >/dev/null 2>&1 || die "Port $ORCHEST_PORT is not a compatible Orchest desktop /health endpoint (HTTP $status). Inspect it; an older build needs an explicit rebuild/restart."
+  orchest_pid=$(printf '%s' "$body" | jq -r '.pid')
   orchest_state=starting
   [[ "$status" != 200 ]] || orchest_state=ready
 }
 
+orchest_pid=""
 saved_ws=$(sway_ipc -t get_workspaces | jq -er '[.[] | select(.focused)] | first | .name') \
   || die 'Cannot read the focused Sway workspace.'
 saved_id=$(focused_window_id) || die 'Cannot read Sway focus.'
@@ -213,6 +226,39 @@ sidebar_id() {
 }
 binding_for() { jq -r --arg id "$1" '.[] | select(.id == $id) | .desktopWorkspaceId // empty' <<< "$workspace_json"; }
 
+# The Overview: an Orchest window (sway reports the app's main pid, the one
+# /health returns, for every window) whose title names no workspace. The
+# mark holder wins, else the lowest id, so a re-run keeps the pane it chose.
+overview_id() {
+  local snapshot="$1"
+  jq -r --argjson pid "$orchest_pid" --arg re "$ORCHEST_SIDEBAR_TITLE_RE" \
+        --arg m "$(overview_mark "$OVERVIEW_WS")" '
+    [ .[] | select(.pid == $pid and ((.title // "") | test($re) | not)) ]
+    | (map(select(.marks | index($m))) | first) // (sort_by(.id) | first)
+    | .id // empty' <<< "$snapshot"
+}
+
+# Move and mark the Overview as the dashboard pane; verify only under
+# --verify-only. Missing is reported, not fatal: the sidebars are placed
+# either way, and startup-windows' dashboard pass says the pane is absent.
+place_overview() {
+  [[ -n "$OVERVIEW_WS" ]] || return 0
+  local snapshot id mark
+  mark=$(overview_mark "$OVERVIEW_WS")
+  snapshot=$(snapshot_windows) || { echo '[Orchest] WARNING: cannot read Sway windows for the Overview.' >&2; return 1; }
+  id=$(overview_id "$snapshot")
+  [[ -n "$id" ]] || { echo "[Orchest] WARNING: no Overview window (closed? Orchest reopens it only at launch)." >&2; return 1; }
+  if [[ "$(workspace_of "$snapshot" "$id")" != "$OVERVIEW_WS" ]]; then
+    [[ "$ACTION" != verify ]] || { echo "[Orchest] Overview $id is not on workspace $OVERVIEW_WS." >&2; return 1; }
+    move_to_workspace "$id" "$OVERVIEW_WS" || { echo "[Orchest] WARNING: cannot move the Overview to $OVERVIEW_WS." >&2; return 1; }
+  fi
+  if [[ "$(id_with_mark "$snapshot" "$mark")" != "$id" ]]; then
+    [[ "$ACTION" != verify ]] || { echo "[Orchest] Overview $id does not hold $mark." >&2; return 1; }
+    mark_window "$id" "$mark" || { echo "[Orchest] WARNING: cannot mark the Overview." >&2; return 1; }
+  fi
+  echo "[Orchest] Overview $id is workspace $OVERVIEW_WS's dashboard pane."
+}
+
 refresh_workspaces || die 'Cannot read Orchest workspace state.'
 for ws in "${WORKSPACES[@]}"; do
   id=$(workspace_id "$ws") || exit 1
@@ -269,7 +315,8 @@ while [[ "$SECONDS" -lt "$deadline" ]]; do
     stable=$((stable + 1))
     if [[ "$stable" -ge 2 ]]; then
       echo '[Orchest] Sidebars, marks and persisted workspace bindings converged.'
-      exit 0
+      place_overview
+      exit "$?"
     fi
   else
     stable=0
