@@ -96,7 +96,7 @@ These are rendered by `hg ssl` itself (via the `{phabstatus}` Mercurial extensio
 | `:HgChangeBaseStack`    | Set base to last public ancestor                                            |
 | `:HgShowBase`           | Show current base revision                                                  |
 | `:HgLineBlameToggle`    | Toggle inline blame virtual text                                            |
-| `:SlPull`               | Async `sl pull` (user-defined in `config/local.lua`)                        |
+| `:SlPull`               | Async `sl pull` (user-defined in `nvim/local/config/meta.lua`)              |
 
 **Hunk navigation:** `]h`/`[h` next/prev hunk, `]H`/`[H` last/first hunk
 

@@ -2,43 +2,39 @@
 name: screenshot-workflow
 description: >-
   Use when the user wants to share a screenshot, image, or visual context with
-  Claude Code. Also use when the user says "look at my screenshot", "latest
-  screenshot", or references an image they want you to see. Covers the
-  drag-and-drop upload workflow and how to read uploaded images.
+  the agent. Also use when the user says "look at my screenshot", "latest
+  screenshot", or references an image they want you to see. Covers where
+  screenshots land on each machine and how to read them by path.
 ---
 
 # Screenshot Workflow
 
-## Overview
+## Reading a screenshot
 
-The user runs Claude Code inside Neovim inside tmux over SSH via VS Code. None of the terminal layers (SSH, tmux, Neovim) support image drag-and-drop passthrough. Screenshots must be uploaded via VS Code's Explorer sidebar and read by file path.
-
-## Workflow
-
-1. User drags a screenshot from their local machine onto the `screenshots` folder in the VS Code **Explorer sidebar** (file tree panel). VS Code uploads it to the remote filesystem automatically.
-2. User tells Claude Code to look at the screenshot.
-3. Claude reads the image using the `Read` tool with the file path.
-
-## Finding Screenshots
-
-A helper script is available at `~/bin/latest-screenshot`. It prints the absolute path of the most recently modified file in `~/screenshots/`.
-
-When the user says "look at my latest screenshot" or similar:
+Screenshots are read by file path with the `Read` tool. `~/bin/latest-screenshot`
+(source-controlled in `~/dotfiles/bin/`) prints the absolute path of the most
+recently modified file in `~/screenshots/`, so "look at my latest screenshot"
+is:
 
 ```bash
-latest-screenshot
+~/bin/latest-screenshot
 ```
 
-Then use the `Read` tool on the returned path.
+then `Read` the returned path. The directory is not created by any dotfiles
+script; if it is missing, ask Matt where the image was saved instead of
+guessing.
 
-## Setup
+## How images get there
 
-Managed by `~/dotfiles/init.sh`:
+**Devserver reached through VS Code Remote (work).** Claude Code runs inside
+Neovim inside tmux over SSH, and none of those layers pass image drag-and-drop
+through. The one component outside the terminal pipeline is VS Code's Explorer
+sidebar: dragging a file from the Mac onto a folder there uploads it to the
+remote filesystem. A `screenshots` symlink inside the checkout
+(`~/checkoutN/fbsource/screenshots` → `~/screenshots`) makes the landing
+folder visible in that tree; create it by hand, it is not managed.
 
-- **`~/screenshots/`** — landing directory for uploaded images
-- **`~/<workspace>/fbsource/screenshots`** — symlink so the folder is visible in the VS Code Explorer (workspace root is `~/<workspace>` containing both fbsource and configerator; e.g. `~/checkout1`, `~/checkout2`, or `~/checkout3`)
-- **`~/bin/latest-screenshot`** — helper script (source-controlled in `~/dotfiles/bin/`)
-
-## Why This Exists
-
-VS Code's Explorer sidebar is the only component in the user's stack (VS Code SSH → tmux → Neovim → Claude Code) that operates outside the terminal pipeline and can receive OS-level drag-and-drop events with file upload over SSH. Neovim file explorers (neo-tree, oil.nvim, etc.) are TUI applications that cannot receive binary image data.
+**Linux desktop (Sway).** `Print` and `Shift+Print` (`sway_config`) capture a
+region or the whole screen with `grim` and copy the PNG to the clipboard via
+`wl-copy`. Nothing is written to disk, so a screenshot Matt wants read by path
+has to be saved into `~/screenshots/` first.

@@ -75,12 +75,13 @@ rather than blanking the app, so a broken diagram costs nothing.
 ## When a raster really is needed
 
 Sometimes a PNG is the right artifact (pasting into a doc, richer layout than
-mermaid allows). Render it locally — Graphviz `dot` is installed — write it
-somewhere durable, and hand Matt the path plus an internal link.
+mermaid allows). Render it locally if Graphviz `dot` is available (check
+`command -v dot`; the work hosts have it, the Linux desktop does not), write it
+somewhere durable, and hand Matt the path plus a link.
 
-Upload with `meta pixelcloud.image upload --file=file://$PWD/x.png` (the
-`file://` prefix is required). Give the resulting `pxl.cl` URL as an ordinary
-markdown **link**, never as `![...]`, which would be stripped.
+On Meta hosts, upload with `meta pixelcloud.image upload --file=file://$PWD/x.png`
+(the `file://` prefix is required). Give the resulting `pxl.cl` URL as an
+ordinary markdown **link**, never as `![...]`, which would be stripped.
 
 Never upload Meta-internal architecture to `google-mux` or any publicly
 fetchable host. It buys nothing here — the image would be blocked inline anyway
