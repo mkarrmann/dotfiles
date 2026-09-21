@@ -554,6 +554,24 @@ tmp=$(jq --arg profile "$DOTFILES_PROFILE" '
           "timeout": 5
         }
       ]
+    },
+    # Ensure Skill descriptions are fully loaded again following compaction.
+    # Compaction drops the skill listing; CLAUDE.md survives (re-loaded via
+    # InstructionsLoaded, which matches "compact") but skills are not
+    # re-announced. Directory-scoped skills recover on directory access;
+    # user- and workspace-scoped ones (~/.claude/skills,
+    # ~/checkoutN/.claude/skills) have no trigger and stay invisible for the
+    # rest of the session. Gated to "compact" so a normal session start keeps
+    # using the listing the harness supplies, and this costs nothing there.
+    {
+      "matcher": "compact",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash ~/.claude/hooks/reload-skills-after-compact.sh",
+          "timeout": 5
+        }
+      ]
     }
   ] |
   .hooks.Notification = [
