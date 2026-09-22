@@ -66,6 +66,13 @@ _SAFE_ENV_NAMES = (
     "SSL_CERT_FILE",
     "KRB5CCNAME",
     "X509_USER_PROXY",
+    # `meta` mints a delegated CAT from the caller's x509 identity and reads
+    # that identity only from these two. Without them it cannot establish who
+    # is asking and every subcommand fails `pm_acl_access_denied`, which
+    # surfaces here as a lost baseline for the two meta-backed kinds
+    # (review_comment, ai_review) while the jf-backed CI kinds still bind.
+    "THRIFT_TLS_CL_CERT_PATH",
+    "THRIFT_TLS_CL_KEY_PATH",
 )
 # `reviews` is grouped server-side because automated reviewers report at
 # WARNING, where they would otherwise sit behind hundreds of coverage warnings

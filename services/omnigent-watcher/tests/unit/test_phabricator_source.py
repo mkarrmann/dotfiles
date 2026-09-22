@@ -429,6 +429,18 @@ def test_bounded_environment_is_an_allowlist() -> None:
     }
 
 
+def test_bounded_environment_keeps_the_meta_x509_identity() -> None:
+    # `meta` reads the caller's identity only from these two. Dropping them
+    # costs the two meta-backed kinds their baseline while the jf-backed CI
+    # kinds still bind, which reads as a diff problem rather than an auth one.
+    source = {
+        "PATH": "/bin",
+        "THRIFT_TLS_CL_CERT_PATH": "/synthetic/identity.pem",
+        "THRIFT_TLS_CL_KEY_PATH": "/synthetic/identity.pem",
+    }
+    assert bounded_source_environment(source) == source
+
+
 def test_metadata_created_time_does_not_make_old_diff_look_new() -> None:
     from omnigent_watcher.phabricator_source import (
         _parse_metadata,
