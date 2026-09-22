@@ -179,7 +179,9 @@ def test_resolve_avoids_credentials_when_candidate_mount_is_readable(
     monkeypatch.setattr("omnigent_hub.remote.mint_delegated_cat", fail_mint)
     peer = replace(hub_config, local_fqdn="peer.example.com")
 
-    record, _, _ = RemoteClient(peer, runner=run, system="Linux").resolve()
+    record, _, _ = RemoteClient(
+        peer, runner=run, system="Linux", credential_check=lambda: None
+    ).resolve()
 
     assert record.epoch == 4
     assert len(commands) == 2
@@ -213,3 +215,52 @@ def active_payload(epoch: int, active_hub: str = "standby.example.com") -> dict[
         "updated_at": "2026-07-18T22:00:00Z",
         "updated_by": "tester",
     }
+
+
+def test_a_missing_ssh_certificate_is_reported_before_the_round_trip(
+    hub_config: HubConfig,
+) -> None:
+    """Say what is wrong instead of letting ssh say "Permission denied".
+
+    Devserver-to-devserver auth is certificate-based, so the bare BatchMode
+    failure points at authorized_keys -- which is empty on every devserver and
+    never consulted. That misdirection is worth one file existence check.
+    """
+
+    def never(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("ssh must not be attempted without a certificate")
+
+    peer = replace(hub_config, local_fqdn="peer.example.com")
+    client = RemoteClient(
+        peer,
+        runner=never,
+        system="Linux",
+        credential_check=lambda: "no ProdCA SSH certificate",
+    )
+
+    with pytest.raises(RemoteError, match="no ProdCA SSH certificate"):
+        client.run("primary.example.com", ("resolve", "--json"))
+
+
+def test_the_certificate_preflight_does_not_apply_to_the_local_host(
+    hub_config: HubConfig,
+) -> None:
+    """Running on this box needs no credential; only the hop does."""
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        del timeout
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, json.dumps(active_payload(4)), "")
+
+    client = RemoteClient(
+        hub_config,
+        runner=run,
+        system="Linux",
+        credential_check=lambda: "no ProdCA SSH certificate",
+    )
+
+    client.run(hub_config.local_fqdn, ("resolve", "--json"))
+
+    assert len(calls) == 1
+    assert "ssh" not in calls[0]

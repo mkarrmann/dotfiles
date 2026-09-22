@@ -7,6 +7,7 @@ import shlex
 import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from omnigent_hub.config import HubConfig
@@ -14,9 +15,50 @@ from omnigent_hub.models import ActiveHubRecord
 
 ProcessRunner = Callable[[list[str], float], subprocess.CompletedProcess[str]]
 
+#: Where ProdCA writes this user's SSH certificate on a devserver.
+#:
+#: Devserver-to-devserver auth is certificate-based; ``authorized_keys`` is never
+#: consulted, so an empty one is normal and says nothing. The certificate itself
+#: is minted by ``fbwallet_fetch``, which authenticates against the SKS agent
+#: forwarded over a DIRECT ssh session from a laptop -- it silently no-ops under
+#: Eternal Terminal, mosh, and VS Code. The directory also lives on a ramdisk and
+#: an expiry sweep deletes rather than expires the files, so the observable state
+#: is simply "not there".
+#:
+#: Consequence worth stating plainly: this credential cannot be renewed
+#: unattended, by any transport. Anything that depends on it is offline-by-design
+#: after a few days away, which is why the automated control plane reads shared
+#: storage instead and only operator-initiated handoff comes through here.
+SSH_CREDENTIAL_DIR = "/var/facebook/credentials/{user}/ssh"
+SSH_CERTIFICATE_NAME = "id_rsa-cert.pub"
+
 
 class RemoteError(RuntimeError):
     pass
+
+
+def ssh_credential_error(user: str | None = None) -> str | None:
+    """An actionable message when this host cannot authenticate over SSH.
+
+    ``None`` when a certificate is present. Deliberately only checks presence:
+    reading validity needs ``ssh-keygen -L`` and the failure that actually
+    happens is absence, because the sweep removes expired certificates outright.
+    """
+    user = user or os.environ.get("USER") or ""
+    if not user:
+        return None
+    directory = Path(SSH_CREDENTIAL_DIR.format(user=user))
+    try:
+        if (directory / SSH_CERTIFICATE_NAME).exists():
+            return None
+    except OSError:
+        return None
+    return (
+        f"no ProdCA SSH certificate in {directory} -- hub-to-hub commands cannot "
+        "authenticate. Renew it by running `fbwallet_fetch` inside a DIRECT ssh "
+        "session to this host from your laptop (not Eternal Terminal, mosh, or "
+        "VS Code, which cannot forward the SKS agent it authenticates against)."
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,12 +87,16 @@ class RemoteClient:
         *,
         runner: ProcessRunner = run_process,
         system: str | None = None,
+        credential_check: Callable[[], str | None] = ssh_credential_error,
     ) -> None:
         self._config = config
         self._runner = runner
         self._system = system or platform.system()
         self._remote_binary = "~/bin/omnigent-hub"
         self._delegated_cat: str | None = None
+        # Injected like `runner` so a test can exercise either branch without a
+        # credentials ramdisk underneath it.
+        self._ssh_credential_error = credential_check
 
     def run(
         self,
@@ -73,6 +119,13 @@ class RemoteClient:
                 command = self._with_delegated_cat(command)
             argv = ["x2ssh", "-et", host, "-c", f"zsh -lc {shlex.quote(command)}"]
         else:
+            # BatchMode=yes turns a missing certificate into a bare
+            # "Permission denied (publickey,password)", which reads like a
+            # misconfigured key and sends you looking for authorized_keys.
+            # Say what is actually wrong before spending the round trip.
+            credential_error = self._ssh_credential_error()
+            if credential_error is not None:
+                raise RemoteError(f"cannot reach {host}: {credential_error}")
             if use_delegated_cat:
                 command = self._with_delegated_cat(command)
             argv = ["ssh", "-o", "BatchMode=yes", host, command]
