@@ -199,7 +199,91 @@ def test_unreadable_storage_at_the_gate_also_fails_the_unit(
     assert code == GATE_EXIT_INDETERMINATE
 
 
+def test_a_recent_backup_short_circuits_the_snapshot(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--max-age lets a caller demand a recovery point without forcing one.
 
+    The upgrade path calls this before every install; re-archiving hundreds of
+    megabytes each time it asks would make the check too expensive to keep.
+    """
+    hub_config.local_state_dir.mkdir(parents=True, exist_ok=True)
+    fresh = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    hub_config.backup_status.write_text(
+        json.dumps({"generation_id": "gen-1", "created_at": fresh, "published": True}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("omnigent_hub.cli.load_config", lambda: hub_config)
+
+    def fail(*args: object, **kwargs: object) -> object:
+        raise AssertionError("a fresh backup must not be rebuilt")
+
+    monkeypatch.setattr("omnigent_hub.cli.create_snapshot", fail)
+
+    main(["snapshot", "--max-age", "3600", "--json"])
+
+
+def test_a_stale_backup_does_not_short_circuit_the_snapshot(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hub_config.local_state_dir.mkdir(parents=True, exist_ok=True)
+    hub_config.backup_status.write_text(
+        json.dumps(
+            {"generation_id": "gen-0", "created_at": "2026-08-17T22:42:54Z", "published": True}
+        ),
+        encoding="utf-8",
+    )
+    taken: list[bool] = []
+    monkeypatch.setattr("omnigent_hub.cli.load_config", lambda: hub_config)
+    monkeypatch.setattr("omnigent_hub.cli.read_record", lambda config: _active_record())
+    monkeypatch.setattr(
+        "omnigent_hub.cli.create_snapshot",
+        lambda config, record, *, quiesced, publish: taken.append(publish) or {},
+    )
+
+    main(["snapshot", "--max-age", "3600", "--json"])
+
+    assert taken == [True]
+
+
+def test_an_unreadable_record_downgrades_the_snapshot_to_local(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ownership outage must not also stop recovery points."""
+    cached = _active_record()
+    hub_config.routing_cache.parent.mkdir(parents=True, exist_ok=True)
+    hub_config.routing_cache.write_text(json.dumps(cached.to_dict()), encoding="utf-8")
+    published: list[bool] = []
+
+    def unavailable(config: HubConfig) -> ActiveHubRecord:
+        raise StorageError("mount is gone")
+
+    monkeypatch.setattr("omnigent_hub.cli.load_config", lambda: hub_config)
+    monkeypatch.setattr("omnigent_hub.cli.read_record", unavailable)
+    monkeypatch.setattr(
+        "omnigent_hub.cli.create_snapshot",
+        lambda config, record, *, quiesced, publish: published.append(publish) or {},
+    )
+
+    main(["snapshot", "--fallback-local", "--json"])
+
+    assert published == [False]
+
+
+def test_without_the_fallback_an_unreadable_record_still_fails(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unavailable(config: HubConfig) -> ActiveHubRecord:
+        raise StorageError("mount is gone")
+
+    monkeypatch.setattr("omnigent_hub.cli.load_config", lambda: hub_config)
+    monkeypatch.setattr("omnigent_hub.cli.read_record", unavailable)
+
+    with pytest.raises(SystemExit):
+        main(["snapshot", "--json"])
+
+
+def _active_record() -> ActiveHubRecord:
     return ActiveHubRecord(
         format_version=1,
         epoch=7,

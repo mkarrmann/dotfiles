@@ -6,9 +6,11 @@ import shutil
 import sys
 import time
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 
 from omnigent_hub.config import HubConfig, load_config
+from omnigent_hub.models import ActiveHubRecord
 from omnigent_hub.notify import alert as _alert
 from omnigent_hub.orchestrator import HandoffError, HandoffOrchestrator
 from omnigent_hub.reconcile import ReconcileError, reconcile_gchat
@@ -194,6 +196,26 @@ def build_parser() -> argparse.ArgumentParser:
     snapshot = subparsers.add_parser("snapshot", help="create an online state snapshot")
     snapshot.add_argument("--quiesced", action="store_true")
     snapshot.add_argument("--no-publish", action="store_true")
+    snapshot.add_argument(
+        "--max-age",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "do nothing if the last snapshot is younger than this. Lets a caller "
+            "say 'make sure a recent recovery point exists' without forcing a "
+            "fresh multi-hundred-megabyte archive every time it asks."
+        ),
+    )
+    snapshot.add_argument(
+        "--fallback-local",
+        action="store_true",
+        help=(
+            "when ownership cannot be established, keep an unpublished snapshot "
+            "on local disk instead of failing. Used by the snapshot timer so an "
+            "ownership outage does not also stop recovery points."
+        ),
+    )
     snapshot.add_argument("--json", action="store_true")
 
     alert = subparsers.add_parser(
@@ -393,15 +415,28 @@ def main(argv: list[str] | None = None) -> None:
             service_action(config, "start-timer")
             _emit(activation.to_dict(), args.json)
         elif args.command == "snapshot":
-            record = read_record(config)
-            with local_lock(config.local_state_dir / "snapshot.lock"):
-                snapshot_result = create_snapshot(
+            recent = _recent_backup(config, args.max_age)
+            if recent is not None:
+                _emit(recent, args.json)
+            else:
+                record, publish = _snapshot_target(
                     config,
-                    record,
-                    quiesced=args.quiesced,
                     publish=not args.no_publish,
+                    fallback_local=args.fallback_local,
                 )
-            _emit(snapshot_result, args.json)
+                with local_lock(config.local_state_dir / "snapshot.lock"):
+                    snapshot_result = create_snapshot(
+                        config,
+                        record,
+                        quiesced=args.quiesced,
+                        publish=publish,
+                    )
+                _emit(snapshot_result, args.json)
+        elif args.command == "alert":
+            # Never fails the caller: this runs as an OnFailure= handler, and a
+            # handler that can itself fail just adds a second failed unit to the
+            # pile nobody is looking at.
+            _emit(alert_on_failure(config, unit=args.unit), args.json)
         elif args.command == "snapshots":
             values = [str(path) for path in list_valid_snapshots(config)]
             _emit({"snapshots": values}, args.json)
@@ -479,6 +514,60 @@ def alert_on_failure(config: HubConfig, *, unit: str) -> dict[str, object]:
         return _alert(config, unit=unit)
     except Exception as exc:  # noqa: BLE001 - see docstring
         return {"unit": unit, "notified": False, "reason": f"alert handler failed: {exc}"}
+
+
+def _recent_backup(config: HubConfig, max_age: float | None) -> dict[str, object] | None:
+    """The last snapshot, if it is younger than *max_age* seconds.
+
+    Answered from ``backup-status.json`` rather than by listing the store: the
+    shared store is a FUSE mount where every archive is a couple of hundred
+    megabytes, and the whole point of this check is to be cheap enough that a
+    caller can make it unconditionally before deciding to do real work.
+    """
+    if max_age is None:
+        return None
+    status = _read_json_file(config.backup_status)
+    created = status.get("created_at")
+    if not isinstance(created, str):
+        return None
+    try:
+        taken = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        age = (datetime.now(UTC) - taken).total_seconds()
+    except ValueError:
+        return None
+    if age > max_age:
+        return None
+    return {**status, "skipped": True, "age_seconds": int(max(0, age))}
+
+
+def _snapshot_target(
+    config: HubConfig, *, publish: bool, fallback_local: bool
+) -> tuple[ActiveHubRecord, bool]:
+    """Pick the record to stamp into the snapshot, and whether to publish it.
+
+    Publication needs the authoritative record, because publishing is the step
+    that can collide with the other hub. Capture does not. With *fallback_local*
+    an unreadable store therefore downgrades to an unpublished local snapshot
+    instead of producing nothing -- the deployment kept zero recovery points for
+    five days the last time these two failed together.
+    """
+    if not publish:
+        return read_record(config), False
+    try:
+        return read_record(config), True
+    except StorageError:
+        if not fallback_local:
+            raise
+    cached = ActiveHubRecord.from_dict(_read_json_file(config.routing_cache), config.topology)
+    return cached, False
+
+
+def _read_json_file(path: Path) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _run_quiesced_backup(config: HubConfig) -> Mapping[str, object]:

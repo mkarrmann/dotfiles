@@ -188,8 +188,18 @@ def create_snapshot(
     owns_transition = (
         quiesced and record.state == "transition" and record.source_hub == config.local_fqdn
     )
-    if not owns_active and not owns_transition:
-        raise SnapshotError("only the active hub or fenced transition source may snapshot")
+    # The ownership rule exists to stop two hubs writing the shared snapshot
+    # store, so it binds publication, not capture. An unpublished snapshot
+    # touches nothing shared and cannot race the other hub.
+    #
+    # The distinction matters because the gate and the snapshot timer used to
+    # fail together: ownership became unresolvable, so recovery points stopped
+    # at exactly the moment they were most wanted, and the deployment went five
+    # days with none at all. A local-only snapshot is always safe to take.
+    if publish and not owns_active and not owns_transition:
+        raise SnapshotError(
+            "only the active hub or fenced transition source may publish a snapshot"
+        )
     timestamp = (now or datetime.now(UTC)).replace(microsecond=0)
     generation = f"{timestamp.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:12]}"
     config.local_state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -258,6 +268,8 @@ def create_snapshot(
             published_archive = publish_snapshot(config, archive, archive_digest)
             manifest["archive_path"] = str(published_archive)
             prune_snapshots(config)
+        else:
+            manifest["archive_path"] = str(retain_local_snapshot(config, archive, archive_digest))
         write_json_atomic(
             config.backup_status,
             {
@@ -270,6 +282,37 @@ def create_snapshot(
             },
         )
         return manifest
+
+
+#: Unpublished snapshots kept on local disk. Deliberately small -- each archive
+#: is a couple of hundred megabytes, and the point is to hold a recent recovery
+#: point through an outage, not to keep history the shared store already keeps.
+LOCAL_SNAPSHOT_KEEP = 3
+
+
+def retain_local_snapshot(config: HubConfig, archive: Path, digest: str) -> Path:
+    """Keep an unpublished snapshot on local disk, with its checksum sidecar.
+
+    Written in the same archive+sidecar shape the shared store uses, so
+    ``validate-snapshot`` and ``restore`` accept one of these unchanged.
+    """
+    config.local_snapshots_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    destination = config.local_snapshots_dir / archive.name
+    sidecar = destination.with_suffix(destination.suffix + ".sha256")
+    shutil.copyfile(archive, destination)
+    if sha256_file(destination) != digest:
+        destination.unlink(missing_ok=True)
+        raise SnapshotError("retained archive checksum differs after copy")
+    sidecar.write_text(f"{digest}  {destination.name}\n", encoding="ascii")
+    _prune_local_snapshots(config)
+    return destination
+
+
+def _prune_local_snapshots(config: HubConfig) -> None:
+    archives = sorted(config.local_snapshots_dir.glob("*.tar.gz"), reverse=True)
+    for archive in archives[LOCAL_SNAPSHOT_KEEP:]:
+        archive.unlink(missing_ok=True)
+        archive.with_suffix(archive.suffix + ".sha256").unlink(missing_ok=True)
 
 
 def publish_snapshot(config: HubConfig, archive: Path, digest: str) -> Path:

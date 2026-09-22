@@ -12,6 +12,7 @@ import pytest
 from omnigent_hub.config import HubConfig
 from omnigent_hub.models import ActiveHubRecord
 from omnigent_hub.snapshot import (
+    LOCAL_SNAPSHOT_KEEP,
     SnapshotError,
     create_snapshot,
     hub_version,
@@ -96,8 +97,8 @@ def test_snapshot_without_completion_sidecar_is_rejected(
         validate_snapshot(hub_config, archive)
 
 
-def test_snapshot_requires_active_local_hub(hub_config: HubConfig) -> None:
-    wrong = ActiveHubRecord(
+def _record_owned_by_the_other_hub() -> ActiveHubRecord:
+    return ActiveHubRecord(
         format_version=1,
         epoch=2,
         state="active",
@@ -107,8 +108,55 @@ def test_snapshot_requires_active_local_hub(hub_config: HubConfig) -> None:
         updated_at="2026-07-18T20:00:00Z",
         updated_by="tester",
     )
-    with pytest.raises(SnapshotError, match="only the active hub or fenced transition source"):
-        create_snapshot(hub_config, wrong, quiesced=False, publish=False)
+
+
+def test_publishing_requires_active_local_hub(hub_config: HubConfig) -> None:
+    with pytest.raises(SnapshotError, match="may publish a snapshot"):
+        create_snapshot(hub_config, _record_owned_by_the_other_hub(), quiesced=False, publish=True)
+
+
+def test_unpublished_snapshot_is_allowed_without_ownership(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Capture is always safe; only publication can collide with the other hub.
+
+    Pins the property that kept the deployment at zero recovery points for five
+    days: the gate and the snapshot timer failed together, so the moment
+    ownership became unresolvable was also the moment backups stopped.
+    """
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+
+    manifest = create_snapshot(
+        hub_config, _record_owned_by_the_other_hub(), quiesced=False, publish=False
+    )
+
+    archive = Path(str(manifest["archive_path"]))
+    assert archive.parent == hub_config.local_snapshots_dir
+    assert archive.is_file()
+    assert not hub_config.snapshots_dir.exists()
+
+
+def test_local_snapshots_are_pruned_to_the_retention_count(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+
+    for index in range(LOCAL_SNAPSHOT_KEEP + 2):
+        create_snapshot(
+            hub_config,
+            record(),
+            quiesced=False,
+            publish=False,
+            now=datetime(2026, 9, 21, 12, index, 0, tzinfo=UTC),
+        )
+
+    kept = sorted(hub_config.local_snapshots_dir.glob("*.tar.gz"))
+    assert len(kept) == LOCAL_SNAPSHOT_KEEP
+    # Newest survive: the holding area exists to cover an outage window, not to
+    # keep history the shared store already keeps.
+    assert [path.name[:15] for path in kept] == [
+        f"20260921T12{index:02d}00" for index in range(2, LOCAL_SNAPSHOT_KEEP + 2)
+    ]
 
 
 def test_bridge_source_change_blocks_restore(

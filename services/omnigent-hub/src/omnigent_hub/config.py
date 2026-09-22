@@ -104,6 +104,16 @@ class HubConfig:
         return self.local_state_dir / "host-probe-failures.json"
 
     @property
+    def local_snapshots_dir(self) -> Path:
+        """Where snapshots land when they cannot be published to shared storage.
+
+        A holding area, not a store: publication is what makes a snapshot part of
+        the deployment's recovery history, and these are pruned hard because they
+        exist only to cover an outage window.
+        """
+        return self.local_state_dir / "local-snapshots"
+
+    @property
     def degraded_streak(self) -> Path:
         """Consecutive reconcile cycles that could not read shared storage.
 
