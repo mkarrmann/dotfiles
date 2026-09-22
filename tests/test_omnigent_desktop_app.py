@@ -8,6 +8,7 @@ from pathlib import Path
 import pty
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -74,6 +75,19 @@ elif name == "apt":
 '''
 
 
+# Linux only. The subject is a Debian/Ubuntu installer: omnigent-desktop-app-ensure
+# exits at `"$(uname -s)" != Linux` before it does anything, and this fixture only
+# reaches the install path by stubbing uname, dpkg and apt. Past that point the script
+# needs GNU coreutils semantics BSD userland does not have:
+#   * mktemp expands only TRAILING X's, so "omnigent-desktop.XXXXXX.deb" comes back
+#     literal -- and exit 0, so nothing announces it, and
+#   * sha256sum takes [-bctwz], not --check/--status.
+# Skipped rather than fixed per-test because running here is worse than failing: the
+# cases asserting an install is REFUSED go green for the wrong reason, since the
+# script aborts before it ever evaluates the condition they exist to check. macOS
+# also drops buffered pty output once the slave closes, so run_helper(interactive)
+# returns "" and every assertion message here is blank.
+@unittest.skipUnless(sys.platform.startswith("linux"), "Debian installer; needs GNU coreutils")
 class OmnigentDesktopAppTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
