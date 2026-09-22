@@ -106,17 +106,38 @@ def ensure_storage(
         sleep(min(2 ** min(attempt - 1, 4), 10))
 
 
+def _read_record_payload(config: HubConfig) -> dict[str, Any]:
+    """Load the record from its current home, falling back to the old one.
+
+    The record moved from ``storage_root/active-hub.json`` to a flat file at the
+    mount root so it stops inheriting a directory's non-refreshable TTL (see
+    ``config.RECORD_NAME``). A host reads whichever exists; the next
+    ``publish_record`` completes the move by writing the new path and unlinking
+    the old. Both hubs therefore keep working across the rollout, in either order.
+    """
+    try:
+        payload = json.loads(config.record_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = json.loads(config.legacy_record_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        # A JSON scalar parses cleanly and then fails much further downstream in
+        # from_dict. Reject it here, where the caller already handles the "this
+        # record is unusable" case.
+        raise json.JSONDecodeError("active-hub record must be a JSON object", "", 0)
+    return payload
+
+
 def read_record(config: HubConfig, *, ensure_mounted: bool = True) -> ActiveHubRecord:
     if ensure_mounted:
         ensure_storage(config)
     try:
-        payload = json.loads(config.record_path.read_text(encoding="utf-8"))
+        payload = _read_record_payload(config)
     except (OSError, json.JSONDecodeError) as exc:
         if not ensure_mounted:
             raise StorageError(f"cannot read active-hub record: {exc}") from exc
         ensure_storage(config, force_remount=True)
         try:
-            payload = json.loads(config.record_path.read_text(encoding="utf-8"))
+            payload = _read_record_payload(config)
         except (OSError, json.JSONDecodeError) as exc:
             raise StorageError(f"cannot read active-hub record: {exc}") from exc
     return ActiveHubRecord.from_dict(payload, config.topology)
@@ -124,7 +145,7 @@ def read_record(config: HubConfig, *, ensure_mounted: bool = True) -> ActiveHubR
 
 def publish_record(config: HubConfig, record: ActiveHubRecord) -> ActiveHubRecord:
     ensure_storage(config)
-    config.storage_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    config.record_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     temp = config.record_path.with_name(f".{config.record_path.name}.{uuid.uuid4().hex}.tmp")
     payload = json.dumps(record.to_dict(), indent=2, sort_keys=True) + "\n"
     try:
@@ -138,6 +159,11 @@ def publish_record(config: HubConfig, record: ActiveHubRecord) -> ActiveHubRecor
     observed = read_record(config, ensure_mounted=False)
     if observed != record:
         raise StorageError("active-hub record did not round-trip after publication")
+    # Complete the move off the retired path, but only once the new one has
+    # verified: a failed publication must never leave the deployment with no
+    # record at all, which is the exact outage this relocation exists to prevent.
+    if config.legacy_record_path != config.record_path:
+        config.legacy_record_path.unlink(missing_ok=True)
     return observed
 
 

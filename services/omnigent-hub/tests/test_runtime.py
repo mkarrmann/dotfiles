@@ -846,6 +846,81 @@ def test_active_reconciliation_never_mints_a_missing_record(
     assert not hub_config.record_path.exists()
 
 
+def test_the_record_is_published_outside_any_expiring_directory(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The record must not sit under a directory that can expire beneath it.
+
+    Every manifoldfs directory carries its own 30-day expiry that nothing can
+    refresh, and it deletes its whole subtree when it fires. The mount root is
+    the only parent that never expires, so that is where the record belongs --
+    refreshing the file is only meaningful once its parent cannot outvote it.
+    """
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    initialize(hub_config, active_hub="primary.example.com")
+
+    assert hub_config.record_path.parent == hub_config.storage_mount
+    assert hub_config.storage_root not in hub_config.record_path.parents
+
+
+def test_a_record_at_the_retired_path_is_still_readable(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    record = initialize(hub_config, active_hub="primary.example.com")
+    hub_config.legacy_record_path.write_text(
+        hub_config.record_path.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    hub_config.record_path.unlink()
+
+    assert read_shared_record(hub_config) == record
+    assert check_gate(hub_config).record == record
+
+
+def test_reconciliation_migrates_a_record_off_the_retired_path(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    record = initialize(hub_config, active_hub="primary.example.com")
+    hub_config.legacy_record_path.write_text(
+        hub_config.record_path.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    hub_config.record_path.unlink()
+    _stub_active_reconciliation(monkeypatch, record)
+
+    result = reconcile_services(hub_config)
+
+    assert result["record_refreshed"] is True
+    assert hub_config.record_path.is_file()
+    # The old copy goes only after the new one verified, so a failed publication
+    # can never leave the deployment with no record at all.
+    assert not hub_config.legacy_record_path.exists()
+    assert read_shared_record(hub_config) == record
+
+
+def test_migration_does_not_weaken_the_never_mint_guard(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Absent from BOTH paths still means "not ours to recreate".
+
+    The migration fallback must not become a loophole: resolve_record serves a
+    force-start override when storage is unreadable, so publishing on a timer
+    whenever the file is missing would quietly make an expiring override
+    permanent -- the exact safety property the expiry exists to provide.
+    """
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    record = initialize(hub_config, active_hub="primary.example.com")
+    hub_config.record_path.unlink()
+    assert not hub_config.legacy_record_path.exists()
+    _stub_active_reconciliation(monkeypatch, record)
+
+    result = reconcile_services(hub_config)
+
+    assert result["record_refreshed"] is False
+    assert not hub_config.record_path.exists()
+    assert not hub_config.legacy_record_path.exists()
+
+
 def _stub_active_reconciliation(monkeypatch: pytest.MonkeyPatch, record: ActiveHubRecord) -> None:
     monkeypatch.setattr("omnigent_hub.runtime.resolve_record", lambda config: record)
     monkeypatch.setattr(

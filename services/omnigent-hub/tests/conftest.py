@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from omnigent_hub.config import HubConfig
+from omnigent_hub.config import RECORD_NAME, HubConfig
 from omnigent_hub.models import Topology
 
 
@@ -59,7 +59,8 @@ def hub_config(tmp_path: Path) -> HubConfig:
         routing_cache=home / ".config/omnigent/active-hub.json",
         storage_mount=storage_mount,
         storage_root=storage_root,
-        record_path=storage_root / "active-hub.json",
+        record_path=storage_mount / RECORD_NAME,
+        legacy_record_path=storage_root / "active-hub.json",
         snapshots_dir=storage_root / "snapshots",
         omnigent_bin=omnigent,
         bridge_project=bridge,

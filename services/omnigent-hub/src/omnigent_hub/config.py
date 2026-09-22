@@ -12,6 +12,28 @@ WATCHER_DB_NAME = "watcher.sqlite3"
 # omnigent-diff-watcher. The sidecar renames it on its next start.
 LEGACY_WATCHER_DB_NAME = "diff-watcher.sqlite3"
 
+# The active-hub record lives flat at the mount root, NOT under storage_root.
+#
+# Every directory manifoldfs creates carries its own 30-day Manifold TTL that
+# counts down on wall clock alone: writing files inside it does not push it out,
+# and neither does mkdir(exist_ok=True). When that directory expires, Manifold
+# deletes everything beneath it regardless of the children's own expiry. The
+# mount root is the one exception -- manifoldfs maintains it at ttl=0 (infinite,
+# and userData=0), so a file placed directly there has only its OWN expiry,
+# which a rewrite genuinely does reset.
+#
+# This is not hypothetical. `omnigent-ha/` was created 2026-08-17 15:42 and the
+# whole tree -- record and snapshots/ together -- was swept 2026-09-16 15:42, to
+# the hour, even though the record itself had been republished two days earlier.
+# That republish (see _refresh_record_ttl) was the right mechanism aimed at the
+# wrong object: it kept the file young inside a directory that was already dying.
+#
+# Snapshots deliberately stay under storage_root. They are pruned at <= 7 days,
+# so the 30-day file TTL never reaches them, and publish_snapshot recreates the
+# directory, so a directory sweep self-heals on the next timer tick. The record
+# cannot tolerate that gap; the archives can.
+RECORD_NAME = "omnigent-ha-active-hub.json"
+
 
 @dataclass(frozen=True, slots=True)
 class HubConfig:
@@ -27,6 +49,7 @@ class HubConfig:
     storage_mount: Path
     storage_root: Path
     record_path: Path
+    legacy_record_path: Path
     snapshots_dir: Path
     omnigent_bin: Path
     bridge_project: Path
@@ -130,7 +153,8 @@ def load_config(environ: dict[str, str] | None = None) -> HubConfig:
         routing_cache=routing_cache,
         storage_mount=storage_mount,
         storage_root=storage_root,
-        record_path=storage_root / "active-hub.json",
+        record_path=storage_mount / RECORD_NAME,
+        legacy_record_path=storage_root / "active-hub.json",
         snapshots_dir=storage_root / "snapshots",
         omnigent_bin=Path(setting("OMNIGENT_BIN", str(home / ".local/bin/omnigent"))),
         bridge_project=Path(

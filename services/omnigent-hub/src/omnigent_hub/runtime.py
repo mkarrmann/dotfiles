@@ -25,7 +25,13 @@ from omnigent_hub.snapshot import (
 from omnigent_hub.storage import StorageError, publish_record, read_record, write_json_atomic
 
 HOST_REGISTRATION_GRACE_SECONDS = 120.0
-RECORD_REFRESH_SECONDS = 7 * 24 * 60 * 60
+
+# How stale the published record may get before reconcile rewrites it.
+#
+# One day against a 30-day expiry, so roughly thirty consecutive cycles have to
+# fail before the record is at risk -- as opposed to the four a weekly refresh
+# allowed. The write is 300 bytes; there is no reason to be frugal with it.
+RECORD_REFRESH_SECONDS = 24 * 60 * 60
 
 # Consecutive failed registration probes before the execution host is restarted.
 #
@@ -384,6 +390,49 @@ def repair_force_start(config: HubConfig) -> ActiveHubRecord:
     return forced
 
 
+def manifold_ttl_seconds(path: Path) -> int | None:
+    """Seconds until Manifold expires *path*, or ``None`` if it has no expiry.
+
+    Read straight from the ``manifold.ttl`` extended attribute, which manifoldfs
+    answers for both files and directories. ``0`` means no expiry -- that is what
+    the mount root reports, and it is why the record lives there.
+
+    Returns ``None`` rather than raising on any local filesystem or non-Manifold
+    path, so this is safe to call on a laptop or in a test tmpdir.
+    """
+    try:
+        raw = os.getxattr(path, "manifold.ttl")
+    except (OSError, AttributeError):
+        return None
+    try:
+        return int(raw.decode("ascii").strip().strip("\x00"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+
+
+def _storage_expiry(config: HubConfig) -> dict[str, Any]:
+    """Report how long the shared coordination state has left to live.
+
+    The failure this exists for is invisible until it is total: the record simply
+    vanishes one day, thirty days after something created its parent, and every
+    gated unit declines to start on its next restart. A remaining-TTL reading
+    turns that into a number that can be watched.
+    """
+    record_ttl = manifold_ttl_seconds(config.record_path)
+    parent_ttl = manifold_ttl_seconds(config.record_path.parent)
+    return {
+        "record_ttl_seconds": record_ttl,
+        # The one that actually matters. A parent with a finite expiry deletes
+        # everything beneath it however young the children are, and no supported
+        # operation refreshes a directory's expiry -- so anything other than 0
+        # here is a scheduled outage, not a warning.
+        "record_parent_ttl_seconds": parent_ttl,
+        "record_parent_expires": parent_ttl is not None and parent_ttl > 0,
+        "snapshots_ttl_seconds": manifold_ttl_seconds(config.snapshots_dir),
+        "legacy_record_present": config.legacy_record_path.exists(),
+    }
+
+
 def local_status(config: HubConfig) -> dict[str, Any]:
     record: ActiveHubRecord | None = None
     record_error: str | None = None
@@ -468,9 +517,11 @@ def local_status(config: HubConfig) -> dict[str, Any]:
             "bridge_db": str(config.bridge_db),
             "artifacts": str(config.artifacts_dir),
             "storage_root": str(config.storage_root),
+            "record": str(config.record_path),
         },
         "newest_snapshot": newest_snapshot,
         "snapshot_error": snapshot_error,
+        "storage_expiry": _storage_expiry(config),
     }
 
 
@@ -900,22 +951,28 @@ def _reconcile_degraded(config: HubConfig, *, storage_error: str) -> dict[str, A
 
 
 def _refresh_record_ttl(config: HubConfig, record: ActiveHubRecord) -> bool:
-    """Keep the shared record inside its retention window.
+    """Keep the published record inside its retention window, and migrate it.
 
-    ``storage_root`` is a 30-day retention path, but the record is only rewritten
-    on activation. A deployment that runs a month without a handoff therefore
-    loses the file, and every gate-guarded unit refuses to start on its next
-    restart. Republishing identical bytes refreshes mtime.
+    The record carries a 30-day Manifold expiry that a rewrite genuinely resets,
+    so republishing identical bytes keeps it alive indefinitely. This only works
+    now that the record sits flat at the mount root: under ``storage_root`` the
+    parent directory had its own non-refreshable expiry and took the file with it
+    regardless of how young the file was. See ``config.RECORD_NAME``.
 
-    A missing record is deliberately NOT recreated here. Ownership is
-    repair-force-start's decision to make; minting it from a routing cache on a
-    timer would turn an expiring force-start into a permanent one.
+    Also completes the move off the retired path -- a host still reading the old
+    location republishes to the new one on its first cycle.
+
+    A record missing from BOTH paths is deliberately not recreated here.
+    ``resolve_record`` falls back to a force-start override when shared storage
+    cannot be read, so minting a file from that override on a 60-second timer
+    would silently convert an expiring override into a permanent one. That call
+    belongs to repair-force-start, and a test pins it.
     """
-    try:
+    if config.record_path.exists():
         age = time.time() - config.record_path.stat().st_mtime
-    except OSError:
-        return False
-    if age < RECORD_REFRESH_SECONDS:
+        if age < RECORD_REFRESH_SECONDS:
+            return False
+    elif not config.legacy_record_path.exists():
         return False
     publish_record(config, record)
     return True
