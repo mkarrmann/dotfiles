@@ -144,7 +144,7 @@ skills are exempt from eviction and so consume the budget first.
 
 The 1M window is selected only when the model id literally contains
 `[1m]` (the check is `/\[1m\]/i`). Anything that strips that suffix —
-Omnigent spawns `--model claude-opus-5` — falls back to 200k, where the
+Omnigent spawns `--model claude-opus-5-5` — falls back to 200k, where the
 `0.01` default yields just 6,000 chars; the bundled skills alone overrun
 that. `sync.sh` therefore sets `0.10` (60,000 chars at 200k) against a
 measured ~39,500-char listing.

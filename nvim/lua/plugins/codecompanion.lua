@@ -198,6 +198,7 @@ end
 
 -- Bare vendor ids; the picker offers whatever claude_1m() makes of them.
 local CLAUDE_BASE_MODELS = {
+  "claude-opus-5-5",
   "claude-opus-5",
   "claude-opus-4-8",
   "claude-sonnet-5",
@@ -211,11 +212,11 @@ local OMNIGENT_MODELS = {
 
 -- Per-family "default" model. Codex's app-server default per-turn model is NOT a
 -- routed slug (-> 421), so "default" for codex must resolve to a routed model
--- rather than "no override". claude pins opus-5 by preference rather than
+-- rather than "no override". claude pins opus-5-5 by preference rather than
 -- necessity: claude-sdk's own default would work, but it resolves provider-side
 -- (gateway/key/subscription) and is not visible from here, so pinning makes the
 -- launch model explicit and stable instead of silently provider-dependent.
-local OMNIGENT_MODEL_DEFAULT = { claude = claude_1m("claude-opus-5"), codex = "gpt-5.6-sol" }
+local OMNIGENT_MODEL_DEFAULT = { claude = claude_1m("claude-opus-5-5"), codex = "gpt-5.6-sol" }
 
 -- Per-model input context windows (vendor model id -> tokens), keyed exactly as
 -- OMNIGENT_MODELS above. Wired into the omnigent adapter `opts.context_windows`

@@ -433,7 +433,7 @@ if [[ ! -f "$CLAUDE_SETTINGS" ]]; then
 fi
 tmp=$(jq --arg profile "$DOTFILES_PROFILE" '
   .permissions.defaultMode = "bypassPermissions" |
-  .model = "claude-opus-5[1m]" |
+  .model = "claude-opus-5-5[1m]" |
   # Claude Code budgets the skill listing at
   #   skillListingBudgetFraction * context_tokens * chars_per_token(3)
   # and when the listing exceeds it, drops EVERY evictable description
@@ -443,7 +443,7 @@ tmp=$(jq --arg profile "$DOTFILES_PROFILE" '
   #
   # Note the window is 1e6 only when the model id literally contains
   # "[1m]"; anything that strips that suffix (Omnigent passes
-  # --model claude-opus-5) falls back to 200k. So size this for the
+  # --model claude-opus-5-5) falls back to 200k. So size this for the
   # 200k case: measured listing is ~39,500 chars, needing >= 0.066.
   # 0.10 gives 60,000 chars, ~50% headroom for new skills.
   #
