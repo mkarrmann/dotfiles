@@ -103,8 +103,17 @@ fi
 # turn. Assert the invariant it exists to hold, so drift surfaces at converge
 # time instead. Gated on the same managed-install condition as the shim, since
 # on a plain Codex install there is nothing to shim and nothing to assert.
-if grep -Eqs '^[[:space:]]*model_provider[[:space:]]*=' \
-    /etc/codex/managed_config.toml /etc/codex/managed_config_corp.toml; then
+# These paths are absolute, so unlike everything else this script reaches for
+# they cannot be redirected with HOME or PATH, and a test fixture inherits
+# whatever /etc/codex the developer is sitting on. On a Meta-managed Mac that
+# means the gate fires inside a fixture whose fake HOME holds no omnigent
+# interpreter, and the converge check dies on a bare "No such file or
+# directory". Injectable so a fixture can state whether its machine has managed
+# Codex; set it empty to skip the assertion outright.
+read -ra _managed_codex_configs \
+  <<<"${OMNIGENT_CODEX_MANAGED_CONFIGS-/etc/codex/managed_config.toml /etc/codex/managed_config_corp.toml}"
+if ((${#_managed_codex_configs[@]})) && grep -Eqs \
+    '^[[:space:]]*model_provider[[:space:]]*=' "${_managed_codex_configs[@]}"; then
   _tools_dir="$(uv tool dir 2>/dev/null || echo "$HOME/.local/share/uv/tools")"
   "${OMNIGENT_PY:-$_tools_dir/omnigent/bin/python3}" - <<'PY'
 # Moved in omnigent 0.13.0 from omnigent.codex_native_app_server. Both paths

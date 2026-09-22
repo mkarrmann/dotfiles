@@ -316,10 +316,36 @@ EOF
     "$fake_bin/curl" "$fake_bin/systemctl"
   stub_linux_uname "$fake_bin"
 
+  # Name a managed-Codex config that does not exist, so this fake machine
+  # declares it has none. Without it the gate reads the real /etc/codex and the
+  # result depends on the developer's laptop: on a Meta-managed Mac it fires and
+  # then dies looking for an omnigent interpreter under the fixture's empty HOME.
   HOME="$home" DOTFILES_DIR="$dotfiles" OMNIGENT_HUB_BIN="$fake_bin/omnigent-hub" \
     OMNIGENT_LOCAL_FQDN=standby.example.com PATH="$fake_bin:/usr/bin:/bin" \
+    OMNIGENT_CODEX_MANAGED_CONFIGS="$TMP/health-no-managed-codex.toml" \
     bash "$ROOT/bin/omnigent-onboard-check" > "$TMP/health-output.log" \
     || { kill "$stub_pid" 2>/dev/null; fail "onboard-check exited non-zero"; }
+
+  # Same fixture, but a machine that DOES have managed Codex. That injection
+  # point sits in front of a production assertion, so a mistake in it would stop
+  # the managed-Codex shim from ever being checked on a real host and nothing
+  # would say so. Prove the gate still fires and still runs OMNIGENT_PY.
+  local managed="$TMP/health-managed-codex.toml"
+  printf 'model_provider = "responses"\n' > "$managed"
+  cat > "$fake_bin/omnigent-py-stub" <<EOF
+#!/usr/bin/env bash
+cat > /dev/null
+echo ran >> "$TMP/health-codex-py.log"
+EOF
+  chmod +x "$fake_bin/omnigent-py-stub"
+  HOME="$home" DOTFILES_DIR="$dotfiles" OMNIGENT_HUB_BIN="$fake_bin/omnigent-hub" \
+    OMNIGENT_LOCAL_FQDN=standby.example.com PATH="$fake_bin:/usr/bin:/bin" \
+    OMNIGENT_CODEX_MANAGED_CONFIGS="$managed" OMNIGENT_PY="$fake_bin/omnigent-py-stub" \
+    bash "$ROOT/bin/omnigent-onboard-check" >/dev/null \
+    || { kill "$stub_pid" 2>/dev/null; fail "onboard-check failed with managed Codex staged"; }
+  [[ -s "$TMP/health-codex-py.log" ]] \
+    || { kill "$stub_pid" 2>/dev/null; fail "managed-Codex gate did not run OMNIGENT_PY"; }
+
   kill "$stub_pid" 2>/dev/null || true
   wait "$stub_pid" 2>/dev/null || true
 
