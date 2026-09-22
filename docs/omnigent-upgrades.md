@@ -4,6 +4,13 @@ The installed Omnigent is the published PyPI wheel, managed by
 `bin/omnigent-version-ensure` (run from `init.sh`). Nothing runs from
 `~/repos/omnigent`.
 
+> **Never run `omni update` / `omnigent update` on any machine here.** It
+> terminates whatever process holds `:6767`, which on a hub is
+> `omnigent-server.service` and on the Mac is mac_proxy — neither of which it
+> can tell apart from the stray local server it thinks it is cleaning up. Use
+> `./init.sh`, or the explicit `uv tool install` below. See
+> "`omni update` takes the hub down (2026-09-21)".
+
 ## The floor
 
 `omnigent_config/topology.env` carries `OMNIGENT_MIN_VERSION`. It is a **floor,
@@ -106,6 +113,42 @@ These are things upstream has broken or could break, none of which fail loudly:
   silently loses both.
 - **Provider block** — `providers.vertex-claude` in `config.shared.yaml` must
   still parse (`kind: subscription`).
+
+## `omni update` takes the hub down (2026-09-21)
+
+`with-proxy omni update`, run on both devservers, took the fleet off Omnigent
+for about five hours (15:59–21:18). It is not an upgrade path this setup
+supports and nothing in dotfiles invokes it.
+
+`omni update` → `_drain_and_stop_local_server` → `stop_untracked_local_server`
+(`omnigent/host/local_server.py`) probes `/health` on the canonical port, asks
+`lsof` which pid is listening, and terminates it. No pidfile match, no ownership
+check, no awareness of systemd or launchd. Its docstring frames it as sweeping
+up an orphan whose pidfile was lost — it cannot tell an orphan from a supervised
+hub. Upstream assumes the single-machine model where the CLI owns the local
+server; here `:6767` is a shared hub, or mac_proxy relaying to one.
+
+- **Mac** — kills mac_proxy. `KeepAlive` in
+  `launchd/com.mkarrmann.omnigent-tunnel.plist` makes it a sub-second gap. That
+  plist and `sync.sh` already carried this warning; both only covered the Mac.
+- **Hub devserver** — kills `omnigent-server.service`. `Restart=always` brings
+  it back after `RestartSec=5`, straight into the package tree `uv tool upgrade`
+  is still rewriting (that upgrade spent 7.3s just uninstalling). The unit fails,
+  retries, exhausts its start limit, and stays dead until someone looks.
+
+The tell from a client: the host daemon loops on `Host tunnel disconnected: did
+not receive a valid HTTP response. Reconnecting in 3.0s` while
+`curl --noproxy '*' http://127.0.0.1:16767/health` resets the connection — the ET
+forward is healthy and nothing is listening on the far side. `omnigent host
+status` shows `host=unknown` with `ReadError: [Errno 54] Connection reset by
+peer`.
+
+Recovery is `systemctl --user reset-failed omnigent-server` then
+`systemctl --user start omnigent-server`, once the package tree has settled.
+
+Note what else this costs: the hubs went 0.13.0 → 0.14.0 without step 2's
+`chat.db` backup, because nobody chose that upgrade or knew it was happening.
+An unplanned hub upgrade skips the one step that protects the shared database.
 
 ## Stale daemons after an in-place upgrade (2026-08-27)
 
