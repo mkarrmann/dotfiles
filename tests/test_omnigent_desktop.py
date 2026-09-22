@@ -17,7 +17,12 @@ class OmnigentDesktopTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.base = Path(temporary.name)
+        # Resolved: on macOS mkdtemp hands back /var/..., and the script under
+        # test compares `readlink -f "$unit"` against "$DOTFILES/systemd/...".
+        # readlink resolves /var to /private/var while DOTFILES would not, so
+        # every managed unit reads as foreign ("is not a managed dotfiles
+        # unit"). /var is a real directory on Linux, so this only bites here.
+        self.base = Path(temporary.name).resolve()
         self.home = self.base / "home"
         self.dotfiles = self.base / "dotfiles"
         self.bin = self.base / "bin"

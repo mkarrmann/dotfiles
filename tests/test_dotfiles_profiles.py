@@ -18,7 +18,11 @@ class ProfileFixture(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.base = Path(temporary.name)
+        # Resolved: on macOS mkdtemp hands back /var/..., while Path.resolve()
+        # on anything beneath it yields /private/var/..., so a symlink assertion
+        # compares two spellings of the same path and fails. /var is a real
+        # directory on Linux, which is why this only ever broke on the Mac.
+        self.base = Path(temporary.name).resolve()
         self.home = self.base / "home"
         self.bin = self.base / "bin"
         self.dotfiles = self.base / "dotfiles"
