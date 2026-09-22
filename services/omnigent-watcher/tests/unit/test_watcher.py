@@ -8,6 +8,7 @@ from omnigent_watcher.domain import (
     DEFAULT_EVENT_TYPES,
     BatchState,
     EventDeliveryStatus,
+    EventKind,
     SessionSnapshot,
     SubscriptionState,
     WatcherConfig,
@@ -141,6 +142,33 @@ async def test_subscribe_rejects_terminal_and_failed_requested_baseline(
         await watcher.subscribe(
             "session-1", "D90000006", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
         )
+
+
+@pytest.mark.asyncio
+async def test_broken_kind_nobody_subscribed_to_does_not_back_off_the_watch(
+    tmp_path: Path,
+) -> None:
+    # `partial_failure` reads comments but fails CI and AI review. A subscriber
+    # who only asked for comments must not inherit that backoff: otherwise one
+    # permanently broken component starves every kind that still works.
+    clock = FakeClock()
+    sessions = FakeSessionService(SessionSnapshot("session-1", {}))
+    watcher = _watcher(
+        tmp_path,
+        FakeReviewSource(fixture("partial_failure"), fixture("partial_failure")),
+        sessions,
+        RecordingDeliveryService(),
+        clock,
+    )
+    comments_only = frozenset({EventKind.REVIEW_COMMENT})
+
+    await watcher.subscribe("session-1", "D90000006", comments_only, source_name=PHABRICATOR_SOURCE)
+    clock.advance(_config().poll_lease_seconds * 100)
+    await watcher.run_iteration()
+
+    watch = watcher.repository.watch("D90000006")
+    assert watch is not None
+    assert watch.failure_count == 0
 
 
 @pytest.mark.asyncio

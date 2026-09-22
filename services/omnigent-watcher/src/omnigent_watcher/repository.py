@@ -884,8 +884,15 @@ class WatcherRepository:
         now: float,
         next_poll_at: float,
         batch_window_seconds: float,
+        failed_kinds: frozenset[EventKind] | None = None,
     ) -> int:
-        """Update source state and merge newly qualifying events into batches."""
+        """Update source state and merge newly qualifying events into batches.
+
+        ``failed_kinds`` narrows the poll's failure set to the kinds that have
+        subscribers, so a broken component nobody watches does not hold the
+        subject's failure count open forever.
+        """
+        unresolved = result.failed_kinds if failed_kinds is None else failed_kinds
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             prior = connection.execute(
@@ -904,7 +911,7 @@ class WatcherRepository:
                 now=now,
                 next_poll_at=next_poll_at,
                 missing_count=missing_count,
-                reset_failure_count=not result.failed_kinds,
+                reset_failure_count=not unresolved,
             )
             self._replace_source_components(connection, result, now=now)
             if (

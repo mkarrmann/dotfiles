@@ -302,13 +302,36 @@ class Watcher:
             return False
         return True
 
+    async def _subscribed_kinds(self, subject: str) -> frozenset[EventKind]:
+        """The union of event kinds this subject's live subscribers asked for."""
+        subscriptions = await asyncio.to_thread(
+            self.repository.subscriptions_for_diff,
+            subject,
+        )
+        return (
+            frozenset().union(*(s.event_types for s in subscriptions))
+            if subscriptions
+            else frozenset()
+        )
+
     async def _poll_watch(self, watch: WatchedSubject) -> bool:
         try:
             source = self.source_for(watch.source)
             result = await source.poll(watch.subject, watch.cursor, watch.spec)
             now_dt = self.clock.now()
             now = now_dt.timestamp()
-            source_failed = bool(result.failed_kinds)
+            # Only the kinds someone actually subscribed to can fail this
+            # watch. A source component that is broken but unwatched would
+            # otherwise hold the whole subject in failure backoff and starve
+            # the kinds that do have subscribers. An empty set means the watch
+            # has no live subscriber and is on its way out, so read it raw
+            # rather than scoring every kind as irrelevant and so successful.
+            watched_kinds = await self._subscribed_kinds(watch.subject)
+            failed_kinds = (
+                result.failed_kinds & watched_kinds if watched_kinds else result.failed_kinds
+            )
+            ok_kinds = result.ok_kinds & watched_kinds if watched_kinds else result.ok_kinds
+            source_failed = bool(failed_kinds)
             self.last_source_error_category = result.error_category if source_failed else None
             if result.lifecycle is not Lifecycle.ACTIVE:
                 delay = (
@@ -322,6 +345,7 @@ class Watcher:
                     now=now,
                     next_poll_at=now + delay,
                     batch_window_seconds=self.config.batch_window_seconds,
+                    failed_kinds=failed_kinds,
                 )
                 if result.lifecycle is Lifecycle.MISSING:
                     await asyncio.to_thread(
@@ -331,7 +355,7 @@ class Watcher:
                     )
                     return False
                 return True
-            if result.totally_failed:
+            if not ok_kinds and failed_kinds:
                 delay = failure_poll_delay(watch.failure_count + 1, watch.subject)
                 await asyncio.to_thread(
                     self.repository.poll_failed,
@@ -351,6 +375,7 @@ class Watcher:
                 now=now,
                 next_poll_at=now + delay,
                 batch_window_seconds=self.config.batch_window_seconds,
+                failed_kinds=failed_kinds,
             )
             if source_failed:
                 await asyncio.to_thread(
