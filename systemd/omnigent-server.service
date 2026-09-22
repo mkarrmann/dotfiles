@@ -34,6 +34,16 @@ Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sb
 # imported rather than reached over a second port so it rides the existing 6767
 # forward; the cost is that a watcher schema change needs this server restarted too.
 Environment=PYTHONPATH=%h/dotfiles/omnigent_config/policy_modules:%h/dotfiles/services/omnigent-watcher/src
+# The mounted watcher router runs `meta` to read comments and Arctic findings,
+# and `meta` reads the caller's x509 identity from these two and nowhere else.
+# Declared here rather than inherited: they reached this process only because
+# the systemd user manager happened to have them, which nothing in dotfiles
+# arranges. Lose that and every `meta` read fails pm_acl_access_denied, which
+# costs review_comment and ai_review their baseline while the jf-backed CI
+# kinds keep binding — a half-broken subscription that reads as a problem with
+# the diff. omnigent-watcher.service declares them for the same reason.
+Environment=THRIFT_TLS_CL_CERT_PATH=/var/facebook/credentials/%u/x509/%u.pem
+Environment=THRIFT_TLS_CL_KEY_PATH=/var/facebook/credentials/%u/x509/%u.pem
 # Vendored tiktoken BPE — its download host does not resolve here, and any
 # server-side token counting fails closed without it.
 # See omnigent_config/tiktoken-cache/README.md.
