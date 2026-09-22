@@ -99,6 +99,16 @@ the reply and address partial coverage: failed diffs receive no durable request
 and need a retry after the read problem is resolved. Already-landed diffs can
 be left retired.
 
+A lost baseline is not a freshness problem, so do not retry a just-submitted
+diff on the theory that Phabricator has not indexed it yet: a component that
+reads zero comments or zero findings still baselines. The failure names a
+category — an `auth` one will never clear on retry. A baseline lost on exactly
+`ai_review` and `review_comment` while the CI kinds bind points at the `meta`
+CLI specifically rather than at the diff, since those two kinds are the ones
+read through `meta` and the CI kinds are read through `jf`. Diagnose that
+before subscribing to a narrowed event set, and report the narrowing as the
+partial coverage it is.
+
 Do not subscribe for a read-only review, temporary research or sub-agent work,
 handed-off work, an unrelated diff merely seen in output, or a committed,
 abandoned, or reverted diff. Do not renew successful active watches on later
