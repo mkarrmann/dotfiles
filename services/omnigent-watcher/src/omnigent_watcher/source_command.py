@@ -190,6 +190,12 @@ async def _run_command(
                 b"not authenticated",
                 b"access token",
                 b"jf auth",
+                # `meta` reports a missing x509 identity this way rather than
+                # with any of the words above, so without these it lands in
+                # EXIT -- reported as retryable, which it is not.
+                b"failed to mint dcat",
+                b"missing user identity",
+                b"pm_acl_access_denied",
             )
         ):
             category = SourceCommandErrorCategory.AUTH

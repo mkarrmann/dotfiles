@@ -134,7 +134,10 @@ async def test_subscribe_rejects_terminal_and_failed_requested_baseline(
         RecordingDeliveryService(),
         clock,
     )
-    with pytest.raises(SubscriptionError, match="could not establish a baseline"):
+    # The category has to survive into the message. Which kinds failed says
+    # nothing about whether a retry can help, and a caller who cannot tell an
+    # auth failure from a transient one retries a failure that never clears.
+    with pytest.raises(SubscriptionError, match=r"could not establish a baseline.*\(unavailable\)"):
         await watcher.subscribe(
             "session-1", "D90000006", DEFAULT_EVENT_TYPES, source_name=PHABRICATOR_SOURCE
         )

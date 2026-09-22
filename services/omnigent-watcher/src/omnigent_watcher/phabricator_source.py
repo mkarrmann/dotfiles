@@ -319,7 +319,7 @@ def to_poll_result(
         lifecycle = Lifecycle.ACTIVE
     categories = {
         component.error.category.value
-        for component in (snapshot.comments, snapshot.ci)
+        for component in (snapshot.comments, snapshot.ci, snapshot.ai_reviews)
         if component.status == "error" and component.error is not None
     }
     return PollResult(

@@ -125,8 +125,12 @@ class Watcher:
             raise SubscriptionError("subject is terminal or missing")
         missing_baseline = event_types & result.failed_kinds
         if missing_baseline:
+            # Name the category: which kinds failed says nothing about whether
+            # retrying can help, and an auth failure read as a timing one costs
+            # the caller a retry loop that can never succeed.
+            reason = f" ({result.error_category})" if result.error_category else ""
             raise SubscriptionError(
-                f"could not establish a baseline for: {', '.join(sorted(missing_baseline))}"
+                f"could not establish a baseline for: {', '.join(sorted(missing_baseline))}{reason}"
             )
         now_dt = self.clock.now()
         now = now_dt.timestamp()

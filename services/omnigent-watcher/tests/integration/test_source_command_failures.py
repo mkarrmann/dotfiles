@@ -87,6 +87,17 @@ async def test_unknown_stdout_preamble_remains_malformed() -> None:
     (
         ("OAuth token expired: secret-token", SourceCommandErrorCategory.AUTH),
         ("Too many requests: secret-limit", SourceCommandErrorCategory.RATE_LIMIT),
+        # `meta` says none of the words above when it cannot establish an
+        # identity. Classified as EXIT it is reported retryable, and a caller
+        # who believes that retries a failure which can never clear.
+        (
+            "WARN meta_release::auth: Failed to mint dCAT for secret-fbid",
+            SourceCommandErrorCategory.AUTH,
+        ),
+        (
+            'WARN meta_release::auth: Unexpected Missing user identity env="secret-env"',
+            SourceCommandErrorCategory.AUTH,
+        ),
     ),
 )
 async def test_expected_failure_categories_are_classified_without_detail(
