@@ -47,9 +47,10 @@ Environment=LITELLM_LOCAL_MODEL_COST_MAP=True
 #
 # Set here rather than in topology.env: that file is also sourced by shell
 # helpers on every machine, and an unknown name is a STARTUP FAILURE, not a
-# no-op (omnigent/server/feature_flags.py). Only the two hubs read this unit and
-# both run 0.13.0, which knows `canvas`; the Mac CLI is still 0.12.0 and does
-# not. Resolved once at startup, so changing it needs a restart, not a reload.
+# no-op (omnigent/server/feature_flags.py). Only the two hubs read this unit, so
+# a name they accept can never reach a client that would reject it. `canvas` is
+# still declared in 0.14.0, with review_by_release 0.15.0 — expect to revisit it
+# then. Resolved once at startup, so changing it needs a restart, not a reload.
 Environment=OMNIGENT_FEATURES=canvas
 # Trust the per-workspace window origins. The hub guards state-changing routes
 # that accept multipart (CORS-safelisted, so the JSON content-type guard cannot
