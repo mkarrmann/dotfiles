@@ -10,7 +10,7 @@ description: Use when deploying Presto to Nexus, creating fbpkg packages, buildi
 **You must NEVER deploy to production clusters.** You may only deploy to Katchin test clusters that you have personally reserved. Before every deployment, verify:
 
 1. **The cluster is a test cluster.** Test cluster names contain `test`, `verifier`, or `katchin` (e.g., `dkl1_batchtest_bgm_3`, `atn1_verifier_t6_2`). If a cluster name does not clearly indicate it is a test cluster, **stop and ask the user to confirm**.
-2. **You have an active reservation.** `pt pcm test-cluster list` is blocked for Claude Code (SAP), so confirm the reservation from the user's `pt pcm test-cluster reserve` output (it prints `Reserved By` and `Expires At`). Note: PCM-reserved batch clusters do **not** appear in the older `pt reservation list` — its absence there is not evidence it's unreserved. `pt pcm deploy` itself also gates on your reservation.
+2. **You have an active reservation.** Check it yourself with `pt pcm test-cluster list --json` and read `reserved_by` / `expiration_time` for the cluster (agents can run this — see "Agent authorization" below). Note: PCM-reserved batch clusters do **not** appear in the older `pt reservation list` — absence there is not evidence it's unreserved. `pt pcm deploy` itself also gates on your reservation.
 3. **The TW config path is the test config.** When using `tw update`, always use the Katchin test config at `tupperware/config/presto/testing/katchin.tw` -- never `tupperware/config/presto/presto.tw` or any other production config.
 
 If there is any ambiguity about whether a cluster is a test cluster, **do not deploy**. Ask the user.
@@ -23,8 +23,8 @@ Handles the full Nexus deploy, fbpkg packaging, and cluster deployment pipeline.
 
 **Key scripts:**
 
-- `~/.claude/skills/presto-deploy/presto-deploy` -- builds, packages, deploys (everything Claude Code can do)
-- `~/.claude/skills/presto-deploy/presto-deploy-finish` -- completes SAP-blocked steps (user runs this)
+- `~/.claude/skills/presto-deploy/presto-deploy` -- builds, packages, deploys (everything an agent can do)
+- `~/.claude/skills/presto-deploy/presto-deploy-finish` -- rollout `accelerate`/`restart` helpers (agent-runnable), plus `tag`, the one step still blocked for agents (user runs that)
 
 **Depends on:** `~/.claude/skills/presto-build/presto-build` (sourced for Maven config and build functions)
 
@@ -33,19 +33,39 @@ Handles the full Nexus deploy, fbpkg packaging, and cluster deployment pipeline.
 - `presto-build` -- Local builds, unit tests, and checkstyle
 - `presto-e2e-test` -- End-to-end testing against remote clusters (correctness verification, performance regression)
 
-## SAP Policy — what Claude Code can and cannot run
+## Agent authorization — what an agent can and cannot run
 
-All Presto test/verifier TW specs have an `allowAgents` policy (D99740807) granting Claude Code `MUTATE`/`CONTROL` on the **Tupperware** API (`tw` commands) for test/verifier tiers. **But the `pt pcm` family and `fbpkg tag` are blocked** by a separate SAP policy on `CPPlatformApiServer.executeAction` / fbpkg.
+All Presto test/verifier TW specs have an `allowAgents` policy (D99740807) granting AI agents `MUTATE`/`CONTROL` on the **Tupperware** API (`tw` commands) for test/verifier tiers.
 
-**What Claude Code CAN do:** `tw update`, `tw task-control apply-task-ops`, `tw restart`, `tw job status`, `tw log`, `fbpkg build`, `fbpkg fetch`, `fbpkg info`, `fbpkg versions`, `presto --smc`, `mvn deploy`, and the `fb_presto_cpp/scripts/build.sh` hybrid merge (the merge's `fbpkg build` succeeds; only its trailing `fbpkg tag` is blocked).
+**`pt pcm` is NOT blocked for agents.** The `pt` CLI detects an agent cert and transparently routes PCM requests through the `presto.api` gateway, which holds the service credentials and calls PCM itself — so `CPPlatformApiServer.executeAction` is never invoked by the agent and its SAP block is never reached.
 
-**What the USER must run (blocked for Claude Code — `CPPlatformApiServer.executeAction` SAP block):** ALL `pt pcm ...` commands, including `pt pcm test-cluster list/reserve/release`, **`pt pcm deploy`**, and `pt pcm cancel`. Hand the user the exact command to run via `!` and have them paste the output. _(Verified 2026-06-12: `pt pcm deploy` fails for the agent with `[Service Authorization Platform] ... blocked method 'CPPlatformApiServer.executeAction'`.)_
+```python
+# fbcode/datainfra/presto/prestotools/commands/pcm/common.py:10
+def is_agent_caller() -> bool:
+    return AgentIdentity.from_cert().is_ai_agent
+```
 
-**What the user MUST do via `presto-deploy-finish`:**
+Authorization happens in two layers instead:
 
-- `fbpkg tag` -- tag the hybrid package (only needed when you deploy by `v<version>` tag rather than by hash; deploying by `-pv <hash>` needs no tag)
+1. **Gateway** (`fbcode/datainfra/presto/services/presto_api_handler.py`) — the caller must be in the `presto` ACL group (`pcm_acl.py`), and the action kind must be in the `_KNOWN_PCM_KINDS` allowlist: `restart_clusters`, `update_clusters` (what `deploy` maps to), `turnup_decom`, `cancel_operations`, lock/unlock, and test-cluster `list` / `reserve` / `extend_ttl` / `release`.
+2. **PCM** (`.../presto_cluster_pool_management/controller/PrestoClusterPoolController.cpp`) — per-action agent policy:
+   - **Production clusters are rejected** for any mutation: `agentic caller may not {} production cluster(s): {}`. "Production" is the cluster's own Configerator `production()` flag (`isProductionCluster`, line 1140) — **independent of `--env rc` vs `--env prod`**.
+   - **`turnup` is rejected in every environment**: `agentic caller may not {} - turnup is not permitted`. Decom is allowed.
+   - `checkAgentUpdatePolicy` — the path `deploy` takes — applies **only** the production check. There is no blanket agent block on deploy.
 
-**Deploy without `pt pcm` (fully agent-runnable alternative):** the `tw update` + `apply-task-ops` fast path below works for Claude Code on test/verifier tiers. It needs the package resolvable by the TW config (tag `v<version>`), so it pairs with a user-run `fbpkg tag`. When in doubt, the simplest division of labor is: agent builds the (hybrid) fbpkg → user runs `pt pcm deploy -pv <hash>` → agent runs `presto-deploy-finish accelerate` and verifies with `presto --smc`.
+**What an agent CAN do:** all `tw` commands on test/verifier tiers (`tw update`, `tw task-control apply-task-ops`, `tw restart`, `tw job status`, `tw log`), `fbpkg build`/`fetch`/`info`/`versions`, `presto --smc`, `mvn deploy`, the `fb_presto_cpp/scripts/build.sh` hybrid merge, and **`pt pcm` against non-production clusters** — `test-cluster list/reserve/extend/release`, `restart-clusters`, `cancel`, `status`, and `deploy`.
+
+**What is still blocked:**
+
+- `pt pcm` mutations targeting **production** clusters (rejected by PCM).
+- `pt pcm turnup-decom` carrying turnup args, in **any** environment (rejected by PCM).
+- `fbpkg tag` — a separate SAP policy on fbpkg, unrelated to the PCM gateway. The user runs it via `presto-deploy-finish tag`. Only needed when deploying by `v<version>` tag; deploying by `-pv <hash>` needs no tag.
+
+> **Verification status.** `pt pcm test-cluster list` and `test-cluster release` were run successfully by an agent on 2026-09-21. `pt pcm deploy` being agent-runnable is established by reading the authorization path above, **not** by an agent having executed it — if it fails, capture the actual error rather than assuming this doc is right.
+>
+> _History: this section previously claimed ALL `pt pcm` commands were SAP-blocked, verified 2026-06-12. That was true then; the gateway landed later (D109364741 / D109364742, with test-cluster kinds added in D110631993) and made it false. Re-check before trusting any dated claim here._
+
+Deploying to a cluster is a live-environment change regardless of whether the agent is technically able to run it — get explicit authorization first.
 
 ## CRITICAL: Prefer Existing fbpkgs Over Building from Source
 
@@ -121,15 +141,15 @@ fbpkg info presto.presto:<hash> 2>&1 | grep -E "(Build User|Revision|Upstream)"
 
 Always deploy as fast as possible. Test clusters have no real traffic, so there is no reason for gradual rollouts, drain timeouts, or canary checks.
 
-### Claude Code Deployment
+### Agent Deployment
 
-Run `presto-deploy`, then paste the `presto-deploy-finish` command for the user to run.
+Run `presto-deploy`. The only step needing the user is `presto-deploy-finish tag`, and only for hybrids deployed by `v<version>` tag rather than by `-pv <hash>`.
 
 **Step-by-step:**
 
-1. **Verify** the cluster is a test cluster with an active reservation (from the user's reserve output — `pt pcm test-cluster list` is SAP-blocked for the agent). Confirm whether it's **Prestissimo or all-Java** and pick the package type accordingly (see "CRITICAL: Match the package to the cluster type").
+1. **Verify** the cluster is a test cluster with an active reservation (`pt pcm test-cluster list --json`). Confirm whether it's **Prestissimo or all-Java** and pick the package type accordingly (see "CRITICAL: Match the package to the cluster type").
 
-2. **Build the right package** (note: the `-c` deploy step inside `presto-deploy` runs `pt pcm deploy`, which is **blocked for the agent** — so build without `-c`, then hand the user the `pt pcm deploy` command):
+2. **Build the right package.** The `-c` deploy step inside `presto-deploy` runs `pt pcm deploy`, which the agent *can* run against a non-production cluster — but deploying is a live-environment change, so build without `-c` unless the user has explicitly authorized the deploy:
 
    ```bash
    # Prestissimo cluster (hybrid REQUIRED — even for coordinator-only Java changes):
@@ -139,9 +159,10 @@ Run `presto-deploy`, then paste the `presto-deploy-finish` command for the user 
    presto-deploy                          # Java-only package
    ```
 
-   Then give the user: `pt pcm deploy -c <cluster> -pv <hybrid_or_java_hash> -r "<reason>" -f -ni -dt 0`
+   Then deploy once authorized -- or hand the user the line to run:
+   `pt pcm deploy -c <cluster> -pv <hybrid_or_java_hash> -r "<reason>" -f -ni -dt 0`
 
-3. **Accelerate the rollout** -- the `presto-deploy` script now runs `presto-deploy-finish accelerate` automatically after deployment. For hybrid builds, paste the `presto-deploy-finish tag` command for the user to run (`fbpkg tag` is still blocked).
+3. **Accelerate the rollout** -- the `presto-deploy` script now runs `presto-deploy-finish accelerate` automatically after deployment. For hybrid builds deployed by `v<version>` tag, paste the `presto-deploy-finish tag` command for the user to run (`fbpkg tag` is still blocked).
 
 4. **Verify** the deployment:
    ```bash
@@ -588,7 +609,7 @@ tw.real job status tsp_<region>/presto/<cluster_name>.worker
 
 ### Fast path: `tw update` + `apply-task-ops`
 
-This is the fastest deployment method. Claude Code now has TW `MUTATE` and `CONTROL` permissions on test/verifier tiers (D99740807). It pushes the update and immediately forces all tasks to restart simultaneously:
+This is the fastest deployment method. AI agents have TW `MUTATE` and `CONTROL` permissions on test/verifier tiers (D99740807). It pushes the update and immediately forces all tasks to restart simultaneously:
 
 ```bash
 # 1. Verify this is a test cluster you have reserved
