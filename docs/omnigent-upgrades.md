@@ -46,10 +46,13 @@ not a pin**:
    server on pre-upgrade code.
 
 4. Verify (from `/` — `python -c` puts cwd on `sys.path`, so running this inside
-   an omnigent checkout tests the wrong copy):
+   an omnigent checkout tests the wrong copy). The `import litellm` line is
+   load-bearing: the printed numbers alone stopped proving the extra is there,
+   for the reason under "Do not forget `--with litellm`".
    ```bash
    cd / && LITELLM_LOCAL_MODEL_COST_MAP=True \
      ~/.local/share/uv/tools/omnigent/bin/python -c "
+   import litellm
    from omnigent.llms.context_window import get_model_context_window as g
    print(g('claude-opus-5'), g('gpt-5.5'))"   # expect 1000000 1050000
    ```
@@ -70,10 +73,22 @@ missing extra and reinstalls. `init.sh` will leave the newer version in place.
 
 Omnigent resolves context windows through, in order: its own small registry →
 litellm → the MLflow catalog → a 128k default. litellm is an optional dependency
-it does not ship, and the catalog fetch fails here — so without litellm **every
-model silently reports 128k**, mis-sizing the context ring and the compaction
-threshold. Verified present in 0.6.0 and 0.9.0; re-check the resolution order if
-a future release restructures `omnigent/llms/context_window.py`.
+it does not ship, and the catalog fetch fails here — so without it **every model
+the registry does not name falls back to 128k**, mis-sizing the context ring and
+the compaction threshold. Verified present in 0.6.0 and 0.9.0; re-check the
+resolution order if a future release restructures
+`omnigent/llms/context_window.py`.
+
+**Check the import, not the numbers — the registry now masks the loss.** Through
+0.9.0 the fallback caught everything, which made a context-window print a
+reliable canary. By 0.14.0 the registry names the models we actually run, so
+`g('claude-opus-5'), g('gpt-5.5')` still prints `1000000 1050000` with litellm
+absent. The canary passes while `claude-3-5-sonnet-20241022` reports 128000 and
+`gemini-1.5-pro` reports 8192. Measured 2026-09-21 on 0.14.0, after a bare
+`uv tool install omnigent@latest` silently dropped the extra — `uv tool install`
+rebuilds the receipt from its arguments, so omitting `--with litellm` uninstalls
+litellm and its 18 transitive packages rather than preserving them. Only
+`import litellm` cannot be masked this way.
 
 ## Check after any upgrade
 
