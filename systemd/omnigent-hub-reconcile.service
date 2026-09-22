@@ -1,5 +1,10 @@
 [Unit]
 Description=Reconcile Omnigent hub services with shared ownership
+# Fires on every failed cycle, including a single degraded one. The decision
+# about which of those is worth a message is omnigent_hub.notify's, not this
+# unit's: it suppresses anything below DEGRADED_STREAK_ALERT_THRESHOLD and
+# re-notifies at most hourly, so a timer failing every 60s produces one message.
+OnFailure=omnigent-alert@%n.service
 After=network-online.target
 Wants=network-online.target
 

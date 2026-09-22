@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
+
 import pytest
 
 from omnigent_hub.cli import _run_quiesced_backup, main
 from omnigent_hub.config import HubConfig
 from omnigent_hub.models import ActiveHubRecord
-from omnigent_hub.runtime import HubRuntimeError
+from omnigent_hub.runtime import (
+    GATE_EXIT_DENIED,
+    GATE_EXIT_INDETERMINATE,
+    GateDenied,
+    GateIndeterminate,
+    HubRuntimeError,
+)
+from omnigent_hub.storage import StorageError
 
 
 def test_direct_quiesced_backup_restores_services_when_turn_is_active(
@@ -134,3 +144,69 @@ def test_force_start_restarts_a_host_that_is_not_registered(
     )
 
     assert "restart-host" in actions
+
+
+def _gate_exit_code(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> int:
+    def refuse(config: HubConfig) -> object:
+        raise failure
+
+    monkeypatch.setattr("omnigent_hub.cli.load_config", lambda: hub_config)
+    monkeypatch.setattr("omnigent_hub.cli.check_gate", refuse)
+    with pytest.raises(SystemExit) as exit_info:
+        main(["gate", "--json"])
+    assert isinstance(exit_info.value.code, int)
+    return exit_info.value.code
+
+
+def test_a_denied_gate_exits_with_systemd_s_clean_skip_code(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """systemd.service(5): ExecCondition= exit 1-254 skips the unit, unfailed.
+
+    This is the standby's normal state. It must stay quiet.
+    """
+    code = _gate_exit_code(hub_config, monkeypatch, GateDenied("active hub is the other one"))
+
+    assert code == GATE_EXIT_DENIED
+    assert 1 <= code <= 254
+
+
+def test_an_indeterminate_gate_exits_with_systemd_s_failure_code(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """255 is the only ExecCondition= code that marks the unit FAILED.
+
+    Regression pin for the five-day outage: every gated unit declined to start
+    because ownership was unreadable, and because that exited 1 alongside the
+    ordinary standby case, systemd recorded it as a clean skip and nothing
+    anywhere went red.
+    """
+    code = _gate_exit_code(
+        hub_config, monkeypatch, GateIndeterminate("cannot establish hub ownership")
+    )
+
+    assert code == GATE_EXIT_INDETERMINATE
+    assert code == 255
+
+
+def test_unreadable_storage_at_the_gate_also_fails_the_unit(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    code = _gate_exit_code(hub_config, monkeypatch, StorageError("mount is gone"))
+
+    assert code == GATE_EXIT_INDETERMINATE
+
+
+
+    return ActiveHubRecord(
+        format_version=1,
+        epoch=7,
+        state="active",
+        active_hub="primary.example.com",
+        activation_id="activation-7",
+        restored_generation=None,
+        updated_at="2026-09-22T04:17:58Z",
+        updated_by="tester",
+    )

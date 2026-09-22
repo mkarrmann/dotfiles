@@ -1,5 +1,9 @@
 [Unit]
 Description=Omnigent Google Chat mobile bridge
+# A gate denial (exit 1-254) leaves this unit cleanly skipped, which is correct
+# for a standby. A gate that cannot establish ownership at all exits 255, which
+# systemd records as a FAILED unit -- and that is what reaches OnFailure=.
+OnFailure=omnigent-alert@%n.service
 After=network-online.target omnigent-server.service omnigent-host.service
 Wants=network-online.target
 ConditionPathExists=%h/.config/omnigent-google-chat.env

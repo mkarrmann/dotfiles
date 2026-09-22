@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# OnFailure= handler for the Omnigent hub units.
+#
+# Invoked by systemd as `omnigent-alert <unit>` through omnigent-alert@.service,
+# whose instance name systemd fills in with the unit that failed. Records the
+# failure durably and notifies only when it is worth interrupting someone --
+# omnigent_hub.notify owns both of those decisions.
+#
+# Exits 0 unconditionally. A failure handler that can itself fail only adds a
+# second red unit next to the one nobody noticed, which is the problem this
+# exists to solve, not a way to solve it.
+set -uo pipefail
+
+DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
+HUB_BIN="${OMNIGENT_HUB_BIN:-$DOTFILES/services/omnigent-hub/.venv/bin/omnigent-hub}"
+GCHAT_ENV="${OMNIGENT_GCHAT_ENV:-$DOTFILES/omnigent_config/google-chat.env}"
+
+unit="${1:-unknown.service}"
+
+if [[ ! -x "$HUB_BIN" ]]; then
+  echo "omnigent-alert: $HUB_BIN is not installed; cannot record $unit" >&2
+  exit 0
+fi
+
+# OMNIGENT_GCHAT_SPACE selects the notification channel. Sourced here rather
+# than baked into the unit so the space lives in one file, beside the bridge
+# that already posts to it.
+if [[ -z "${OMNIGENT_GCHAT_SPACE:-}" && -f "$GCHAT_ENV" ]]; then
+  # shellcheck disable=SC1090
+  source "$GCHAT_ENV"
+  export OMNIGENT_GCHAT_SPACE
+fi
+
+"$HUB_BIN" alert "$unit" --json || true
+exit 0

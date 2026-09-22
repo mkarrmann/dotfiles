@@ -1,5 +1,9 @@
 [Unit]
 Description=Out-of-process watcher that wakes Omnigent sessions when a watched subject changes
+# A gate denial (exit 1-254) leaves this unit cleanly skipped, which is correct
+# for a standby. A gate that cannot establish ownership at all exits 255, which
+# systemd records as a FAILED unit -- and that is what reaches OnFailure=.
+OnFailure=omnigent-alert@%n.service
 After=network-online.target omnigent-server.service
 Wants=network-online.target omnigent-server.service
 ConditionPathExists=%h/dotfiles/services/omnigent-watcher/.venv/bin/omnigent-watcher

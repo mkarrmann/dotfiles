@@ -103,6 +103,21 @@ class HubConfig:
         """
         return self.local_state_dir / "host-probe-failures.json"
 
+    @property
+    def degraded_streak(self) -> Path:
+        """Consecutive reconcile cycles that could not read shared storage.
+
+        Local state for the same reason ``host_probe_failures`` is: the timer
+        starts a fresh process every cycle, so a streak cannot live in memory,
+        and it describes this machine's view rather than shared truth.
+
+        The streak exists so a blip and an outage look different. Reconcile wrote
+        ``"state": "degraded"`` 7,298 times across the five days the active-hub
+        record was missing and nothing escalated, because a single failed cycle
+        and the four-thousandth one exited identically.
+        """
+        return self.local_state_dir / "degraded-streak.json"
+
 
 def load_config(environ: dict[str, str] | None = None) -> HubConfig:
     env = os.environ if environ is None else environ

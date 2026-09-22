@@ -14,9 +14,12 @@ import pytest
 from omnigent_hub.config import HubConfig
 from omnigent_hub.models import ActiveHubRecord
 from omnigent_hub.runtime import (
+    DEGRADED_STREAK_ALERT_THRESHOLD,
     HOST_PROBE_FAILURE_RESTART_THRESHOLD,
     HOST_PROBE_FAILURE_WINDOW_SECONDS,
     RECORD_REFRESH_SECONDS,
+    GateDenied,
+    GateIndeterminate,
     HubRuntimeError,
     activate_transition,
     assert_sessions_quiescent,
@@ -33,8 +36,9 @@ from omnigent_hub.runtime import (
     resolve_record,
     resolve_routing_record,
     service_action,
+    write_routing_cache,
 )
-from omnigent_hub.storage import StorageError, publish_record
+from omnigent_hub.storage import StorageError, publish_record, write_json_atomic
 from omnigent_hub.storage import read_record as read_shared_record
 
 
@@ -109,7 +113,10 @@ def test_gate_fails_closed_when_storage_is_unreadable_without_override(
 
     monkeypatch.setattr("omnigent_hub.runtime.read_record", unavailable)
 
-    with pytest.raises(StorageError, match="unavailable"):
+    # Indeterminate, not denied: the exit code the CLI derives from this is what
+    # decides whether systemd treats a gated unit as cleanly skipped or failed,
+    # and an unreadable store must never look like a quiet standby.
+    with pytest.raises(GateIndeterminate, match="unavailable"):
         check_gate(hub_config)
 
 
@@ -919,6 +926,66 @@ def test_migration_does_not_weaken_the_never_mint_guard(
     assert result["record_refreshed"] is False
     assert not hub_config.record_path.exists()
     assert not hub_config.legacy_record_path.exists()
+
+
+def test_a_denied_gate_is_distinguishable_from_an_indeterminate_one(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The distinction the CLI turns into systemd's skip-vs-fail exit codes."""
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    initialize(hub_config, active_hub="primary.example.com")
+    elsewhere = replace(hub_config, local_fqdn="standby.example.com")
+
+    with pytest.raises(GateDenied):
+        check_gate(elsewhere)
+
+    # A record that names this host but no matching local activation proof is a
+    # broken host, not an idle one.
+    hub_config.activation_marker.unlink()
+    with pytest.raises(GateIndeterminate):
+        check_gate(hub_config)
+
+
+def test_degraded_cycles_accumulate_into_an_escalating_streak(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    record = initialize(hub_config, active_hub="primary.example.com")
+    write_routing_cache(hub_config, record)
+
+    def unavailable(config: HubConfig) -> ActiveHubRecord:
+        raise StorageError("unavailable")
+
+    monkeypatch.setattr("omnigent_hub.runtime.read_record", unavailable)
+    monkeypatch.setattr("omnigent_hub.runtime.systemd_state", lambda unit: "active")
+    monkeypatch.setattr("omnigent_hub.runtime.unit_active_seconds", lambda unit: 600.0)
+    monkeypatch.setattr("omnigent_hub.runtime.probe_host_registered", lambda config: True)
+    monkeypatch.setattr("omnigent_hub.runtime.service_action", lambda config, action: {})
+
+    outcomes = [reconcile_services(hub_config) for _ in range(DEGRADED_STREAK_ALERT_THRESHOLD)]
+
+    assert [outcome["state"] for outcome in outcomes] == ["degraded"] * len(outcomes)
+    assert [outcome["degraded_streak"] for outcome in outcomes] == list(
+        range(1, DEGRADED_STREAK_ALERT_THRESHOLD + 1)
+    )
+    # Only the cycle that crosses the threshold asks to be escalated; the blips
+    # before it stay quiet.
+    assert [outcome["degraded_alert"] for outcome in outcomes] == [False] * (
+        DEGRADED_STREAK_ALERT_THRESHOLD - 1
+    ) + [True]
+
+
+def test_a_readable_record_ends_the_degraded_streak(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    record = initialize(hub_config, active_hub="primary.example.com")
+    write_json_atomic(hub_config.degraded_streak, {"count": 9, "since": "2026-09-16T23:00:00Z"})
+    _stub_active_reconciliation(monkeypatch, record)
+
+    reconcile_services(hub_config)
+
+    assert not hub_config.degraded_streak.exists()
 
 
 def _stub_active_reconciliation(monkeypatch: pytest.MonkeyPatch, record: ActiveHubRecord) -> None:

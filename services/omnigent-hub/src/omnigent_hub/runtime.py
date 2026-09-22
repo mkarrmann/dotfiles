@@ -33,6 +33,18 @@ HOST_REGISTRATION_GRACE_SECONDS = 120.0
 # allowed. The write is 300 bytes; there is no reason to be frugal with it.
 RECORD_REFRESH_SECONDS = 24 * 60 * 60
 
+# Consecutive unreadable-storage cycles before reconcile escalates from "exited
+# nonzero" to "failed the unit loudly". Five cycles is about five minutes at the
+# 60s cadence -- long enough to ride out a remount, short enough that a real
+# outage is visible the same morning it starts.
+DEGRADED_STREAK_ALERT_THRESHOLD = 5
+
+# Process exit codes for `omnigent-hub gate`, chosen for systemd's ExecCondition
+# contract (systemd.service(5)): 1-254 skips the unit and leaves it clean, while
+# 255 marks it FAILED. That distinction is the whole point -- see check_gate.
+GATE_EXIT_DENIED = 1
+GATE_EXIT_INDETERMINATE = 255
+
 # Consecutive failed registration probes before the execution host is restarted.
 #
 # Restarting the host kills every runner on the box -- the host is their parent
@@ -63,6 +75,28 @@ def _now() -> float:
 
 class HubRuntimeError(RuntimeError):
     pass
+
+
+class GateDenied(HubRuntimeError):
+    """Ownership is known, and it is not this host's turn to run hub services.
+
+    The ordinary, healthy state of the standby. Callers should treat it as a
+    clean skip -- the deployment is working exactly as designed.
+    """
+
+
+class GateIndeterminate(HubRuntimeError):
+    """Ownership could not be established at all.
+
+    Shared storage is unreadable, the record is gone or malformed, or the local
+    activation marker contradicts a record that does name this host. Nothing can
+    safely start, and unlike :class:`GateDenied` this is never normal.
+
+    Kept distinct because conflating the two is what turned a storage expiry into
+    a five-day silent outage: both exited 1, systemd reads 1 as "skipped, not
+    failed", and so every gated unit quietly declined to start with nothing
+    anywhere going red.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,17 +143,31 @@ def write_routing_cache(config: HubConfig, record: ActiveHubRecord) -> None:
 
 
 def check_gate(config: HubConfig) -> GateResult:
+    """Decide whether this host may run hub services.
+
+    Raises :class:`GateDenied` when ownership is known and belongs elsewhere, and
+    :class:`GateIndeterminate` when ownership cannot be established. Both remain
+    :class:`HubRuntimeError` subclasses, so existing callers that only care
+    "did the gate pass" are unaffected.
+    """
     config.topology.validate_hub(config.local_fqdn)
-    record = resolve_record(config)
+    try:
+        record = resolve_record(config)
+    except (StorageError, ValidationError, ValueError) as exc:
+        raise GateIndeterminate(f"cannot establish hub ownership: {exc}") from exc
     if record.state != "active":
-        raise HubRuntimeError(
+        raise GateDenied(
             f"deployment is fenced by transition {record.transition_id} at epoch {record.epoch}"
         )
     if record.active_hub != config.local_fqdn:
-        raise HubRuntimeError(
-            f"active hub is {record.active_hub}, not local host {config.local_fqdn}"
-        )
-    marker = read_json_object(config.activation_marker)
+        raise GateDenied(f"active hub is {record.active_hub}, not local host {config.local_fqdn}")
+    try:
+        marker = read_json_object(config.activation_marker)
+    except HubRuntimeError as exc:
+        # Missing or unparseable marker on the host the record names. Same
+        # verdict as a mismatched one, and for the same reason: ownership is
+        # settled but this host cannot prove it activated.
+        raise GateIndeterminate(f"cannot read local activation marker: {exc}") from exc
     expected = {
         "format_version": 1,
         "epoch": record.epoch,
@@ -129,7 +177,11 @@ def check_gate(config: HubConfig) -> GateResult:
     }
     observed = {key: marker.get(key) for key in expected}
     if observed != expected:
-        raise HubRuntimeError(
+        # The record names this host, so ownership is not in question -- what is
+        # missing is local proof of activation. Indeterminate rather than denied:
+        # a host that believes it owns the lineage but cannot show the matching
+        # marker is broken, not idle, and should say so loudly.
+        raise GateIndeterminate(
             f"local activation marker does not match epoch {record.epoch} activation "
             f"{record.activation_id}"
         )
@@ -522,6 +574,7 @@ def local_status(config: HubConfig) -> dict[str, Any]:
         "newest_snapshot": newest_snapshot,
         "snapshot_error": snapshot_error,
         "storage_expiry": _storage_expiry(config),
+        "degraded_streak": _read_optional_json(config.degraded_streak),
     }
 
 
@@ -898,6 +951,27 @@ def resolve_routing_record(config: HubConfig) -> ActiveHubRecord:
     return ActiveHubRecord.from_dict(cache, config.topology)
 
 
+def _clear_degraded_streak(config: HubConfig) -> None:
+    config.degraded_streak.unlink(missing_ok=True)
+
+
+def _record_degraded_cycle(config: HubConfig) -> int:
+    """Count consecutive unreadable-storage cycles and return the new length.
+
+    Unlike ``_record_host_probe_failure`` there is no expiry window: a storage
+    outage does not heal by being ignored, and the streak is reset the moment a
+    cycle reads the record again.
+    """
+    previous = _read_optional_json(config.degraded_streak) or {}
+    count = previous.get("count")
+    streak = (count if isinstance(count, int) and count > 0 else 0) + 1
+    write_json_atomic(
+        config.degraded_streak,
+        {"count": streak, "since": previous.get("since") or utc_now(), "observed_at": utc_now()},
+    )
+    return streak
+
+
 def _reconcile_degraded(config: HubConfig, *, storage_error: str) -> dict[str, Any]:
     """Keep this devserver usable when shared storage cannot be read.
 
@@ -932,11 +1006,14 @@ def _reconcile_degraded(config: HubConfig, *, storage_error: str) -> dict[str, A
         except HubRuntimeError as exc:
             client_error = str(exc)
     host, host_action = reconcile_host(config, route_changed=False)
+    streak = _record_degraded_cycle(config)
     return {
         "host": config.local_fqdn,
         "state": "degraded",
         "epoch": cached.epoch,
         "storage_error": storage_error,
+        "degraded_streak": streak,
+        "degraded_alert": streak >= DEGRADED_STREAK_ALERT_THRESHOLD,
         "client_error": client_error,
         "route": {
             "url": f"http://127.0.0.1:{config.topology.port}",
@@ -983,6 +1060,9 @@ def reconcile_services(config: HubConfig) -> dict[str, Any]:
         record = resolve_routing_record(config)
     except StorageError as exc:
         return _reconcile_degraded(config, storage_error=str(exc))
+    # Reached only when the record resolved, so whatever outage the streak was
+    # counting is over.
+    _clear_degraded_streak(config)
     if record.state != "active":
         services = service_action(config, "stop-all")
         config.activation_marker.unlink(missing_ok=True)

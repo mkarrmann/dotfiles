@@ -1,0 +1,34 @@
+# Authoritative systemd --user unit for Omnigent hub failure escalation.
+# Symlinked into ~/.config/systemd/user/ by ~/dotfiles/init.sh (Linux block);
+# after editing pick up changes with:
+#
+#   systemctl --user daemon-reload
+#   systemctl --user start 'omnigent-alert@omnigent-server.service'   # dry test
+#
+# Referenced as `OnFailure=omnigent-alert@%n.service` by the units whose failure
+# would otherwise be silent. systemd substitutes the failing unit's name into
+# %n, and %i here unescapes it back into an argument.
+#
+# This exists because a failed unit on an unwatched devserver is indistinguishable
+# from a healthy one. The active-hub record expired on 2026-09-16 and every gated
+# unit refused to start from then on; nothing surfaced it until an unrelated
+# upgrade forced a restart five days later. Units now fail loudly (see
+# `omnigent-hub gate` and its 255 exit code) and this turns that into a message.
+
+[Unit]
+Description=Escalate a failed Omnigent hub unit (%i)
+# Never let the handler trigger itself, however it exits.
+OnFailure=
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+EnvironmentFile=%h/dotfiles/omnigent_config/topology.env
+ExecStart=%h/dotfiles/bin/omnigent-alert %i
+# Bounded: the notification path shells out to the `meta` CLI, which can hang on
+# a bad network. A stuck alert must not accumulate one process per failed cycle.
+TimeoutStartSec=90
+StandardOutput=append:%S/omnigent-hub/alert.log
+StandardError=append:%S/omnigent-hub/alert.log
+UMask=0077
+NoNewPrivileges=true

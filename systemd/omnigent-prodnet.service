@@ -11,6 +11,10 @@
 
 [Unit]
 Description=Omnigent prod-network proxy (v6 :6767 -> loopback server; hub only)
+# A gate denial (exit 1-254) leaves this unit cleanly skipped, which is correct
+# for a standby. A gate that cannot establish ownership at all exits 255, which
+# systemd records as a FAILED unit -- and that is what reaches OnFailure=.
+OnFailure=omnigent-alert@%n.service
 After=network.target omnigent-server.service
 Wants=omnigent-server.service
 

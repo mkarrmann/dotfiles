@@ -9,10 +9,15 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from omnigent_hub.config import HubConfig, load_config
+from omnigent_hub.notify import alert as _alert
 from omnigent_hub.orchestrator import HandoffError, HandoffOrchestrator
 from omnigent_hub.reconcile import ReconcileError, reconcile_gchat
 from omnigent_hub.remote import RemoteClient, RemoteError
 from omnigent_hub.runtime import (
+    GATE_EXIT_DENIED,
+    GATE_EXIT_INDETERMINATE,
+    GateDenied,
+    GateIndeterminate,
     HubRuntimeError,
     abort_transition,
     activate_transition,
@@ -191,6 +196,12 @@ def build_parser() -> argparse.ArgumentParser:
     snapshot.add_argument("--no-publish", action="store_true")
     snapshot.add_argument("--json", action="store_true")
 
+    alert = subparsers.add_parser(
+        "alert", help="record a unit failure and notify unless it is noise"
+    )
+    alert.add_argument("unit")
+    alert.add_argument("--json", action="store_true")
+
     snapshots = subparsers.add_parser("snapshots", help="list valid published snapshots")
     snapshots.add_argument("--json", action="store_true")
 
@@ -220,7 +231,19 @@ def main(argv: list[str] | None = None) -> None:
             record = resolve_record(config)
             _emit(record.to_dict(), args.json)
         elif args.command == "gate":
-            gate_result = check_gate(config)
+            # Exit codes are load-bearing: systemd reads 1-254 from an
+            # ExecCondition= as "skip this unit, all is well" and 255 as "this
+            # unit FAILED". Denied is the standby's normal resting state and must
+            # stay quiet; indeterminate means nothing can establish ownership and
+            # must go red. Collapsing the two is what hid a five-day outage.
+            try:
+                gate_result = check_gate(config)
+            except GateDenied as exc:
+                print(f"SKIP: {exc}", file=sys.stderr)
+                raise SystemExit(GATE_EXIT_DENIED) from exc
+            except (GateIndeterminate, StorageError) as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                raise SystemExit(GATE_EXIT_INDETERMINATE) from exc
             _emit(
                 {
                     "allowed": True,
@@ -278,6 +301,13 @@ def main(argv: list[str] | None = None) -> None:
                 # Local services were reconciled from the routing cache, but the
                 # shared record is unreadable: still fail so the outage stays
                 # visible in the unit state instead of only in the log body.
+                #
+                # Deliberately a plain 1 and not GATE_EXIT_INDETERMINATE: 255 only
+                # means anything to an ExecCondition=, and this is an ExecStart=,
+                # where every nonzero code fails the unit identically. Whether a
+                # given cycle is worth escalating is decided by bin/omnigent-alert
+                # off the streak this run just recorded, so the threshold lives in
+                # one place instead of being smuggled into an exit status.
                 raise SystemExit(1)
         elif args.command == "status":
             remote = RemoteClient(config)
@@ -438,6 +468,19 @@ def _target_fqdn(config: HubConfig, target: str) -> str:
         raise ValueError(f"unknown hub target {target!r}") from exc
 
 
+def alert_on_failure(config: HubConfig, *, unit: str) -> dict[str, object]:
+    """Escalate a failed unit, swallowing anything that goes wrong doing so.
+
+    Broad by design. This is the last link in the chain that exists because a
+    failure went unnoticed for five days; it raising its own exception would put
+    it right back in that category.
+    """
+    try:
+        return _alert(config, unit=unit)
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        return {"unit": unit, "notified": False, "reason": f"alert handler failed: {exc}"}
+
+
 def _run_quiesced_backup(config: HubConfig) -> Mapping[str, object]:
     if config.local_fqdn not in config.topology.hubs:
         remote = RemoteClient(config)
@@ -470,7 +513,10 @@ def _run_quiesced_backup(config: HubConfig) -> Mapping[str, object]:
         transition = begin_transition(config, target_hub=target)
         try:
             check_gate(config)
-        except HubRuntimeError:
+        except GateDenied:
+            # Only a definite denial proves the fence took hold. An indeterminate
+            # gate is allowed to propagate and abort the handoff: "I cannot read
+            # who owns this" must never be mistaken for "the fence is working".
             pass
         else:
             raise HandoffError("source startup gate still passes after transition fence")
