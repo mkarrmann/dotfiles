@@ -1,1 +1,9 @@
 # Work-only Codex defaults. Portable MCPs are managed by agent_config/sync-mcps.
+
+# The plugin is tagged no-codex, but agent-market installs it for Codex anyway
+# (T273473181). In Codex it contributes nothing but a SessionStart hook telling
+# the model to use Claude-only tools (code-search agent, TaskOutput, ToolSearch).
+# Template entries win over the plugin state Codex records, so this reasserts
+# itself on every sync. TODO: drop once agent-market honors no-codex.
+[plugins."meta_codesearch@claude-templates"]
+enabled = false
