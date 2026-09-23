@@ -1,6 +1,8 @@
 local M = {}
 
 local BUILD_ROOT = vim.env.BUILD_ROOT or ("/data/users/" .. vim.env.USER .. "/builds")
+-- TODO: builds always target ~/checkout1 and its build root / Maven repo, even
+-- from a buffer in another checkout; derive them via lib.checkout like jdtls does.
 local DEV_HOME = vim.uv.fs_realpath(vim.fn.expand("~/checkout1/fbsource/fbcode/github")) or vim.fn.expand("~/checkout1/fbsource/fbcode/github")
 
 local COMMON = table.concat({
