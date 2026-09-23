@@ -66,8 +66,10 @@ return {
 				return dir
 			end
 
+			-- The same repo lives in every ~/checkoutN, so the basename alone would put all
+			-- checkouts in one jdtls workspace. The suffix is empty for ~/checkout1.
 			opts.project_name = opts.project_name or function(root_dir)
-				return root_dir and vim.fs.basename(root_dir)
+				return root_dir and (vim.fs.basename(root_dir) .. require("lib.checkout").suffix(root_dir))
 			end
 			opts.jdtls_config_dir = opts.jdtls_config_dir or function(project_name)
 				return vim.fn.stdpath("cache") .. "/jdtls/" .. project_name .. "/config"
@@ -138,6 +140,27 @@ return {
 			-- Attaching without a reactor root leaves jdtls to root itself at the process cwd,
 			-- which for a session started at the workspace root is the directory holding every
 			-- repo, so it indexes all of them.
+			-- Non-primary checkouts build into their own Maven local repository (see
+			-- ~/.localrc), so jdtls must resolve dependencies from there too; otherwise
+			-- presto-facebook-trunk sees whatever presto-trunk SNAPSHOT checkout1 last
+			-- installed. jdtls reads the local repository only from a settings file, so
+			-- write ~/.m2/settings.xml with it overridden next to the project's workspace.
+			local function settings_for(root_dir)
+				local checkout = require("lib.checkout")
+				local repo = checkout.maven_repo(root_dir)
+				if not repo then
+					return opts.settings
+				end
+				local base = vim.fn.expand("~/.m2/settings.xml")
+				local xml = vim.fn.filereadable(base) == 1 and table.concat(vim.fn.readfile(base), "\n") or nil
+				local path = vim.fn.stdpath("cache") .. "/jdtls/" .. opts.project_name(root_dir) .. "/maven-settings.xml"
+				vim.fn.mkdir(vim.fs.dirname(path), "p")
+				vim.fn.writefile(vim.split(checkout.with_local_repository(xml, repo), "\n"), path)
+				return vim.tbl_deep_extend("force", opts.settings, {
+					java = { configuration = { maven = { userSettings = path } } },
+				})
+			end
+
 			local function attach_jdtls()
 				if vim.bo.filetype ~= "java" then
 					return
@@ -147,14 +170,19 @@ return {
 				if not root_dir then
 					return
 				end
+				local settings = settings_for(root_dir)
 				local config = extend_or_override({
 					cmd = opts.full_cmd(opts),
 					root_dir = root_dir,
+					-- jdtls imports the project as soon as it initializes, before the client's
+					-- didChangeConfiguration arrives, so settings that shape the import (Maven
+					-- settings file, Gradle off) must also go in initializationOptions.
 					init_options = {
 						bundles = vim.fn.filereadable(JAVA_DEBUG_JAR) == 1
 								and { JAVA_DEBUG_JAR } or {},
+						settings = settings,
 					},
-					settings = opts.settings,
+					settings = settings,
 					capabilities = LazyVim.has("cmp-nvim-lsp")
 							and require("cmp_nvim_lsp").default_capabilities()
 						or nil,
