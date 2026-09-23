@@ -303,6 +303,27 @@ if [[ -n "$platform_bin" && -d "$platform_bin" ]]; then
 fi
 sync_link_dir "$DOTFILES_DIR/bin" "$HOME/bin" "*" "$platform_bin"
 
+# The meta-lsp-pyrefly and meta-lsp-thrift Claude Code plugins run bare
+# `pyrefly` / `thrift-lsp`, which Meta hosts do not put on PATH; both ship as
+# DotSlash launchers inside fbsource. Expose them from the first standard
+# checkout that has them. Skipped where none does, since link_one aborts the
+# sync on a missing source.
+# TODO: delete once D121294149 and D121294191 land; the plugins then resolve
+# these from the session's own checkout and never consult PATH.
+if [[ "$DOTFILES_PROFILE" == work ]]; then
+  mkdir -p "$HOME/.local/bin"
+  for shim in \
+    "pyrefly:fbcode/scripts/__dotslash_builder__/pyrefly-fbcode/current/pyrefly-fbcode" \
+    "thrift-lsp:xplat/vscode/vscode-extensions/thrift/bin/fb-thriftlsp"; do
+    for root in "$HOME/fbsource" "/data/users/${USER:-}/fbsource" "$HOME/checkout1/fbsource"; do
+      if [[ -x "$root/${shim#*:}" ]]; then
+        link_one "$root/${shim#*:}" "$HOME/.local/bin/${shim%%:*}"
+        break
+      fi
+    done
+  done
+fi
+
 # wofi
 mkdir -p "$HOME/.config/wofi"
 link_one "$DOTFILES_DIR/wofi_config" "$HOME/.config/wofi/config"

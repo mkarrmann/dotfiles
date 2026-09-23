@@ -506,6 +506,25 @@ class SyncProfileTest(ProfileFixture):
         # Bash call for no consumer.
         self.assertNotIn("omnigent-capture-diff", json.dumps(settings["hooks"]))
 
+    def test_lsp_shims_link_fbsource_launchers_on_work_only(self):
+        launchers = {
+            "pyrefly": "fbcode/scripts/__dotslash_builder__/pyrefly-fbcode/current/pyrefly-fbcode",
+            "thrift-lsp": "xplat/vscode/vscode-extensions/thrift/bin/fb-thriftlsp",
+        }
+        self.env["DOTFILES_PROFILE"] = "desktop"
+        self.assert_success(self.run_script(self.script))
+        for name in launchers:
+            self.assertFalse((self.home / ".local/bin" / name).is_symlink())
+        self.env["DOTFILES_PROFILE"] = "work"
+        self.assert_success(self.run_script(self.script))
+        for name in launchers:
+            self.assertFalse((self.home / ".local/bin" / name).is_symlink())
+        for name, rel in launchers.items():
+            self.stub(self.home / "fbsource" / rel, "exit 0")
+        self.assert_success(self.run_script(self.script))
+        for name, rel in launchers.items():
+            self.assertEqual((self.home / ".local/bin" / name).resolve(), self.home / "fbsource" / rel)
+
     def test_work_mac_sync_keeps_launchd_and_internal_helpers(self):
         self.env["DOTFILES_PROFILE"] = "work"
         self.env["TEST_PLATFORM"] = "Darwin"
