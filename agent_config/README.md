@@ -125,6 +125,11 @@ found. `sync.sh` uses that to scope by workspace:
 Keep the global list short: each entry costs context in every unrelated
 session.
 
+`skills-codex/` holds skills for Codex alone, for capabilities Claude already
+has natively (e.g. `glass` for semantic code navigation, which Claude gets
+from its LSP servers). `sync.sh` links them only into `$CODEX_HOME/skills/`, and
+only on work Linux hosts, since they document devserver CLIs.
+
 Skills belonging to a specific fbsource subtree (Sapphire, Presto, …)
 are deliberately **not** linked here. They ship in that subtree's own
 `.claude/skills/`, and the harness finds them from inside it; hoisting

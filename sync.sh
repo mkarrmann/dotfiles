@@ -190,6 +190,7 @@ sync_link_subdirs() {
 
 SKILLS_SRC="$DOTFILES_DIR/agent_config/skills"
 SKILLS_VENDORED="$SKILLS_SRC/meta-powertools-vendored"
+SKILLS_CODEX="$DOTFILES_DIR/agent_config/skills-codex"
 SKILLS_GLOBAL_LIST="$DOTFILES_DIR/agent_config/skills-global.list"
 
 skill_scope() {
@@ -245,7 +246,7 @@ link_skills_scoped() {
 validate_skill_frontmatter() {
   local d name fm
   shopt -s nullglob
-  for d in "$SKILLS_SRC"/*/ "$SKILLS_VENDORED"/*/; do
+  for d in "$SKILLS_SRC"/*/ "$SKILLS_VENDORED"/*/ "$SKILLS_CODEX"/*/; do
     name="$(basename "$d")"
     [[ "$name" == "meta-powertools-vendored" ]] && continue
     if [[ ! -e "${d}SKILL.md" ]]; then
@@ -701,6 +702,12 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
   sync_link_subdirs "$DOTFILES_DIR/agent_config/skills/meta-powertools-vendored" "$codex_home/skills" "SKILL.md"
 else
   link_skills_scoped "$codex_home/skills" global
+fi
+# Codex-only skills cover what Claude already has natively (LSP, code search)
+# and describe devserver CLIs, so they reach neither Claude's .claude/skills nor
+# the Mac. Omnigent's Codex sessions mirror host skills from $codex_home/skills.
+if [[ "$DOTFILES_PROFILE" == work && "$(uname -s)" == Linux ]]; then
+  sync_link_subdirs "$SKILLS_CODEX" "$codex_home/skills" "SKILL.md"
 fi
 
 # default.rules is machine-specific — managed by Codex itself

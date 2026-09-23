@@ -525,6 +525,28 @@ class SyncProfileTest(ProfileFixture):
         for name, rel in launchers.items():
             self.assertEqual((self.home / ".local/bin" / name).resolve(), self.home / "fbsource" / rel)
 
+    def test_codex_only_skills_link_into_codex_on_work_linux_only(self):
+        skill = self.dotfiles / "agent_config/skills-codex/demo"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("---\nname: demo\ndescription: demo\n---\n")
+        (self.home / "checkout1/fbsource").mkdir(parents=True)
+        (self.dotfiles / "agent_config/meta-workspace-preferences.md").touch()
+        codex_link = self.home / ".codex/skills/demo"
+        for profile, platform in (("desktop", "Linux"), ("desktop", "Darwin"), ("work", "Darwin")):
+            with self.subTest(profile=profile, platform=platform):
+                self.env["DOTFILES_PROFILE"] = profile
+                self.env["TEST_PLATFORM"] = platform
+                self.assert_success(self.run_script(self.script))
+                self.assertFalse(codex_link.is_symlink())
+        self.env["DOTFILES_PROFILE"] = "work"
+        self.env["TEST_PLATFORM"] = "Linux"
+        result = self.run_script(self.script)
+        self.assert_success(result)
+        self.assertEqual(codex_link.resolve(), skill)
+        self.assertNotIn("SKILL PROBLEMS", result.stdout)
+        for claude_skills in (self.home / ".claude/skills", self.home / "checkout1/.claude/skills"):
+            self.assertFalse((claude_skills / "demo").exists())
+
     def test_work_mac_sync_keeps_launchd_and_internal_helpers(self):
         self.env["DOTFILES_PROFILE"] = "work"
         self.env["TEST_PLATFORM"] = "Darwin"
