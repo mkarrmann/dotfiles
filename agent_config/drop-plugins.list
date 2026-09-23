@@ -18,3 +18,12 @@ datamate
 pixelcloud
 brain
 debrief
+
+# Unused, and each costs skill/agent listing tokens in every session.
+# meta-lsp-flow/relay/typescript: no Flow, Relay, or TypeScript work.
+agent-manager
+dna-recommender
+logger-framework
+meta-lsp-flow
+meta-lsp-relay
+meta-lsp-typescript
