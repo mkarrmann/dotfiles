@@ -1,9 +1,34 @@
 # Work-only Codex defaults. Portable MCPs are managed by agent_config/sync-mcps.
 
-# The plugin is tagged no-codex, but agent-market installs it for Codex anyway
-# (T273473181). In Codex it contributes nothing but a SessionStart hook telling
-# the model to use Claude-only tools (code-search agent, TaskOutput, ToolSearch).
-# Template entries win over the plugin state Codex records, so this reasserts
-# itself on every sync. TODO: drop once agent-market honors no-codex.
+# Claude-only plugins that agent_config/sync installs for every agent. Template
+# entries win over the plugin state Codex records, so every sync reasserts these.
+#
+# meta_codesearch is tagged no-codex, but agent-market installs it for Codex
+# anyway (T273473181). In Codex it contributes nothing but a SessionStart hook
+# telling the model to use Claude-only tools (code-search agent, TaskOutput,
+# ToolSearch). TODO: drop once agent-market honors no-codex.
 [plugins."meta_codesearch@claude-templates"]
+enabled = false
+
+# Codex has no LSP client, so these ship only skills that direct it to an LSP
+# tool it lacks.
+[plugins."meta-lsp@claude-templates"]
+enabled = false
+
+[plugins."meta-lsp-buck2@claude-templates"]
+enabled = false
+
+[plugins."meta-lsp-cpp@claude-templates"]
+enabled = false
+
+[plugins."meta-lsp-go@claude-templates"]
+enabled = false
+
+[plugins."meta-lsp-pyrefly@claude-templates"]
+enabled = false
+
+[plugins."meta-lsp-rust@claude-templates"]
+enabled = false
+
+[plugins."meta-lsp-thrift@claude-templates"]
 enabled = false

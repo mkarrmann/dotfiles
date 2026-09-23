@@ -196,17 +196,22 @@ class CodexConfigTest(unittest.TestCase):
         for key in ("projects", "tui", "plugins"):
             self.assertEqual(result[key], data[key])
 
-    def test_work_template_disables_meta_codesearch_over_recorded_state(self):
+    def test_work_template_disables_claude_only_plugins_over_recorded_state(self):
         shutil.copyfile(ROOT / "codex_config/config.work.toml", self.config_dir / "config.work.toml")
-        plugin = "meta_codesearch@claude-templates"
-        state = {plugin: {"enabled": True}, "other@example": {"enabled": True}}
+        claude_only = [
+            f"{name}@claude-templates"
+            for name in ("meta_codesearch", "meta-lsp", "meta-lsp-buck2", "meta-lsp-cpp",
+                         "meta-lsp-go", "meta-lsp-pyrefly", "meta-lsp-rust", "meta-lsp-thrift")
+        ]
+        state = {plugin: {"enabled": True} for plugin in [*claude_only, "other@example"]}
         for profile, expected in (("work", False), ("desktop", True)):
             with self.subTest(profile=profile):
                 self.env["DOTFILES_PROFILE"] = profile
                 self.path.write_text(config.dumps({"plugins": state}))
                 self.run_sync()
                 plugins = config.read_config(self.path)["plugins"]
-                self.assertIs(plugins[plugin]["enabled"], expected)
+                for plugin in claude_only:
+                    self.assertIs(plugins[plugin]["enabled"], expected, plugin)
                 self.assertTrue(plugins["other@example"]["enabled"])
 
     def test_relocated_and_native_session_homes(self):
