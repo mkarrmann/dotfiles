@@ -431,7 +431,7 @@ CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 if [[ ! -f "$CLAUDE_SETTINGS" ]]; then
   echo '{}' > "$CLAUDE_SETTINGS"
 fi
-tmp=$(jq --arg profile "$DOTFILES_PROFILE" '
+tmp=$(jq '
   .permissions.defaultMode = "bypassPermissions" |
   .model = "claude-opus-5-5[1m]" |
   # Claude Code budgets the skill listing at
@@ -458,22 +458,11 @@ tmp=$(jq --arg profile "$DOTFILES_PROFILE" '
     "MCP_TIMEOUT": "120000",
     "ENABLE_LSP_TOOL": "1"
   }) |
-  ({
-    "meta-lsp@claude-templates": true,
-    "meta-lsp-hack@claude-templates": true,
-    "meta-lsp-flow@claude-templates": true,
-    "meta-lsp-buck2@claude-templates": true,
-    "meta-lsp-thrift@claude-templates": true,
-    "meta-lsp-pyrefly@claude-templates": true,
-    "meta-lsp-relay@claude-templates": true,
-    "meta-lsp-go@claude-templates": true,
-    "meta-lsp-rust@claude-templates": true,
-    "meta-lsp-typescript@claude-templates": true
-  }) as $work_plugins |
-  .enabledPlugins |= (
-    (. // {}) | if $profile == "work" then . + $work_plugins
-    else delpaths($work_plugins | keys | map([.])) end
-  ) |
+  # Plugin installs, and so their enabledPlugins entries, belong to
+  # agent_config/bootstrap-plugins. Earlier versions of this filter enabled
+  # meta-lsp plugins from a claude-templates marketplace that work hosts no
+  # longer have; strip those stale keys.
+  .enabledPlugins |= ((. // {}) | with_entries(select(.key | endswith("@claude-templates") | not))) |
   .statusLine = {"type": "command", "command": "~/.claude/statusline.sh"} |
   .hooks.PreToolUse = [
     {

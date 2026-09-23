@@ -425,7 +425,11 @@ class SyncProfileTest(ProfileFixture):
         self.settings = self.home / ".claude/settings.json"
         self.settings.parent.mkdir()
         self.settings.write_text(json.dumps({
-            "enabledPlugins": {"meta-lsp@claude-templates": True, "personal@example": True},
+            "enabledPlugins": {
+                "meta-lsp@claude-templates": True,
+                "meta-lsp@agent-market": True,
+                "personal@example": True,
+            },
             "env": {"PERSONAL_SETTING": "keep"},
         }))
 
@@ -466,6 +470,7 @@ class SyncProfileTest(ProfileFixture):
                 self.assertFalse((self.home / ".hgrc").exists())
                 settings = json.loads(self.settings.read_text())
                 self.assertNotIn("meta-lsp@claude-templates", settings["enabledPlugins"])
+                self.assertTrue(settings["enabledPlugins"]["meta-lsp@agent-market"])
                 self.assertTrue(settings["enabledPlugins"]["personal@example"])
                 self.assertEqual(settings["env"]["PERSONAL_SETTING"], "keep")
                 self.assertEqual(settings["statusLine"]["command"], "~/.claude/statusline.sh")
@@ -492,7 +497,8 @@ class SyncProfileTest(ProfileFixture):
         self.assertTrue(any(line.startswith("systemctl --user enable --now omnigent-host.service ") for line in calls), calls)
         self.assertTrue((self.home / ".config/environment.d/omnigent.conf").is_file())
         settings = json.loads(self.settings.read_text())
-        self.assertTrue(settings["enabledPlugins"]["meta-lsp@claude-templates"])
+        self.assertNotIn("meta-lsp@claude-templates", settings["enabledPlugins"])
+        self.assertTrue(settings["enabledPlugins"]["meta-lsp@agent-market"])
         self.assertTrue(settings["enabledPlugins"]["personal@example"])
         # The capture-diff hook repopulated tool_result payloads for the
         # capture_diff policy. That policy is gone and no tool_result policy
@@ -514,7 +520,7 @@ class SyncProfileTest(ProfileFixture):
         self.assertFalse(any(line.startswith("systemctl ") for line in calls), calls)
         self.assertFalse((self.home / ".config/environment.d/omnigent.conf").exists())
         settings = json.loads(self.settings.read_text())
-        self.assertTrue(settings["enabledPlugins"]["meta-lsp@claude-templates"])
+        self.assertTrue(settings["enabledPlugins"]["meta-lsp@agent-market"])
 
     def test_work_mac_sync_does_not_retire_the_staged_desktop_watch_job(self):
         self.env["TEST_PLATFORM"] = "Darwin"
