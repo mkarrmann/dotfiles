@@ -176,6 +176,22 @@ def _copy_artifacts(source: Path, destination: Path) -> tuple[int, int]:
     return (count, total_bytes)
 
 
+STAGING_PREFIX = "snapshot-"
+
+
+def _sweep_orphaned_staging(config: HubConfig) -> None:
+    """Remove staging directories left behind by killed snapshot runs.
+
+    ``TemporaryDirectory`` cleanup never runs when systemd kills a run at
+    ``TimeoutStartSec`` or the process is stuck in a FUSE read, and each orphan
+    is over a gigabyte. Every caller of :func:`create_snapshot` holds
+    ``snapshot.lock``, so no staging directory can be live when this runs.
+    """
+    for staging in config.local_state_dir.glob(f"{STAGING_PREFIX}*"):
+        if staging.is_dir() and not staging.is_symlink():
+            shutil.rmtree(staging, ignore_errors=True)
+
+
 def create_snapshot(
     config: HubConfig,
     record: ActiveHubRecord,
@@ -203,7 +219,10 @@ def create_snapshot(
     timestamp = (now or datetime.now(UTC)).replace(microsecond=0)
     generation = f"{timestamp.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:12]}"
     config.local_state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="snapshot-", dir=config.local_state_dir) as temporary:
+    _sweep_orphaned_staging(config)
+    with tempfile.TemporaryDirectory(
+        prefix=STAGING_PREFIX, dir=config.local_state_dir
+    ) as temporary:
         temp = Path(temporary)
         state = temp / "omnigent-state"
         state.mkdir(mode=0o700)
@@ -390,8 +409,34 @@ def newest_valid_snapshot(config: HubConfig) -> Path | None:
     return None
 
 
-def prune_snapshots(config: HubConfig, *, recent_count: int = 12, daily_count: int = 7) -> None:
-    snapshots = list_valid_snapshots(config)
+#: Publish staging files older than this belong to a run that was killed
+#: mid-copy; a live publish renames its staging file within seconds.
+STALE_PUBLISH_TEMP_SECONDS = 3600
+
+
+def prune_snapshots(
+    config: HubConfig,
+    *,
+    recent_count: int = 12,
+    daily_count: int = 7,
+    now: float | None = None,
+) -> None:
+    """Apply retention to the shared store by archive name alone.
+
+    Deliberately does not checksum: over the FUSE mount each archive costs
+    seconds to hash, so verifying the whole store pushed a snapshot run past
+    ``TimeoutStartSec``. A killed run never pruned, the store grew by one
+    archive per cycle, and every later run was killed too. Integrity is
+    checked where it matters -- twice at publish, and again at restore via
+    :func:`newest_valid_snapshot`.
+
+    An archive outside the retention set is deleted whether or not it
+    verifies, so corrupt or sidecar-less archives cannot accumulate either.
+    """
+    ensure_storage(config)
+    if not config.snapshots_dir.exists():
+        return
+    snapshots = sorted(config.snapshots_dir.glob("*.tar.gz"), reverse=True)
     keep = set(snapshots[:recent_count])
     daily_dates: set[str] = set()
     for archive in snapshots:
@@ -404,6 +449,13 @@ def prune_snapshots(config: HubConfig, *, recent_count: int = 12, daily_count: i
         if archive not in keep:
             archive.unlink(missing_ok=True)
             archive.with_suffix(archive.suffix + ".sha256").unlink(missing_ok=True)
+    cutoff = (time.time() if now is None else now) - STALE_PUBLISH_TEMP_SECONDS
+    for temp in config.snapshots_dir.glob(".*.tmp"):
+        try:
+            if temp.stat().st_mtime < cutoff:
+                temp.unlink(missing_ok=True)
+        except FileNotFoundError:
+            continue
 
 
 def validate_snapshot(

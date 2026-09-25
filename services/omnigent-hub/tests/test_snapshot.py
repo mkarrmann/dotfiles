@@ -17,6 +17,7 @@ from omnigent_hub.snapshot import (
     create_snapshot,
     hub_version,
     list_valid_snapshots,
+    prune_snapshots,
     restore_snapshot,
     sha256_file,
     sqlite_summary,
@@ -157,6 +158,61 @@ def test_local_snapshots_are_pruned_to_the_retention_count(
     assert [path.name[:15] for path in kept] == [
         f"20260921T12{index:02d}00" for index in range(2, LOCAL_SNAPSHOT_KEEP + 2)
     ]
+
+
+def test_staging_orphaned_by_a_killed_run_is_swept(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    hub_config.local_state_dir.mkdir(parents=True, exist_ok=True)
+    orphan = hub_config.local_state_dir / "snapshot-killed"
+    (orphan / "omnigent-state").mkdir(parents=True)
+    (orphan / "20260921T120000Z-dead.tar.gz").write_bytes(b"x" * 1024)
+    unrelated = hub_config.local_state_dir / "pre-restore"
+    unrelated.mkdir()
+
+    create_snapshot(hub_config, record(), quiesced=False, publish=False)
+
+    assert not orphan.exists()
+    assert unrelated.is_dir()
+    assert list(hub_config.local_state_dir.glob("snapshot-*")) == []
+
+
+def test_shared_store_prune_uses_names_not_checksums(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    store = hub_config.snapshots_dir
+    store.mkdir(parents=True)
+    names = [
+        f"202609{day:02d}T{hour:02d}0000Z-gen.tar.gz" for day in range(1, 11) for hour in (6, 18)
+    ]
+    for index, name in enumerate(names):
+        (store / name).write_bytes(b"not a real archive")
+        # Some sidecars mismatch and some are missing: retention must not care.
+        if index % 3 == 0:
+            (store / f"{name}.sha256").write_text(f"{'0' * 64}  {name}\n", encoding="ascii")
+    stale_temp = store / ".20260901T060000Z-gen.tar.gz.dead.tmp"
+    fresh_temp = store / ".20260910T180000Z-gen.tar.gz.live.tmp"
+    stale_temp.write_bytes(b"partial")
+    fresh_temp.write_bytes(b"partial")
+    now = 1_800_000_000.0
+    os.utime(stale_temp, (now - 7200, now - 7200))
+    os.utime(fresh_temp, (now - 60, now - 60))
+
+    def refuse_to_hash(path: Path) -> str:
+        raise AssertionError(f"prune must not checksum {path}")
+
+    monkeypatch.setattr("omnigent_hub.snapshot.sha256_file", refuse_to_hash)
+    prune_snapshots(hub_config, recent_count=4, daily_count=7, now=now)
+
+    newest_first = sorted(names, reverse=True)
+    daily = {name for name in newest_first if name.endswith("T180000Z-gen.tar.gz")}
+    expected = set(newest_first[:4]) | {name for name in daily if name[:8] >= "20260904"}
+    assert {path.name for path in store.glob("*.tar.gz")} == expected
+    assert {path.name for path in store.glob("*.sha256")} <= {f"{name}.sha256" for name in expected}
+    assert not stale_temp.exists()
+    assert fresh_temp.exists()
 
 
 def test_bridge_source_change_blocks_restore(
