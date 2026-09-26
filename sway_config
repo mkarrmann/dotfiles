@@ -257,11 +257,20 @@ output * adaptive_sync off
 ### Keyboards
 # The layout is xkb/symbols/my_us_xkb, linked by sync.sh into
 # ~/.config/xkb/symbols/, where libxkbcommon resolves it by name.
+set $xkb_options lv3:ralt_switch
+
 input type:keyboard {
     xkb_numlock enabled
     xkb_layout my_us_xkb
-    xkb_options lv3:ralt_switch
+    xkb_options $xkb_options,caps:swapescape
 }
+
+# Keyboards that place Esc and Caps Lock in their own firmware are exempt from
+# the swap. Identifiers match exactly (sway has no globs) and differ per
+# transport, so each way a board connects (USB, Bluetooth) gets its own line.
+# Take the identifier from `swaymsg -t get_inputs`; a line for an absent
+# keyboard is inert, so every machine's boards can be listed here.
+input "5824:10203:MoErgo_Glove80_Left_Keyboard" xkb_options $xkb_options
 
 bindsym $mod+d exec wofi --show drun
 
