@@ -14,8 +14,6 @@ set $left h
 set $down j
 set $up k
 set $right l
-# Your preferred terminal emulator
-set $term foot
 # Your preferred application launcher
 # Note: pass the final command to swaymsg so that the resulting window can be opened
 # on the original workspace that the command was run on.
@@ -140,9 +138,11 @@ bindsym Mod1+f fullscreen
 #
 # Basics:
 #
-    # Start a terminal, in its own scope under the memory-capped
-    # app-terminals.slice (see bin-linux/app-scope).
-    bindsym $mod+Return exec $HOME/bin/app-scope app-terminals.slice $term
+    # Start a terminal running nvim, in its own scope under the memory-capped
+    # app-terminals.slice (see bin-linux/app-scope). Launched like
+    # startup-windows' terminals, minus the restart loop: quitting nvim closes
+    # the window. The login shell supplies PATH, since nvim is not on sway's.
+    bindsym $mod+Return exec $HOME/bin/app-scope app-terminals.slice ghostty --working-directory=home -e zsh -lc "nvim --cmd 'set title'"
 
     # Copy a selected region or the entire desktop to the clipboard.
     bindsym --release Print exec sh -c 'geometry=$(slurp) && grim -g "$geometry" - | wl-copy --type image/png'
