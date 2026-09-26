@@ -254,9 +254,13 @@ include ~/.config/sway/config.d/*
 
 output * adaptive_sync off
 
+### Keyboards
+# The layout is xkb/symbols/my_us_xkb, linked by sync.sh into
+# ~/.config/xkb/symbols/, where libxkbcommon resolves it by name.
 input type:keyboard {
     xkb_numlock enabled
-    xkb_file ~/.config/xkb/my_us_xkb.xkb
+    xkb_layout my_us_xkb
+    xkb_options lv3:ralt_switch
 }
 
 bindsym $mod+d exec wofi --show drun

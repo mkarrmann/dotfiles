@@ -350,6 +350,8 @@ link_one "$DOTFILES_DIR/wofi_config" "$HOME/.config/wofi/config"
 # sway
 mkdir -p "$HOME/.config/sway"
 link_one "$DOTFILES_DIR/sway_config" "$HOME/.config/sway/config"
+mkdir -p "$HOME/.config/xkb/symbols"
+link_one "$DOTFILES_DIR/xkb/symbols/my_us_xkb" "$HOME/.config/xkb/symbols/my_us_xkb"
 
 # Claude Code
 mkdir -p "$HOME/.claude/projects" "$HOME/.claude/rules" "$HOME/.claude/hooks" "$HOME/.claude/meta"

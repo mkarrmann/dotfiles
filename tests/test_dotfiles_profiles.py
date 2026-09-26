@@ -395,6 +395,7 @@ class SyncProfileTest(ProfileFixture):
             ".bashrc", ".bash_profile", ".zshrc", ".zprofile", ".zshenv",
             ".screenrc", ".inputrc", ".tmux.conf", ".git-prompt.sh",
             "nvim_init.lua", "wofi_config", "sway_config", "ghostty_config",
+            "xkb/symbols/my_us_xkb",
             "claude_config/CLAUDE.md", "claude_config/meta-config.toml",
             "claude_config/statusline.sh", "claude_config/obsidian-vault.conf",
             "agent_config/global-development-preferences.md",
