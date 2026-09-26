@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Run a command in its own transient systemd --user scope under SLICE.
+#
+#   app-scope app-terminals.slice ghostty --class=... -e ...
+#   app-scope app.slice wofi --show drun
+#
+# sway's exec and startup-windows' setsid otherwise leave every app in the
+# login session's scope alongside sway itself, where neither a slice's memory
+# cap nor systemd-oomd can tell one app from another.
+#
+# OOMPolicy=continue matters: the user manager defaults to stop, which tears
+# down the whole scope when the kernel OOM-kills any one process in it -- the
+# terminal, its editor and its agent along with the runaway compiler.
+#
+# Falls back to a plain exec when no user manager is reachable, so a launch
+# never fails merely because systemd is unavailable.
+set -euo pipefail
+
+if [[ $# -lt 2 ]]; then
+  echo "usage: app-scope SLICE COMMAND [ARG...]" >&2
+  exit 2
+fi
+slice="$1"
+shift
+
+if systemctl --user show --property=Version --value >/dev/null 2>&1; then
+  exec systemd-run --user --scope --quiet --collect --slice="$slice" \
+    --property=OOMPolicy=continue -- "$@"
+fi
+exec "$@"

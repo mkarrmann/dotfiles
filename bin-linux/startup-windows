@@ -334,15 +334,20 @@ current_term_app_ids() {
 # login; from a terminal it is silenced, as it was under sway's exec. The lock
 # marker must not be inherited: a reconciler started from inside a launched
 # terminal would otherwise believe it already holds the lock.
+#
+# The first argument is the systemd --user slice for the app's own scope (see
+# app-scope): terminals go in the memory-capped app-terminals.slice.
 launch() {
+  local slice="$1"
+  shift
   if [[ "$DRY_RUN" == true ]]; then
-    echo "  DRY-RUN launch: $(printf '%q ' "$@")"
+    echo "  DRY-RUN launch ($slice): $(printf '%q ' "$@")"
     return 0
   fi
   if [[ -t 2 ]]; then
-    env -u SWAY_STARTUP_WINDOWS_LOCKED -u SWAY_WINDOWS_LOCK_SOCKET setsid -f -- "$@" </dev/null >/dev/null 2>&1
+    env -u SWAY_STARTUP_WINDOWS_LOCKED -u SWAY_WINDOWS_LOCK_SOCKET setsid -f -- "$SCRIPT_DIR/app-scope" "$slice" "$@" </dev/null >/dev/null 2>&1
   else
-    env -u SWAY_STARTUP_WINDOWS_LOCKED -u SWAY_WINDOWS_LOCK_SOCKET setsid -f -- "$@" </dev/null
+    env -u SWAY_STARTUP_WINDOWS_LOCKED -u SWAY_WINDOWS_LOCK_SOCKET setsid -f -- "$SCRIPT_DIR/app-scope" "$slice" "$@" </dev/null
   fi
 }
 
@@ -358,13 +363,13 @@ launch_desktop_entry() {
   fi
   # An Exec line is shell-quoted by the desktop entry spec, so it still needs
   # one shell -- the one sway's exec used to supply.
-  launch sh -c "exec $exec_line"
+  launch app.slice sh -c "exec $exec_line"
 }
 
 create_term() {
   local slot="$1" workdir="$2" cmd="$3"
   workdir="${workdir/#\~/$HOME}"
-  launch ghostty "--class=${TERM_APP_ID_PREFIX}${slot}" \
+  launch app-terminals.slice ghostty "--class=${TERM_APP_ID_PREFIX}${slot}" \
     "--working-directory=$workdir" -e zsh -lc "$cmd"
 }
 
@@ -515,7 +520,7 @@ reconcile_marked() {
     before=$(window_ids_matching "$SNAPSHOT" "$match" "$invalid")
     case "$type" in
       chrome)
-        launch "${CHROME_CMD[@]}" || { warn "[$type:$ws] launch failed"; return 1; } ;;
+        launch app.slice "${CHROME_CMD[@]}" || { warn "[$type:$ws] launch failed"; return 1; } ;;
       omnigent)
         if ! omnigent_has_window; then
           launch_desktop_entry "$OMNIGENT_DESKTOP_ENTRY" || return 1
@@ -621,7 +626,7 @@ reconcile_dashboard_pane() {
       launch_desktop_entry "${cmd#__desktop_entry__ }" || return 1
     else
       # shellcheck disable=SC2086
-      launch $cmd || { warn "[dash:$app_id] launch failed"; return 1; }
+      launch app.slice $cmd || { warn "[dash:$app_id] launch failed"; return 1; }
     fi
     [[ "$DRY_RUN" == true ]] && return 0
     deadline=$(( $(date +%s) + 25 ))

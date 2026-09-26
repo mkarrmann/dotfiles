@@ -140,8 +140,9 @@ bindsym Mod1+f fullscreen
 #
 # Basics:
 #
-    # Start a terminal
-    bindsym $mod+Return exec $term
+    # Start a terminal, in its own scope under the memory-capped
+    # app-terminals.slice (see bin-linux/app-scope).
+    bindsym $mod+Return exec $HOME/bin/app-scope app-terminals.slice $term
 
     # Copy a selected region or the entire desktop to the clipboard.
     bindsym --release Print exec sh -c 'geometry=$(slurp) && grim -g "$geometry" - | wl-copy --type image/png'
@@ -272,7 +273,9 @@ input type:keyboard {
 # keyboard is inert, so every machine's boards can be listed here.
 input "5824:10203:MoErgo_Glove80_Left_Keyboard" xkb_options $xkb_options
 
-bindsym $mod+d exec wofi --show drun
+# Apps started from wofi share its scope under app.slice, rather than
+# sway's session scope where systemd-oomd cannot see them.
+bindsym $mod+d exec $HOME/bin/app-scope app.slice wofi --show drun
 
 input * {
     natural_scroll enabled

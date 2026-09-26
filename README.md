@@ -103,6 +103,12 @@ Linux desktops also get a systemd-coredump size cap (`systemd/desktop/coredump-s
 installed to `/etc/systemd/coredump.conf.d/` by `bin/coredump-size-cap-ensure`) so a crashing
 Electron app cannot fill the root filesystem with a 30 GB core. Needs sudo, so `init.sh` prints
 the command when run non-interactively.
+
+Running out of memory kills the offending process instead of freezing the desktop. Workspace
+terminals (from `startup-windows` and `$mod+Return`) each run in their own systemd scope under
+`app-terminals.slice` (`systemd/desktop/app-terminals.slice`, capped at 80% of RAM, no swap), so a
+runaway build inside one gets its largest process OOM-killed while sway and Chrome keep the rest.
+`bin-linux/app-scope` does the wrapping.
 Other architectures and distributions skip this package installer. Devservers
 and Macs skip it entirely, and `sync.sh` never invokes it. On first launch,
 select `http://127.0.0.1:6767`; the app's settings stay machine-local.

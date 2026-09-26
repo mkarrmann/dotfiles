@@ -957,6 +957,12 @@ if [[ "$DOTFILES_PROFILE" == desktop ]]; then
 fi
 
 if [[ "$DOTFILES_PROFILE" == desktop && "$(uname -s)" == Linux ]]; then
+  # Memory-capped slice for workspace terminals; see the comment in the file.
+  # Staged only: systemd loads it the first time app-scope launches into it.
+  mkdir -p "$HOME/.config/systemd/user"
+  link_one "$DOTFILES_DIR/systemd/desktop/app-terminals.slice" \
+    "$HOME/.config/systemd/user/app-terminals.slice"
+
   # Launcher override for the packaged GUI; see the comment in the file.
   mkdir -p "$HOME/.local/share/applications"
   link_one "$DOTFILES_DIR/omnigent_config/omnigent-desktop-electron.desktop" \

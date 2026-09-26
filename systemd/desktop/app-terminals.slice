@@ -1,0 +1,20 @@
+# Linked into ~/.config/systemd/user/ by sync.sh on Linux desktops.
+#
+# Workspace terminals and everything run from them: editors, agents, builds.
+# bin-linux/app-scope puts each terminal in its own scope under this slice.
+#
+# The cap keeps a fifth of RAM for sway, Chrome and the rest of the desktop.
+# Without it, a parallel C++ build filled RAM and swap, the kernel evicted
+# every program's code pages, and the desktop froze until a hard reset.
+# With it, the kernel OOM-kills the largest process in this slice (the
+# runaway compiler) and nothing outside it notices. No swap, so the slice
+# hits its cap promptly instead of thrashing on its way there.
+#
+# systemd loads a new slice file on first use; edits to this one take effect
+# after `systemctl --user daemon-reload`.
+[Unit]
+Description=Workspace terminals
+
+[Slice]
+MemoryMax=80%
+MemorySwapMax=0
