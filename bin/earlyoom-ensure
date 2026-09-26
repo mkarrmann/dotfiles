@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Install earlyoom with the desktop config (see the config's header).
+set -euo pipefail
+
+DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
+if [[ "$("$DOTFILES/bin/dotfiles-profile")" != desktop || "$(uname -s)" != Linux ]]; then
+  exit 0
+fi
+
+source="$DOTFILES/systemd/desktop/earlyoom.default"
+target=/etc/default/earlyoom
+
+if command -v earlyoom >/dev/null 2>&1 && cmp -s "$source" "$target" &&
+    systemctl is-active --quiet earlyoom; then
+  echo "[earlyoom] up to date"
+  exit 0
+fi
+
+if [[ ! -t 0 || ! -t 1 ]]; then
+  printf '[earlyoom] installing earlyoom needs an interactive terminal for sudo. Run:\n  %q\n' \
+    "$DOTFILES/bin/earlyoom-ensure"
+  exit 0
+fi
+
+# The package ships /etc/default/earlyoom as a conffile and starts the service,
+# so install first, then replace the config and restart to load it.
+command -v earlyoom >/dev/null 2>&1 || sudo apt-get install -y earlyoom
+sudo install -m 644 "$source" "$target"
+sudo systemctl enable earlyoom
+sudo systemctl restart earlyoom
+echo "[earlyoom] installed $target and restarted earlyoom"

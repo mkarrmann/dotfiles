@@ -108,7 +108,9 @@ Running out of memory kills the offending process instead of freezing the deskto
 terminals (from `startup-windows` and `$mod+Return`) each run in their own systemd scope under
 `app-terminals.slice` (`systemd/desktop/app-terminals.slice`, capped at 80% of RAM, no swap), so a
 runaway build inside one gets its largest process OOM-killed while sway and Chrome keep the rest.
-`bin-linux/app-scope` does the wrapping.
+`bin-linux/app-scope` does the wrapping. For everything outside that slice, `bin/earlyoom-ensure`
+installs `earlyoom` with `systemd/desktop/earlyoom.default`, which acts on low RAM before swap
+fills and prefers compilers over browser tabs. Also needs sudo, same as the coredump cap.
 Other architectures and distributions skip this package installer. Devservers
 and Macs skip it entirely, and `sync.sh` never invokes it. On first launch,
 select `http://127.0.0.1:6767`; the app's settings stay machine-local.

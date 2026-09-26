@@ -239,6 +239,8 @@ else
       echo "WARNING: Omnigent desktop app installation failed" >&2
     "$DOTFILES_DIR/bin/coredump-size-cap-ensure" ||
       echo "WARNING: coredump size cap installation failed" >&2
+    "$DOTFILES_DIR/bin/earlyoom-ensure" ||
+      echo "WARNING: earlyoom installation failed" >&2
   fi
 
   # Omnigent config is universal: the managed local server that the host above

@@ -1,0 +1,18 @@
+# Installed to /etc/default/earlyoom by bin/earlyoom-ensure on Linux desktops.
+#
+# Backstop for memory hogs outside systemd/desktop/app-terminals.slice, which
+# has its own cap. The kernel OOM killer acts only once reclaim has already
+# failed -- after swap is full and the desktop has been frozen for minutes --
+# and then picks by oom_score, which Chrome inflates (oom_score_adj=300) so
+# its tabs die before the real culprit.
+#
+# -m 5: SIGTERM below 5% available RAM, SIGKILL below 2.5%.
+# -s 100,100: ignore swap. earlyoom otherwise also waits for swap to fall
+#   below its threshold, which is exactly the thrashing this is meant to stop.
+# --prefer: compilers and linkers go first even when smaller than a tab.
+# --avoid: the compositor, terminals and editors go last (prefix match).
+#
+# systemd's EnvironmentFile parser strips backslashes and does not honour
+# shell quotes inside a value, so the regexes use bracket expressions and
+# must contain no whitespace.
+EARLYOOM_ARGS="-r 3600 -m 5 -s 100,100 --prefer ^(cc1plus|cc1|ld|ld[.]bfd|ld[.]gold|ld[.]lld|lld|mold|clang|clang[+][+]|rustc)$ --avoid ^(sway|Xwayland|ghostty|foot|nvim|gdm|systemd|pipewire|wireplumber|dbus|earlyoom)"
