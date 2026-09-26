@@ -266,6 +266,24 @@ validate_skill_frontmatter() {
   shopt -u nullglob
 }
 
+# Meta only: claude-templates (agent-market) installs some standalone skills for
+# Codex by copying into ~/.codex/skills/<name>. If dotfiles also links that name
+# there, each update writes upstream's files through the link into this repo, so
+# claude-templates must own the skill outright and dotfiles must not ship it.
+warn_claude_templates_skill_overlap() {
+  local manifest="$HOME/.claude/.claude-templates-manifest.json" d name
+  [[ -f "$manifest" ]] || return 0
+  shopt -s nullglob
+  for d in "$SKILLS_SRC"/*/ "$SKILLS_VENDORED"/*/ "$SKILLS_CODEX"/*/; do
+    name="$(basename "$d")"
+    [[ "$name" == "meta-powertools-vendored" ]] && continue
+    if jq -e --arg n "$name" '.components.skills[$n]' "$manifest" >/dev/null 2>&1; then
+      SKILL_ISSUES+=("$name: also installed by claude-templates, which copies it through this link into dotfiles; delete the dotfiles copy")
+    fi
+  done
+  shopt -u nullglob
+}
+
 # Top-level dotfiles
 for f in \
   .shell_env \
@@ -368,6 +386,9 @@ for retired_hook in "$HOME"/.claude/hooks/no-foreground-wait.*; do
 done
 # Skills
 validate_skill_frontmatter
+if [[ "$DOTFILES_PROFILE" == work ]]; then
+  warn_claude_templates_skill_overlap
+fi
 link_skills_scoped "$HOME/.claude/skills" global
 # Omnigent currently creates each private Codex home under
 # <session-workspace>/.codex-tmp. Redirect that directory outside Eden so
@@ -970,7 +991,7 @@ fi
 if [[ ${#SKILL_ISSUES[@]} -gt 0 ]]; then
   {
     echo ""
-    echo "SKILL PROBLEMS (${#SKILL_ISSUES[@]}) — these skills will not load correctly:"
+    echo "SKILL PROBLEMS (${#SKILL_ISSUES[@]}):"
     for f in "${SKILL_ISSUES[@]}"; do
       echo "  $f"
     done

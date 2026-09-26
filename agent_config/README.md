@@ -231,7 +231,10 @@ fresh on its own — no manual step.
   at `plugins/custom-mcps/mcps/` and rewired by `sync-mcps`. The
   valuable skills are vendored at `skills/meta-powertools-vendored/`
   and symlinked by `init.sh` (checkout-scoped — see "Skills" above).
-  See that dir's `TODO.md` for the staleness problem.
+  See that dir's `TODO.md` for the staleness problem. Skills that
+  claude-templates itself installs (`ci-signals`, `deep-research`,
+  `skill-creator`) are deliberately not vendored; `sync.sh` flags any
+  overlap on work hosts.
 - Codex re-serializes `~/.codex/config.toml` at runtime and strips
   comments. `sync-mcps` parses TOML and replaces managed MCP tables by
   name, so formatting and quoted table names do not affect synchronization.

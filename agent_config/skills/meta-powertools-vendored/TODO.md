@@ -1,6 +1,6 @@
 # TODO: keep these skills fresh
 
-These 48 SKILL.md dirs are a **frozen snapshot** of meta-powertools
+These SKILL.md dirs are a **frozen snapshot** of meta-powertools
 v1.0.0's skills, copied from `~/.claude/plugins/cache/agent-market/meta-powertools/1.0.0/skills/`
 on 2026-06-28. They were vendored so we could drop the
 meta-powertools → 10x-data-scientist bundle without losing the useful
@@ -45,6 +45,19 @@ zero-effort answer if you accept the drift.
 The MCPs in `plugins/custom-mcps/mcps/` have the same problem in
 principle (e.g. the upstream scuba.json gained a smarter dispatcher
 recently). Apply the same approach.
+
+## Skills claude-templates installs are not vendored
+
+`ci-signals`, `deep-research`, and `skill-creator` were removed on
+2026-09-25. `claude-templates update` (the 2-hour
+`claude-templates-update.timer`) installs them itself, for Claude and Codex
+(`~/.claude/.claude-templates-manifest.json`), and it installs for Codex by
+copying into `~/.codex/skills/<name>`. While `sync.sh` symlinked those paths
+here, every update wrote upstream's files through the link into this directory
+-- the recurring dirty `skill-creator/scripts/run_eval.py` and `deep-research/*`.
+Every agent was already loading upstream's version, so removing the copies
+changed nothing that loads. `sync.sh` reports any future overlap
+(`warn_claude_templates_skill_overlap`); resolve it by deleting the copy here.
 
 ## Local modifications to preserve across a re-vendor
 
