@@ -41,7 +41,7 @@ Generally, the ideal, standard development workflow should be:
    and try to ensure that I can easily verify that you ran your tests and it had the
    intended effect (e.g. figure out how to find logs corresponding to your testing which
    prove what you're testing)
-3. Once you are fully complete, I give brief initial sign off on your work. Most likely, I have not yet looked at your code. Then you submit draft diffs/PRs for your work.
+3. Once you are fully complete, I give brief initial sign off on your work. Most likely, I have not yet looked at your code. Then you submit draft diffs/PRs for your work. If I previously gave you explicit permission to submit once the work is complete, you may skip this sign-off and submit directly.
 4. You monitor CI for feedback (e.g. CI test/lint failures, AI reviewers). You
    independently and automatically respond to these signals, to get the diffs in a
    workable state. You may repeat this step multiple times. Of course, feel free to push
