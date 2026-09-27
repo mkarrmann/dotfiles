@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Warm Storage broadcast-file footprint of one Presto-on-Spark query.
+# Usage: ws-broadcast-stats <presto_query_id> <start_epoch_seconds>
+set -euo pipefail
+qid=${1:?presto query id}
+since=${2:?start epoch seconds (a little before the query started)}
+
+scuba() { meta scuba.dataset query --dataset "$1" --sql "$2" 2>&1; }
+
+dirs=$(scuba warm_storage_directory_service_activity \
+  "SELECT cluster, context FROM warm_storage_directory_service_activity WHERE time >= $since AND user = 'presto_on_spark' AND opName = 'DIRECTORY_SVC_GET_DIRECTORY' AND DIRECTORY_PATH LIKE '%$qid' GROUP BY cluster, context LIMIT 20")
+cluster=$(grep -oE 'ws\.dw\.[a-z0-9]+' <<<"$dirs" | head -1)
+contexts=$(grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' <<<"$dirs" | sort -u | head -20 | sed "s/.*/'&'/" | paste -sd, -)
+if [[ -z $cluster || -z $contexts ]]; then
+  echo "No broadcast directory found for $qid since $since" >&2
+  exit 1
+fi
+
+dir_ids=$(scuba warm_storage_file_service_activity \
+  "SELECT DIR_ID, COUNT(*) AS n FROM warm_storage_file_service_activity WHERE time >= $since AND cluster = '$cluster' AND user = 'presto_on_spark' AND context IN ($contexts) AND STRPOS(FILE_NAME, 'file_broadcast_') = 1 GROUP BY DIR_ID LIMIT 10" |
+  grep -oE 'dir_[0-9a-f-]{36}' | sort -u)
+if [[ -z $dir_ids ]]; then
+  echo "Found contexts in $cluster but no file_broadcast_* opens for $qid" >&2
+  exit 1
+fi
+
+for dir in $dir_ids; do
+  echo "== $qid  $cluster  $dir"
+  scuba warm_storage_file_service_activity \
+    "SELECT COUNT(*) AS stored_rows, SUM(sample_rate) AS est_opens, SUM(IF(result = 'WSE_OK', sample_rate, 0)) AS ok_opens, SUM(IF(result = 'WSE_THROTTLED_HOT_PATH', sample_rate, 0)) AS hot_path_throttled, SUM(IF(sample_rate = 1, 1, 0)) AS slow_rows, APPROX_COUNT_DISTINCT(FILE_NAME) AS files FROM warm_storage_file_service_activity WHERE time >= $since AND cluster = '$cluster' AND user = 'presto_on_spark' AND opName = 'FILE_SVC_OPEN_FILE' AND DIR_ID = '$dir' AND STRPOS(FILE_NAME, 'file_broadcast_') = 1" |
+    grep -v '^Executing'
+done
