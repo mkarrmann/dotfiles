@@ -23,6 +23,17 @@ only when action may be needed. Setup and wake turns still use tokens, and
 the observer still consumes compute/API calls. Savings depend on the checks
 avoided, context size, and caching; there is no universal token cost per turn.
 
+## Wait on the condition, never a guessed duration
+
+A fixed `sleep N` guesses how long the work takes: it overshoots and wastes
+wall time after the work is done, or undershoots and costs another check. Wait
+on the condition so you resume the moment it holds — `wait <pid>` for jobs this
+shell started, otherwise `until <check>; do sleep 5; done`. With other work to
+do, detach that wait and let it signal you; with nothing else to do, a
+foreground condition wait is just as fast. The `no_foreground_wait` Omnigent
+policy refuses a standalone sleep of 30s or more (60s as a loop's poll
+interval), and a refused command runs none of its parts.
+
 ## Choose the mechanism that fits
 
 **Harness-native equivalents are encouraged.** Prefer an existing completion

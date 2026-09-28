@@ -5,6 +5,10 @@ measured Presto canary-watch session, eight such turns cost roughly 1.4M tokens
 and 75 minutes of dead wall-clock and returned only a timestamp. Every harness
 can detach the wait instead, so the same wait costs nothing.
 
+A fixed sleep also wastes wall time on its own: it is a guess at how long the
+work takes, so it overshoots, or undershoots and costs another turn. Waiting on
+the condition itself resumes the moment it holds.
+
 Enforced here rather than as a per-harness ``PreToolUse`` hook because one
 policy covers every harness Omnigent fronts: ``native_policy_hook`` funnels each
 harness's native tool call through the policy engine with its tool name intact.

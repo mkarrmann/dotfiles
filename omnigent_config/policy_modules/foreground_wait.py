@@ -11,9 +11,16 @@ from __future__ import annotations
 
 import re
 
-# Below this a sleep is a retry or settle pause rather than a way of waiting,
-# and denying it would be noise. Observed failures were all >= 300s.
-THRESHOLD_SECONDS = 60
+# A fixed sleep outside a loop is a guess at how long the work takes: it either
+# overshoots, wasting wall time after the work is done, or undershoots and costs
+# another check-and-sleep turn. Below this it is a retry or settle pause, and
+# denying it would be noise.
+GUESS_THRESHOLD_SECONDS = 30
+
+# A sleep inside a while/until/for body is a poll interval: the loop exits once
+# the condition holds, so overshoot is bounded by the interval. Only a long
+# interval is worth refusing.
+POLL_INTERVAL_THRESHOLD_SECONDS = 60
 
 # Every harness's shell tool. Mirrors
 # ``omnigent.policies.builtins._shell.SHELL_TOOLS``, which is the authoritative
@@ -57,21 +64,27 @@ _SLEEP = re.compile(
 
 _UNITS = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}
 
+# The body of a shell loop. Approximate (nesting and a stray ``for``/``do`` in
+# quoted text can misplace a boundary), but a misclassified sleep only moves
+# between the two thresholds; it never escapes the gate.
+_LOOP_BODY = re.compile(r"\b(?:while|until|for)\b.*?\bdo\b(.*?)\bdone\b", re.S)
+
 # Already-detached work does not hold the turn open, so it is not our business.
 _DETACHED = re.compile(r"\b(?:setsid|nohup|disown)\b|&\s*$")
 
 # Always-true instruction, so an unrecognised harness still gets a correct
 # answer rather than one borrowed from a harness it is not running.
 _GENERIC = (
-    "Detach the wait and have the detached process signal you once the "
-    "condition holds, instead of sleeping here."
+    "Wait on the condition itself so you resume the moment it holds: "
+    "`wait <pid>`, or `until <check>; do sleep 5; done`. If you have other "
+    "work, detach that wait and have it signal you, then continue."
 )
 
 _HINTS = {
     "Bash": (
-        "In Claude Code: re-run with run_in_background=true, wrapping the check "
-        "in a loop that exits as soon as the condition holds — the harness "
-        "re-invokes you when the process exits, so the wait costs no tokens."
+        "In Claude Code: with nothing else to do, run that loop in the "
+        "foreground; with other work, run it with run_in_background=true and "
+        "carry on — the harness re-invokes you when it exits."
     ),
     "shell": (
         "In Codex: `setsid nohup ... &` that calls "
@@ -105,19 +118,28 @@ def command_text(arguments: object) -> str:
     return str(command)
 
 
-def longest_foreground_sleep(command: str) -> float:
-    """Return the longest blocking sleep in ``command``, in seconds.
+def longest_gated_sleep(command: str) -> float:
+    """Return the longest sleep in ``command`` over its threshold, in seconds.
 
-    Returns 0.0 when the command detaches, since a detached wait does not hold
+    Each sleep is held to :data:`POLL_INTERVAL_THRESHOLD_SECONDS` inside a loop
+    body and :data:`GUESS_THRESHOLD_SECONDS` elsewhere. Returns 0.0 when none
+    qualifies, or when the command detaches, since a detached wait does not hold
     the turn open.
     """
     if _DETACHED.search(command):
         return 0.0
     command = _HEREDOC.sub("", command)
-    return max(
-        (float(value) * _UNITS[unit] for value, unit in _SLEEP.findall(command)),
-        default=0.0,
-    )
+    loop_bodies = [m.span(1) for m in _LOOP_BODY.finditer(command)]
+    gated = []
+    for match in _SLEEP.finditer(command):
+        seconds = float(match.group(1)) * _UNITS[match.group(2)]
+        # The match itself can begin at the ``do`` that opens the body, so
+        # locate the sleep by its duration.
+        in_loop = any(start <= match.start(1) < end for start, end in loop_bodies)
+        threshold = POLL_INTERVAL_THRESHOLD_SECONDS if in_loop else GUESS_THRESHOLD_SECONDS
+        if seconds >= threshold:
+            gated.append(seconds)
+    return max(gated, default=0.0)
 
 
 def blocking_wait_seconds(tool_name: object, arguments: object) -> float:
@@ -131,13 +153,18 @@ def blocking_wait_seconds(tool_name: object, arguments: object) -> float:
     if isinstance(arguments, dict) and arguments.get("run_in_background"):
         # Claude Code's own backgrounding flag. Other harnesses never set it.
         return 0.0
-    seconds = longest_foreground_sleep(command_text(arguments))
-    return seconds if seconds >= THRESHOLD_SECONDS else 0.0
+    return longest_gated_sleep(command_text(arguments))
 
 
 def denial_reason(seconds: float, tool_name: str) -> str:
-    """The message an agent sees when a blocking wait is refused."""
+    """The message an agent sees when a blocking wait is refused.
+
+    It must say that nothing ran: agents otherwise re-issue only the wait and
+    lose the rest of the command, such as files the same call was writing.
+    """
     return (
-        f"Foreground sleep of {seconds:.0f}s blocks this turn to wait, spending "
-        f"a model turn to produce nothing. {remedy_for(tool_name)}"
+        f"Refused, and nothing in this command ran — re-run every part of it, "
+        f"not just the wait. A {seconds:.0f}s sleep is a guess: it "
+        f"overshoots and wastes wall time, or undershoots and costs another "
+        f"turn. {remedy_for(tool_name)}"
     )

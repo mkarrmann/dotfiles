@@ -70,6 +70,33 @@ class TestDetection(unittest.TestCase):
             900.0,
         )
 
+    def test_standalone_sleep_is_held_to_the_guess_threshold(self) -> None:
+        cases = {
+            "fixed wait then check": ("sleep 45; tail -5 job.log", 45.0),
+            # Regression: a subagent launched queries, then guessed at their
+            # runtime. Loops on either side must not shield the sleep between.
+            "between two loops": (
+                "for i in 1 2; do run $i & done; sleep 100; for i in 1 2; do tail r$i; done",
+                100.0,
+            ),
+        }
+        for label, (command, want) in cases.items():
+            with self.subTest(case=label):
+                self.assertEqual(
+                    detection.blocking_wait_seconds("Bash", {"command": command}), want
+                )
+
+    def test_poll_interval_is_held_to_the_loop_threshold(self) -> None:
+        for command, want in [
+            ("until [ -f done ]; do sleep 45; done", 0.0),
+            ("while ! check; do sleep 90; done", 90.0),
+            ("for i in $(seq 60); do check && break; sleep 10; done", 0.0),
+        ]:
+            with self.subTest(command=command):
+                self.assertEqual(
+                    detection.blocking_wait_seconds("Bash", {"command": command}), want
+                )
+
     def test_codex_argv_list(self) -> None:
         self.assertEqual(
             detection.blocking_wait_seconds(
@@ -130,7 +157,7 @@ class TestDetection(unittest.TestCase):
         cases = {
             "non-shell tool": ("Edit", {"command": "sleep 300"}),
             "backgrounded": ("Bash", {"command": "sleep 300", "run_in_background": True}),
-            "below threshold": ("Bash", {"command": "sleep 59"}),
+            "below threshold": ("Bash", {"command": "sleep 29"}),
             "retry pause": ("Bash", {"command": "sleep 5; retry"}),
             "flag not a wait": ("Bash", {"command": "mytool --sleep 300 --run"}),
             "identifier": ("Bash", {"command": "X=1 sleep_seconds=300 run"}),
@@ -148,7 +175,7 @@ class TestDetection(unittest.TestCase):
         self.assertIn("run_in_background", detection.remedy_for("Bash"))
         self.assertIn("codex queue", detection.remedy_for("shell"))
         # An unrecognised harness still gets a correct, generic instruction.
-        self.assertIn("Detach the wait", detection.remedy_for("developer__shell"))
+        self.assertIn("wait <pid>", detection.remedy_for("developer__shell"))
         self.assertNotIn("run_in_background", detection.remedy_for("developer__shell"))
 
 
@@ -162,6 +189,8 @@ class TestPolicy(unittest.TestCase):
         self.assertEqual(out["result"], "DENY")
         self.assertIn("600s", out["reason"])
         self.assertIn("codex queue", out["reason"])
+        # Without this, agents re-issue only the wait and drop the rest.
+        self.assertIn("nothing in this command ran", out["reason"])
 
     def test_ask_action(self) -> None:
         policy = policy_mod.block_foreground_wait(action="ask")
