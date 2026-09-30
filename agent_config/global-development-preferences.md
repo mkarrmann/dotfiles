@@ -62,7 +62,7 @@ Frequently remind yourself which step you are at by explicitly mentioning it out
 
 ## Live Environment Safety — Hard Gate
 
-Implementation authorization covers source-code changes and isolated tests only. It never authorizes deployment, installation, synchronization, activation, or mutation of the live development environment.
+Implementation authorization covers source-code changes and tests in the session's own working copy only. It never authorizes deployment, installation, synchronization, activation, or mutation of the live development environment.
 
 Unless I explicitly request the exact live operation, NEVER:
 
@@ -86,6 +86,10 @@ If live activation or verification would be useful:
 “Implement,” “finish,” “get working,” “test end-to-end,” and “verify” do not imply permission to perform live rollout. Configuration changes should take effect on the next natural restart unless I explicitly request activation.
 
 Never modify or terminate a process that the agent did not start during the current turn.
+
+### New working copies and build environments
+
+Work in the working copy the session started in. Creating a new working copy or build environment — a worktree, a fresh clone, a new container or VM, or a separate build cache, daemon, or output directory — requires my explicit approval first. "Isolation" is not a reason on its own. If you think one is warranted, for example because parallel agents would clobber each other or the task needs a different revision, stop and propose it: why, what it costs, and how you will clean it up. Then wait. Approval covers that one environment, and you remove it when the task is done.
 
 ## Do's
 
