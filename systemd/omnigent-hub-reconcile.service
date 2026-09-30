@@ -9,6 +9,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+# Compete for CPU from omnigent.slice rather than app.slice; see that file.
+Slice=omnigent.slice
 Type=oneshot
 Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 EnvironmentFile=%h/dotfiles/omnigent_config/topology.env

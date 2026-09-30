@@ -1,0 +1,23 @@
+# Linked into ~/.config/systemd/user/ by sync.sh on Linux work devservers.
+#
+# The Omnigent units a session depends on end to end: the hub server, the
+# execution host and its runners, the client tunnel, and the reconciler that
+# watches them. Their CPU demand is small; the problem is latency when a build
+# or training job saturates the box. At load 220 on 72 cores the reconciler's
+# probe took 7-12s just to start Python, timed out, and restarted the host --
+# killing every session on it.
+#
+# CPU weights only compete between siblings, and the load arrives in siblings
+# of app.slice (3pai_sandbox.slice for agent tool calls, buck2.slice for
+# builds). So the weight must be set on a slice at that level: a CPUWeight= on
+# the units themselves would only compete inside app.slice. Agent tool calls
+# already run in 3pai_sandbox.slice scopes, so this does not favour an agent's
+# own heavy work.
+#
+# Units pick this up at their next start after `systemctl --user daemon-reload`
+# (sync.sh reloads); systemd does not move running units between slices.
+[Unit]
+Description=Omnigent sessions and their watchdog
+
+[Slice]
+CPUWeight=1000

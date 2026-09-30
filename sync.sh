@@ -869,6 +869,7 @@ if [[ "$DOTFILES_PROFILE" == work && "$(uname -s)" == "Linux" ]] && command -v s
   done
   sync_link_dir "$DOTFILES_DIR/systemd" "$HOME/.config/systemd/user" "*.service"
   sync_link_dir "$DOTFILES_DIR/systemd" "$HOME/.config/systemd/user" "*.timer"
+  sync_link_dir "$DOTFILES_DIR/systemd" "$HOME/.config/systemd/user" "*.slice"
   # Hub ownership is dynamic. Only the reconcile timer starts at boot; it
   # starts hub units on the owner and an SSH client tunnel everywhere else.
   for unit_name in omnigent-server.service \

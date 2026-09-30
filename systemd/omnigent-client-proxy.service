@@ -10,6 +10,8 @@ Wants=network-online.target
 StartLimitIntervalSec=0
 
 [Service]
+# Compete for CPU from omnigent.slice rather than app.slice; see that file.
+Slice=omnigent.slice
 Type=simple
 Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 EnvironmentFile=%h/dotfiles/omnigent_config/topology.env
