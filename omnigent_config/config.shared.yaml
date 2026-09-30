@@ -65,6 +65,7 @@ tui:
 # host's child). Their POLICY_REGISTRY entries are merged into the registry.
 policy_modules:
   - no_foreground_wait
+  - no_new_environments
 
 # Server-wide default policies, appended after per-agent policies for EVERY
 # session. `type: function` self-selects its phase, so no `on:` is needed.
@@ -82,3 +83,10 @@ policies:
       path: no_foreground_wait.block_foreground_wait
       arguments:
         action: deny
+  # Refuse an agent's first attempt to create a worktree, clone, or Buck isolation
+  # dir, and tell it that needs approval. A reminder, not a lock: a command
+  # prefixed with OMNIGENT_NEW_ENV_APPROVED=1 runs. See the module docstring.
+  no_new_environments:
+    type: function
+    function:
+      path: no_new_environments.gate_new_environments

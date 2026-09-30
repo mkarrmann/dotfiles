@@ -119,6 +119,8 @@ class OmnigentServerConfigTest(unittest.TestCase):
                 self.assertEqual(config["host"], {"host_id": "keep"})
                 self.assertEqual(config["runner"]["custom_option"], "keep")
                 self.assertIn("no_foreground_wait", config["policy_modules"])
+                self.assertIn("no_new_environments", config["policy_modules"])
+                self.assertIn("no_new_environments", config["policies"])
                 if profile == "desktop":
                     self.assertFalse(self.calls.exists())
                 before = self.config.stat().st_mtime_ns
