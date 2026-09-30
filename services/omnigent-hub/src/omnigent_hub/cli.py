@@ -319,10 +319,12 @@ def main(argv: list[str] | None = None) -> None:
         elif args.command == "reconcile-services":
             outcome = reconcile_services(config)
             _emit(outcome, args.json)
-            if outcome.get("state") == "degraded":
+            if outcome.get("state") == "degraded" or outcome.get("host_probe_alert"):
                 # Local services were reconciled from the routing cache, but the
                 # shared record is unreadable: still fail so the outage stays
                 # visible in the unit state instead of only in the log body.
+                # Likewise once host probes have been inconclusive long enough
+                # that host self-healing is effectively off.
                 #
                 # Deliberately a plain 1 and not GATE_EXIT_INDETERMINATE: 255 only
                 # means anything to an ExecCondition=, and this is an ExecStart=,

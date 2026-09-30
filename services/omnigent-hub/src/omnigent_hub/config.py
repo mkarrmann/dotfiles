@@ -104,6 +104,25 @@ class HubConfig:
         return self.local_state_dir / "host-probe-failures.json"
 
     @property
+    def host_probe_unknown(self) -> Path:
+        """Consecutive host-registration probes that could not reach a verdict.
+
+        Kept apart from ``host_probe_failures`` because it drives an alert, not
+        a restart: an inconclusive probe is not evidence against the host.
+        """
+        return self.local_state_dir / "host-probe-unknown.json"
+
+    @property
+    def host_probe_last(self) -> Path:
+        """Verdict, duration, and time of the most recent host-registration probe.
+
+        Evidence for the next incident: reconcile.log lines carry no timestamps,
+        and a restart caused by slow probes looks identical to one caused by a
+        dead host unless the probe's own timing was kept.
+        """
+        return self.local_state_dir / "host-probe-last.json"
+
+    @property
     def local_snapshots_dir(self) -> Path:
         """Where snapshots land when they cannot be published to shared storage.
 

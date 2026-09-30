@@ -7,7 +7,11 @@ import pytest
 
 from omnigent_hub.config import HubConfig
 from omnigent_hub.notify import ALERT_REPEAT_SECONDS, alert
-from omnigent_hub.runtime import DEGRADED_STREAK_ALERT_THRESHOLD, initialize
+from omnigent_hub.runtime import (
+    DEGRADED_STREAK_ALERT_THRESHOLD,
+    HOST_PROBE_UNKNOWN_ALERT_THRESHOLD,
+    initialize,
+)
 from omnigent_hub.storage import write_json_atomic
 
 
@@ -47,6 +51,20 @@ def test_a_sustained_degraded_streak_escalates(owned: HubConfig) -> None:
     assert len(messages) == 1
     assert "omnigent-hub-reconcile.service" in messages[0]
     assert f"{DEGRADED_STREAK_ALERT_THRESHOLD} consecutive reconcile cycles" in messages[0]
+
+
+def test_a_blind_host_probe_escalates_even_during_a_degraded_blip(owned: HubConfig) -> None:
+    write_json_atomic(owned.degraded_streak, {"count": 1, "since": "2026-09-16T23:00:00Z"})
+    write_json_atomic(
+        owned.host_probe_unknown,
+        {"count": HOST_PROBE_UNKNOWN_ALERT_THRESHOLD, "since": "2026-09-29T16:00:00Z"},
+    )
+
+    messages = _sent(owned, unit="omnigent-hub-reconcile.service")
+
+    assert len(messages) == 1
+    assert f"inconclusive for {HOST_PROBE_UNKNOWN_ALERT_THRESHOLD} consecutive" in messages[0]
+    assert _alerts(owned)[-1]["host_probe_unknown_streak"] == HOST_PROBE_UNKNOWN_ALERT_THRESHOLD
 
 
 def test_a_failed_unit_escalates_regardless_of_the_streak(owned: HubConfig) -> None:

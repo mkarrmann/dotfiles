@@ -13,6 +13,7 @@ from omnigent_hub.runtime import (
     GATE_EXIT_INDETERMINATE,
     GateDenied,
     GateIndeterminate,
+    HostProbe,
     HubRuntimeError,
 )
 from omnigent_hub.storage import StorageError
@@ -91,7 +92,8 @@ def _force_start_actions(
     monkeypatch.setattr("omnigent_hub.runtime.systemd_state", lambda unit: "active")
     monkeypatch.setattr("omnigent_hub.runtime.unit_active_seconds", lambda unit: 600.0)
     monkeypatch.setattr(
-        "omnigent_hub.runtime.probe_host_registered", lambda config: host_registered
+        "omnigent_hub.runtime.probe_host",
+        lambda config: HostProbe.REGISTERED if host_registered else HostProbe.UNREGISTERED,
     )
 
     main(
@@ -294,3 +296,31 @@ def _active_record() -> ActiveHubRecord:
         updated_at="2026-09-22T04:17:58Z",
         updated_by="tester",
     )
+
+
+def test_reconcile_fails_its_unit_once_host_probes_stay_inconclusive(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Failing the unit is what routes the blind watchdog to omnigent-alert."""
+    monkeypatch.setattr("omnigent_hub.cli.load_config", lambda: hub_config)
+    monkeypatch.setattr(
+        "omnigent_hub.cli.reconcile_services",
+        lambda config: {"state": "standby", "host_probe_alert": True},
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["reconcile-services", "--json"])
+
+    assert exit_info.value.code == 1
+
+
+def test_reconcile_exits_cleanly_below_the_inconclusive_probe_threshold(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("omnigent_hub.cli.load_config", lambda: hub_config)
+    monkeypatch.setattr(
+        "omnigent_hub.cli.reconcile_services",
+        lambda config: {"state": "standby", "host_probe_alert": False},
+    )
+
+    main(["reconcile-services", "--json"])

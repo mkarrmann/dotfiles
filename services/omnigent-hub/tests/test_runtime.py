@@ -17,9 +17,12 @@ from omnigent_hub.runtime import (
     DEGRADED_STREAK_ALERT_THRESHOLD,
     HOST_PROBE_FAILURE_RESTART_THRESHOLD,
     HOST_PROBE_FAILURE_WINDOW_SECONDS,
+    HOST_PROBE_TIMEOUT_SECONDS,
+    HOST_PROBE_UNKNOWN_ALERT_THRESHOLD,
     RECORD_REFRESH_SECONDS,
     GateDenied,
     GateIndeterminate,
+    HostProbe,
     HubRuntimeError,
     activate_transition,
     assert_sessions_quiescent,
@@ -28,6 +31,7 @@ from omnigent_hub.runtime import (
     check_gate,
     force_start,
     initialize,
+    probe_host,
     read_force_override,
     reconcile_host,
     reconcile_local_route,
@@ -202,7 +206,7 @@ def test_active_reconciliation_frees_loopback_before_starting_server(
     )
     monkeypatch.setattr("omnigent_hub.runtime.systemd_state", lambda unit: "active")
     monkeypatch.setattr("omnigent_hub.runtime.unit_active_seconds", lambda unit: 600.0)
-    monkeypatch.setattr("omnigent_hub.runtime.probe_host_registered", lambda config: True)
+    monkeypatch.setattr("omnigent_hub.runtime.probe_host", lambda config: HostProbe.REGISTERED)
 
     def record_action(config: HubConfig, action: str) -> dict[str, str]:
         actions.append(action)
@@ -264,7 +268,7 @@ def test_standby_reconciliation_restarts_wedged_client_proxy(
     monkeypatch.setattr("omnigent_hub.runtime.systemd_state", lambda unit: "active")
     monkeypatch.setattr("omnigent_hub.runtime.probe_health", lambda config: False)
     monkeypatch.setattr("omnigent_hub.runtime.unit_active_seconds", lambda unit: 600.0)
-    monkeypatch.setattr("omnigent_hub.runtime.probe_host_registered", lambda config: True)
+    monkeypatch.setattr("omnigent_hub.runtime.probe_host", lambda config: HostProbe.REGISTERED)
 
     def record_action(config: HubConfig, action: str) -> dict[str, str]:
         actions.append(action)
@@ -296,7 +300,7 @@ def test_standby_reconciliation_leaves_healthy_client_proxy(
     monkeypatch.setattr("omnigent_hub.runtime.systemd_state", lambda unit: "active")
     monkeypatch.setattr("omnigent_hub.runtime.probe_health", lambda config: True)
     monkeypatch.setattr("omnigent_hub.runtime.unit_active_seconds", lambda unit: 600.0)
-    monkeypatch.setattr("omnigent_hub.runtime.probe_host_registered", lambda config: True)
+    monkeypatch.setattr("omnigent_hub.runtime.probe_host", lambda config: HostProbe.REGISTERED)
 
     def record_action(config: HubConfig, action: str) -> dict[str, str]:
         actions.append(action)
@@ -330,10 +334,10 @@ def test_standby_reconciliation_starts_a_host_left_dead_by_an_explicit_stop(
     )
     monkeypatch.setattr("omnigent_hub.runtime.probe_health", lambda config: True)
 
-    def unexpected_probe(config: HubConfig) -> bool:
+    def unexpected_probe(config: HubConfig) -> HostProbe:
         raise AssertionError("an inactive host unit must not be probed before starting")
 
-    monkeypatch.setattr("omnigent_hub.runtime.probe_host_registered", unexpected_probe)
+    monkeypatch.setattr("omnigent_hub.runtime.probe_host", unexpected_probe)
 
     def record_action(config: HubConfig, action: str) -> dict[str, str]:
         actions.append(action)
@@ -351,7 +355,10 @@ def test_standby_reconciliation_starts_a_host_left_dead_by_an_explicit_stop(
 
 
 def _unregistered_standby_round(
-    standby: HubConfig, monkeypatch: pytest.MonkeyPatch, *, registered: bool = False
+    standby: HubConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    probe: HostProbe = HostProbe.UNREGISTERED,
 ) -> tuple[list[str], dict[str, Any]]:
     """One reconcile pass over a standby whose host the hub cannot see."""
     actions: list[str] = []
@@ -366,7 +373,7 @@ def _unregistered_standby_round(
     monkeypatch.setattr("omnigent_hub.runtime.systemd_state", lambda unit: "active")
     monkeypatch.setattr("omnigent_hub.runtime.probe_health", lambda config: True)
     monkeypatch.setattr("omnigent_hub.runtime.unit_active_seconds", lambda unit: 600.0)
-    monkeypatch.setattr("omnigent_hub.runtime.probe_host_registered", lambda config: registered)
+    monkeypatch.setattr("omnigent_hub.runtime.probe_host", lambda config: probe)
 
     def record_action(config: HubConfig, action: str) -> dict[str, str]:
         actions.append(action)
@@ -379,9 +386,8 @@ def _unregistered_standby_round(
 def test_standby_reconciliation_tolerates_a_single_unseen_host_probe(
     hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Restarting the host kills every runner on it, so one probe -- which also
-    # reads False for a slow CLI or a timeout -- must not be enough to spend
-    # in-flight sessions on.
+    # Restarting the host kills every runner on it, so even one definite
+    # "offline" must not be enough to spend in-flight sessions on.
     standby = replace(hub_config, local_fqdn="standby.example.com")
     actions, result = _unregistered_standby_round(standby, monkeypatch)
     assert "restart-host" not in actions
@@ -412,7 +418,7 @@ def test_a_registered_probe_clears_the_host_failure_streak(
     standby = replace(hub_config, local_fqdn="standby.example.com")
     for _ in range(HOST_PROBE_FAILURE_RESTART_THRESHOLD - 1):
         _unregistered_standby_round(standby, monkeypatch)
-    _unregistered_standby_round(standby, monkeypatch, registered=True)
+    _unregistered_standby_round(standby, monkeypatch, probe=HostProbe.REGISTERED)
 
     actions, result = _unregistered_standby_round(standby, monkeypatch)
 
@@ -437,6 +443,160 @@ def test_a_stale_host_failure_streak_does_not_accumulate(
     assert result["host_restarted"] is False
 
 
+def test_inconclusive_host_probes_never_restart_the_host_on_the_timer(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A timed-out probe is CPU starvation, a wedged tunnel, or a slow hub.
+    # Restarting the host fixes none of those and kills every session on it.
+    standby = replace(hub_config, local_fqdn="standby.example.com")
+    results = []
+    for _ in range(HOST_PROBE_UNKNOWN_ALERT_THRESHOLD + 2):
+        actions, result = _unregistered_standby_round(standby, monkeypatch, probe=HostProbe.UNKNOWN)
+        assert "restart-host" not in actions
+        results.append(result)
+
+    streaks = [result["host_probe_unknown_streak"] for result in results]
+    assert streaks == list(range(1, HOST_PROBE_UNKNOWN_ALERT_THRESHOLD + 3))
+    # Escalates from the threshold on, so a blind watchdog cannot stay quiet.
+    alerts = [result["host_probe_alert"] for result in results]
+    assert alerts == [False] * (HOST_PROBE_UNKNOWN_ALERT_THRESHOLD - 1) + [True] * 3
+    assert not standby.host_probe_failures.exists()
+
+
+def test_an_inconclusive_probe_does_not_interrupt_a_failure_streak(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # It is no evidence of health either, so it must not buy a wedged host
+    # another three cycles.
+    standby = replace(hub_config, local_fqdn="standby.example.com")
+    for _ in range(HOST_PROBE_FAILURE_RESTART_THRESHOLD - 1):
+        _unregistered_standby_round(standby, monkeypatch)
+    _unregistered_standby_round(standby, monkeypatch, probe=HostProbe.UNKNOWN)
+
+    actions, result = _unregistered_standby_round(standby, monkeypatch)
+
+    assert actions[-1] == "restart-host"
+    assert result["host_probe_unknown_streak"] == 0
+
+
+@pytest.mark.parametrize("verdict", [HostProbe.REGISTERED, HostProbe.UNREGISTERED])
+def test_a_conclusive_probe_ends_the_inconclusive_streak(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch, verdict: HostProbe
+) -> None:
+    standby = replace(hub_config, local_fqdn="standby.example.com")
+    for _ in range(HOST_PROBE_UNKNOWN_ALERT_THRESHOLD):
+        _unregistered_standby_round(standby, monkeypatch, probe=HostProbe.UNKNOWN)
+
+    _, result = _unregistered_standby_round(standby, monkeypatch, probe=verdict)
+
+    assert result["host_probe_unknown_streak"] == 0
+    assert result["host_probe_alert"] is False
+    assert not standby.host_probe_unknown.exists()
+
+
+def test_reconcile_reports_the_verdict_and_duration_of_its_host_probe(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    standby = replace(hub_config, local_fqdn="standby.example.com")
+
+    _, result = _unregistered_standby_round(standby, monkeypatch, probe=HostProbe.UNKNOWN)
+
+    assert result["host_probe"]["verdict"] == "unknown"
+    assert isinstance(result["host_probe"]["seconds"], float)
+    assert result["host_probe"]["at"].endswith("Z")
+
+
+def test_operator_reconcile_restarts_on_an_inconclusive_probe(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Unchanged from before the probe distinguished verdicts: an operator ran a
+    # --yes command to fix this host, and the timer is not there to try again.
+    monkeypatch.setattr("omnigent_hub.runtime.systemd_state", lambda unit: "active")
+    monkeypatch.setattr("omnigent_hub.runtime.unit_active_seconds", lambda unit: 600.0)
+    monkeypatch.setattr("omnigent_hub.runtime.probe_host", lambda config: HostProbe.UNKNOWN)
+    monkeypatch.setattr("omnigent_hub.runtime.service_action", lambda config, action: {})
+
+    _, action = reconcile_host(hub_config, route_changed=False, require_repeated_failure=False)
+
+    assert action == "restart-host"
+
+
+def _daemon(process: str, host_status: str | None) -> dict[str, Any]:
+    return {"process": process, "host_status": host_status, "error": None}
+
+
+def _probe_with(
+    hub_config: HubConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stdout: str = "",
+    returncode: int = 0,
+    raises: BaseException | None = None,
+) -> tuple[HostProbe, dict[str, Any]]:
+    seen: dict[str, Any] = {}
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen.update(kwargs, command=command)
+        if raises is not None:
+            raise raises
+        return subprocess.CompletedProcess(command, returncode, stdout=stdout, stderr="")
+
+    monkeypatch.setattr("omnigent_hub.runtime.subprocess.run", fake_run)
+    return probe_host(hub_config), seen
+
+
+@pytest.mark.parametrize(
+    ("daemons", "expected"),
+    [
+        ([_daemon("online", "online")], HostProbe.REGISTERED),
+        ([_daemon("offline", "offline"), _daemon("online", "online")], HostProbe.REGISTERED),
+        # The CLI short-circuits a dead process to "offline" without asking the hub.
+        ([_daemon("offline", "offline")], HostProbe.UNREGISTERED),
+        # The hub answered 200 and does not have the tunnel.
+        ([_daemon("online", "offline")], HostProbe.UNREGISTERED),
+        # No daemon recorded itself for this server.
+        ([], HostProbe.UNREGISTERED),
+        # The hub request failed; the CLI leaves host_status null.
+        ([_daemon("online", None)], HostProbe.UNKNOWN),
+        ([_daemon("offline", "offline"), _daemon("online", None)], HostProbe.UNKNOWN),
+    ],
+)
+def test_probe_host_classifies_cli_output(
+    hub_config: HubConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    daemons: list[dict[str, Any]],
+    expected: HostProbe,
+) -> None:
+    probe, _ = _probe_with(hub_config, monkeypatch, stdout=json.dumps({"daemons": daemons}))
+    assert probe is expected
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        {"raises": subprocess.TimeoutExpired(["omnigent"], HOST_PROBE_TIMEOUT_SECONDS)},
+        {"raises": OSError("no such file")},
+        {"returncode": 1, "stdout": "Error: cannot mint token"},
+        {"stdout": "not json"},
+        {"stdout": json.dumps({"daemons": "nope"})},
+        {"stdout": json.dumps({"daemons": ["nope"]})},
+    ],
+)
+def test_probe_host_calls_anything_but_a_verdict_unknown(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch, outcome: dict[str, Any]
+) -> None:
+    probe, _ = _probe_with(hub_config, monkeypatch, **outcome)
+    assert probe is HostProbe.UNKNOWN
+
+
+def test_probe_host_allows_for_a_starved_interpreter(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The CLI measured 7-12s at load 220; the old 15s budget restarted hosts.
+    _, seen = _probe_with(hub_config, monkeypatch, stdout=json.dumps({"daemons": []}))
+    assert seen["timeout"] == HOST_PROBE_TIMEOUT_SECONDS >= 60
+
+
 def test_operator_reconcile_restarts_an_unseen_host_immediately(
     hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -445,7 +605,7 @@ def test_operator_reconcile_restarts_an_unseen_host_immediately(
     # nothing about the host they were run to fix.
     monkeypatch.setattr("omnigent_hub.runtime.systemd_state", lambda unit: "active")
     monkeypatch.setattr("omnigent_hub.runtime.unit_active_seconds", lambda unit: 600.0)
-    monkeypatch.setattr("omnigent_hub.runtime.probe_host_registered", lambda config: False)
+    monkeypatch.setattr("omnigent_hub.runtime.probe_host", lambda config: HostProbe.UNREGISTERED)
     monkeypatch.setattr("omnigent_hub.runtime.service_action", lambda config, action: {})
 
     _, action = reconcile_host(hub_config, route_changed=False, require_repeated_failure=False)
@@ -470,10 +630,10 @@ def test_standby_reconciliation_leaves_a_freshly_started_host_to_register(
     monkeypatch.setattr("omnigent_hub.runtime.probe_health", lambda config: True)
     monkeypatch.setattr("omnigent_hub.runtime.unit_active_seconds", lambda unit: 10.0)
 
-    def unexpected_probe(config: HubConfig) -> bool:
+    def unexpected_probe(config: HubConfig) -> HostProbe:
         raise AssertionError("a host inside its grace window must not be probed")
 
-    monkeypatch.setattr("omnigent_hub.runtime.probe_host_registered", unexpected_probe)
+    monkeypatch.setattr("omnigent_hub.runtime.probe_host", unexpected_probe)
 
     def record_action(config: HubConfig, action: str) -> dict[str, str]:
         actions.append(action)
@@ -959,7 +1119,7 @@ def test_degraded_cycles_accumulate_into_an_escalating_streak(
     monkeypatch.setattr("omnigent_hub.runtime.read_record", unavailable)
     monkeypatch.setattr("omnigent_hub.runtime.systemd_state", lambda unit: "active")
     monkeypatch.setattr("omnigent_hub.runtime.unit_active_seconds", lambda unit: 600.0)
-    monkeypatch.setattr("omnigent_hub.runtime.probe_host_registered", lambda config: True)
+    monkeypatch.setattr("omnigent_hub.runtime.probe_host", lambda config: HostProbe.REGISTERED)
     monkeypatch.setattr("omnigent_hub.runtime.service_action", lambda config, action: {})
 
     outcomes = [reconcile_services(hub_config) for _ in range(DEGRADED_STREAK_ALERT_THRESHOLD)]
@@ -996,7 +1156,7 @@ def _stub_active_reconciliation(monkeypatch: pytest.MonkeyPatch, record: ActiveH
     )
     monkeypatch.setattr("omnigent_hub.runtime.systemd_state", lambda unit: "active")
     monkeypatch.setattr("omnigent_hub.runtime.unit_active_seconds", lambda unit: 600.0)
-    monkeypatch.setattr("omnigent_hub.runtime.probe_host_registered", lambda config: True)
+    monkeypatch.setattr("omnigent_hub.runtime.probe_host", lambda config: HostProbe.REGISTERED)
     monkeypatch.setattr("omnigent_hub.runtime.service_action", lambda config, action: {})
 
 

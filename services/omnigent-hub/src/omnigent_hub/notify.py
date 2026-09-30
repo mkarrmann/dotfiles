@@ -16,7 +16,10 @@ Two rules keep it quiet enough to stay trusted:
   produces one message rather than sixty;
 * a single degraded reconcile cycle is a blip and says nothing. Only a streak
   past ``DEGRADED_STREAK_ALERT_THRESHOLD`` escalates, which is the same threshold
-  reconcile records against, read from one place rather than duplicated.
+  reconcile records against, read from one place rather than duplicated. A
+  reconcile that failed because host probes have been inconclusive for
+  ``HOST_PROBE_UNKNOWN_ALERT_THRESHOLD`` cycles escalates regardless: it only
+  fails the unit once that streak is already long.
 
 The durable record is written unconditionally: a notification that could not be
 sent must still leave evidence that the condition happened.
@@ -35,9 +38,11 @@ from typing import Any
 from omnigent_hub.config import HubConfig
 from omnigent_hub.runtime import (
     DEGRADED_STREAK_ALERT_THRESHOLD,
+    HOST_PROBE_UNKNOWN_ALERT_THRESHOLD,
     GateDenied,
     HubRuntimeError,
     check_gate,
+    host_probe_unknown_streak,
     manifold_ttl_seconds,
     utc_now,
 )
@@ -141,7 +146,11 @@ def should_notify(config: HubConfig, *, unit: str, now: float) -> tuple[bool, st
     # of at least 1. A reconcile failure with no streak therefore failed for some
     # other reason entirely -- an exception, a systemd error -- which is rarer
     # and less explicable than a storage outage, and always worth escalating.
-    if unit.startswith("omnigent-hub-reconcile") and 0 < streak < DEGRADED_STREAK_ALERT_THRESHOLD:
+    if (
+        unit.startswith("omnigent-hub-reconcile")
+        and 0 < streak < DEGRADED_STREAK_ALERT_THRESHOLD
+        and host_probe_unknown_streak(config) < HOST_PROBE_UNKNOWN_ALERT_THRESHOLD
+    ):
         return False, f"degraded streak {streak} is below {DEGRADED_STREAK_ALERT_THRESHOLD}"
     last = _read_json(_alert_state_path(config)).get(unit)
     if isinstance(last, int | float) and now - last < ALERT_REPEAT_SECONDS:
@@ -164,6 +173,7 @@ def alert(
         "host": config.local_fqdn,
         "at": utc_now(),
         "degraded_streak": _degraded_streak(config),
+        "host_probe_unknown_streak": host_probe_unknown_streak(config),
         "gate": _gate_summary(config),
         "storage_warning": _storage_warning(config),
         "notified": False,
@@ -202,6 +212,12 @@ def _format(detail: Mapping[str, Any]) -> str:
     streak = detail.get("degraded_streak")
     if isinstance(streak, int) and streak:
         lines.append(f"shared storage unreadable for {streak} consecutive reconcile cycles")
+    blind = detail.get("host_probe_unknown_streak")
+    if isinstance(blind, int) and blind >= HOST_PROBE_UNKNOWN_ALERT_THRESHOLD:
+        lines.append(
+            f"host registration probe inconclusive for {blind} consecutive reconcile cycles; "
+            "the host will not be auto-restarted until a probe answers"
+        )
     warning = detail.get("storage_warning")
     if warning:
         lines.append(str(warning))

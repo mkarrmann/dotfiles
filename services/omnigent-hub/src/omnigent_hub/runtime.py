@@ -9,6 +9,7 @@ import urllib.request
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -54,13 +55,27 @@ GATE_EXIT_INDETERMINATE = 255
 # own reconnect loop backs off to a 10s cap and retries indefinitely, so a
 # blipped link recovers well inside a single 60s reconcile interval.
 #
-# One sample is also a weak signal. ``probe_host_registered`` reports False for
-# a slow or failed CLI invocation, a 15s timeout, and unparseable output, none
-# of which mean the host is gone.
+# Only a definite answer counts toward the streak -- see :class:`HostProbe`.
+# Even those get three samples: the hub can briefly report a host offline while
+# its websocket reconnects.
 #
 # Three strikes at the 60s cadence still restarts a genuinely wedged host
 # within roughly three minutes.
 HOST_PROBE_FAILURE_RESTART_THRESHOLD = 3
+
+# Wall-clock budget for one `omnigent host status` invocation. Most of it is
+# interpreter startup and auth resolution: 7-12s on a devserver at load 220,
+# which the previous 15s budget turned into host restarts. Sized to fit inside
+# the reconcile unit's TimeoutStartSec=180 alongside a client restart's 60s
+# health wait.
+HOST_PROBE_TIMEOUT_SECONDS = 60.0
+
+# Consecutive inconclusive probes before reconcile fails its unit so that
+# omnigent-alert escalates. Inconclusive probes never restart the host, so
+# without this a probe that can no longer answer would silently switch off host
+# self-healing. Ten cycles is 10-20 minutes depending on how long each probe
+# takes to give up.
+HOST_PROBE_UNKNOWN_ALERT_THRESHOLD = 10
 
 # A streak older than this is treated as over. Without it the count is
 # "failures ever", not "failures in a row": two isolated blips days apart would
@@ -75,6 +90,23 @@ def _now() -> float:
 
 class HubRuntimeError(RuntimeError):
     pass
+
+
+class HostProbe(StrEnum):
+    """What one registration probe established about the local execution host.
+
+    The probe never talks to the host daemon. It checks that the recorded
+    daemon process is alive, then asks the hub whether that host's tunnel is
+    online. A broken host therefore answers quickly and definitely: the process
+    is dead, or the hub reports it offline. A probe that times out, errors, or
+    cannot reach the hub says nothing about the host -- it is CPU starvation, a
+    wedged tunnel, or a slow hub, and restarting the host fixes none of those
+    while killing every session on it.
+    """
+
+    REGISTERED = "registered"
+    UNREGISTERED = "unregistered"
+    UNKNOWN = "unknown"
 
 
 class GateDenied(HubRuntimeError):
@@ -575,6 +607,9 @@ def local_status(config: HubConfig) -> dict[str, Any]:
         "snapshot_error": snapshot_error,
         "storage_expiry": _storage_expiry(config),
         "degraded_streak": _read_optional_json(config.degraded_streak),
+        "host_probe_failures": _read_optional_json(config.host_probe_failures),
+        "host_probe_unknown": _read_optional_json(config.host_probe_unknown),
+        "host_probe_last": _read_optional_json(config.host_probe_last),
     }
 
 
@@ -719,8 +754,10 @@ def unit_active_seconds(unit: str) -> float | None:
     return max(0.0, time.monotonic() - entered)
 
 
-def probe_host_registered(config: HubConfig, *, timeout_seconds: float = 15.0) -> bool:
-    """Whether the local execution host is registered and online with the hub."""
+def probe_host(
+    config: HubConfig, *, timeout_seconds: float = HOST_PROBE_TIMEOUT_SECONDS
+) -> HostProbe:
+    """Classify the local execution host's registration with the hub."""
     try:
         result = subprocess.run(
             [
@@ -737,22 +774,25 @@ def probe_host_registered(config: HubConfig, *, timeout_seconds: float = 15.0) -
             timeout=timeout_seconds,
         )
     except (OSError, subprocess.SubprocessError):
-        return False
+        return HostProbe.UNKNOWN
     if result.returncode != 0:
-        return False
+        return HostProbe.UNKNOWN
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError:
-        return False
+        return HostProbe.UNKNOWN
     daemons = payload.get("daemons") if isinstance(payload, dict) else None
-    if not isinstance(daemons, list):
-        return False
-    return any(
-        isinstance(daemon, dict)
-        and daemon.get("process") == "online"
-        and daemon.get("host_status") == "online"
-        for daemon in daemons
-    )
+    if not isinstance(daemons, list) or not all(isinstance(d, dict) for d in daemons):
+        return HostProbe.UNKNOWN
+    if any(d.get("process") == "online" and d.get("host_status") == "online" for d in daemons):
+        return HostProbe.REGISTERED
+    # The CLI sets host_status to a string only from something definite: "offline"
+    # for a dead process, or whatever the hub answered with a 200. It leaves it
+    # null when the hub request failed. An empty list is definite too: no daemon
+    # has recorded itself for this server at all.
+    if all(isinstance(d.get("host_status"), str) for d in daemons):
+        return HostProbe.UNREGISTERED
+    return HostProbe.UNKNOWN
 
 
 def _client_reconcile_action(config: HubConfig, *, route_changed: bool) -> str:
@@ -773,6 +813,59 @@ def _client_reconcile_action(config: HubConfig, *, route_changed: bool) -> str:
 def _clear_host_probe_failures(config: HubConfig) -> None:
     """Forget the current failure streak."""
     config.host_probe_failures.unlink(missing_ok=True)
+
+
+def _clear_host_probe_unknown(config: HubConfig) -> None:
+    config.host_probe_unknown.unlink(missing_ok=True)
+
+
+def _record_host_probe_unknown(config: HubConfig) -> int:
+    """Count consecutive inconclusive probes and return the new length.
+
+    No expiry window, unlike the failure streak: this measures how long the
+    watchdog has been unable to see the host, and only a conclusive probe ends
+    that. Corrupt or unwritable state is tolerated for the same reason as in
+    :func:`_record_host_probe_failure`.
+    """
+    previous = _read_optional_json(config.host_probe_unknown) or {}
+    count = previous.get("count")
+    streak = (count if isinstance(count, int) and count > 0 else 0) + 1
+    try:
+        write_json_atomic(
+            config.host_probe_unknown,
+            {
+                "count": streak,
+                "since": previous.get("since") or utc_now(),
+                "observed_at": utc_now(),
+            },
+        )
+    except OSError:
+        pass
+    return streak
+
+
+def host_probe_unknown_streak(config: HubConfig) -> int:
+    count = (_read_optional_json(config.host_probe_unknown) or {}).get("count")
+    return count if isinstance(count, int) and count > 0 else 0
+
+
+def _record_last_host_probe(config: HubConfig, probe: HostProbe, *, seconds: float) -> None:
+    try:
+        write_json_atomic(
+            config.host_probe_last,
+            {"verdict": probe.value, "seconds": round(seconds, 1), "at": utc_now()},
+        )
+    except OSError:
+        pass
+
+
+def _host_probe_report(config: HubConfig) -> dict[str, Any]:
+    streak = host_probe_unknown_streak(config)
+    return {
+        "host_probe": _read_optional_json(config.host_probe_last),
+        "host_probe_unknown_streak": streak,
+        "host_probe_alert": streak >= HOST_PROBE_UNKNOWN_ALERT_THRESHOLD,
+    }
 
 
 def _record_host_probe_failure(config: HubConfig) -> int:
@@ -826,27 +919,40 @@ def _host_reconcile_action(
     On the reconcile timer an unregistered host is restarted only after
     :data:`HOST_PROBE_FAILURE_RESTART_THRESHOLD` consecutive probes agree,
     because the restart kills every runner on the box and a single probe is not
-    evidence enough to spend live sessions on. Operator commands pass
-    ``require_repeated_failure=False``: they are one-shot and gated behind
-    ``--yes``, so deferring would leave the command silently doing nothing
-    about the host it was run to fix.
+    evidence enough to spend live sessions on. An inconclusive probe neither
+    advances nor resets that streak and never restarts the host on the timer;
+    it is counted separately so a watchdog that has gone blind escalates rather
+    than going quiet. Operator commands pass ``require_repeated_failure=False``:
+    they are one-shot and gated behind ``--yes``, so deferring would leave the
+    command silently doing nothing about the host it was run to fix.
     """
     if route_changed:
         _clear_host_probe_failures(config)
+        _clear_host_probe_unknown(config)
         return "restart-host"
     if systemd_state("omnigent-host.service") != "active":
         _clear_host_probe_failures(config)
+        _clear_host_probe_unknown(config)
         return "start-host"
     active_seconds = unit_active_seconds("omnigent-host.service")
     if active_seconds is not None and active_seconds < HOST_REGISTRATION_GRACE_SECONDS:
         return None
-    if probe_host_registered(config):
+    started = time.monotonic()
+    probe = probe_host(config)
+    _record_last_host_probe(config, probe, seconds=time.monotonic() - started)
+    if probe is HostProbe.REGISTERED:
         _clear_host_probe_failures(config)
+        _clear_host_probe_unknown(config)
         return None
     if require_repeated_failure:
+        if probe is HostProbe.UNKNOWN:
+            _record_host_probe_unknown(config)
+            return None
+        _clear_host_probe_unknown(config)
         if _record_host_probe_failure(config) < HOST_PROBE_FAILURE_RESTART_THRESHOLD:
             return None
     _clear_host_probe_failures(config)
+    _clear_host_probe_unknown(config)
     return "restart-host"
 
 
@@ -1024,6 +1130,7 @@ def _reconcile_degraded(config: HubConfig, *, storage_error: str) -> dict[str, A
         "services": {**client, **host},
         "host_action": host_action,
         "host_restarted": host_action == "restart-host",
+        **_host_probe_report(config),
     }
 
 
@@ -1089,6 +1196,7 @@ def reconcile_services(config: HubConfig) -> dict[str, Any]:
             "services": {**services, **client, **host},
             "host_action": host_action,
             "host_restarted": host_action == "restart-host",
+            **_host_probe_report(config),
         }
     service_action(config, "stop-client")
     route = reconcile_local_route(config, restart_host=False)
@@ -1111,6 +1219,7 @@ def reconcile_services(config: HubConfig) -> dict[str, Any]:
         "services": {**core, **tail, **host},
         "host_action": host_action,
         "host_restarted": host_action == "restart-host",
+        **_host_probe_report(config),
         "record_refreshed": record_refreshed,
         "record_refresh_error": record_refresh_error,
     }
