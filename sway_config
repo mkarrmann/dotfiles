@@ -277,10 +277,14 @@ input "5824:10203:MoErgo_Glove80_Left_Keyboard" xkb_options $xkb_options
 # sway's session scope where systemd-oomd cannot see them.
 bindsym $mod+d exec $HOME/bin/app-scope app.slice wofi --show drun
 
-input * {
+# Pointer settings are opted into per device, so a newly plugged mouse keeps
+# libinput's defaults. Scrolling comes from the Glove80's mouse keys, whose
+# direction natural_scroll sets; wheel mice keep the default direction.
+input "5824:10203:MoErgo_Glove80_Left_Mouse" {
     natural_scroll enabled
     pointer_accel -0.8
 }
+input "20547:19685:Ploopy_Corporation_Ploopy_Nano_2_Trackball_Mouse" pointer_accel -0.8
 
 # Make DISPLAY/WAYLAND_DISPLAY available to systemd --user services and systemd-run scopes
 exec_always --no-startup-id systemctl --user import-environment DISPLAY WAYLAND_DISPLAY SWAYSOCK XDG_CURRENT_DESKTOP
