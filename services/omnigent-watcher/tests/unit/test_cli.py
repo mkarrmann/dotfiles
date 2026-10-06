@@ -44,6 +44,11 @@ def _seed(connection: sqlite3.Connection) -> None:
     )
 
 
+# TODO: flaky, and reliably so after another test module (e.g. test_logic.py):
+# the raw main-file bytes can change between snapshots although `status`
+# wrote nothing -- likely an unclosed connection (`with self._connect()` only
+# commits) being garbage-collected and checkpointing its WAL. Reproduces on
+# unmodified HEAD e32fc5f.
 def _main_file_and_contents(path: Path) -> tuple[bytes, int, str]:
     with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
         contents = "\n".join(connection.iterdump())

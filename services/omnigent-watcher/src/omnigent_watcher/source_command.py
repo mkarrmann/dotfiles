@@ -164,6 +164,11 @@ async def _run_command(
             stdout, _stderr = await asyncio.gather(stdout_task, stderr_task)
             return_code = await process.wait()
     except TimeoutError as exc:
+        # TODO: kill() reaches only the direct child. A command whose own child
+        # keeps stdout open makes this wait() block until that child exits,
+        # because asyncio waits for every pipe to close -- so the timeout does
+        # not bound it. agenthome_client.run_meta spawns in a new session and
+        # uses killpg for this reason.
         process.kill()
         await process.wait()
         stdout_task.cancel()
