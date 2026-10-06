@@ -100,7 +100,9 @@ feeding external tool output into a thread, but an API primitive is not an
 already-configured notification tool. Do not invent a CLI command or manually
 wire an app-server bridge as a routine waiting workaround. In Omnigent, use
 `watch-anything` when native notification is insufficient and the condition
-fits that skill. Outside Omnigent, its watcher cannot target a native thread ID.
+fits that skill. Outside Omnigent, its watcher cannot target a native thread
+ID; the one exception is an Agent Home session, addressed as
+`agenthome:<session_id>` (see [[watch-anything]]).
 
 ## Make the wait useful and bounded
 

@@ -85,6 +85,13 @@ diff_subscribe(
   natural mistake. If you are a subagent that will not outlive the watch, pass
   `parent_session_id` instead — otherwise the wake goes to a session that no
   longer exists.
+- **In an Agent Home session** (no `sys_session_get_info`), run
+  `meta ah.session whoami` and pass `agenthome:<session_id>` — for example
+  `agenthome:ah_rrO5GPFnu14SVsq9ExhBFJ`. Check that the title and host it
+  prints are yours; under Codex it may not resolve the calling session. If the
+  tool answers that the running watcher cannot wake Agent Home sessions yet,
+  report that as the monitoring gap — enabling it is the user's restart, not
+  yours.
 - **`diffs`** is required. Name every diff in the stack, using at most 20 IDs
   per call. Read the ids out of your own `jf submit` / `conf submit` output.
   Nothing is scraped from tool output on your behalf — an earlier version of

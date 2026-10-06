@@ -73,6 +73,11 @@ subscribe(
   `parent_session_id` when the parent owns follow-up. A durable child can own
   its own watch, but do not assume its later externally triggered turns will
   automatically notify the parent; target the actual owner.
+- **In an Agent Home session**, pass `agenthome:` followed by the
+  `session_id` that `meta ah.session whoami` prints, after checking its title
+  and host are yours. If the tool answers that the running watcher cannot wake
+  Agent Home sessions yet, fall back to native waiting and say so; enabling it
+  is the user's restart, not yours.
 - **`subject`** must be namespaced `<prefix>:<identifier>` and identify the
   particular job or dependency. It shares one command specification across
   sessions on the server; conflicting commands, extraction, intervals, or
