@@ -268,4 +268,32 @@ async def list_watches(session_id: str, sources: str) -> StatusResponse:
     return StatusResponse(detail=detail)
 
 
+class CapabilitiesResponse(BaseModel):
+    session_kinds: list[str]
+
+
+@router.get("/v1/watches/capabilities", response_model=CapabilitiesResponse)
+async def capabilities() -> CapabilitiesResponse:
+    """The session backends the running worker can wake.
+
+    A server that predates this route answers 404, which the MCP client reads
+    as "Omnigent only" -- the same answer as a worker that predates it.
+    """
+    kinds = await asyncio.to_thread(_worker_session_kinds)
+    return CapabilitiesResponse(session_kinds=sorted(kinds))
+
+
+def _worker_session_kinds() -> frozenset[str]:
+    from pathlib import Path
+
+    from .capabilities import capabilities_path, worker_session_kinds
+    from .database import DEFAULT_DATABASE_PATH
+
+    settings = _settings()
+    configured = (
+        settings.database_path if settings is not None else Path(DEFAULT_DATABASE_PATH).expanduser()
+    )
+    return worker_session_kinds(capabilities_path(configured))
+
+
 DEBUG_ROUTERS: list[tuple[Any, str, list[str]]] = [(router, "", ["watch"])]

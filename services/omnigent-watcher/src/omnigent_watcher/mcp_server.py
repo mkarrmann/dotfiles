@@ -1,8 +1,9 @@
 """MCP tools that register watches against the watcher's own database.
 
-Every tool takes the Omnigent ``session_id`` it should wake, because that is
-the only thing a watch needs from its caller that the caller cannot state
-directly. Agents get it from Omnigent's own ``sys_session_get_info``.
+Every tool takes the ``session_id`` it should wake, because that is the only
+thing a watch needs from its caller that the caller cannot state directly.
+Agents get it from Omnigent's own ``sys_session_get_info``, or, in Agent Home,
+as ``agenthome:`` plus the id ``meta ah.session whoami`` prints.
 
 Asking for it, rather than discovering it, is what makes this work in every
 harness. The MCP protocol carries no session context in any transport --
@@ -54,11 +55,14 @@ _ALL_EVENTS: tuple[EventName, ...] = (
 SessionId = Annotated[
     str,
     Field(
-        pattern=r"^[A-Za-z0-9_-]{8,128}$",
+        # The server caps session ids at 128 characters, prefix included.
+        pattern=r"^(?:[A-Za-z0-9_-]{8,128}|agenthome:[A-Za-z0-9_-]{8,118})$",
         description=(
-            "The Omnigent session to wake. Call sys_session_get_info and pass "
-            "its session_id -- or its parent_session_id if you are a subagent "
-            "that will not outlive the watch."
+            "The session to wake. In Omnigent, call sys_session_get_info and "
+            "pass its session_id -- or its parent_session_id if you are a "
+            "subagent that will not outlive the watch. In Agent Home, pass "
+            "agenthome: followed by the session_id that `meta ah.session "
+            "whoami` prints."
         ),
     ),
 ]
@@ -129,6 +133,59 @@ def _server_url() -> str:
 
 
 async def _validate_session(session_id: str) -> None:
+    """Confirm *session_id* is a live session before writing anything.
+
+    ``agenthome:`` ids are checked against Agent Home, and only once the
+    running worker has said it can wake them (see ``capabilities``).
+    Everything else is an Omnigent session.
+
+    :raises ValueError: If the session is unknown, closed, or archived.
+    """
+    from .agenthome_client import is_agent_home
+
+    if is_agent_home(session_id):
+        await _validate_agent_home_session(session_id)
+        return
+    await _validate_omnigent_session(session_id)
+
+
+async def _validate_agent_home_session(session_id: str) -> None:
+    from .agenthome_client import AgentHomeClient
+    from .capabilities import AGENT_HOME
+
+    if AGENT_HOME not in await _worker_session_kinds():
+        raise ValueError(
+            "the running watcher cannot wake Agent Home sessions yet. It needs "
+            "omnigent-server and omnigent-watcher restarted on the hub to load "
+            "that support -- an operator action for the user, not this agent."
+        )
+    snapshot = await AgentHomeClient().get(session_id)
+    if snapshot.terminal or not snapshot.reachable:
+        raise ValueError(
+            f"no live Agent Home session {session_id} on any of your hosts, or "
+            "Agent Home could not be reached. Run `meta ah.session whoami` and "
+            "pass agenthome: followed by the session_id it prints."
+        )
+
+
+async def _worker_session_kinds() -> frozenset[str]:
+    """What the server reports its worker can wake; Omnigent alone if unsure."""
+    from .capabilities import OMNIGENT
+
+    url = f"{_server_url().rstrip('/')}/v1/watches/capabilities"
+    try:
+        async with httpx.AsyncClient(timeout=15.0, trust_env=False) as client:
+            response = await client.get(url)
+        payload = response.json() if response.status_code == 200 else None
+    except (httpx.HTTPError, ValueError):
+        payload = None
+    kinds = payload.get("session_kinds") if isinstance(payload, dict) else None
+    if not isinstance(kinds, list):
+        return frozenset({OMNIGENT})
+    return frozenset(kind for kind in kinds if isinstance(kind, str))
+
+
+async def _validate_omnigent_session(session_id: str) -> None:
     """Confirm *session_id* is a live Omnigent session before writing anything.
 
     The address is supplied by the caller, so a typo or a session that has since

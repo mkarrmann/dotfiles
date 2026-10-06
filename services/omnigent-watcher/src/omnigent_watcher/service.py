@@ -6,12 +6,19 @@ import asyncio
 import logging
 import time
 
+from .agenthome_client import AgentHomeClient, AgentHomeDeliveryService
+from .capabilities import (
+    capabilities_path,
+    clear_worker_capabilities,
+    write_worker_capabilities,
+)
 from .command_source import CommandSource
 from .database import resolve
 from .domain import SubscriptionState
 from .omnigent_client import OmnigentClient, OmnigentDeliveryService
 from .phabricator_source import PhabricatorReviewSource, bounded_source_environment
 from .repository import WatcherRepository
+from .session_routing import RoutingDeliveryService, RoutingSessionService
 from .settings import ServiceSettings
 from .watcher import SubscriptionError, Watcher
 
@@ -34,9 +41,11 @@ class WatcherService:
         settings: ServiceSettings,
         *,
         client: OmnigentClient | None = None,
+        agent_home: AgentHomeClient | None = None,
     ) -> None:
         self.settings = settings
         self.client = client or OmnigentClient(settings.server_url)
+        self.agent_home = agent_home or AgentHomeClient()
         self.repository = WatcherRepository(resolve(settings.database_path))
         self.watcher = Watcher(
             self.repository,
@@ -44,11 +53,18 @@ class WatcherService:
                 PhabricatorReviewSource(),
                 CommandSource(env=bounded_source_environment()),
             ),
-            self.client,
-            OmnigentDeliveryService(
-                self.client,
-                mode=settings.delivery_mode,
-                allowlist=settings.delivery_session_allowlist,
+            RoutingSessionService(self.client, self.agent_home),
+            RoutingDeliveryService(
+                OmnigentDeliveryService(
+                    self.client,
+                    mode=settings.delivery_mode,
+                    allowlist=settings.delivery_session_allowlist,
+                ),
+                AgentHomeDeliveryService(
+                    self.agent_home,
+                    mode=settings.delivery_mode,
+                    allowlist=settings.delivery_session_allowlist,
+                ),
             ),
             config=settings.watcher,
         )
@@ -79,6 +95,10 @@ class WatcherService:
         self._deferred_bindings.pop((session_id, subject), None)
 
     async def run(self) -> None:
+        capabilities = capabilities_path(self.settings.database_path)
+        # Advertised only once this process is the one polling, so the MCP
+        # surface never accepts a watch that no running worker can wake.
+        await asyncio.to_thread(write_worker_capabilities, capabilities)
         try:
             while True:
                 try:
@@ -91,11 +111,13 @@ class WatcherService:
                     delay = self.settings.scheduler_error_retry_seconds
                 await asyncio.sleep(max(0.05, delay))
         finally:
+            await asyncio.to_thread(clear_worker_capabilities, capabilities)
             await asyncio.to_thread(
                 self.repository.release_owner_leases,
                 self.watcher.owner,
             )
             await self.client.close()
+            await self.agent_home.close()
 
     async def run_iteration(self) -> None:
         now = time.time()

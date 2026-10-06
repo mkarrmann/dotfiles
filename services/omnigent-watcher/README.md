@@ -115,6 +115,41 @@ archived session. It does not catch a deliberate wrong-but-live id, which would
 wake another session of the same user on the same machine, from an agent that
 already has that user's shell.
 
+### Agent Home sessions
+
+A session id of the form `agenthome:<agent_id>` names an Agent Home 2.0
+(dm-core) session instead of an Omnigent one; agents get the id from
+`meta ah.session whoami`. Every other id takes the Omnigent path unchanged.
+The prefix is explicit because Agent Home ids have no single shape -- Claude
+sessions are `ah_<token>`, Codex sessions bare UUIDs.
+
+The worker reaches those sessions through the `meta ah.session` CLI
+(`agenthome_client.py`): `list` for liveness and idleness, `inspect` for the
+batch-marker receipt, and `message` to wake. As with Omnigent, a wake is sent
+only to an idle session; a running one, or one waiting on its user or an
+approval, defers the batch. A session off every host is unreachable, never
+gone: Agent Home's `not_found` also covers a session whose host failed to
+answer, so an archived session suspends after a day and retires with the
+seven-day idle limit rather than at once. Receipts are read from the owning
+host only, because the stored-transcript fallback can lag an accepted wake.
+A CLI failure is reported as unreachable rather than raised, and every call is
+bounded at 45 seconds, so a slow or broken `meta` delays but cannot abort the
+cycle for Omnigent sessions.
+
+Validation happens in the MCP process, which picks up new code at the next
+session start, while delivery happens in the worker, which needs a restart. To
+keep a new MCP process from accepting a watch that an older worker would
+retire as deleted, the worker advertises what it can wake in
+`watcher.capabilities.json` beside its database, the server API reports it at
+`GET /v1/watches/capabilities`, and the MCP refuses `agenthome:` ids until
+both say Agent Home. Enabling it is therefore a restart of `omnigent-server`
+and `omnigent-watcher` on the hub; no schema change is involved.
+
+Commands still run on the hub, and the MCP server still needs the Omnigent
+server's watcher API to register a watch. This lets Agent Home sessions use
+the watcher while both systems run; it does not yet let the watcher outlive
+the Omnigent hub.
+
 ### Generic watches
 
 A command watch runs its argv directly — never through a shell, so no part of
