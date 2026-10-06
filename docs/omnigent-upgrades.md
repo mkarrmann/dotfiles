@@ -25,13 +25,7 @@ not a pin**:
 ## Roll the fleet forward
 
 1. Bump `OMNIGENT_MIN_VERSION` in `omnigent_config/topology.env`, commit, push.
-2. On the **hub first**, back up the database — the hub and standby share it and
-   a new release may migrate the schema:
-   ```bash
-   systemctl --user stop omnigent-server
-   cp ~/.omnigent/chat.db ~/.omnigent/chat.db.pre-<version>
-   ```
-3. On each machine:
+2. Upgrade the Mac and the standby, then the hub last. On each machine:
 
    ```bash
    cd ~/dotfiles && git pull && ./init.sh
@@ -47,10 +41,25 @@ not a pin**:
    dies. That is not a broken install and does not read like one — see the
    2026-08-27 entry under "Known upstream bugs".
 
-   **`omnigent-server` on the hub is still manual**, deliberately: a release
-   can migrate `chat.db`, so step 2's backup must happen first.
-   `omnigent-version-ensure` prints the exact commands when it sees a running
-   server on pre-upgrade code.
+   **The `chat.db` backup is automatic too.** On the host that owns the shared
+   database (`omnigent-hub gate`), `omnigent-version-ensure` takes an
+   `omnigent-hub snapshot` before replacing the package — a consistent SQLite
+   backup that also covers the bridge and watcher databases and artifacts — and
+   refuses to upgrade if it cannot. Override deliberately with
+   `OMNIGENT_SKIP_RECOVERY_POINT=1`. Do not `cp chat.db` by hand: a copy of a
+   live database with a WAL is not a consistent backup.
+
+3. **Restart `omnigent-server` on the hub by hand.** It is deliberately not
+   restarted automatically: a release can migrate `chat.db`, so when that
+   happens is the operator's call. First read init's output for
+   `requests OMNIGENT_FEATURES ... which this release does not define` — an
+   unknown feature name in `systemd/omnigent-server.service` makes the server
+   refuse to start, so fix the unit before restarting. Then:
+
+   ```bash
+   systemctl --user stop omnigent-server
+   systemctl --user start omnigent-server
+   ```
 
 4. Verify (from `/` — `python -c` puts cwd on `sys.path`, so running this inside
    an omnigent checkout tests the wrong copy). The `import litellm` line is
@@ -61,11 +70,14 @@ not a pin**:
      ~/.local/share/uv/tools/omnigent/bin/python -c "
    import litellm
    from omnigent.llms.context_window import get_model_context_window as g
-   print(g('claude-opus-5'), g('gpt-5.5'))"   # expect 1000000 1050000
+   print(g('claude-haiku-4-5'), g('gemini-2.5-pro'))"   # expect 200000 1048576
    ```
+   Then run `bin/omnigent-onboard-check` on each Linux machine, and send one
+   message in any session: that is the only check that exercises a runner on
+   the new code.
 
-Upgrade the hub last if you care about uptime: clients tolerate an older server
-better than the reverse.
+The hub goes last because clients tolerate an older server better than the
+reverse.
 
 ## Move one machine ahead of the floor
 
@@ -86,16 +98,22 @@ the compaction threshold. Verified present in 0.6.0 and 0.9.0; re-check the
 resolution order if a future release restructures
 `omnigent/llms/context_window.py`.
 
-**Check the import, not the numbers — the registry now masks the loss.** Through
-0.9.0 the fallback caught everything, which made a context-window print a
-reliable canary. By 0.14.0 the registry names the models we actually run, so
-`g('claude-opus-5'), g('gpt-5.5')` still prints `1000000 1050000` with litellm
-absent. The canary passes while `claude-3-5-sonnet-20241022` reports 128000 and
-`gemini-1.5-pro` reports 8192. Measured 2026-09-21 on 0.14.0, after a bare
+**Check the import first; the numbers depend on the release.** Through 0.9.0
+the fallback caught everything, which made a context-window print a reliable
+canary. On 0.14.0 the registry named the models we actually run, so
+`g('claude-opus-5'), g('gpt-5.5')` printed `1000000 1050000` with litellm
+absent and masked the loss. Measured 2026-09-21, after a bare
 `uv tool install omnigent@latest` silently dropped the extra — `uv tool install`
 rebuilds the receipt from its arguments, so omitting `--with litellm` uninstalls
-litellm and its 18 transitive packages rather than preserving them. Only
-`import litellm` cannot be masked this way.
+litellm and its 18 transitive packages rather than preserving them. On 0.17.0
+the registry no longer covers those models and every model falls back to 128000
+without litellm (measured 2026-10-06), so the numbers are a canary again.
+`import litellm` is the check that holds on every release.
+
+Pick canary models that litellm's bundled cost map still knows. A model
+reporting 128000 _with_ litellm present may simply be unmapped: by 0.17.0
+litellm raises `ModelNotMappedError` for the retired `claude-3-5-sonnet-*` ids,
+so they report 128000 regardless.
 
 ## Check after any upgrade
 
@@ -146,9 +164,11 @@ peer`.
 Recovery is `systemctl --user reset-failed omnigent-server` then
 `systemctl --user start omnigent-server`, once the package tree has settled.
 
-Note what else this costs: the hubs went 0.13.0 → 0.14.0 without step 2's
-`chat.db` backup, because nobody chose that upgrade or knew it was happening.
-An unplanned hub upgrade skips the one step that protects the shared database.
+Note what else this costs: the hubs went 0.13.0 → 0.14.0 without a `chat.db`
+backup, because nobody chose that upgrade or knew it was happening. An
+unplanned hub upgrade skips the one step that protects the shared database —
+which is why `omnigent-version-ensure` now takes the recovery point itself, but
+only on the path it controls; `omni update` bypasses it.
 
 ## Stale daemons after an in-place upgrade (2026-08-27)
 
