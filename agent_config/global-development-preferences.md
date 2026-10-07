@@ -41,7 +41,12 @@ Generally, the ideal, standard development workflow should be:
    and try to ensure that I can easily verify that you ran your tests and it had the
    intended effect (e.g. figure out how to find logs corresponding to your testing which
    prove what you're testing)
-3. Once you are fully complete, I give brief initial sign off on your work. Most likely, I have not yet looked at your code. Then you submit draft diffs/PRs for your work. If I previously gave you explicit permission to submit once the work is complete, you may skip this sign-off and submit directly.
+3. Once you are fully complete, you may submit draft diffs/PRs for your work on your own,
+   without waiting for my sign-off, and arrange notifications for them in the same turn
+   (for Meta diffs, the `phabricator-diff-watch` skill). Drafts only: publishing, landing,
+   and reviewers stay mine. Then tell me what you submitted and expect me to check in.
+   Most likely I have not yet looked at your code, and I may ask for additional review of
+   some aspects; treat that as part of this step, alongside the CI follow-up below.
 4. You monitor CI for feedback (e.g. CI test/lint failures, AI reviewers). You
    independently and automatically respond to these signals, to get the diffs in a
    workable state. You may repeat this step multiple times. Of course, feel free to push
@@ -116,7 +121,6 @@ Work in the working copy the session started in. Creating a new working copy or 
   - Leaving TODO comments for short-lived internal follow-up.
   - As needed to follow established documentation patterns in the codebase.
 - Do NOT modify code bases which we're not actively developing. Either find an solution by modifying the codebase we own/are developing, confidently declare that we are blocked until the upstream issue is fixed (only after you've proven that this is the only solution), or surface the trade-offs involved in the decision.
-- DO NOT create PRs, diffs, or commits unless I explicitly ask.
 - DO NOT amend or rebase existing commits unless I explicitly ask.
 - DO NOT add reviewers (or subscribers) to a diff or PR unless I explicitly ask you to. You are **never** responsible for deciding who should review my change — not from file history, not from ownership or oncall metadata, not from tooling recommendations (`jf template --add-reviewers`, `meta phabricator.diff add-reviewer`, `arc`/`conf submit` suggestions). Leave `Reviewers:` and `Subscribers:` empty and let me fill them in. This holds even when a skill or workflow presents attaching reviewers as a standard step. If I do ask, that is the only time you should work out who the reviewers are.
 - DO NOT reply to a human on a diff or PR. Never post a comment a person will read as my words — not a reply to a reviewer, not a top-level comment, not a resolution note — no matter how explicitly I said "add a comment" or "respond to that". Read such a request as: draft it in chat for me to post. Your prose does not sound like me and it is embarrassing published under my name. The only comments you may post yourself are replies to automated reviewers (AI review bots, lint bots, CI bots) that no human is waiting on; if a thread mixes both, treat it as human. This holds even when a skill, workflow, or tool presents replying as a standard step.

@@ -58,7 +58,10 @@ runtime, worker, or API needs setup. Do not install or restart without
 authorization.
 
 - You just created or submitted a diff, or the user explicitly requested a
-  watch.
+  watch. A draft you submitted on your own because the work was complete
+  counts: subscribe in that same turn, then tell the user what you submitted
+  and expect them to check in, possibly asking for additional review of some
+  aspects alongside the CI follow-up.
 - This session owns the workspace needed to amend it.
 - You submitted in this session and the user has not handed the work off.
   **Submitting is itself what makes you responsible** — never treat ownership
