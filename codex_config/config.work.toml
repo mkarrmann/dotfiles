@@ -1,5 +1,12 @@
 # Work-only Codex defaults. Portable MCPs are managed by agent_config/sync-mcps.
 
+# Devservers are single-user, so every directory under $HOME is trusted. Codex
+# resolves trust from the nearest ancestor entry and the Meta launcher refuses
+# to start under an untrusted one, so checkouts need no entries of their own.
+# As a template entry this also replaces an "untrusted" Codex recorded itself.
+[projects."__HOME__"]
+trust_level = "trusted"
+
 # Claude-only plugins that agent_config/sync installs for every agent. Template
 # entries win over the plugin state Codex records, so every sync reasserts these.
 #

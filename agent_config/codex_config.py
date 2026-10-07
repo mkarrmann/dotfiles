@@ -149,9 +149,13 @@ def generate_config(dotfiles: Path, mcps: dict, *, work: bool = True, retired=()
     template = dotfiles / "codex_config/config.template.toml"
     # Escape the replacement for its position inside a TOML string.
     escaped_home = json.dumps(str(Path.home()), ensure_ascii=False)[1:-1]
-    defaults = tomllib.loads(template.read_text().replace("__HOME__", escaped_home))
+
+    def read_default(path: Path) -> dict:
+        return tomllib.loads(path.read_text().replace("__HOME__", escaped_home))
+
+    defaults = read_default(template)
     if work:
-        defaults = merge(defaults, read_config(dotfiles / "codex_config/config.work.toml"))
+        defaults = merge(defaults, read_default(dotfiles / "codex_config/config.work.toml"))
     current, local = read_config(path), read_config(local_path)
     legacy = dotfiles / "codex_config/config.toml"
     migrate = path.is_symlink() and path.resolve() == legacy.resolve()

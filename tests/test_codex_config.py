@@ -196,6 +196,19 @@ class CodexConfigTest(unittest.TestCase):
         for key in ("projects", "tui", "plugins"):
             self.assertEqual(result[key], data[key])
 
+    def test_work_template_trusts_home_over_recorded_state(self):
+        shutil.copyfile(ROOT / "codex_config/config.work.toml", self.config_dir / "config.work.toml")
+        home = str(self.home)
+        for profile, expected in (("work", "trusted"), ("desktop", "untrusted")):
+            with self.subTest(profile=profile):
+                self.env["DOTFILES_PROFILE"] = profile
+                self.path.write_text(config.dumps(
+                    {"projects": {home: {"trust_level": "untrusted"}}}
+                ))
+                self.run_sync()
+                projects = config.read_config(self.path)["projects"]
+                self.assertEqual(projects[home]["trust_level"], expected)
+
     def test_work_template_disables_claude_only_plugins_over_recorded_state(self):
         shutil.copyfile(ROOT / "codex_config/config.work.toml", self.config_dir / "config.work.toml")
         claude_only = [
