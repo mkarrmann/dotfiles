@@ -160,9 +160,8 @@ local OMNIGENT_EFFORT_ORDER = { "none", "minimal", "low", "medium", "high", "xhi
 -- azure-codex-<model>) only fires for routed slugs. So these MUST be the exact
 -- dotted route ids (NOT gateway-style `gpt-5-5`), and `gpt-5.4` is omitted (its
 -- deployment is retired -> 404). Verified working end-to-end via omnigent:
--- gpt-5.5. gpt-5.6-sol is in daily use through the standalone codex CLI
--- (codex_config/config.template.toml), so the slug is routed, but its
--- omnigent app-server path has not been separately exercised.
+-- gpt-5.5. The standalone Codex config selects gpt-6.1-sol; its Omnigent
+-- app-server path has not been separately exercised.
 --
 -- Claude's large-context ids carry a trailing `[1m]` marker. Name every 1M-family
 -- model in that spelling, always: it is the ONE lever that makes the window
@@ -207,7 +206,7 @@ local CLAUDE_BASE_MODELS = {
 
 local OMNIGENT_MODELS = {
   claude = vim.tbl_map(claude_1m, CLAUDE_BASE_MODELS),
-  codex  = { "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna" },
+  codex  = { "gpt-6.1-sol", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna" },
 }
 
 -- Per-family "default" model. Codex's app-server default per-turn model is NOT a
@@ -216,7 +215,7 @@ local OMNIGENT_MODELS = {
 -- necessity: claude-sdk's own default would work, but it resolves provider-side
 -- (gateway/key/subscription) and is not visible from here, so pinning makes the
 -- launch model explicit and stable instead of silently provider-dependent.
-local OMNIGENT_MODEL_DEFAULT = { claude = claude_1m("claude-opus-5-5"), codex = "gpt-5.6-sol" }
+local OMNIGENT_MODEL_DEFAULT = { claude = claude_1m("claude-opus-5-5"), codex = "gpt-6.1-sol" }
 
 -- Per-model input context windows (vendor model id -> tokens), keyed exactly as
 -- OMNIGENT_MODELS above. Wired into the omnigent adapter `opts.context_windows`
