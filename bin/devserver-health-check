@@ -47,6 +47,7 @@ fi
 # with nothing stalling -- this devserver sat at 35 GB swapped with 0 pages/s
 # faulting back in. What matters is whether tasks are *waiting* on memory, which
 # is exactly what PSI reports. Occupancy is printed for context only.
+psi_x100=0
 if [[ -r /proc/pressure/memory ]]; then
     psi_pct=$(awk '/^some/ { split($3, a, "="); print a[2]; exit }' /proc/pressure/memory)
     psi_x100=$(awk '/^some/ { split($3, a, "="); printf "%d", a[2] * 100; exit }' /proc/pressure/memory)
@@ -55,7 +56,7 @@ if [[ -r /proc/pressure/memory ]]; then
     elif (( psi_x100 > 1000 )); then
         warn "Memory pressure: ${psi_pct}% of the last 60s stalled on memory"
     else
-        ok "No memory pressure (PSI some avg60=${psi_pct}%)"
+        ok "Memory pressure below warning threshold (PSI some avg60=${psi_pct}%)"
     fi
     info "Swap: $(( swap_used_kb / 1024 )) MB in use (occupancy, not a pressure signal)"
 else
@@ -82,20 +83,26 @@ echo "--- Buck2 Daemons ---"
 buck2_daemons=$(ps -eo pid,rss,args 2>/dev/null | grep 'buck2-daemon --isolation-dir' | grep -v grep || true)
 if [[ -n "$buck2_daemons" ]]; then
     daemon_count=$(echo "$buck2_daemons" | wc -l)
-    total_buck2_mb=$(echo "$buck2_daemons" | awk '{sum += $2} END {print int(sum/1024)}')
-    info "${daemon_count} buck2 daemons using ${total_buck2_mb} MB total"
+    total_buck2_kb=$(echo "$buck2_daemons" | awk '{sum += $2} END {printf "%.0f\n", sum}')
+    total_buck2_mb=$((total_buck2_kb / 1024))
+    buck2_pct=$((total_buck2_kb * 100 / total_mem_kb))
+    info "${daemon_count} buck2 daemons using ${total_buck2_mb} MB total (${buck2_pct}% of system RAM)"
 
-    echo "$buck2_daemons" | while read -r pid rss args; do
+    if (( total_buck2_kb * 100 > total_mem_kb * 30 )); then
+        if (( mem_pct > 90 || psi_x100 > 3000 )); then
+            err "Buck2 uses ${buck2_pct}% of system RAM while host memory is under critical pressure"
+        elif (( mem_pct > 75 || psi_x100 > 1000 )); then
+            warn "Buck2 uses ${buck2_pct}% of system RAM while host memory is under pressure"
+        fi
+    fi
+
+    while read -r pid rss args; do
         rss_mb=$((rss / 1024))
         iso_dir=$(echo "$args" | sed -n 's/.*--isolation-dir \([^ ]*\).*/\1/p')
-        if (( rss > 8388608 )); then
-            err "  PID ${pid}: $((rss_mb / 1024)) GB (isolation: ${iso_dir})"
-        elif (( rss > 4194304 )); then
-            warn "  PID ${pid}: $((rss_mb / 1024)) GB (isolation: ${iso_dir})"
-        else
-            info "  PID ${pid}: ${rss_mb} MB (isolation: ${iso_dir})"
-        fi
-    done
+        project=$(readlink "/proc/${pid}/cwd" 2>/dev/null || true)
+        project=${project%%/buck-out/*}
+        info "  PID ${pid}: ${rss_mb} MB (project: ${project:-unknown}; isolation: ${iso_dir})"
+    done <<< "$buck2_daemons"
 else
     ok "No buck2 daemons running"
 fi
