@@ -79,6 +79,50 @@ not a pin**:
 The hub goes last because clients tolerate an older server better than the
 reverse.
 
+## LiteLLM import race breaks HTTP responses (2026-10-08)
+
+Omnigent 0.17.0 resolves model context metadata in worker threads. The first
+lookup can import LiteLLM while Uvicorn is already serving requests. LiteLLM
+1.104.0 attaches redaction filters to Uvicorn's loggers before its own import
+finishes. A concurrent access log imports the filter's dependencies, producing
+an import-lock cycle: the worker owns `litellm` and waits for
+`litellm.types.secret_managers.main`, while the logging thread owns the latter
+and waits for `litellm`.
+
+Python aborts the import with `_DeadlockError` and removes the incomplete root
+module. The registered filters survive and subsequently raise
+`KeyError: 'litellm'`. Uvicorn logs before writing HTTP headers, so requests
+receive no response even though the server process is alive. Omnigent swallows
+the original worker exception. Restarting briefly restores health, then the
+next cold import can trigger the race again.
+
+`systemd/omnigent-server.service` uses `bin/omnigent-server-run` to complete the
+public `import litellm` before running the installed Omnigent console script
+in the same process. It retains redaction, uses the existing uv-tool interpreter,
+and reports initialization failures before accepting requests. No dependency
+pin or edits to the installed package are needed. Remove the launcher when
+upstream makes concurrent initialization safe, after checking the regression.
+
+Verify without running Omnigent or touching its databases:
+
+```bash
+python3 -B -m unittest discover -s tests -p test_omnigent_server_run.py
+```
+
+The checks cover initialization order, argument and exit-status forwarding,
+failure before console entry, and concurrent HTTP responses through real
+Uvicorn with the installed LiteLLM filters. The HTTP check starts and closes
+its own temporary test server on an unused loopback port.
+
+Activation is separate from editing the source. Once ready to interrupt hub
+connections, reload systemd's unit definitions and restart the server:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user restart omnigent-server.service
+curl --noproxy '*' --max-time 5 http://127.0.0.1:6767/health
+```
+
 ## Move one machine ahead of the floor
 
 ```bash

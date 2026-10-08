@@ -99,7 +99,7 @@ ExecCondition=%h/dotfiles/services/omnigent-hub/.venv/bin/omnigent-hub gate
 # merges those keys in from omnigent_config/config.shared.yaml and
 # config.server.yaml; bin/omnigent-server-config-stale knows they are read only
 # at boot.
-ExecStart=%h/.local/bin/omnigent server --host 127.0.0.1 --port ${OMNIGENT_PORT} --database-uri sqlite:///%h/.omnigent/chat.db --artifact-location %h/.omnigent/artifacts --config %h/.omnigent/config.yaml
+ExecStart=%h/dotfiles/bin/omnigent-server-run --host 127.0.0.1 --port ${OMNIGENT_PORT} --database-uri sqlite:///%h/.omnigent/chat.db --artifact-location %h/.omnigent/artifacts --config %h/.omnigent/config.yaml
 Restart=always
 RestartSec=5
 TimeoutStartSec=150

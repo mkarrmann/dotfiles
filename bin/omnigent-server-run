@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# HACK: LiteLLM 1.104.0 attaches Uvicorn filters before its import finishes.
+# Concurrent access logging can deadlock that import and break every HTTP
+# response. Initialize it before serving requests; see docs/omnigent-upgrades.md.
+set -euo pipefail
+
+python="${OMNIGENT_PY:-$HOME/.local/share/uv/tools/omnigent/bin/python}"
+
+exec "$python" -P -c '
+import runpy
+import sys
+
+sys.argv = sys.argv[1:]
+import litellm
+
+runpy.run_path(sys.argv[0], run_name="__main__")
+' "$HOME/.local/bin/omnigent" server "$@"
