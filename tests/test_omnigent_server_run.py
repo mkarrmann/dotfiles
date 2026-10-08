@@ -1,5 +1,6 @@
 """Server launcher contracts and HTTP smoke check using the installed packages."""
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -63,6 +64,17 @@ class OmnigentServerRunTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")
         self.assertIn("RuntimeError: preload failed", result.stderr)
+
+    @unittest.skipIf(
+        importlib.util.find_spec("litellm"), "test interpreter has LiteLLM installed"
+    )
+    def test_absent_litellm_still_enters_console(self):
+        self.console.write_text(
+            "import sys\nassert 'litellm' not in sys.modules\nprint('console entered')\n"
+        )
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "console entered\n")
 
     @unittest.skipUnless(TOOL_PYTHON.is_file(), "installed Omnigent interpreter unavailable")
     def test_concurrent_http_responses_with_installed_litellm(self):
