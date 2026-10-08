@@ -6,7 +6,7 @@ import os
 import pytest
 
 from omnigent_hub.config import HubConfig
-from omnigent_hub.notify import ALERT_REPEAT_SECONDS, alert
+from omnigent_hub.notify import ALERT_REPEAT_SECONDS, SERVER_RESTART_REPORT_SECONDS, alert
 from omnigent_hub.runtime import (
     DEGRADED_STREAK_ALERT_THRESHOLD,
     HOST_PROBE_UNKNOWN_ALERT_THRESHOLD,
@@ -141,3 +141,47 @@ def test_a_reconcile_failure_with_no_streak_escalates(owned: HubConfig) -> None:
     assert not owned.degraded_streak.exists()
 
     assert len(_sent(owned, unit="omnigent-hub-reconcile.service")) == 1
+
+
+def test_a_server_restart_alert_says_why(owned: HubConfig) -> None:
+    write_json_atomic(
+        owned.server_restart_last,
+        {"at": "2026-10-08T20:11:00Z", "consecutive_failed_cycles": 2},
+    )
+
+    messages = _sent(owned, unit="omnigent-server.service")
+
+    assert len(messages) == 1
+    assert "reconcile restarted the server at 2026-10-08T20:11:00Z" in messages[0]
+    assert "unanswered for 2 consecutive reconcile cycles" in messages[0]
+
+
+def test_an_old_server_restart_is_not_reported(owned: HubConfig) -> None:
+    write_json_atomic(
+        owned.server_restart_last,
+        {"at": "2026-10-01T00:00:00Z", "consecutive_failed_cycles": 2},
+    )
+    aged = owned.server_restart_last.stat().st_mtime - SERVER_RESTART_REPORT_SECONDS - 1
+    os.utime(owned.server_restart_last, (aged, aged))
+
+    assert "reconcile restarted" not in _sent(owned, unit="omnigent-server.service")[0]
+
+
+def test_a_server_restart_is_not_attributed_to_other_units(owned: HubConfig) -> None:
+    write_json_atomic(
+        owned.server_restart_last,
+        {"at": "2026-10-08T20:11:00Z", "consecutive_failed_cycles": 2},
+    )
+
+    assert "reconcile restarted" not in _sent(owned, unit="omnigent-watcher.service")[0]
+
+
+def test_a_reconcile_alert_does_not_throttle_a_server_restart_alert(owned: HubConfig) -> None:
+    """What hid the 2026-10-08 outage: an unrelated reconcile alert minutes earlier."""
+    _sent(owned, unit="omnigent-hub-reconcile.service")
+    write_json_atomic(
+        owned.server_restart_last,
+        {"at": "2026-10-08T20:11:00Z", "consecutive_failed_cycles": 2},
+    )
+
+    assert len(_sent(owned, unit="omnigent-server.service")) == 1

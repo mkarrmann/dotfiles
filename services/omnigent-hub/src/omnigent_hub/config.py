@@ -123,6 +123,24 @@ class HubConfig:
         return self.local_state_dir / "host-probe-last.json"
 
     @property
+    def server_health_failures(self) -> Path:
+        """Consecutive reconcile cycles in which a running server never answered.
+
+        Local state for the same reason ``host_probe_failures`` is: each cycle is
+        a fresh process, and the streak is this machine's view of its own server.
+        """
+        return self.local_state_dir / "server-health-failures.json"
+
+    @property
+    def server_restart_last(self) -> Path:
+        """When and why reconcile last restarted an unresponsive server.
+
+        Read by the alert that the restart raises, so the message can say what
+        happened instead of only naming the unit.
+        """
+        return self.local_state_dir / "server-restart-last.json"
+
+    @property
     def local_snapshots_dir(self) -> Path:
         """Where snapshots land when they cannot be published to shared storage.
 

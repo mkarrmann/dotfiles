@@ -39,6 +39,7 @@ from omnigent_hub.config import HubConfig
 from omnigent_hub.runtime import (
     DEGRADED_STREAK_ALERT_THRESHOLD,
     HOST_PROBE_UNKNOWN_ALERT_THRESHOLD,
+    SERVER_UNIT,
     GateDenied,
     HubRuntimeError,
     check_gate,
@@ -50,6 +51,11 @@ from omnigent_hub.storage import StorageError, write_json_atomic
 
 #: Minimum gap between notifications about the same unit.
 ALERT_REPEAT_SECONDS = 60 * 60
+
+#: How recent reconcile's server-restart marker must be for a server alert to
+#: report it. The alert is started seconds after the restart; anything older is
+#: from an earlier incident.
+SERVER_RESTART_REPORT_SECONDS = 10 * 60
 
 #: Remaining shared-storage lifetime below which the expiry is worth mentioning
 #: in the alert body. A week is enough warning to act without rushing.
@@ -137,6 +143,18 @@ def _storage_warning(config: HubConfig) -> str | None:
     )
 
 
+def _recent_server_restart(config: HubConfig, *, unit: str, now: float) -> dict[str, Any] | None:
+    if unit != SERVER_UNIT:
+        return None
+    try:
+        modified = config.server_restart_last.stat().st_mtime
+    except OSError:
+        return None
+    if now - modified > SERVER_RESTART_REPORT_SECONDS:
+        return None
+    return _read_json(config.server_restart_last) or None
+
+
 def should_notify(config: HubConfig, *, unit: str, now: float) -> tuple[bool, str]:
     """Whether *unit* failing right now is worth a message, and why or why not."""
     streak = _degraded_streak(config)
@@ -176,6 +194,7 @@ def alert(
         "host_probe_unknown_streak": host_probe_unknown_streak(config),
         "gate": _gate_summary(config),
         "storage_warning": _storage_warning(config),
+        "server_restart": _recent_server_restart(config, unit=unit, now=now),
         "notified": False,
         "reason": reason,
     }
@@ -217,6 +236,13 @@ def _format(detail: Mapping[str, Any]) -> str:
         lines.append(
             f"host registration probe inconclusive for {blind} consecutive reconcile cycles; "
             "the host will not be auto-restarted until a probe answers"
+        )
+    restart = detail.get("server_restart")
+    if isinstance(restart, dict):
+        lines.append(
+            f"reconcile restarted the server at {restart.get('at')}: it was running but "
+            f"/health went unanswered for {restart.get('consecutive_failed_cycles')} "
+            "consecutive reconcile cycles"
         )
     warning = detail.get("storage_warning")
     if warning:

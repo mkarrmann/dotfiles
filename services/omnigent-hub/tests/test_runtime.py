@@ -20,10 +20,14 @@ from omnigent_hub.runtime import (
     HOST_PROBE_TIMEOUT_SECONDS,
     HOST_PROBE_UNKNOWN_ALERT_THRESHOLD,
     RECORD_REFRESH_SECONDS,
+    SERVER_HEALTH_FAILURE_RESTART_THRESHOLD,
+    SERVER_HEALTH_FAILURE_WINDOW_SECONDS,
+    SERVER_STARTUP_GRACE_SECONDS,
     GateDenied,
     GateIndeterminate,
     HostProbe,
     HubRuntimeError,
+    ServerUnhealthy,
     activate_transition,
     assert_sessions_quiescent,
     attach_transition_generation,
@@ -40,6 +44,7 @@ from omnigent_hub.runtime import (
     resolve_record,
     resolve_routing_record,
     service_action,
+    wait_for_health,
     write_routing_cache,
 )
 from omnigent_hub.storage import StorageError, publish_record, write_json_atomic
@@ -1171,3 +1176,306 @@ def initialize_record_for_test(config: HubConfig, active_hub: str) -> ActiveHubR
         updated_at="2026-07-18T22:00:00Z",
         updated_by=config.local_fqdn,
     )
+
+
+def _active_server_round(
+    config: HubConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    healthy: bool,
+    active_seconds: float | None = 600.0,
+    server_state: str = "active",
+) -> tuple[list[str], list[list[str]], dict[str, Any] | Exception]:
+    """One reconcile pass on the active hub, whose server answers or does not.
+
+    Returns the service actions taken, the raw systemctl commands run outside
+    service_action (the alert), and the result or the exception the cycle raised.
+    """
+    actions: list[str] = []
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        "omnigent_hub.runtime.resolve_record",
+        lambda config: initialize_record_for_test(config, "primary.example.com"),
+    )
+    monkeypatch.setattr(
+        "omnigent_hub.runtime.reconcile_local_route",
+        lambda config, restart_host: {"changed": False, "url": "http://127.0.0.1:6767"},
+    )
+    monkeypatch.setattr(
+        "omnigent_hub.runtime.systemd_state",
+        lambda unit: server_state if unit == "omnigent-server.service" else "active",
+    )
+    monkeypatch.setattr("omnigent_hub.runtime.unit_active_seconds", lambda unit: active_seconds)
+    monkeypatch.setattr("omnigent_hub.runtime.probe_host", lambda config: HostProbe.REGISTERED)
+    monkeypatch.setattr("omnigent_hub.runtime._refresh_record_ttl", lambda config, record: False)
+
+    def record_action(config: HubConfig, action: str) -> dict[str, str]:
+        actions.append(action)
+        if action == "start-core" and not healthy:
+            raise ServerUnhealthy("Omnigent did not become healthy: timed out")
+        return {}
+
+    def record_command(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        commands.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr("omnigent_hub.runtime.service_action", record_action)
+    monkeypatch.setattr("omnigent_hub.runtime.subprocess.run", record_command)
+    try:
+        return actions, commands, reconcile_services(config)
+    except HubRuntimeError as exc:
+        return actions, commands, exc
+
+
+def test_a_healthy_server_is_left_alone(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    actions, commands, result = _active_server_round(hub_config, monkeypatch, healthy=True)
+
+    assert isinstance(result, dict)
+    assert result["server_restarted"] is False
+    assert "restart-server" not in actions
+    assert commands == []
+
+
+def test_a_single_unanswered_health_wait_fails_the_cycle_without_a_restart(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    actions, commands, result = _active_server_round(hub_config, monkeypatch, healthy=False)
+
+    # Still a failed cycle, so the outage stays visible in the unit state.
+    assert isinstance(result, ServerUnhealthy)
+    assert actions == ["stop-client", "start-core"]
+    assert commands == []
+
+
+def test_a_server_that_stays_unresponsive_is_restarted_and_reported(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 2026-10-08 outage: active unit, no response, and `start` a no-op."""
+    for _ in range(SERVER_HEALTH_FAILURE_RESTART_THRESHOLD - 1):
+        _active_server_round(hub_config, monkeypatch, healthy=False)
+
+    actions, commands, result = _active_server_round(hub_config, monkeypatch, healthy=False)
+
+    assert isinstance(result, dict)
+    assert actions == ["stop-client", "start-core", "restart-server", "start-tail"]
+    assert result["server_restarted"] is True
+    assert result["server_alert_error"] is None
+    assert commands == [
+        [
+            "systemctl",
+            "--user",
+            "start",
+            "--no-block",
+            "omnigent-alert@omnigent-server.service.service",
+        ]
+    ]
+    marker = json.loads(hub_config.server_restart_last.read_text(encoding="utf-8"))
+    assert marker["consecutive_failed_cycles"] == SERVER_HEALTH_FAILURE_RESTART_THRESHOLD
+    assert not hub_config.server_health_failures.exists()
+
+
+def test_a_restart_starts_a_fresh_streak(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for _ in range(SERVER_HEALTH_FAILURE_RESTART_THRESHOLD):
+        _active_server_round(hub_config, monkeypatch, healthy=False)
+
+    actions, _, result = _active_server_round(hub_config, monkeypatch, healthy=False)
+
+    assert isinstance(result, ServerUnhealthy)
+    assert "restart-server" not in actions
+
+
+def test_an_answered_health_wait_clears_the_server_streak(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for _ in range(SERVER_HEALTH_FAILURE_RESTART_THRESHOLD - 1):
+        _active_server_round(hub_config, monkeypatch, healthy=False)
+    _active_server_round(hub_config, monkeypatch, healthy=True)
+
+    actions, _, result = _active_server_round(hub_config, monkeypatch, healthy=False)
+
+    assert isinstance(result, ServerUnhealthy)
+    assert "restart-server" not in actions
+
+
+def test_a_stale_server_streak_does_not_accumulate(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for _ in range(SERVER_HEALTH_FAILURE_RESTART_THRESHOLD - 1):
+        _active_server_round(hub_config, monkeypatch, healthy=False)
+    aged = time.time() + SERVER_HEALTH_FAILURE_WINDOW_SECONDS + 1
+    monkeypatch.setattr("omnigent_hub.runtime._now", lambda: aged)
+
+    actions, _, result = _active_server_round(hub_config, monkeypatch, healthy=False)
+
+    assert isinstance(result, ServerUnhealthy)
+    assert "restart-server" not in actions
+
+
+def test_a_starting_server_is_never_restarted(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Includes one that wedges again right after a restart: no restart loop."""
+    for _ in range(SERVER_HEALTH_FAILURE_RESTART_THRESHOLD + 1):
+        actions, _, result = _active_server_round(
+            hub_config,
+            monkeypatch,
+            healthy=False,
+            active_seconds=SERVER_STARTUP_GRACE_SECONDS - 1,
+        )
+        assert isinstance(result, ServerUnhealthy)
+        assert "restart-server" not in actions
+    assert not hub_config.server_health_failures.exists()
+
+
+def test_a_server_that_is_not_running_is_not_restarted_by_the_watchdog(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed or stopped unit is systemd's (Restart=always) or start-core's job."""
+    for _ in range(SERVER_HEALTH_FAILURE_RESTART_THRESHOLD + 1):
+        actions, _, result = _active_server_round(
+            hub_config, monkeypatch, healthy=False, server_state="activating"
+        )
+        assert isinstance(result, ServerUnhealthy)
+        assert "restart-server" not in actions
+
+
+def test_an_unwritable_server_streak_never_restarts(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unwritable(path: Path, value: object) -> None:
+        raise OSError("read-only state dir")
+
+    monkeypatch.setattr("omnigent_hub.runtime.write_json_atomic", unwritable)
+    for _ in range(SERVER_HEALTH_FAILURE_RESTART_THRESHOLD + 1):
+        actions, _, result = _active_server_round(hub_config, monkeypatch, healthy=False)
+        assert isinstance(result, ServerUnhealthy)
+        assert "restart-server" not in actions
+
+
+def test_a_failed_alert_does_not_fail_the_restart_cycle(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for _ in range(SERVER_HEALTH_FAILURE_RESTART_THRESHOLD - 1):
+        _active_server_round(hub_config, monkeypatch, healthy=False)
+
+    def failing_command(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, 1, "", "Unit not found")
+
+    actions: list[str] = []
+
+    def record_action(config: HubConfig, action: str) -> dict[str, str]:
+        actions.append(action)
+        if action == "start-core":
+            raise ServerUnhealthy("timed out")
+        return {}
+
+    monkeypatch.setattr("omnigent_hub.runtime.service_action", record_action)
+    monkeypatch.setattr("omnigent_hub.runtime.subprocess.run", failing_command)
+
+    result = reconcile_services(hub_config)
+
+    assert result["server_restarted"] is True
+    assert result["server_alert_error"] == "Unit not found"
+    assert actions[-1] == "start-tail"
+
+
+def test_a_non_health_failure_does_not_count_toward_a_restart(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gate or systemctl failure says nothing about whether the server answers."""
+    monkeypatch.setattr("omnigent_hub.runtime.systemd_state", lambda unit: "active")
+    monkeypatch.setattr("omnigent_hub.runtime.unit_active_seconds", lambda unit: 600.0)
+
+    def gate_failure(config: HubConfig, action: str) -> dict[str, str]:
+        raise GateIndeterminate("cannot read the record")
+
+    monkeypatch.setattr("omnigent_hub.runtime.service_action", gate_failure)
+    monkeypatch.setattr(
+        "omnigent_hub.runtime.resolve_record",
+        lambda config: initialize_record_for_test(config, "primary.example.com"),
+    )
+    monkeypatch.setattr(
+        "omnigent_hub.runtime.reconcile_local_route",
+        lambda config, restart_host: {"changed": False, "url": "http://127.0.0.1:6767"},
+    )
+    for _ in range(SERVER_HEALTH_FAILURE_RESTART_THRESHOLD + 1):
+        with pytest.raises(GateIndeterminate):
+            reconcile_services(hub_config)
+    assert not hub_config.server_health_failures.exists()
+
+
+def test_restart_server_is_gated_and_waits_for_health(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr("omnigent_hub.runtime.check_gate", lambda config: calls.append("gate"))
+    monkeypatch.setattr(
+        "omnigent_hub.runtime.wait_for_health", lambda config: calls.append("health")
+    )
+    monkeypatch.setattr("omnigent_hub.runtime.systemd_state", lambda unit: "active")
+
+    def record_command(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr("omnigent_hub.runtime.subprocess.run", record_command)
+
+    service_action(hub_config, "restart-server")
+
+    assert calls == [
+        "gate",
+        ["systemctl", "--user", "restart", "omnigent-server.service"],
+        "health",
+    ]
+
+
+def test_an_unanswered_health_wait_is_a_typed_hub_error(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(url: str, timeout: float) -> object:
+        raise OSError("timed out")
+
+    monkeypatch.setattr("omnigent_hub.runtime.urllib.request.urlopen", refuse)
+    monkeypatch.setattr("omnigent_hub.runtime.time.sleep", lambda seconds: None)
+
+    with pytest.raises(ServerUnhealthy, match="timed out") as raised:
+        wait_for_health(hub_config, timeout_seconds=0.01)
+    assert isinstance(raised.value, HubRuntimeError)
+
+
+def test_the_restart_alert_is_queued_before_the_restart(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A restart that runs the cycle out of time must not take the alert with it."""
+    for _ in range(SERVER_HEALTH_FAILURE_RESTART_THRESHOLD - 1):
+        _active_server_round(hub_config, monkeypatch, healthy=False)
+    events: list[str] = []
+
+    def record_action(config: HubConfig, action: str) -> dict[str, str]:
+        events.append(action)
+        if action == "start-core":
+            raise ServerUnhealthy("timed out")
+        if action == "restart-server":
+            assert config.server_restart_last.exists()
+            raise ServerUnhealthy("still not answering after the restart")
+        return {}
+
+    def record_command(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        events.append(argv[-1])
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr("omnigent_hub.runtime.service_action", record_action)
+    monkeypatch.setattr("omnigent_hub.runtime.subprocess.run", record_command)
+
+    with pytest.raises(ServerUnhealthy, match="after the restart"):
+        reconcile_services(hub_config)
+    assert events == [
+        "stop-client",
+        "start-core",
+        "omnigent-alert@omnigent-server.service.service",
+        "restart-server",
+    ]

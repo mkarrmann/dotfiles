@@ -82,6 +82,30 @@ HOST_PROBE_UNKNOWN_ALERT_THRESHOLD = 10
 # combine with a third to restart a healthy host.
 HOST_PROBE_FAILURE_WINDOW_SECONDS = 300.0
 
+SERVER_UNIT = "omnigent-server.service"
+
+# Consecutive reconcile cycles in which an already-running server never answered
+# /health before reconcile restarts it.
+#
+# One failed cycle is a full wait_for_health: 60 seconds without a single 200.
+# Two in a row rules out a load spike. A server restart is much cheaper than a
+# host restart -- runners belong to omnigent-host and reconnect on their own --
+# and a server that answers nothing has already dropped every client in effect.
+#
+# On 2026-10-08 the server stayed up but answered nothing for 33 minutes (a
+# LiteLLM import deadlock broke every access-log write, which uvicorn performs
+# before sending headers). Reconcile failed every cycle and could not fix it,
+# because `systemctl start` is a no-op on an active unit.
+SERVER_HEALTH_FAILURE_RESTART_THRESHOLD = 2
+
+# A server is not judged until it has been up this long. Covers the 150s that
+# omnigent-server.service allows for startup, and stops a server that wedges
+# again right after a restart from being restarted on every cycle.
+SERVER_STARTUP_GRACE_SECONDS = 180.0
+
+# A server-health streak older than this is over, as for the host streak.
+SERVER_HEALTH_FAILURE_WINDOW_SECONDS = 300.0
+
 
 def _now() -> float:
     """Wall clock, isolated so tests can age a streak without sleeping."""
@@ -90,6 +114,10 @@ def _now() -> float:
 
 class HubRuntimeError(RuntimeError):
     pass
+
+
+class ServerUnhealthy(HubRuntimeError):
+    """The server's /health did not return 200 within the wait."""
 
 
 class HostProbe(StrEnum):
@@ -657,6 +685,7 @@ def service_action(config: HubConfig, action: str) -> dict[str, str]:
             ("stop", "omnigent-prodnet.service"),
             ("start", "omnigent-server.service"),
         ),
+        "restart-server": (("restart", "omnigent-server.service"),),
         "start-tail": (
             ("start", "omnigent-watcher.service"),
             ("start", "omnigent-google-chat.service"),
@@ -675,6 +704,7 @@ def service_action(config: HubConfig, action: str) -> dict[str, str]:
     commands = actions[action]
     if action in {
         "start-core",
+        "restart-server",
         "start-tail",
         "start-bridge",
         "start-watcher",
@@ -701,7 +731,7 @@ def service_action(config: HubConfig, action: str) -> dict[str, str]:
             text=True,
             capture_output=True,
         )
-    if action in {"start-core", "start-client", "restart-client"}:
+    if action in {"start-core", "restart-server", "start-client", "restart-client"}:
         wait_for_health(config)
     return {unit: systemd_state(unit) for unit in units}
 
@@ -719,7 +749,7 @@ def wait_for_health(config: HubConfig, *, timeout_seconds: float = 60) -> None:
         except (OSError, urllib.error.URLError) as exc:
             last_error = str(exc)
         time.sleep(0.5)
-    raise HubRuntimeError(f"Omnigent did not become healthy at {url}: {last_error}")
+    raise ServerUnhealthy(f"Omnigent did not become healthy at {url}: {last_error}")
 
 
 def probe_health(config: HubConfig, *, timeout_seconds: float = 2.0) -> bool:
@@ -967,6 +997,101 @@ def reconcile_host(
     return service_action(config, action), action
 
 
+def _clear_server_health_failures(config: HubConfig) -> None:
+    config.server_health_failures.unlink(missing_ok=True)
+
+
+def _record_server_health_failure(config: HubConfig) -> int:
+    """Add one failed cycle to the server-health streak and return its length.
+
+    Tolerates corrupt or unwritable state as ``_record_host_probe_failure`` does:
+    a streak that cannot advance never restarts the server, which leaves it to
+    the alert that the failed cycle raises anyway.
+    """
+    now = _now()
+    previous = 0
+    try:
+        payload = json.loads(config.server_health_failures.read_text(encoding="utf-8"))
+        if now - float(payload["last_failure_at"]) <= SERVER_HEALTH_FAILURE_WINDOW_SECONDS:
+            previous = int(payload["consecutive_failures"])
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+        previous = 0
+    count = max(previous, 0) + 1
+    try:
+        write_json_atomic(
+            config.server_health_failures,
+            {"consecutive_failures": count, "last_failure_at": now},
+        )
+    except OSError:
+        return 0
+    return count
+
+
+def _escalate_server_restart(config: HubConfig, *, failures: int) -> str | None:
+    """Record why the server is being restarted and raise an alert about it.
+
+    Goes through omnigent-alert@ like a unit failure does, so this alert is
+    throttled per unit and sent with the same channel, environment, and timeout.
+    That matters here: reconcile's own alerts are throttled under the reconcile
+    unit, so any earlier, unrelated reconcile failure would hide this one.
+    Started with --no-block so the send does not count against reconcile's
+    TimeoutStartSec. Returns an error string instead of raising: the restart
+    already happened and the cycle must still finish.
+    """
+    try:
+        write_json_atomic(
+            config.server_restart_last,
+            {"at": utc_now(), "consecutive_failed_cycles": failures},
+        )
+    except OSError as exc:
+        return f"could not record the restart: {exc}"
+    result = subprocess.run(
+        ["systemctl", "--user", "start", "--no-block", f"omnigent-alert@{SERVER_UNIT}.service"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return (result.stderr or result.stdout).strip() or f"exit {result.returncode}"
+    return None
+
+
+def reconcile_server(config: HubConfig) -> tuple[dict[str, str], dict[str, Any]]:
+    """Run ``start-core``, and restart a server that is up but never answers.
+
+    ``start-core`` alone cannot repair that: ``systemctl start`` does nothing to
+    an active unit, so a wedged process fails every cycle's health wait forever.
+    Each failed wait counts toward a streak, and the server is restarted once
+    :data:`SERVER_HEALTH_FAILURE_RESTART_THRESHOLD` cycles in a row agree.
+
+    A failed wait that does not trigger a restart still raises, as before, so
+    the cycle fails and the outage stays visible. Waits that fail before the
+    server has been up for :data:`SERVER_STARTUP_GRACE_SECONDS` raise without
+    counting: startup is not evidence of a wedge.
+    """
+    report: dict[str, Any] = {"server_restarted": False}
+    try:
+        core = service_action(config, "start-core")
+    except ServerUnhealthy:
+        if systemd_state(SERVER_UNIT) != "active":
+            raise
+        active_seconds = unit_active_seconds(SERVER_UNIT)
+        if active_seconds is not None and active_seconds < SERVER_STARTUP_GRACE_SECONDS:
+            raise
+        failures = _record_server_health_failure(config)
+        if failures < SERVER_HEALTH_FAILURE_RESTART_THRESHOLD:
+            raise
+        _clear_server_health_failures(config)
+        # Escalate first: the restart and its health wait can run this cycle
+        # past TimeoutStartSec, and a killed cycle must not lose the alert.
+        report["server_alert_error"] = _escalate_server_restart(config, failures=failures)
+        core = service_action(config, "restart-server")
+        report["server_restarted"] = True
+        return core, report
+    _clear_server_health_failures(config)
+    return core, report
+
+
 def assert_sessions_quiescent(config: HubConfig) -> dict[str, Any]:
     url = f"http://127.0.0.1:{config.topology.port}/v1/sessions?limit=1000&kind=any"
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -1200,7 +1325,7 @@ def reconcile_services(config: HubConfig) -> dict[str, Any]:
         }
     service_action(config, "stop-client")
     route = reconcile_local_route(config, restart_host=False)
-    core = service_action(config, "start-core")
+    core, server_report = reconcile_server(config)
     host, host_action = reconcile_host(config, route_changed=bool(route["changed"]))
     tail = service_action(config, "start-tail")
     # A refresh failure must not abandon the cycle: the services above are
@@ -1217,6 +1342,7 @@ def reconcile_services(config: HubConfig) -> dict[str, Any]:
         "epoch": record.epoch,
         "route": route,
         "services": {**core, **tail, **host},
+        **server_report,
         "host_action": host_action,
         "host_restarted": host_action == "restart-host",
         **_host_probe_report(config),
