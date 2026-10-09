@@ -30,7 +30,8 @@ echo ""
 # --- Memory ---
 total_mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
 avail_mem_kb=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)
-swap_used_kb=$(awk '/SwapTotal/ {total=$2} /SwapFree/ {free=$2} END {print total-free}' /proc/meminfo)
+read -r swap_total_kb swap_free_kb < <(awk '/SwapTotal/ {total=$2} /SwapFree/ {free=$2} END {print total, free}' /proc/meminfo)
+swap_used_kb=$((swap_total_kb - swap_free_kb))
 mem_pct=$((100 - (avail_mem_kb * 100 / total_mem_kb)))
 
 echo "--- Memory ---"
@@ -58,9 +59,9 @@ if [[ -r /proc/pressure/memory ]]; then
     else
         ok "Memory pressure below warning threshold (PSI some avg60=${psi_pct}%)"
     fi
-    info "Swap: $(( swap_used_kb / 1024 )) MB in use (occupancy, not a pressure signal)"
+    info "Swap: $(( swap_used_kb / 1024 )) / $(( swap_total_kb / 1024 )) MB used, $(( swap_free_kb / 1024 )) MB free (occupancy, not a pressure signal)"
 else
-    info "Swap: $(( swap_used_kb / 1024 )) MB in use (kernel has no PSI; cannot assess pressure)"
+    info "Swap: $(( swap_used_kb / 1024 )) / $(( swap_total_kb / 1024 )) MB used, $(( swap_free_kb / 1024 )) MB free (kernel has no PSI; cannot assess pressure)"
 fi
 echo ""
 
@@ -176,29 +177,35 @@ if ! $orphan_found; then
 fi
 echo ""
 
-# --- Stuck Sapling operations ---
-echo "--- Stuck Sapling Operations ---"
-stuck_sl=$(ps -eo pid,etimes,args 2>/dev/null | grep -E 'hg\.real (diff|status|goto|log)' | grep -v grep | awk '$2 > 300 {print}' || true)
-if [[ -n "$stuck_sl" ]]; then
+# --- Long-running Sapling operations ---
+echo "--- Long-running Sapling Operations ---"
+long_running_sl=$(ps -eo pid,etimes,args 2>/dev/null | grep -E 'hg\.real (diff|status|goto|log)' | grep -v grep | awk '$2 > 300 {print}' || true)
+if [[ -n "$long_running_sl" ]]; then
     while read -r pid elapsed args; do
         mins=$((elapsed / 60))
-        warn "Stuck sl operation PID ${pid} running for ${mins}m: $(echo "$args" | head -c 80)"
-        if $FIX_MODE; then
-            kill "$pid" 2>/dev/null && fix "Killed stuck sl operation ${pid}" || warn "Failed to kill ${pid}"
-        fi
-    done <<< "$stuck_sl"
+        warn "Long-running Sapling operation PID ${pid} running for ${mins}m: $(echo "$args" | head -c 80)"
+    done <<< "$long_running_sl"
 else
-    ok "No stuck Sapling operations"
+    ok "No long-running Sapling operations"
 fi
 echo ""
 
 # --- Claude Code sessions ---
 echo "--- Claude Code Sessions ---"
-# `grep -c` already prints "0" when nothing matches; it just exits 1 as well.
-# `|| echo 0` appended a second line, making claude_count "0\n0" and both
-# arithmetic tests below fail with "syntax error in expression". `|| true`
-# keeps the count and only swallows the exit status.
-claude_count=$(ps -eo args 2>/dev/null | grep -c '^claude$' || true)
+# Count each Claude process tree once, including launcher/native pairs.
+claude_count=$(ps -eo pid=,ppid=,comm= | awk '
+    { parents[$1]=$2; if ($3 == "claude") claude[$1]=1 }
+    END {
+        count=0
+        for (pid in claude) {
+            ancestor=parents[pid]
+            while (ancestor in parents && !(ancestor in claude)) {
+                ancestor=parents[ancestor]
+            }
+            if (!(ancestor in claude)) count++
+        }
+        print count
+    }')
 if (( claude_count > 3 )); then
     warn "${claude_count} Claude Code sessions running (consider closing unused ones)"
 elif (( claude_count > 0 )); then
@@ -229,9 +236,7 @@ if (( warn_count == 0 )); then
     echo -e "${GREEN}All checks passed.${NC}"
 else
     echo -e "${YELLOW}${warn_count} issue(s) found.${NC}"
-    if ! $FIX_MODE && (( warn_count > 0 )); then
-        echo -e "Run with ${BLUE}--fix${NC} to auto-resolve fixable issues."
-    elif (( fix_count > 0 )); then
+    if (( fix_count > 0 )); then
         echo -e "${GREEN}${fix_count} issue(s) auto-resolved.${NC}"
     fi
 fi
