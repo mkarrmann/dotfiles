@@ -1,5 +1,11 @@
 # Work-only Codex defaults. Portable MCPs are managed by agent_config/sync-mcps.
 
+[shell_environment_policy.set]
+http_proxy = "http://fwdproxy:8080"
+https_proxy = "http://fwdproxy:8080"
+no_proxy = ".facebook.com,.facebook.net,.fbcdn.net,.fb.com,.fburl.com,.thefacebook.com,.tfbnw.net,.fbinfra.net,.sb.fbsbx.com,.internalfb.com,.intern.facebook.com,localhost,127.0.0.1,::1"
+NO_PROXY = ".facebook.com,.facebook.net,.fbcdn.net,.fb.com,.fburl.com,.thefacebook.com,.tfbnw.net,.fbinfra.net,.sb.fbsbx.com,.internalfb.com,.intern.facebook.com,localhost,127.0.0.1,::1"
+
 # Devservers are single-user, so every directory under $HOME is trusted. Codex
 # resolves trust from the nearest ancestor entry and the Meta launcher refuses
 # to start under an untrusted one, so checkouts need no entries of their own.
