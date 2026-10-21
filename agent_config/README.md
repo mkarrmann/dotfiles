@@ -53,7 +53,10 @@ is the default.
    everything in `drop-plugins.list` from every agent, cleans orphan
    plugin caches under `~/.claude/plugins/cache/agent-market/` and
    `~/.codex/plugins/cache/claude-templates/`, then runs `sync apply`
-   to install everything in `plugins.list` on every agent.
+   to install everything in `plugins.list` on every agent. On Linux it
+   also installs the agent-market settings in `settings.linux.list` into
+   Claude (e.g. `fwdproxy`, without which WebFetch has no network on a
+   devserver). Install-only.
 
 So: pull dotfiles → run `init.sh` → every devserver lines up.
 

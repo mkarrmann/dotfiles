@@ -3,6 +3,7 @@
 #   1. Uninstall plugins from drop-plugins.list on every agent
 #   2. Delete orphan plugin caches left behind by uninstalls
 #   3. Install everything in plugins.list (via `sync apply`)
+#   4. On Linux, install everything in settings.linux.list into Claude
 #
 # Idempotent — safe to re-run.
 
@@ -11,6 +12,7 @@ set -uo pipefail
 CFG="${AGENT_CONFIG_DIR:-$HOME/dotfiles/agent_config}"
 DROPS_FILE="$CFG/drop-plugins.list"
 PLUGINS_FILE="$CFG/plugins.list"
+SETTINGS_FILE="$CFG/settings.linux.list"
 STAMP="$HOME/.cache/agent_config/bootstrap-plugins.stamp"
 AGENTS=(claude codex devmate metacode)
 
@@ -22,25 +24,34 @@ fi
 # Fast path: nothing in the canon has changed since last run. Each agent-market
 # call costs ~100-500ms and many will fail forever (tagged no-codex / no-metacode);
 # stamping cuts repeat runs from ~60s to instant. Force a re-run by deleting
-# the stamp, or by editing either canon file.
+# the stamp, or by editing any canon file.
 if [ "${BOOTSTRAP_PLUGINS_FORCE:-0}" != "1" ] && [ -f "$STAMP" ] \
-   && [ "$STAMP" -nt "$DROPS_FILE" ] && [ "$STAMP" -nt "$PLUGINS_FILE" ]; then
+   && [ "$STAMP" -nt "$DROPS_FILE" ] && [ "$STAMP" -nt "$PLUGINS_FILE" ] \
+   && [ "$STAMP" -nt "$SETTINGS_FILE" ]; then
   echo "bootstrap-plugins: canon unchanged — skipping"
   echo "  (re-run with BOOTSTRAP_PLUGINS_FORCE=1 or rm $STAMP)"
   exit 0
 fi
 
+# Print the entries of a canon list, one per line.
+read_list() {
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Trim with Bash parameter expansion. Passing comments through xargs is not
+    # safe because ordinary prose may contain unmatched quotes.
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    case "$line" in
+      ''|'#'*) continue ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done < "$1"
+}
+
 DROPS=()
-while IFS= read -r line || [ -n "$line" ]; do
-  # Trim with Bash parameter expansion. Passing comments through xargs is not
-  # safe because ordinary prose may contain unmatched quotes.
-  line="${line#"${line%%[![:space:]]*}"}"
-  line="${line%"${line##*[![:space:]]}"}"
-  case "$line" in
-    ''|'#'*) continue ;;
-    *) DROPS+=("$line") ;;
-  esac
-done < "$DROPS_FILE"
+while IFS= read -r p; do
+  DROPS+=("$p")
+done < <(read_list "$DROPS_FILE")
 
 installed_for() {
   local agent="$1"
@@ -56,7 +67,7 @@ installed_for() {
   fi
 }
 
-plugin_is_listed() {
+is_listed() {
   local needle="$1"
   local installed="$2"
   local value
@@ -74,7 +85,7 @@ for a in "${AGENTS[@]}"; do
   fi
   removed=0
   for p in "${DROPS[@]}"; do
-    plugin_is_listed "$p" "$installed" || continue
+    is_listed "$p" "$installed" || continue
     if agent-market plugin "$p" uninstall --agent "$a" --quiet 2>/dev/null; then
       echo "  $a: removed $p"
     else
@@ -93,6 +104,23 @@ done
 
 echo "== installing plugins from plugins.list =="
 "$CFG/sync" apply
+
+echo "== installing Claude settings from settings.linux.list =="
+if [ "$(uname -s)" = Linux ]; then
+  installed_settings="$(agent-market list --agent claude 2>/dev/null \
+    | awk '$1=="setting"{print $2}')"
+  while IFS= read -r setting; do
+    if is_listed "$setting" "$installed_settings"; then
+      echo "  $setting: already installed"
+    elif agent-market setting "$setting" install --agent claude --quiet; then
+      echo "  + $setting"
+    else
+      echo "  failed to install $setting" >&2
+    fi
+  done < <(read_list "$SETTINGS_FILE")
+else
+  echo "  not Linux; skipping"
+fi
 
 mkdir -p "$(dirname "$STAMP")"
 touch "$STAMP"

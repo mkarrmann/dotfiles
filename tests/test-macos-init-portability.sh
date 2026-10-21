@@ -46,14 +46,16 @@ plugin-one
   plugin-two  
 EOF
   : > "$cfg/plugins.list"
+  printf '# comment\ninstalled-setting\nnew-setting\n' > "$cfg/settings.linux.list"
   # bootstrap-plugins takes its fast path only when the stamp is strictly newer
-  # than both canon files, and bash's -nt compares whole seconds. When the
+  # than every canon file, and bash's -nt compares whole seconds. When the
   # fixture writes the canon and runs twice inside one second, the second run
   # takes the slow path and the fast-path assertion below fails -- about half
   # the time on this machine. Backdate the canon instead of sleeping a second.
   # In production the stamp is re-touched on every slow run, so a same-second
   # collision there costs one extra run and then self-corrects.
-  touch -t 202001010000 "$cfg/drop-plugins.list" "$cfg/plugins.list"
+  touch -t 202001010000 "$cfg/drop-plugins.list" "$cfg/plugins.list" \
+    "$cfg/settings.linux.list"
   printf '{"plugins":{"plugin-one@market":{}}}\n' \
     > "$home/.claude/plugins/installed_plugins.json"
   cat > "$cfg/sync" <<EOF
@@ -63,7 +65,7 @@ EOF
   cat > "$fake_bin/agent-market" <<EOF
 #!/usr/bin/env bash
 if [[ "\${1:-}" == list ]]; then
-  printf 'plugin plugin-one\nplugin retained-plugin\n'
+  printf 'plugin plugin-one\nplugin retained-plugin\nsetting installed-setting\n'
   exit 0
 fi
 printf '%s\n' "\$*" >> "$TMP/agent-market.log"
@@ -73,6 +75,7 @@ EOF
 echo plugin-one@market
 EOF
   chmod +x "$cfg/sync" "$fake_bin/agent-market" "$fake_bin/jq"
+  stub_linux_uname "$fake_bin"
 
   if sed -n '/^[[:space:]]*mapfile[[:space:]]/p' "$ROOT/agent_config/bootstrap-plugins" \
       | sed -n '1p' | read -r _; then
@@ -82,8 +85,11 @@ EOF
   HOME="$home" PATH="$fake_bin:/usr/bin:/bin" AGENT_CONFIG_DIR="$cfg" \
     bash "$ROOT/agent_config/bootstrap-plugins" >/dev/null
 
-  [[ "$(wc -l < "$TMP/agent-market.log" | tr -d ' ')" == 4 ]] \
+  [[ "$(sed -n '/uninstall/p' "$TMP/agent-market.log" | wc -l | tr -d ' ')" == 4 ]] \
     || fail "expected only the installed dropped plugin to be uninstalled"
+  [[ "$(sed -n '/^setting /p' "$TMP/agent-market.log")" \
+      == 'setting new-setting install --agent claude --quiet' ]] \
+    || fail "expected only the missing Linux setting to be installed"
   if sed -n '/plugin-two/p' "$TMP/agent-market.log" | sed -n '1p' | read -r _; then
     fail "bootstrap attempted to uninstall a plugin that was not installed"
   fi
@@ -95,6 +101,17 @@ EOF
     bash "$ROOT/agent_config/bootstrap-plugins" >/dev/null
   [[ "$(wc -l < "$TMP/agent-market.log")" == "$before" ]] \
     || fail "unchanged second run did not use the fast path"
+
+  local mac_bin="$TMP/plugin-mac-bin"
+  mkdir -p "$mac_bin"
+  printf '#!/usr/bin/env bash\necho Darwin\n' > "$mac_bin/uname"
+  chmod +x "$mac_bin/uname"
+  : > "$TMP/agent-market.log"
+  HOME="$home" PATH="$mac_bin:$fake_bin:/usr/bin:/bin" AGENT_CONFIG_DIR="$cfg" \
+    BOOTSTRAP_PLUGINS_FORCE=1 bash "$ROOT/agent_config/bootstrap-plugins" >/dev/null
+  if sed -n '/^setting /p' "$TMP/agent-market.log" | sed -n '1p' | read -r _; then
+    fail "bootstrap installed a Linux-only setting on macOS"
+  fi
 }
 
 test_client_dvsc_reconciliation() {

@@ -1,0 +1,9 @@
+# agent-market settings installed into Claude Code on work Linux hosts
+# (devservers, ODs) by bootstrap-plugins. Install-only: removing a line does
+# not uninstall the setting.
+#
+# fwdproxy: Claude Code has no outbound HTTP on a devserver without it, so
+# WebFetch fails for every domain. Linux-only because the setting breaks
+# outbound HTTP wherever fwdproxy:8080 is unreachable, and the Mac unsets
+# https_proxy for exactly that reason (zshenv.local.meta-macos).
+fwdproxy
