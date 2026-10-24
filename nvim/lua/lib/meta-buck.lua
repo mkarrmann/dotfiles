@@ -107,8 +107,16 @@ local function get_owning_targets(path, kinds, no_coro, opts)
 	return add_runnable_base_targets(decoded, cwd, no_coro, options)
 end
 
+---Buck root of the current buffer's file, else of the active repo. A
+---:MetaRepo pick shouldn't send a file's build to another checkout.
+---@return string?
+local function current_buck_root()
+	local name = vim.api.nvim_buf_get_name(0)
+	return (name ~= "" and repo_context.buck_root(name)) or repo_context.buck_root()
+end
+
 local function get_buck_root(kind, no_coro)
-	local cwd = repo_context.buck_root()
+	local cwd = current_buck_root()
 	if not cwd then
 		return nil, "Not in a Buck project"
 	end
@@ -141,7 +149,7 @@ function M.setup()
 	if not terminal._repo_context_run_command then
 		terminal._repo_context_run_command = terminal.run_command
 		terminal.run_command = function(cmd, opts)
-			local cwd = is_buck_command(cmd) and repo_context.buck_root() or nil
+			local cwd = is_buck_command(cmd) and current_buck_root() or nil
 			if cwd then
 				local scoped = { "cd", vim.fn.shellescape(cwd), "&&" }
 				vim.list_extend(scoped, cmd)
@@ -155,7 +163,7 @@ function M.setup()
 		M._io_popen = io.popen
 		io.popen = function(command, mode)
 			if type(command) == "string" and command:match("^%s*buck2%s+log%s+show") then
-				local cwd = repo_context.buck_root()
+				local cwd = current_buck_root()
 				if cwd then
 					-- HACK: meta.buck does not expose a cwd for its post-test log query.
 					command = "cd " .. vim.fn.shellescape(cwd) .. " && " .. command

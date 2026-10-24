@@ -41,6 +41,21 @@ function M.run()
 		assert_eq(queries[2].cwd, "/repo", "base query runs in the Buck root")
 		assert_eq(targets["fbcode//a:b"], { ["buck.type"] = "python_unittest" }, "base target is added")
 		assert_eq(targets["fbcode//a:b-library"], { ["buck.type"] = "python_library" }, "library target is kept")
+
+		-- Buck commands run in the current file's Buck root, even when a
+		-- :MetaRepo pick points the repo context elsewhere.
+		local ran
+		package.loaded["meta.util.terminal"] = { run_command = function(cmd) ran = cmd end }
+		package.loaded["lib.repo-context"] = {
+			buck_root = function(path)
+				return path and "/file-root" or "/picked-root"
+			end,
+		}
+		package.loaded["lib.meta-buck"] = nil
+		require("lib.meta-buck").setup()
+		vim.api.nvim_buf_set_name(0, "/file-root/fbcode/a/b.py")
+		require("meta.util.terminal").run_command({ "buck2", "test", "fbcode//a:b" })
+		assert_eq(ran[2], vim.fn.shellescape("/file-root"), "buck runs in the file's root")
 	end, debug.traceback)
 
 	vim.system = orig_system
