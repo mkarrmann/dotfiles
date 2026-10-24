@@ -2425,9 +2425,6 @@ local function jf_graphql(query, variables, on_success, on_error, cwd)
   )
 end
 
----@type table<string, string>
-local version_id_cache = {}
-
 local function get_current_diff_number(callback, cwd)
   vim.system(
     { "hg", "log", "--limit", "1", "--template", "{phabdiff}" },
@@ -2468,11 +2465,9 @@ query GetVersionID($query_params: [PhabricatorDiffQueryParams!]!) {
 }
 ]]
 
+---Latest version of a diff. Not cached: a jf submit in this session adds one,
+---and drafts attached to an older version point at the wrong lines.
 local function get_version_id(diff_number, callback, cwd)
-  if version_id_cache[diff_number] then
-    callback(version_id_cache[diff_number])
-    return
-  end
   jf_graphql(GET_VERSION_ID_QUERY, {
     query_params = { {
       numbers = { diff_number },
@@ -2494,7 +2489,6 @@ local function get_version_id(diff_number, callback, cwd)
       vim.notify("Could not find version for D" .. diff_number, vim.log.levels.ERROR)
       return
     end
-    version_id_cache[diff_number] = version.id
     callback(version.id)
   end, nil, cwd)
 end
@@ -2651,8 +2645,7 @@ local function HgPublishDrafts()
     command = "HgPublishDrafts",
   })
 
-  local root = active_repo_root()
-  get_current_diff_number(function(diff_number)
+  local function publish(diff_number, root)
     jf_graphql(PUBLISH_DRAFTS_MUTATION, {
       data = {
         client_caller = "neovim",
@@ -2668,6 +2661,16 @@ local function HgPublishDrafts()
       local url = diff and diff.url or ("D" .. diff_number)
       vim.notify("Draft comments published on " .. url, vim.log.levels.INFO)
     end, nil, root)
+  end
+
+  -- in a diff split, :HgInlineComment drafts on the split's diff; publish there too
+  local session = DIFF_SPLIT_SESSIONS[vim.api.nvim_get_current_tabpage()]
+  if session and session.commit.diff then
+    return publish((session.commit.diff:gsub("^D", "")), session.repo_root)
+  end
+  local root = active_repo_root()
+  get_current_diff_number(function(diff_number)
+    publish(diff_number, root)
   end, root)
 end
 
