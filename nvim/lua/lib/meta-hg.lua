@@ -1148,10 +1148,11 @@ function ssl_utils.refresh_buffer(bufnr)
   end)
 
   run({ "hg", "ssl" }, function(ssl_obj)
-    ssl_done = true
     if ssl_obj.code ~= 0 then
+      -- leave hg sl's output up
       return fail("Failed to run hg ssl")
     end
+    ssl_done = true
     if not is_latest() then
       return
     end
