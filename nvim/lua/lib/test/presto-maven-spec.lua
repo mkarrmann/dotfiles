@@ -28,6 +28,9 @@ function M.run()
 		maven.full()
 
 		assert_eq(#calls, 1, "one terminal job")
+		assert_eq(calls[1].fn, "jobstart", "uses jobstart, not the deprecated termopen")
+		assert_eq(calls[1].opts.term, true, "runs in a terminal")
+		assert_eq(type(calls[1].opts.on_exit), "function", "still reports the exit status")
 		local cmd = calls[1].cmd
 		assert_eq(type(cmd), "string", "shell command")
 		local cd = cmd:find("cd '[^']*/presto%-trunk'")

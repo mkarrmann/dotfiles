@@ -54,7 +54,8 @@ local function run(shell_cmd, title)
 	vim.cmd("botright new | resize 15")
 	build_bufnr = vim.api.nvim_get_current_buf()
 
-	vim.fn.termopen(shell_cmd, {
+	vim.fn.jobstart(shell_cmd, {
+		term = true,
 		on_exit = function(_, code)
 			vim.schedule(function()
 				local level = code == 0 and vim.log.levels.INFO or vim.log.levels.ERROR
