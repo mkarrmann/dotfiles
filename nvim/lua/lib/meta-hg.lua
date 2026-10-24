@@ -1124,21 +1124,17 @@ end
 
 local diff_session = require("lib.diff-session")
 
+local scratch_buf_counter = 0
+
 ---@param lines string[]
----@param name string
+---@param name string Suffixed with a counter so every call gets its own buffer.
 ---@param file_path string
 ---@return integer
 local function create_scratch_buf(lines, name, file_path)
-  local existing = vim.fn.bufnr(name)
-  if existing ~= -1 then
-    vim.api.nvim_buf_set_option(existing, "modifiable", true)
-    vim.api.nvim_buf_set_lines(existing, 0, -1, false, lines)
-    vim.api.nvim_buf_set_option(existing, "modifiable", false)
-    return existing
-  end
+  scratch_buf_counter = scratch_buf_counter + 1
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.api.nvim_buf_set_name(buf, name)
+  vim.api.nvim_buf_set_name(buf, name .. "#" .. scratch_buf_counter)
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].modifiable = false
   vim.bo[buf].swapfile = false
