@@ -39,6 +39,7 @@ local log_to_scuba = meta_util.log_to_scuba
 ---@field parent_rev string Pinned (see `pin_rev`).
 ---@field labels { old: string, new: string } The revisions as requested, for display.
 ---@field repo_root string
+---@field return_win integer Window focused again when the split closes.
 ---@field cache table<string, Hg.rev_cache> File contents keyed by revision.
 ---@field closed boolean
 
@@ -1439,12 +1440,20 @@ local function open_diff_split(opts)
     return
   end
   local tab = vim.api.nvim_get_current_tabpage()
-  if DIFF_SPLIT_SESSIONS[tab] then
-    diff_session.close(DIFF_SPLIT_SESSIONS[tab])
-  end
-
   local return_win = vim.api.nvim_get_current_win()
-  vim.api.nvim_set_current_win(opts.split_from or return_win)
+  local previous = DIFF_SPLIT_SESSIONS[tab]
+  if previous then
+    -- reopened from the previous split's own panes: take its place
+    if return_win == previous.left_win or return_win == previous.right_win then
+      return_win = previous.return_win
+    end
+    diff_session.close(previous)
+  end
+  local split_from = opts.split_from or return_win
+  if not vim.api.nvim_win_is_valid(split_from) then
+    split_from = vim.api.nvim_get_current_win()
+  end
+  vim.api.nvim_set_current_win(split_from)
   local left_win, right_win = diff_session.create_pair_wins()
 
   ---@type Hg.diff_session
@@ -1459,6 +1468,7 @@ local function open_diff_split(opts)
     parent_rev = pin_rev(opts.repo_root, opts.parent_rev),
     labels = { old = opts.parent_rev, new = opts.target.hash },
     repo_root = opts.repo_root,
+    return_win = return_win,
     update_winbar = diff_split_update_winbar,
     cache = {},
     closed = false,

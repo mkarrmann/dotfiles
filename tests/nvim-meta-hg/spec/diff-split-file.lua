@@ -22,6 +22,19 @@ H.run(function()
 	H.eq(vim.api.nvim_get_current_win(), origin, "closing returns to your window")
 	H.eq(#vim.fn.getbufinfo({ buflisted = 1 }), bufs_before, "no buffers left behind")
 
+	-- Opening a second split in the tab replaces the first, and returns to
+	-- the window it was opened from, not the first one's.
+	vim.cmd.edit(root .. "/bar.py")
+	vim.cmd("HgDiffSplit")
+	vim.cmd.vsplit(root .. "/dos.txt")
+	local second = vim.api.nvim_get_current_win()
+	vim.cmd("HgDiffSplit")
+	s = H.session()
+	H.eq(H.files(s), "dos.txt", "second split replaced the first")
+	ds.close(s)
+	H.eq(vim.api.nvim_get_current_win(), second, "closing it returns to where it was opened")
+	vim.cmd.only()
+
 	-- A file renamed in the current commit diffs against its old name.
 	H.sh({ "hg", "mv", "foo.ts", "renamed.ts" }, root)
 	H.sh({ "hg", "commit", "-m", "rename", "foo.ts", "renamed.ts" }, root)
