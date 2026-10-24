@@ -1411,6 +1411,11 @@ end
 
 ---@param opts Hg.diff_split_opts
 local function open_diff_split(opts)
+  -- the file list can be stale (HgChanges after a revert elsewhere)
+  if #opts.files == 0 then
+    vim.notify("No changed files to diff", vim.log.levels.INFO)
+    return
+  end
   local tab = vim.api.nvim_get_current_tabpage()
   if DIFF_SPLIT_SESSIONS[tab] then
     diff_session.close(DIFF_SPLIT_SESSIONS[tab])
