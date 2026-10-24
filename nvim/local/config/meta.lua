@@ -86,46 +86,6 @@ vim.api.nvim_create_autocmd("User", {
 					toggle_terminal = "<leader>Bg",
 				},
 			})
-
-			local original_run_target = buck.run_target
-			buck.run_target = function(extra_args)
-				local buck_util = require("meta.util.buck")
-				local targets_map = buck_util.get_owning_targets(nil, nil, true, {})
-				if targets_map then
-					local has_non_library = false
-					for name, _ in pairs(targets_map) do
-						if not name:match("%-library$") then
-							has_non_library = true
-							break
-						end
-					end
-					if not has_non_library then
-						for name, _ in pairs(targets_map) do
-							local base = name:gsub("%-library$", "")
-							local cwd = repo_context.buck_root()
-							local result = cwd
-								and vim.system(
-									{ "buck2", "uquery", base, "--json", "-a", "buck.type" },
-									{ cwd = cwd, text = true }
-								):wait()
-							if result and result.code == 0 then
-								local ok2, decoded = pcall(vim.fn.json_decode, result.stdout)
-								if ok2 and decoded and decoded[base] then
-									local buck_type = decoded[base]["buck.type"] or ""
-									if buck_type:match("_binary$") then
-										local terminal = require("meta.util.terminal")
-										local cmd = buck_util.run(base, extra_args, {})
-										local term_opts = { direction = "horizontal" }
-										terminal.run_and_store(cmd, term_opts)
-										return
-									end
-								end
-							end
-						end
-					end
-				end
-				original_run_target(extra_args)
-			end
 		end
 
 		vim.api.nvim_create_user_command("HgDiffSplit", function()
