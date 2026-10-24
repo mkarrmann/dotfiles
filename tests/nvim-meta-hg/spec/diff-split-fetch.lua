@@ -23,7 +23,11 @@ H.run(function()
 	for i, p in ipairs(s.pairs) do
 		ds.show_pair(s, i)
 		local raw = H.read(root .. "/" .. p.file):gsub("\n$", "")
-		local got = table.concat(vim.api.nvim_buf_get_lines(p.new_buf, 0, -1, false), "\n")
+		local eol = vim.bo[p.new_buf].fileformat == "dos" and "\r\n" or "\n"
+		local got = table.concat(vim.api.nvim_buf_get_lines(p.new_buf, 0, -1, false), eol)
+		if eol == "\r\n" then
+			got = got .. "\r"
+		end
 		H.eq(got, raw, "content " .. p.file)
 	end
 	ds.close(s)

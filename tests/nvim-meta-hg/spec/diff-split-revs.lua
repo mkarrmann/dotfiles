@@ -20,7 +20,7 @@ H.run(function()
 	H.sh({ "hg", "commit", "-m", "dos", "dos.txt" }, root)
 	local p, i = H.pair(s, "dos.txt")
 	ds.show_pair(s, i)
-	H.eq(H.lines(p.old_buf), "a\r\nb\r\nc\r", "old side still from the original base")
+	H.eq(H.lines(p.old_buf), "a\nb\nc", "old side still from the original base")
 	local wb = vim.w[s.right_win].custom_winbar_text or ""
 	H.check(wb:find(". " .. revs.descendant:sub(1, 10), 1, true) ~= nil, "winbar names the base: " .. wb)
 end)
