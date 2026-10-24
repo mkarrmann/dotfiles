@@ -1959,6 +1959,16 @@ local function HgSsl(opts)
     launch_root = buf_repo_root()
   end
 
+  -- :bdelete unloads the panel but keeps it valid, without its options and
+  -- mappings; wipe it so it gets rebuilt below.
+  if
+    SSL_STATE.bufnr
+    and vim.api.nvim_buf_is_valid(SSL_STATE.bufnr)
+    and not vim.api.nvim_buf_is_loaded(SSL_STATE.bufnr)
+  then
+    vim.api.nvim_buf_delete(SSL_STATE.bufnr, { force = true })
+  end
+
   if SSL_STATE.bufnr and vim.api.nvim_buf_is_valid(SSL_STATE.bufnr) then
     local retargeted = SSL_STATE.repo_root ~= launch_root
     SSL_STATE.repo_root = launch_root

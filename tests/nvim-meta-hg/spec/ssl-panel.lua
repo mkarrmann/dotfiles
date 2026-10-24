@@ -37,4 +37,13 @@ H.run(function()
 	end), "current commit stays listed: " .. vim.inspect(lines))
 	H.eq(vim.v.errmsg, "", "no errors")
 	H.eq(#vim.api.nvim_buf_get_extmarks(hg.ssl_state.bufnr, ns, 0, -1, {}), 1, "status block still drawn")
+
+	-- :bdelete unloads the panel and wipes its options and mappings.
+	vim.cmd("bdelete " .. hg.ssl_state.bufnr)
+	vim.cmd.edit(root .. "/bar.py")
+	vim.cmd("HgSsl")
+	local panel = vim.api.nvim_get_current_buf()
+	H.eq(panel, hg.ssl_state.bufnr, "panel shown")
+	H.eq(vim.bo[panel].buftype, "nofile", "reopened panel is a nofile buffer")
+	H.check(vim.fn.maparg("r", "n", false, true).buffer == 1, "reopened panel has its mappings")
 end)
