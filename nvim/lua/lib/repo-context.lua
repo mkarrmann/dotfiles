@@ -51,38 +51,26 @@ local function buffer_context(bufnr)
 	}
 end
 
--- A repo picked explicitly (:MetaRepo) is pinned: it wins over the focused
--- buffer's repo until a buffer in a different repo is entered.
----@param repo_root string
----@param workdir string?
----@param tabpage integer?
----@param mode? "pin"|"enter"
-local function store(repo_root, workdir, tabpage, mode)
-	if not root_for(repo_root, ".hg") then
-		return
-	end
-	tabpage = tabpage or vim.api.nvim_get_current_tabpage()
-	local ok, previous = pcall(vim.api.nvim_tabpage_get_var, tabpage, TAB_CONTEXT_VAR)
-	previous = ok and type(previous) == "table" and previous or nil
-	local same = previous ~= nil and previous.repo_root == repo_root
-	if previous and previous.pinned and not same and not mode then
-		return
-	end
-	if not workdir and same then
-		workdir = previous.workdir
-	end
-	pcall(vim.api.nvim_tabpage_set_var, tabpage, TAB_CONTEXT_VAR, {
-		repo_root = repo_root,
-		workdir = workdir or repo_root,
-		pinned = mode == "pin" or (same and previous.pinned) or nil,
-	})
-end
-
 ---@param repo_root string
 ---@param workdir string?
 ---@param tabpage integer?
 function M.remember(repo_root, workdir, tabpage)
-	store(repo_root, workdir, tabpage)
+	if not root_for(repo_root, ".hg") then
+		return
+	end
+	tabpage = tabpage or vim.api.nvim_get_current_tabpage()
+	if not workdir then
+		local ok, previous = pcall(vim.api.nvim_tabpage_get_var, tabpage, TAB_CONTEXT_VAR)
+		if ok and previous.repo_root == repo_root then
+			workdir = previous.workdir
+		end
+	end
+	pcall(
+		vim.api.nvim_tabpage_set_var,
+		tabpage,
+		TAB_CONTEXT_VAR,
+		{ repo_root = repo_root, workdir = workdir or repo_root }
+	)
 end
 
 local function remembered_context()
@@ -104,12 +92,7 @@ end
 ---@param bufnr integer?
 ---@return table?
 function M.current(bufnr)
-	local context = bufnr == nil and remembered_context() or nil
-	if context and context.pinned then
-		return context
-	end
-
-	context = buffer_context(bufnr)
+	local context = buffer_context(bufnr)
 	if context then
 		M.remember(context.repo_root, context.workdir)
 		return context
@@ -148,36 +131,23 @@ local function candidate_parent()
 	return repo_root and vim.fs.dirname(repo_root) or cwd
 end
 
--- vim.fs.dir reports symlinks as "link" without following them; ~/fbsource and
--- ~/configerator are links. Repos reached twice are listed once, under the
--- first path found.
----@param parent string
----@param found table<string, string> realpath -> path
-local function collect_repos(parent, found)
-	for name, entry_type in vim.fs.dir(parent) do
-		if entry_type == "directory" or entry_type == "link" then
-			local path = vim.fs.joinpath(parent, name)
-			if path_exists(vim.fs.joinpath(path, ".hg")) then
-				local real = vim.uv.fs_realpath(path) or path
-				found[real] = found[real] or path
-			end
-		end
-	end
-end
-
 ---@return string[]
 function M.candidates()
-	local found = {}
-	collect_repos(candidate_parent(), found)
-	local home = vim.env.HOME
-	if home then
-		for name, entry_type in vim.fs.dir(home) do
-			if (entry_type == "directory" or entry_type == "link") and name:match("^checkout") then
-				collect_repos(vim.fs.joinpath(home, name), found)
+	local parent = candidate_parent()
+	local candidates = {}
+	local iterator = vim.fs.dir(parent)
+	if not iterator then
+		return candidates
+	end
+
+	for name, entry_type in iterator do
+		if entry_type == "directory" then
+			local path = vim.fs.joinpath(parent, name)
+			if path_exists(vim.fs.joinpath(path, ".hg")) then
+				table.insert(candidates, path)
 			end
 		end
 	end
-	local candidates = vim.tbl_values(found)
 	table.sort(candidates)
 	return candidates
 end
@@ -198,7 +168,7 @@ function M.with_context(callback, opts)
 		return
 	end
 	if #candidates == 1 then
-		store(candidates[1], nil, nil, "pin")
+		M.remember(candidates[1])
 		callback({ repo_root = candidates[1], workdir = candidates[1] })
 		return
 	end
@@ -206,11 +176,11 @@ function M.with_context(callback, opts)
 	vim.ui.select(candidates, {
 		prompt = "Select repository:",
 		format_item = function(path)
-			return vim.fn.fnamemodify(path, ":~")
+			return vim.fs.basename(path)
 		end,
 	}, function(repo_root)
 		if repo_root then
-			store(repo_root, nil, nil, "pin")
+			M.remember(repo_root)
 			callback({ repo_root = repo_root, workdir = repo_root })
 		end
 	end)
@@ -243,7 +213,7 @@ function M.setup()
 		callback = function(args)
 			local context = buffer_context(args.buf)
 			if context then
-				store(context.repo_root, context.workdir, nil, "enter")
+				M.remember(context.repo_root, context.workdir)
 			end
 		end,
 	})
