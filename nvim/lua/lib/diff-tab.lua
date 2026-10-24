@@ -137,9 +137,7 @@ local function show_pair(state, index)
 	end)
 
 	for _, win in ipairs({ state.left_win, state.right_win }) do
-		vim.wo[win].scrollbind = true
-		vim.wo[win].foldenable = false
-		vim.wo[win].relativenumber = true
+		require("lib.diff-opts").apply(win)
 	end
 
 	update_winbar(state)
