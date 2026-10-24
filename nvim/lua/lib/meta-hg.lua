@@ -2133,7 +2133,23 @@ local function HgSsl(opts)
 
 end
 
+---Commit message lines with the template's comment lines and trailing blanks removed.
+---hg strips its `HG:` lines only when it runs the editor itself, not for --logfile.
+---@param lines string[]
+---@return string[]
+local function commit_message_lines(lines)
+  local message = vim.tbl_filter(function(line)
+    return not (vim.startswith(line, "HG:") or vim.startswith(line, "SL:"))
+  end, lines)
+  while #message > 0 and vim.trim(message[#message]) == "" do
+    table.remove(message)
+  end
+  return message
+end
+
 ---Open a commit-message editor in a new tab and commit when the window closes.
+---The message is what was last written to the file; closing without changing
+---the template aborts.
 ---@param paths string[]? specific files to commit (nil = all pending changes)
 ---@param on_done fun()? called after a successful commit
 ---@param repo_root string? repo to commit in (defaults to the active repo)
@@ -2141,42 +2157,39 @@ local function commit_with_message(paths, on_done, repo_root)
   repo_root = repo_root or active_repo_root()
   local commit_filepath = vim.fn.tempname() .. ".commit"
 
-  -- populate temp file with commit template
-  vim.fn.system(
-    "hg --cwd "
-      .. vim.fn.shellescape(repo_root)
-      .. " debugcommitmessage >> "
-      .. commit_filepath
-  )
+  local template = vim.system(
+    { "hg", "debugcommitmessage" },
+    { text = true, cwd = repo_root }
+  ):wait().stdout or ""
+  local template_lines = split_file_lines(template)
+  vim.fn.writefile(template_lines, commit_filepath)
 
-  vim.cmd("tabnew " .. commit_filepath)
+  vim.cmd.tabnew(vim.fn.fnameescape(commit_filepath))
   vim.bo.filetype = "hgcommit"
 
   local buf_nr = vim.api.nvim_get_current_buf()
 
   vim.api.nvim_create_autocmd("WinClosed", {
     buffer = 0,
+    once = true,
     callback = function()
       local function cleanup()
         vim.schedule(function()
           vim.fn.delete(commit_filepath)
-          vim.api.nvim_buf_delete(buf_nr, { force = true })
+          if vim.api.nvim_buf_is_valid(buf_nr) then
+            vim.api.nvim_buf_delete(buf_nr, { force = true })
+          end
           -- update signs for the buffer that we returned to
           sign_util.infer_signs(0)
         end)
       end
-      local lines = {}
-      local raw_lines = vim.api.nvim_buf_get_lines(buf_nr, 0, -1, true)
-      for _, line in ipairs(raw_lines) do
-        if not vim.startswith(line, "HG:") then
-          table.insert(lines, line)
-        end
-      end
-      local concat_lines = table.concat(lines, "")
-      if vim.trim(concat_lines) == "" then
+      local message = commit_message_lines(vim.fn.readfile(commit_filepath))
+      local untouched = vim.deep_equal(message, commit_message_lines(template_lines))
+      if untouched or vim.trim(table.concat(message, "")) == "" then
         vim.notify("Commit aborted", vim.log.levels.INFO)
         cleanup()
       else
+        vim.fn.writefile(message, commit_filepath)
         local cmd = { "hg", "commit", "--logfile", commit_filepath }
         if paths and #paths > 0 then
           -- include explicitly named untracked/missing files in the commit
