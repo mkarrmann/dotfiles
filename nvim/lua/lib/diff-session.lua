@@ -49,11 +49,54 @@ local ACTIONS = {
 
 ---@type table<integer, integer> Buffer -> sessions that mapped keys in it.
 local attach_count = {}
+---@type table<integer, table<string, table>> Buffer -> the buffer's own maps
+--- the session keys replaced (e.g. LazyVim's treesitter ]f/[f), by key.
+local replaced = {}
+
+---Runs a map as if its key had been pressed.
+---@param map table from nvim_get_keymap/nvim_buf_get_keymap
+local function run_map(map)
+	local rhs = map.rhs
+	if map.callback then
+		rhs = map.callback()
+		if map.expr ~= 1 then
+			return
+		end
+	end
+	if rhs and rhs ~= "" then
+		if map.expr == 1 and not map.callback then
+			rhs = vim.api.nvim_eval(rhs)
+		end
+		vim.api.nvim_feedkeys(vim.keycode(rhs), map.noremap == 1 and "n" or "m", false)
+	end
+end
+
+---What `key` does outside a diff pane: the map it replaced in `buf`, else a
+---global map, else the built-in command.
+---@param buf integer
+---@param key string
+local function run_usual(buf, key)
+	local map = (replaced[buf] or {})[key]
+	if not map then
+		for _, m in ipairs(vim.api.nvim_get_keymap("n")) do
+			if m.lhs == key then
+				map = m
+				break
+			end
+		end
+	end
+	if map then
+		return run_map(map)
+	end
+	local count = vim.v.count > 0 and tostring(vim.v.count) or ""
+	vim.api.nvim_feedkeys(count .. key, "n", false)
+end
 
 ---Maps the session keys in `buf` for `session`. A live file buffer can be in
 ---several sessions (one per tab) and in ordinary windows, so the maps look
 ---the session up from the current window when pressed, and fall back to the
----key's usual meaning outside diff panes.
+---key's usual meaning outside diff panes. The buffer's own maps for those
+---keys come back when the last session lets go of it.
 ---@param session DiffSession
 ---@param buf integer?
 local function attach(session, buf)
@@ -66,14 +109,19 @@ local function attach(session, buf)
 	if attach_count[buf] > 1 then
 		return
 	end
+	replaced[buf] = {}
+	for _, map in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
+		if ACTIONS[map.lhs] then
+			replaced[buf][map.lhs] = map
+		end
+	end
 	for key, action in pairs(ACTIONS) do
 		vim.keymap.set("n", key, function()
 			local session_here = current_session()
 			if session_here then
 				return action.run(session_here)
 			end
-			local count = vim.v.count > 0 and tostring(vim.v.count) or ""
-			vim.api.nvim_feedkeys(count .. key, "n", false)
+			run_usual(buf, key)
 		end, { buffer = buf, desc = action.desc })
 	end
 end
@@ -85,11 +133,19 @@ local function detach(buf)
 		return
 	end
 	attach_count[buf] = nil
-	if vim.api.nvim_buf_is_valid(buf) then
-		for key in pairs(ACTIONS) do
-			pcall(vim.keymap.del, "n", key, { buffer = buf })
-		end
+	local saved = replaced[buf] or {}
+	replaced[buf] = nil
+	if not vim.api.nvim_buf_is_valid(buf) then
+		return
 	end
+	for key in pairs(ACTIONS) do
+		pcall(vim.keymap.del, "n", key, { buffer = buf })
+	end
+	vim.api.nvim_buf_call(buf, function()
+		for _, map in pairs(saved) do
+			vim.fn.mapset("n", false, map)
+		end
+	end)
 end
 
 ---Maps the session keys in a pair's buffers; call once the pair has loaded.
