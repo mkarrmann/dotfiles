@@ -122,8 +122,15 @@ end
 local SSL_STATE = {
   ---@type number? reuse the same buffer for the nvim process lifespan
   bufnr = nil,
+  ---@type integer Bumped by every refresh. A refresh's results are shown only
+  --- while it is still the latest one, so one that finishes late (or was
+  --- started for another repo) can't overwrite the panel.
+  refresh_gen = 0,
   ---@type boolean
-  blocked = false,
+  refreshing = false,
+  ---@type integer Commands launched from the panel that change the repo and
+  --- are still running. Others are refused meanwhile.
+  busy = 0,
   ---@type boolean controls how current status is displayed and what actions are available
   merge_conflict = false,
   ---@type table<string, integer> hop label -> target line (1-indexed)
@@ -753,14 +760,17 @@ function ssl_utils.action_end(opts)
 end
 
 ---@param bufnr number
----@param sl_lines string[]
-function ssl_utils.annotate_hg_status(bufnr, sl_lines)
+---@param sl_lines string[] lines shown in the panel
+---@param is_latest fun(): boolean false once a newer refresh has started
+function ssl_utils.annotate_hg_status(bufnr, sl_lines, is_latest)
   vim.system(
     { "hg", "status" },
     { text = true, cwd = SSL_STATE.repo_root },
     function(status_obj)
     if status_obj.code ~= 0 then
-      vim.notify("Failed to check hg status", vim.log.levels.ERROR)
+      vim.schedule(function()
+        vim.notify("Failed to check hg status", vim.log.levels.ERROR)
+      end)
       return
     end
     local out = vim.trim(status_obj.stdout or "")
@@ -801,6 +811,9 @@ function ssl_utils.annotate_hg_status(bufnr, sl_lines)
     -- vim.fn.* & vim.api.nvim_buf_set_extmark
     -- cannot be canned inside lua fast function
     vim.schedule(function()
+      if not is_latest() then
+        return
+      end
       local status_pad = graph_lines
         .. string.rep(
           " ",
@@ -1039,53 +1052,71 @@ local function ssl_highlight_current_line(bufnr, lines)
   end
 end
 
----@param bufnr number
+---@param bufnr number?
 function ssl_utils.refresh_buffer(bufnr)
-  SSL_STATE.blocked = true
+  bufnr = bufnr or SSL_STATE.bufnr
+  SSL_STATE.refresh_gen = SSL_STATE.refresh_gen + 1
+  SSL_STATE.refreshing = true
+  local gen, root = SSL_STATE.refresh_gen, SSL_STATE.repo_root
+
+  local function is_latest()
+    return gen == SSL_STATE.refresh_gen
+      and root == SSL_STATE.repo_root
+      and bufnr ~= nil
+      and vim.api.nvim_buf_is_valid(bufnr)
+  end
+
+  local function fail(msg)
+    if is_latest() then
+      SSL_STATE.refreshing = false
+      vim.notify(msg, vim.log.levels.ERROR)
+    end
+  end
+
+  local function show(lines)
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+    ssl_highlight_current_line(bufnr, lines)
+    ssl_place_hop_labels(bufnr, lines)
+  end
+
+  ---@param cmd string[]
+  ---@param on_exit fun(obj: vim.SystemCompleted)
+  local function run(cmd, on_exit)
+    local ok, err = pcall(vim.system, cmd, { text = true, cwd = root }, function(obj)
+      vim.schedule(function()
+        on_exit(obj)
+      end)
+    end)
+    if not ok then
+      fail("Failed to run " .. table.concat(cmd, " ") .. ": " .. tostring(err))
+    end
+  end
 
   -- first quickly fill the buffer with commits without diff status
-  vim.system(
-    { "hg", "sl" },
-    { text = true, cwd = SSL_STATE.repo_root },
-    function(sl_obj)
+  run({ "hg", "sl" }, function(sl_obj)
     if sl_obj.code ~= 0 then
-      vim.notify("Failed to run hg sl", vim.log.levels.ERROR)
-      SSL_STATE.blocked = false
+      return fail("Failed to run hg sl")
+    end
+    if not is_latest() then
       return
     end
+    show(filter_hidden_bookmarks(vim.split(sl_obj.stdout, "\n")))
 
-    local sl_lines = vim.split(sl_obj.stdout, "\n")
-    sl_lines = filter_hidden_bookmarks(sl_lines)
-    vim.schedule(function()
-      vim.api.nvim_buf_set_lines(bufnr or 0, 0, -1, false, sl_lines)
-      ssl_highlight_current_line(bufnr or 0, sl_lines)
-      ssl_place_hop_labels(bufnr or 0, sl_lines)
-    end)
-
-    -- later async update content with diff statuses
-    vim.system(
-      { "hg", "ssl" },
-      { text = true, cwd = SSL_STATE.repo_root },
-      function(ssl_obj)
+    -- later update content with diff statuses
+    run({ "hg", "ssl" }, function(ssl_obj)
       if ssl_obj.code ~= 0 then
-        SSL_STATE.blocked = false
-        vim.notify("Failed to run hg ssl", vim.log.levels.ERROR)
+        return fail("Failed to run hg ssl")
+      end
+      if not is_latest() then
         return
       end
-
-      local ssl_lines = vim.split(ssl_obj.stdout, "\n")
-      ssl_lines = filter_hidden_bookmarks(ssl_lines)
-      -- cannot call "nvim_buf_set_lines" inside a lua loop
-      vim.schedule(function()
-        SSL_STATE.blocked = false
-        vim.api.nvim_buf_set_lines(bufnr or 0, 0, -1, false, ssl_lines)
-        ssl_highlight_current_line(bufnr or 0, ssl_lines)
-        ssl_place_hop_labels(bufnr or 0, ssl_lines)
-        vim.notify("ssl updated", vim.log.levels.INFO)
-      end)
+      SSL_STATE.refreshing = false
+      local ssl_lines = filter_hidden_bookmarks(vim.split(ssl_obj.stdout, "\n"))
+      show(ssl_lines)
+      vim.notify("ssl updated", vim.log.levels.INFO)
 
       if CONFIG.ssl.status then
-        ssl_utils.annotate_hg_status(bufnr, sl_lines)
+        ssl_utils.annotate_hg_status(bufnr, ssl_lines, is_latest)
       end
     end)
   end)
@@ -1114,9 +1145,10 @@ function ssl_utils.run_cmd(cmd, bufnr, reload, msg)
     vim.notify("Running: " .. table.concat(cmd, " "), vim.log.levels.INFO)
   end
 
-  SSL_STATE.blocked = true
+  SSL_STATE.busy = SSL_STATE.busy + 1
 
-  vim.system(cmd, { text = true, cwd = SSL_STATE.repo_root }, function(obj)
+  local ok, err = pcall(vim.system, cmd, { text = true, cwd = SSL_STATE.repo_root }, function(obj)
+    SSL_STATE.busy = SSL_STATE.busy - 1
     -- in case of an error we surface full output to the user
     if obj.code ~= 0 then
       local stderr = vim
@@ -1133,7 +1165,6 @@ function ssl_utils.run_cmd(cmd, bufnr, reload, msg)
         end)
         :totable()
 
-      SSL_STATE.blocked = false
       vim.schedule(function()
         vim.notify(
           "Failed to '"
@@ -1148,10 +1179,6 @@ function ssl_utils.run_cmd(cmd, bufnr, reload, msg)
       return
     end
 
-    if not reload then
-      SSL_STATE.blocked = false
-    end
-
     vim.schedule(function()
       ssl_utils.action_end({
         reload = reload,
@@ -1160,6 +1187,10 @@ function ssl_utils.run_cmd(cmd, bufnr, reload, msg)
       })
     end)
   end)
+  if not ok then
+    SSL_STATE.busy = SSL_STATE.busy - 1
+    vim.notify("Failed to run " .. table.concat(cmd, " ") .. ": " .. tostring(err), vim.log.levels.ERROR)
+  end
 end
 
 local diff_session = require("lib.diff-session")
@@ -1536,9 +1567,8 @@ vim.api.nvim_create_autocmd("TabClosed", {
 ---@class (exact) Hg.ssl_command
 ---@field desc string
 ---@field action fun(commit: Hg.commit, bufnr: number)
----@field readonly ?boolean Neither mutates the repo nor depends on buffer
---- contents beyond the commit already resolved from the cursor, so it may run
---- while the panel is refreshing (see `ssl_action`).
+---@field readonly ?boolean Doesn't change the repo, so it may run while
+--- another panel command is still running (see `ssl_action`).
 
 local HgChanges -- forward declaration; defined after HgStatus
 
@@ -1796,10 +1826,10 @@ local SSL_COMMANDS = {
 
         -- ssl_utils.run_cmd(cmd, bufnr, true, "Rebase completed")
         vim.notify("Running: " .. table.concat(cmd, " "), vim.log.levels.INFO)
-        SSL_STATE.blocked = true
+        SSL_STATE.busy = SSL_STATE.busy + 1
 
         vim.system(cmd, { text = true, cwd = SSL_STATE.repo_root }, function(obj)
-          SSL_STATE.blocked = false
+          SSL_STATE.busy = SSL_STATE.busy - 1
           -- success
           if obj.code == 0 then
             SSL_STATE.merge_conflict = false
@@ -1998,8 +2028,8 @@ local function HgSsl(opts)
 
   local function ssl_action(name, guard)
     return function()
-      if SSL_STATE.blocked and not SSL_COMMANDS[name].readonly then
-        vim.notify("SSL is updating, please wait...", vim.log.levels.WARN)
+      if SSL_STATE.busy > 0 and not SSL_COMMANDS[name].readonly then
+        vim.notify("A smartlog command is still running, please wait...", vim.log.levels.WARN)
         return
       end
       local commit = get_current_commit()
@@ -2083,13 +2113,9 @@ local function HgSsl(opts)
   vim.api.nvim_create_autocmd("BufEnter", {
     buffer = SSL_STATE.bufnr,
     callback = function()
-      -- BufEnter fires before an ssl command which leads to a race condition
-      -- This delay allows ssl commands to block ssl buffer before this autocmd
-      vim.defer_fn(function()
-        if not SSL_STATE.blocked then
-          ssl_utils.refresh_buffer(SSL_STATE.bufnr)
-        end
-      end, 30)
+      if not SSL_STATE.refreshing then
+        ssl_utils.refresh_buffer(SSL_STATE.bufnr)
+      end
     end,
     desc = "Update ssl buffer when focused",
   })
@@ -3891,7 +3917,7 @@ return {
   ssl_commands = SSL_COMMANDS,
   open_working_copy_diff_split = open_working_copy_diff_split,
   refresh_ssl = function()
-    if SSL_STATE.bufnr and vim.api.nvim_buf_is_valid(SSL_STATE.bufnr) and not SSL_STATE.blocked then
+    if SSL_STATE.bufnr and vim.api.nvim_buf_is_valid(SSL_STATE.bufnr) then
       ssl_utils.refresh_buffer(SSL_STATE.bufnr)
     end
   end,
