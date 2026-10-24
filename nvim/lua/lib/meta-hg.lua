@@ -873,6 +873,8 @@ function ssl_utils.annotate_hg_status(bufnr, sl_lines, is_latest)
       end
       table.insert(virtual_status_lines, { { status_pad, "Normal" } })
 
+      -- replacing the lines moves old marks instead of deleting them
+      vim.api.nvim_buf_clear_namespace(bufnr, SSL_NS, 0, -1)
       vim.api.nvim_buf_set_extmark(
         bufnr,
         SSL_NS,
