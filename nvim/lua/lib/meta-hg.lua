@@ -1522,8 +1522,9 @@ end
 --- Changed files, each paired with its copy source. Sources that were renamed
 --- away are dropped, so a rename shows as one diff instead of a delete and an add.
 ---@param repo_root string
----@param opts { rev: string?, paths: string[]? } `rev` lists that commit's
---- changes (M/A/R); otherwise the working copy's modified and added files.
+---@param opts { rev: string?, base: string?, paths: string[]? } `rev` lists
+--- that commit's changes (M/A/R); otherwise the working copy's modified and
+--- added files, relative to `base` (default: the working-copy parent).
 --- `paths` restricts the listing to those repo-relative paths.
 ---@return Hg.diff_file_spec[]? nil when hg fails
 local function changed_files(repo_root, opts)
@@ -1534,6 +1535,9 @@ local function changed_files(repo_root, opts)
   if opts.rev then
     vim.list_extend(cmd, { "--change", opts.rev })
   else
+    if opts.base then
+      vim.list_extend(cmd, { "--rev", opts.base })
+    end
     vim.list_extend(cmd, { "--modified", "--added" })
   end
   for _, path in ipairs(opts.paths or {}) do
@@ -1594,6 +1598,30 @@ local function open_working_copy_diff_split(repo_root)
     files = files,
     target = { hash = ".", is_current = true },
     parent_rev = ".",
+    repo_root = repo_root,
+  })
+end
+
+---Diff split of one file: the working copy against `base`.
+---@param repo_root string
+---@param path string absolute
+---@param base string
+local function open_file_diff_split(repo_root, path, base)
+  local rel = vim.fs.relpath(repo_root, path)
+  if not rel then
+    vim.notify(path .. " is not in " .. repo_root, vim.log.levels.ERROR)
+    return
+  end
+  local files = changed_files(repo_root, { base = base, paths = { rel } })
+  if not files then
+    vim.notify("hg status failed", vim.log.levels.ERROR)
+    return
+  end
+  open_diff_split({
+    -- an unchanged file still opens, showing no differences
+    files = #files > 0 and files or { { file = rel } },
+    target = { hash = ".", is_current = true },
+    parent_rev = base,
     repo_root = repo_root,
   })
 end
@@ -4059,6 +4087,7 @@ return {
   ssl_state = SSL_STATE,
   ssl_commands = SSL_COMMANDS,
   open_working_copy_diff_split = open_working_copy_diff_split,
+  open_file_diff_split = open_file_diff_split,
   refresh_ssl = function()
     if SSL_STATE.bufnr and vim.api.nvim_buf_is_valid(SSL_STATE.bufnr) then
       ssl_utils.refresh_buffer(SSL_STATE.bufnr)

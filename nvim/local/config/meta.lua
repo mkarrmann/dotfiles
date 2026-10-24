@@ -133,46 +133,20 @@ vim.api.nvim_create_autocmd("User", {
 				vim.notify("Not a file buffer", vim.log.levels.WARN)
 				return
 			end
-			local file = vim.fn.expand("%:p")
+			local file = vim.api.nvim_buf_get_name(0)
 			if file == "" then
 				vim.notify("No file in current buffer", vim.log.levels.ERROR)
 				return
 			end
-
 			local repo_root = repo_context.repo_root(file)
 			if not repo_root then
 				vim.notify("File is not in a Sapling repository", vim.log.levels.ERROR)
 				return
 			end
-			local result = vim.system({ "hg", "cat", "-r", ".^", file }, { text = true, cwd = repo_root }):wait()
-			local old_ok = result.code == 0
-			local old_lines = {}
-			if old_ok and result.stdout and result.stdout ~= "" then
-				old_lines = vim.split(result.stdout:gsub("\n$", ""), "\n", { plain = true })
+			if meta_hg then
+				meta_hg.open_file_diff_split(repo_root, file, ".^")
 			end
-
-			local tmp = vim.fn.tempname()
-			vim.fn.writefile(old_lines, tmp)
-			local orig_win = vim.api.nvim_get_current_win()
-			vim.cmd("rightbelow vertical diffsplit " .. vim.fn.fnameescape(tmp))
-			local diff_win = vim.api.nvim_get_current_win()
-			local display_name = vim.fn.fnamemodify(file, ":.")
-			require("lib.diff-opts").apply_pair(diff_win, orig_win, ".^", "LIVE", display_name)
-			vim.api.nvim_set_current_win(orig_win)
-			vim.api.nvim_create_autocmd("WinClosed", {
-				pattern = tostring(diff_win),
-				once = true,
-				callback = function()
-					if vim.api.nvim_win_is_valid(orig_win) then
-						pcall(vim.api.nvim_win_del_var, orig_win, "custom_winbar_text")
-						vim.api.nvim_win_call(orig_win, function()
-							vim.cmd("diffoff")
-						end)
-						require("lualine").refresh()
-					end
-				end,
-			})
-		end, { desc = "Side-by-side diff of current file against parent commit" })
+		end, { desc = "Side-by-side diff of the current file against .^ (its commit plus uncommitted changes)" })
 
 		vim.api.nvim_create_user_command("HgDiffSplitWorkingSet", function()
 			local context = repo_context.current()
@@ -185,14 +159,14 @@ vim.api.nvim_create_autocmd("User", {
 			if meta_hg then
 				meta_hg.open_working_copy_diff_split(context.repo_root)
 			end
-		end, { desc = "Side-by-side diff of all uncommitted changes" })
+		end, { desc = "Side-by-side diff of all uncommitted changes against ." })
 
 		vim.keymap.set("n", "<leader>hb", "<CMD>HgBlame<CR>", { desc = "Hg blame" })
 		vim.keymap.set("n", "<leader>hB", "<CMD>HgLineBlameToggle<CR>", { desc = "Hg toggle inline blame" })
 		vim.keymap.set("n", "<leader>ho", "<CMD>HgLineBlameCopyDiff<CR>", { desc = "Hg copy diff number for line" })
 		vim.keymap.set("n", "<leader>hh", "<CMD>HgHistory<CR>", { desc = "Hg file history" })
-		vim.keymap.set("n", "<leader>hd", "<CMD>HgDiffSplit<CR>", { desc = "Hg diff split" })
-		vim.keymap.set("n", "<leader>hD", "<CMD>HgDiffSplitWorkingSet<CR>", { desc = "Hg diff split (working set)" })
+		vim.keymap.set("n", "<leader>hd", "<CMD>HgDiffSplit<CR>", { desc = "Hg diff split: file vs .^" })
+		vim.keymap.set("n", "<leader>hD", "<CMD>HgDiffSplitWorkingSet<CR>", { desc = "Hg diff split: uncommitted vs ." })
 		vim.keymap.set("n", "<leader>hs", "<CMD>HgSsl<CR>", { desc = "Hg smartlog" })
 		vim.keymap.set("n", "<leader>hS", "<CMD>HgSslSplit<CR>", { desc = "Hg smartlog (vsplit)" })
 		vim.keymap.set("n", "<leader>hu", "<CMD>HgSuggest<CR>", { desc = "Hg suggest changes" })
