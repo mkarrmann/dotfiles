@@ -1451,7 +1451,7 @@ local function diff_split_load_pair(session, pair)
   pair.new_buf = new_buf
   pair.is_live = is_live
 
-  diff_session.register(vim.api.nvim_get_current_tabpage(), session)
+  diff_session.attach_pair(session, pair)
 end
 
 ---Hash of `rev` if it is relative to the working copy ("." or ".^"), which

@@ -42,10 +42,18 @@ H.run(function()
 	end, 20)
 	H.eq(cats, 8, "prefetch used 8 batched hg cat calls")
 	cats = 0
+	local maps = 0
+	local keymap_set = vim.keymap.set
+	vim.keymap.set = function(...)
+		maps = maps + 1
+		return keymap_set(...)
+	end
 	for i = 2, #s.pairs do
 		ds.show_pair(s, i)
 	end
+	vim.keymap.set = keymap_set
 	H.eq(cats, 0, "cycling all 120 files spawned no hg cat")
+	H.check(maps <= 119 * 2 * 6, "keys mapped once per new buffer while cycling (" .. maps .. " maps)")
 	H.check(H.lines(s.pairs[120].new_buf) == "v120" and H.lines(s.pairs[120].old_buf) == "", "f120 content")
 	ds.close(s)
 
