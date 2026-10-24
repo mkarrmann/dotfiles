@@ -66,6 +66,20 @@ H.run(function()
 	vim.cmd("normal ]H")
 	H.eq(vim.fn.line("."), 21, "]H to the last hunk")
 
+	-- A CRLF file compares line for line.
+	H.write(root .. "/dos.txt", "a\r\nb\r\nc\r\n")
+	H.sh({ "hg", "add", "dos.txt" }, root)
+	H.sh({ "hg", "commit", "-m", "dos", "dos.txt" }, root)
+	H.write(root .. "/dos.txt", "a\r\nB\r\nc\r\n")
+	vim.cmd.edit(root .. "/dos.txt")
+	vim.wait(2000, function()
+		return signs() == "1_ 2+"
+	end, 20)
+	H.eq(signs(), "1_ 2+", "CRLF file: only the changed line")
+	vim.cmd("HgRead")
+	H.eq(vim.api.nvim_buf_get_lines(0, 0, -1, false), { "a", "b", "c" }, ":HgRead keeps a dos buffer free of carriage returns")
+	vim.cmd.edit(path)
+
 	-- A slow refresh computed for older text doesn't replace a newer one.
 	H.fake_hg()
 	with_content(function(l)
