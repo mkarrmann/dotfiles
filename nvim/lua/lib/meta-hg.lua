@@ -1847,13 +1847,12 @@ local SSL_COMMANDS = {
 
           -- fail
           vim.schedule(function()
-            if string.find(obj.stderr, "hit merge conflicts") then
+            local stderr = obj.stderr or ""
+            if string.find(stderr, "hit merge conflicts") then
               SSL_STATE.merge_conflict = true
 
               -- won't rebase due to local changes
-              if
-                string.find(obj.stderr, "but you have working copy changes")
-              then
+              if string.find(stderr, "but you have working copy changes") then
                 return ssl_utils.action_end({
                   reload = true,
                   bufnr = bufnr,
@@ -1862,24 +1861,24 @@ local SSL_COMMANDS = {
               end
 
               -- user needs to resolve merge conflicts
-              if string.find(obj.stderr, " conflicts while merging ") then
+              if string.find(stderr, " conflicts while merging ") then
                 return ssl_utils.action_end({
                   reload = true,
                   bufnr = bufnr,
                   msg = "Rebased failed due to merge conflicts",
                 })
               end
-
-              return ssl_utils.action_end({
-                reload = true,
-                bufnr = bufnr,
-                msg = string.format(
-                  "Rebase failed unexpectedly\n\nSTDOUT:\n%s\n\nSTDERR:\n%s",
-                  obj.stdout or "",
-                  obj.stderr or ""
-                ),
-              })
             end
+
+            return ssl_utils.action_end({
+              reload = true,
+              bufnr = bufnr,
+              msg = string.format(
+                "Rebase failed unexpectedly\n\nSTDOUT:\n%s\n\nSTDERR:\n%s",
+                obj.stdout or "",
+                stderr
+              ),
+            })
           end)
         end)
       end
