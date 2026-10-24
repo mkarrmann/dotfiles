@@ -47,7 +47,7 @@ function H.read(path)
 end
 
 ---Puts a pass-through `hg` first on PATH that can misbehave per repo:
----H.slow delays the output of the next run of a subcommand, H.rewrite edits
+---H.slow delays the output of the next (or every) run of a subcommand, H.rewrite edits
 ---the output of every run of one, H.fail makes every run of one fail.
 function H.fake_hg()
 	local bin = H.tmp .. "/bin"
@@ -62,7 +62,7 @@ function H.fake_hg()
 		'[ -f "$slow" ] || [ -f "$script" ] || exec "$real" "$@"',
 		-- Run first and delay the output, so a slow run reports the state it read.
 		'out=$("$real" "$@"); status=$?',
-		'if [ -f "$slow" ]; then delay=$(cat "$slow"); rm -f "$slow"; sleep "$delay"; fi',
+		'if [ -f "$slow" ]; then delay=$(cat "$slow"); [ -f "$slow.keep" ] || rm -f "$slow"; sleep "$delay"; fi',
 		"if [ -f \"$script\" ]; then out=$(printf '%s\\n' \"$out\" | sed -f \"$script\"); fi",
 		"printf '%s\\n' \"$out\"",
 		"exit $status",
@@ -72,8 +72,15 @@ function H.fake_hg()
 	vim.env.PATH = bin .. ":" .. vim.env.PATH
 end
 
-function H.slow(root, sub, seconds)
-	H.write(vim.uv.fs_realpath(root) .. "/.hg/slow-" .. sub, tostring(seconds))
+---@param keep boolean? delay every run, not just the next one
+function H.slow(root, sub, seconds, keep)
+	local marker = vim.uv.fs_realpath(root) .. "/.hg/slow-" .. sub
+	H.write(marker, tostring(seconds))
+	if keep then
+		H.write(marker .. ".keep", "")
+	else
+		os.remove(marker .. ".keep")
+	end
 end
 
 function H.fail(root, sub, stderr)

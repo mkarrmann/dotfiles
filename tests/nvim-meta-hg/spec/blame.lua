@@ -78,4 +78,26 @@ H.run(function()
 	vim.cmd("write")
 	vim.wait(300)
 	H.eq(blames, before + 1, "hg blame after a write")
+
+	-- Switching away and back faster than hg blame takes still ends with blame.
+	H.slow(root, "blame", 2, true)
+	vim.api.nvim_buf_set_lines(0, 0, 1, false, { "line 1" })
+	vim.cmd("write")
+	local a = vim.api.nvim_get_current_buf()
+	vim.api.nvim_win_set_cursor(0, { 1, 0 })
+	-- line 1 was "line 1 edited" (not submitted) until this write
+	local fresh = { "1:test " .. TODAY .. " D1" }
+	local seen = false
+	for _ = 1, 5 do
+		seen = vim.wait(1200, function()
+			return vim.deep_equal(marks(a), fresh)
+		end, 20)
+		if seen then
+			break
+		end
+		vim.cmd.edit(root .. "/small.txt")
+		vim.wait(100)
+		vim.cmd.buffer(a)
+	end
+	H.check(seen, "blame shows despite switching buffers every 1.3 s (blame takes 2 s)")
 end)

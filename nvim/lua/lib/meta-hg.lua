@@ -3835,7 +3835,7 @@ end
 local function setup_line_blame()
   ---@type table<string, Hg.blame_entry> Absolute path to blame
   local cache = {}
-  ---@type table<string, {generation: integer, job: vim.SystemObj?}> Latest blame run per path
+  ---@type table<string, {generation: integer, job: vim.SystemObj?, key: string?}> Latest blame run per path
   local runs = {}
 
   ---Blame for line `lnum` of `bufnr`. While the buffer has unsaved changes,
@@ -3981,13 +3981,18 @@ local function setup_line_blame()
       return
     end
 
-    -- one blame per file at a time; a newer one supersedes it
+    -- one blame per file at a time: one already running for the same file
+    -- state finishes (and draws); one for a stale state is replaced
     local run = runs[filepath] or { generation = 0 }
     runs[filepath] = run
     if run.job then
+      if key and run.key == key then
+        return
+      end
       pcall(run.job.kill, run.job, 15)
     end
     run.generation = run.generation + 1
+    run.key = key
     local generation = run.generation
     run.job = vim.system(
       cmd,
