@@ -13,8 +13,13 @@ local log_to_scuba = meta_util.log_to_scuba
 ---@field author ?string
 ---@field message string
 
+---@class (exact) Hg.diff_file_spec
+---@field file string
+---@field old_file string? Path on the old side, when renamed or copied from elsewhere.
+
 ---@class (exact) Hg.diff_file_pair : DiffPair
 ---@field file string
+---@field old_file string?
 ---@field old_buf integer?
 ---@field new_buf integer?
 ---@field is_live boolean
@@ -37,7 +42,7 @@ local log_to_scuba = meta_util.log_to_scuba
 ---@field closed boolean
 
 ---@class (exact) Hg.diff_split_opts
----@field files string[] Repo-relative paths, in display order.
+---@field files Hg.diff_file_spec[] In display order.
 ---@field target Hg.diff_target
 ---@field parent_rev string
 ---@field repo_root string
@@ -1166,7 +1171,7 @@ local function diff_split_update_winbar(session)
   local pos = string.format("[%d/%d]", session.index, #session.pairs)
 
   vim.api.nvim_win_set_var(session.right_win, "custom_winbar_text",
-    "%#Comment# " .. session.parent_rev .. " %* " .. pair.file .. " " .. pos)
+    "%#Comment# " .. session.parent_rev .. " %* " .. (pair.old_file or pair.file) .. " " .. pos)
 
   if pair.is_live then
     vim.api.nvim_win_set_var(session.left_win, "custom_winbar_text",
@@ -1281,16 +1286,17 @@ local function diff_split_load_pair(session, pair)
   end
 
   local new_rev = session.commit.hash
+  local old_file = pair.old_file or pair.file
   local real_path = session.repo_root .. "/" .. pair.file
   local is_live = session.commit.is_current and vim.fn.filereadable(real_path) == 1
 
-  local wants = { { rev = session.parent_rev, path = pair.file } }
+  local wants = { { rev = session.parent_rev, path = old_file } }
   if not is_live then
     table.insert(wants, { rev = new_rev, path = pair.file })
   end
   diff_await(session, wants)
 
-  local old_lines = session.cache[session.parent_rev].contents[pair.file]
+  local old_lines = session.cache[session.parent_rev].contents[old_file]
   local new_buf
   if is_live then
     new_buf = vim.fn.bufadd(real_path)
@@ -1314,8 +1320,8 @@ local function diff_split_load_pair(session, pair)
 
   pair.old_buf = create_scratch_buf(
     old_lines or {},
-    "hg-diff://" .. session.parent_rev .. "/" .. pair.file,
-    pair.file
+    "hg-diff://" .. session.parent_rev .. "/" .. old_file,
+    old_file
   )
   pair.new_buf = new_buf
   pair.is_live = is_live
@@ -1336,8 +1342,8 @@ local function open_diff_split(opts)
 
   ---@type Hg.diff_session
   local session = {
-    pairs = vim.tbl_map(function(file)
-      return { file = file, is_live = false }
+    pairs = vim.tbl_map(function(spec)
+      return { file = spec.file, old_file = spec.old_file, is_live = false }
     end, opts.files),
     index = 1,
     left_win = left_win,
@@ -1387,12 +1393,13 @@ local function open_diff_split(opts)
 
   diff_session.register(tab, session)
 
-  local paths = vim.tbl_map(function(pair)
-    return pair.file
-  end, session.pairs)
-  diff_prefetch(session, session.parent_rev, paths)
+  diff_prefetch(session, session.parent_rev, vim.tbl_map(function(pair)
+    return pair.old_file or pair.file
+  end, session.pairs))
   if not session.commit.is_current then
-    diff_prefetch(session, session.commit.hash, paths)
+    diff_prefetch(session, session.commit.hash, vim.tbl_map(function(pair)
+      return pair.file
+    end, session.pairs))
   end
 
   diff_split_load_pair(session, session.pairs[1])
@@ -1404,22 +1411,72 @@ local function open_diff_split(opts)
   diff_session.show_pair(session, 1)
 end
 
+--- Changed files, each paired with its copy source. Sources that were renamed
+--- away are dropped, so a rename shows as one diff instead of a delete and an add.
 ---@param repo_root string
-local function open_working_copy_diff_split(repo_root)
-  local out = vim.system({ "hg", "status" }, { text = true, cwd = repo_root }):wait()
+---@param opts { rev: string?, paths: string[]? } `rev` lists that commit's
+--- changes (M/A/R); otherwise the working copy's modified and added files.
+--- `paths` restricts the listing to those repo-relative paths.
+---@return Hg.diff_file_spec[]? nil when hg fails
+local function changed_files(repo_root, opts)
+  if opts.paths and #opts.paths == 0 then
+    return {}
+  end
+  local cmd = { "hg", "status", "--copies" }
+  if opts.rev then
+    vim.list_extend(cmd, { "--change", opts.rev })
+  else
+    vim.list_extend(cmd, { "--modified", "--added" })
+  end
+  for _, path in ipairs(opts.paths or {}) do
+    table.insert(cmd, "path:" .. path)
+  end
+  local out = vim.system(cmd, { text = true, cwd = repo_root }):wait()
   if out.code ~= 0 then
-    vim.notify("hg status failed", vim.log.levels.ERROR)
-    return
+    return nil
   end
 
-  local files = {}
-  for _, line in ipairs(vim.split(vim.trim(out.stdout or ""), "\n")) do
-    local status = line:sub(1, 1)
-    if status == "M" or status == "A" then
-      table.insert(files, line:sub(3))
+  local files, sources, removed = {}, {}, {}
+  for _, line in ipairs(vim.split(out.stdout or "", "\n", { trimempty = true })) do
+    -- `--copies` prints an added file's source indented on the next line
+    local source = line:match("^  (.+)")
+    if source then
+      sources[files[#files]] = source
+    else
+      local path = line:sub(3)
+      table.insert(files, path)
+      if line:sub(1, 1) == "R" then
+        removed[path] = true
+      end
     end
   end
 
+  local renamed_away = {}
+  for _, source in pairs(sources) do
+    if removed[source] then
+      renamed_away[source] = true
+    end
+  end
+  local specs = {}
+  for _, file in ipairs(files) do
+    if not renamed_away[file] then
+      table.insert(specs, { file = file, old_file = sources[file] })
+    end
+  end
+  -- status groups by kind (M, A, R); show files in path order instead
+  table.sort(specs, function(a, b)
+    return a.file < b.file
+  end)
+  return specs
+end
+
+---@param repo_root string
+local function open_working_copy_diff_split(repo_root)
+  local files = changed_files(repo_root, {})
+  if not files then
+    vim.notify("hg status failed", vim.log.levels.ERROR)
+    return
+  end
   if #files == 0 then
     vim.notify("No uncommitted changes", vim.log.levels.INFO)
     return
@@ -1486,17 +1543,11 @@ local SSL_COMMANDS = {
     readonly = true,
     action = function(commit)
       local repo_root = SSL_STATE.repo_root or buf_repo_root()
-      local template = '{files % "{file}\\n"}'
-      local cmd = "hg --cwd "
-        .. vim.fn.shellescape(repo_root)
-        .. " log -r "
-        .. commit.hash
-        .. " --template "
-        .. vim.fn.shellescape(template)
-      local files_raw = vim.fn.systemlist(cmd)
-      local files = vim.tbl_filter(function(f)
-        return f ~= ""
-      end, files_raw)
+      local files = changed_files(repo_root, { rev = commit.hash })
+      if not files then
+        vim.notify("Failed to list files changed in " .. commit.hash, vim.log.levels.ERROR)
+        return
+      end
 
       if #files == 0 then
         vim.notify("No files changed in this commit", vim.log.levels.WARN)
@@ -3094,10 +3145,17 @@ HgChanges = function()
 
     -- reuse the repo_root captured at HgChanges entry (the picker buffer has no
     -- file, so it can't be re-resolved here)
-    open_diff_split({
-      files = vim.tbl_map(function(e)
+    local files = changed_files(repo_root, {
+      paths = vim.tbl_map(function(e)
         return e.path
       end, diffable),
+    })
+    if not files then
+      vim.notify("hg status failed", vim.log.levels.ERROR)
+      return
+    end
+    open_diff_split({
+      files = files,
       target = { hash = ".", is_current = true },
       parent_rev = ".",
       repo_root = repo_root,
