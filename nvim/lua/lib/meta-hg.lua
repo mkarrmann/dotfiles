@@ -32,6 +32,7 @@ local log_to_scuba = meta_util.log_to_scuba
 ---@class (exact) Hg.rev_cache
 ---@field contents table<string, string[]|false> Path -> lines; false when absent at the revision.
 ---@field pending table<string, true> Paths with a fetch in flight.
+---@field errors table<string, string> Paths that couldn't be read, and why.
 
 ---@class (exact) Hg.diff_session : DiffSession
 ---@field pairs Hg.diff_file_pair[]
@@ -1299,14 +1300,14 @@ local DIFF_FETCH_TIMEOUT_MS = 60000
 local function diff_rev_cache(session, rev)
   local cache = session.cache[rev]
   if not cache then
-    cache = { contents = {}, pending = {} }
+    cache = { contents = {}, pending = {}, errors = {} }
     session.cache[rev] = cache
   end
   return cache
 end
 
 --- Fetches `paths` at `rev` into the session cache with a single `hg cat`.
---- If hg fails the paths stay uncached, which readers treat as unreadable.
+--- If hg fails the paths are recorded as errors.
 ---@param session Hg.diff_session
 ---@param rev string
 ---@param paths string[]
@@ -1327,6 +1328,11 @@ local function diff_fetch(session, rev, paths, on_done)
       end
       for _, entry in ipairs(entries) do
         cache.contents[entry.abspath] = split_file_lines(entry.data)
+      end
+    else
+      local err = vim.trim(out.stderr or "")
+      for _, path in ipairs(paths) do
+        cache.errors[path] = err ~= "" and err or ("hg cat exited " .. out.code)
       end
     end
     for _, path in ipairs(paths) do
@@ -1365,14 +1371,42 @@ local function diff_await(session, wants)
   for _, want in ipairs(wants) do
     local cache = diff_rev_cache(session, want.rev)
     if cache.contents[want.path] == nil and not cache.pending[want.path] then
+      cache.errors[want.path] = nil
       diff_fetch(session, want.rev, { want.path })
     end
   end
-  vim.wait(DIFF_FETCH_TIMEOUT_MS, function()
+  local done = vim.wait(DIFF_FETCH_TIMEOUT_MS, function()
     return vim.iter(wants):all(function(want)
       return not session.cache[want.rev].pending[want.path]
     end)
   end, 10)
+  if not done then
+    for _, want in ipairs(wants) do
+      local cache = session.cache[want.rev]
+      if cache.pending[want.path] then
+        cache.errors[want.path] = "timed out after " .. DIFF_FETCH_TIMEOUT_MS / 1000 .. " s"
+      end
+    end
+  end
+end
+
+--- Lines to show for `path` at `rev`: its content, nothing when it doesn't
+--- exist there, or a line saying why it couldn't be read.
+---@param session Hg.diff_session
+---@param rev string
+---@param path string
+---@return string[]
+local function diff_side_lines(session, rev, path)
+  local cache = session.cache[rev]
+  local lines = cache.contents[path]
+  if lines then
+    return lines
+  end
+  local err = cache.errors[path]
+  if err then
+    return { string.format("<failed to read %s at %s: %s>", path, rev, err) }
+  end
+  return {}
 end
 
 ---@param session Hg.diff_session
@@ -1393,7 +1427,6 @@ local function diff_split_load_pair(session, pair)
   end
   diff_await(session, wants)
 
-  local old_lines = session.cache[session.parent_rev].contents[old_file]
   local new_buf
   if is_live then
     new_buf = vim.fn.bufadd(real_path)
@@ -1403,23 +1436,15 @@ local function diff_split_load_pair(session, pair)
       vim.fn.bufload(new_buf)
     end
   else
-    local new_lines = session.cache[new_rev].contents[pair.file]
-    if not old_lines and not new_lines then
-      vim.notify(
-        "Skipping " .. pair.file .. " (unreadable at either revision)",
-        vim.log.levels.WARN
-      )
-      return
-    end
     new_buf = create_scratch_buf(
-      new_lines or {},
+      diff_side_lines(session, new_rev, pair.file),
       "hg-diff://" .. new_rev .. "/" .. pair.file,
       pair.file
     )
   end
 
   pair.old_buf = create_scratch_buf(
-    old_lines or {},
+    diff_side_lines(session, session.parent_rev, old_file),
     "hg-diff://" .. session.parent_rev .. "/" .. old_file,
     old_file
   )

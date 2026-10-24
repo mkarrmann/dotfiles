@@ -80,16 +80,17 @@ function M.show_pair(session, index)
 	end
 
 	local pair = session.pairs[index]
+	-- set even if the pair can't be shown, so ]f/[f move past it
+	session.index = index
 	if not pair.old_buf or not vim.api.nvim_buf_is_valid(pair.old_buf) then
 		if pair.load then
 			pair.load(pair)
 		end
 		if not pair.old_buf or not vim.api.nvim_buf_is_valid(pair.old_buf) then
+			vim.notify("Can't show " .. pair.file, vim.log.levels.WARN)
 			return
 		end
 	end
-
-	session.index = index
 
 	vim.api.nvim_win_call(session.left_win, function()
 		vim.cmd("diffoff")

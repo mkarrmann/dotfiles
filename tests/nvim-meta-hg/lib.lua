@@ -48,7 +48,7 @@ end
 
 ---Puts a pass-through `hg` first on PATH that can misbehave per repo:
 ---H.slow delays the output of the next run of a subcommand, H.rewrite edits
----the output of every run of one.
+---the output of every run of one, H.fail makes every run of one fail.
 function H.fake_hg()
 	local bin = H.tmp .. "/bin"
 	vim.fn.mkdir(bin, "p")
@@ -58,6 +58,7 @@ function H.fake_hg()
 		'dir="$(pwd -P)/.hg"',
 		'slow="$dir/slow-$1"',
 		'script="$dir/sed-$1"',
+		'if [ -f "$dir/fail-$1" ]; then cat "$dir/fail-$1" >&2; exit 255; fi',
 		'[ -f "$slow" ] || [ -f "$script" ] || exec "$real" "$@"',
 		-- Run first and delay the output, so a slow run reports the state it read.
 		'out=$("$real" "$@"); status=$?',
@@ -73,6 +74,10 @@ end
 
 function H.slow(root, sub, seconds)
 	H.write(vim.uv.fs_realpath(root) .. "/.hg/slow-" .. sub, tostring(seconds))
+end
+
+function H.fail(root, sub, stderr)
+	H.write(vim.uv.fs_realpath(root) .. "/.hg/fail-" .. sub, stderr .. "\n")
 end
 
 function H.rewrite(root, sub, sed_script)
