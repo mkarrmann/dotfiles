@@ -107,18 +107,4 @@ return {
 			return opts
 		end,
 	},
-
-	{
-		"neovim/nvim-lspconfig",
-		opts = {
-			format = {
-				filter = function(client)
-					if #vim.lsp.get_clients({ name = "linttool@meta" }) > 0 then
-						return client.name ~= "rust-analyzer@meta"
-					end
-					return true
-				end,
-			},
-		},
-	},
 }
