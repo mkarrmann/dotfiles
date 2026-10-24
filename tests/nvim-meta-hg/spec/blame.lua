@@ -1,5 +1,5 @@
--- Inline blame is drawn in the right buffer at its own cursor, not at all
--- while toggled off, and remapped through unsaved edits.
+-- Inline blame: drawn in the right buffer at its own cursor, off when toggled
+-- off, remapped through unsaved edits, and not recomputed needlessly.
 -- hg blame is faked to attribute "line N" to diff DN.
 local H = dofile(os.getenv("NVIM_META_HG_LIB"))
 
@@ -66,4 +66,16 @@ H.run(function()
 	move_to(2)
 	H.eq(marks(), {}, "an unsaved new line has no blame")
 	vim.cmd("edit!")
+
+	-- Re-entering an unchanged buffer reuses its blame; writing recomputes it.
+	vim.wait(1000)
+	local before = blames
+	vim.cmd.edit(root .. "/small.txt")
+	vim.cmd.edit(root .. "/lines.txt")
+	vim.wait(300)
+	H.eq(blames, before, "no hg blame when re-entering unchanged buffers")
+	vim.api.nvim_buf_set_lines(0, 0, 1, false, { "line 1 edited" })
+	vim.cmd("write")
+	vim.wait(300)
+	H.eq(blames, before + 1, "hg blame after a write")
 end)

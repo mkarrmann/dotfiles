@@ -3566,8 +3566,6 @@ local function setup_hg_signcolumn()
     "BufEnter",
     "BufWritePost",
     "FileChangedShellPost",
-    -- when user runs commands inline, ie :!hg amend
-    "CmdlineLeave",
   }, {
     pattern = "*",
     callback = function(arg)
@@ -3578,6 +3576,23 @@ local function setup_hg_signcolumn()
       end
     end,
     desc = "Update hg column signs for any buffer",
+  })
+
+  vim.api.nvim_create_autocmd("CmdlineLeave", {
+    pattern = ":",
+    callback = function(arg)
+      -- shell commands like :!hg amend change the status without touching
+      -- the file; any other : command or search needn't spawn hg
+      if not vim.fn.getcmdline():find("!", 1, true) then
+        return
+      end
+      vim.schedule(function()
+        if vim.api.nvim_buf_is_valid(arg.buf) then
+          sign_util.infer_signs(arg.buf)
+        end
+      end)
+    end,
+    desc = "Update hg column signs after shell commands",
   })
 
   vim.api.nvim_create_autocmd({
@@ -3697,14 +3712,37 @@ local function map_unchanged_lines(old, new)
 end
 
 ---@class (exact) Hg.blame_entry
+---@field key string? What was blamed (see `blame_key`); unchanged means reusable.
 ---@field text string[] Blame annotation per line of the file as blamed.
 ---@field lines string[] The file's lines as blamed (on disk).
 ---@field map table<integer, integer>? Buffer line -> blamed line, while modified.
 ---@field map_tick integer? changedtick `map` was computed at.
 
+---Identifies the blame of `filepath`: its mtime and the working-copy parent.
+---@param filepath string
+---@param repo_root string
+---@return string?
+local function blame_key(filepath, repo_root)
+  local stat = vim.uv.fs_stat(filepath)
+  -- HACK: Sapling keeps the working-copy parent in the first 20 bytes of
+  -- .hg/dirstate (eden checkouts included). Reading it avoids spawning
+  -- hg log on every BufEnter just to learn that nothing was committed.
+  local f = io.open(repo_root .. "/.hg/dirstate", "rb")
+  local parent = f and f:read(20)
+  if f then
+    f:close()
+  end
+  if not stat or not parent or #parent ~= 20 then
+    return nil
+  end
+  return string.format("%d.%d:%s", stat.mtime.sec, stat.mtime.nsec, parent)
+end
+
 local function setup_line_blame()
   ---@type table<string, Hg.blame_entry> Absolute path to blame
   local cache = {}
+  ---@type table<string, {generation: integer, job: vim.SystemObj?}> Latest blame run per path
+  local runs = {}
 
   ---Blame for line `lnum` of `bufnr`. While the buffer has unsaved changes,
   ---its lines are matched to the blamed ones through a diff; lines that only
@@ -3741,6 +3779,7 @@ local function setup_line_blame()
       return
     end
 
+    vim.api.nvim_buf_clear_namespace(bufnr, LINE_BLAME_NS, 0, -1)
     vim.api.nvim_buf_set_extmark(bufnr, LINE_BLAME_NS, cursor[1] - 1, 0, {
       hl_mode = "combine",
       virt_text = {
@@ -3841,10 +3880,29 @@ local function setup_line_blame()
       "-q", -- simple date format
       filepath, -- absolute (relative would resolve against cwd, not the repo)
     }
-    vim.system(
+    local repo_root = repo_root_of(filepath)
+    local key = blame_key(filepath, repo_root)
+    if key and cache[filepath] and cache[filepath].key == key then
+      set_line_blame(arg.buf)
+      return
+    end
+
+    -- one blame per file at a time; a newer one supersedes it
+    local run = runs[filepath] or { generation = 0 }
+    runs[filepath] = run
+    if run.job then
+      pcall(run.job.kill, run.job, 15)
+    end
+    run.generation = run.generation + 1
+    local generation = run.generation
+    run.job = vim.system(
       cmd,
-      { text = true, cwd = repo_root_of(filepath) },
+      { text = true, cwd = repo_root },
       function(blame_obj)
+      if run.generation ~= generation then
+        return
+      end
+      run.job = nil
       if blame_obj.code ~= 0 then
         return
       end
@@ -3873,6 +3931,7 @@ local function setup_line_blame()
           .. diff
       end, blame_out_lines)
       cache[filepath] = {
+        key = key,
         text = text,
         lines = vim.tbl_map(function(line)
           return line:match("^.-%d%d%d%d%-%d%d%-%d%d: (.*)$") or ""
@@ -3917,9 +3976,7 @@ local function setup_line_blame()
   vim.api.nvim_create_user_command("HgLineBlameToggle", function()
     CONFIG.line_blame.enable = not CONFIG.line_blame.enable
     if CONFIG.line_blame.enable then
-      local buf = vim.api.nvim_get_current_buf()
-      set_line_blame(buf)
-      attach({ buf = buf })
+      attach({ buf = vim.api.nvim_get_current_buf() })
     else
       for _, buf in ipairs(vim.api.nvim_list_bufs()) do
         vim.api.nvim_buf_clear_namespace(buf, LINE_BLAME_NS, 0, -1)
