@@ -74,4 +74,29 @@ H.run(function()
 	H.check(vim.wait(5000, function()
 		return notified("Commit has been hidden")
 	end, 50), "hide ran")
+
+	-- hg ssl doesn't wait for hg sl, and a late hg sl doesn't replace its output.
+	vim.cmd.edit(repo2 .. "/bar.py")
+	vim.cmd("HgSsl")
+	vim.wait(5000, function()
+		return not hg.ssl_state.refreshing
+	end, 20)
+	H.rewrite(repo2, "ssl", "s/  test$/  test  [ssl]/")
+	H.slow(repo2, "sl", 2)
+	local started = vim.uv.now()
+	hg.refresh_ssl()
+	vim.wait(5000, function()
+		return panel():find("[ssl]", 1, true) ~= nil
+	end, 20)
+	local elapsed = vim.uv.now() - started
+	H.check(elapsed < 1800, "full smartlog shown without waiting for hg sl (" .. elapsed .. " ms)")
+	vim.wait(2500)
+	H.check(panel():find("[ssl]", 1, true) ~= nil, "late hg sl output didn't replace it")
+
+	-- Re-entering the panel right after a refresh doesn't start another.
+	local refreshes = hg.ssl_state.refresh_gen
+	vim.cmd.wincmd("p")
+	vim.cmd.wincmd("p")
+	vim.api.nvim_exec_autocmds("BufEnter", { buffer = hg.ssl_state.bufnr })
+	H.eq(hg.ssl_state.refresh_gen, refreshes, "no refresh on BufEnter right after one finished")
 end)

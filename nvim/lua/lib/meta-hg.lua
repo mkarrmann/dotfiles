@@ -119,6 +119,9 @@ for i = 1, #HOP_CHARS do
   end
 end
 
+-- Focusing the panel refreshes it unless a refresh finished this recently.
+local SSL_REFOCUS_REFRESH_MS = 5000
+
 local SSL_STATE = {
   ---@type number? reuse the same buffer for the nvim process lifespan
   bufnr = nil,
@@ -128,6 +131,8 @@ local SSL_STATE = {
   refresh_gen = 0,
   ---@type boolean
   refreshing = false,
+  ---@type integer? vim.uv.now() when the last refresh finished
+  refreshed_at = nil,
   ---@type integer Commands launched from the panel that change the repo and
   --- are still running. Others are refused meanwhile.
   busy = 0,
@@ -1097,33 +1102,33 @@ function ssl_utils.refresh_buffer(bufnr)
     end
   end
 
-  -- first quickly fill the buffer with commits without diff status
+  -- hg sl (~1 s in fbsource) fills the panel while hg ssl (~10 s, it asks
+  -- Phabricator for diff statuses) is still running; both start now
+  local ssl_done = false
   run({ "hg", "sl" }, function(sl_obj)
-    if sl_obj.code ~= 0 then
-      return fail("Failed to run hg sl")
+    if sl_obj.code ~= 0 or ssl_done or not is_latest() then
+      return
+    end
+    show(filter_hidden_bookmarks(vim.split(sl_obj.stdout, "\n")))
+  end)
+
+  run({ "hg", "ssl" }, function(ssl_obj)
+    ssl_done = true
+    if ssl_obj.code ~= 0 then
+      return fail("Failed to run hg ssl")
     end
     if not is_latest() then
       return
     end
-    show(filter_hidden_bookmarks(vim.split(sl_obj.stdout, "\n")))
+    SSL_STATE.refreshing = false
+    SSL_STATE.refreshed_at = vim.uv.now()
+    local ssl_lines = filter_hidden_bookmarks(vim.split(ssl_obj.stdout, "\n"))
+    show(ssl_lines)
+    vim.notify("ssl updated", vim.log.levels.INFO)
 
-    -- later update content with diff statuses
-    run({ "hg", "ssl" }, function(ssl_obj)
-      if ssl_obj.code ~= 0 then
-        return fail("Failed to run hg ssl")
-      end
-      if not is_latest() then
-        return
-      end
-      SSL_STATE.refreshing = false
-      local ssl_lines = filter_hidden_bookmarks(vim.split(ssl_obj.stdout, "\n"))
-      show(ssl_lines)
-      vim.notify("ssl updated", vim.log.levels.INFO)
-
-      if CONFIG.ssl.status then
-        ssl_utils.annotate_hg_status(bufnr, ssl_lines, is_latest)
-      end
-    end)
+    if CONFIG.ssl.status then
+      ssl_utils.annotate_hg_status(bufnr, ssl_lines, is_latest)
+    end
   end)
 end
 
@@ -2127,7 +2132,9 @@ local function HgSsl(opts)
   vim.api.nvim_create_autocmd("BufEnter", {
     buffer = SSL_STATE.bufnr,
     callback = function()
-      if not SSL_STATE.refreshing then
+      local recent = SSL_STATE.refreshed_at
+        and vim.uv.now() - SSL_STATE.refreshed_at < SSL_REFOCUS_REFRESH_MS
+      if not SSL_STATE.refreshing and not recent then
         ssl_utils.refresh_buffer(SSL_STATE.bufnr)
       end
     end,
