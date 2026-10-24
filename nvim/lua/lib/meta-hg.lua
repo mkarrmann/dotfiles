@@ -311,38 +311,46 @@ hg_utils.can_commit = function(cwd)
   return (#status.modified + #status.added + #status.removed) > 0
 end
 
----Run a command in a new tab terminal buffer and exit the current buffer
----@param cmd string
----@param on_close ?function
+---Run a command in a terminal in a new tab. The tab closes when the command
+---succeeds and stays open on failure so its output can be read.
+---@param cmd string[]
+---@param on_close ?function called when the command exits
 ---@param on_open ?function
 ---@param cwd string? directory to run the terminal command in
 function hg_utils.run_cmd_and_exit(cmd, on_close, on_open, cwd)
   vim.cmd("tabnew")
-  if cwd and cwd ~= "" then
-    vim.cmd("lcd " .. vim.fn.fnameescape(cwd))
-  end
-  vim.cmd("term " .. cmd)
+  local term_buf = vim.api.nvim_get_current_buf()
+  vim.fn.jobstart(cmd, {
+    term = true,
+    cwd = cwd ~= "" and cwd or nil,
+    on_exit = function(_, code)
+      vim.schedule(function()
+        if code ~= 0 then
+          vim.notify(
+            table.concat(cmd, " ") .. " failed (exit " .. code .. ")",
+            vim.log.levels.WARN
+          )
+        elseif vim.api.nvim_buf_is_valid(term_buf) then
+          for _, win in ipairs(vim.fn.win_findbuf(term_buf)) do
+            if #vim.api.nvim_list_wins() > 1 then
+              vim.api.nvim_win_close(win, true)
+            end
+          end
+          vim.api.nvim_buf_delete(term_buf, { force = true })
+        end
+        vim.cmd.doautocmd("BufEnter")
+        if on_close then
+          on_close()
+        end
+      end)
+    end,
+  })
 
   if on_open then
     vim.schedule(on_open)
   end
-
-  -- kills the tab and buffer on command exit
-  local term_buf = vim.api.nvim_get_current_buf()
-  vim.api.nvim_create_autocmd("TermClose", {
-    buffer = term_buf,
-    callback = function()
-      vim.cmd.close()
-      if vim.api.nvim_buf_is_valid(term_buf) then
-        vim.api.nvim_buf_delete(term_buf, { force = true })
-      end
-      vim.cmd.doautocmd("BufEnter")
-      if on_close then
-        on_close()
-      end
-    end,
-  })
 end
+
 
 local sign_util = {}
 
@@ -1538,9 +1546,14 @@ local SSL_COMMANDS = {
     desc = "Show commit message and changes",
     readonly = true,
     action = function(commit, bufnr)
-      local cmd =
-        { "hg", "show", "--color=always", commit.hash, "|", "less", "-R" }
-      hg_utils.run_cmd_and_exit(table.concat(cmd, " "), function()
+      local cmd = {
+        "sh",
+        "-c",
+        'hg show --color=always "$1" | less -R',
+        "sh",
+        commit.hash,
+      }
+      hg_utils.run_cmd_and_exit(cmd, function()
         ssl_utils.action_end({
           reload = true,
           bufnr = bufnr,
@@ -1620,7 +1633,7 @@ local SSL_COMMANDS = {
         table.insert(cmd, commit.hash)
       end
 
-      hg_utils.run_cmd_and_exit(table.concat(cmd, " "), function()
+      hg_utils.run_cmd_and_exit(cmd, function()
         ssl_utils.action_end({
           reload = true,
           bufnr = bufnr,
@@ -1638,7 +1651,7 @@ local SSL_COMMANDS = {
         return
       end
 
-      hg_utils.run_cmd_and_exit(table.concat(cmd, " "), function()
+      hg_utils.run_cmd_and_exit(cmd, function()
         ssl_utils.action_end({
           reload = true,
           bufnr = bufnr,
@@ -1656,7 +1669,7 @@ local SSL_COMMANDS = {
         table.insert(cmd, commit.hash)
       end
 
-      hg_utils.run_cmd_and_exit(table.concat(cmd, " "), function()
+      hg_utils.run_cmd_and_exit(cmd, function()
         ssl_utils.action_end({
           reload = true,
           bufnr = bufnr,
@@ -2261,7 +2274,7 @@ local function HgAmend()
     return
   end
 
-  hg_utils.run_cmd_and_exit("hg amend", nil, nil, root)
+  hg_utils.run_cmd_and_exit({ "hg", "amend" }, nil, nil, root)
 end
 
 local function HgCommitInteractive()
@@ -2277,7 +2290,7 @@ local function HgCommitInteractive()
     return
   end
 
-  hg_utils.run_cmd_and_exit("hg commit --interactive", nil, nil, root)
+  hg_utils.run_cmd_and_exit({ "hg", "commit", "--interactive" }, nil, nil, root)
 end
 
 local function HgAbsorb()
@@ -2293,7 +2306,7 @@ local function HgAbsorb()
     return
   end
 
-  hg_utils.run_cmd_and_exit("hg absorb", nil, nil, root)
+  hg_utils.run_cmd_and_exit({ "hg", "absorb" }, nil, nil, root)
 end
 
 local function HgSuggest(opts)
@@ -2325,12 +2338,13 @@ local function HgSuggest(opts)
 
   local cmd = { "jf", "suggest", "--no-commit" }
 
+  -- the arguments are typed as shell words (-m "a message")
   local args = vim.trim(opts.args or "")
   if args ~= "" then
-    vim.list_extend(cmd, vim.split(args, "%s+"))
+    cmd = { "sh", "-c", table.concat(cmd, " ") .. " " .. args }
   end
 
-  hg_utils.run_cmd_and_exit(table.concat(cmd, " "), nil, nil, root)
+  hg_utils.run_cmd_and_exit(cmd, nil, nil, root)
 end
 
 local function jf_graphql(query, variables, on_success, on_error, cwd)
