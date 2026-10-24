@@ -73,7 +73,8 @@ files nobody else touched.
 | D10 | `c5c0ebe` | Title bar shows the requested base and its hash, e.g. `.^ 1a2b3c4d5e6f`. |
 | D11 | `e35411e` | `apply_pair` went with D9. |
 | Consolidation | `45c8e57` | Extracted the shared render sequence (`diff-opts.show`). Kept the keymaps separate: the two look sessions up differently and diff-tab has its own keys. |
-| G1, G3–G6 | `c2631b9`, `02d3375`, `b6ffc2a`, `e6202b0`, `a736708` | G3's effect on an actual Maven run and G4's eden prefetch weren't run. |
+| G1, G3, G4, G6 | `c2631b9`, `02d3375`, `b6ffc2a`, `a736708` | G3's effect on an actual Maven run and G4's eden prefetch weren't run. |
+| G5 | `e6202b0`, reverted in `7bb4f71` | **Wrong item.** Each nvs session runs in a workspace root (`~/checkoutN`, see `~/.config/nvs/sessions.*`), and the picker already offered exactly that workspace's fbsource and configerator. Scanning `~/checkout*/*` put every checkout's repos in it, and a sticky pick overrode the buffer's repo. `e017898` adds a spec for the intended behavior. |
 | G2 | `7ebbd6e` | |
 | G7 | `ccd85bc` | |
 | G8 | — | **Not fixable as described:** meta.nvim's own `init.lua` requires `meta.null-ls` (`meta/init.lua:113`), whose `init.lua` requires `null-ls.logger`, so none-ls loads with meta.nvim whatever none-ls's own event says. The dependency stays (it orders none-ls first). |
@@ -90,7 +91,7 @@ fixed afterwards:
 | Stale smartlog status block kept once the working copy was clean | `fd8319b` |
 | Panel left empty when `hg ssl` failed before `hg sl` finished (S8) | `9160a53` |
 | Diff panes still left `nofoldenable` on files cycled out of them (D1 was incomplete) | `b21d3b6` |
-| A sticky `:MetaRepo` pick (G5) sent Buck commands for a file to another checkout | `0ca7db4` |
+| A sticky `:MetaRepo` pick (G5) sent Buck commands for a file to another checkout | `0ca7db4` (Buck now resolves from the file first; moot once G5 was reverted) |
 | Runner passed unit specs that failed to load | `93bcb8d` |
 | Two blocking `hg log` calls to pin revisions (~0.6 s in fbsource) | `5825388` |
 | Rebase spawn error left the panel busy forever | `07482ed` |
@@ -775,7 +776,9 @@ turn/session modes and live refresh are a different lifecycle.
 - **Fix:** move the `cd` first (or pass `--repo`). 1 line. Separate from the
   existing TODO about always building checkout1.
 
-### G5 (T2) `:MetaRepo`'s choice is overridden; no candidates from `~` — repro (first part)
+### G5 (T2) — withdrawn: based on a misreading of the workspace setup; see Outcome
+
+#### Original finding (G5) `:MetaRepo`'s choice is overridden; no candidates from `~` — repro (first part)
 
 - **Where:** `repo-context.current` (`lua/lib/repo-context.lua:94-99`);
   `candidate_parent`/`candidates` (`:128-153`).
