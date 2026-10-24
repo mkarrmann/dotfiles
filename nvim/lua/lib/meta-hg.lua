@@ -474,23 +474,29 @@ local function HgBlame()
     end,
   })
 end
+---@param direction "prev"|"next"
+local function hg_step(direction, opts)
+  local args = vim.split(opts.args or "", "%s+", { trimempty = true })
+  local obj = hg_utils.run_sync(vim.list_extend({ direction }, args))
+  if obj.code == 0 then
+    vim.notify(vim.trim((obj.stdout or "") .. "\n" .. (obj.stderr or "")), vim.log.levels.INFO)
+  end
+  -- :! used to reload changed files on its way out
+  vim.cmd.checktime()
+end
 local function HgPrev(opts)
   log_to_scuba({
     module = "hg",
     command = "HgPrev",
   })
-  vim.cmd(
-    "!hg --cwd " .. vim.fn.shellescape(buf_repo_root()) .. " prev " .. opts.args
-  )
+  hg_step("prev", opts)
 end
 local function HgNext(opts)
   log_to_scuba({
     module = "hg",
     command = "HgNext",
   })
-  vim.cmd(
-    "!hg --cwd " .. vim.fn.shellescape(buf_repo_root()) .. " next " .. opts.args
-  )
+  hg_step("next", opts)
 end
 local function HgMove(opts)
   log_to_scuba({
@@ -617,6 +623,8 @@ local function makeHgBrowse(for_current_commit, yank)
     end
   end
 end
+local HISTORY_NS = vim.api.nvim_create_namespace("hg_history")
+
 local function HgHistory(opts)
   log_to_scuba({
     module = "hg",
@@ -624,21 +632,23 @@ local function HgHistory(opts)
   })
   local count = tonumber(opts.args) or 50
 
-  local current_file = vim.fn.shellescape(vim.fn.expand("%:p"))
   local template =
-    "{date|shortdate}\t{phabdiff}\t{author|user}\t{desc|strip|firstline}"
-  local cmd = "hg --cwd "
-    .. vim.fn.shellescape(buf_repo_root())
-    .. " log "
-    .. current_file
-    .. ' --template "'
-    .. template
-    .. '\\n" -l '
-    .. count
+    "{date|shortdate}\t{phabdiff}\t{author|user}\t{desc|strip|firstline}\\n"
+  local obj = hg_utils.run_sync({
+    "log",
+    vim.api.nvim_buf_get_name(0),
+    "--template",
+    template,
+    "-l",
+    tostring(count),
+  })
+  if obj.code ~= 0 then
+    return
+  end
   local temp_filename = vim.fn.tempname()
-  vim.cmd("silent !" .. cmd .. " > " .. temp_filename)
+  vim.fn.writefile(split_file_lines(obj.stdout), temp_filename)
 
-  vim.cmd("belowright split " .. temp_filename)
+  vim.cmd("belowright split " .. vim.fn.fnameescape(temp_filename))
 
   vim.schedule(function()
     vim.bo.filetype = "hghistory"
@@ -654,15 +664,8 @@ local function HgHistory(opts)
 
     local diff_id_start = 11
     local diff_id_end = 20
-    for line = 0, total_commits, 1 do
-      vim.api.nvim_buf_add_highlight(
-        0, -- current buffer
-        -1, -- ungrouped highlight
-        "String", -- highlight group
-        line,
-        diff_id_start,
-        diff_id_end
-      )
+    for line = 0, total_commits - 1 do
+      vim.hl.range(0, HISTORY_NS, "String", { line, diff_id_start }, { line, diff_id_end })
     end
   end)
 end
@@ -672,12 +675,7 @@ local function HgWrite()
     command = "HgWrite",
   })
   vim.cmd("write")
-  vim.cmd(
-    "silent !hg --cwd "
-      .. vim.fn.shellescape(buf_repo_root())
-      .. " add "
-      .. vim.fn.shellescape(vim.fn.expand("%:p"))
-  )
+  hg_utils.run_sync({ "add", vim.api.nvim_buf_get_name(0) })
 end
 
 local function HgHunkRevert()
@@ -2760,6 +2758,30 @@ local function HgChangeBase(opts)
   end
 end
 
+local STATUS_HL_NS = vim.api.nvim_create_namespace("hg_status_hl")
+
+---Highlights the status letter of `hg status` lines.
+---@param buf integer
+---@param lines string[]
+local function highlight_status_lines(buf, lines)
+  local mode_to_hl = {
+    M = "@diff.plus", -- modified
+    A = "@diff.plus", -- added
+    R = "@diff.minus", -- removed
+    C = "@diff.minus", -- clean
+    I = "@diff.delta", -- ignored
+    ["!"] = "@diff.delta", -- missing
+    ["?"] = "@diff.delta", -- not tracked
+  }
+  vim.api.nvim_buf_clear_namespace(buf, STATUS_HL_NS, 0, -1)
+  for i, line in ipairs(lines) do
+    local hl = mode_to_hl[line:sub(1, 1)]
+    if hl then
+      vim.hl.range(buf, STATUS_HL_NS, hl, { i - 1, 0 }, { i - 1, 1 })
+    end
+  end
+end
+
 local function HgStatus()
   log_to_scuba({
     module = "hg",
@@ -2787,21 +2809,7 @@ local function HgStatus()
     -- Y shows the status of the working tree
     local lines = vim.split(out.stdout, "\n")
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-    local mode_to_hl = {
-      M = "@diff.plus", -- modified
-      A = "@diff.plus", -- added
-      R = "@diff.minus", -- removed
-      C = "@diff.minus", -- clean
-      I = "@diff.delta", -- ignored
-      ["!"] = "@diff.delta", -- missing
-      ["?"] = "@diff.delta", -- not tracked
-    }
-    for i, line in ipairs(lines) do
-      local mode = line:sub(1, 1)
-      if mode_to_hl[mode] then
-        vim.api.nvim_buf_add_highlight(buf, -1, mode_to_hl[mode], i - 1, 0, 1)
-      end
-    end
+    highlight_status_lines(buf, lines)
   end
 
   local buf = vim.api.nvim_create_buf(false, true)
@@ -2909,23 +2917,8 @@ HgChanges = function()
   vim.api.nvim_set_option_value("modifiable", false, { buf = buf })
   vim.api.nvim_buf_set_name(buf, "hg changes")
 
-  local mode_to_hl = {
-    M = "@diff.plus",
-    A = "@diff.plus",
-    R = "@diff.minus",
-    C = "@diff.minus",
-    I = "@diff.delta",
-    ["!"] = "@diff.delta",
-    ["?"] = "@diff.delta",
-  }
-
   local function apply_highlights()
-    for i, line in ipairs(lines) do
-      local mode = line:sub(1, 1)
-      if mode_to_hl[mode] then
-        vim.api.nvim_buf_add_highlight(buf, -1, mode_to_hl[mode], i - 1, 0, 1)
-      end
-    end
+    highlight_status_lines(buf, lines)
   end
 
   apply_highlights()
@@ -3018,7 +3011,6 @@ HgChanges = function()
     vim.api.nvim_set_option_value("modifiable", true, { buf = buf })
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.api.nvim_set_option_value("modifiable", false, { buf = buf })
-    vim.api.nvim_buf_clear_namespace(buf, -1, 0, -1)
     apply_highlights()
     update_signs()
     if vim.api.nvim_win_is_valid(win) then
