@@ -69,10 +69,13 @@ run_spec() {
   mkdir -p "$work/state" "$work/cache" "$work/cwd"
   local -a cmd
   if [[ $spec == "$suite"/* ]]; then
-    cmd=("$real_nvim" --headless -c "luafile $spec")
+    # H.run quits on its own; reaching the cquit means the spec file itself failed.
+    cmd=("$real_nvim" --headless -c "luafile $spec" -c "cquit 1")
   else
+    # A Lua error in -c doesn't change nvim's exit status; turn it into one.
     cmd=("$real_nvim" --headless -u NONE --cmd "set rtp+=$repo_root/nvim"
-      -c "lua require('lib.test.$name').run()" -c "qa!")
+      -c "lua local ok, err = pcall(require('lib.test.$name').run) if not ok then io.stderr:write(tostring(err) .. '\\n') vim.cmd.cquit(1) end"
+      -c "qa!")
   fi
   local status=0
   (
