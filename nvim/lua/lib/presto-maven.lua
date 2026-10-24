@@ -70,8 +70,8 @@ local function mvn_cmd(repo_type, root, goal, modules, opts)
 	local parts = {
 		"mkdir -p " .. vim.fn.shellescape(BUILD_ROOT .. "/presto-trunk")
 			.. " " .. vim.fn.shellescape(BUILD_ROOT .. "/presto-facebook-trunk"),
-		"eden prefetch 'fbcode/github/presto-facebook-trunk/**' 'fbcode/github/presto-trunk/**' 2>/dev/null || true",
 		"cd " .. vim.fn.shellescape(root),
+		"(eden prefetch 'fbcode/github/presto-facebook-trunk/**' 'fbcode/github/presto-trunk/**' 2>/dev/null || true)",
 	}
 
 	local mvn = "mvn"
