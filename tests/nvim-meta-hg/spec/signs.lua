@@ -65,4 +65,20 @@ H.run(function()
 	H.eq(vim.fn.line("."), 3, "[h back")
 	vim.cmd("normal ]H")
 	H.eq(vim.fn.line("."), 21, "]H to the last hunk")
+
+	-- A slow refresh computed for older text doesn't replace a newer one.
+	H.fake_hg()
+	with_content(function(l)
+		l[5] = "five"
+	end, "before the race", "4_ 5+")
+	H.slow(root, "cat", 1.5)
+	vim.api.nvim_exec_autocmds("BufEnter", { buffer = 0 })
+	vim.wait(300)
+	vim.api.nvim_buf_set_lines(0, 9, 10, false, { "ten" })
+	vim.api.nvim_exec_autocmds("BufEnter", { buffer = 0 })
+	vim.wait(1000, function()
+		return signs() == "4_ 5+ 9_ 10+"
+	end, 20)
+	vim.wait(2000)
+	H.eq(signs(), "4_ 5+ 9_ 10+", "signs match the newest text")
 end)

@@ -3352,6 +3352,9 @@ end)
 local function setup_hg_signcolumn()
   ---@type table<number, number[]> from bufnr to first_hunk_line[]
   local cache = {}
+  ---@type table<number, integer> from bufnr to its latest sign refresh; an
+  --- older refresh that finishes late is dropped
+  local generations = {}
   ---@param bufnr number
   ---@param now ?boolean
   function sign_util.clear_namespace(bufnr, now)
@@ -3445,6 +3448,17 @@ local function setup_hg_signcolumn()
     -- hg resolves the repo from cwd, not from the file argument, so pin to the
     -- file's own repo to keep signs correct when nvim's cwd is elsewhere.
     local file_repo_root = repo_root_of(filepath)
+    generations[bufnr] = (generations[bufnr] or 0) + 1
+    local generation = generations[bufnr]
+    local function clear_if_latest()
+      vim.schedule(function()
+        if generations[bufnr] == generation and vim.api.nvim_buf_is_valid(bufnr) then
+          vim.b[bufnr].hg_diff = nil
+          cache[bufnr] = nil
+          vim.api.nvim_buf_clear_namespace(bufnr, SIGN_NS, 0, -1)
+        end
+      end)
+    end
     local current_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, true)
     -- what :write would put on disk, final newline included, so it compares
     -- like for like with hg cat
@@ -3458,9 +3472,7 @@ local function setup_hg_signcolumn()
       { text = true, cwd = file_repo_root },
       function(status_obj)
         if status_obj.code ~= 0 then
-          clear_hg_diff(bufnr)
-          sign_util.clear_namespace(bufnr)
-          return
+          return clear_if_latest()
         end
 
         local stdout_lines = vim.split(status_obj.stdout, "\n")
@@ -3472,9 +3484,7 @@ local function setup_hg_signcolumn()
         -- If no base_revision is set, only show diffs for locally modified files
         -- If base_revision IS set, show diff between current version and that base (even for unmodified files)
         if not CONFIG.base_revision and file_state ~= "M" then
-          clear_hg_diff(bufnr)
-          sign_util.clear_namespace(bufnr)
-          return
+          return clear_if_latest()
         end
 
         -- Build the hg cat command with optional base revision
@@ -3496,9 +3506,7 @@ local function setup_hg_signcolumn()
           { text = true, cwd = file_repo_root },
           function(cat_obj)
             if cat_obj.code ~= 0 or not cat_obj.stdout then
-              clear_hg_diff(bufnr)
-              sign_util.clear_namespace(bufnr)
-              return
+              return clear_if_latest()
             end
 
             ---@type string
@@ -3511,39 +3519,41 @@ local function setup_hg_signcolumn()
               { result_type = "indices" }
             )
             if not hunks then
-              clear_hg_diff(bufnr)
-              sign_util.clear_namespace(bufnr)
-              return
+              return clear_if_latest()
             end
-
-            -- Count total added/removed lines for statusline
-            local total_added = 0
-            local total_removed = 0
-            for _, hunk in ipairs(hunks) do
-              local _old_start, removed, _new_start, added = unpack(hunk)
-              total_added = total_added + added
-              total_removed = total_removed + removed
-            end
-
-            -- Store in buffer variable for statusline
-            if total_added == 0 and total_removed == 0 then
-              vim.b[bufnr].hg_diff = nil
-            else
-              vim.b[bufnr].hg_diff = {
-                added = total_added,
-                removed = total_removed,
-              }
-            end
-
-            cache[bufnr] = vim.tbl_map(
-              function(h)
-                return math.max(h[3], 1)
-              end,
-              ---@diagnostic disable-next-line: param-type-mismatch
-              hunks
-            )
 
             vim.schedule(function()
+              if generations[bufnr] ~= generation or not vim.api.nvim_buf_is_valid(bufnr) then
+                return
+              end
+
+              -- Count total added/removed lines for statusline
+              local total_added = 0
+              local total_removed = 0
+              for _, hunk in ipairs(hunks) do
+                local _old_start, removed, _new_start, added = unpack(hunk)
+                total_added = total_added + added
+                total_removed = total_removed + removed
+              end
+
+              -- Store in buffer variable for statusline
+              if total_added == 0 and total_removed == 0 then
+                vim.b[bufnr].hg_diff = nil
+              else
+                vim.b[bufnr].hg_diff = {
+                  added = total_added,
+                  removed = total_removed,
+                }
+              end
+
+              cache[bufnr] = vim.tbl_map(
+                function(h)
+                  return math.max(h[3], 1)
+                end,
+                ---@diagnostic disable-next-line: param-type-mismatch
+                hunks
+              )
+
               sign_util.apply_signs(bufnr, hunks)
             end)
           end
