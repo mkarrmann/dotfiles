@@ -93,8 +93,6 @@ local CONFIG = {
       "fbcode/stable",
     },
   },
-  ---@type 'snacks'|'telescope'
-  picker = "telescope",
   ---@type string? Base revision for diff and gutter (nil = parent commit)
   base_revision = nil,
 }
@@ -4031,70 +4029,6 @@ local function setup_line_blame()
   end, { desc = "Copy the diff number for the line under the cursor to clipboard" })
 end
 
-local function hg_diff_snacks_picker(opts)
-  meta_util.log_to_scuba({
-    module = "hg",
-    command = "hg_diff",
-  })
-  opts = opts or {}
-  local additional_args = opts.additional_args or {}
-  local cmd = { "hg", "diff" }
-  -- Add base revision if configured
-  if CONFIG.base_revision then
-    table.insert(cmd, "--rev")
-    table.insert(cmd, CONFIG.base_revision)
-  end
-  vim.list_extend(cmd, additional_args)
-  local hunks = meta_util_hg.get_diff_hunks({ cmd = cmd })
-
-  local items = vim.tbl_map(function(hunk)
-    return {
-      text = hunk.filename .. ":" .. hunk.lnum,
-      item = {},
-      file = hunk.filename,
-      pos = { hunk.lnum, 0 },
-      preview = {
-        text = table.concat(hunk.raw_lines, "\n"),
-        ft = "diff",
-        loc = false,
-      },
-    }
-  end, hunks)
-
-  require("snacks.picker").pick("hg_diff", {
-    items = items,
-    preview = "preview",
-  })
-end
-
-local function hg_diff_current_commit_snacks_picker()
-  meta_util.log_to_scuba({
-    module = "hg",
-    command = "hg_diff_current_commit",
-  })
-  local cmd = { "hg", "diff", "-c", "." }
-  local hunks = meta_util_hg.get_diff_hunks({ cmd = cmd })
-
-  local items = vim.tbl_map(function(hunk)
-    return {
-      text = hunk.filename .. ":" .. hunk.lnum,
-      item = {},
-      file = hunk.filename,
-      pos = { hunk.lnum, 0 },
-      preview = {
-        text = table.concat(hunk.raw_lines, "\n"),
-        ft = "diff",
-        loc = false,
-      },
-    }
-  end, hunks)
-
-  require("snacks.picker").pick("hg_diff_current_commit", {
-    items = items,
-    preview = "preview",
-  })
-end
-
 local _is_setup = false
 return {
   ssl_state = SSL_STATE,
@@ -4135,29 +4069,17 @@ return {
 
     vim.api.nvim_create_user_command(
       "HgDiff",
-      CONFIG.picker == "snacks"
-          and function()
-            hg_diff_snacks_picker()
-          end
-        or ":Telescope hg diff",
+      ":Telescope hg diff",
       { desc = "Hg diff picker" }
     )
     vim.api.nvim_create_user_command(
       "HgDiffIgnoreAllSpace",
-      CONFIG.picker == "snacks"
-          and function()
-            hg_diff_snacks_picker({ additional_args = { "--ignore-all-space" } })
-          end
-        or ":Telescope hg diff_ignore_all_space",
+      ":Telescope hg diff_ignore_all_space",
       { desc = "Hg diff picker ignoring space changes" }
     )
     vim.api.nvim_create_user_command(
       "HgDiffCurrentCommit",
-      CONFIG.picker == "snacks"
-          and function()
-            hg_diff_current_commit_snacks_picker()
-          end
-        or ":Telescope hg current_commit",
+      ":Telescope hg current_commit",
       { desc = "Hg diff picker for current commit changes" }
     )
 
