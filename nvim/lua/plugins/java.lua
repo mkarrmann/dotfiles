@@ -119,11 +119,6 @@ return {
 			}
 		end,
 		config = function(_, opts)
-			-- Set JAVA_HOME for the jdtls process (needs Java 21 to run).
-			vim.env.JAVA_HOME = JAVA_21
-
-			-- Let LazyVim's default config function handle the rest.
-			-- We just need to ensure JAVA_HOME is set before it runs.
 			local LazyVim = require("lazyvim.util")
 
 			local java_filetypes = { "java" }
@@ -173,6 +168,9 @@ return {
 				local settings = settings_for(root_dir)
 				local config = extend_or_override({
 					cmd = opts.full_cmd(opts),
+					-- jdtls needs Java 21 to run; only its process gets it, so Maven and
+					-- other children of nvim keep the shell's JDK.
+					cmd_env = { JAVA_HOME = JAVA_21 },
 					root_dir = root_dir,
 					-- jdtls imports the project as soon as it initializes, before the client's
 					-- didChangeConfiguration arrives, so settings that shape the import (Maven
