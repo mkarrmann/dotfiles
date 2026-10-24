@@ -51,13 +51,15 @@ managed agent-store registration remains Linux-only. See
 agent specs under `omnigent_config/agents/` plus the packaged polly/debby
 overlays into the `~/.omnigent/chat.db` this machine's server owns: the active
 hub at work, the managed local server on a Linux desktop. `dvsc` is Meta's
-devmate and is registered at work only. After a bundle or config change the
+devmate and `muse` is Muse Code driven through it (see
+[the Muse path note](docs/muse-omnigent-path.md)); both are registered at work
+only. After a bundle or config change the
 server must restart to see it; the script does so only when nothing is
 disturbed -- at work after the hub quiescence check (the server restart leaves
 runners alone), on a desktop only when no session is connected, because there
 the server lives inside `omnigent-host.service` and restarting it ends every
 live session -- and otherwise prints the command and exits 1. What stays
-work-only: `agents/dvsc`, the hub/reconcile/snapshot/Google Chat services,
+work-only: `agents/dvsc`, `agents/muse`, the hub/reconcile/snapshot/Google Chat services,
 `runtime_ext` (Sapling), and
 `topology.env`.
 

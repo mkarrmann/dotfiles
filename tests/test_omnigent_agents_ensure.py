@@ -181,7 +181,7 @@ class AgentsEnsureTest(unittest.TestCase):
         )
         (self.dotfiles / "omnigent_config/materialize_agent_overlays.py").parent.mkdir(parents=True)
         (self.dotfiles / "omnigent_config/materialize_agent_overlays.py").touch()
-        for name in ("claude", "codex", "dvsc"):
+        for name in ("claude", "codex", "dvsc", "muse"):
             spec = self.dotfiles / "omnigent_config/agents" / name
             spec.mkdir(parents=True)
             (spec / "config.yaml").write_text(f"name: {name}\n")
@@ -369,15 +369,17 @@ class AgentsEnsureTest(unittest.TestCase):
         self.assertEqual(self.recorded("omnigent"), [])
         self.assertEqual(self.registered_agents(), set())
 
-    def test_work_hub_registers_dvsc_and_restarts_quiescent_server(self):
+    def test_work_hub_registers_dvsc_and_muse_and_restarts_quiescent_server(self):
         self.env["TEST_PROFILE"] = "work"
         self.env["TEST_IS_HUB"] = "0"
-        url = self.start_live_server("claude", "codex", "dvsc", current=False)
+        url = self.start_live_server("claude", "codex", "dvsc", "muse", current=False)
         self.env["TEST_HUB_URL"] = url
         self.env["TEST_UNIT_ACTIVE"] = "1"
         result = self.run_script()
         self.assert_success(result)
-        self.assertEqual(self.registered_agents(), {"claude", "codex", "dvsc", "polly", "debby"})
+        self.assertEqual(
+            self.registered_agents(), {"claude", "codex", "dvsc", "muse", "polly", "debby"}
+        )
         self.assertEqual(
             self.restarts(),
             [
@@ -390,8 +392,8 @@ class AgentsEnsureTest(unittest.TestCase):
     def test_work_hub_busy_server_is_left_alone(self):
         self.env["TEST_PROFILE"] = "work"
         self.env["TEST_IS_HUB"] = "0"
-        self.preregister("claude", "codex", "dvsc", "polly", "debby")
-        url = self.start_live_server("claude", "codex", "dvsc", current=False)
+        self.preregister("claude", "codex", "dvsc", "muse", "polly", "debby")
+        url = self.start_live_server("claude", "codex", "dvsc", "muse", current=False)
         self.env["TEST_HUB_URL"] = url
         self.env["TEST_UNIT_ACTIVE"] = "1"
         self.env["TEST_QUIESCE_EXIT"] = "1"

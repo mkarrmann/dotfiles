@@ -8,10 +8,13 @@
 #
 # It does two things, each a no-op when already satisfied:
 #
-#   1. Reconciles the per-host server URL and registers the `dvsc-core` command
-#      in the `acp:` block of ~/.omnigent/config.yaml (merged in place with
-#      omnigent's own pyyaml, preserving host: and any other acp agents).
-#      `acp:dvsc-core` is the harness id the dvsc agent spec binds to.
+#   1. Reconciles the per-host server URL and registers the `dvsc-core` and
+#      `muse` commands in the `acp:` block of ~/.omnigent/config.yaml (merged
+#      in place with omnigent's own pyyaml, preserving host: and any other acp
+#      agents). `acp:dvsc-core` and `acp:muse` are the harness ids the dvsc and
+#      muse agent specs bind to; `muse` is the same wrapper launched with
+#      `--default-mode muse`, because Omnigent forwards a model but no mode.
+#      The muse spec's agent-store row is reconciled by omnigent-agents-ensure.
 #
 #   2. On the active Linux hub only, pre-registers the dotfiles `dvsc` agent
 #      spec as an Omnigent builtin (a `session_id IS NULL` row in agent_store)
@@ -101,18 +104,23 @@ if not isinstance(agents, list):
     agents = []
     acp["agents"] = agents
 
-entry = {"name": "dvsc-core", "command": cmd, "send_model": True}
-for i, a in enumerate(agents):
-    if isinstance(a, dict) and a.get("name") == "dvsc-core":
-        if a == entry:
-            print("[dvsc-ensure] config.yaml: dvsc-core acp entry already present")
-        else:
-            agents[i] = entry
-            print("[dvsc-ensure] config.yaml: updated dvsc-core acp entry")
-        break
-else:
-    agents.append(entry)
-    print("[dvsc-ensure] config.yaml: added dvsc-core acp entry")
+entries = [
+    {"name": "dvsc-core", "command": cmd, "send_model": True},
+    {"name": "muse", "command": f"{cmd} --default-mode muse", "send_model": True},
+]
+for entry in entries:
+    name = entry["name"]
+    for i, a in enumerate(agents):
+        if isinstance(a, dict) and a.get("name") == name:
+            if a == entry:
+                print(f"[dvsc-ensure] config.yaml: {name} acp entry already present")
+            else:
+                agents[i] = entry
+                print(f"[dvsc-ensure] config.yaml: updated {name} acp entry")
+            break
+    else:
+        agents.append(entry)
+        print(f"[dvsc-ensure] config.yaml: added {name} acp entry")
 
 os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path, "w") as f:

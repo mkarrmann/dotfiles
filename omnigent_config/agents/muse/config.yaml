@@ -1,0 +1,34 @@
+spec_version: 1
+name: muse
+description: >-
+  Meta's Muse Code, run by dm-core (devmate) and driven over the Agent Client
+  Protocol by the dvsc-core-acp wrapper launched in its `muse` mode. dm-core
+  starts the managed /usr/local/bin/muse launcher, so the harness, identity,
+  and inference are Meta's internal path (AI Gateway, Meta Model API). The
+  model is selectable at launch and mid-session; reasoning effort uses Muse's
+  default, since the generic ACP harness has no channel for it.
+
+# `acp:muse` resolves to the `muse` entry in the `acp:` block of
+# ~/.omnigent/config.yaml (added by `omnigent-dvsc-ensure`): the same
+# ~/bin/dvsc-core-acp wrapper as dvsc, launched with `--default-mode muse`
+# because Omnigent forwards a model but no mode. dm-core and Muse own the
+# system prompt and tool loop, so this spec declares no `prompt:`.
+executor:
+  type: omnigent
+  config:
+    harness: acp:muse
+    # ACP otherwise falls back to a human prompt whenever policy returns ALLOW
+    # or abstains. Explicit DENY/ASK policies still win over this default.
+    permission_mode: bypassPermissions
+
+tools:
+  watch:
+    type: mcp
+    command: omnigent-watch-mcp
+    tools:
+      - diff_subscribe
+      - diff_unsubscribe
+      - diff_status
+      - subscribe
+      - unsubscribe
+      - status

@@ -1,24 +1,25 @@
 #!/usr/bin/env bash
 # omnigent-agents-ensure — reconcile the source-controlled Omnigent agent
-# bundles (claude-sdk, codex, and at work dvsc) plus the packaged polly/debby
-# overlays into the agent store of the server THIS machine owns, so they show
-# up in the CodeCompanion picker with their current tools and prompts. The
-# existing model/effort pickers key off each agent's harness family.
+# bundles (claude-sdk, codex, and at work dvsc and muse) plus the packaged
+# polly/debby overlays into the agent store of the server THIS machine owns, so
+# they show up in the CodeCompanion picker with their current tools and
+# prompts. The existing model/effort pickers key off each agent's harness
+# family.
 #
 # Which server that is follows the dotfiles profile:
 #   work     the active hub (omnigent-server.service on ~/.omnigent/chat.db).
 #            Standbys, peer devservers, and the Mac never open a local chat.db.
 #   desktop  the managed local server that omnigent-host.service spawns, on
 #            the same ~/.omnigent/chat.db (omnigent/host/local_server.py).
-#            dvsc is Meta's devmate over ACP and has no runtime here, so it is
-#            not registered.
+#            dvsc and muse are Meta's devmate (and Muse Code through it) over
+#            ACP and have no runtime here, so they are not registered.
 #
-# This is the bundle-reconciliation sibling of omnigent-dvsc-ensure: dvsc needs
-# an extra acp: config merge (its harness is acp:dvsc-core), so it keeps its own
-# script; agent-store reconciliation happens here for all tracked agents in ONE
-# throwaway server boot. Omnigent's ``--agent`` registration is content-aware:
-# it preserves the stable agent row and updates its bundle only when the
-# materialized content hash changes.
+# This is the bundle-reconciliation sibling of omnigent-dvsc-ensure: dvsc and
+# muse need an extra acp: config merge (their harnesses are acp:dvsc-core and
+# acp:muse), so that keeps its own script; agent-store reconciliation happens
+# here for all tracked agents in ONE throwaway server boot. Omnigent's
+# ``--agent`` registration is content-aware: it preserves the stable agent row
+# and updates its bundle only when the materialized content hash changes.
 #
 # Neither the hub unit nor the managed local server has an `--agent` hook, so —
 # exactly like omnigent-dvsc-ensure — we register by briefly booting a
@@ -85,7 +86,7 @@ case "$PROFILE" in
       log "non-active hub/client detected; skipping local agent-store seed"
       exit 0
     fi
-    TRACKED_AGENT_NAMES=(claude codex dvsc)
+    TRACKED_AGENT_NAMES=(claude codex dvsc muse)
     SERVER_UNIT=omnigent-server.service
     ;;
   desktop)
