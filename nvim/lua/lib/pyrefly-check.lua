@@ -122,7 +122,7 @@ function M.check(bufnr, opts)
 	-- it would leave the previous run's diagnostics on screen with no indication
 	-- they describe superseded content.
 	if running[bufnr] then
-		pending[bufnr] = true
+		pending[bufnr] = vim.tbl_extend("force", pending[bufnr] or {}, opts)
 		return
 	end
 	running[bufnr] = true
@@ -132,20 +132,24 @@ function M.check(bufnr, opts)
 		{ cwd = root, text = true, timeout = M.TIMEOUT_MS },
 		vim.schedule_wrap(function(res)
 			running[bufnr] = nil
+			local rerun = pending[bufnr]
+			pending[bufnr] = nil
 			if not vim.api.nvim_buf_is_valid(bufnr) then
-				pending[bufnr] = nil
 				return
 			end
-			-- JSON goes to stdout; the binary's INFO chatter goes to stderr
-			-- and must not be fed to the decoder.
-			local diags = M.parse(res.stdout, root, path)
-			vim.diagnostic.set(M.NS, bufnr, diags)
-			if opts.notify then
-				vim.notify(string.format("pyrefly-check: %d finding(s)", #diags), vim.log.levels.INFO)
+			-- Explicit :PyreflyCheck runs regardless of the toggle; automatic
+			-- runs that finish after it was switched off are discarded.
+			if M.enabled or opts.notify then
+				-- JSON goes to stdout; the binary's INFO chatter goes to stderr
+				-- and must not be fed to the decoder.
+				local diags = M.parse(res.stdout, root, path)
+				vim.diagnostic.set(M.NS, bufnr, diags)
+				if opts.notify then
+					vim.notify(string.format("pyrefly-check: %d finding(s)", #diags), vim.log.levels.INFO)
+				end
 			end
-			if pending[bufnr] then
-				pending[bufnr] = nil
-				M.check(bufnr, opts)
+			if rerun and (M.enabled or rerun.notify) then
+				M.check(bufnr, rerun)
 			end
 		end)
 	)

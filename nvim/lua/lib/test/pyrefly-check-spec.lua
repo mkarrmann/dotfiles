@@ -61,6 +61,66 @@ local OUTPUT = vim.json.encode({
 	},
 })
 
+-- Drives check() and :PyreflyCheckToggle with a stubbed binary whose runs
+-- complete only when the test says so.
+local function toggle_checks(pc)
+	local orig = { system = vim.system, resolve = pc.resolve, notify = vim.notify }
+	do
+		local runs = {}
+		vim.system = function(_, _, on_exit)
+			table.insert(runs, on_exit)
+			return {}
+		end
+		pc.resolve = function()
+			return ROOT, "/bin/pyrefly"
+		end
+		vim.notify = function() end
+		pc.setup()
+
+		local buf = vim.api.nvim_create_buf(true, false)
+		vim.api.nvim_buf_set_name(buf, TARGET)
+		vim.api.nvim_set_current_buf(buf)
+		local function finish(i)
+			local done = false
+			runs[i]({ code = 1, stdout = OUTPUT, stderr = "" })
+			vim.schedule(function()
+				done = true
+			end)
+			vim.wait(1000, function()
+				return done
+			end)
+		end
+		local function count()
+			return #vim.diagnostic.get(buf, { namespace = pc.NS })
+		end
+
+		pc.check(buf)
+		pc.check(buf)
+		assert_eq(#runs, 1, "a save mid-check is queued, not started")
+		vim.cmd.PyreflyCheckToggle()
+		assert_eq(pc.enabled, false, "toggled off")
+		finish(1)
+		assert_eq(count(), 0, "toggling off discards the in-flight result")
+		assert_eq(#runs, 1, "toggling off drops the queued re-run")
+
+		vim.cmd.PyreflyCheck()
+		assert_eq(#runs, 2, "explicit :PyreflyCheck still runs while auto-run is off")
+		finish(2)
+		assert_eq(count(), 3, "explicit check publishes its findings")
+
+		vim.cmd.PyreflyCheckToggle()
+		pc.check(buf)
+		vim.cmd.PyreflyCheckToggle()
+		vim.cmd.PyreflyCheck()
+		assert_eq(#runs, 3, "explicit request mid-check is queued")
+		finish(3)
+		assert_eq(#runs, 4, "a queued explicit request survives toggling off")
+		finish(4)
+		assert_eq(count(), 3, "queued explicit check publishes its findings")
+	end
+	vim.system, pc.resolve, vim.notify = orig.system, orig.resolve, orig.notify
+end
+
 function M.run()
 	local ok, err = xpcall(function()
 		package.loaded["lib.pyrefly-check"] = nil
@@ -103,10 +163,13 @@ function M.run()
 		-- Private namespace, so a reset never clears LSP diagnostics.
 		assert_eq(type(pc.NS), "number", "has its own diagnostic namespace")
 		assert_eq(pc.NS ~= vim.api.nvim_create_namespace("some.lsp.namespace"), true, "namespace is distinct")
+
+		toggle_checks(pc)
 	end, debug.traceback)
 
 	if not ok then
-		error(err)
+		io.stderr:write(err .. "\n")
+		vim.cmd.cquit(1)
 	end
 	print("pyrefly-check-spec: all checks passed")
 end
