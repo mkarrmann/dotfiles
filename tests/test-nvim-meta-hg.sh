@@ -82,7 +82,10 @@ run_spec() {
   local status=0
   (
     cd "$work/cwd"
-    env XDG_CONFIG_HOME="$tmp_dir/config" XDG_STATE_HOME="$work/state" XDG_CACHE_HOME="$work/cache" \
+    # An agent's environment makes Sapling change its output (it ignores -q
+    # when CODING_AGENT_METADATA is set); run as the editor would.
+    env -u CODING_AGENT_METADATA -u CLAUDECODE -u AI_AGENT -u AGENT \
+      XDG_CONFIG_HOME="$tmp_dir/config" XDG_STATE_HOME="$work/state" XDG_CACHE_HOME="$work/cache" \
       HGUSER=test NVIM_META_HG_SUITE="$suite" NVIM_META_HG_LIB="$suite/lib.lua" NVIM_META_HG_TMP="$work" \
       timeout "$spec_timeout" "${cmd[@]}"
   ) > "$work/out.log" 2>&1 || status=$?
