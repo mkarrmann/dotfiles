@@ -792,6 +792,9 @@ function ssl_utils.annotate_hg_status(bufnr, sl_lines, is_latest)
         break
       end
     end
+    if current_commit_line_idx == 0 then
+      return
+    end
 
     -- Get the decoration graph lines (mimics that diff tree continues)
     -- should work for all commits but the topmost one
@@ -909,7 +912,7 @@ local function filter_hidden_bookmarks(lines)
     end
 
     local commit = ssl_utils.parse_diff_line(line)
-    if commit and commit.is_bookmark then
+    if commit and commit.is_bookmark and not commit.is_current then
       local dominated = true
       for _, bm in ipairs(vim.split(commit.bookmarks, " ")) do
         local is_hidden = false

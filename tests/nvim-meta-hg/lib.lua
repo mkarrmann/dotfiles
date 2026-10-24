@@ -46,22 +46,25 @@ function H.read(path)
 	return text
 end
 
----Puts a pass-through `hg` first on PATH. `H.slow(root, sub, seconds)` then
----delays the output of the next `hg <sub>` run in that repo, once.
+---Puts a pass-through `hg` first on PATH that can misbehave per repo:
+---H.slow delays the output of the next run of a subcommand, H.rewrite edits
+---the output of every run of one.
 function H.fake_hg()
 	local bin = H.tmp .. "/bin"
 	vim.fn.mkdir(bin, "p")
 	H.write(bin .. "/hg", table.concat({
 		"#!/bin/sh",
 		"real=" .. vim.fn.exepath("hg"),
-		'marker="$(pwd -P)/.hg/slow-$1"',
-		'[ -f "$marker" ] || exec "$real" "$@"',
+		'dir="$(pwd -P)/.hg"',
+		'slow="$dir/slow-$1"',
+		'script="$dir/sed-$1"',
+		'[ -f "$slow" ] || [ -f "$script" ] || exec "$real" "$@"',
 		-- Run first and delay the output, so a slow run reports the state it read.
-		'delay=$(cat "$marker"); rm -f "$marker"',
 		'out=$("$real" "$@"); status=$?',
-		'sleep "$delay"',
+		'if [ -f "$slow" ]; then delay=$(cat "$slow"); rm -f "$slow"; sleep "$delay"; fi',
+		"if [ -f \"$script\" ]; then out=$(printf '%s\\n' \"$out\" | sed -f \"$script\"); fi",
 		"printf '%s\\n' \"$out\"",
-		'exit $status',
+		"exit $status",
 		"",
 	}, "\n"))
 	vim.uv.fs_chmod(bin .. "/hg", 493)
@@ -70,6 +73,10 @@ end
 
 function H.slow(root, sub, seconds)
 	H.write(vim.uv.fs_realpath(root) .. "/.hg/slow-" .. sub, tostring(seconds))
+end
+
+function H.rewrite(root, sub, sed_script)
+	H.write(vim.uv.fs_realpath(root) .. "/.hg/sed-" .. sub, sed_script .. "\n")
 end
 
 function H.check(cond, msg)
