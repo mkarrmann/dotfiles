@@ -17,6 +17,9 @@ end
 ---@param right_buf integer
 function M.show(left_win, left_buf, right_win, right_buf)
 	for _, win in ipairs({ left_win, right_win }) do
+		-- :diffoff only restores the pre-diff 'foldenable' while it is on, and
+		-- the buffer leaving the pane remembers what it is left with
+		vim.wo[win][0].foldenable = true
 		vim.api.nvim_win_call(win, function()
 			vim.cmd("diffoff")
 		end)
