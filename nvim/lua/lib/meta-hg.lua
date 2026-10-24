@@ -323,6 +323,22 @@ hg_utils.can_commit = function(cwd)
   return (#status.modified + #status.added + #status.removed) > 0
 end
 
+---Run `hg <args>` to completion in the repo of `bufnr`'s file; notify on failure.
+---@param args string[]
+---@param bufnr integer?
+---@return vim.SystemCompleted
+function hg_utils.run_sync(args, bufnr)
+  local cmd = vim.list_extend({ "hg" }, args)
+  local obj = vim.system(cmd, { text = true, cwd = buf_repo_root(bufnr) }):wait()
+  if obj.code ~= 0 then
+    vim.notify(
+      table.concat(cmd, " ") .. " failed:\n" .. vim.trim((obj.stderr or "") .. "\n" .. (obj.stdout or "")),
+      vim.log.levels.ERROR
+    )
+  end
+  return obj
+end
+
 ---Run a command in a terminal in a new tab. The tab closes when the command
 ---succeeds and stays open on failure so its output can be read.
 ---@param cmd string[]
@@ -499,26 +515,42 @@ local function HgRemove()
     module = "hg",
     command = "HgRemove",
   })
-  vim.cmd(
-    "silent !hg --cwd "
-      .. vim.fn.shellescape(buf_repo_root())
-      .. " remove "
-      .. vim.fn.shellescape(vim.fn.expand("%:p"))
-  )
-  vim.api.nvim_buf_delete(0, { force = true })
+  local buf = vim.api.nvim_get_current_buf()
+  if hg_utils.run_sync({ "remove", vim.api.nvim_buf_get_name(buf) }, buf).code == 0 then
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end
 end
 local function HgResolve()
   log_to_scuba({
     module = "hg",
     command = "HgResolve",
   })
-  vim.cmd(
-    "silent !hg --cwd "
-      .. vim.fn.shellescape(buf_repo_root())
-      .. " resolve --mark "
-      .. vim.fn.shellescape(vim.fn.expand("%:p"))
-  )
-  vim.api.nvim_buf_delete(0, { force = true })
+  local buf = vim.api.nvim_get_current_buf()
+  local function resolve()
+    if vim.bo[buf].modified then
+      vim.api.nvim_buf_call(buf, function()
+        vim.cmd("write")
+      end)
+    end
+    if hg_utils.run_sync({ "resolve", "--mark", vim.api.nvim_buf_get_name(buf) }, buf).code == 0 then
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end
+  end
+
+  -- Sapling marks a file resolved even with conflict markers left in it
+  local has_markers = vim.iter(vim.api.nvim_buf_get_lines(buf, 0, -1, false)):any(function(line)
+    return line:find("^<<<<<<< ") ~= nil or line:find("^>>>>>>> ") ~= nil
+  end)
+  if not has_markers then
+    return resolve()
+  end
+  vim.ui.select({ "Yes", "No" }, {
+    prompt = "This file still has conflict markers. Mark it resolved anyway?",
+  }, function(choice)
+    if choice == "Yes" then
+      resolve()
+    end
+  end)
 end
 
 ---@param for_current_commit boolean
