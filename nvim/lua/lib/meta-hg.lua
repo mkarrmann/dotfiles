@@ -660,9 +660,9 @@ end
 ---@param line string
 ---@return Hg.commit?
 function ssl_utils.parse_diff_line(line)
-  local commit_marker = "[@ox]  "
-  local has_commit_info = string.match(line, commit_marker)
-  if has_commit_info == nil then
+  -- graph (box-drawing characters and spaces), node marker, two spaces, hash;
+  -- unanchored, a message line like "│  second  fox  commit" matched too
+  if not line:find("^[%s\128-\255]*[@ox]  %x%x%x%x%x%x%x%x") then
     return nil
   end
 
