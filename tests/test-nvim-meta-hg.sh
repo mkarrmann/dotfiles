@@ -76,7 +76,7 @@ run_spec() {
   else
     # A Lua error in -c doesn't change nvim's exit status; turn it into one.
     cmd=("$real_nvim" --headless -u NONE --cmd "set rtp+=$repo_root/nvim"
-      -c "lua local ok, err = pcall(require('lib.test.$name').run) if not ok then io.stderr:write(tostring(err) .. '\\n') vim.cmd.cquit(1) end"
+      -c "lua local ok, err = pcall(function() return require('lib.test.$name').run() end) if not ok then io.stderr:write(tostring(err) .. '\\n') vim.cmd.cquit(1) end"
       -c "qa!")
   fi
   local status=0
