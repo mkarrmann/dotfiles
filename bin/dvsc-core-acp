@@ -54,6 +54,16 @@ if ! SCRIPT="$(resolve_dist)"; then
   exit 1
 fi
 
+# Launch flags (e.g. `--default-mode muse` for the Omnigent muse agent) need a
+# dist that parses them. An older dist ignores argv and would silently run the
+# default mode instead, so refuse to start.
+if [[ $# -gt 0 && ! -f "$(dirname "$SCRIPT")/launch-args.js" ]]; then
+  echo "$SCRIPT predates launch flags and would ignore: $*" >&2
+  echo "Rebuild it with: cd ${SCRIPT%/packages/*} && npx tsc -b" >&2
+  echo "Or set DVSC_ACP_DIST to a dist/index.js built with launch-flag support." >&2
+  exit 1
+fi
+
 NODE=""
 for candidate in \
   "${DVSC_ACP_NODE:-}" \
