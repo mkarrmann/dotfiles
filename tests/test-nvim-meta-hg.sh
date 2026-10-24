@@ -69,8 +69,10 @@ run_spec() {
   mkdir -p "$work/state" "$work/cache" "$work/cwd"
   local -a cmd
   if [[ $spec == "$suite"/* ]]; then
-    # H.run quits on its own; reaching the cquit means the spec file itself failed.
-    cmd=("$real_nvim" --headless -c "luafile $spec" -c "cquit 1")
+    # Scheduled so the spec runs after VimEnter, like anything you'd type;
+    # which-key, for one, creates no mappings until then. H.run quits on its
+    # own, so the cquit only runs if the spec file itself fails to load.
+    cmd=("$real_nvim" --headless -c "lua vim.schedule(function() local ok, err = pcall(dofile, '$spec') if not ok then io.stderr:write(tostring(err) .. '\\n') end vim.cmd.cquit(1) end)")
   else
     # A Lua error in -c doesn't change nvim's exit status; turn it into one.
     cmd=("$real_nvim" --headless -u NONE --cmd "set rtp+=$repo_root/nvim"

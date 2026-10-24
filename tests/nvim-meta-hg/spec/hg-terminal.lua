@@ -15,7 +15,7 @@ H.run(function()
 	H.check(vim.wait(15000, function()
 		return #vim.api.nvim_list_tabpages() == 1
 	end, 50), "terminal tab closed after success")
-	H.eq(#vim.api.nvim_tabpage_list_wins(home_tab), 2, "the window you moved to survives")
+	H.eq(#H.wins(home_tab), 2, "the window you moved to survives")
 	H.eq(vim.trim(H.sh({ "hg", "status" }, root)), "", "amend ran")
 
 	-- A failing command leaves its output on screen.
@@ -35,5 +35,5 @@ H.run(function()
 	vim.wait(300)
 	H.check(vim.api.nvim_tabpage_is_valid(term_tab), "failed command's tab stays open")
 	H.check(vim.api.nvim_buf_is_valid(term_buf) and H.lines(term_buf):find("failing on purpose", 1, true) ~= nil, "output visible")
-	H.eq(#vim.api.nvim_tabpage_list_wins(home_tab), 2, "home tab untouched")
+	H.eq(#H.wins(home_tab), 2, "home tab untouched")
 end)

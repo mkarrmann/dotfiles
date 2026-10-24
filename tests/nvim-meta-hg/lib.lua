@@ -46,6 +46,32 @@ function H.read(path)
 	return text
 end
 
+---Puts a pass-through `hg` first on PATH. `H.slow(root, sub, seconds)` then
+---delays the output of the next `hg <sub>` run in that repo, once.
+function H.fake_hg()
+	local bin = H.tmp .. "/bin"
+	vim.fn.mkdir(bin, "p")
+	H.write(bin .. "/hg", table.concat({
+		"#!/bin/sh",
+		"real=" .. vim.fn.exepath("hg"),
+		'marker="$(pwd -P)/.hg/slow-$1"',
+		'[ -f "$marker" ] || exec "$real" "$@"',
+		-- Run first and delay the output, so a slow run reports the state it read.
+		'delay=$(cat "$marker"); rm -f "$marker"',
+		'out=$("$real" "$@"); status=$?',
+		'sleep "$delay"',
+		"printf '%s\\n' \"$out\"",
+		'exit $status',
+		"",
+	}, "\n"))
+	vim.uv.fs_chmod(bin .. "/hg", 493)
+	vim.env.PATH = bin .. ":" .. vim.env.PATH
+end
+
+function H.slow(root, sub, seconds)
+	H.write(vim.uv.fs_realpath(root) .. "/.hg/slow-" .. sub, tostring(seconds))
+end
+
 function H.check(cond, msg)
 	if not cond then
 		H.failures = H.failures + 1
@@ -59,6 +85,13 @@ end
 
 function H.lines(buf)
 	return table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+end
+
+---Non-floating windows of a tab; notifications open floating ones.
+function H.wins(tab)
+	return vim.tbl_filter(function(w)
+		return vim.api.nvim_win_get_config(w).relative == ""
+	end, vim.api.nvim_tabpage_list_wins(tab or 0))
 end
 
 function H.session()
