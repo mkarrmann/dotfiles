@@ -500,15 +500,25 @@ local function HgMove(opts)
     module = "hg",
     command = "HgMove",
   })
-  -- TODO check if file exists already
-  vim.cmd(
-    "silent !hg --cwd "
-      .. vim.fn.shellescape(buf_repo_root())
-      .. " move "
-      .. vim.fn.shellescape(vim.fn.expand("%:p"))
-      .. " "
-      .. opts.args
-  )
+  local buf = vim.api.nvim_get_current_buf()
+  local src = vim.api.nvim_buf_get_name(buf)
+  -- relative to nvim's cwd, like :saveas and the command's file completion
+  local dest = vim.fn.fnamemodify(vim.fs.normalize(opts.args), ":p")
+  if vim.fn.isdirectory(dest) == 1 then
+    dest = vim.fs.joinpath(dest, vim.fs.basename(src))
+  end
+  dest = vim.fs.normalize(dest)
+  if vim.bo[buf].modified then
+    vim.cmd("write")
+  end
+  if hg_utils.run_sync({ "move", src, dest }, buf).code ~= 0 then
+    return
+  end
+  local ok, err = pcall(vim.api.nvim_buf_set_name, buf, dest)
+  if not ok then
+    return vim.notify("Moved to " .. dest .. ", but couldn't rename the buffer: " .. err, vim.log.levels.WARN)
+  end
+  vim.cmd("edit!")
 end
 local function HgRemove()
   log_to_scuba({
