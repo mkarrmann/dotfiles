@@ -49,14 +49,10 @@ vim.api.nvim_create_autocmd("User", {
 			local ok, m = pcall(require, "lib.meta-hg")
 			if ok then
 				meta_hg = m
-				package.loaded["meta.hg"] = m
 				m.setup({ ssl = { status = true } })
 			end
 		end
-		local meta_ok, meta = pcall(require, "meta")
-		if meta_ok then
-			meta.setup()
-		end
+		local meta_ok = pcall(require, "meta")
 
 		local metamate_ok, metamate = pcall(require, "meta.metamate")
 		if metamate_ok then

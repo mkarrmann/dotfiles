@@ -1,31 +1,5 @@
 return {
 	{
-		dir = "/usr/share/fb-editor-support/nvim",
-		name = "meta.nvim",
-		cond = vim.fn.isdirectory("/usr/share/fb-editor-support/nvim") == 1,
-		dependencies = { "nvimtools/none-ls.nvim" },
-		config = function()
-			local meta = require("meta")
-			meta.setup()
-
-			-- Which servers are enabled lives in local/config/meta.lua, which
-			-- runs on every Meta machine. Enabling them here too meant two
-			-- lists that had already drifted apart.
-
-			local null_ls = require("null-ls")
-			null_ls.register({
-				meta.null_ls.diagnostics.arclint,
-				meta.null_ls.formatting.arclint,
-			})
-
-			-- arclint's formatter registers for every filetype but refuses to run
-			-- in fbsource, which leaves none-ls holding LazyVim's primary format
-			-- slot and doing nothing. Give linttool the slot where it attaches.
-			require("lib.meta-format").setup()
-		end,
-	},
-
-	{
 		"nvim-telescope/telescope.nvim",
 		keys = {
 			{
