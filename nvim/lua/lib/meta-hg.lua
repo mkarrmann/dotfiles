@@ -3667,14 +3667,18 @@ local LINE_BLAME_NS = vim.api.nvim_create_namespace("hg_line_blame")
 local LINE_BLAME_GROUP =
   vim.api.nvim_create_augroup("hg_line_blame", { clear = true })
 local function setup_line_blame()
-  ---@type table<string, string[]> Filepath to blame lines
+  ---@type table<string, string[]> Absolute path to blame lines
   local cache = {}
 
+  ---Draws blame for the cursor line of `bufnr` if it is the current buffer;
+  ---async callbacks may land after you've moved elsewhere.
   local function set_line_blame(bufnr)
+    if not vim.api.nvim_buf_is_valid(bufnr) or vim.api.nvim_get_current_buf() ~= bufnr then
+      return
+    end
     local cursor = vim.api.nvim_win_get_cursor(0)
 
-    local rel_filepath = vim.fn.expand("%")
-    local blame_lines = cache[rel_filepath]
+    local blame_lines = cache[vim.api.nvim_buf_get_name(bufnr)]
     if not blame_lines then
       return
     end
@@ -3730,6 +3734,9 @@ local function setup_line_blame()
 
         local handle_cursor_moved = debounce(
           function(cursor_moved_arg)
+            if not vim.api.nvim_buf_is_valid(cursor_moved_arg.buf) then
+              return
+            end
             -- clear all extmarks
             vim.api.nvim_buf_clear_namespace(
               cursor_moved_arg.buf,
@@ -3772,7 +3779,6 @@ local function setup_line_blame()
           end,
         })
 
-        local rel_filepath = vim.fn.expand("%")
         local cmd = {
           "hg",
           "blame",
@@ -3796,7 +3802,7 @@ local function setup_line_blame()
             return
           end
 
-          cache[rel_filepath] = vim.tbl_map(function(line)
+          cache[filepath] = vim.tbl_map(function(line)
             -- example output from hg blame
             -- lack of diff means the line was not submitted yet
             -- "     antonk52           2024-09-25: end"
@@ -3818,6 +3824,9 @@ local function setup_line_blame()
 
           -- schedule since cannot call nvim_buf_get_extmarks inside lua loop
           vim.schedule(function()
+            if not vim.api.nvim_buf_is_valid(arg.buf) then
+              return
+            end
             -- if there is already an extmarks no need to set it
             -- means cursor has moved already
             if
@@ -3857,7 +3866,7 @@ local function setup_line_blame()
   ---@param lnum integer 1-indexed
   ---@return string? diff phabdiff id (e.g. "D12345") or nil
   local function diff_for_line(bufnr, lnum)
-    local cached = (cache[vim.fn.expand("%")] or {})[lnum]
+    local cached = (cache[vim.api.nvim_buf_get_name(bufnr)] or {})[lnum]
     if cached then
       return cached:match("D%d+")
     end
