@@ -13,20 +13,29 @@ local log_to_scuba = meta_util.log_to_scuba
 ---@field author ?string
 ---@field message string
 
----@class (exact) Hg.diff_file_pair
+---@class (exact) Hg.diff_file_pair : DiffPair
 ---@field file string
 ---@field old_buf integer?
 ---@field new_buf integer?
 ---@field is_live boolean
 
----@class (exact) Hg.diff_session
+---@class (exact) Hg.diff_target
+---@field hash string Revision on the new side; "." for the working copy.
+---@field is_current boolean New side shows the working-copy file when it exists.
+---@field diff string? Phabricator diff, for inline comments.
+
+---@class (exact) Hg.diff_session : DiffSession
 ---@field pairs Hg.diff_file_pair[]
----@field index integer
----@field left_win integer
----@field right_win integer
----@field commit Hg.commit
+---@field commit Hg.diff_target
 ---@field parent_rev string
 ---@field repo_root string
+
+---@class (exact) Hg.diff_split_opts
+---@field files string[] Repo-relative paths, in display order.
+---@field target Hg.diff_target
+---@field parent_rev string
+---@field repo_root string
+---@field split_from integer? Window to open the diff panes beside; defaults to the current one.
 
 ---@class (exact) Hg.preblame_opts
 ---@field scrollbind boolean
@@ -1221,8 +1230,106 @@ local function diff_split_load_pair(session, pair)
   diff_session.register(vim.api.nvim_get_current_tabpage(), session)
 end
 
-local function diff_split_show_pair(session, index)
-  diff_session.show_pair(session, index)
+---@param opts Hg.diff_split_opts
+local function open_diff_split(opts)
+  local tab = vim.api.nvim_get_current_tabpage()
+  if DIFF_SPLIT_SESSIONS[tab] then
+    diff_session.close(DIFF_SPLIT_SESSIONS[tab])
+  end
+
+  local return_win = vim.api.nvim_get_current_win()
+  vim.api.nvim_set_current_win(opts.split_from or return_win)
+  local left_win, right_win = diff_session.create_pair_wins()
+
+  local closing = false
+
+  ---@type Hg.diff_session
+  local session = {
+    pairs = vim.tbl_map(function(file)
+      return { file = file, is_live = false }
+    end, opts.files),
+    index = 1,
+    left_win = left_win,
+    right_win = right_win,
+    commit = opts.target,
+    parent_rev = opts.parent_rev,
+    repo_root = opts.repo_root,
+    update_winbar = diff_split_update_winbar,
+  }
+
+  session.on_close = function()
+    if closing then
+      return
+    end
+    closing = true
+    for _, win in ipairs({ left_win, right_win }) do
+      if vim.api.nvim_win_is_valid(win) then
+        pcall(vim.api.nvim_win_close, win, true)
+      end
+    end
+    diff_session.cleanup(session)
+    if vim.api.nvim_win_is_valid(return_win) then
+      vim.api.nvim_set_current_win(return_win)
+    end
+  end
+
+  -- Clean up if either diff window is closed externally
+  for _, win in ipairs({ left_win, right_win }) do
+    vim.api.nvim_create_autocmd("WinClosed", {
+      pattern = tostring(win),
+      once = true,
+      callback = function()
+        vim.schedule(function()
+          diff_session.close(session)
+        end)
+      end,
+    })
+  end
+
+  for _, pair in ipairs(session.pairs) do
+    pair.load = function(p)
+      diff_split_load_pair(session, p)
+    end
+  end
+
+  diff_session.register(tab, session)
+
+  diff_split_load_pair(session, session.pairs[1])
+  if not session.pairs[1].old_buf then
+    session.on_close()
+    return
+  end
+
+  diff_session.show_pair(session, 1)
+end
+
+---@param repo_root string
+local function open_working_copy_diff_split(repo_root)
+  local out = vim.system({ "hg", "status" }, { text = true, cwd = repo_root }):wait()
+  if out.code ~= 0 then
+    vim.notify("hg status failed", vim.log.levels.ERROR)
+    return
+  end
+
+  local files = {}
+  for _, line in ipairs(vim.split(vim.trim(out.stdout or ""), "\n")) do
+    local status = line:sub(1, 1)
+    if status == "M" or status == "A" then
+      table.insert(files, line:sub(3))
+    end
+  end
+
+  if #files == 0 then
+    vim.notify("No uncommitted changes", vim.log.levels.INFO)
+    return
+  end
+
+  open_diff_split({
+    files = files,
+    target = { hash = ".", is_current = true },
+    parent_rev = ".",
+    repo_root = repo_root,
+  })
 end
 
 ---@param tab integer
@@ -1295,86 +1402,12 @@ local SSL_COMMANDS = {
         return
       end
 
-      local parent_rev = commit.hash .. "^"
-
-      ---@type Hg.diff_file_pair[]
-      local file_pairs = {}
-      for _, file in ipairs(files) do
-        table.insert(file_pairs, {
-          file = file,
-          is_live = false,
-        })
-      end
-
-      -- Close any existing diff split in this tab before opening a new one
-      local tab = vim.api.nvim_get_current_tabpage()
-      if DIFF_SPLIT_SESSIONS[tab] then
-        diff_session.close(DIFF_SPLIT_SESSIONS[tab])
-      end
-
-      local ssl_win = vim.api.nvim_get_current_win()
-
-      -- Open diff windows to the right of the HgSsl window, in the same tab
-      local left_win, right_win = diff_session.create_pair_wins()
-
-      local closing = false
-
-      ---@type Hg.diff_session
-      local session = {
-        pairs = file_pairs,
-        index = 1,
-        left_win = left_win,
-        right_win = right_win,
-        commit = commit,
-        parent_rev = parent_rev,
+      open_diff_split({
+        files = files,
+        target = { hash = commit.hash, is_current = commit.is_current, diff = commit.diff },
+        parent_rev = commit.hash .. "^",
         repo_root = repo_root,
-        update_winbar = diff_split_update_winbar,
-      }
-
-      session.on_close = function()
-        if closing then
-          return
-        end
-        closing = true
-        for _, win in ipairs({ left_win, right_win }) do
-          if vim.api.nvim_win_is_valid(win) then
-            pcall(vim.api.nvim_win_close, win, true)
-          end
-        end
-        diff_session.cleanup(session)
-        if vim.api.nvim_win_is_valid(ssl_win) then
-          vim.api.nvim_set_current_win(ssl_win)
-        end
-      end
-
-      -- Clean up if either diff window is closed externally
-      for _, win in ipairs({ left_win, right_win }) do
-        vim.api.nvim_create_autocmd("WinClosed", {
-          pattern = tostring(win),
-          once = true,
-          callback = function()
-            vim.schedule(function()
-              diff_session.close(session)
-            end)
-          end,
-        })
-      end
-
-      for _, pair in ipairs(file_pairs) do
-        pair.load = function(p)
-          diff_split_load_pair(session, p)
-        end
-      end
-
-      diff_session.register(tab, session)
-
-      diff_split_load_pair(session, file_pairs[1])
-      if not file_pairs[1].old_buf then
-        session.on_close()
-        return
-      end
-
-      diff_split_show_pair(session, 1)
+      })
     end,
   },
   uncommit = {
@@ -2947,25 +2980,10 @@ HgChanges = function()
       return
     end
 
-    -- reuse the repo_root captured at HgChanges entry (the picker buffer has no
-    -- file, so it can't be re-resolved here)
-
-    local file_pairs = {}
-    for _, e in ipairs(diffable) do
-      table.insert(file_pairs, { file = e.path, is_live = false })
-    end
-
-    local tab = vim.api.nvim_get_current_tabpage()
-    if DIFF_SPLIT_SESSIONS[tab] then
-      diff_session.close(DIFF_SPLIT_SESSIONS[tab])
-    end
-
-    local changes_win = vim.api.nvim_get_current_win()
-
     -- Split from the HgSsl window (not the small changes split)
-    local split_from = changes_win
+    local split_from
     if SSL_STATE.bufnr then
-      for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+      for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
         if vim.api.nvim_win_get_buf(w) == SSL_STATE.bufnr then
           split_from = w
           break
@@ -2973,65 +2991,17 @@ HgChanges = function()
       end
     end
 
-    vim.api.nvim_set_current_win(split_from)
-    local left_win, right_win = diff_session.create_pair_wins()
-
-    local closing = false
-
-    local session = {
-      pairs = file_pairs,
-      index = 1,
-      left_win = left_win,
-      right_win = right_win,
-      commit = { is_current = true, hash = "." },
+    -- reuse the repo_root captured at HgChanges entry (the picker buffer has no
+    -- file, so it can't be re-resolved here)
+    open_diff_split({
+      files = vim.tbl_map(function(e)
+        return e.path
+      end, diffable),
+      target = { hash = ".", is_current = true },
       parent_rev = ".",
       repo_root = repo_root,
-      update_winbar = diff_split_update_winbar,
-    }
-
-    session.on_close = function()
-      if closing then
-        return
-      end
-      closing = true
-      for _, w in ipairs({ left_win, right_win }) do
-        if vim.api.nvim_win_is_valid(w) then
-          pcall(vim.api.nvim_win_close, w, true)
-        end
-      end
-      diff_session.cleanup(session)
-      if vim.api.nvim_win_is_valid(changes_win) then
-        vim.api.nvim_set_current_win(changes_win)
-      end
-    end
-
-    for _, w in ipairs({ left_win, right_win }) do
-      vim.api.nvim_create_autocmd("WinClosed", {
-        pattern = tostring(w),
-        once = true,
-        callback = function()
-          vim.schedule(function()
-            diff_session.close(session)
-          end)
-        end,
-      })
-    end
-
-    for _, pair in ipairs(file_pairs) do
-      pair.load = function(p)
-        diff_split_load_pair(session, p)
-      end
-    end
-
-    diff_session.register(tab, session)
-
-    diff_split_load_pair(session, file_pairs[1])
-    if not file_pairs[1].old_buf then
-      session.on_close()
-      return
-    end
-
-    diff_session.show_pair(session, 1)
+      split_from = split_from,
+    })
   end, { buffer = buf, desc = "Diff split selected files" })
 
   local help_lines = {
@@ -3706,8 +3676,7 @@ local _is_setup = false
 return {
   ssl_state = SSL_STATE,
   ssl_commands = SSL_COMMANDS,
-  diff_split_load_pair = diff_split_load_pair,
-  diff_split_update_winbar = diff_split_update_winbar,
+  open_working_copy_diff_split = open_working_copy_diff_split,
   refresh_ssl = function()
     if SSL_STATE.bufnr and vim.api.nvim_buf_is_valid(SSL_STATE.bufnr) and not SSL_STATE.blocked then
       ssl_utils.refresh_buffer(SSL_STATE.bufnr)
