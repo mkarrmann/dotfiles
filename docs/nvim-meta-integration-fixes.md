@@ -45,7 +45,7 @@ files nobody else touched.
 | C2 | `6a4b0ba` | Also the `run_cmd_and_exit` part of C10. |
 | C3 | `70372ba` | |
 | C4 | `5be0f1c` | |
-| C5 | `6f3162e` | **Deviation:** the destination resolves against nvim's cwd (like `:saveas` and the command's file completion), not the file's directory. With the cwd at the repo root this is the old behavior. |
+| C5 | `6f3162e`, corrected in `c27073e` | A relative destination resolves against the repo root (as before), and completion now matches. `6f3162e` first resolved it against nvim's cwd, assuming the cwd is a repo root; nvs sessions run in the workspace root (`~/checkoutN`). |
 | C6 | `caf23af` | |
 | C7 | `202245b` | Also stopped closing a blame window from running `:buf N` in whatever window became current. |
 | C8 | `5774183` | Checked with a fake `jf`; not run against Phabricator. |
@@ -91,7 +91,7 @@ fixed afterwards:
 | Stale smartlog status block kept once the working copy was clean | `fd8319b` |
 | Panel left empty when `hg ssl` failed before `hg sl` finished (S8) | `9160a53` |
 | Diff panes still left `nofoldenable` on files cycled out of them (D1 was incomplete) | `b21d3b6` |
-| A sticky `:MetaRepo` pick (G5) sent Buck commands for a file to another checkout | `0ca7db4` (Buck now resolves from the file first; moot once G5 was reverted) |
+| A sticky `:MetaRepo` pick (G5) sent Buck commands for a file to another checkout | `0ca7db4`, reverted in `0a8c468` once G5 was reverted (the buffer's repo wins again, so it changed nothing) |
 | Runner passed unit specs that failed to load | `93bcb8d` |
 | Two blocking `hg log` calls to pin revisions (~0.6 s in fbsource) | `5825388` |
 | Rebase spawn error left the panel busy forever | `07482ed` |
