@@ -311,6 +311,17 @@ OMNIGENT_MODELS.dvsc = {
 -- picker offers only "default" — effort (and mode) come from dm-core's defaults.
 OMNIGENT_EFFORTS.dvsc = {}
 
+-- muse (the `acp:muse` agent) is the dvsc-core-acp wrapper launched in its
+-- `muse` mode: dm-core drives Muse Code, and the picked id rides the same
+-- session/new `model` fallback into Muse's own catalog. dm-core accepts catalog
+-- ids only, so the CLI's `muse-latest` alias fails ("Muse model 'muse-latest' is
+-- not available"); add Muse Wonder ids once the internal catalog lists them.
+-- "default" means Muse's own default model, and effort is not forwarded.
+OMNIGENT_MODELS.muse = {
+  "muse-spark-1.3-internal",
+}
+OMNIGENT_EFFORTS.muse = {}
+
 -- Classify a harness id into a model/effort family, mirroring the vendor-token
 -- rules in omnigent/model_override.py (model_family_mismatch).
 local function _omnigent_family_for_harness(harness)
@@ -320,6 +331,7 @@ local function _omnigent_family_for_harness(harness)
   -- dm-core model ids (dot-notation, e.g. claude-opus-4.8) would otherwise be
   -- misread as the "claude" vendor family and offer the wrong catalog.
   if h:find("dvsc", 1, true) then return "dvsc" end
+  if h:find("muse", 1, true) then return "muse" end
   if h:find("claude", 1, true) then return "claude" end
   if h:find("codex", 1, true) then return "codex" end
   if h:find("openai-agents", 1, true) then return "openai-agents" end
@@ -817,7 +829,7 @@ local function _omnigent_session_family(session, cb)
   -- and offer the wrong (omnigent vendor) catalog. For vendor harnesses the
   -- model token is the more specific signal, so it still takes precedence.
   local function decide(harness_fam)
-    if harness_fam == "dvsc" then return cb(harness_fam) end
+    if harness_fam == "dvsc" or harness_fam == "muse" then return cb(harness_fam) end
     local fam = _omnigent_family_for_model(session.model_override or session.model)
     if fam then return cb(fam) end
     cb(harness_fam)
