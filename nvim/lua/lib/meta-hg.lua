@@ -4023,11 +4023,13 @@ return {
       desc = "Revert the hunk beneath the cursor",
     })
 
-    vim.api.nvim_create_user_command(
-      "HgRead",
-      "%! hg cat %",
-      { desc = "Restore content of current buffer to the current commit" }
-    )
+    vim.api.nvim_create_user_command("HgRead", function()
+      local buf = vim.api.nvim_get_current_buf()
+      local obj = hg_utils.run_sync({ "cat", "-r", ".", vim.api.nvim_buf_get_name(buf) }, buf)
+      if obj.code == 0 then
+        vim.api.nvim_buf_set_lines(buf, 0, -1, false, split_file_lines(obj.stdout))
+      end
+    end, { desc = "Restore content of current buffer to the current commit" })
 
     vim.api.nvim_create_user_command(
       "HgRemove",
