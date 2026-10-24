@@ -1320,8 +1320,11 @@ local function diff_split_load_pair(session, pair)
   local new_buf
   if is_live then
     new_buf = vim.fn.bufadd(real_path)
-    vim.api.nvim_set_option_value("swapfile", false, { buf = new_buf })
-    vim.fn.bufload(new_buf)
+    if not vim.api.nvim_buf_is_loaded(new_buf) then
+      -- loading here would stop on a swap-exists prompt
+      vim.bo[new_buf].swapfile = false
+      vim.fn.bufload(new_buf)
+    end
   else
     local new_lines = session.cache[new_rev].contents[pair.file]
     if not old_lines and not new_lines then
