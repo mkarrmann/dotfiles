@@ -53,4 +53,19 @@ H.run(function()
 	end, 20)
 	local publish = vim.json.decode(calls()[#calls()])
 	H.eq(publish.data and publish.data.number, "123", "drafts published on the diff split's diff")
+
+	-- In a working-copy split (:HgDiffSplit) comments go on the current commit's diff.
+	H.fake_hg()
+	H.rewrite(root, "log", "s/^$/D456/")
+	vim.cmd.edit(root .. "/bar.py")
+	vim.cmd("HgDiffSplit")
+	H.notifications = {}
+	comment("third")
+	vim.wait(3000, function()
+		return calls()[#calls()]:find("third", 1, true) ~= nil
+	end, 20)
+	H.check(not vim.iter(H.notifications):any(function(n)
+		return tostring(n.msg):find("No Phabricator diff", 1, true) ~= nil
+	end), "not refused: " .. vim.inspect(H.notifications))
+	H.check(calls()[#calls()]:find("third", 1, true) ~= nil, "draft created")
 end)

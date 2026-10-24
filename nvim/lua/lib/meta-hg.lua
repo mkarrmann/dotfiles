@@ -2610,14 +2610,15 @@ mutation PublishDrafts($data: UpdatePhabricatorDiffData!) {
 
 local function resolve_inline_comment_context()
   local session = DIFF_SPLIT_SESSIONS[vim.api.nvim_get_current_tabpage()]
-  if session then
+  local cur_win = vim.api.nvim_get_current_win()
+  if session and (cur_win == session.left_win or cur_win == session.right_win) then
     local pair = session.pairs[session.index]
+    -- nil for working-copy splits: the caller uses the current commit's diff
     local diff_number = session.commit.diff and session.commit.diff:gsub("^D", "")
-    if not diff_number then
+    if not diff_number and not session.commit.is_current then
       vim.notify("No Phabricator diff linked to this commit", vim.log.levels.ERROR)
       return nil
     end
-    local cur_win = vim.api.nvim_get_current_win()
     local is_new_file = cur_win == session.left_win
     return {
       file_path = pair.file,
