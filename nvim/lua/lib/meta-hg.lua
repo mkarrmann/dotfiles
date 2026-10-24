@@ -384,6 +384,7 @@ local function HgBlame()
     command = "HgBlame",
   })
   local code_win = vim.api.nvim_get_current_win()
+  local code_buf = vim.api.nvim_get_current_buf()
   local obj = hg_utils.run_sync({
     "blame",
     "-r", "wdir()", -- annotate changed lines
@@ -467,7 +468,8 @@ local function HgBlame()
       local opts = PREBLAME_OPTS[code_win]
       PREBLAME_OPTS[code_win] = nil
       BLAME_WIN_COUNT[code_win] = nil
-      if vim.api.nvim_win_is_valid(code_win) then
+      -- the options were set for code_buf; another buffer there has its own
+      if vim.api.nvim_win_is_valid(code_win) and vim.api.nvim_win_get_buf(code_win) == code_buf then
         for k, v in pairs(opts) do
           vim.wo[code_win][0][k] = v
         end
