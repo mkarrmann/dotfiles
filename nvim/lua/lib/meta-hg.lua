@@ -3074,11 +3074,16 @@ HgChanges = function()
 
         local tracked = {}
         local untracked = {}
+        -- hg revert un-adds an added file but leaves it on disk
+        local added = {}
         for _, e in ipairs(entries) do
           if e.status == "?" then
             table.insert(untracked, e.path)
           else
             table.insert(tracked, e.path)
+            if e.status == "A" then
+              table.insert(added, e.path)
+            end
           end
         end
 
@@ -3121,6 +3126,13 @@ HgChanges = function()
           vim.system(cmd, { text = true, cwd = repo_root }, function(result)
             if result.code ~= 0 then
               table.insert(errors, result.stderr or "hg revert failed")
+            else
+              for _, path in ipairs(added) do
+                local ok, err = os.remove(vim.fs.joinpath(repo_root, path))
+                if not ok and vim.uv.fs_stat(vim.fs.joinpath(repo_root, path)) then
+                  table.insert(errors, err)
+                end
+              end
             end
             on_done()
           end)

@@ -1,9 +1,12 @@
--- HgChanges `X` reloads only the discarded checkout's buffers.
+-- HgChanges `X` reloads only the discarded checkout's buffers and deletes
+-- discarded added files.
 local H = dofile(os.getenv("NVIM_META_HG_LIB"))
 
 H.run(function()
 	local other = H.repo("diff")
 	local root = H.repo("diff")
+	H.write(root .. "/added.txt", "new\n")
+	H.sh({ "hg", "add", "added.txt" }, root)
 
 	-- Unsaved edits to the same repo-relative path in another checkout, which is nvim's cwd.
 	vim.cmd.cd(other)
@@ -24,6 +27,7 @@ H.run(function()
 		end
 	end
 	select_line("bar%.py$")
+	select_line("added%.txt$")
 	vim.ui.select = function(_, _, on_choice)
 		on_choice("Yes")
 	end
@@ -37,4 +41,7 @@ H.run(function()
 	H.eq(H.read(root .. "/bar.py"), 'print("bar2")\n', "bar.py reverted on disk")
 	H.eq(H.lines(buf), 'print("bar2")', "bar.py buffer in the discarded checkout reloaded")
 	H.eq(H.lines(other_buf), "unsaved", "other checkout's unsaved buffer untouched")
+	H.eq(vim.uv.fs_stat(root .. "/added.txt"), nil, "discarded added file removed from disk")
+	local status = H.sh({ "hg", "status" }, root)
+	H.check(not status:find("added.txt", 1, true), "added.txt gone from status: " .. status)
 end)
