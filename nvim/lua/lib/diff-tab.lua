@@ -153,8 +153,6 @@ end
 
 --- Keymaps ---
 
-local KEYMAPS = { "]f", "[f", "]F", "[F", "gf", "gq", "gm", "?" }
-
 local close_diff_tab
 
 local function set_keymaps(buf, manager, session_id)
@@ -259,15 +257,6 @@ local function set_keymaps(buf, manager, session_id)
 	end, { buffer = buf, desc = "Toggle turn/session mode" })
 end
 
-local function remove_keymaps_from_buf(buf)
-	if not buf or not vim.api.nvim_buf_is_valid(buf) then
-		return
-	end
-	for _, key in ipairs(KEYMAPS) do
-		pcall(vim.keymap.del, "n", key, { buffer = buf })
-	end
-end
-
 --- Tab management ---
 
 close_diff_tab = function(state)
@@ -343,16 +332,8 @@ local function setup_diff_tab(manager, state, session_id)
 		end,
 	})
 
-	vim.api.nvim_create_autocmd("BufWinEnter", {
-		group = group,
-		callback = function(args)
-			if not state.diff_tab or vim.api.nvim_get_current_tabpage() ~= state.diff_tab then
-				return
-			end
-			set_keymaps(args.buf, manager, session_id)
-		end,
-	})
-
+	-- The diff buffers get their keys when created (add_file); these are the
+	-- tab's initial empty buffers, shown while there's no file to diff.
 	for _, win in ipairs({ state.left_win, state.right_win }) do
 		set_keymaps(vim.api.nvim_win_get_buf(win), manager, session_id)
 	end

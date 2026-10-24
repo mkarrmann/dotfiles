@@ -142,6 +142,21 @@ function M.run()
 	if mgr._sessions["sess1"] ~= nil then
 		error("cleanup did not drop session; _sessions['sess1'] = " .. vim.inspect(mgr._sessions["sess1"]))
 	end
+
+	-- A real file opened inside the diff tab doesn't get the diff tab's keys.
+	vim.t.test_diff_session_id = "tabbed"
+	mgr:add_file("tabbed", "/tmp/tabbed.lua", { after_lines = { "x" } })
+	mgr:toggle()
+	local file = vim.fn.tempname()
+	vim.fn.writefile({ "real" }, file)
+	vim.cmd.edit(file)
+	for _, key in ipairs({ "?", "gq", "gf", "gm", "]f" }) do
+		if vim.fn.maparg(key, "n", false, true).buffer == 1 then
+			error("real file buffer got the diff tab's " .. key .. " mapping")
+		end
+	end
+	mgr:cleanup("tabbed")
+	vim.fn.delete(file)
 end
 
 return M
