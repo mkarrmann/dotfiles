@@ -35,8 +35,9 @@ local log_to_scuba = meta_util.log_to_scuba
 
 ---@class (exact) Hg.diff_session : DiffSession
 ---@field pairs Hg.diff_file_pair[]
----@field commit Hg.diff_target
----@field parent_rev string
+---@field commit Hg.diff_target Its hash is pinned (see `pin_rev`).
+---@field parent_rev string Pinned (see `pin_rev`).
+---@field labels { old: string, new: string } The revisions as requested, for display.
 ---@field repo_root string
 ---@field cache table<string, Hg.rev_cache> File contents keyed by revision.
 ---@field closed boolean
@@ -1255,15 +1256,21 @@ local function diff_split_update_winbar(session)
   local pair = session.pairs[session.index]
   local pos = string.format("[%d/%d]", session.index, #session.pairs)
 
+  local function rev_label(label, rev)
+    return label == rev and rev or (label .. " " .. rev)
+  end
+
   vim.api.nvim_win_set_var(session.right_win, "custom_winbar_text",
-    "%#Comment# " .. session.parent_rev .. " %* " .. (pair.old_file or pair.file) .. " " .. pos)
+    "%#Comment# " .. rev_label(session.labels.old, session.parent_rev) .. " %* "
+      .. (pair.old_file or pair.file) .. " " .. pos)
 
   if pair.is_live then
     vim.api.nvim_win_set_var(session.left_win, "custom_winbar_text",
       "%#DiagnosticOk# LIVE %* " .. pair.file .. " " .. pos)
   else
     vim.api.nvim_win_set_var(session.left_win, "custom_winbar_text",
-      "%#Comment# " .. session.commit.hash .. " %* " .. pair.file .. " " .. pos)
+      "%#Comment# " .. rev_label(session.labels.new, session.commit.hash) .. " %* "
+        .. pair.file .. " " .. pos)
   end
   require("lualine").refresh()
 end
@@ -1407,6 +1414,23 @@ local function diff_split_load_pair(session, pair)
   diff_session.register(vim.api.nvim_get_current_tabpage(), session)
 end
 
+---Hash of `rev` if it is relative to the working copy ("." or ".^"), which
+---moves when you commit or amend; other revisions are returned unchanged.
+---@param repo_root string
+---@param rev string
+---@return string
+local function pin_rev(repo_root, rev)
+  if not rev:find("^%.") then
+    return rev
+  end
+  local out = vim.system(
+    { "hg", "log", "-r", rev, "-T", "{node|short}" },
+    { text = true, cwd = repo_root }
+  ):wait()
+  local hash = vim.trim(out.stdout or "")
+  return (out.code == 0 and hash ~= "") and hash or rev
+end
+
 ---@param opts Hg.diff_split_opts
 local function open_diff_split(opts)
   -- the file list can be stale (HgChanges after a revert elsewhere)
@@ -1431,8 +1455,9 @@ local function open_diff_split(opts)
     index = 1,
     left_win = left_win,
     right_win = right_win,
-    commit = opts.target,
-    parent_rev = opts.parent_rev,
+    commit = vim.tbl_extend("force", opts.target, { hash = pin_rev(opts.repo_root, opts.target.hash) }),
+    parent_rev = pin_rev(opts.repo_root, opts.parent_rev),
+    labels = { old = opts.parent_rev, new = opts.target.hash },
     repo_root = opts.repo_root,
     update_winbar = diff_split_update_winbar,
     cache = {},
