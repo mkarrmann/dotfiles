@@ -1961,7 +1961,7 @@ local SSL_COMMANDS = {
         vim.notify("Running: " .. table.concat(cmd, " "), vim.log.levels.INFO)
         SSL_STATE.busy = SSL_STATE.busy + 1
 
-        vim.system(cmd, { text = true, cwd = SSL_STATE.repo_root }, function(obj)
+        local ok, err = pcall(vim.system, cmd, { text = true, cwd = SSL_STATE.repo_root }, function(obj)
           SSL_STATE.busy = SSL_STATE.busy - 1
           -- success
           if obj.code == 0 then
@@ -2009,6 +2009,10 @@ local SSL_COMMANDS = {
             })
           end)
         end)
+        if not ok then
+          SSL_STATE.busy = SSL_STATE.busy - 1
+          vim.notify("Failed to run " .. table.concat(cmd, " ") .. ": " .. tostring(err), vim.log.levels.ERROR)
+        end
       end
 
       vim.ui.select(choices, {
