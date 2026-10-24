@@ -119,36 +119,8 @@ local function show_pair(state, index)
 		return
 	end
 
-	vim.api.nvim_win_call(state.left_win, function()
-		vim.cmd("diffoff")
-	end)
-	vim.api.nvim_win_call(state.right_win, function()
-		vim.cmd("diffoff")
-	end)
-
-	vim.api.nvim_win_set_buf(state.left_win, after_buf)
-	vim.api.nvim_win_set_buf(state.right_win, before_buf)
-
-	vim.api.nvim_win_call(state.left_win, function()
-		vim.cmd("diffthis")
-	end)
-	vim.api.nvim_win_call(state.right_win, function()
-		vim.cmd("diffthis")
-	end)
-
-	for _, win in ipairs({ state.left_win, state.right_win }) do
-		require("lib.diff-opts").apply(win)
-	end
-
+	require("lib.diff-opts").show(state.left_win, after_buf, state.right_win, before_buf)
 	update_winbar(state)
-
-	vim.api.nvim_win_call(state.left_win, function()
-		vim.cmd("syncbind")
-		vim.cmd("normal! gg")
-	end)
-	vim.api.nvim_win_call(state.right_win, function()
-		vim.cmd("normal! gg")
-	end)
 end
 
 --- Keymaps ---

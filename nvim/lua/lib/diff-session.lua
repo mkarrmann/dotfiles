@@ -125,36 +125,8 @@ function M.show_pair(session, index)
 		end
 	end
 
-	vim.api.nvim_win_call(session.left_win, function()
-		vim.cmd("diffoff")
-	end)
-	vim.api.nvim_win_call(session.right_win, function()
-		vim.cmd("diffoff")
-	end)
-
-	vim.api.nvim_win_set_buf(session.left_win, pair.new_buf)
-	vim.api.nvim_win_set_buf(session.right_win, pair.old_buf)
-
-	vim.api.nvim_win_call(session.left_win, function()
-		vim.cmd("diffthis")
-	end)
-	vim.api.nvim_win_call(session.right_win, function()
-		vim.cmd("diffthis")
-	end)
-
-	local diff_opts = require("lib.diff-opts")
-	diff_opts.apply(session.left_win)
-	diff_opts.apply(session.right_win)
-
+	require("lib.diff-opts").show(session.left_win, pair.new_buf, session.right_win, pair.old_buf)
 	session.update_winbar(session)
-	vim.cmd("syncbind")
-
-	vim.api.nvim_win_call(session.left_win, function()
-		vim.cmd("normal! gg")
-	end)
-	vim.api.nvim_win_call(session.right_win, function()
-		vim.cmd("normal! gg")
-	end)
 	vim.api.nvim_set_current_win(session.left_win)
 end
 
