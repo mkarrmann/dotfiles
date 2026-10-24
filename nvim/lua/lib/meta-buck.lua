@@ -52,7 +52,7 @@ local function add_runnable_base_targets(targets, cwd, no_coro, options)
 	local bases = {}
 	for target in pairs(targets) do
 		if target:match("%-library$") then
-			table.insert(bases, target:gsub("%-library$", ""))
+			table.insert(bases, (target:gsub("%-library$", "")))
 		else
 			return targets
 		end
