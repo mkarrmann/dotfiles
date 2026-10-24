@@ -530,11 +530,13 @@ local function makeHgBrowse(for_current_commit, yank)
 
     local repo_root = vim.fs.root(0, ".hg")
     if repo_root == nil then
-      return vim.notify("Failed to locate repo root", vim.log.level.ERROR)
+      return vim.notify("Failed to locate repo root", vim.log.levels.ERROR)
     end
-    local repo_name = vim.fn.readfile(repo_root .. "/.hg/reponame")[1]
-    if repo_name == nil or repo_name == "" then
-      return vim.notify("Failed to infer repo name", vim.log.level.ERROR)
+    local reponame_file = repo_root .. "/.hg/reponame"
+    local repo_name = vim.fn.filereadable(reponame_file) == 1
+      and vim.fn.readfile(reponame_file)[1]
+    if not repo_name or repo_name == "" then
+      return vim.notify("Failed to infer repo name", vim.log.levels.ERROR)
     end
 
     local buf_abs_path = vim.fn.expand("%:p")
@@ -545,7 +547,7 @@ local function makeHgBrowse(for_current_commit, yank)
       local cmd = { "hg", "log", "-l", "1", "--template", "{node}" }
       local obj = vim.system(cmd, { text = true, cwd = repo_root }):wait()
       if obj.code ~= 0 then
-        return vim.notify("Failed to get current commit", vim.log.level.ERROR)
+        return vim.notify("Failed to get current commit", vim.log.levels.ERROR)
       else
         local current_commit = obj.stdout and vim.trim(obj.stdout) or nil
         -- first line is the command itself
@@ -566,7 +568,7 @@ local function makeHgBrowse(for_current_commit, yank)
     if yank then
       if opts.reg ~= "" then
         vim.fn.setreg(opts.reg, url)
-      elseif vim.g.clipboard or vim.opt.clipboard then
+      elseif vim.o.clipboard ~= "" then
         vim.fn.setreg("*", url, "u")
       else
         vim.fn.setreg('"', url)
