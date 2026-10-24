@@ -3379,8 +3379,7 @@ local function setup_hg_signcolumn()
 
   ---@param bufnr number
   ---@param hunks string|integer[][]
-  ---@param current_lines string[]
-  function sign_util.apply_signs(bufnr, hunks, current_lines)
+  function sign_util.apply_signs(bufnr, hunks)
     sign_util.clear_namespace(bufnr, true)
     local buf_lines_total = vim.api.nvim_buf_line_count(bufnr)
 
@@ -3392,12 +3391,11 @@ local function setup_hg_signcolumn()
     for _, hunk in ipairs(hunks) do
       local _old_line, removed, new_file_line, added = unpack(hunk)
 
-      -- last line is not annotated in vscode or `hg diff` command
-      if removed == 1 and added == 1 and new_file_line == #current_lines then
-        goto continue
-      end
-
-      local above_removed_line = new_file_line - 2
+      -- The delete mark goes on the line above the change. For a pure
+      -- deletion vim.diff reports the line after which lines were removed
+      -- (0 at the top of the file); for a change, its first line.
+      local above_removed_line = added == 0 and math.max(new_file_line - 1, 0)
+        or new_file_line - 2
       if
         removed > 0
         and above_removed_line >= 0
@@ -3427,8 +3425,6 @@ local function setup_hg_signcolumn()
           end
         end
       end
-
-      ::continue::
     end
   end
 
@@ -3450,6 +3446,13 @@ local function setup_hg_signcolumn()
     -- file's own repo to keep signs correct when nvim's cwd is elsewhere.
     local file_repo_root = repo_root_of(filepath)
     local current_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, true)
+    -- what :write would put on disk, final newline included, so it compares
+    -- like for like with hg cat
+    local current_text = table.concat(current_lines, "\n")
+    local writes_eol = vim.bo[bufnr].eol or (vim.bo[bufnr].fixeol and not vim.bo[bufnr].binary)
+    if writes_eol and current_text ~= "" then
+      current_text = current_text .. "\n"
+    end
     vim.system(
       { "hg", "status", filepath },
       { text = true, cwd = file_repo_root },
@@ -3504,7 +3507,7 @@ local function setup_hg_signcolumn()
             ---@example { { 1179, 0, 1180, 2 }, { 1298, 0, 1301, 1 }, { 1307, 0, 1311, 6 }, { 1622, 1, 1631, 1 } }
             local hunks = vim.diff(
               old_content,
-              table.concat(current_lines, "\n"),
+              current_text,
               { result_type = "indices" }
             )
             if not hunks then
@@ -3534,14 +3537,14 @@ local function setup_hg_signcolumn()
 
             cache[bufnr] = vim.tbl_map(
               function(h)
-                return h[3]
+                return math.max(h[3], 1)
               end,
               ---@diagnostic disable-next-line: param-type-mismatch
               hunks
             )
 
             vim.schedule(function()
-              sign_util.apply_signs(bufnr, hunks, current_lines)
+              sign_util.apply_signs(bufnr, hunks)
             end)
           end
         )
@@ -3590,24 +3593,20 @@ local function setup_hg_signcolumn()
   local function go_to_hunk(direction)
     return function()
       local hunks = cache[vim.api.nvim_get_current_buf()]
-      -- last hunk is never displayed
-      if not hunks or #hunks < 2 then
+      if not hunks or #hunks == 0 then
         return
       end
 
       local cursor = vim.api.nvim_win_get_cursor(0)
-      local total_lines = #vim.api.nvim_buf_get_lines(0, 0, -1, true)
 
       if direction == 1 then
         for _, start_line in ipairs(hunks) do
-          -- last line never has signs
-          -- go to the very first hunk
-          if start_line == total_lines then
-            return go_to_line(hunks[1])
-          elseif start_line > cursor[1] then
+          if start_line > cursor[1] then
             return go_to_line(start_line)
           end
         end
+        -- wrap around to the first hunk
+        return go_to_line(hunks[1])
       else
         local i = #hunks
         while i >= 1 do
@@ -3638,17 +3637,15 @@ local function setup_hg_signcolumn()
 
   vim.keymap.set({ "x", "n" }, "]H", function()
     local hunks = cache[vim.api.nvim_get_current_buf()]
-    -- last hunk is never displayed
-    if not hunks or #hunks < 2 then
+    if not hunks or #hunks == 0 then
       return
     end
 
-    return go_to_line(hunks[#hunks - 1])
+    return go_to_line(hunks[#hunks])
   end, { desc = "Go to last hg hunk" })
   vim.keymap.set({ "x", "n" }, "[H", function()
     local hunks = cache[vim.api.nvim_get_current_buf()]
-    -- last hunk is never displayed
-    if not hunks or #hunks < 1 then
+    if not hunks or #hunks == 0 then
       return
     end
 
