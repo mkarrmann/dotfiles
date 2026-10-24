@@ -508,8 +508,12 @@ local function HgMove(opts)
   })
   local buf = vim.api.nvim_get_current_buf()
   local src = vim.api.nvim_buf_get_name(buf)
-  -- relative to nvim's cwd, like :saveas and the command's file completion
-  local dest = vim.fn.fnamemodify(vim.fs.normalize(opts.args), ":p")
+  -- relative to the repo root, like the paths hg prints; nvim's cwd is
+  -- usually a workspace holding several repos
+  local dest = vim.fs.normalize(opts.args)
+  if not vim.startswith(dest, "/") then
+    dest = vim.fs.joinpath(buf_repo_root(buf), dest)
+  end
   if vim.fn.isdirectory(dest) == 1 then
     dest = vim.fs.joinpath(dest, vim.fs.basename(src))
   end
@@ -4239,11 +4243,17 @@ HgHistory 50       show 50 recent diffs to the current buffer
 ]],
     })
 
-    vim.api.nvim_create_user_command(
-      "HgMove",
-      HgMove,
-      { nargs = 1, complete = "file" }
-    )
+    vim.api.nvim_create_user_command("HgMove", HgMove, {
+      nargs = 1,
+      -- paths relative to the repo root, as HgMove reads them
+      complete = function(arglead)
+        local root = buf_repo_root()
+        return vim.tbl_map(function(path)
+          return path:sub(#root + 2)
+        end, vim.fn.getcompletion(vim.fs.joinpath(root, arglead), "file"))
+      end,
+      desc = "Move the current file (destination relative to the repo root)",
+    })
 
     vim.api.nvim_create_user_command("HgBrowse", makeHgBrowse(false, false), {
       nargs = 0,
