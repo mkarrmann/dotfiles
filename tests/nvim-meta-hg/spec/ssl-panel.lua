@@ -23,6 +23,17 @@ H.run(function()
 	refresh()
 	H.eq(#vim.api.nvim_buf_get_extmarks(hg.ssl_state.bufnr, ns, 0, -1, {}), 1, "one status block after three refreshes")
 
+	-- Once the working copy is clean the block goes away.
+	H.sh({ "hg", "commit", "-m", "wc" }, root)
+	hg.refresh_ssl()
+	vim.wait(5000, function()
+		return not hg.ssl_state.refreshing
+	end, 20)
+	vim.wait(1500)
+	H.eq(#vim.api.nvim_buf_get_extmarks(hg.ssl_state.bufnr, ns, 0, -1, {}), 0, "no stale status block with a clean working copy")
+	H.write(root .. "/bar.py", "dirty again\n")
+	refresh()
+
 	-- The current commit carries only a hidden bookmark (sl goto fbsource/stable).
 	H.fake_hg()
 	for _, sub in ipairs({ "sl", "ssl" }) do

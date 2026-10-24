@@ -799,7 +799,16 @@ function ssl_utils.annotate_hg_status(bufnr, sl_lines, is_latest)
     { "hg", "status" },
     { text = true, cwd = SSL_STATE.repo_root },
     function(status_obj)
+    -- replacing the lines moves the previous annotation instead of deleting it
+    local function clear_previous()
+      vim.schedule(function()
+        if is_latest() then
+          vim.api.nvim_buf_clear_namespace(bufnr, SSL_NS, 0, -1)
+        end
+      end)
+    end
     if status_obj.code ~= 0 then
+      clear_previous()
       vim.schedule(function()
         vim.notify("Failed to check hg status", vim.log.levels.ERROR)
       end)
@@ -811,7 +820,7 @@ function ssl_utils.annotate_hg_status(bufnr, sl_lines, is_latest)
       "The repository is in an unfinished"
     ) ~= nil
     if out == "" then
-      return
+      return clear_previous()
     end
 
     local status_lines = vim.split(out, "\n")
@@ -825,7 +834,7 @@ function ssl_utils.annotate_hg_status(bufnr, sl_lines, is_latest)
       end
     end
     if current_commit_line_idx == 0 then
-      return
+      return clear_previous()
     end
 
     -- Get the decoration graph lines (mimics that diff tree continues)
@@ -908,7 +917,6 @@ function ssl_utils.annotate_hg_status(bufnr, sl_lines, is_latest)
       end
       table.insert(virtual_status_lines, { { status_pad, "Normal" } })
 
-      -- replacing the lines moves old marks instead of deleting them
       vim.api.nvim_buf_clear_namespace(bufnr, SSL_NS, 0, -1)
       vim.api.nvim_buf_set_extmark(
         bufnr,
