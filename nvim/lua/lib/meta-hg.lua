@@ -254,26 +254,11 @@ hg_utils.on_blame_enter = function()
 
   meta_util.open_url("https://www.internalfb.com/diff/" .. word_under_cursor)
 end
----@type table<integer, Hg.preblame_opts>
-local BUF_OPTS_DICT = {}
-
----@param should_delete_buffer boolean
-hg_utils.on_blame_exit = function(should_delete_buffer)
-  -- remove blame buffer
-  if should_delete_buffer then
-    vim.cmd("bdelete")
-  end
-  local buf_nr = vim.api.nvim_buf_get_number(0)
-
-  -- if we've set window options,
-  -- let's reset them and clear dict
-  if BUF_OPTS_DICT[buf_nr] ~= nil then
-    for k, v in pairs(BUF_OPTS_DICT[buf_nr]) do
-      vim.wo[k] = v
-    end
-    BUF_OPTS_DICT[buf_nr] = nil
-  end
-end
+---@type table<integer, Hg.preblame_opts> Code window -> its options before the
+--- first blame window opened beside it.
+local PREBLAME_OPTS = {}
+---@type table<integer, integer> Code window -> blame windows open beside it.
+local BLAME_WIN_COUNT = {}
 
 ---@param cwd string? repo root to run in (defaults to the active repo)
 hg_utils.status = function(cwd)
@@ -321,6 +306,16 @@ hg_utils.can_commit = function(cwd)
   local status = hg_utils.status(cwd)
 
   return (#status.modified + #status.added + #status.removed) > 0
+end
+
+---@param data string
+---@return string[]
+local function split_file_lines(data)
+  local lines = vim.split(data, "\n", { plain = true })
+  if lines[#lines] == "" then
+    table.remove(lines)
+  end
+  return lines
 end
 
 ---Run `hg <args>` to completion in the repo of `bufnr`'s file; notify on failure.
@@ -387,69 +382,65 @@ local function HgBlame()
     module = "hg",
     command = "HgBlame",
   })
-  local buf_nr_for_blame = vim.api.nvim_buf_get_number(0)
-  -- TODO:
-  -- - [ ] check if file has been modified, if not -> proceed, if modified -> warn that lines may mismatch
-  -- - [ ] check if file has been modified
-  local cmd = table.concat({
-    "hg",
-    "--cwd " .. vim.fn.shellescape(buf_repo_root()), -- run in the file's repo, not nvim's cwd
+  local code_win = vim.api.nvim_get_current_win()
+  local obj = hg_utils.run_sync({
     "blame",
-    '-r "wdir()"', -- annotate changed lines
+    "-r", "wdir()", -- annotate changed lines
     "--user", -- include username
     "--date", -- include date
     "--phabdiff", -- include diff
     "-q", -- simple date format
-    vim.fn.shellescape(vim.fn.expand("%:p")), -- absolute path (relative would resolve against --cwd)
-  }, " ")
-
+    vim.api.nvim_buf_get_name(0),
+  })
+  if obj.code ~= 0 then
+    return
+  end
+  local blame_lines = split_file_lines(obj.stdout)
   local temp_filename = vim.fn.tempname()
-  vim.cmd("silent !" .. cmd .. " > " .. temp_filename)
-  local line = vim.fn.readfile(temp_filename, "", 1)[1]
+  vim.fn.writefile(blame_lines, temp_filename)
 
   -- revisition info and content is split by `: `
   -- the width until `:` char is the width of the blame buffer we want
   -- add 2 to for `: `
   ---@type number
-  local target_width = #vim.split(line, ":")[1] + 2
+  local target_width = #vim.split(blame_lines[1] or "", ":")[1] + 2
 
-  ---@type Hg.preblame_opts
-  local preblame_opts = {
-    scrollbind = vim.wo.scrollbind,
-    wrap = vim.wo.wrap,
-    foldenable = vim.wo.foldenable,
-  }
-  -- current buffer num
-  local buf_nr = vim.api.nvim_buf_get_number(0)
-  BUF_OPTS_DICT[buf_nr] = preblame_opts
+  if PREBLAME_OPTS[code_win] == nil then
+    PREBLAME_OPTS[code_win] = {
+      scrollbind = vim.wo[code_win].scrollbind,
+      wrap = vim.wo[code_win].wrap,
+      foldenable = vim.wo[code_win].foldenable,
+    }
+  end
+  BLAME_WIN_COUNT[code_win] = (BLAME_WIN_COUNT[code_win] or 0) + 1
 
-  local cursor = vim.api.nvim_win_get_cursor(0)
-  local current_cursor_line = cursor[1]
+  local current_cursor_line = vim.api.nvim_win_get_cursor(0)[1]
 
   -- move cursor to the first line
   vim.api.nvim_win_set_cursor(0, { 1, 1 })
 
-  vim.wo.scrollbind = true
-  vim.wo.wrap = false
-  vim.wo.foldenable = false
+  vim.wo[code_win][0].scrollbind = true
+  vim.wo[code_win][0].wrap = false
+  vim.wo[code_win][0].foldenable = false
 
-  vim.cmd("keepalt leftabove vsplit " .. temp_filename)
+  vim.cmd("keepalt leftabove vsplit " .. vim.fn.fnameescape(temp_filename))
+  local blame_win = vim.api.nvim_get_current_win()
   vim.cmd("vertical resize " .. target_width) -- set split width
 
   -- set all buffer/window related settings
   vim.bo.filetype = "hgblame"
   vim.bo.modified = false
   vim.bo.modifiable = false
-  vim.wo.number = false
-  vim.wo.spell = false
+  vim.wo[blame_win][0].number = false
+  vim.wo[blame_win][0].spell = false
   -- then fix the scroll
-  vim.wo.scrollbind = true
+  vim.wo[blame_win][0].scrollbind = true
   -- now that both windows have scroll binded we can scroll blame buffer
   -- and the code buffer scrolls too
   vim.api.nvim_win_set_cursor(0, { current_cursor_line, 1 })
-  vim.wo.wrap = false
-  vim.wo.foldcolumn = "0"
-  vim.wo.foldenable = false
+  vim.wo[blame_win][0].wrap = false
+  vim.wo[blame_win][0].foldcolumn = "0"
+  vim.wo[blame_win][0].foldenable = false
 
   -- disable indentline if present
   if vim.fn.exists(":IndentBlanklineDisable") == 1 then
@@ -463,18 +454,24 @@ local function HgBlame()
     { buffer = 0 }
   )
   -- delete blame buffer
-  vim.keymap.set("n", "gq", function()
-    hg_utils.on_blame_exit(true)
-  end, { buffer = 0 })
+  vim.keymap.set("n", "gq", "<Cmd>bdelete<CR>", { buffer = 0 })
   vim.api.nvim_create_autocmd("WinClosed", {
+    pattern = tostring(blame_win),
+    once = true,
     callback = function()
-      vim.cmd("buf " .. buf_nr_for_blame)
-      -- scheduling to wait for buffer to change
-      vim.schedule(function()
-        hg_utils.on_blame_exit(false)
-      end)
+      BLAME_WIN_COUNT[code_win] = BLAME_WIN_COUNT[code_win] - 1
+      if BLAME_WIN_COUNT[code_win] > 0 then
+        return
+      end
+      local opts = PREBLAME_OPTS[code_win]
+      PREBLAME_OPTS[code_win] = nil
+      BLAME_WIN_COUNT[code_win] = nil
+      if vim.api.nvim_win_is_valid(code_win) then
+        for k, v in pairs(opts) do
+          vim.wo[code_win][0][k] = v
+        end
+      end
     end,
-    buffer = 0,
   })
 end
 local function HgPrev(opts)
@@ -1277,16 +1274,6 @@ end
 
 local DIFF_PREFETCH_BATCH = 50
 local DIFF_FETCH_TIMEOUT_MS = 60000
-
----@param data string
----@return string[]
-local function split_file_lines(data)
-  local lines = vim.split(data, "\n", { plain = true })
-  if lines[#lines] == "" then
-    table.remove(lines)
-  end
-  return lines
-end
 
 ---@param session Hg.diff_session
 ---@param rev string
