@@ -24,11 +24,17 @@ local log_to_scuba = meta_util.log_to_scuba
 ---@field is_current boolean New side shows the working-copy file when it exists.
 ---@field diff string? Phabricator diff, for inline comments.
 
+---@class (exact) Hg.rev_cache
+---@field contents table<string, string[]|false> Path -> lines; false when absent at the revision.
+---@field pending table<string, true> Paths with a fetch in flight.
+
 ---@class (exact) Hg.diff_session : DiffSession
 ---@field pairs Hg.diff_file_pair[]
 ---@field commit Hg.diff_target
 ---@field parent_rev string
 ---@field repo_root string
+---@field cache table<string, Hg.rev_cache> File contents keyed by revision.
+---@field closed boolean
 
 ---@class (exact) Hg.diff_split_opts
 ---@field files string[] Repo-relative paths, in display order.
@@ -1172,6 +1178,101 @@ local function diff_split_update_winbar(session)
   require("lualine").refresh()
 end
 
+local DIFF_PREFETCH_BATCH = 50
+local DIFF_FETCH_TIMEOUT_MS = 60000
+
+---@param data string
+---@return string[]
+local function split_file_lines(data)
+  local lines = vim.split(data, "\n", { plain = true })
+  if lines[#lines] == "" then
+    table.remove(lines)
+  end
+  return lines
+end
+
+---@param session Hg.diff_session
+---@param rev string
+---@return Hg.rev_cache
+local function diff_rev_cache(session, rev)
+  local cache = session.cache[rev]
+  if not cache then
+    cache = { contents = {}, pending = {} }
+    session.cache[rev] = cache
+  end
+  return cache
+end
+
+--- Fetches `paths` at `rev` into the session cache with a single `hg cat`.
+--- If hg fails the paths stay uncached, which readers treat as unreadable.
+---@param session Hg.diff_session
+---@param rev string
+---@param paths string[]
+---@param on_done fun()?
+local function diff_fetch(session, rev, paths, on_done)
+  local cache = diff_rev_cache(session, rev)
+  local cmd = { "hg", "cat", "-r", rev, "-T", "json" }
+  for _, path in ipairs(paths) do
+    cache.pending[path] = true
+    table.insert(cmd, "path:" .. path)
+  end
+  vim.system(cmd, { cwd = session.repo_root }, function(out)
+    -- exits 1 when none of the paths exist at rev
+    local ok, entries = pcall(vim.json.decode, out.stdout or "")
+    if (out.code == 0 or out.code == 1) and ok and type(entries) == "table" then
+      for _, path in ipairs(paths) do
+        cache.contents[path] = false
+      end
+      for _, entry in ipairs(entries) do
+        cache.contents[entry.abspath] = split_file_lines(entry.data)
+      end
+    end
+    for _, path in ipairs(paths) do
+      cache.pending[path] = nil
+    end
+    if on_done then
+      vim.schedule(on_done)
+    end
+  end)
+end
+
+--- Fetches `paths` at `rev` in the background, in order, one batch at a time.
+---@param session Hg.diff_session
+---@param rev string
+---@param paths string[]
+local function diff_prefetch(session, rev, paths)
+  local start = 1
+  local function next_batch()
+    if session.closed or start > #paths then
+      return
+    end
+    -- the first file goes alone so the first diff can show before the rest arrive
+    local size = start == 1 and 1 or DIFF_PREFETCH_BATCH
+    local batch = vim.list_slice(paths, start, start + size - 1)
+    start = start + size
+    diff_fetch(session, rev, batch, next_batch)
+  end
+  next_batch()
+end
+
+--- Blocks until every wanted file is cached or known unreadable, fetching any
+--- that no batch has claimed yet.
+---@param session Hg.diff_session
+---@param wants { rev: string, path: string }[]
+local function diff_await(session, wants)
+  for _, want in ipairs(wants) do
+    local cache = diff_rev_cache(session, want.rev)
+    if cache.contents[want.path] == nil and not cache.pending[want.path] then
+      diff_fetch(session, want.rev, { want.path })
+    end
+  end
+  vim.wait(DIFF_FETCH_TIMEOUT_MS, function()
+    return vim.iter(wants):all(function(want)
+      return not session.cache[want.rev].pending[want.path]
+    end)
+  end, 10)
+end
+
 ---@param session Hg.diff_session
 ---@param pair Hg.diff_file_pair
 local function diff_split_load_pair(session, pair)
@@ -1179,33 +1280,25 @@ local function diff_split_load_pair(session, pair)
     return
   end
 
-  local escaped_file = vim.fn.shellescape(pair.file)
-  local cwd_flag = "--cwd " .. vim.fn.shellescape(session.repo_root) .. " "
+  local new_rev = session.commit.hash
+  local real_path = session.repo_root .. "/" .. pair.file
+  local is_live = session.commit.is_current and vim.fn.filereadable(real_path) == 1
 
-  local old_content = vim.fn.systemlist(
-    "hg " .. cwd_flag .. "cat -r " .. session.parent_rev .. " " .. escaped_file
-  )
-  local old_ok = vim.v.shell_error == 0
-
-  local is_live = false
-  local new_buf
-
-  if session.commit.is_current then
-    local real_path = session.repo_root .. "/" .. pair.file
-    if vim.fn.filereadable(real_path) == 1 then
-      is_live = true
-      new_buf = vim.fn.bufadd(real_path)
-      vim.api.nvim_set_option_value("swapfile", false, { buf = new_buf })
-      vim.fn.bufload(new_buf)
-    end
-  end
-
+  local wants = { { rev = session.parent_rev, path = pair.file } }
   if not is_live then
-    local new_content = vim.fn.systemlist(
-      "hg " .. cwd_flag .. "cat -r " .. session.commit.hash .. " " .. escaped_file
-    )
-    local new_ok = vim.v.shell_error == 0
-    if not old_ok and not new_ok then
+    table.insert(wants, { rev = new_rev, path = pair.file })
+  end
+  diff_await(session, wants)
+
+  local old_lines = session.cache[session.parent_rev].contents[pair.file]
+  local new_buf
+  if is_live then
+    new_buf = vim.fn.bufadd(real_path)
+    vim.api.nvim_set_option_value("swapfile", false, { buf = new_buf })
+    vim.fn.bufload(new_buf)
+  else
+    local new_lines = session.cache[new_rev].contents[pair.file]
+    if not old_lines and not new_lines then
       vim.notify(
         "Skipping " .. pair.file .. " (unreadable at either revision)",
         vim.log.levels.WARN
@@ -1213,14 +1306,14 @@ local function diff_split_load_pair(session, pair)
       return
     end
     new_buf = create_scratch_buf(
-      new_ok and new_content or {},
-      "hg-diff://" .. session.commit.hash .. "/" .. pair.file,
+      new_lines or {},
+      "hg-diff://" .. new_rev .. "/" .. pair.file,
       pair.file
     )
   end
 
   pair.old_buf = create_scratch_buf(
-    old_ok and old_content or {},
+    old_lines or {},
     "hg-diff://" .. session.parent_rev .. "/" .. pair.file,
     pair.file
   )
@@ -1241,8 +1334,6 @@ local function open_diff_split(opts)
   vim.api.nvim_set_current_win(opts.split_from or return_win)
   local left_win, right_win = diff_session.create_pair_wins()
 
-  local closing = false
-
   ---@type Hg.diff_session
   local session = {
     pairs = vim.tbl_map(function(file)
@@ -1255,13 +1346,15 @@ local function open_diff_split(opts)
     parent_rev = opts.parent_rev,
     repo_root = opts.repo_root,
     update_winbar = diff_split_update_winbar,
+    cache = {},
+    closed = false,
   }
 
   session.on_close = function()
-    if closing then
+    if session.closed then
       return
     end
-    closing = true
+    session.closed = true
     for _, win in ipairs({ left_win, right_win }) do
       if vim.api.nvim_win_is_valid(win) then
         pcall(vim.api.nvim_win_close, win, true)
@@ -1293,6 +1386,14 @@ local function open_diff_split(opts)
   end
 
   diff_session.register(tab, session)
+
+  local paths = vim.tbl_map(function(pair)
+    return pair.file
+  end, session.pairs)
+  diff_prefetch(session, session.parent_rev, paths)
+  if not session.commit.is_current then
+    diff_prefetch(session, session.commit.hash, paths)
+  end
 
   diff_split_load_pair(session, session.pairs[1])
   if not session.pairs[1].old_buf then
