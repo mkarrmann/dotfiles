@@ -2793,21 +2793,19 @@ local function HgStatus()
   local repo_root = active_repo_root()
 
   local function update_status(buf)
-    local out = vim.system({ "hg", "status" }, { cwd = repo_root }):wait()
+    local out = vim.system({ "hg", "status" }, { cwd = repo_root, text = true }):wait()
     if out.code ~= 0 then
       return vim.notify(
-        "Failed to run git status\n" .. out.stderr,
+        "Failed to run hg status\n" .. (out.stderr or ""),
         vim.log.levels.ERROR
       )
     end
-    local stdout = vim.trim(out.stdout)
+    local stdout = vim.trim(out.stdout or "")
     if stdout == "" then
       stdout = "No changes"
     end
-    -- "XY foo/bar.baz"
-    -- X shows the status of the index
-    -- Y shows the status of the working tree
-    local lines = vim.split(out.stdout, "\n")
+    -- "M foo/bar.baz"
+    local lines = vim.split(stdout, "\n")
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     highlight_status_lines(buf, lines)
   end
@@ -2819,6 +2817,11 @@ local function HgStatus()
   vim.api.nvim_set_option_value("buftype", "nofile", { buf = buf })
   vim.api.nvim_set_option_value("bufhidden", "wipe", { buf = buf })
   vim.api.nvim_set_option_value("swapfile", false, { buf = buf })
+  -- a still-open status window from an earlier :HgStatus holds the name
+  local previous = vim.fn.bufnr("^hg status$")
+  if previous ~= -1 then
+    vim.api.nvim_buf_delete(previous, { force = true })
+  end
   vim.api.nvim_buf_set_name(buf, "hg status")
 
   -- open a new window and set it to the buffer
@@ -2828,45 +2831,62 @@ local function HgStatus()
 
   -- add keymaps
   do
+    ---@type table<string, {args: string[], confirm: boolean?}>
     local char_to_command = {
-      a = "add",
-      s = "add", --stage (like fugitive)
-      X = "reset", -- discard change under cursor
+      a = { args = { "add" } },
+      s = { args = { "add" } }, --stage (like fugitive)
+      X = { args = { "revert", "--no-backup" }, confirm = true }, -- discard change under cursor
       -- TODO show diff for file under cursor
-      u = "forget", -- unstage (like fugitive)
-      d = "forget",
+      u = { args = { "forget" } }, -- unstage (like fugitive)
+      d = { args = { "forget" } },
     }
     for char, command in pairs(char_to_command) do
       -- TODO support ranges
       vim.keymap.set("n", char, function()
         local line = vim.api.nvim_get_current_line()
         local path = line:match("..%s*(.*)")
+        if not path or path == "" or line == "No changes" then
+          return
+        end
+        local cmd = vim.list_extend({ "hg" }, command.args)
+        table.insert(cmd, path)
 
-        local out = vim.system({ "hg", command, path }, { cwd = repo_root }):wait()
-        if out.code ~= 0 then
-          return vim.notify(
-            'Failed to run "hg '
-              .. command
-              .. " "
-              .. path
-              .. '"\n'
-              .. out.stderr,
-            vim.log.levels.ERROR
-          )
+        local function run()
+          local out = vim.system(cmd, { cwd = repo_root, text = true }):wait()
+          if out.code ~= 0 then
+            return vim.notify(
+              'Failed to run "' .. table.concat(cmd, " ") .. '"\n' .. (out.stderr or ""),
+              vim.log.levels.ERROR
+            )
+          end
+          update_status(buf)
+          local file_buf = loaded_buf_for_path(vim.fs.joinpath(repo_root, path))
+          if file_buf and not vim.bo[file_buf].modified then
+            vim.api.nvim_buf_call(file_buf, function()
+              vim.cmd("checktime")
+            end)
+          end
         end
 
-        update_status(buf)
-      end, { desc = "hg " .. command .. " file", buffer = buf })
+        if not command.confirm then
+          return run()
+        end
+        vim.ui.select({ "Yes", "No" }, { prompt = "Discard changes to " .. path .. "?" }, function(choice)
+          if choice == "Yes" then
+            run()
+          end
+        end)
+      end, { desc = table.concat(vim.list_extend({ "hg" }, command.args), " ") .. " file", buffer = buf })
     end
     vim.keymap.set("n", "?", function()
-      return vim.print(table.join({
+      vim.notify(table.concat({
         "a - add (hg add)",
         "s - add (fugitive keymap) (hg add)",
-        "X - discard change under cursor (hg reset)",
+        "X - discard change under cursor (hg revert)",
         "u - unstage (fugitive keymap) (hg forget)",
         "d - unstage (hg forget)",
         "? - show help",
-      }, "\n"))
+      }, "\n"), vim.log.levels.INFO)
     end, { desc = "show help", buffer = buf })
   end
 end
