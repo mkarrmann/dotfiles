@@ -649,19 +649,6 @@ end
 
 local ssl_utils = {}
 
-local _ssl_file = nil
-function ssl_utils.get_ssl_file()
-  if _ssl_file ~= nil then
-    return _ssl_file
-  end
-
-  local temp_filename = vim.fn.tempname()
-  local temp_dir = vim.fs.dirname(temp_filename)
-  local result = temp_dir .. "/smartlog"
-  _ssl_file = result
-  return result
-end
-
 ---@param line string
 ---@return Hg.commit?
 function ssl_utils.parse_diff_line(line)
@@ -1747,10 +1734,9 @@ local SSL_COMMANDS = {
   submit = {
     desc = "Submit to phabricator",
     action = function(commit, bufnr)
-      local target = commit.diff and commit.diff or commit.hash
       local cmd = { "jf", "submit" }
       if not commit.is_current then
-        table.insert(cmd, target)
+        table.insert(cmd, commit.hash)
       end
       ssl_utils.run_cmd(cmd, bufnr, true)
     end,
@@ -1917,11 +1903,7 @@ local SSL_COMMANDS = {
       }, function(choice)
         if choice == nil then
           return vim.schedule(function()
-            ssl_utils.action_end({
-              reload = true,
-              bufnr = bufnr,
-              msg = "Rebase cancelled",
-            })
+            ssl_utils.action_end({ msg = "Rebase cancelled" })
           end)
         elseif choice == "custom" then
           vim.ui.input(
@@ -2064,12 +2046,21 @@ local function HgSsl(opts)
     end
   end
 
+  local show_commit = ssl_action("show")
+  local open_in_phabricator = ssl_action("open_in_phabricator", function(c)
+    if not c.diff then
+      vim.notify("No diff associated with this commit", vim.log.levels.WARN)
+      return false
+    end
+    return true
+  end)
+
   local wk = require("which-key")
   local buf = SSL_STATE.bufnr
   wk.add({
     buffer = buf,
     { "<CR>", group = "actions" },
-    { "<CR>s", ssl_action("show"), desc = "Show commit" },
+    { "<CR>s", show_commit, desc = "Show commit" },
     { "<CR>d", ssl_action("diff_split"), desc = "Diff split" },
     { "<CR>o", ssl_action("checkout", function(c)
       if c.is_current then
@@ -2101,17 +2092,10 @@ local function HgSsl(opts)
       end
       return true
     end), desc = "Working changes" },
-    { "<CR>c", ssl_action("changes"), desc = "Commit selected files (new commit)" },
     { "<CR>x", ssl_action("hide"), desc = "Hide commit" },
     { "<CR>b", ssl_action("rebase"), desc = "Rebase onto..." },
     { "<CR>p", ssl_action("arc_pull"), desc = "Arc pull" },
-    { "<CR>gx", ssl_action("open_in_phabricator", function(c)
-      if not c.diff then
-        vim.notify("No diff associated with this commit", vim.log.levels.WARN)
-        return false
-      end
-      return true
-    end), desc = "Open in Phabricator" },
+    { "<CR>gx", open_in_phabricator, desc = "Open in Phabricator" },
     { "<CR>ga", ssl_action("author_internal_profile", function(c)
       if not c.author then
         vim.notify("No author on this commit", vim.log.levels.WARN)
@@ -2190,21 +2174,8 @@ local function HgSsl(opts)
   )
   vim.keymap.set("n", "C", ssl_utils.go_to_current_commit, nowait_opt)
 
-  vim.keymap.set("n", CONFIG.ssl.keys.show, function()
-    local commit = get_current_commit()
-    if commit == nil then
-      vim.notify("No commit under cursor")
-      return
-    end
-    SSL_COMMANDS["show"].action(commit, SSL_STATE.bufnr)
-  end, nowait_opt)
-
-  vim.keymap.set("n", CONFIG.ssl.keys.open, function()
-    local commit = ssl_utils.parse_diff_line(vim.api.nvim_get_current_line())
-    if commit and commit.diff then
-      meta_util.open_url("https://www.internalfb.com/diff/" .. commit.diff)
-    end
-  end, { buffer = true, desc = "Open diff in phabricator" })
+  vim.keymap.set("n", CONFIG.ssl.keys.show, show_commit, nowait_opt)
+  vim.keymap.set("n", CONFIG.ssl.keys.open, open_in_phabricator, { buffer = true, desc = "Open diff in phabricator" })
 
 end
 

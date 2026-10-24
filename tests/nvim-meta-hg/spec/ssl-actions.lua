@@ -25,6 +25,18 @@ H.run(function()
 	end, 50), "rebase onto a bad revision reports the failure")
 	H.check(notified("Rebase failed.*unknown revision"), "and includes hg's error")
 
+	-- Submitting a non-current commit names it by hash, not by its diff.
+	local bin = H.tmp .. "/bin"
+	vim.fn.mkdir(bin, "p")
+	H.write(bin .. "/jf", "#!/bin/sh\necho \"$@\" > " .. H.tmp .. "/jf-args\n")
+	vim.uv.fs_chmod(bin .. "/jf", 493)
+	vim.env.PATH = bin .. ":" .. vim.env.PATH
+	hg.ssl_commands.submit.action({ hash = revs.target, diff = "D123", is_current = false }, nil)
+	vim.wait(5000, function()
+		return vim.uv.fs_stat(H.tmp .. "/jf-args") ~= nil
+	end, 20)
+	H.eq(vim.trim(H.read(H.tmp .. "/jf-args")), "submit " .. revs.target, "jf submit gets the hash")
+
 	-- Message lines that happen to contain "o  " are not commits.
 	H.write(root .. "/bar.py", "x\n")
 	H.sh({ "hg", "commit", "-m", "second  fox  commit" }, root)
