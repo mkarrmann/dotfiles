@@ -218,6 +218,18 @@ local function active_repo_root()
   return buf_repo_root()
 end
 
+---Loaded buffer whose name is exactly `path` (vim.fn.bufnr pattern-matches).
+---@param path string absolute path
+---@return integer?
+local function loaded_buf_for_path(path)
+  path = vim.fs.normalize(path)
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(b) and vim.api.nvim_buf_get_name(b) == path then
+      return b
+    end
+  end
+end
+
 ---@type table<integer, Hg.diff_session>
 local DIFF_SPLIT_SESSIONS = require("lib.diff-session").sessions
 
@@ -3091,9 +3103,9 @@ HgChanges = function()
               vim.log.levels.INFO
             )
             for _, path in ipairs(all_paths) do
-              local abs = vim.fn.fnamemodify(path, ":p")
-              local b = vim.fn.bufnr(abs)
-              if b ~= -1 and vim.api.nvim_buf_is_loaded(b) then
+              local abs = vim.fs.joinpath(repo_root, path)
+              local b = loaded_buf_for_path(abs)
+              if b and vim.uv.fs_stat(abs) then
                 vim.api.nvim_buf_call(b, function()
                   vim.cmd("edit!")
                 end)
@@ -3117,7 +3129,7 @@ HgChanges = function()
         if #untracked > 0 then
           pending = pending + 1
           -- untracked paths are relative to the repo root
-          local cmd = vim.list_extend({ "rm", "-f" }, untracked)
+          local cmd = vim.list_extend({ "rm", "-f", "--" }, untracked)
           vim.system(cmd, { text = true, cwd = repo_root }, function(result)
             if result.code ~= 0 then
               table.insert(errors, result.stderr or "rm failed")
