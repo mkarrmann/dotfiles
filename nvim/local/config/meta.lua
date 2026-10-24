@@ -88,50 +88,50 @@ vim.api.nvim_create_autocmd("User", {
 			})
 		end
 
-		vim.api.nvim_create_user_command("HgDiffSplit", function()
-			if vim.bo.buftype ~= "" then
-				vim.notify("Not a file buffer", vim.log.levels.WARN)
-				return
-			end
-			local file = vim.api.nvim_buf_get_name(0)
-			if file == "" then
-				vim.notify("No file in current buffer", vim.log.levels.ERROR)
-				return
-			end
-			local repo_root = repo_context.repo_root(file)
-			if not repo_root then
-				vim.notify("File is not in a Sapling repository", vim.log.levels.ERROR)
-				return
-			end
-			if meta_hg then
+		-- These need lib.meta-hg, which needs meta.nvim.
+		if meta_hg then
+			vim.api.nvim_create_user_command("HgDiffSplit", function()
+				if vim.bo.buftype ~= "" then
+					vim.notify("Not a file buffer", vim.log.levels.WARN)
+					return
+				end
+				local file = vim.api.nvim_buf_get_name(0)
+				if file == "" then
+					vim.notify("No file in current buffer", vim.log.levels.ERROR)
+					return
+				end
+				local repo_root = repo_context.repo_root(file)
+				if not repo_root then
+					vim.notify("File is not in a Sapling repository", vim.log.levels.ERROR)
+					return
+				end
 				meta_hg.open_file_diff_split(repo_root, file, ".^")
-			end
-		end, { desc = "Side-by-side diff of the current file against .^ (its commit plus uncommitted changes)" })
+			end, { desc = "Side-by-side diff of the current file against .^ (its commit plus uncommitted changes)" })
 
-		vim.api.nvim_create_user_command("HgDiffSplitWorkingSet", function()
-			local context = repo_context.current()
-			if not context then
-				repo_context.with_context(function()
-					vim.cmd.HgDiffSplitWorkingSet()
-				end)
-				return
-			end
-			if meta_hg then
+			vim.api.nvim_create_user_command("HgDiffSplitWorkingSet", function()
+				local context = repo_context.current()
+				if not context then
+					repo_context.with_context(function()
+						vim.cmd.HgDiffSplitWorkingSet()
+					end)
+					return
+				end
 				meta_hg.open_working_copy_diff_split(context.repo_root)
-			end
-		end, { desc = "Side-by-side diff of all uncommitted changes against ." })
+			end, { desc = "Side-by-side diff of all uncommitted changes against ." })
 
-		vim.keymap.set("n", "<leader>hb", "<CMD>HgBlame<CR>", { desc = "Hg blame" })
-		vim.keymap.set("n", "<leader>hB", "<CMD>HgLineBlameToggle<CR>", { desc = "Hg toggle inline blame" })
-		vim.keymap.set("n", "<leader>ho", "<CMD>HgLineBlameCopyDiff<CR>", { desc = "Hg copy diff number for line" })
-		vim.keymap.set("n", "<leader>hh", "<CMD>HgHistory<CR>", { desc = "Hg file history" })
-		vim.keymap.set("n", "<leader>hd", "<CMD>HgDiffSplit<CR>", { desc = "Hg diff split: file vs .^" })
-		vim.keymap.set("n", "<leader>hD", "<CMD>HgDiffSplitWorkingSet<CR>", { desc = "Hg diff split: uncommitted vs ." })
-		vim.keymap.set("n", "<leader>hs", "<CMD>HgSsl<CR>", { desc = "Hg smartlog" })
-		vim.keymap.set("n", "<leader>hS", "<CMD>HgSslSplit<CR>", { desc = "Hg smartlog (vsplit)" })
-		vim.keymap.set("n", "<leader>hu", "<CMD>HgSuggest<CR>", { desc = "Hg suggest changes" })
-		vim.keymap.set("v", "<leader>hc", ":HgInlineComment<CR>", { desc = "Hg inline comment" })
-		vim.keymap.set("n", "<leader>hC", "<CMD>HgPublishDrafts<CR>", { desc = "Hg publish draft comments" })
+			vim.keymap.set("n", "<leader>hb", "<CMD>HgBlame<CR>", { desc = "Hg blame" })
+			vim.keymap.set("n", "<leader>hB", "<CMD>HgLineBlameToggle<CR>", { desc = "Hg toggle inline blame" })
+			vim.keymap.set("n", "<leader>ho", "<CMD>HgLineBlameCopyDiff<CR>", { desc = "Hg copy diff number for line" })
+			vim.keymap.set("n", "<leader>hh", "<CMD>HgHistory<CR>", { desc = "Hg file history" })
+			vim.keymap.set("n", "<leader>hd", "<CMD>HgDiffSplit<CR>", { desc = "Hg diff split: file vs .^" })
+			vim.keymap.set("n", "<leader>hD", "<CMD>HgDiffSplitWorkingSet<CR>", { desc = "Hg diff split: uncommitted vs ." })
+			vim.keymap.set("n", "<leader>hs", "<CMD>HgSsl<CR>", { desc = "Hg smartlog" })
+			vim.keymap.set("n", "<leader>hS", "<CMD>HgSslSplit<CR>", { desc = "Hg smartlog (vsplit)" })
+			vim.keymap.set("n", "<leader>hu", "<CMD>HgSuggest<CR>", { desc = "Hg suggest changes" })
+			vim.keymap.set("v", "<leader>hc", ":HgInlineComment<CR>", { desc = "Hg inline comment" })
+			vim.keymap.set("n", "<leader>hC", "<CMD>HgPublishDrafts<CR>", { desc = "Hg publish draft comments" })
+		end
+
 		vim.keymap.set("n", "<leader>hp", "<CMD>SlPull<CR>", { desc = "Hg pull" })
 
 		vim.api.nvim_create_user_command("SlPull", function()
@@ -148,7 +148,9 @@ vim.api.nvim_create_autocmd("User", {
 					vim.schedule(function()
 						if code == 0 then
 							vim.notify("sl pull completed", vim.log.levels.INFO)
-							require("lib.meta-hg").refresh_ssl()
+							if meta_hg then
+								meta_hg.refresh_ssl()
+							end
 						else
 							vim.notify("sl pull failed (exit " .. code .. ")", vim.log.levels.ERROR)
 						end
