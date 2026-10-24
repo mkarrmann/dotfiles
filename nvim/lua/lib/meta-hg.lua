@@ -36,8 +36,8 @@ local log_to_scuba = meta_util.log_to_scuba
 
 ---@class (exact) Hg.diff_session : DiffSession
 ---@field pairs Hg.diff_file_pair[]
----@field commit Hg.diff_target Its hash is pinned (see `pin_rev`).
----@field parent_rev string Pinned (see `pin_rev`).
+---@field commit Hg.diff_target Its hash is pinned (see `pin_revs`).
+---@field parent_rev string Pinned (see `pin_revs`).
 ---@field labels { old: string, new: string } The revisions as requested, for display.
 ---@field repo_root string
 ---@field return_win integer Window focused again when the split closes.
@@ -1463,21 +1463,34 @@ local function diff_split_load_pair(session, pair)
   diff_session.attach_pair(session, pair)
 end
 
----Hash of `rev` if it is relative to the working copy ("." or ".^"), which
----moves when you commit or amend; other revisions are returned unchanged.
+---Hashes for revisions relative to the working copy ("." or ".^"), which
+---move when you commit or amend; other revisions are returned unchanged.
 ---@param repo_root string
----@param rev string
----@return string
-local function pin_rev(repo_root, rev)
-  if not rev:find("^%.") then
-    return rev
+---@param revs string[]
+---@return string[]
+local function pin_revs(repo_root, revs)
+  local cmd = { "hg", "log", "-T", "{node|short}\n" }
+  ---@type string[]
+  local relative = {}
+  for _, rev in ipairs(revs) do
+    if rev:find("^%.") and not vim.tbl_contains(relative, rev) then
+      table.insert(relative, rev)
+      vim.list_extend(cmd, { "-r", rev })
+    end
   end
-  local out = vim.system(
-    { "hg", "log", "-r", rev, "-T", "{node|short}" },
-    { text = true, cwd = repo_root }
-  ):wait()
-  local hash = vim.trim(out.stdout or "")
-  return (out.code == 0 and hash ~= "") and hash or rev
+  if #relative == 0 then
+    return revs
+  end
+  -- one hg call for all of them (~0.3 s each in fbsource); output keeps -r order
+  local out = vim.system(cmd, { text = true, cwd = repo_root }):wait()
+  local hashes = vim.split(vim.trim(out.stdout or ""), "\n", { trimempty = true })
+  if out.code ~= 0 or #hashes ~= #relative then
+    return revs
+  end
+  return vim.tbl_map(function(rev)
+    local i = vim.fn.index(relative, rev) + 1
+    return i > 0 and hashes[i] or rev
+  end, revs)
 end
 
 ---@param opts Hg.diff_split_opts
@@ -1503,6 +1516,7 @@ local function open_diff_split(opts)
   end
   vim.api.nvim_set_current_win(split_from)
   local left_win, right_win = diff_session.create_pair_wins()
+  local pinned = pin_revs(opts.repo_root, { opts.parent_rev, opts.target.hash })
 
   ---@type Hg.diff_session
   local session = {
@@ -1512,8 +1526,8 @@ local function open_diff_split(opts)
     index = 1,
     left_win = left_win,
     right_win = right_win,
-    commit = vim.tbl_extend("force", opts.target, { hash = pin_rev(opts.repo_root, opts.target.hash) }),
-    parent_rev = pin_rev(opts.repo_root, opts.parent_rev),
+    commit = vim.tbl_extend("force", opts.target, { hash = pinned[2] }),
+    parent_rev = pinned[1],
     labels = { old = opts.parent_rev, new = opts.target.hash },
     repo_root = opts.repo_root,
     return_win = return_win,
