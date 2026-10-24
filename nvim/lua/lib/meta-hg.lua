@@ -1126,8 +1126,9 @@ local diff_session = require("lib.diff-session")
 
 ---@param lines string[]
 ---@param name string
+---@param file_path string
 ---@return integer
-local function create_scratch_buf(lines, name)
+local function create_scratch_buf(lines, name, file_path)
   local existing = vim.fn.bufnr(name)
   if existing ~= -1 then
     vim.api.nvim_buf_set_option(existing, "modifiable", true)
@@ -1141,6 +1142,10 @@ local function create_scratch_buf(lines, name)
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].modifiable = false
   vim.bo[buf].swapfile = false
+  local ft = vim.filetype.match({ filename = file_path, contents = lines })
+  if ft then
+    vim.bo[buf].filetype = ft
+  end
   return buf
 end
 
@@ -1204,13 +1209,15 @@ local function diff_split_load_pair(session, pair)
     end
     new_buf = create_scratch_buf(
       new_ok and new_content or {},
-      "hg-diff://" .. session.commit.hash .. "/" .. pair.file
+      "hg-diff://" .. session.commit.hash .. "/" .. pair.file,
+      pair.file
     )
   end
 
   pair.old_buf = create_scratch_buf(
     old_ok and old_content or {},
-    "hg-diff://" .. session.parent_rev .. "/" .. pair.file
+    "hg-diff://" .. session.parent_rev .. "/" .. pair.file,
+    pair.file
   )
   pair.new_buf = new_buf
   pair.is_live = is_live
