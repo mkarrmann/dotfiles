@@ -1,5 +1,5 @@
--- Inline blame is drawn in the right buffer at its own cursor, and not at
--- all while toggled off.
+-- Inline blame is drawn in the right buffer at its own cursor, not at all
+-- while toggled off, and remapped through unsaved edits.
 -- hg blame is faked to attribute "line N" to diff DN.
 local H = dofile(os.getenv("NVIM_META_HG_LIB"))
 
@@ -58,4 +58,12 @@ H.run(function()
 	vim.cmd("HgLineBlameToggle")
 	vim.wait(500)
 	H.eq(marks(), { "6:test " .. TODAY .. " D6" }, "toggling on draws for the cursor line")
+
+	-- Unsaved lines inserted above shift the blame with them.
+	vim.api.nvim_buf_set_lines(0, 0, 0, false, { "new a", "new b", "new c" })
+	move_to(5)
+	H.eq(marks(), { "5:test " .. TODAY .. " D2" }, "line 5 is the old line 2")
+	move_to(2)
+	H.eq(marks(), {}, "an unsaved new line has no blame")
+	vim.cmd("edit!")
 end)

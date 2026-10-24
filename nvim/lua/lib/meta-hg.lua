@@ -3666,9 +3666,66 @@ end
 local LINE_BLAME_NS = vim.api.nvim_create_namespace("hg_line_blame")
 local LINE_BLAME_GROUP =
   vim.api.nvim_create_augroup("hg_line_blame", { clear = true })
+---Maps each line of `new` to the line of `old` it is an unchanged copy of.
+---@param old string[]
+---@param new string[]
+---@return table<integer, integer> new line number -> old line number
+local function map_unchanged_lines(old, new)
+  local hunks = vim.diff(
+    table.concat(old, "\n") .. "\n",
+    table.concat(new, "\n") .. "\n",
+    { result_type = "indices" }
+  )
+  ---@cast hunks integer[][]
+  local map = {}
+  local old_i, new_i = 1, 1
+  for _, hunk in ipairs(hunks) do
+    local _, old_count, new_start, new_count = unpack(hunk)
+    -- a pure deletion reports the line after which lines were removed
+    local unchanged_until = new_count == 0 and new_start or new_start - 1
+    while new_i <= unchanged_until do
+      map[new_i] = old_i
+      new_i, old_i = new_i + 1, old_i + 1
+    end
+    new_i, old_i = new_i + new_count, old_i + old_count
+  end
+  while new_i <= #new do
+    map[new_i] = old_i
+    new_i, old_i = new_i + 1, old_i + 1
+  end
+  return map
+end
+
+---@class (exact) Hg.blame_entry
+---@field text string[] Blame annotation per line of the file as blamed.
+---@field lines string[] The file's lines as blamed (on disk).
+---@field map table<integer, integer>? Buffer line -> blamed line, while modified.
+---@field map_tick integer? changedtick `map` was computed at.
+
 local function setup_line_blame()
-  ---@type table<string, string[]> Absolute path to blame lines
+  ---@type table<string, Hg.blame_entry> Absolute path to blame
   local cache = {}
+
+  ---Blame for line `lnum` of `bufnr`. While the buffer has unsaved changes,
+  ---its lines are matched to the blamed ones through a diff; lines that only
+  ---exist in the buffer have no blame.
+  ---@return string?
+  local function blame_for_line(bufnr, lnum)
+    local entry = cache[vim.api.nvim_buf_get_name(bufnr)]
+    if not entry then
+      return nil
+    end
+    if not vim.bo[bufnr].modified then
+      return entry.text[lnum]
+    end
+    local tick = vim.api.nvim_buf_get_changedtick(bufnr)
+    if entry.map_tick ~= tick then
+      entry.map = map_unchanged_lines(entry.lines, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+      entry.map_tick = tick
+    end
+    local blamed_lnum = entry.map[lnum]
+    return blamed_lnum and entry.text[blamed_lnum]
+  end
 
   ---Draws blame for the cursor line of `bufnr` if it is the current buffer;
   ---async callbacks may land after you've moved elsewhere.
@@ -3678,11 +3735,7 @@ local function setup_line_blame()
     end
     local cursor = vim.api.nvim_win_get_cursor(0)
 
-    local blame_lines = cache[vim.api.nvim_buf_get_name(bufnr)]
-    if not blame_lines then
-      return
-    end
-    local blame_line = blame_lines[cursor[1]]
+    local blame_line = blame_for_line(bufnr, cursor[1])
     -- not committed line or line not in blame output (e.g. newly added)
     if not blame_line or blame_line == "" then
       return
@@ -3795,12 +3848,12 @@ local function setup_line_blame()
       if blame_obj.code ~= 0 then
         return
       end
-      local blame_out_lines = vim.split(vim.trim(blame_obj.stdout), "\n")
+      local blame_out_lines = split_file_lines(blame_obj.stdout)
       if not blame_out_lines then
         return
       end
 
-      cache[filepath] = vim.tbl_map(function(line)
+      local text = vim.tbl_map(function(line)
         -- example output from hg blame
         -- lack of diff means the line was not submitted yet
         -- "     antonk52           2024-09-25: end"
@@ -3819,6 +3872,12 @@ local function setup_line_blame()
           .. " "
           .. diff
       end, blame_out_lines)
+      cache[filepath] = {
+        text = text,
+        lines = vim.tbl_map(function(line)
+          return line:match("^.-%d%d%d%d%-%d%d%-%d%d: (.*)$") or ""
+        end, blame_out_lines),
+      }
 
       -- schedule since cannot call nvim_buf_get_extmarks inside lua loop
       vim.schedule(function()
@@ -3875,7 +3934,7 @@ local function setup_line_blame()
   ---@param lnum integer 1-indexed
   ---@return string? diff phabdiff id (e.g. "D12345") or nil
   local function diff_for_line(bufnr, lnum)
-    local cached = (cache[vim.api.nvim_buf_get_name(bufnr)] or {})[lnum]
+    local cached = blame_for_line(bufnr, lnum)
     if cached then
       return cached:match("D%d+")
     end
