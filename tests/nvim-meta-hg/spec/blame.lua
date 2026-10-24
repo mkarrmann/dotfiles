@@ -1,4 +1,5 @@
--- Inline blame is drawn in the right buffer at its own cursor.
+-- Inline blame is drawn in the right buffer at its own cursor, and not at
+-- all while toggled off.
 -- hg blame is faked to attribute "line N" to diff DN.
 local H = dofile(os.getenv("NVIM_META_HG_LIB"))
 
@@ -49,4 +50,12 @@ H.run(function()
 	end, 20)
 	move_to(4)
 	H.eq(marks(), { "4:test " .. TODAY .. " D4" }, "blame for the cursor line")
+
+	-- Toggled off, moving the cursor shows nothing; toggled on, it's back.
+	vim.cmd("HgLineBlameToggle")
+	move_to(6)
+	H.eq(marks(), {}, "nothing while toggled off")
+	vim.cmd("HgLineBlameToggle")
+	vim.wait(500)
+	H.eq(marks(), { "6:test " .. TODAY .. " D6" }, "toggling on draws for the cursor line")
 end)

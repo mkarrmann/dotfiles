@@ -3696,167 +3696,176 @@ local function setup_line_blame()
     })
   end
 
-  vim.api.nvim_create_autocmd(
-    { "BufEnter", "BufWritePost", "FileChangedShellPost" },
-    {
-      pattern = "*",
-      callback = function(arg)
+  ---Registers the cursor handlers for a buffer and refreshes its blame.
+  ---@param arg {buf: integer}
+  local function attach(arg)
+    if not CONFIG.line_blame.enable then
+      return
+    end
+
+    -- buf is inside hg repository
+    if not vim.fs.root(vim.api.nvim_buf_get_name(arg.buf), ".hg") then
+      return
+    end
+
+    if not vim.api.nvim_buf_is_valid(arg.buf) then
+      return
+    end
+
+    local filepath = vim.api.nvim_buf_get_name(arg.buf)
+    local is_file = sign_util.is_file(filepath)
+    local buflisted =
+      vim.api.nvim_get_option_value("buflisted", { buf = arg.buf })
+    local readonly =
+      vim.api.nvim_get_option_value("readonly", { buf = arg.buf })
+    local is_blameable_buffer = is_file and buflisted and not readonly
+    if not is_blameable_buffer then
+      return
+    end
+
+    -- Refresh events revisit the same buffer, so replace its handlers
+    -- instead of accumulating another pair on every event.
+    vim.api.nvim_clear_autocmds({
+      group = LINE_BLAME_GROUP,
+      buffer = arg.buf,
+    })
+
+    local handle_cursor_moved = debounce(
+      function(cursor_moved_arg)
+        if not CONFIG.line_blame.enable or not vim.api.nvim_buf_is_valid(cursor_moved_arg.buf) then
+          return
+        end
+        -- clear all extmarks
+        vim.api.nvim_buf_clear_namespace(
+          cursor_moved_arg.buf,
+          LINE_BLAME_NS,
+          0,
+          -1
+        )
+
+        set_line_blame(cursor_moved_arg.buf)
+      end,
+      CONFIG.line_blame.debounce_ms
+    )
+
+    vim.api.nvim_create_autocmd("CursorMoved", {
+      desc = "Update hg line blame in Normal mode only",
+      buffer = arg.buf,
+      group = LINE_BLAME_GROUP,
+      callback = handle_cursor_moved,
+    })
+    vim.api.nvim_create_autocmd("ModeChanged", {
+      desc = "Hide blame in non-normal modes",
+      buffer = arg.buf,
+      group = LINE_BLAME_GROUP,
+      callback = function(mode_changed_arg)
         if not CONFIG.line_blame.enable then
           return
         end
 
-        -- buf is inside hg repository
-        if not vim.fs.root(vim.api.nvim_buf_get_name(arg.buf), ".hg") then
+        vim.api.nvim_buf_clear_namespace(
+          mode_changed_arg.buf,
+          LINE_BLAME_NS,
+          0,
+          -1
+        )
+        if not vim.startswith(vim.fn.mode(), "n") then
           return
         end
 
+        set_line_blame(mode_changed_arg.buf)
+      end,
+    })
+
+    local cmd = {
+      "hg",
+      "blame",
+      "-r",
+      "wdir()", -- annotate changed lines
+      "--user", -- include username
+      "--date", -- include date
+      "--phabdiff", -- include diff
+      "-q", -- simple date format
+      filepath, -- absolute (relative would resolve against cwd, not the repo)
+    }
+    vim.system(
+      cmd,
+      { text = true, cwd = repo_root_of(filepath) },
+      function(blame_obj)
+      if blame_obj.code ~= 0 then
+        return
+      end
+      local blame_out_lines = vim.split(vim.trim(blame_obj.stdout), "\n")
+      if not blame_out_lines then
+        return
+      end
+
+      cache[filepath] = vim.tbl_map(function(line)
+        -- example output from hg blame
+        -- lack of diff means the line was not submitted yet
+        -- "     antonk52           2024-09-25: end"
+        -- "     antonk52 D40184872 2022-10-11: return {"
+        local username, diff, date =
+          line:match("^ *(.*) (D%d*) (....-..-..): .*")
+
+        if not diff then
+          return CONFIG.line_blame.prefix .. "Not submitted yet"
+        end
+
+        return CONFIG.line_blame.prefix
+          .. username
+          .. " "
+          .. date
+          .. " "
+          .. diff
+      end, blame_out_lines)
+
+      -- schedule since cannot call nvim_buf_get_extmarks inside lua loop
+      vim.schedule(function()
         if not vim.api.nvim_buf_is_valid(arg.buf) then
           return
         end
-
-        local filepath = vim.api.nvim_buf_get_name(arg.buf)
-        local is_file = sign_util.is_file(filepath)
-        local buflisted =
-          vim.api.nvim_get_option_value("buflisted", { buf = arg.buf })
-        local readonly =
-          vim.api.nvim_get_option_value("readonly", { buf = arg.buf })
-        local is_blameable_buffer = is_file and buflisted and not readonly
-        if not is_blameable_buffer then
+        -- if there is already an extmarks no need to set it
+        -- means cursor has moved already
+        if
+          vim.api.nvim_buf_get_extmarks(
+            arg.buf,
+            LINE_BLAME_NS,
+            0,
+            -1,
+            { details = true }
+          )[1]
+        then
           return
         end
 
-        -- Refresh events revisit the same buffer, so replace its handlers
-        -- instead of accumulating another pair on every event.
-        vim.api.nvim_clear_autocmds({
-          group = LINE_BLAME_GROUP,
-          buffer = arg.buf,
-        })
+        -- display could have been disabled during loading blame
+        if CONFIG.line_blame.enable then
+          set_line_blame(arg.buf)
+        end
+      end)
+    end)
+  end
 
-        local handle_cursor_moved = debounce(
-          function(cursor_moved_arg)
-            if not vim.api.nvim_buf_is_valid(cursor_moved_arg.buf) then
-              return
-            end
-            -- clear all extmarks
-            vim.api.nvim_buf_clear_namespace(
-              cursor_moved_arg.buf,
-              LINE_BLAME_NS,
-              0,
-              -1
-            )
-
-            set_line_blame(cursor_moved_arg.buf)
-          end,
-          CONFIG.line_blame.debounce_ms
-        )
-
-        vim.api.nvim_create_autocmd("CursorMoved", {
-          desc = "Update hg line blame in Normal mode only",
-          buffer = arg.buf,
-          group = LINE_BLAME_GROUP,
-          callback = handle_cursor_moved,
-        })
-        vim.api.nvim_create_autocmd("ModeChanged", {
-          desc = "Hide blame in non-normal modes",
-          buffer = arg.buf,
-          group = LINE_BLAME_GROUP,
-          callback = function(mode_changed_arg)
-            if not CONFIG.line_blame.enable then
-              return
-            end
-
-            vim.api.nvim_buf_clear_namespace(
-              mode_changed_arg.buf,
-              LINE_BLAME_NS,
-              0,
-              -1
-            )
-            if not vim.startswith(vim.fn.mode(), "n") then
-              return
-            end
-
-            set_line_blame(mode_changed_arg.buf)
-          end,
-        })
-
-        local cmd = {
-          "hg",
-          "blame",
-          "-r",
-          "wdir()", -- annotate changed lines
-          "--user", -- include username
-          "--date", -- include date
-          "--phabdiff", -- include diff
-          "-q", -- simple date format
-          filepath, -- absolute (relative would resolve against cwd, not the repo)
-        }
-        vim.system(
-          cmd,
-          { text = true, cwd = repo_root_of(filepath) },
-          function(blame_obj)
-          if blame_obj.code ~= 0 then
-            return
-          end
-          local blame_out_lines = vim.split(vim.trim(blame_obj.stdout), "\n")
-          if not blame_out_lines then
-            return
-          end
-
-          cache[filepath] = vim.tbl_map(function(line)
-            -- example output from hg blame
-            -- lack of diff means the line was not submitted yet
-            -- "     antonk52           2024-09-25: end"
-            -- "     antonk52 D40184872 2022-10-11: return {"
-            local username, diff, date =
-              line:match("^ *(.*) (D%d*) (....-..-..): .*")
-
-            if not diff then
-              return CONFIG.line_blame.prefix .. "Not submitted yet"
-            end
-
-            return CONFIG.line_blame.prefix
-              .. username
-              .. " "
-              .. date
-              .. " "
-              .. diff
-          end, blame_out_lines)
-
-          -- schedule since cannot call nvim_buf_get_extmarks inside lua loop
-          vim.schedule(function()
-            if not vim.api.nvim_buf_is_valid(arg.buf) then
-              return
-            end
-            -- if there is already an extmarks no need to set it
-            -- means cursor has moved already
-            if
-              vim.api.nvim_buf_get_extmarks(
-                arg.buf,
-                LINE_BLAME_NS,
-                0,
-                -1,
-                { details = true }
-              )[1]
-            then
-              return
-            end
-
-            -- display could have been disabled during loading blame
-            if CONFIG.line_blame.enable then
-              set_line_blame(arg.buf)
-            end
-          end)
-        end)
-      end,
+  vim.api.nvim_create_autocmd(
+    { "BufEnter", "BufWritePost", "FileChangedShellPost" },
+    {
+      pattern = "*",
+      callback = attach,
       desc = "Update hg line blame cache",
     }
   )
   vim.api.nvim_create_user_command("HgLineBlameToggle", function()
-    if CONFIG.line_blame.enable then
-      -- clear all extmarks
-      vim.api.nvim_buf_clear_namespace(0, LINE_BLAME_NS, 0, -1)
-    end
     CONFIG.line_blame.enable = not CONFIG.line_blame.enable
+    if CONFIG.line_blame.enable then
+      local buf = vim.api.nvim_get_current_buf()
+      set_line_blame(buf)
+      attach({ buf = buf })
+    else
+      for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+        vim.api.nvim_buf_clear_namespace(buf, LINE_BLAME_NS, 0, -1)
+      end
+    end
   end, { desc = "Toggle display of line blame" })
 
   -- The diff shown in the ghost text is virtual text, so the cursor can never
