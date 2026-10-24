@@ -216,13 +216,7 @@ function M.close(session)
 	if session.on_close then
 		session.on_close()
 	else
-		-- Default: close the tab containing the diff.
-		local tab = vim.api.nvim_get_current_tabpage()
-		if M.sessions[tab] == session then
-			vim.cmd("tabclose")
-		else
-			M.cleanup(session)
-		end
+		M.cleanup(session)
 	end
 end
 

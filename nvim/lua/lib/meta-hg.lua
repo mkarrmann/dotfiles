@@ -1675,26 +1675,6 @@ local function open_file_diff_split(repo_root, path, base)
   })
 end
 
----@param tab integer
-local function diff_split_cleanup(tab)
-  local session = DIFF_SPLIT_SESSIONS[tab]
-  if not session then
-    return
-  end
-  diff_session.cleanup(session)
-end
-
-vim.api.nvim_create_autocmd("TabClosed", {
-  callback = function()
-    for tab, _ in pairs(DIFF_SPLIT_SESSIONS) do
-      if not vim.api.nvim_tabpage_is_valid(tab) then
-        diff_split_cleanup(tab)
-      end
-    end
-  end,
-  desc = "Clean up diff split sessions on tab close",
-})
-
 ---@class (exact) Hg.ssl_command
 ---@field desc string
 ---@field action fun(commit: Hg.commit, bufnr: number)
