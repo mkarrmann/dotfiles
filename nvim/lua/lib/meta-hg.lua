@@ -3877,6 +3877,54 @@ local function blame_key(filepath, repo_root)
   return string.format("%d.%d:%s", stat.mtime.sec, stat.mtime.nsec, parent)
 end
 
+---@param filepath string absolute (relative would resolve against cwd, not the repo)
+local function blame_cmd(filepath)
+  return {
+    "hg",
+    "blame",
+    "-r",
+    "wdir()", -- annotate changed lines
+    "--user", -- include username
+    "--date", -- include date
+    "--phabdiff", -- include diff
+    "-q", -- simple date format
+    filepath,
+  }
+end
+
+---@param key string?
+---@param stdout string output of `blame_cmd`
+---@return Hg.blame_entry
+local function parse_blame(key, stdout)
+  local blame_out_lines = split_file_lines(stdout)
+  local text = vim.tbl_map(function(line)
+    -- example output from hg blame
+    -- lack of diff means the line was not submitted yet
+    -- "     antonk52           2024-09-25: end"
+    -- "     antonk52 D40184872 2022-10-11: return {"
+    local username, diff, date =
+      line:match("^ *(.*) (D%d*) (....-..-..): .*")
+
+    if not diff then
+      return CONFIG.line_blame.prefix .. "Not submitted yet"
+    end
+
+    return CONFIG.line_blame.prefix
+      .. username
+      .. " "
+      .. date
+      .. " "
+      .. diff
+  end, blame_out_lines)
+  return {
+    key = key,
+    text = text,
+    lines = vim.tbl_map(function(line)
+      return line:match("^.-%d%d%d%d%-%d%d%-%d%d: (.*)$") or ""
+    end, blame_out_lines),
+  }
+end
+
 local function setup_line_blame()
   ---@type table<string, Hg.blame_entry> Absolute path to blame
   local cache = {}
@@ -4008,17 +4056,6 @@ local function setup_line_blame()
       end,
     })
 
-    local cmd = {
-      "hg",
-      "blame",
-      "-r",
-      "wdir()", -- annotate changed lines
-      "--user", -- include username
-      "--date", -- include date
-      "--phabdiff", -- include diff
-      "-q", -- simple date format
-      filepath, -- absolute (relative would resolve against cwd, not the repo)
-    }
     local repo_root = repo_root_of(filepath)
     local key = blame_key(filepath, repo_root)
     if key and cache[filepath] and cache[filepath].key == key then
@@ -4040,7 +4077,7 @@ local function setup_line_blame()
     run.key = key
     local generation = run.generation
     run.job = vim.system(
-      cmd,
+      blame_cmd(filepath),
       { text = true, cwd = repo_root },
       function(blame_obj)
       if run.generation ~= generation then
@@ -4050,37 +4087,7 @@ local function setup_line_blame()
       if blame_obj.code ~= 0 then
         return
       end
-      local blame_out_lines = split_file_lines(blame_obj.stdout)
-      if not blame_out_lines then
-        return
-      end
-
-      local text = vim.tbl_map(function(line)
-        -- example output from hg blame
-        -- lack of diff means the line was not submitted yet
-        -- "     antonk52           2024-09-25: end"
-        -- "     antonk52 D40184872 2022-10-11: return {"
-        local username, diff, date =
-          line:match("^ *(.*) (D%d*) (....-..-..): .*")
-
-        if not diff then
-          return CONFIG.line_blame.prefix .. "Not submitted yet"
-        end
-
-        return CONFIG.line_blame.prefix
-          .. username
-          .. " "
-          .. date
-          .. " "
-          .. diff
-      end, blame_out_lines)
-      cache[filepath] = {
-        key = key,
-        text = text,
-        lines = vim.tbl_map(function(line)
-          return line:match("^.-%d%d%d%d%-%d%d%-%d%d: (.*)$") or ""
-        end, blame_out_lines),
-      }
+      cache[filepath] = parse_blame(key, blame_obj.stdout)
 
       -- schedule since cannot call nvim_buf_get_extmarks inside lua loop
       vim.schedule(function()
@@ -4135,23 +4142,18 @@ local function setup_line_blame()
   ---@param lnum integer 1-indexed
   ---@return string? diff phabdiff id (e.g. "D12345") or nil
   local function diff_for_line(bufnr, lnum)
-    local cached = blame_for_line(bufnr, lnum)
-    if cached then
-      return cached:match("D%d+")
-    end
-    -- cache miss (blame disabled or not yet loaded): query hg directly
     local filepath = vim.api.nvim_buf_get_name(bufnr)
-    local out = vim
-      .system(
-        { "hg", "blame", "-r", "wdir()", "--phabdiff", "-q", filepath },
-        { text = true, cwd = repo_root_of(filepath) }
-      )
-      :wait()
-    if out.code ~= 0 then
-      return nil
+    if not cache[filepath] then
+      -- blame disabled or not yet loaded: query hg directly
+      local repo_root = repo_root_of(filepath)
+      local out = vim.system(blame_cmd(filepath), { text = true, cwd = repo_root }):wait()
+      if out.code ~= 0 then
+        return nil
+      end
+      cache[filepath] = parse_blame(blame_key(filepath, repo_root), out.stdout)
     end
-    local line = vim.split(vim.trim(out.stdout), "\n")[lnum]
-    return line and line:match("D%d+")
+    local blame = blame_for_line(bufnr, lnum)
+    return blame and blame:match("D%d+")
   end
 
   vim.api.nvim_create_user_command("HgLineBlameCopyDiff", function()

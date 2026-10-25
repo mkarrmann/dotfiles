@@ -21,7 +21,11 @@ end
 H.run(function()
 	H.fake_hg()
 	local root = H.repo("plain")
-	H.rewrite(root, "blame", [[s/^\( *\)test *\([0-9-]*\): line \([0-9]*\)$/\1test D\3 \2: line \3/]])
+	H.rewrite(root, "blame", table.concat({
+		[[s/^\( *\)test *\([0-9-]*\): line \([0-9]*\)$/\1test D\3 \2: line \3/]],
+		-- without --user and --date
+		[[s/^ *: line \([0-9]*\)$/D\1: line \1/]],
+	}, "\n"))
 	local blames = 0
 	local system = vim.system
 	vim.system = function(cmd, ...)
@@ -65,6 +69,15 @@ H.run(function()
 	H.eq(marks(), { "5:test " .. TODAY .. " D2" }, "line 5 is the old line 2")
 	move_to(2)
 	H.eq(marks(), {}, "an unsaved new line has no blame")
+	-- and :HgLineBlameCopyDiff goes by the same lines
+	local function copied()
+		H.notifications = {}
+		pcall(vim.cmd, "HgLineBlameCopyDiff")
+		return H.notifications[#H.notifications] and H.notifications[#H.notifications].msg
+	end
+	H.eq(copied(), "No diff for this line (uncommitted or not tracked)", "no diff copied for an unsaved new line")
+	move_to(5)
+	H.eq(copied(), "Copied D2", "the old line 2's diff copied from line 5")
 	vim.cmd("edit!")
 
 	-- Re-entering an unchanged buffer reuses its blame; writing recomputes it.
