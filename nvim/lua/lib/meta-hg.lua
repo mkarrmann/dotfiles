@@ -2597,15 +2597,18 @@ local function get_current_diff_number(callback, cwd)
   )
 end
 
-local GET_VERSION_ID_QUERY = [[
-query GetVersionID($query_params: [PhabricatorDiffQueryParams!]!) {
+-- phabricator_versions answers with no versions; this lists them, oldest first
+local GET_VERSIONS_QUERY = [[
+query GetVersions($query_params: [PhabricatorDiffQueryParams!]!) {
   phabricator_diff_query(query_params: $query_params) {
     results {
       nodes {
-        phabricator_versions(orderby: created_time_reverse, first: 1) {
-          nodes {
-            id
-          }
+        latest_phabricator_version {
+          id
+        }
+        author_relevant_phabricator_versions(limit: 500) {
+          id
+          commit_hash_best_effort
         }
       }
     }
@@ -2613,32 +2616,65 @@ query GetVersionID($query_params: [PhabricatorDiffQueryParams!]!) {
 }
 ]]
 
----Latest version of a diff. Not cached: a jf submit in this session adds one,
----and drafts attached to an older version point at the wrong lines.
-local function get_version_id(diff_number, callback, cwd)
-  jf_graphql(GET_VERSION_ID_QUERY, {
+---The version of a diff submitted from commit `node`, whose lines are that
+---commit's. Without one (an amend or rebase not submitted yet, or a diff
+---updated elsewhere) its latest version, with `matched` false.
+---@param diff_number string
+---@param node string full hash
+---@param callback fun(version_id: string, matched: boolean)
+---@param cwd string
+local function get_version_id(diff_number, node, callback, cwd)
+  jf_graphql(GET_VERSIONS_QUERY, {
     query_params = { {
       numbers = { diff_number },
       client_caller = "neovim",
       queryID = "1",
     } },
   }, function(result)
-    local nodes = result
-      and result.phabricator_diff_query
-      and result.phabricator_diff_query[1]
-      and result.phabricator_diff_query[1].results
-      and result.phabricator_diff_query[1].results.nodes
-    local version = nodes
-      and nodes[1]
-      and nodes[1].phabricator_versions
-      and nodes[1].phabricator_versions.nodes
-      and nodes[1].phabricator_versions.nodes[1]
-    if not version then
-      vim.notify("Could not find version for D" .. diff_number, vim.log.levels.ERROR)
+    local diff = vim.tbl_get(result or {}, "phabricator_diff_query", 1, "results", "nodes", 1)
+    if not (diff and diff.latest_phabricator_version) then
+      vim.notify("Could not find versions of D" .. diff_number, vim.log.levels.ERROR)
       return
     end
-    callback(version.id)
+    for _, version in ipairs(diff.author_relevant_phabricator_versions or {}) do
+      if version.commit_hash_best_effort == node then
+        return callback(version.id, true)
+      end
+    end
+    callback(diff.latest_phabricator_version.id, false)
   end, nil, cwd)
+end
+
+---Full hash and Phabricator diff number (nil if none) of `rev`.
+---@param repo_root string
+---@param rev string
+---@param callback fun(node: string, diff_number: string?)
+local function get_commit(repo_root, rev, callback)
+  vim.system({ "hg", "log", "-r", rev, "-T", "{node} {phabdiff}" }, { text = true, cwd = repo_root }, function(obj)
+    local node, phabdiff = (obj.stdout or ""):match("^(%x+) ?(%S*)")
+    vim.schedule(function()
+      if obj.code ~= 0 or not node then
+        return vim.notify("Failed to look up " .. rev .. ": " .. vim.trim(obj.stderr or ""), vim.log.levels.ERROR)
+      end
+      callback(node, phabdiff ~= "" and phabdiff:gsub("^D", "") or nil)
+    end)
+  end)
+end
+
+---Why the lines of `buf`, a file buffer, may not be its commit's: unsaved or
+---uncommitted changes. nil when they are.
+---@param buf integer
+---@param repo_root string
+---@param callback fun(reason: string?)
+local function live_changes(buf, repo_root, callback)
+  if vim.bo[buf].modified then
+    return callback("unsaved changes")
+  end
+  vim.system({ "hg", "status", "--", vim.api.nvim_buf_get_name(buf) }, { text = true, cwd = repo_root }, function(obj)
+    vim.schedule(function()
+      callback(vim.trim(obj.stdout or "") ~= "" and "uncommitted changes" or nil)
+    end)
+  end)
 end
 
 local CREATE_INLINE_DRAFT_MUTATION = [[
@@ -2673,23 +2709,28 @@ local function focused_diff_split()
   end
 end
 
+---@class (exact) Hg.inline_comment_target
+---@field repo_root string
+---@field file_path string Relative to `repo_root`.
+---@field rev string The commit whose diff the comment goes on.
+---@field is_new_file boolean Whether the lines are from `rev` (else from its parent).
+---@field live_buf integer? File buffer the lines are from, which may differ from `rev`.
+
+---Where a comment on the current window's lines goes.
+---@return Hg.inline_comment_target?
 local function resolve_inline_comment_context()
   local session = focused_diff_split()
-  local cur_win = vim.api.nvim_get_current_win()
   if session then
     local pair = session.pairs[session.index]
-    -- nil for working-copy splits: the caller uses the current commit's diff
-    local diff_number = session.commit.diff and session.commit.diff:gsub("^D", "")
-    if not diff_number and not session.commit.is_current then
-      vim.notify("No Phabricator diff linked to this commit", vim.log.levels.ERROR)
-      return nil
-    end
-    local is_new_file = cur_win == session.left_win
+    local on_left = vim.api.nvim_get_current_win() == session.left_win
     return {
-      file_path = pair.file,
-      diff_number = diff_number,
-      is_new_file = is_new_file,
       repo_root = session.repo_root,
+      file_path = pair.file,
+      rev = session.commit.hash,
+      -- the right pane shows parent_rev, which an "uncommitted vs ." split
+      -- pins to the commit itself
+      is_new_file = on_left or session.parent_rev == session.commit.hash,
+      live_buf = on_left and pair.is_live and pair.new_buf or nil,
     }
   end
 
@@ -2699,12 +2740,12 @@ local function resolve_inline_comment_context()
     return nil
   end
 
-  local buf_abs_path = vim.fn.expand("%:p")
   return {
-    file_path = buf_abs_path:sub(#repo_root + 2),
-    diff_number = nil,
-    is_new_file = true,
     repo_root = repo_root,
+    file_path = vim.fn.expand("%:p"):sub(#repo_root + 2),
+    rev = ".",
+    is_new_file = true,
+    live_buf = vim.api.nvim_get_current_buf(),
   }
 end
 
@@ -2746,32 +2787,45 @@ local function HgInlineComment(opts)
   vim.cmd("startinsert")
 
   local function submit_comment(content)
-    local function do_submit(diff_number)
-      get_version_id(diff_number, function(version_id)
-        jf_graphql(CREATE_INLINE_DRAFT_MUTATION, {
-          data = {
-            content = content,
-            phabricator_version_id = version_id,
-            file_name = ctx.file_path,
-            is_new_file = ctx.is_new_file,
-            line_number = line1,
-            line_length = line_length,
-            skip_draft = false,
-          },
-        }, function()
-          vim.notify(
-            string.format("Draft comment added on D%s %s:%d", diff_number, ctx.file_path, line1),
-            vim.log.levels.INFO
-          )
-        end, nil, ctx.repo_root)
-      end, ctx.repo_root)
-    end
-
-    if ctx.diff_number then
-      do_submit(ctx.diff_number)
-    else
-      get_current_diff_number(do_submit, ctx.repo_root)
-    end
+    get_commit(ctx.repo_root, ctx.rev, function(node, diff_number)
+      if not diff_number then
+        return vim.notify("No Phabricator diff linked to " .. node:sub(1, 12), vim.log.levels.ERROR)
+      end
+      local function create(changes)
+        get_version_id(diff_number, node, function(version_id, matched)
+          jf_graphql(CREATE_INLINE_DRAFT_MUTATION, {
+            data = {
+              content = content,
+              phabricator_version_id = version_id,
+              file_name = ctx.file_path,
+              is_new_file = ctx.is_new_file,
+              line_number = line1,
+              line_length = line_length,
+              skip_draft = false,
+            },
+          }, function()
+            local msg = string.format("Draft comment added on D%s %s:%d", diff_number, ctx.file_path, line1)
+            local caveats = {}
+            if not matched then
+              table.insert(caveats, string.format(
+                "no version of D%s was submitted from %s, so it went on the latest", diff_number, node:sub(1, 12)))
+            end
+            if changes then
+              table.insert(caveats, "the file has " .. changes)
+            end
+            if #caveats > 0 then
+              return vim.notify(msg .. ". Its line may be off: " .. table.concat(caveats, "; "), vim.log.levels.WARN)
+            end
+            vim.notify(msg, vim.log.levels.INFO)
+          end, nil, ctx.repo_root)
+        end, ctx.repo_root)
+      end
+      if ctx.live_buf then
+        live_changes(ctx.live_buf, ctx.repo_root, create)
+      else
+        create(nil)
+      end
+    end)
   end
 
   vim.api.nvim_create_autocmd("WinClosed", {
