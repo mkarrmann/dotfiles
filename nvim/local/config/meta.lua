@@ -35,6 +35,38 @@ vim.lsp.enable({
 	"thriftlsp@meta",
 })
 
+-- HACK: start buck2@meta, rust-analyzer@meta and thriftlsp@meta in their
+-- root_dir. nvim launches a server in `cmd_cwd`, which defaults to nvim's own
+-- cwd and is unrelated to root_dir; configs that care pass
+-- `cwd = config.root_dir` from a `cmd` function (meta.nvim's cppls, pyrefly
+-- and linttool, lspconfig's hhvm), but these three give `cmd` as a list. In an
+-- nvs session nvim's cwd is the workspace root (~/checkoutN), which holds the
+-- repos but isn't one, and `buck2 lsp` exits there: "not in a Buck project".
+-- The command itself is still meta.nvim's, read from its lsp/*.lua the way
+-- vim.lsp.config merges them, when the server first starts.
+for _, name in ipairs({ "buck2@meta", "rust-analyzer@meta", "thriftlsp@meta" }) do
+	local shipped_cmd
+	vim.lsp.config(name, {
+		cmd = function(dispatchers, config)
+			if not shipped_cmd then
+				local shipped = {}
+				for _, file in ipairs(vim.api.nvim_get_runtime_file(("lsp/%s.lua"):format(name), true)) do
+					shipped = vim.tbl_deep_extend("force", shipped, assert(loadfile(file))())
+				end
+				shipped_cmd = assert(shipped.cmd, ("no cmd in lsp/%s.lua on the runtimepath"):format(name))
+			end
+			if type(shipped_cmd) == "function" then
+				return shipped_cmd(dispatchers, config)
+			end
+			return vim.lsp.rpc.start(shipped_cmd, dispatchers, {
+				cwd = config.cmd_cwd or config.root_dir,
+				env = config.cmd_env,
+				detached = config.detached,
+			})
+		end,
+	})
+end
+
 -- pyrefly@meta cannot report type errors in the IDE (fbcode/pyrefly.toml sets
 -- disable-type-errors-in-ide), so recover them from the CLI on save.
 require("lib.pyrefly-check").setup()
