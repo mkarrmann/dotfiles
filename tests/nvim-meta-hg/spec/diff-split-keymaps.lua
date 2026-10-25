@@ -52,6 +52,15 @@ H.run(function()
 	vim.fn.maparg("]f", "n", false, true).callback()
 	vim.wait(100)
 	H.eq(vim.fn.line("."), 5, "]f outside the panes runs the buffer's own map")
+
+	-- There gq still formats, with the rest of what was typed after it.
+	vim.bo.textwidth = 10
+	vim.bo.formatexpr = ""
+	vim.api.nvim_buf_set_lines(0, 0, 1, false, { "one two three four" })
+	vim.api.nvim_win_set_cursor(0, { 1, 0 })
+	vim.api.nvim_feedkeys("gqq", "mx", false)
+	H.eq(vim.api.nvim_buf_get_lines(0, 0, 2, false), { "one two", "three four" }, "gqq outside the panes formats the line")
+	vim.cmd("silent! undo")
 	ds.close(s3)
 	H.eq(vim.fn.maparg("]f", "n", false, true).desc, ts.desc, "and it's restored when the split closes")
 end)

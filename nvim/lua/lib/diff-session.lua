@@ -67,7 +67,8 @@ local function run_map(map)
 		if map.expr == 1 and not map.callback then
 			rhs = vim.api.nvim_eval(rhs)
 		end
-		vim.api.nvim_feedkeys(vim.keycode(rhs), map.noremap == 1 and "n" or "m", false)
+		-- "i": ahead of any typeahead, e.g. the second q of gqq
+		vim.api.nvim_feedkeys(vim.keycode(rhs), map.noremap == 1 and "ni" or "mi", false)
 	end
 end
 
@@ -89,7 +90,7 @@ local function run_usual(buf, key)
 		return run_map(map)
 	end
 	local count = vim.v.count > 0 and tostring(vim.v.count) or ""
-	vim.api.nvim_feedkeys(count .. key, "n", false)
+	vim.api.nvim_feedkeys(count .. key, "ni", false)
 end
 
 ---Maps the session keys in `buf` for `session`. A live file buffer can be in
