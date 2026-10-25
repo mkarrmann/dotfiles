@@ -22,6 +22,11 @@ H.run(function()
 	local function calls()
 		return vim.uv.fs_stat(log) and vim.split(vim.trim(H.read(log)), "\n") or {}
 	end
+	-- one read: jf may append between two
+	local function last_call()
+		local all = calls()
+		return all[#all] or ""
+	end
 
 	local root, revs = H.repo("diff")
 	local hg = require("lib.meta-hg")
@@ -49,9 +54,9 @@ H.run(function()
 
 	vim.cmd("HgPublishDrafts")
 	vim.wait(3000, function()
-		return calls()[#calls()]:find("attach_inlines", 1, true) ~= nil
+		return last_call():find("attach_inlines", 1, true) ~= nil
 	end, 20)
-	local publish = vim.json.decode(calls()[#calls()])
+	local publish = vim.json.decode(last_call())
 	H.eq(publish.data and publish.data.number, "123", "drafts published on the diff split's diff")
 
 	-- Outside the split's panes, like :HgInlineComment, it goes by the file's commit.
@@ -66,9 +71,9 @@ H.run(function()
 	vim.cmd.edit(root .. "/bar.py")
 	vim.cmd("HgPublishDrafts")
 	vim.wait(3000, function()
-		return calls()[#calls()]:find('"456"', 1, true) ~= nil
+		return last_call():find('"456"', 1, true) ~= nil
 	end, 20)
-	publish = vim.json.decode(calls()[#calls()])
+	publish = vim.json.decode(last_call())
 	H.eq(publish.data and publish.data.number, "456", "drafts published on the focused file's diff, not the split's")
 
 	-- In a working-copy split (:HgDiffSplit) comments go on the current commit's diff.
@@ -76,10 +81,10 @@ H.run(function()
 	H.notifications = {}
 	comment("third")
 	vim.wait(3000, function()
-		return calls()[#calls()]:find("third", 1, true) ~= nil
+		return last_call():find("third", 1, true) ~= nil
 	end, 20)
 	H.check(not vim.iter(H.notifications):any(function(n)
 		return tostring(n.msg):find("No Phabricator diff", 1, true) ~= nil
 	end), "not refused: " .. vim.inspect(H.notifications))
-	H.check(calls()[#calls()]:find("third", 1, true) ~= nil, "draft created")
+	H.check(last_call():find("third", 1, true) ~= nil, "draft created")
 end)
