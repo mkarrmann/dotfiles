@@ -25,7 +25,7 @@ affects everything; T2 = real but narrower bug; T3 = cleanup). Items under
 
 Every T1–T3 item landed on `master` as its own commit, each with a spec that
 failed before the fix where a spec was feasible. Run them all with
-`~/dotfiles/tests/test-nvim-meta-hg.sh` (44 specs, about a minute; hermetic). Worked
+`~/dotfiles/tests/test-nvim-meta-hg.sh` (45 specs, about a minute; hermetic). Worked
 serially in `~/dotfiles` rather than in the five worktrees the plan proposed;
 G1, G3–G6 and G9's `termopen` bullet went to one helper agent working on
 files nobody else touched.
@@ -112,6 +112,13 @@ fixed with a spec that failed before:
 | `:HgLineBlameCopyDiff` blamed the file on disk by buffer line number for lines that exist only in the buffer (pre-existing; B6 fixed only the ghost text) | `e91f9e0` |
 | `:HgBlame` options saved per window: lost if another buffer was showing when the blame closed, and swapped between two buffers blamed in one window | `6a3f7f7` |
 | `presto-maven` built `~/checkout1` from every workspace (the pre-existing TODO G4 left alone); it now builds the file's own repo with that workspace's build root and Maven repository | `4e064bf` |
+
+Found in use afterwards: opening a BUCK file in an nvs session (here, the
+live side of a diff split) made `buck2@meta` exit with "not in a Buck
+project". meta.nvim's `buck2@meta`, `rust-analyzer@meta` and
+`thriftlsp@meta` start in nvim's cwd, the workspace root; `08d51a3` starts
+them in their root_dir. Its spec's double read of the fake `jf` log was the
+intermittent `hg-inline-comments` failure (`dd19208`).
 
 Declined: it suggested binding inline comments to the Phabricator version a
 split "displays" rather than the latest. A split shows a local commit, not a
