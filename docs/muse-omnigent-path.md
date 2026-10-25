@@ -22,6 +22,12 @@ CodeCompanion → Omnigent `muse` agent (harness acp:muse-core)
 - **Sandbox.** Under dm-core the launcher runs
   `muse.real serve --disable-sandbox`. This matches dvsc's no-approval stance
   (`DVSC_AUTO_RUN_MODE=autoRunAll`, `permission_mode: bypassPermissions`).
+- **Identity passthrough.** Omnigent spawns acp agents with a
+  deny-by-default environment. When the workspace is outside an fbsource
+  checkout, dm-core's `dmt` launcher runs `scsc lookup -R fbsource`, which
+  needs your TLS identity. So both acp entries pass `THRIFT_TLS_CL_CERT_PATH`
+  and `THRIFT_TLS_CL_KEY_PATH` through. Without them, `session/new` fails with
+  "Repo metadata read access … not permitted with Identity for [MACHINE:…]".
 - **Why a mode, not a new wrapper.** dm-core already maintains an MSP client
   for Muse, owned by the codecompose oncall. A separate ACP↔MSP wrapper would
   have to track MSP, which changes nearly daily. The wrapper needed one new

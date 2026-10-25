@@ -108,9 +108,26 @@ if not isinstance(agents, list):
 # The server seeds a generic picker agent named after each acp slug at every
 # boot, replacing any agent of that name, so a slug must differ from the name
 # of the spec that binds to it (dvsc -> dvsc-core, muse -> muse-core).
+#
+# Omnigent spawns acp agents with a deny-by-default environment. dm-core's
+# `dmt` launcher runs `scsc lookup -R fbsource` whenever the session workspace
+# is outside an fbsource checkout, and without the user's TLS identity that
+# fails as the machine identity ("Repo metadata read access ... is not
+# permitted"), so session/new dies before dm-core starts.
+identity = ["THRIFT_TLS_CL_CERT_PATH", "THRIFT_TLS_CL_KEY_PATH"]
 entries = [
-    {"name": "dvsc-core", "command": cmd, "send_model": True},
-    {"name": "muse-core", "command": f"{cmd} --default-mode muse", "send_model": True},
+    {
+        "name": "dvsc-core",
+        "command": cmd,
+        "send_model": True,
+        "env_passthrough": list(identity),
+    },
+    {
+        "name": "muse-core",
+        "command": f"{cmd} --default-mode muse",
+        "send_model": True,
+        "env_passthrough": list(identity),
+    },
 ]
 for entry in entries:
     name = entry["name"]
