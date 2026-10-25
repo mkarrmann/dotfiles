@@ -113,4 +113,18 @@ H.run(function()
 	vim.cmd.wincmd("p")
 	vim.api.nvim_exec_autocmds("BufEnter", { buffer = hg.ssl_state.bufnr })
 	H.eq(hg.ssl_state.refresh_gen, refreshes, "no refresh on BufEnter right after one finished")
+
+	-- Retargeting doesn't leave the old repo's commits up to act on in the new one.
+	H.slow(repo1, "sl", 2)
+	H.slow(repo1, "ssl", 2)
+	vim.cmd.wincmd("p")
+	vim.cmd.edit(repo1 .. "/small.txt")
+	vim.cmd("HgSsl")
+	H.check(not panel():find(revs2.descendant, 1, true), "repo2's commits are gone as soon as the panel retargets to repo1")
+	H.notifications = {}
+	vim.fn.maparg("<CR>x", "n", false, true).callback()
+	H.check(notified("No commit under cursor"), "an action right after retargeting finds no commit")
+	H.check(vim.wait(5000, function()
+		return notified("ssl updated")
+	end, 50), "repo1's smartlog arrives (its commits were all hidden above)")
 end)

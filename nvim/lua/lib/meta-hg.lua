@@ -2127,6 +2127,11 @@ local function HgSsl(opts)
 
     if retargeted then
       vim.api.nvim_buf_set_name(SSL_STATE.bufnr, "hgssl [" .. launch_root .. "]")
+      -- the old repo's commits would be acted on in the new one
+      vim.api.nvim_buf_set_lines(SSL_STATE.bufnr, 0, -1, false, {})
+      for _, ns in ipairs({ SSL_NS, SSL_CURRENT_NS, SSL_HOP_NS }) do
+        vim.api.nvim_buf_clear_namespace(SSL_STATE.bufnr, ns, 0, -1)
+      end
       vim.schedule(function()
         ssl_utils.refresh_buffer(SSL_STATE.bufnr)
       end)
