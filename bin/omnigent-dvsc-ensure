@@ -9,12 +9,13 @@
 # It does two things, each a no-op when already satisfied:
 #
 #   1. Reconciles the per-host server URL and registers the `dvsc-core` and
-#      `muse` commands in the `acp:` block of ~/.omnigent/config.yaml (merged
-#      in place with omnigent's own pyyaml, preserving host: and any other acp
-#      agents). `acp:dvsc-core` and `acp:muse` are the harness ids the dvsc and
-#      muse agent specs bind to; `muse` is the same wrapper launched with
-#      `--default-mode muse`, because Omnigent forwards a model but no mode.
-#      The muse spec's agent-store row is reconciled by omnigent-agents-ensure.
+#      `muse-core` commands in the `acp:` block of ~/.omnigent/config.yaml
+#      (merged in place with omnigent's own pyyaml, preserving host: and any
+#      other acp agents). `acp:dvsc-core` and `acp:muse-core` are the harness
+#      ids the dvsc and muse agent specs bind to; `muse-core` is the same
+#      wrapper launched with `--default-mode muse`, because Omnigent forwards a
+#      model but no mode. The muse spec's agent-store row is reconciled by
+#      omnigent-agents-ensure.
 #
 #   2. On the active Linux hub only, pre-registers the dotfiles `dvsc` agent
 #      spec as an Omnigent builtin (a `session_id IS NULL` row in agent_store)
@@ -104,9 +105,12 @@ if not isinstance(agents, list):
     agents = []
     acp["agents"] = agents
 
+# The server seeds a generic picker agent named after each acp slug at every
+# boot, replacing any agent of that name, so a slug must differ from the name
+# of the spec that binds to it (dvsc -> dvsc-core, muse -> muse-core).
 entries = [
     {"name": "dvsc-core", "command": cmd, "send_model": True},
-    {"name": "muse", "command": f"{cmd} --default-mode muse", "send_model": True},
+    {"name": "muse-core", "command": f"{cmd} --default-mode muse", "send_model": True},
 ]
 for entry in entries:
     name = entry["name"]

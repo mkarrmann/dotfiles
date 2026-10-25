@@ -311,7 +311,7 @@ OMNIGENT_MODELS.dvsc = {
 -- picker offers only "default" — effort (and mode) come from dm-core's defaults.
 OMNIGENT_EFFORTS.dvsc = {}
 
--- muse (the `acp:muse` agent) is the dvsc-core-acp wrapper launched in its
+-- muse (the `acp:muse-core` agent) is the dvsc-core-acp wrapper launched in its
 -- `muse` mode: dm-core drives Muse Code, and the picked id rides the same
 -- session/new `model` fallback into Muse's own catalog. dm-core accepts catalog
 -- ids only, so the CLI's `muse-latest` alias fails ("Muse model 'muse-latest' is

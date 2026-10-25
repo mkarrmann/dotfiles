@@ -8,7 +8,7 @@ description: >-
   model is selectable at launch and mid-session; reasoning effort uses Muse's
   default, since the generic ACP harness has no channel for it.
 
-# `acp:muse` resolves to the `muse` entry in the `acp:` block of
+# `acp:muse-core` resolves to the `muse-core` entry in the `acp:` block of
 # ~/.omnigent/config.yaml (added by `omnigent-dvsc-ensure`): the same
 # ~/bin/dvsc-core-acp wrapper as dvsc, launched with `--default-mode muse`
 # because Omnigent forwards a model but no mode. dm-core and Muse own the
@@ -16,7 +16,7 @@ description: >-
 executor:
   type: omnigent
   config:
-    harness: acp:muse
+    harness: acp:muse-core
     # ACP otherwise falls back to a human prompt whenever policy returns ALLOW
     # or abstains. Explicit DENY/ASK policies still win over this default.
     permission_mode: bypassPermissions

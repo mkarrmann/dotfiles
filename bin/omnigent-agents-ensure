@@ -16,7 +16,7 @@
 #
 # This is the bundle-reconciliation sibling of omnigent-dvsc-ensure: dvsc and
 # muse need an extra acp: config merge (their harnesses are acp:dvsc-core and
-# acp:muse), so that keeps its own script; agent-store reconciliation happens
+# acp:muse-core), so that keeps its own script; agent-store reconciliation happens
 # here for all tracked agents in ONE throwaway server boot. Omnigent's
 # ``--agent`` registration is content-aware: it preserves the stable agent row
 # and updates its bundle only when the materialized content hash changes.

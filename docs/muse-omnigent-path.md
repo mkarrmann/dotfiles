@@ -6,7 +6,7 @@ Muse Wonder models (Wonder, Wonder Full) become available internally.
 ## Path
 
 ```
-CodeCompanion → Omnigent `muse` agent (harness acp:muse)
+CodeCompanion → Omnigent `muse` agent (harness acp:muse-core)
   → ~/bin/dvsc-core-acp --default-mode muse      (users/mk/mkarrmann/dvsc-core-acp)
   → dm-core server, agentType Muse               (dmt; dm-core/src/extension-host/muse)
   → /usr/local/bin/muse serve --trust-workspace  (managed Meta launcher, fb-muse-code RPM)
@@ -62,8 +62,10 @@ These steps change live state, so run them deliberately.
    `cd <checkout>/fbsource/users/mk/mkarrmann/dvsc-core-acp && npx tsc -b`.
    If that dist predates the change, the launcher refuses `--default-mode`
    instead of silently running native.
-2. `~/dotfiles/bin/omnigent-dvsc-ensure --config-only` adds the `muse` entry
-   to the `acp:` block of `~/.omnigent/config.yaml`.
+2. `~/dotfiles/bin/omnigent-dvsc-ensure --config-only` adds the `muse-core`
+   entry to the `acp:` block of `~/.omnigent/config.yaml`. The slug must not
+   be `muse`: the server seeds a generic agent named after each acp slug at
+   boot, which would replace the `muse` spec.
 3. `~/dotfiles/bin/omnigent-agents-ensure` registers the `muse` builtin on the
    active hub. It restarts the server only when the hub is quiescent.
 
