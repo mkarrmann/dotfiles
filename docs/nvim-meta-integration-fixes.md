@@ -100,12 +100,33 @@ fixed afterwards:
 Its suspicion that gutter signs and `:HgRead` mishandle CRLF files was wrong
 (`vim.system`'s text mode converts CRLF to LF); `34192ea` adds the coverage.
 
+A second review (Codex, `gpt-6.1-sol`) found more, each reproduced and
+fixed with a spec that failed before:
+
+| Finding | Commit |
+|---|---|
+| Retargeting the smartlog left the old repo's commits up and actionable while the new one loaded (S1 stopped refreshes from blocking actions): `<CR>u` on its `@` ran `hg uncommit` in the new repo | `5f96fb4` |
+| `:HgPublishDrafts` used a diff split's diff from any window in its tab, while `:HgInlineComment` uses it only from the split's panes | `a60a68f` |
+| Diff split keys outside a pane replayed their usual meaning after the rest of the typeahead (`gqq` ran `q`, then `gq`) | `7944340` |
+| CRLF files without a final newline weren't recognized as CRLF in diff panes | `0668c1b` |
+| `:HgLineBlameCopyDiff` blamed the file on disk by buffer line number for lines that exist only in the buffer (pre-existing; B6 fixed only the ghost text) | `e91f9e0` |
+| `:HgBlame` options saved per window: lost if another buffer was showing when the blame closed, and swapped between two buffers blamed in one window | `6a3f7f7` |
+| `presto-maven` built `~/checkout1` from every workspace (the pre-existing TODO G4 left alone); it now builds the file's own repo with that workspace's build root and Maven repository | `4e064bf` |
+
+Declined: it suggested binding inline comments to the Phabricator version a
+split "displays" rather than the latest. A split shows a local commit, not a
+version, and the latest version is the one that matches the commit you
+submitted last, which is why C8 dropped the per-session version cache. The
+case it found, a split left open across a resubmit, shows a commit that is
+no longer current; reopen the split.
+
 Known limit of the runner: plugins come from the real `~/.local/share/nvim`,
 so a startup that installs a missing Mason package or treesitter parser
 would write there, as your editor would.
 
 Still to check by hand: C8 against Phabricator, G3 with a real in-editor
-Maven run, G4's eden prefetch.
+Maven run, G4's eden prefetch, and a `presto-maven` build from a
+`~/checkout2` file.
 
 ## Contents
 
