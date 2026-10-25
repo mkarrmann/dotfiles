@@ -48,7 +48,7 @@ files nobody else touched.
 | C5 | `6f3162e`, corrected in `c27073e` | A relative destination resolves against the repo root (as before), and completion now matches. `6f3162e` first resolved it against nvim's cwd, assuming the cwd is a repo root; nvs sessions run in the workspace root (`~/checkoutN`). |
 | C6 | `caf23af` | |
 | C7 | `202245b` | Also stopped closing a blame window from running `:buf N` in whatever window became current. |
-| C8 | `5774183` | Checked with a fake `jf`; not run against Phabricator. |
+| C8 | `5774183` | The version lookup never worked; see `e06d546` below. Its query was run against Phabricator; no draft was created. |
 | C9 | `45de1a4` | |
 | C10 | `2d78d36` (+ C2, C4–C7) | |
 | B1 | `e957134` | meta.nvim's spec now lives only in `local/plugins/meta.lua`. |
@@ -120,18 +120,25 @@ project". meta.nvim's `buck2@meta`, `rust-analyzer@meta` and
 them in their root_dir. Its spec's double read of the fake `jf` log was the
 intermittent `hg-inline-comments` failure (`dd19208`).
 
-Declined: it suggested binding inline comments to the Phabricator version a
-split "displays" rather than the latest. A split shows a local commit, not a
-version, and the latest version is the one that matches the commit you
-submitted last, which is why C8 dropped the per-session version cache. The
-case it found, a split left open across a resubmit, shows a commit that is
-no longer current; reopen the split.
+It also suggested binding inline comments to the version a split shows
+rather than the latest. I first declined that, wrongly: the latest version
+differs from a split's commit after any amend or rebase not yet submitted,
+in a working-copy split, and when the diff was updated elsewhere. Checking
+it against Phabricator showed worse: the version lookup's
+`phabricator_versions` answers with no versions at all, so
+`:HgInlineComment` had never been able to create a draft (since before this
+work; the spec's fake `jf` hid it). `e06d546` lists versions through
+`author_relevant_phabricator_versions` and uses the one whose
+`commit_hash_best_effort` is the commit the lines are from, falling back to
+the latest with a warning; it also warns for unsaved or uncommitted lines,
+and puts comments on the right pane of an "uncommitted vs ." split on the
+new side.
 
 Known limit of the runner: plugins come from the real `~/.local/share/nvim`,
 so a startup that installs a missing Mason package or treesitter parser
 would write there, as your editor would.
 
-Still to check by hand: C8 against Phabricator, G3 with a real in-editor
+Still to check by hand: one real draft comment (C8, `e06d546`), G3 with a real in-editor
 Maven run, G4's eden prefetch, and a `presto-maven` build from a
 `~/checkout2` file.
 
