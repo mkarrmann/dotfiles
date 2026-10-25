@@ -54,10 +54,24 @@ H.run(function()
 	local publish = vim.json.decode(calls()[#calls()])
 	H.eq(publish.data and publish.data.number, "123", "drafts published on the diff split's diff")
 
-	-- In a working-copy split (:HgDiffSplit) comments go on the current commit's diff.
+	-- Outside the split's panes, like :HgInlineComment, it goes by the file's commit.
 	H.fake_hg()
 	H.rewrite(root, "log", "s/^$/D456/")
+	local session = H.session()
+	for _, win in ipairs(H.wins()) do
+		if win ~= session.left_win and win ~= session.right_win then
+			vim.api.nvim_set_current_win(win)
+		end
+	end
 	vim.cmd.edit(root .. "/bar.py")
+	vim.cmd("HgPublishDrafts")
+	vim.wait(3000, function()
+		return calls()[#calls()]:find('"456"', 1, true) ~= nil
+	end, 20)
+	publish = vim.json.decode(calls()[#calls()])
+	H.eq(publish.data and publish.data.number, "456", "drafts published on the focused file's diff, not the split's")
+
+	-- In a working-copy split (:HgDiffSplit) comments go on the current commit's diff.
 	vim.cmd("HgDiffSplit")
 	H.notifications = {}
 	comment("third")

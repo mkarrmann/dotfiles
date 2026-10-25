@@ -2637,10 +2637,21 @@ mutation PublishDrafts($data: UpdatePhabricatorDiffData!) {
 }
 ]]
 
-local function resolve_inline_comment_context()
+---The diff split whose pane is the current window, if any. Other windows in
+---its tab show ordinary files, which belong to their own repo and commit.
+---@return Hg.diff_session?
+local function focused_diff_split()
   local session = DIFF_SPLIT_SESSIONS[vim.api.nvim_get_current_tabpage()]
+  local win = vim.api.nvim_get_current_win()
+  if session and (win == session.left_win or win == session.right_win) then
+    return session
+  end
+end
+
+local function resolve_inline_comment_context()
+  local session = focused_diff_split()
   local cur_win = vim.api.nvim_get_current_win()
-  if session and (cur_win == session.left_win or cur_win == session.right_win) then
+  if session then
     local pair = session.pairs[session.index]
     -- nil for working-copy splits: the caller uses the current commit's diff
     local diff_number = session.commit.diff and session.commit.diff:gsub("^D", "")
@@ -2787,8 +2798,8 @@ local function HgPublishDrafts()
     end, nil, root)
   end
 
-  -- in a diff split, :HgInlineComment drafts on the split's diff; publish there too
-  local session = DIFF_SPLIT_SESSIONS[vim.api.nvim_get_current_tabpage()]
+  -- from a diff split pane, :HgInlineComment drafts on the split's diff; publish there too
+  local session = focused_diff_split()
   if session and session.commit.diff then
     return publish((session.commit.diff:gsub("^D", "")), session.repo_root)
   end
