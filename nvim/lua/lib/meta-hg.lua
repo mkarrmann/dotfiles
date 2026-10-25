@@ -1257,13 +1257,17 @@ local function create_scratch_buf(lines, name, file_path)
   scratch_buf_counter = scratch_buf_counter + 1
   -- A CRLF file comes out of hg cat with "\r" on every line, but loads into a
   -- file buffer as fileformat=dos without them; match that, or every line
-  -- differs from the live side.
-  local dos = #lines > 0 and vim.iter(lines):all(function(line)
+  -- differs from the live side. A last line without a newline has no "\r".
+  local crlf = vim.list_slice(lines, 1, #lines - 1)
+  if #lines > 0 and lines[#lines]:sub(-1) == "\r" then
+    table.insert(crlf, lines[#lines])
+  end
+  local dos = #crlf > 0 and vim.iter(crlf):all(function(line)
     return line:sub(-1) == "\r"
   end)
   if dos then
     lines = vim.tbl_map(function(line)
-      return line:sub(1, -2)
+      return (line:gsub("\r$", ""))
     end, lines)
   end
   local buf = vim.api.nvim_create_buf(false, true)
