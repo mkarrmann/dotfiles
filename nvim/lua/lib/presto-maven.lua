@@ -1,9 +1,11 @@
+-- Builds the Presto repo of the current file, in that file's workspace, with
+-- the workspace's own build root and Maven repository (see lib.checkout).
+
+local checkout = require("lib.checkout")
+
 local M = {}
 
 local BUILD_ROOT = vim.env.BUILD_ROOT or ("/data/users/" .. vim.env.USER .. "/builds")
--- TODO: builds always target ~/checkout1 and its build root / Maven repo, even
--- from a buffer in another checkout; derive them via lib.checkout like jdtls does.
-local DEV_HOME = vim.uv.fs_realpath(vim.fn.expand("~/checkout1/fbsource/fbcode/github")) or vim.fn.expand("~/checkout1/fbsource/fbcode/github")
 
 local COMMON = table.concat({
 	"-Dmaven.gitcommitid.skip=true",
@@ -18,17 +20,20 @@ local COMMON = table.concat({
 }, " ")
 
 local REPO_FLAGS = {
-	oss = COMMON .. " -Dmaven.javadoc.skip=true"
-		.. " -Dout-of-tree-build-root=" .. BUILD_ROOT .. "/presto-trunk",
-	fb = COMMON .. " -DuseParallelDependencyResolution=false -nsu -DwithPlugins=true"
-		.. " -Dout-of-tree-build-root=" .. BUILD_ROOT .. "/presto-facebook-trunk",
+	oss = COMMON .. " -Dmaven.javadoc.skip=true",
+	fb = COMMON .. " -DuseParallelDependencyResolution=false -nsu -DwithPlugins=true",
 }
 
+local REPO_DIRS = { oss = "presto-trunk", fb = "presto-facebook-trunk" }
+
+---@return "oss"|"fb"|nil
+---@return string? root of the repo `path` is in
 local function detect_repo(path)
-	if path:find("presto%-facebook%-trunk") then
-		return "fb", DEV_HOME .. "/presto-facebook-trunk"
-	elseif path:find("presto%-trunk") then
-		return "oss", DEV_HOME .. "/presto-trunk"
+	for _, repo_type in ipairs({ "fb", "oss" }) do
+		local root = path:match("^(.*/" .. vim.pesc(REPO_DIRS[repo_type]) .. ")/")
+		if root then
+			return repo_type, root
+		end
 	end
 end
 
@@ -68,9 +73,9 @@ end
 
 local function mvn_cmd(repo_type, root, goal, modules, opts)
 	opts = opts or {}
+	local build_root = BUILD_ROOT .. "/" .. REPO_DIRS[repo_type] .. checkout.suffix(root)
 	local parts = {
-		"mkdir -p " .. vim.fn.shellescape(BUILD_ROOT .. "/presto-trunk")
-			.. " " .. vim.fn.shellescape(BUILD_ROOT .. "/presto-facebook-trunk"),
+		"mkdir -p " .. vim.fn.shellescape(build_root),
 		"cd " .. vim.fn.shellescape(root),
 		"(eden prefetch 'fbcode/github/presto-facebook-trunk/**' 'fbcode/github/presto-trunk/**' 2>/dev/null || true)",
 	}
@@ -89,7 +94,11 @@ local function mvn_cmd(repo_type, root, goal, modules, opts)
 		mvn = mvn .. " -pl " .. modules .. " -am"
 	end
 
-	mvn = mvn .. " " .. REPO_FLAGS[repo_type]
+	mvn = mvn .. " " .. REPO_FLAGS[repo_type] .. " -Dout-of-tree-build-root=" .. vim.fn.shellescape(build_root)
+	local maven_repo = checkout.maven_repo(root)
+	if maven_repo then
+		mvn = mvn .. " -Dmaven.repo.local=" .. vim.fn.shellescape(maven_repo)
+	end
 
 	if opts.skip_checkstyle then
 		mvn = mvn .. " -Dair.check.skip-all"
