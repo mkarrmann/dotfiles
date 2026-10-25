@@ -56,6 +56,10 @@ local log_to_scuba = meta_util.log_to_scuba
 ---@field wrap boolean
 ---@field foldenable boolean
 
+---@class (exact) Hg.preblame
+---@field opts Hg.preblame_opts
+---@field count integer Blame windows open beside it.
+
 local hg_utils = {}
 
 local CONFIG = {
@@ -255,11 +259,9 @@ hg_utils.on_blame_enter = function()
 
   meta_util.open_url("https://www.internalfb.com/diff/" .. word_under_cursor)
 end
----@type table<integer, Hg.preblame_opts> Code window -> its options before the
---- first blame window opened beside it.
-local PREBLAME_OPTS = {}
----@type table<integer, integer> Code window -> blame windows open beside it.
-local BLAME_WIN_COUNT = {}
+---@type table<string, Hg.preblame> "<code window>:<buffer>" -> the buffer's
+--- options in that window before the first blame window opened beside it.
+local PREBLAME = {}
 
 ---@param cwd string? repo root to run in (defaults to the active repo)
 hg_utils.status = function(cwd)
@@ -407,14 +409,16 @@ local function HgBlame()
   ---@type number
   local target_width = #vim.split(blame_lines[1] or "", ":")[1] + 2
 
-  if PREBLAME_OPTS[code_win] == nil then
-    PREBLAME_OPTS[code_win] = {
+  local preblame_key = code_win .. ":" .. code_buf
+  PREBLAME[preblame_key] = PREBLAME[preblame_key] or {
+    opts = {
       scrollbind = vim.wo[code_win].scrollbind,
       wrap = vim.wo[code_win].wrap,
       foldenable = vim.wo[code_win].foldenable,
-    }
-  end
-  BLAME_WIN_COUNT[code_win] = (BLAME_WIN_COUNT[code_win] or 0) + 1
+    },
+    count = 0,
+  }
+  PREBLAME[preblame_key].count = PREBLAME[preblame_key].count + 1
 
   local current_cursor_line = vim.api.nvim_win_get_cursor(0)[1]
 
@@ -461,19 +465,36 @@ local function HgBlame()
     pattern = tostring(blame_win),
     once = true,
     callback = function()
-      BLAME_WIN_COUNT[code_win] = BLAME_WIN_COUNT[code_win] - 1
-      if BLAME_WIN_COUNT[code_win] > 0 then
+      local preblame = PREBLAME[preblame_key]
+      preblame.count = preblame.count - 1
+      if preblame.count > 0 then
         return
       end
-      local opts = PREBLAME_OPTS[code_win]
-      PREBLAME_OPTS[code_win] = nil
-      BLAME_WIN_COUNT[code_win] = nil
-      -- the options were set for code_buf; another buffer there has its own
-      if vim.api.nvim_win_is_valid(code_win) and vim.api.nvim_win_get_buf(code_win) == code_buf then
-        for k, v in pairs(opts) do
+      PREBLAME[preblame_key] = nil
+      local function restore()
+        for k, v in pairs(preblame.opts) do
           vim.wo[code_win][0][k] = v
         end
       end
+      if not vim.api.nvim_win_is_valid(code_win) then
+        return
+      end
+      if vim.api.nvim_win_get_buf(code_win) == code_buf then
+        return restore()
+      end
+      -- the options are code_buf's; another buffer there has its own
+      vim.api.nvim_create_autocmd("BufWinEnter", {
+        buffer = code_buf,
+        callback = function()
+          if not vim.api.nvim_win_is_valid(code_win) then
+            return true
+          end
+          if vim.api.nvim_get_current_win() == code_win then
+            restore()
+            return true
+          end
+        end,
+      })
     end,
   })
 end
