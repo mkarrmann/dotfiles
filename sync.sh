@@ -498,10 +498,14 @@ tmp=$(jq '
   # description today is 1135 (dataviz), so nothing is truncated.
   .skillListingBudgetFraction = 0.10 |
   del(.skillListingMaxDescChars) |
+  # Run the Bash tool under bash rather than the login shell ($SHELL is zsh).
+  # /bin/bash exists on every Linux and macOS host, so the value is stable
+  # regardless of the PATH sync.sh runs under.
   .env |= ((. // {}) + {
     "DISABLE_AUTOUPDATER": "1",
     "MCP_TIMEOUT": "120000",
-    "ENABLE_LSP_TOOL": "1"
+    "ENABLE_LSP_TOOL": "1",
+    "CLAUDE_CODE_SHELL": "/bin/bash"
   }) |
   # Plugin installs, and so their enabledPlugins entries, belong to
   # agent_config/bootstrap-plugins. Earlier versions of this filter enabled
