@@ -10,6 +10,7 @@
 
 neovim-meta
 omnigent-models
+omnigent-math-output
 omnigent-sessions
 omnigent-visual-output
 personal-development-setup-and-env
