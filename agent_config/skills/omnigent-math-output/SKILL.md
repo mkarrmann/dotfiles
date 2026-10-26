@@ -9,7 +9,9 @@ description: >-
   delimiter rule, where to put formulas (paragraphs, not tables or bullets with
   single dollars), symbol glossaries, and what to do in a plain terminal.
   Trigger keywords: latex, katex, math, formula, equation, derivation, proof,
-  notation, subscript, symbol, variable definitions, glossary.
+  notation, subscript, symbol, variable definitions, glossary. Also covers
+  LaTeX in markdown docs viewed in Omnigent's file view (Preview mode,
+  multi-line $$ blocks).
 ---
 
 # Math in Omnigent
@@ -63,6 +65,20 @@ Group g's predicted share of the query's true neighbours.
 - **Inline symbols in prose via `$`.** Refer to symbols in prose as plain
   Unicode (μ, ν, τ, k′) or words; put anything with subscripts or structure in
   a `$$` block.
+
+## Markdown files (docs) opened in Omnigent's file view
+
+Formulas in docs are LaTeX too; never fall back to Unicode or code-block math.
+
+- **The view mode matters.** The file view's default **Editor** mode is TipTap with no math
+  extension, so it renders no math at all. **Preview** (toolbar view-mode menu, remembered across files)
+  uses the same plugin as chat (`web/src/shell/CodeViewer.tsx:119`). Tell the reader to switch to Preview.
+- **Display formulas: `$$` alone on a line, the formula, `$$` alone on a line**, with blank lines around.
+  A one-line `$$…$$` is *inline* math in remark-math (the opening fence can't have content after it), and
+  `\tag{…}` inline is a KaTeX error.
+- **Symbols in prose:** inline `$$…$$` (single `$` does not render here either).
+- Verified 2026-10-26 by rendering docs through a copy of Preview's exact pipeline (normalize step,
+  remark/rehype plugins, sanitize schema, KaTeX).
 
 ## Make it interpretable
 
