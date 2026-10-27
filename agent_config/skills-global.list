@@ -14,6 +14,7 @@ omnigent-math-output
 omnigent-sessions
 omnigent-visual-output
 personal-development-setup-and-env
+prune-stale-builds
 screenshot-workflow
 show-in-nvim
 waiting-without-polling

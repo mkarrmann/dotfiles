@@ -92,6 +92,8 @@ Rules of thumb:
 
 To force a clean build, pass **`-c`**. Do **not** reach for it reflexively when a build fails — read the error first; a clean rebuild rarely fixes a real compile error and just wastes 20 minutes. (`-I` still exists as a backward-compatible no-op since incremental is now the default.)
 
+Old versions' artifacts are never cleaned up by a build; after a trunk version bump, or when disk runs low, use `~/bin/prune-stale-builds` (see the `prune-stale-builds` skill) rather than deleting build roots or Maven repositories.
+
 ## Quick Reference
 
 | Task                                           | Command                                  |

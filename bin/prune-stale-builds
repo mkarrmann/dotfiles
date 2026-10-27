@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""
+Delete Presto Maven artifacts left behind by older trunk versions.
+
+Each workspace (~/checkoutN, ~/wt/<label>) builds into its own out-of-tree
+roots and Maven repository; see _checkout_suffix in ~/.localrc. Every trunk
+version bump leaves the previous 0.NNN-SNAPSHOT artifacts behind in all of
+them, roughly 30G per repository per bump, and nothing else ever removes them.
+
+A version is stale for a workspace when it is strictly older than the version
+its poms name. Newer versions are kept, so checking out an older revision does
+not throw away the build you will return to. Workspaces with a running Maven
+build are skipped entirely: a build started before a rebase may still resolve
+the version the poms no longer name.
+
+Reports by default; --yes deletes. Build roots and repositories whose
+workspace no longer exists are listed, never deleted.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import shutil
+import sys
+import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from pathlib import Path
+
+PRESTO_GROUP = Path("com/facebook/presto")
+SNAPSHOT_DIR = re.compile(r"0\.(\d+)-SNAPSHOT")
+SNAPSHOT_IN_NAME = re.compile(r"-0\.(\d+)-SNAPSHOT")
+WORKSPACE_NAME = re.compile(r"checkout\d+")
+TREE_PREFIXES = ("presto-trunk", "presto-facebook-trunk", "m2-repo")
+MAVEN_LAUNCHER = "org.codehaus.plexus.classworlds.launcher.Launcher"
+
+
+@dataclass(frozen=True)
+class Tree:
+    """A build root or Maven repository, and the oldest version still current for it."""
+
+    path: Path
+    current: int
+    is_repo: bool
+
+
+@dataclass(frozen=True)
+class Workspace:
+    name: str
+    root: Path
+    trees: tuple[Tree, ...]
+
+
+@dataclass(frozen=True)
+class Stale:
+    path: Path
+    size: int
+
+
+def pom_minor(pom: Path) -> int | None:
+    try:
+        version = ET.parse(pom).getroot().findtext("{http://maven.apache.org/POM/4.0.0}version")
+    except (OSError, ET.ParseError):
+        return None
+    match = SNAPSHOT_DIR.fullmatch(version or "")
+    return int(match.group(1)) if match else None
+
+
+def workspace_roots(home: Path) -> list[Path]:
+    roots = [p for p in home.glob("checkout*") if p.is_dir() and WORKSPACE_NAME.fullmatch(p.name)]
+    roots += [p for p in (home / "wt").glob("*") if p.is_dir()]
+    return sorted(roots)
+
+
+def suffix(home: Path, root: Path) -> str:
+    return "" if root == home / "checkout1" else f"-{root.name}"
+
+
+def load_workspace(home: Path, build_root: Path, root: Path) -> Workspace | str:
+    github = root / "fbsource/fbcode/github"
+    oss = pom_minor(github / "presto-trunk/pom.xml")
+    fb = pom_minor(github / "presto-facebook-trunk/pom.xml")
+    if oss is None or fb is None:
+        return f"{root}: cannot read a 0.NNN-SNAPSHOT version from its presto poms"
+    s = suffix(home, root)
+    repo = home / ".m2/repository" if not s else build_root / f"m2-repo{s}"
+    return Workspace(
+        name=root.name,
+        root=root,
+        trees=(
+            Tree(build_root / f"presto-trunk{s}", oss, is_repo=False),
+            Tree(build_root / f"presto-facebook-trunk{s}", fb, is_repo=False),
+            Tree(repo, min(oss, fb), is_repo=True),
+        ),
+    )
+
+
+def maven_paths_in_use(proc_root: Path, home: Path) -> set[Path]:
+    in_use: set[Path] = set()
+    for cmdline in proc_root.glob("[0-9]*/cmdline"):
+        try:
+            args = cmdline.read_bytes().split(b"\0")
+        except OSError:
+            continue
+        argv = [a.decode(errors="replace") for a in args if a]
+        if MAVEN_LAUNCHER not in argv:
+            continue
+        repo = home / ".m2/repository"
+        for arg in argv:
+            if arg.startswith("-Dmaven.repo.local="):
+                repo = Path(arg.split("=", 1)[1])
+            elif arg.startswith("-Dout-of-tree-build-root="):
+                in_use.add(Path(arg.split("=", 1)[1]))
+        in_use.add(repo)
+    return in_use
+
+
+def find_stale(tree: Tree) -> list[Path]:
+    if tree.is_repo:
+        top, match = tree.path / PRESTO_GROUP, SNAPSHOT_DIR.fullmatch
+    else:
+        top, match = tree.path, SNAPSHOT_IN_NAME.search
+    stale: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(top):
+        for name in list(dirnames):
+            m = match(name)
+            if m and int(m.group(1)) < tree.current:
+                stale.append(Path(dirpath, name))
+                dirnames.remove(name)
+        if not tree.is_repo:
+            for name in filenames:
+                m = match(name)
+                if m and int(m.group(1)) < tree.current:
+                    stale.append(Path(dirpath, name))
+    return stale
+
+
+def size_of(path: Path) -> int:
+    if not path.is_dir() or path.is_symlink():
+        return path.lstat().st_size
+    total = 0
+    for dirpath, _, filenames in os.walk(path):
+        for name in filenames:
+            try:
+                total += os.lstat(os.path.join(dirpath, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def delete(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def orphans(build_root: Path, names: set[str]) -> list[Path]:
+    found = []
+    for entry in sorted(build_root.glob("*")):
+        for prefix in TREE_PREFIXES:
+            if entry.name.startswith(f"{prefix}-"):
+                label = entry.name[len(prefix) + 1 :]
+                if label not in names and entry.is_dir():
+                    found.append(entry)
+    return found
+
+
+def human(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "K", "M", "G"):
+        if size < 1024:
+            return f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}T"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--yes", action="store_true", help="delete; without it, only report")
+    parser.add_argument("-v", "--verbose", action="store_true", help="list every stale path")
+    parser.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+    parser.add_argument("--build-root", type=Path, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--proc-root", type=Path, default=Path("/proc"), help=argparse.SUPPRESS)
+    args = parser.parse_args()
+
+    home: Path = args.home
+    build_root: Path = args.build_root or Path(
+        os.environ.get("BUILD_ROOT", f"/data/users/{os.environ.get('USER', '')}/builds")
+    )
+    in_use = maven_paths_in_use(args.proc_root, home)
+
+    workspaces: list[Workspace] = []
+    for root in workspace_roots(home):
+        loaded = load_workspace(home, build_root, root)
+        if isinstance(loaded, str):
+            print(f"skip {loaded}")
+            continue
+        busy = [t.path for t in loaded.trees if t.path in in_use]
+        if busy:
+            print(f"skip {loaded.name}: Maven build running against {', '.join(map(str, busy))}")
+            continue
+        workspaces.append(loaded)
+
+    with ThreadPoolExecutor(max_workers=32) as pool:
+        trees = [(ws, t) for ws in workspaces for t in ws.trees]
+        found = list(pool.map(lambda wt: find_stale(wt[1]), trees))
+        paths = [p for ps in found for p in ps]
+        sizes = dict(zip(paths, pool.map(size_of, paths)))
+
+        total = 0
+        for (ws, tree), stale in zip(trees, found):
+            if not stale:
+                continue
+            bytes_ = sum(sizes[p] for p in stale)
+            total += bytes_
+            print(f"{ws.name}: {human(bytes_):>7} older than 0.{tree.current}-SNAPSHOT in {tree.path} ({len(stale)} paths)")
+            if args.verbose:
+                for p in stale:
+                    print(f"    {p}")
+
+        if args.yes and paths:
+            list(pool.map(delete, paths))
+            print(f"deleted {human(total)}")
+        elif paths:
+            print(f"{human(total)} reclaimable; rerun with --yes to delete")
+        else:
+            print("nothing stale")
+
+    leftover = orphans(build_root, {p.name for p in workspace_roots(home)})
+    if leftover:
+        print("\nno matching workspace (not deleted; remove by hand if unused):")
+        for p in leftover:
+            print(f"    {p}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
