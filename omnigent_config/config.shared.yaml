@@ -49,7 +49,12 @@ runner:
   # the warnings are noisy and the first resumed turn pays a cold prompt cache).
   # 0 disables the watchdog entirely (idle runners then linger, holding their
   # claude subprocess memory until the host/parent dies).
-  idle_timeout_s: 14400
+  # This only bounds the whole runner. Each session's own pane/harness has a
+  # separate 1h reaper, set by OMNIGENT_NATIVE_PANE_IDLE_TIMEOUT_S and
+  # OMNIGENT_HARNESS_IDLE_TIMEOUT_S in the host units (systemd/omnigent-host.service,
+  # systemd/desktop/omnigent-host.service, launchd/com.mkarrmann.omnigent-host.plist).
+  # Keep all three equal: a runner exiting first takes every session's pane with it.
+  idle_timeout_s: 172800
 
 tui:
   theme: dark

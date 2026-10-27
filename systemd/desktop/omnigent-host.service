@@ -14,6 +14,11 @@ Environment=PATH=%h/.local/bin:%h/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin
 # on the work hub, and the same accepted cost: omnigent forwards PYTHONPATH to
 # runners, so agent shells can import foreground_wait/no_foreground_wait too.
 Environment=PYTHONPATH=%h/dotfiles/omnigent_config/policy_modules:%h/dotfiles/services/omnigent-watcher/src
+# Per-session idle reapers; see systemd/omnigent-host.service. The host filters
+# runner env, so they must also ride the passthrough.
+Environment=OMNIGENT_NATIVE_PANE_IDLE_TIMEOUT_S=172800
+Environment=OMNIGENT_HARNESS_IDLE_TIMEOUT_S=172800
+Environment=OMNIGENT_RUNNER_ENV_PASSTHROUGH=OMNIGENT_NATIVE_PANE_IDLE_TIMEOUT_S,OMNIGENT_HARNESS_IDLE_TIMEOUT_S
 ExecStart=%h/.local/bin/omnigent host --server "" --non-interactive
 Restart=on-failure
 RestartPreventExitStatus=78 143

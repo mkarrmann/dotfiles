@@ -73,13 +73,18 @@ Environment=LITELLM_LOCAL_MODEL_COST_MAP=True
 # arms one meta_path hook, chains to any sitecustomize it shadows, and fails
 # open -- but drop these entries first when debugging a harness.
 Environment=PYTHONPATH=%h/dotfiles/omnigent_config/runtime_ext
+# Per-session idle reapers (native tmux pane / SDK harness subprocess), 1h by
+# default. Both run in the runner, so they also need the passthrough entry. Keep
+# equal to runner.idle_timeout_s in omnigent_config/config.shared.yaml.
+Environment=OMNIGENT_NATIVE_PANE_IDLE_TIMEOUT_S=172800
+Environment=OMNIGENT_HARNESS_IDLE_TIMEOUT_S=172800
 # The host filters its environment before launching runners. Forward only the
 # non-secret paths/selectors required by Meta's Claude and Codex launchers.
 # PYTHONPATH is listed belt-and-braces: omnigent's own _RUNNER_ENV_ALLOWLIST
 # already forwards it, but that is a private upstream constant, and if it ever
 # stops covering PYTHONPATH the Sapling backend above would quietly stop
 # loading (panel empty again, nothing broken) with no obvious cause.
-Environment=OMNIGENT_RUNNER_ENV_PASSTHROUGH=THRIFT_TLS_CL_CERT_PATH,THRIFT_TLS_CL_KEY_PATH,CODEX_MANAGED_CONFIG_PATH,HARNESS_CODEX_PATH,HARNESS_CODEX_DISABLE_NATIVE_TOOLS,HARNESS_TURN_TIMEOUT_S,OMNIGENT_LOG_LEVEL,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS,TIKTOKEN_CACHE_DIR,LITELLM_LOCAL_MODEL_COST_MAP,PYTHONPATH
+Environment=OMNIGENT_RUNNER_ENV_PASSTHROUGH=THRIFT_TLS_CL_CERT_PATH,THRIFT_TLS_CL_KEY_PATH,CODEX_MANAGED_CONFIG_PATH,HARNESS_CODEX_PATH,HARNESS_CODEX_DISABLE_NATIVE_TOOLS,HARNESS_TURN_TIMEOUT_S,OMNIGENT_LOG_LEVEL,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS,TIKTOKEN_CACHE_DIR,LITELLM_LOCAL_MODEL_COST_MAP,PYTHONPATH,OMNIGENT_NATIVE_PANE_IDLE_TIMEOUT_S,OMNIGENT_HARNESS_IDLE_TIMEOUT_S
 # Meta's codex launcher re-execs the real binary into a transient systemd scope
 # under 3pai_sandbox.slice, which leaves this unit's cgroup. systemd kills a
 # unit by cgroup, so a restart kills the runner but strands the Codex
