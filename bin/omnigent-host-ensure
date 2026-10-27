@@ -120,6 +120,10 @@ if [[ -n "$tmux_bin" ]]; then
   if ! tmux_session_alive; then
     # Clear a dead-pane session first: new-session fails on a duplicate name.
     "$tmux_bin" kill-session -t "$session_name" 2>/dev/null || true
+    # TODO: if a tmux server is already running, the new session inherits the
+    # server's environment, not launchd's, so the plist's EnvironmentVariables
+    # (TIKTOKEN_CACHE_DIR, idle timeouts, passthrough) may never reach the host.
+    # Unverified; check `ps eww` on the host pid, fix with `new-session -e`.
     "$tmux_bin" new-session -d -s "$session_name" "exec '$OMNIGENT_BIN' host --server '$OMNIGENT_URL' --non-interactive"
   fi
   launcher="tmux session $session_name"
