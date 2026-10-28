@@ -12,6 +12,7 @@ neovim-meta
 omnigent-models
 omnigent-math-output
 omnigent-sessions
+omnigent-subagents
 omnigent-visual-output
 personal-development-setup-and-env
 prune-stale-builds
