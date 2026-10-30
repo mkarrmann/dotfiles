@@ -210,12 +210,13 @@ session workspace **without the workaround**:
 4. Re-run `omnigent-agents-ensure`, restart the host, and repeat the live CWD
    check in both numbered checkouts and concurrent sessions.
 
-The adjacent `HARNESS_CODEX_DISABLE_NATIVE_TOOLS=1` and
-`HARNESS_TURN_TIMEOUT_S=1800` settings address a separate issue: native Codex
-tool calls are not emitted as Omnigent progress or durable tool items, which
-caused the false 240-second idle-watchdog failure. Remove those only after
-Omnigent forwards native tool activity and cancellation correctly; they are
-not part of the CWD cleanup.
+The adjacent `HARNESS_CODEX_DISABLE_NATIVE_TOOLS=1` setting addresses a
+separate issue: native Codex tool calls are not emitted as Omnigent progress or
+durable tool items, which caused the false 240-second idle-watchdog failure.
+Remove it only after Omnigent forwards native tool activity and cancellation
+correctly; it is not part of the CWD cleanup. (A companion
+`HARNESS_TURN_TIMEOUT_S=1800` override was dropped once Omnigent's own default
+rose to 3600.)
 
 ## What will NOT show yet (parity work, non-blocking)
 

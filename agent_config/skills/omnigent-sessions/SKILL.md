@@ -206,8 +206,8 @@ curl -s --noproxy '*' "$BASE/v1/sessions/$CONV" | jq -r '
 
    > `RuntimeError: turn exceeded the <N>s harness idle watchdog (run_turn emitted no events for <N>s; likely a wedged LLM or tool call)`
 
-   `N` is `HARNESS_TURN_TIMEOUT_S`: 1800 on the work host unit
-   (`systemd/omnigent-host.service`), the 3600 default on the desktop. It fires
+   `N` is `HARNESS_TURN_TIMEOUT_S`, unset on every host, so Omnigent's 3600
+   default applies. It fires
    when the outer harness receives **no progress events** for that long; it
    does not prove the model or tool is wedged. Check
    the timeline after the error. If SDK Codex keeps making native app-server

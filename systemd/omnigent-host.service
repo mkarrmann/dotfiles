@@ -39,10 +39,9 @@ Environment=CODEX_MANAGED_CONFIG_PATH=/dev/null
 Environment=HARNESS_CODEX_PATH=%h/bin/codex
 # Temporary tool-observability workaround, independent of the cwd hack: native
 # Codex tools are invisible to Omnigent's transcript and progress watchdog.
-# These are supported operator knobs; remove them once native Codex tool events
+# This is a supported operator knob; remove it once native Codex tool events
 # are forwarded as harness progress and durable session items.
 Environment=HARNESS_CODEX_DISABLE_NATIVE_TOOLS=1
-Environment=HARNESS_TURN_TIMEOUT_S=1800
 Environment=XDG_RUNTIME_DIR=%t
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
 # TEMPORARY DIAGNOSTIC (harness/SDK visibility): DEBUG surfaces the claude CLI
@@ -84,7 +83,7 @@ Environment=OMNIGENT_HARNESS_IDLE_TIMEOUT_S=302400
 # already forwards it, but that is a private upstream constant, and if it ever
 # stops covering PYTHONPATH the Sapling backend above would quietly stop
 # loading (panel empty again, nothing broken) with no obvious cause.
-Environment=OMNIGENT_RUNNER_ENV_PASSTHROUGH=THRIFT_TLS_CL_CERT_PATH,THRIFT_TLS_CL_KEY_PATH,CODEX_MANAGED_CONFIG_PATH,HARNESS_CODEX_PATH,HARNESS_CODEX_DISABLE_NATIVE_TOOLS,HARNESS_TURN_TIMEOUT_S,OMNIGENT_LOG_LEVEL,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS,TIKTOKEN_CACHE_DIR,LITELLM_LOCAL_MODEL_COST_MAP,PYTHONPATH,OMNIGENT_NATIVE_PANE_IDLE_TIMEOUT_S,OMNIGENT_HARNESS_IDLE_TIMEOUT_S
+Environment=OMNIGENT_RUNNER_ENV_PASSTHROUGH=THRIFT_TLS_CL_CERT_PATH,THRIFT_TLS_CL_KEY_PATH,CODEX_MANAGED_CONFIG_PATH,HARNESS_CODEX_PATH,HARNESS_CODEX_DISABLE_NATIVE_TOOLS,OMNIGENT_LOG_LEVEL,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS,TIKTOKEN_CACHE_DIR,LITELLM_LOCAL_MODEL_COST_MAP,PYTHONPATH,OMNIGENT_NATIVE_PANE_IDLE_TIMEOUT_S,OMNIGENT_HARNESS_IDLE_TIMEOUT_S
 # Meta's codex launcher re-execs the real binary into a transient systemd scope
 # under 3pai_sandbox.slice, which leaves this unit's cgroup. systemd kills a
 # unit by cgroup, so a restart kills the runner but strands the Codex
