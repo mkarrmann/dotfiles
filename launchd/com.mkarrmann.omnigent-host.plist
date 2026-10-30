@@ -60,9 +60,9 @@
       <string>True</string>
       <!-- Per-session idle reapers; see systemd/omnigent-host.service. -->
       <key>OMNIGENT_NATIVE_PANE_IDLE_TIMEOUT_S</key>
-      <string>172800</string>
+      <string>302400</string>
       <key>OMNIGENT_HARNESS_IDLE_TIMEOUT_S</key>
-      <string>172800</string>
+      <string>302400</string>
       <key>OMNIGENT_RUNNER_ENV_PASSTHROUGH</key>
       <string>TIKTOKEN_CACHE_DIR,LITELLM_LOCAL_MODEL_COST_MAP,OMNIGENT_NATIVE_PANE_IDLE_TIMEOUT_S,OMNIGENT_HARNESS_IDLE_TIMEOUT_S</string>
     </dict>

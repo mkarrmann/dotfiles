@@ -76,8 +76,8 @@ Environment=PYTHONPATH=%h/dotfiles/omnigent_config/runtime_ext
 # Per-session idle reapers (native tmux pane / SDK harness subprocess), 1h by
 # default. Both run in the runner, so they also need the passthrough entry. Keep
 # equal to runner.idle_timeout_s in omnigent_config/config.shared.yaml.
-Environment=OMNIGENT_NATIVE_PANE_IDLE_TIMEOUT_S=172800
-Environment=OMNIGENT_HARNESS_IDLE_TIMEOUT_S=172800
+Environment=OMNIGENT_NATIVE_PANE_IDLE_TIMEOUT_S=302400
+Environment=OMNIGENT_HARNESS_IDLE_TIMEOUT_S=302400
 # The host filters its environment before launching runners. Forward only the
 # non-secret paths/selectors required by Meta's Claude and Codex launchers.
 # PYTHONPATH is listed belt-and-braces: omnigent's own _RUNNER_ENV_ALLOWLIST

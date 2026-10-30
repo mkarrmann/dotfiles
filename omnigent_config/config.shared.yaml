@@ -54,7 +54,7 @@ runner:
   # OMNIGENT_HARNESS_IDLE_TIMEOUT_S in the host units (systemd/omnigent-host.service,
   # systemd/desktop/omnigent-host.service, launchd/com.mkarrmann.omnigent-host.plist).
   # Keep all three equal: a runner exiting first takes every session's pane with it.
-  idle_timeout_s: 172800
+  idle_timeout_s: 302400
 
 tui:
   theme: dark
