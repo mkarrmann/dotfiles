@@ -59,6 +59,18 @@ runner:
 tui:
   theme: dark
 
+# Base args prepended to every native Claude terminal launch, from both the web
+# UI and `omnigent claude` (runner/native/orchestration.py, resolve_harness_args).
+# Meta's /etc/claude-code/managed-settings.json sets defaultMode "auto", which
+# outranks ~/.claude/settings.json's "bypassPermissions"; only a CLI flag beats
+# it, so without this every Omnigent Claude session ran in auto mode and parked
+# on a web approval card whenever the auto-mode classifier hesitated. Per-session
+# args append after these, and the last --permission-mode wins, so a session can
+# still opt into a stricter mode.
+harness:
+  claude-native:
+    args: ["--permission-mode", "bypassPermissions"]
+
 # ---------------------------------------------------------------------------
 # Server keys. Read by `omnigent server` alone; inert for the CLI and host.
 # ---------------------------------------------------------------------------

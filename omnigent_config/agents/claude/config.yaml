@@ -17,6 +17,10 @@ executor:
   type: omnigent
   config:
     harness: claude-sdk
+    # The claude-sdk harness otherwise defaults to "auto"
+    # (_DEFAULT_PERMISSION_MODE in omnigent/inner/claude_sdk_harness.py), which
+    # parks a turn on an approval card whenever the classifier hesitates.
+    permission_mode: bypassPermissions
   # Opus 5 / 5.5 serve 1M unconditionally, but omnigent can't see that: litellm isn't
   # installed, github (the MLflow catalog) is unreachable from a devserver, and
   # its own registry only keys the `[1m]` spelling -- so a bare id collapses to

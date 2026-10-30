@@ -1,8 +1,11 @@
 # Shared Codex defaults. Machine-specific overrides belong in
 # ~/.codex/config.local.toml. sync.sh merges its parsed TOML over this
 # template and the managed MCP definitions to generate ~/.codex/config.toml.
-approval_policy = "on-request"
-approvals_reviewer = "auto_review"
+# Never stop for approval (Meta's /etc/codex/requirements.toml allows "never";
+# /etc/codex/config.toml already sets sandbox_mode = "danger-full-access").
+# Omnigent's native Codex sessions copy this file into their private CODEX_HOME,
+# and their threads take this policy on both start and resume.
+approval_policy = "never"
 model = "gpt-6.1-sol"
 model_reasoning_effort = "high"
 service_tier = "fast"
