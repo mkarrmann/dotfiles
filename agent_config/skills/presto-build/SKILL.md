@@ -165,6 +165,31 @@ mpt -pl presto-tests -Dtest=TestLocalQueries#testIOExplainForUnsupportedStatemen
 
 **Targeted test runs in OSS trunk require `-Dsurefire.useManifestOnlyJar=false`.** Without it, surefire's forked VM dies with "Could not find or load main class org.apache.maven.surefire.booter.ForkedBooter" or "The forked VM terminated without properly saying goodbye". The OSS trunk's `out-of-tree-build` profile (`pom.xml`) symlinks `target/` to `${BUILD_ROOT}/presto-trunk/${project.groupId}:${project.artifactId}` — the `:` in that directory name (from `com.facebook.presto:presto-tests` etc.) breaks surefire's manifest-only booter jar load. Disabling the booter jar makes surefire pass the classpath directly via `-cp` and sidesteps the issue. Also add `-Dsurefire.failIfNoSpecifiedTests=false` so dependent modules built via `-am` don't error when the test pattern doesn't match anything in them.
 
+**Single tests in an OSS module outside `OSS_MODULES` (e.g. `presto-hive`).**
+- **Why the helpers don't work:**
+  - `mpt` pins `-pl` to `_oss_modules`, which doesn't include `presto-hive`.
+  - `presto-build -t -l presto-hive` adds `-am`, so it runs the test suites of every upstream module too.
+- **What works:** install the dependencies once, then run surefire on the one module, without `-am`. In a non-interactive shell you also need JDK 17 (see the CRITICAL callout above).
+
+```bash
+export JAVA_HOME=/usr/local/java-runtime/impl/17 PATH=/usr/local/java-runtime/impl/17/bin:$PATH
+cd fbcode/github/presto-trunk
+OOT="-Dout-of-tree-build-root=/data/users/$USER/builds/presto-trunk -Dout-of-tree-build=true -Dlicense.report.skip=true \
+  -Dmaven.gitcommitid.skip=true -Djava.net.preferIPv6Addresses=true -Dos.detected.name=linux -Dos.detected.arch=x86_64 \
+  -Dos.detected.classifier=linux-x86_64 -nsu -o"
+# 1. install the module and its deps (skip tests and checks); ~3 min incremental
+mvn install -pl presto-hive -am -DskipTests -Dair.check.skip-all=true -Dmaven.javadoc.skip=true -T 24 $OOT
+# 2. after changing an upstream module (e.g. presto-main-base), reinstall just that module
+mvn install -pl presto-main-base -DskipTests -Dair.check.skip-all=true -Dmaven.javadoc.skip=true -T 24 $OOT
+# 3. run the test in the one module, without -am
+mvn test -pl presto-hive -Dair.check.skip-all=true -Dsurefire.useManifestOnlyJar=false \
+  -Dtest='TestMergeJoinPlan#testLocalParallelismAboveMergeJoin' -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false $OOT
+```
+
+- **Checkstyle for those modules:** run `mvn validate -pl presto-main-base,presto-hive $OOT` without `-Dair.check.skip-all`. That runs the project's configured checks.
+- **Don't run bare `mvn checkstyle:check`:** it applies the default Sun rules and reports hundreds of irrelevant errors (missing `package-info.java`, Javadoc).
+- These paths are for checkout1. Other workspaces add their suffix and `-Dmaven.repo.local`, as in the Maven flag reference below.
+
 ### Checkstyle
 
 ```bash
