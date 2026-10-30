@@ -144,9 +144,68 @@ By default this runs **deployed/released** packages — `-j stable_fb34` resolve
 To test your **own build** instead:
 
 - **C++ / Velox** (e.g. to check if trunk fixes a Velox bug): `cd fbcode && fbpkg build -E presto.presto_on_spark_cpp --yes` → pass the hash: `sapphire-local velox -n <ns> -f <q> -c <hash>`.
-- **Java** (`presto-trunk` / `presto-facebook-trunk` changes): build a `presto.spark` fbpkg (see `presto-build` / `sapphire-e2e-test`), then `sapphire-local java -n <ns> -f <q> -j <hash>` (or `ab -j <hash>`). The Java build can't run from a Claude session — have the user run it.
+- **Java** (`presto-trunk` / `presto-facebook-trunk` changes): build a `presto.spark` fbpkg, then run `sapphire-local java -n <ns> -f <q> -j <hash>` (or `ab -j <hash>`), or `sapphire-submit.sh -j <hash> -c <matching cpp hash> -x`. Agent sessions can do the build themselves; see the recipe below.
+
+### Recipe: stock `presto.spark` + your Java patch (ephemeral fbpkg)
+
+Used successfully 2026-10 for planner A/Bs on Sapphire Velox. Building a new directory needs the user's OK, per the new-environment rule. Remove it afterwards.
+
+1. **Pick the stock pair you'll compare against, and pin it.** For example Java `presto.spark:3c9705239b9d46c4a780b79c8077bdac` with C++ `presto.presto_on_spark_cpp:1931c6d0e6f845a5badf36c52684c798`.
+   - Tags such as `cpp-latest-sanity-passed-spark3` move, and once pointed at someone's personal Java build. Pin exact hashes.
+   - Fetch the stock package (`fbpkg fetch presto.spark:<hash> -d <dir>`) and read the version its `launcher.jar` reports (e.g. `0.301-edge140-SNAPSHOT`).
+2. **Export the source without touching any working copy.**
+   - Run `sl archive -r <base rev> -I fbcode/github/presto-trunk -I fbcode/github/presto-facebook-trunk <dir>/src`, then `patch -p1` your diff.
+   - Use your stack's base revision, i.e. roughly the stock build's.
+3. **Stamp the stock version** so the launcher matches:
+   - `mvn versions:set -DnewVersion=<ver> -DprocessAllModules=true -DgenerateBackupPoms=false` in both trees;
+   - set `<dep.presto.version>` in `presto-facebook-trunk/pom.xml`.
+4. **Build with JDK 17 and its own Maven repo** (`-Dmaven.repo.local=<dir>/m2`). Otherwise installing `<ver>` into `~/.m2` clobbers any other session's build of the same version.
+   - `presto-trunk`: `mvn clean install -pl '!presto-docs'`.
+   - `presto-facebook-trunk`: `mvn clean install -nsu -pl presto-facebook-spark-package -am`.
+   - Flags for both: `-DskipTests -DskipUI -Dair.check.skip-all -Dspark-version=3 -Dlicense.report.skip=true -Dout-of-tree-build=true -Dout-of-tree-build-root=<dir>/oot/<repo> -s fbcode/javafoundations/mvn/src/main/resources/settings.xml -T 16`.
+   - `MAVEN_OPTS="-Xms16g -Xmx16g -XX:+UseG1GC -Djava.net.preferIPv6Addresses=true -Dmaven.gitcommitid.skip=true"`.
+5. **Assemble and publish the fbpkg.** Lay out a directory as `<pkg>/sapphire/{launcher.jar,lib,plugin}`, taken from your build (`presto-facebook-spark-package`'s output dir). Add `sapphire_cpp`, `bin` and `cron` from the fetched stock package. Then add `<pkg>/materialized_configs/presto.spark.fbpkg.materialized_JSON`:
+   ```json
+   {"paths": ["<pkg>/sapphire/bin", "<pkg>/sapphire/lib", "<pkg>/sapphire/cron", "<pkg>/sapphire/plugin", "<pkg>/sapphire/sapphire_cpp", "<pkg>/sapphire/launcher.jar"],
+    "path_mapping": {"<pkg>/sapphire/bin": "bin", "<pkg>/sapphire/lib": "lib", "...": "same for each path"}}
+   ```
+   Publish from inside `<pkg>` with `fbpkg build presto.spark --configerator-path <pkg> -E --expire 7d --yes --json -m "<what this is>"`. The new hash is in the JSON output (`[0]["uuid"]`). An "unable to determine VCS type" warning is harmless.
+
+   A complete, working script is in `build-presto-spark-with-patch.example.sh` next to this file (a copy of the 2026-10-30 run). It builds stock plus one planner patch in about 30 minutes of wall time and uses about 86 GiB of disk. `oot/` and `m2/` dominate that; delete them when done.
+
+   **Caveat:** the stock Java package is a release build (`v0.301-edge140-spark3`), not trunk at your base revision. A trunk build plus your patch differs from stock in other classes too; the 2026-10-30 build had 48 differing jars, including planner classes. For a clean single-patch A/B, build the same recipe **without** the patch as the baseline (about 25 minutes), rather than comparing against stock.
+6. **Fetch it back and verify** (see the `verify-fbpkg-by-fetch-back` memory). Check:
+   - the native parts are byte-identical to stock;
+   - `launcher.jar` reports `<ver>`;
+   - the jar holding your changed class differs from stock (`javap -c` shows the change);
+   - the rest of `lib/` matches your build.
+7. **Run** with `sapphire-submit.sh --spark3 -j <your hash> -c <stock cpp hash> -x ...`. Keep the same `-c` as the baseline arm, so only Java differs.
 
 Comparing deployed vs your build is how you decide "file a new Velox bug" vs "an existing fix just needs deploying."
+
+## Session properties: system (`-s`) vs catalog (`-t`)
+
+`sapphire-submit.sh` (and so `sapphire-local`) builds the launcher's JSON config, which keeps two separate maps: `sessionProperties` (system) and `catalogSessionProperties` (catalog → properties). See `PrestoFacebookSparkPipelineConfiguration.java`.
+
+- **`-s name=value` always goes into `sessionProperties`.** A catalog-prefixed name like `-s prism_batch.order_based_execution_enabled=true` is validated as a *system* property. The query fails at startup with `Unknown session property prism_batch.order_based_execution_enabled`, raised from `SessionPropertyManager.validateSystemSessionProperty` ← `Session.beginTransactionId`.
+- **Connector (Hive/Prism) properties need `-t name=value`, without a catalog prefix.** The script puts them under `catalogSessionProperties.prism_batch` (`sapphire-submit.sh:69`, `:375-388`). Check the submit log's `"catalogSessionProperties"` line to confirm.
+- **Only `prism_batch` works.** The launcher deliberately drops every `prism.*` catalog property and logs only "Skipping following prism connector session properties" (`PrestoFacebookSparkPipeline.filterCatalogSessionProperties`, `:527-548`). Interactive Presto lists both `prism.` and `prism_batch.` variants, which makes this easy to miss.
+- **Example:** order-based execution, so the planner sees a `sorted_by` table as sorted and can pick a merge join: `-s prefer_merge_join_for_sorted_inputs=true -t order_based_execution_enabled=true`.
+
+## Where per-operator / per-driver stats live
+
+`di.presto_on_spark_query_statistics` has only query-level totals: CPU, BCU, peak memory, shuffle bytes, Spark app id. Its `presto_spark_execution_info_json` holds only physical resource settings. For anything finer:
+
+- **Operator stats:** Hive `di.presto_query_operator_stats_inc_archive`, about 1–2 h lag, `ds` = PT date. Use it instead of `di.presto_query_operator_stats`, which lags about 19 h.
+  - One row per (stage, pipeline, operator), with `total_drivers` summed over tasks, `input_positions`, and `runtime_stats` JSON.
+  - Strip the literal `\n` before parsing `runtime_stats`.
+  - Keys are prefixed with the plan node id, e.g. `FilterProject.5.driverCpuTimeNanos` {sum, count, max}. Its count is the number of drivers and its max is the busiest driver.
+  - Custom Velox runtime stats appear here too, e.g. `FilterProject.5.vectorSearchCandidatesExamined`, whose count is the number of UDF calls.
+  - This is native Velox CPU.
+- **Stage stats:** `di.presto_query_stage_stats_inc_archive`: `tasks`, `total_cpu_time_ms`, and a per-task `cpu_distribution` (p25…max).
+- **Busy threads per task** = stage native CPU ÷ the sum of Spark task run time. Take the run times from Scuba `spark_stage_metrics` (`app_id`, `executor_run_time_ms`, submission and completion times; real-time). Spark stage ids count from the leaves while Presto fragment ids count from the root, so match them by `num_tasks`.
+- **Spark's `executor_cpu_time_ms` excludes Velox CPU.** The native worker is a separate C++ process, so that number is mostly JVM warm-up. Don't use it as a parallelism measure.
+- **Driver log:** with `-e wrapper.gtr.enabled=false -e wrapper.gtr.force.enabled=false`, the driver log (plan, query id) is in the Chronos **parent** instance's `meta chronos.job logs`, not in `_launcher_child`.
 
 ## Debugging Java-vs-Velox row-count mismatches (methodology)
 
