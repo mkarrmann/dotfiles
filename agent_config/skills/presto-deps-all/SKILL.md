@@ -90,6 +90,13 @@ Build verification deferred to after Nexus republish + pom bump." \
 # Make sure MAVEN_OPTS includes IPv6 prefs — see Gotchas
 source ~/.localrc   # if it has the MAVEN_OPTS block
 
+# Since 2026-10-22 uploads need a client cert on the PUBLISH ACL — see Gotchas.
+# Rebuild the .p12 each publish (user/agent certs expire in ~3 days).
+PEM=/var/facebook/credentials/$USER/x509/$USER.pem
+P12=$(mktemp -d)/maven-client.p12
+openssl pkcs12 -export -in "$PEM" -inkey "$PEM" -name maven-client -out "$P12" -passout pass:changeit
+export MAVEN_OPTS="$MAVEN_OPTS -Djavax.net.ssl.keyStore=$P12 -Djavax.net.ssl.keyStoreType=PKCS12 -Djavax.net.ssl.keyStorePassword=changeit"
+
 LOG="/tmp/buck2nexus-$(date +%s).log"
 cd <fbsource>
 buck2 run tools/build/buck/java/buck2nexus:buck2nexus -- \
@@ -137,6 +144,12 @@ cd fbcode/github/presto-facebook-trunk
 Or any module that consumes the new dep. If a class still resolves to the old shaded path, you missed a shading rule.
 
 ## Gotchas
+
+### Uploads need a client certificate (bare 403 otherwise)
+
+Since Maven Proxy v335 (2026-10-22, after S702814), `maven.thefacebook.com` authorizes every upload against the `MAVEN_PROXY:maven_proxy_prod` PUBLISH ACL using the caller's TLS client certificate, *before* checking the `deployment` password. `buck2nexus` runs a plain `mvn deploy:deploy-file` that sends no certificate, so every upload gets a bare `403 Forbidden` with an empty body — the same with no credentials, wrong credentials, or the correct ones. The fix is the keystore `MAVEN_OPTS` in Step 3; nothing else changes (same URL, same `fb-nexus-releases` server entry). `oncall_presto_batch` / `oncall_presto_interactive` are on PUBLISH. The agent cert (`claude_code_$USER.pem`) works too (verified 2026-10-27). Announcement: https://fb.workplace.com/groups/java.eng/permalink/33691587553796437/. Source: `fbcode/javafoundations/maven-proxy/` (`MavenProxyRequestHandler.tlsAuthorizer`).
+
+To upload an already-built jar without rebuilding, use `mvn deploy:deploy-file --batch-mode -DrepositoryId=fb-nexus-releases -Durl=https://maven.thefacebook.com/nexus/content/repositories/releases -Dfile=<jar> -DpomFile=<pom>` with the same `MAVEN_OPTS`.
 
 ### IPv6 — maven.thefacebook.com has no A record
 
