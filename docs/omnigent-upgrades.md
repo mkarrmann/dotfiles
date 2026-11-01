@@ -64,6 +64,10 @@ not a pin**:
    systemctl --user start omnigent-server
    ```
 
+   Until you do, `bin/omnigent-server-config-stale --package` reports the
+   server as running the previous release, and both `init.sh`'s closing summary
+   and `sync.sh` print that warning with this command.
+
 4. Verify (from `/` — `python -c` puts cwd on `sys.path`, so running this inside
    an omnigent checkout tests the wrong copy). The `import litellm` line is
    load-bearing: the printed numbers alone stopped proving the extra is there,

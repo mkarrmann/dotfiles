@@ -29,6 +29,12 @@ report() {
 }
 warn() { report WARNING "$@"; }
 summarize_problems() {
+  # Checked last, after anything above that may have restarted the server.
+  local stale
+  if [[ -x "$DOTFILES_DIR/bin/omnigent-server-config-stale" ]] &&
+    stale="$("$DOTFILES_DIR/bin/omnigent-server-config-stale" --package 2>/dev/null)"; then
+    init_problems+=("WARNING: $stale")
+  fi
   ((${#init_problems[@]})) || return 0
   echo >&2
   echo "init.sh finished with ${#init_problems[@]} problem(s):" >&2

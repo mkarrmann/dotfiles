@@ -783,11 +783,16 @@ AGENT_CONFIG_DIR="$DOTFILES_DIR/agent_config" "$DOTFILES_DIR/agent_config/sync-m
 # disk. The server reads config.yaml and the policy modules only at boot and there
 # is no reload endpoint, so an edit to either sits inert until the next restart --
 # with nothing anywhere to say so. Restarting belongs to init.sh, which gates on
-# nothing running; this file only stages, so it warns and moves on.
+# nothing running; this file only stages, so it warns and moves on. --package
+# reports the same for an omnigent upgrade the server has not restarted onto,
+# which nothing restarts automatically on the hub.
 if [[ -x "$DOTFILES_DIR/bin/omnigent-server-config-stale" ]]; then
   if stale_detail="$("$DOTFILES_DIR/bin/omnigent-server-config-stale")"; then
     echo "WARNING: $stale_detail" >&2
     echo "         run init.sh (or bin/omnigent-agents-ensure) while sessions are idle to load it" >&2
+  fi
+  if stale_detail="$("$DOTFILES_DIR/bin/omnigent-server-config-stale" --package)"; then
+    echo "WARNING: $stale_detail" >&2
   fi
 fi
 

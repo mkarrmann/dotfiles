@@ -311,6 +311,19 @@ class InitProfileTest(ProfileFixture):
         self.assertTrue(all(line.startswith("  ") for line in summary), result.stderr)
         self.assertTrue(any("omnigent-version-ensure failed" in line for line in summary), result.stderr)
 
+    def test_a_server_older_than_the_package_is_reported_last(self):
+        self.env["DOTFILES_PROFILE"] = "work"
+        self.stub(
+            self.dotfiles / "bin/omnigent-server-config-stale",
+            '[[ "$1" == --package ]] || exit 1\necho "server predates omnigent 0.20.0; restart it"',
+        )
+        result = self.run_script(self.script)
+        self.assert_success(result)
+        self.assertIn(
+            "WARNING: server predates omnigent 0.20.0; restart it",
+            result.stderr.rstrip().splitlines()[-1],
+        )
+
     def test_worker_restart_follows_successful_server_activation(self):
         self.env["DOTFILES_PROFILE"] = "work"
         self.stub(self.dotfiles / "bin/omnigent-server-url", "exit 0")

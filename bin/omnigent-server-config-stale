@@ -30,24 +30,44 @@
 # Reports at most one file (the check is a boolean; the first witness is enough
 # to act on).
 #
+# --package checks the installed omnigent package instead: the uv tool receipt
+# is rewritten by every install, so a server that booted before it is still
+# running the previous release. This is a separate mode on purpose.
+# omnigent-agents-ensure restarts the server whenever the default check reports
+# stale, and the hub server is deliberately never restarted unattended after an
+# upgrade (a release can migrate chat.db; see omnigent-version-ensure), so the
+# package must not join the default witnesses. --package only reports.
+#
 # Exit codes: 0 = stale (restart needed), 1 = current, or not applicable
 # (server not running / not this host / timestamp unreadable).
 #
-# Env overrides: DOTFILES_DIR.
+# Env overrides: DOTFILES_DIR, UV_TOOL_DIR.
 set -euo pipefail
 
-if [[ $# -gt 1 || ( $# -eq 1 && "$1" != "--quiet" ) ]]; then
-  echo "usage: omnigent-server-config-stale [--quiet]" >&2
-  exit 2
-fi
 quiet=false
-[[ ${1:-} == "--quiet" ]] && quiet=true
+package=false
+for arg in "$@"; do
+  case "$arg" in
+    --quiet) quiet=true ;;
+    --package) package=true ;;
+    *)
+      echo "usage: omnigent-server-config-stale [--quiet] [--package]" >&2
+      exit 2
+      ;;
+  esac
+done
 
 DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
 
 case "$("$DOTFILES/bin/dotfiles-profile")" in
-  work) unit=omnigent-server.service ;;
-  desktop) unit=omnigent-host.service ;;
+  work)
+    unit=omnigent-server.service
+    restart="systemctl --user stop omnigent-server && systemctl --user start omnigent-server"
+    ;;
+  desktop)
+    unit=omnigent-host.service
+    restart="systemctl --user restart omnigent-host"
+    ;;
   *) exit 1 ;;
 esac
 
@@ -58,6 +78,24 @@ started_at="$(systemctl --user show "$unit" \
   --property=ExecMainStartTimestamp --value 2>/dev/null || true)"
 [ -n "$started_at" ] || exit 1
 started_epoch="$(date -d "$started_at" +%s 2>/dev/null)" || exit 1
+
+if [[ "$package" == true ]]; then
+  tool_dir="${UV_TOOL_DIR:-$HOME/.local/share/uv/tools}/omnigent"
+  receipt="$tool_dir/uv-receipt.toml"
+  [ -f "$receipt" ] || exit 1
+  [ "$(stat -c %Y "$receipt")" -gt "$started_epoch" ] || exit 1
+  if [ "$quiet" != true ]; then
+    version=""
+    for info in "$tool_dir"/lib/python*/site-packages/omnigent-*.dist-info; do
+      [ -d "$info" ] || continue
+      version="${info##*/omnigent-}"
+      version=" ${version%.dist-info}"
+    done
+    printf 'omnigent server (%s) started %s, before omnigent%s was installed; restart it when ready: %s\n' \
+      "$unit" "$started_at" "$version" "$restart"
+  fi
+  exit 0
+fi
 
 sources=("$DOTFILES/omnigent_config/config.shared.yaml"
          "$DOTFILES/omnigent_config/config.server.yaml"

@@ -92,9 +92,9 @@ class OmnigentServerConfigTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
-    def run_helper(self, name):
+    def run_helper(self, name, *args):
         return subprocess.run(
-            [str(ROOT / "bin" / name)],
+            [str(ROOT / "bin" / name), *args],
             env=self.env,
             cwd=self.dotfiles,
             capture_output=True,
@@ -154,6 +154,38 @@ class OmnigentServerConfigTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("omnigent_watcher/http_api.py", result.stdout)
         self.assertFalse(self.calls.exists())
+
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "needs systemd and GNU date/stat")
+    def test_package_mode_reports_an_install_newer_than_the_server(self):
+        self.env["TEST_PROFILE"] = "work"
+        self.script(
+            self.bin / "systemctl",
+            'if [[ "$2" == show ]]; then echo "2026-01-02 00:00:00 UTC"; fi',
+        )
+        tool = self.home / ".local/share/uv/tools/omnigent"
+        (tool / "lib/python3.12/site-packages/omnigent-0.20.0.dist-info").mkdir(parents=True)
+        receipt = tool / "uv-receipt.toml"
+        receipt.write_text("[tool]\n")
+        os.utime(receipt, (1, 1))
+        # A config source edited after boot must not trip --package: that mode
+        # feeds only warnings, never omnigent-agents-ensure's restart.
+        policy = self.dotfiles / "omnigent_config/config.shared.yaml"
+        os.utime(policy, (2_000_000_000, 2_000_000_000))
+        self.assertEqual(self.run_helper("omnigent-server-config-stale", "--package").returncode, 1)
+
+        os.utime(receipt, (2_000_000_000, 2_000_000_000))
+        result = self.run_helper("omnigent-server-config-stale", "--package")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("before omnigent 0.20.0 was installed", result.stdout)
+        self.assertIn("systemctl --user stop omnigent-server", result.stdout)
+
+        os.utime(policy, (1, 1))
+        for path in (self.dotfiles / "omnigent_config").rglob("*"):
+            os.utime(path, (1, 1))
+        # ...and the default mode ignores the package, so an upgrade alone never
+        # makes omnigent-agents-ensure restart the hub.
+        self.assertEqual(self.run_helper("omnigent-server-config-stale").returncode, 1)
 
 
 if __name__ == "__main__":
