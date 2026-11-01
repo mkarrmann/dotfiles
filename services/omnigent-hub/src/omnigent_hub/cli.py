@@ -96,6 +96,14 @@ def build_parser() -> argparse.ArgumentParser:
     attach.add_argument("--json", action="store_true")
 
     status = subparsers.add_parser("local-status", help="report this machine's hub state")
+    status.add_argument(
+        "--no-snapshot",
+        action="store_true",
+        help=(
+            "skip verifying the newest snapshot, which reads a whole archive from "
+            "shared storage; newest_snapshot is then null"
+        ),
+    )
     status.add_argument("--json", action="store_true")
 
     quiesce = subparsers.add_parser(
@@ -320,7 +328,7 @@ def main(argv: list[str] | None = None) -> None:
                 args.json,
             )
         elif args.command == "local-status":
-            _emit(local_status(config), args.json)
+            _emit(local_status(config, check_snapshot=not args.no_snapshot), args.json)
         elif args.command == "quiesce-check":
             _emit(assert_sessions_quiescent(config), args.json)
         elif args.command == "services":

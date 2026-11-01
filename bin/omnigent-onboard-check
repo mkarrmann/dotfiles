@@ -44,7 +44,9 @@ if not isinstance(result, dict) or not isinstance(result.get("data"), list):
 PY
 
 if "$SERVER_URL_BIN" --is-candidate; then
-  status="$($HUB_BIN local-status --json)"
+  # --no-snapshot: only the record, gate and services are checked below, and
+  # verifying the newest archive reads over a gigabyte from shared storage.
+  status="$($HUB_BIN local-status --no-snapshot --json)"
   STATUS_JSON="$status" python3 - "$local_fqdn" <<'PY'
 import json
 import os

@@ -545,7 +545,13 @@ def _storage_expiry(config: HubConfig) -> dict[str, Any]:
     }
 
 
-def local_status(config: HubConfig) -> dict[str, Any]:
+def local_status(config: HubConfig, *, check_snapshot: bool = True) -> dict[str, Any]:
+    """This machine's hub state.
+
+    ``check_snapshot=False`` skips verifying the newest snapshot, which reads a
+    whole archive (over a gigabyte) from the FUSE store, for callers that only
+    need routing and service state.
+    """
     record: ActiveHubRecord | None = None
     record_error: str | None = None
     try:
@@ -567,7 +573,7 @@ def local_status(config: HubConfig) -> dict[str, Any]:
         # Only the newest is reported, so only the newest is verified. See
         # newest_valid_snapshot: the store is on a FUSE mount and checksumming
         # all of it here is what made this call hang for minutes.
-        newest = newest_valid_snapshot(config)
+        newest = newest_valid_snapshot(config) if check_snapshot else None
         if newest is not None:
             newest_snapshot = load_manifest_from_archive(config, newest)
             newest_snapshot["archive_path"] = str(newest)
@@ -632,6 +638,7 @@ def local_status(config: HubConfig) -> dict[str, Any]:
             "record": str(config.record_path),
         },
         "newest_snapshot": newest_snapshot,
+        "snapshot_checked": check_snapshot,
         "snapshot_error": snapshot_error,
         "storage_expiry": _storage_expiry(config),
         "degraded_streak": _read_optional_json(config.degraded_streak),

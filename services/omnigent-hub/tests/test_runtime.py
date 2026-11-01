@@ -35,6 +35,7 @@ from omnigent_hub.runtime import (
     check_gate,
     force_start,
     initialize,
+    local_status,
     probe_host,
     read_force_override,
     reconcile_host,
@@ -1479,3 +1480,34 @@ def test_the_restart_alert_is_queued_before_the_restart(
         "omnigent-alert@omnigent-server.service.service",
         "restart-server",
     ]
+
+
+def test_local_status_can_skip_the_snapshot_check(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """omnigent-onboard-check reads only routing and services; verifying the
+    newest archive made every init.sh on the standby wait minutes for it."""
+
+    def fail(config: HubConfig) -> None:
+        raise AssertionError("the snapshot store must not be read")
+
+    monkeypatch.setattr("omnigent_hub.runtime.newest_valid_snapshot", fail)
+    monkeypatch.setattr("omnigent_hub.runtime.systemd_state", lambda unit: "active")
+    for name in (
+        "_capture_version",
+        "_capture_bridge_version",
+        "_capture_watcher_version",
+        "_capture_hub_version",
+    ):
+        monkeypatch.setattr(f"omnigent_hub.runtime.{name}", lambda config: "test")
+    monkeypatch.setattr("omnigent_hub.runtime._nvim_environment_urls", lambda: {})
+    monkeypatch.setattr("omnigent_hub.runtime.resolve_record", lambda config: None)
+    monkeypatch.setattr("omnigent_hub.runtime.check_gate", lambda config: None)
+    monkeypatch.setattr("omnigent_hub.runtime._storage_expiry", lambda config: {})
+
+    status = local_status(hub_config, check_snapshot=False)
+
+    assert status["newest_snapshot"] is None
+    assert status["snapshot_checked"] is False
+    assert status["snapshot_error"] is None
+    assert status["services"]["omnigent-host.service"] == "active"
