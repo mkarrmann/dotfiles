@@ -290,11 +290,26 @@ class InitProfileTest(ProfileFixture):
         result = self.run_script(self.script)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("server activation deferred or failed", result.stderr)
+        self.assertIn("server activation deferred or failed", result.stderr.rstrip().splitlines()[-1])
         calls = self.calls()
         self.assertTrue(any(line.startswith("omnigent-agents-ensure ") for line in calls), calls)
         self.assertFalse(any(line.startswith("omnigent-watcher ") for line in calls), calls)
         self.assertFalse(any(line.startswith("systemctl ") for line in calls), calls)
         self.assertFalse(any(line.startswith("omnigent-hub reconcile-services ") for line in calls), calls)
+
+    def test_failed_steps_are_repeated_after_everything_else(self):
+        """A warning printed mid-run scrolls out of view (an upgrade prints ~120
+        lines of uv output after it), so init.sh repeats it on exit."""
+        self.env["DOTFILES_PROFILE"] = "work"
+        self.stub(self.dotfiles / "bin/omnigent-version-ensure", self.recorder + "\nexit 1")
+        result = self.run_script(self.script)
+        self.assert_success(result)
+        lines = result.stderr.rstrip().splitlines()
+        header = next(i for i, line in enumerate(lines) if line.startswith("init.sh finished with"))
+        summary = lines[header + 1:]
+        self.assertTrue(summary, result.stderr)
+        self.assertTrue(all(line.startswith("  ") for line in summary), result.stderr)
+        self.assertTrue(any("omnigent-version-ensure failed" in line for line in summary), result.stderr)
 
     def test_worker_restart_follows_successful_server_activation(self):
         self.env["DOTFILES_PROFILE"] = "work"

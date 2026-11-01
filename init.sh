@@ -16,22 +16,42 @@ DOTFILES_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 DOTFILES_PROFILE="$("$DOTFILES_DIR/bin/dotfiles-profile")" || exit 1
 export DOTFILES_DIR DOTFILES_PROFILE
 
+# Failed steps warn and carry on, so the run's last lines say nothing about
+# them -- a single upgrade prints ~120 lines of uv package list after its
+# warning. Every warning is therefore repeated in a summary on exit, including
+# the early exit after a deferred server activation.
+init_problems=()
+report() {
+  local level="$1"
+  shift
+  echo "$level: $*" >&2
+  init_problems+=("$level: $*")
+}
+warn() { report WARNING "$@"; }
+summarize_problems() {
+  ((${#init_problems[@]})) || return 0
+  echo >&2
+  echo "init.sh finished with ${#init_problems[@]} problem(s):" >&2
+  printf '  %s\n' "${init_problems[@]}" >&2
+}
+trap summarize_problems EXIT
+
 # ---------------------------------------------------------------------------
 # 1. Reflect config: symlinks, generated files, staged systemd/launchd units.
 # ---------------------------------------------------------------------------
-"$DOTFILES_DIR/sync.sh" || echo "WARNING: config sync (sync.sh) failed" >&2
+"$DOTFILES_DIR/sync.sh" || warn "config sync (sync.sh) failed"
 
 # ---------------------------------------------------------------------------
 # 2. Installs / dependency bootstrap (network-bound; non-disruptive).
 # ---------------------------------------------------------------------------
 "$DOTFILES_DIR/bin/codecompanion-fork-ensure" \
-  || echo "WARNING: CodeCompanion fork bootstrap failed; Lazy may be unable to install it" >&2
+  || warn "CodeCompanion fork bootstrap failed; Lazy may be unable to install it"
 
 # The MCP client runs on every machine; the worker runs beside the server.
 watcher_project="$DOTFILES_DIR/services/omnigent-watcher"
 if [[ -f "$watcher_project/uv.lock" ]] && command -v uv &>/dev/null; then
   (cd "$watcher_project" && uv sync --frozen --all-groups) ||
-    echo "WARNING: omnigent-watcher dependency sync failed" >&2
+    warn "omnigent-watcher dependency sync failed"
 fi
 
 # Cross-agent plugin install: uninstalls dropped plugins, cleans orphan caches,
@@ -39,16 +59,16 @@ fi
 # is not on PATH (skips with a single warning).
 if [[ "$DOTFILES_PROFILE" == work ]]; then
   "$DOTFILES_DIR/agent_config/bootstrap-plugins" ||
-    echo "WARNING: agent_config/bootstrap-plugins failed" >&2
+    warn "agent_config/bootstrap-plugins failed"
 
   # The operator CLI runs locally on both hub devservers and on the Mac, which
   # orchestrates authenticated handoffs through x2ssh.
   "$DOTFILES_DIR/bin/omnigent-version-ensure" ||
-    echo "WARNING: failed to install the pinned Omnigent version" >&2
+    warn "omnigent-version-ensure failed: Omnigent was not upgraded (see its error above)"
   hub_project="$DOTFILES_DIR/services/omnigent-hub"
   if [[ -f "$hub_project/uv.lock" ]] && command -v uv &>/dev/null; then
     (cd "$hub_project" && uv sync --frozen --all-groups) ||
-      echo "WARNING: omnigent-hub dependency sync failed" >&2
+      warn "omnigent-hub dependency sync failed"
   fi
   # Resolve routing before the config and agent helpers consume it. The Mac
   # uses its existing localhost proxy and does not need the Linux routing cache.
@@ -65,7 +85,7 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
       fi
     fi
     if [[ "$routing_ready" != true ]]; then
-      echo "WARNING: Omnigent routing unavailable; skipping dependent setup and onboarding" >&2
+      warn "Omnigent routing unavailable; skipping dependent setup and onboarding"
     fi
   fi
 
@@ -78,7 +98,7 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
     # clients only reconcile config.yaml; they never open a local chat.db. See
     # bin/omnigent-dvsc-ensure and omnigent_config/agents/dvsc/.
     "$DOTFILES_DIR/bin/omnigent-dvsc-ensure" --config-only ||
-      echo "WARNING: omnigent-dvsc-ensure failed (dvsc ACP config may be stale)" >&2
+      warn "omnigent-dvsc-ensure failed (dvsc ACP config may be stale)"
   fi
 
   # Omnigent: propagate the shared configuration into ~/.omnigent/config.yaml.
@@ -86,13 +106,13 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
   # sync ran before omnigent was installed and self-skipped) still applies it
   # once the install above completes.
   "$DOTFILES_DIR/bin/omnigent-config-ensure" ||
-    echo "WARNING: omnigent-config-ensure failed (shared config not applied)" >&2
+    warn "omnigent-config-ensure failed (shared config not applied)"
 
   # Omnigent: shim the managed-Codex login probe. Runs here as well as in sync.sh
   # for the same reason as config-ensure above — the stage-1 sync self-skips when
   # omnigent is not yet installed, and the dismissal half needs its interpreter.
   "$DOTFILES_DIR/bin/omnigent-codex-login-ensure" ||
-    echo "WARNING: omnigent-codex-login-ensure failed (codex-native first turns may fail)" >&2
+    warn "omnigent-codex-login-ensure failed (codex-native first turns may fail)"
 
   # Omnigent: reconcile all managed builtin agent bundles (claude-sdk, codex,
   # dvsc, and packaged Polly/Debby) so they show in the CodeCompanion omnigent
@@ -103,7 +123,7 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
   # omnigent_config/agents/{claude,codex,dvsc}/.
   if [[ "$routing_ready" == true ]]; then
     if ! "$DOTFILES_DIR/bin/omnigent-agents-ensure"; then
-      echo "ERROR: Omnigent server activation deferred or failed; skipping further worker convergence. Rerun init.sh when the server can be refreshed." >&2
+      report ERROR "Omnigent server activation deferred or failed; skipping further worker convergence. Rerun init.sh when the server can be refreshed."
       exit 1
     fi
   fi
@@ -130,7 +150,7 @@ PY
       watcher_job="gui/$UID/com.mkarrmann.omnigent-watcher"
       if launchctl print "$watcher_job" >/dev/null 2>&1 &&
           ! launchctl bootout "$watcher_job"; then
-        echo "WARNING: failed to stop desktop Omnigent watcher" >&2
+        warn "failed to stop desktop Omnigent watcher"
       else
         rm -f "$watcher_plist"
       fi
@@ -174,7 +194,7 @@ PY
 
       if "$DOTFILES_DIR/bin/omnigent-server-url" --is-candidate; then
         "$DOTFILES_DIR/bin/omnigent-retire-legacy-standby" ||
-          echo "WARNING: failed to retire legacy Omnigent standby launchers" >&2
+          warn "failed to retire legacy Omnigent standby launchers"
       fi
 
       # The private Google Chat bridge runs only beside the central server. Its
@@ -183,20 +203,20 @@ PY
       # install the same unit, whose ExecCondition keeps it inactive.
       gchat_project="$DOTFILES_DIR/services/omnigent-google-chat"
       "$DOTFILES_DIR/bin/omnigent-google-chat-ensure" ||
-        echo "WARNING: omnigent-google-chat runtime config generation failed" >&2
+        warn "omnigent-google-chat runtime config generation failed"
       if "$DOTFILES_DIR/bin/omnigent-server-url" --is-candidate &&
         [[ -x /usr/local/bin/meta ]] &&
         [[ -f "$gchat_project/uv.lock" ]] &&
         command -v uv &>/dev/null; then
         (cd "$gchat_project" && uv sync --frozen --all-groups) ||
-          echo "WARNING: omnigent-google-chat dependency sync failed" >&2
+          warn "omnigent-google-chat dependency sync failed"
       fi
 
       # The reconcile timer (enabled by sync.sh) enables hub-only services on the
       # active owner and maintains the loopback SSH tunnel elsewhere. Trigger one
       # pass eagerly so a fresh bootstrap converges without waiting for the timer.
       "$DOTFILES_DIR/bin/omnigent-hub" reconcile-services --json >/dev/null ||
-        echo "WARNING: initial Omnigent service reconciliation failed" >&2
+        warn "initial Omnigent service reconciliation failed"
 
       omnigent_onboarded=false
       for _ in $(seq 1 15); do
@@ -207,7 +227,7 @@ PY
         sleep 2
       done
       if [[ "$omnigent_onboarded" != true ]]; then
-        echo "WARNING: Omnigent onboarding did not converge; run 'omnigent-hub status' for the specific failing invariant" >&2
+        warn "Omnigent onboarding did not converge; run 'omnigent-hub status' for the specific failing invariant"
       fi
 
     fi
@@ -225,7 +245,7 @@ PY
         session="$1"
         workdir="${2:-}"
         "$HOME/bin/nvs-setup" "$session" ${workdir:+"$workdir"} ||
-          echo "WARNING: nvs-setup failed for $session" >&2
+          warn "nvs-setup failed for $session"
       done <"$nvs_sessions"
     fi
   fi
@@ -233,14 +253,14 @@ PY
 else
   echo "[desktop] skipping work plugins and Omnigent hub setup"
   "$DOTFILES_DIR/bin/omnigent-desktop-ensure" ||
-    echo "WARNING: local Omnigent startup failed" >&2
+    warn "local Omnigent startup failed"
   if [[ "$(uname -s)" == Linux ]]; then
     "$DOTFILES_DIR/bin/omnigent-desktop-app-ensure" ||
-      echo "WARNING: Omnigent desktop app installation failed" >&2
+      warn "Omnigent desktop app installation failed"
     "$DOTFILES_DIR/bin/coredump-size-cap-ensure" ||
-      echo "WARNING: coredump size cap installation failed" >&2
+      warn "coredump size cap installation failed"
     "$DOTFILES_DIR/bin/earlyoom-ensure" ||
-      echo "WARNING: earlyoom installation failed" >&2
+      warn "earlyoom installation failed"
   fi
 
   # Omnigent config is universal: the managed local server that the host above
@@ -252,9 +272,9 @@ else
   # restarts it once more to load the new definitions; when sessions have
   # already reconnected it prints the restart instead.
   "$DOTFILES_DIR/bin/omnigent-config-ensure" ||
-    echo "WARNING: omnigent-config-ensure failed (shared config not applied)" >&2
+    warn "omnigent-config-ensure failed (shared config not applied)"
   "$DOTFILES_DIR/bin/omnigent-agents-ensure" ||
-    echo "WARNING: omnigent-agents-ensure failed (managed agents may be stale in the picker)" >&2
+    warn "omnigent-agents-ensure failed (managed agents may be stale in the picker)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -263,7 +283,7 @@ fi
 # Nori CLI
 if ! command -v nori &>/dev/null; then
     "$DOTFILES_DIR/bin/install-or-upgrade-nori" && echo "installed nori" \
-        || echo "WARNING: nori install failed" >&2
+        || warn "nori install failed"
 fi
 
 # Omnigent TLS front door (macOS only; self-skips elsewhere). Installs caddy
@@ -272,7 +292,7 @@ fi
 # See bin-macos/omnigent-tls-ensure.
 if [[ "$DOTFILES_PROFILE" == work ]]; then
   "$DOTFILES_DIR/bin-macos/omnigent-tls-ensure" \
-      || echo "WARNING: omnigent-tls-ensure failed (desktop app may not connect)" >&2
+      || warn "omnigent-tls-ensure failed (desktop app may not connect)"
 fi
 
 if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
@@ -293,7 +313,7 @@ if [[ -x "$HOME/.tmux/plugins/tpm/bin/install_plugins" ]]; then
     else
         tmux set-environment -g TMUX_PLUGIN_MANAGER_PATH "$HOME/.tmux/plugins"
         "$HOME/.tmux/plugins/tpm/bin/install_plugins" && echo "installed tmux plugins" \
-            || echo "WARNING: tmux plugin install failed" >&2
+            || warn "tmux plugin install failed"
     fi
 fi
 
@@ -302,12 +322,12 @@ if ! command -v cargo &>/dev/null; then
         curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
             | sh -s -- -y --profile minimal --no-modify-path \
             && echo "installed cargo (via rustup)" \
-            || echo "WARNING: cargo install via rustup failed" >&2
+            || warn "cargo install via rustup failed"
     elif command -v brew &>/dev/null; then
         brew install rust && echo "installed cargo (via brew rust)" \
-            || echo "WARNING: cargo install via brew failed" >&2
+            || warn "cargo install via brew failed"
     else
-        echo "WARNING: cargo not found and no installer available (need curl or brew)" >&2
+        warn "cargo not found and no installer available (need curl or brew)"
     fi
 fi
 
@@ -319,12 +339,12 @@ fi
 if ! command -v bob &>/dev/null; then
     if command -v cargo &>/dev/null; then
         cargo install bob-nvim && echo "installed bob" \
-            || echo "WARNING: bob install via cargo failed" >&2
+            || warn "bob install via cargo failed"
     elif command -v brew &>/dev/null; then
         brew install bob && echo "installed bob" \
-            || echo "WARNING: bob install via brew failed" >&2
+            || warn "bob install via brew failed"
     else
-        echo "WARNING: bob not found and no installer available (need cargo or brew)" >&2
+        warn "bob not found and no installer available (need cargo or brew)"
     fi
 fi
 
@@ -333,19 +353,19 @@ fi
 # formatter that drifts between machines rewrites files depending on where you
 # edited. See bin/stylua-ensure.
 "$DOTFILES_DIR/bin/stylua-ensure" \
-    || echo "WARNING: stylua install failed (make format will be unavailable)" >&2
+    || warn "stylua install failed (make format will be unavailable)"
 
 # marksman, the Markdown language server. Non-fatal: GitHub release assets are
 # not reachable from every host here, and nvim leaves marksman disabled when the
 # binary is absent rather than erroring. See bin/marksman-ensure.
 "$DOTFILES_DIR/bin/marksman-ensure" \
-    || echo "WARNING: marksman install failed (markdown LSP will stay disabled)" >&2
+    || warn "marksman install failed (markdown LSP will stay disabled)"
 
 # GitHub CLI, latest release into ~/.local/bin. Non-fatal for the same reason
 # as marksman: release assets are not reachable from every host, and nothing
 # else here depends on it. See bin/gh-ensure.
 "$DOTFILES_DIR/bin/gh-ensure" \
-    || echo "WARNING: gh install failed" >&2
+    || warn "gh install failed"
 
 # AWS CLI and the AWS Agent Toolkit (aws-mcp server + aws-* skills for every
 # detected agent). Desktop only: it is a personal account. Credentials never
@@ -353,5 +373,5 @@ fi
 # until `aws login` has been run on this machine. See bin/aws-agent-toolkit-ensure.
 if [[ "$DOTFILES_PROFILE" == desktop ]]; then
   "$DOTFILES_DIR/bin/aws-agent-toolkit-ensure" \
-      || echo "WARNING: AWS Agent Toolkit setup failed" >&2
+      || warn "AWS Agent Toolkit setup failed"
 fi
