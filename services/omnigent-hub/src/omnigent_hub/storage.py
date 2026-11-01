@@ -23,14 +23,34 @@ class StorageError(RuntimeError):
 
 
 @contextmanager
-def local_lock(path: Path) -> Iterator[None]:
+def local_lock(
+    path: Path,
+    *,
+    wait_seconds: float = 0.0,
+    on_wait: Callable[[], None] | None = None,
+) -> Iterator[None]:
+    """Hold an exclusive flock on *path*.
+
+    By default a held lock fails immediately. With *wait_seconds*, poll for up
+    to that long instead, calling *on_wait* once when the first attempt finds
+    the lock held.
+    """
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with path.open("a+", encoding="utf-8") as handle:
         os.chmod(path, 0o600)
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise StorageError(f"another operation owns {path}") from exc
+        deadline = time.monotonic() + wait_seconds
+        announced = False
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as exc:
+                if time.monotonic() >= deadline:
+                    raise StorageError(f"another operation owns {path}") from exc
+                if not announced and on_wait is not None:
+                    on_wait()
+                announced = True
+                time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
         try:
             yield
         finally:

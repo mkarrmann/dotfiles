@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import UTC, datetime
 
 import pytest
@@ -16,7 +17,7 @@ from omnigent_hub.runtime import (
     HostProbe,
     HubRuntimeError,
 )
-from omnigent_hub.storage import StorageError
+from omnigent_hub.storage import StorageError, local_lock
 
 
 def test_direct_quiesced_backup_restores_services_when_turn_is_active(
@@ -246,6 +247,37 @@ def test_a_stale_backup_does_not_short_circuit_the_snapshot(
     main(["snapshot", "--max-age", "3600", "--json"])
 
     assert taken == [True]
+
+
+def test_waiting_on_an_in_flight_snapshot_reuses_its_recovery_point(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The upgrade path must not fail, or write a second archive, because the
+    snapshot timer happens to be mid-run when it asks for a recovery point."""
+    hub_config.local_state_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("omnigent_hub.cli.load_config", lambda: hub_config)
+    monkeypatch.setattr("omnigent_hub.cli.read_record", lambda config: _active_record())
+
+    def fail(*args: object, **kwargs: object) -> object:
+        raise AssertionError("the in-flight snapshot already satisfies --max-age")
+
+    monkeypatch.setattr("omnigent_hub.cli.create_snapshot", fail)
+    held = threading.Event()
+
+    def in_flight_snapshot() -> None:
+        with local_lock(hub_config.local_state_dir / "snapshot.lock"):
+            held.set()
+            threading.Event().wait(0.5)
+            fresh = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            hub_config.backup_status.write_text(
+                json.dumps({"generation_id": "gen-2", "created_at": fresh, "published": True}),
+                encoding="utf-8",
+            )
+
+    threading.Thread(target=in_flight_snapshot, daemon=True).start()
+    assert held.wait(5)
+
+    main(["snapshot", "--max-age", "900", "--wait-lock", "10", "--json"])
 
 
 def test_an_unreadable_record_downgrades_the_snapshot_to_local(

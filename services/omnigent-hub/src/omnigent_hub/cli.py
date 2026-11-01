@@ -216,6 +216,17 @@ def build_parser() -> argparse.ArgumentParser:
             "ownership outage does not also stop recovery points."
         ),
     )
+    snapshot.add_argument(
+        "--wait-lock",
+        type=float,
+        default=0.0,
+        metavar="SECONDS",
+        help=(
+            "wait up to this long for an in-flight snapshot instead of failing "
+            "at once. With --max-age, the snapshot waited on can satisfy the "
+            "request, so the caller does not write a second archive."
+        ),
+    )
     snapshot.add_argument("--json", action="store_true")
 
     alert = subparsers.add_parser(
@@ -426,13 +437,26 @@ def main(argv: list[str] | None = None) -> None:
                     publish=not args.no_publish,
                     fallback_local=args.fallback_local,
                 )
-                with local_lock(config.local_state_dir / "snapshot.lock"):
-                    snapshot_result = create_snapshot(
-                        config,
-                        record,
-                        quiesced=args.quiesced,
-                        publish=publish,
+                with local_lock(
+                    config.local_state_dir / "snapshot.lock",
+                    wait_seconds=args.wait_lock,
+                    on_wait=lambda: print(
+                        f"waiting up to {args.wait_lock:.0f}s for an in-flight snapshot",
+                        file=sys.stderr,
+                    ),
+                ):
+                    # The snapshot we waited on may be the recovery point the
+                    # caller asked for.
+                    snapshot_result: Mapping[str, object] | None = _recent_backup(
+                        config, args.max_age
                     )
+                    if snapshot_result is None:
+                        snapshot_result = create_snapshot(
+                            config,
+                            record,
+                            quiesced=args.quiesced,
+                            publish=publish,
+                        )
                 _emit(snapshot_result, args.json)
         elif args.command == "alert":
             # Never fails the caller: this runs as an OnFailure= handler, and a

@@ -45,7 +45,10 @@ not a pin**:
    database (`omnigent-hub gate`), `omnigent-version-ensure` takes an
    `omnigent-hub snapshot` before replacing the package — a consistent SQLite
    backup that also covers the bridge and watcher databases and artifacts — and
-   refuses to upgrade if it cannot. Override deliberately with
+   refuses to upgrade if it cannot. If the snapshot timer is mid-run it waits
+   for that run (up to 300s) and reuses its archive when it is fresh enough, so
+   there is no need to pause the timer — which would not stick anyway, since
+   the reconcile loop restarts it within a minute. Override deliberately with
    `OMNIGENT_SKIP_RECOVERY_POINT=1`. Do not `cp chat.db` by hand: a copy of a
    live database with a WAL is not a consistent backup.
 

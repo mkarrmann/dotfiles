@@ -165,7 +165,13 @@ ensure_recovery_point() {
   # a database it does not own.
   "$hub_bin" gate >/dev/null 2>&1 || return 0
   echo "[omnigent-version] ensuring a recovery point before replacing the package"
-  if ! "$hub_bin" snapshot --max-age 900 --fallback-local --json >/dev/null; then
+  # --wait-lock: the snapshot timer can hold snapshot.lock for most of its
+  # five-minute period, and its run is capped at 270s (omnigent-snapshot.service).
+  # Waiting out one run turns "another operation owns snapshot.lock" from a
+  # refused upgrade into a short delay, and --max-age lets that run's archive
+  # serve as the recovery point. Pausing the timer instead does not work: the
+  # reconcile loop restarts it within a minute.
+  if ! "$hub_bin" snapshot --max-age 900 --fallback-local --wait-lock 300 --json >/dev/null; then
     cat >&2 <<'EOF'
 ERROR: could not take a recovery point and this host owns the shared database.
        A release can migrate chat.db, so the upgrade is refused rather than run
