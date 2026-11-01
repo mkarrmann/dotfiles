@@ -9,9 +9,19 @@ local_fqdn="${OMNIGENT_LOCAL_FQDN:-$(hostname -f 2>/dev/null || hostname)}"
 
 [[ "$(uname -s)" == Linux ]] || exit 0
 
-url="$($SERVER_URL_BIN)"
-curl -sf --noproxy '*' --max-time 5 "$url/health" >/dev/null
-systemctl --user is-active --quiet omnigent-host.service
+# Every failing check names itself. Under set -e a bare `curl -sf` or
+# `systemctl is-active --quiet` exits with only a status code, which init.sh's
+# retry loop then repeats fifteen times without a word.
+fail() {
+  echo "[omnigent-onboard] $*" >&2
+  exit 1
+}
+
+url="$($SERVER_URL_BIN)" || fail "could not resolve the Omnigent server URL ($SERVER_URL_BIN)"
+curl -sf --noproxy '*' --max-time 5 "$url/health" >/dev/null ||
+  fail "server at $url is not answering /health"
+systemctl --user is-active --quiet omnigent-host.service ||
+  fail "omnigent-host.service is $(systemctl --user is-active omnigent-host.service 2>/dev/null), expected active"
 
 # Exercise one real request over the host WebSocket. The host list's `online`
 # flag only proves that a socket was accepted; this RPC proves bidirectional
@@ -25,8 +35,11 @@ import urllib.request
 base = os.environ["ONBOARD_URL"].rstrip("/")
 fqdn = os.environ["ONBOARD_FQDN"]
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-with opener.open(f"{base}/v1/hosts", timeout=5) as response:
-    payload = json.load(response)
+try:
+    with opener.open(f"{base}/v1/hosts", timeout=5) as response:
+        payload = json.load(response)
+except (OSError, ValueError) as exc:
+    raise SystemExit(f"cannot list execution hosts at {base}: {exc}") from None
 hosts = payload.get("hosts") if isinstance(payload, dict) else None
 if not isinstance(hosts, list):
     raise SystemExit("Omnigent host list returned an invalid payload")
@@ -37,8 +50,11 @@ host_id = matches[0].get("host_id")
 if not isinstance(host_id, str) or not host_id:
     raise SystemExit(f"execution host {fqdn!r} has no host id")
 path = urllib.parse.quote(host_id, safe="")
-with opener.open(f"{base}/v1/hosts/{path}/filesystem?limit=1", timeout=10) as response:
-    result = json.load(response)
+try:
+    with opener.open(f"{base}/v1/hosts/{path}/filesystem?limit=1", timeout=10) as response:
+        result = json.load(response)
+except (OSError, ValueError) as exc:
+    raise SystemExit(f"execution host {fqdn!r} did not answer an RPC: {exc}") from None
 if not isinstance(result, dict) or not isinstance(result.get("data"), list):
     raise SystemExit(f"execution host {fqdn!r} RPC returned an invalid payload")
 PY
@@ -46,7 +62,8 @@ PY
 if "$SERVER_URL_BIN" --is-candidate; then
   # --no-snapshot: only the record, gate and services are checked below, and
   # verifying the newest archive reads over a gigabyte from shared storage.
-  status="$($HUB_BIN local-status --no-snapshot --json)"
+  status="$($HUB_BIN local-status --no-snapshot --json)" ||
+    fail "omnigent-hub local-status failed"
   STATUS_JSON="$status" python3 - "$local_fqdn" <<'PY'
 import json
 import os
@@ -94,7 +111,8 @@ for service in forbidden:
         raise SystemExit(f"{service} must be inactive for this role")
 PY
 else
-  systemctl --user is-active --quiet omnigent-client-proxy.service
+  systemctl --user is-active --quiet omnigent-client-proxy.service ||
+    fail "omnigent-client-proxy.service is $(systemctl --user is-active omnigent-client-proxy.service 2>/dev/null), expected active"
 fi
 
 # The managed-Codex login shim (bin/omnigent-codex-login-ensure) is invisible at
