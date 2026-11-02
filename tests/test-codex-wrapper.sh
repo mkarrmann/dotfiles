@@ -47,6 +47,32 @@ grep -Fx 'arg=model="test"' "$TMP/out" >/dev/null
 grep -Fx 'arg=app-server' "$TMP/out" >/dev/null
 grep -Fx 'arg=--flag' "$TMP/out" >/dev/null
 
+# `codex exec` never inherits a socket stdin (Claude Code's never-closing one);
+# pipes, files and other subcommands keep theirs.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'if [[ -S /dev/stdin ]]; then echo stdin=socket' \
+  'elif [[ -p /dev/stdin ]]; then echo stdin=pipe' \
+  'else echo stdin=other; fi' >"$TMP/stdin-codex"
+chmod +x "$TMP/stdin-codex"
+with_socket_stdin() {
+  python3 -c 'import socket, subprocess, sys
+a, b = socket.socketpair()
+sys.exit(subprocess.run(sys.argv[1:], stdin=a).returncode)' "$@"
+}
+export OMNIGENT_CODEX_REAL_PATH="$TMP/stdin-codex"
+with_socket_stdin "$WRAPPER" exec "prompt" >"$TMP/out" 2>"$TMP/err"
+grep -Fx 'stdin=other' "$TMP/out" >/dev/null
+grep -F 'reading /dev/null instead' "$TMP/err" >/dev/null
+with_socket_stdin "$WRAPPER" -c 'model="m"' --skip-git-repo-check e "prompt" >"$TMP/out" 2>/dev/null
+grep -Fx 'stdin=other' "$TMP/out" >/dev/null
+with_socket_stdin "$WRAPPER" review >"$TMP/out"
+grep -Fx 'stdin=socket' "$TMP/out" >/dev/null
+echo input | "$WRAPPER" exec - >"$TMP/out"
+grep -Fx 'stdin=pipe' "$TMP/out" >/dev/null
+unset OMNIGENT_CODEX_REAL_PATH
+
 # Launcher resolution. CODEX_LAUNCHER_CANDIDATES stands in for the built-in
 # system list so these run identically on a Meta devserver (where
 # /usr/local/bin/codex exists) and on a machine where it does not.

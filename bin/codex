@@ -68,6 +68,34 @@ if [[ "${1:-}" == "app-server" ]]; then
   args=("${config_args[@]}" app-server "${app_server_args[@]}")
 fi
 
+# The subcommand is the first argument that is neither a flag nor a flag's value.
+subcommand=""
+set -- ${args[@]+"${args[@]}"}
+while (($#)); do
+  case "$1" in
+    -c | --config | -m | --model | -p | --profile | -s | --sandbox | \
+      -a | --ask-for-approval | -C | --cd | -i | --image | --add-dir | \
+      --enable | --disable | --local-provider)
+      shift 2 || break
+      ;;
+    -*) shift ;;
+    *)
+      subcommand="$1"
+      break
+      ;;
+  esac
+done
+
+# `codex exec` appends stdin to its prompt whenever stdin is not a terminal and
+# waits for EOF. Claude Code's Bash tool leaves a command its own stdin, a socket
+# that never closes, whenever the command contains a `<` redirect or a heredoc,
+# so such an exec hangs forever at "Reading additional input from stdin...".
+# Real input arrives as a pipe or a file, never as a socket.
+if [[ "$subcommand" == exec || "$subcommand" == e ]] && [[ -S /dev/stdin ]]; then
+  echo "codex wrapper: stdin is a socket that never closes; reading /dev/null instead" >&2
+  exec </dev/null
+fi
+
 # Test seam for HACK(omnigent-sdk-codex-cwd); production leaves this unset.
 # Remove it with the workspace workaround and tests.
 if [[ -n "${OMNIGENT_CODEX_REAL_PATH:-}" ]]; then
