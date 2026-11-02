@@ -27,7 +27,11 @@ if [[ ! -x "$OMNIGENT_BIN" ]]; then
   fi
 fi
 
+# config.yaml stores the id as `host_<hex>`, but `host status --json` reports
+# the bare `<hex>`. Compare bare ids: an exact match never succeeded, so every
+# 60s run "replaced a mismatched daemon" and killed every runner on the Mac.
 desired_host_id="$(awk '$1 == "host_id:" { print $2; exit }' "$state_dir/config.yaml" 2>/dev/null || true)"
+desired_host_id="${desired_host_id#host_}"
 
 host_online() {
   local status
@@ -45,7 +49,7 @@ except (TypeError, ValueError):
 for daemon in payload.get("daemons", []):
     if daemon.get("target", "").rstrip("/") != target.rstrip("/"):
         continue
-    if desired and daemon.get("host_id") != desired:
+    if desired and (daemon.get("host_id") or "").removeprefix("host_") != desired:
         continue
     if daemon.get("host_status") == "online" and daemon.get("process") == "online":
         raise SystemExit(0)
@@ -69,7 +73,7 @@ except (TypeError, ValueError):
 
 for daemon in payload.get("daemons", []):
     if daemon.get("target", "").rstrip("/") == target.rstrip("/"):
-        host_id = daemon.get("host_id")
+        host_id = (daemon.get("host_id") or "").removeprefix("host_")
         if host_id and host_id != desired:
             raise SystemExit(0)
 raise SystemExit(1)
