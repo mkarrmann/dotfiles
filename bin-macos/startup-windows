@@ -151,17 +151,17 @@ claimed_omnigent_ids=""
 omnigent_restore_settled=false
 
 # Workspace 11 hosts a fixed 2x2 "dashboard" laid out by arrange-ws11. Its two
-# Chrome windows (internalfb Calendar + Google Chat) must be claimed BEFORE the
+# Chrome windows (internalfb Calendar + Slack) must be claimed BEFORE the
 # generic Chrome distribution below, or they get handed to ws 1-8 / swept to Z.
 WS11_WORKSPACE=11
 WS11_CAL_URL="https://www.internalfb.com/calendar"
-WS11_CHAT_URL="https://chat.google.com/u/0/app/home"
+WS11_SLACK_URL="https://app.slack.com/client"
 WS11_CAL_TITLE_RE='^Calendar\b'
-WS11_CHAT_TITLE_RE='^Chat\b'
+WS11_SLACK_TITLE_RE=' - Slack - '
 # Ids reserved by reserve_ws11_chrome, handed to arrange-ws11 so it arranges the
 # windows this script picked instead of re-resolving the titles itself.
 WS11_CAL_WINDOW_ID=""
-WS11_CHAT_WINDOW_ID=""
+WS11_SLACK_WINDOW_ID=""
 OMNIGENT_PORT="${OMNIGENT_PORT:-$(omnigent-server-url --port)}"
 OMNIGENT_TLS_PORT="${OMNIGENT_TLS_PORT:-$(omnigent-server-url --tls-port)}"
 OMNIGENT_PRIMARY_FQDN="${OMNIGENT_PRIMARY_FQDN:-$(omnigent-server-url --primary)}"
@@ -834,7 +834,7 @@ reserve_ws11_chrome() {
 
   local spec slot title_re url wid tries
   for spec in "CAL|${WS11_CAL_TITLE_RE}|${WS11_CAL_URL}" \
-              "CHAT|${WS11_CHAT_TITLE_RE}|${WS11_CHAT_URL}"; do
+              "SLACK|${WS11_SLACK_TITLE_RE}|${WS11_SLACK_URL}"; do
     IFS='|' read -r slot title_re url <<< "$spec"
     wid=$(find_chrome_by_title "$title_re" "$SNAPSHOT")
     if [[ -z "$wid" ]] || chrome_id_is_claimed "$wid"; then
@@ -855,8 +855,8 @@ reserve_ws11_chrome() {
       # claimed_chrome_ids; without the id it re-derives the window from the
       # title and can land on a different one, leaving both on workspace 11.
       case "$slot" in
-        CAL)  WS11_CAL_WINDOW_ID="$wid" ;;
-        CHAT) WS11_CHAT_WINDOW_ID="$wid" ;;
+        CAL)   WS11_CAL_WINDOW_ID="$wid" ;;
+        SLACK) WS11_SLACK_WINDOW_ID="$wid" ;;
       esac
       echo "[ws11] reserved Chrome window $wid ($title_re) for workspace $WS11_WORKSPACE"
     else
@@ -1397,10 +1397,10 @@ fi
 
 # Provision and arrange the workspace-11 dashboard after the standard workspace
 # and Orchest placement passes have converged. The reserved ids travel with the
-# call: arrange-ws11 would otherwise re-resolve '^Calendar\b' / '^Chat\b' from
+# call: arrange-ws11 would otherwise re-resolve '^Calendar\b' / ' - Slack - ' from
 # scratch, and any other Chrome window showing a calendar matches just as well.
 WS11_CAL_WINDOW_ID="$WS11_CAL_WINDOW_ID" \
-WS11_CHAT_WINDOW_ID="$WS11_CHAT_WINDOW_ID" \
+WS11_SLACK_WINDOW_ID="$WS11_SLACK_WINDOW_ID" \
   arrange-workspaces --ensure-windows 11 || {
   echo "WARNING: workspace 11 arrangement did not converge" >&2
   ((failures++)) || true

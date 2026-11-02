@@ -7,7 +7,7 @@ set -uo pipefail
 #   ┌──────────────┬──────────────────────┐
 #   │ Calendar 27% │ Obsidian         73% │   top row (internalfb calendar)
 #   ├──────────────┴──────────────────────┤
-#   │ Chat 70%              │ Orchest  30% │   bottom row (Google Chat / Orchest)
+#   │ Slack 70%             │ Orchest  30% │   bottom row (Slack / Orchest)
 #   └──────────────────────┴──────────────┘
 #
 # Rows are 50/50 height; per-row width splits are TOP_LEFT_PCT / BOT_LEFT_PCT.
@@ -39,7 +39,7 @@ set -uo pipefail
 #   and AeroSpace's ordering of equal titles is not stable between calls, so
 #   resolving the same regex twice can yield two different windows. When
 #   startup-windows reserves the dashboard's Chrome windows it passes their ids
-#   in WS11_CAL_WINDOW_ID / WS11_CHAT_WINDOW_ID (WS11_OBS_WINDOW_ID and
+#   in WS11_CAL_WINDOW_ID / WS11_SLACK_WINDOW_ID (WS11_OBS_WINDOW_ID and
 #   WS11_ORCH_WINDOW_ID are honoured too) and those win outright. Title matching
 #   is only the fallback for a standalone run, and it never takes a Chrome
 #   window off another workspace — it opens a fresh one instead.
@@ -79,13 +79,13 @@ WS=11
 SWEEP_WORKSPACE="Z"
 LAPTOP_RE='Built-in|Retina'
 TOP_LEFT_PCT=27   # Calendar's width share of the top row
-BOT_LEFT_PCT=70   # Chat's width share of the bottom row
+BOT_LEFT_PCT=70   # Slack's width share of the bottom row
 CHROME_APP="Google Chrome"
 CAL_URL="https://www.internalfb.com/calendar"
-CHAT_URL="https://chat.google.com/u/0/app/home"
+SLACK_URL="https://app.slack.com/client"
 # Identity matchers: app name + window-title regex. Order = TL, TR, BL, BR.
 CAL_TITLE_RE='^Calendar\b'
-CHAT_TITLE_RE='^Chat\b'
+SLACK_TITLE_RE=' - Slack - '
 ORCHEST_TITLE_RE='^Orchest$'
 ATTEMPTS="${WS11_ATTEMPTS:-4}"
 ENSURE_WINDOWS=false
@@ -287,7 +287,7 @@ flatten_flat() {
 
 # ── Resolve the four windows ─────────────────────────────────────────
 # Reserved ids win outright: startup-windows already decided which Calendar and
-# Chat windows are the dashboard's, and re-deriving that from titles here is
+# Slack windows are the dashboard's, and re-deriving that from titles here is
 # what let a second same-titled window get pulled onto ws 11.
 #
 # Otherwise retry title-based resolution: window titles can be briefly empty
@@ -296,30 +296,30 @@ flatten_flat() {
 # so a transient blank title never causes a duplicate window to be spawned.
 echo "arrange-ws11: resolving windows..."
 SNAP=$(snapshot)
-CAL=$(claimed_window  "$SNAP" "${WS11_CAL_WINDOW_ID:-}"  "$CHROME_APP" Calendar) || CAL=""
-CHAT=$(claimed_window "$SNAP" "${WS11_CHAT_WINDOW_ID:-}" "$CHROME_APP" Chat)     || CHAT=""
-OBS=$(claimed_window  "$SNAP" "${WS11_OBS_WINDOW_ID:-}"  Obsidian      Obsidian) || OBS=""
-ORCH=$(claimed_window "$SNAP" "${WS11_ORCH_WINDOW_ID:-}" Orchest       Orchest)  || ORCH=""
+CAL=$(claimed_window   "$SNAP" "${WS11_CAL_WINDOW_ID:-}"   "$CHROME_APP" Calendar) || CAL=""
+SLACK=$(claimed_window "$SNAP" "${WS11_SLACK_WINDOW_ID:-}" "$CHROME_APP" Slack)    || SLACK=""
+OBS=$(claimed_window   "$SNAP" "${WS11_OBS_WINDOW_ID:-}"   Obsidian      Obsidian) || OBS=""
+ORCH=$(claimed_window  "$SNAP" "${WS11_ORCH_WINDOW_ID:-}"  Orchest       Orchest)  || ORCH=""
 
 for attempt in $(seq 1 8); do
   [[ "$attempt" -gt 1 ]] && SNAP=$(snapshot)
   [[ -z "$CAL"  ]] && CAL=$(resolve_window  "$SNAP" "$CHROME_APP" "$CAL_TITLE_RE"     own)
-  [[ -z "$CHAT" ]] && CHAT=$(resolve_window "$SNAP" "$CHROME_APP" "$CHAT_TITLE_RE"    own)
+  [[ -z "$SLACK" ]] && SLACK=$(resolve_window "$SNAP" "$CHROME_APP" "$SLACK_TITLE_RE"   own)
   [[ -z "$OBS"  ]] && OBS=$(resolve_window  "$SNAP" Obsidian      '.'                 any)
   [[ -z "$ORCH" ]] && ORCH=$(resolve_window "$SNAP" Orchest       "$ORCHEST_TITLE_RE" any)
-  [[ -n "$CAL" && -n "$CHAT" && -n "$OBS" && -n "$ORCH" ]] && break
+  [[ -n "$CAL" && -n "$SLACK" && -n "$OBS" && -n "$ORCH" ]] && break
   sleep 1
 done
 if [[ "$ENSURE_WINDOWS" == true ]]; then
   [[ -z "$CAL"  ]] && CAL=$(ensure_chrome "$CAL_TITLE_RE" "$CAL_URL")
-  [[ -z "$CHAT" ]] && CHAT=$(ensure_chrome "$CHAT_TITLE_RE" "$CHAT_URL")
+  [[ -z "$SLACK" ]] && SLACK=$(ensure_chrome "$SLACK_TITLE_RE" "$SLACK_URL")
   [[ -z "$OBS"  ]] && OBS=$(ensure_app_window "Obsidian" '.')
   [[ -z "$ORCH" ]] && ORCH=$(ensure_app_window "Orchest" "$ORCHEST_TITLE_RE")
 fi
-echo "  cal(TL)=$CAL obs(TR)=$OBS chat(BL)=$CHAT orch(BR)=$ORCH"
+echo "  cal(TL)=$CAL obs(TR)=$OBS slack(BL)=$SLACK orch(BR)=$ORCH"
 
 missing=0
-for pair in "Calendar $CAL" "Obsidian $OBS" "Chat $CHAT" "Orchest $ORCH"; do
+for pair in "Calendar $CAL" "Obsidian $OBS" "Slack $SLACK" "Orchest $ORCH"; do
   set -- $pair
   [[ -z "${2:-}" ]] && { echo "WARNING: [ws11] $1 window not found" >&2; missing=1; }
 done
@@ -328,15 +328,15 @@ done
 # that is hard to read off the failure. Only reachable via bad reserved ids,
 # since the four matchers are mutually exclusive.
 if [[ "$missing" -eq 0 ]] &&
-   [[ "$(printf '%s\n' "$CAL" "$OBS" "$CHAT" "$ORCH" | sort -u | wc -l)" -ne 4 ]]; then
-  echo "WARNING: [ws11] slots collide on one window (cal=$CAL obs=$OBS chat=$CHAT orch=$ORCH)" >&2
+   [[ "$(printf '%s\n' "$CAL" "$OBS" "$SLACK" "$ORCH" | sort -u | wc -l)" -ne 4 ]]; then
+  echo "WARNING: [ws11] slots collide on one window (cal=$CAL obs=$OBS slack=$SLACK orch=$ORCH)" >&2
   missing=1
 fi
 
 if [[ "$missing" -ne 0 ]]; then
   if [[ "$ENSURE_WINDOWS" == true ]]; then
     echo "arrange-ws11: some windows are still missing; placing those found on workspace $WS" >&2
-    for wid in "$CAL" "$OBS" "$CHAT" "$ORCH"; do
+    for wid in "$CAL" "$OBS" "$SLACK" "$ORCH"; do
       [[ -n "$wid" ]] && aerospace move-node-to-workspace --window-id "$wid" "$WS" 2>/dev/null || true
     done
   else
@@ -372,26 +372,26 @@ build_grid() {
   # shellcheck disable=SC2086
   foreign=$(comm -23 \
     <(printf '%s\n' $residents | sort -u) \
-    <(printf '%s\n' "$CAL" "$OBS" "$CHAT" "$ORCH" | sort -u))
+    <(printf '%s\n' "$CAL" "$OBS" "$SLACK" "$ORCH" | sort -u))
   for wid in $foreign; do
     echo "  evicting foreign window $wid from workspace $WS to $SWEEP_WORKSPACE"
   done
   # shellcheck disable=SC2086
-  evacuate=$(printf '%s\n' $residents "$CAL" "$OBS" "$CHAT" "$ORCH" | awk 'NF && !seen[$0]++')
+  evacuate=$(printf '%s\n' $residents "$CAL" "$OBS" "$SLACK" "$ORCH" | awk 'NF && !seen[$0]++')
   for wid in $evacuate; do
     aerospace move-node-to-workspace --window-id "$wid" "$SWEEP_WORKSPACE" 2>/dev/null || true
   done
   sleep 0.3
-  for wid in "$CAL" "$OBS" "$CHAT" "$ORCH"; do
+  for wid in "$CAL" "$OBS" "$SLACK" "$ORCH"; do
     aerospace move-node-to-workspace --window-id "$wid" "$WS" 2>/dev/null || true; sleep 0.15
   done
   sleep 0.2
-  # 2. flatten to a v_tiles column [CAL, OBS, CHAT, ORCH] top->bottom
+  # 2. flatten to a v_tiles column [CAL, OBS, SLACK, ORCH] top->bottom
   flatten_flat "$CAL" || { echo "  flatten did not converge" >&2; return 1; }
   # 3. join top pair, then bottom pair (focused window becomes the left cell)
   focus_verified "$CAL" "$WS" || return 1
   aerospace join-with down 2>/dev/null || true; sleep 0.3
-  focus_verified "$CHAT" "$WS" || return 1
+  focus_verified "$SLACK" "$WS" || return 1
   aerospace join-with down 2>/dev/null || true; sleep 0.3
   # ws 11 must now hold exactly the four dashboard windows, all under h_tiles
   # rows. One query answers both; a late arrival that slipped in during the
@@ -401,7 +401,7 @@ build_grid() {
     --format '%{window-id}|%{window-parent-container-layout}' 2>/dev/null)
   nonrow=$(awk -F'|' 'NF && $2!="h_tiles"{c++} END{print c+0}' <<< "$rows")
   actual=$(awk -F'|' 'NF{print $1}' <<< "$rows" | sort -n | tr '\n' ' ')
-  expected=$(printf '%s\n' "$CAL" "$OBS" "$CHAT" "$ORCH" | sort -n | tr '\n' ' ')
+  expected=$(printf '%s\n' "$CAL" "$OBS" "$SLACK" "$ORCH" | sort -n | tr '\n' ' ')
   if [[ "$actual" != "$expected" ]]; then
     echo "  workspace $WS holds [${actual% }], expected [${expected% }]" >&2
     return 1
@@ -459,7 +459,7 @@ frame_of() {
   printf '%s\n' "$candidates"
 }
 
-# verify cells via geometry; returns 0 if CAL=TL OBS=TR CHAT=BL ORCH=BR, 1 if wrong,
+# verify cells via geometry; returns 0 if CAL=TL OBS=TR SLACK=BL ORCH=BR, 1 if wrong,
 # 2 if geometry unavailable (cannot tell)
 TOL=80
 VC_MINX=0; VC_MINY=0
@@ -473,18 +473,18 @@ cell_of() {
 verify_cells() {
   refresh_geom
   [[ -z "$GEOM" ]] && return 2
-  local f_cal f_obs f_chat f_orch f x y
+  local f_cal f_obs f_slack f_orch f x y
   f_cal=$(frame_of "$CAL");   f_obs=$(frame_of "$OBS")
-  f_chat=$(frame_of "$CHAT"); f_orch=$(frame_of "$ORCH")
+  f_slack=$(frame_of "$SLACK"); f_orch=$(frame_of "$ORCH")
   VC_MINX=""; VC_MINY=""
-  for f in "$f_cal" "$f_obs" "$f_chat" "$f_orch"; do
+  for f in "$f_cal" "$f_obs" "$f_slack" "$f_orch"; do
     set -- $f; x="${1:-}"; y="${2:-}"
     [[ -z "$x" ]] && return 2
     [[ -z "$VC_MINX" || $x -lt $VC_MINX ]] && VC_MINX=$x
     [[ -z "$VC_MINY" || $y -lt $VC_MINY ]] && VC_MINY=$y
   done
   [[ "$(cell_of "$f_cal")" == "TL" && "$(cell_of "$f_obs")" == "TR" \
-     && "$(cell_of "$f_chat")" == "BL" && "$(cell_of "$f_orch")" == "BR" ]]
+     && "$(cell_of "$f_slack")" == "BL" && "$(cell_of "$f_orch")" == "BR" ]]
 }
 
 built=0
@@ -511,7 +511,7 @@ if [[ "$WIDTH" -gt 0 ]]; then
     aerospace resize --window-id "$1" width "$arg" 2>/dev/null || true; sleep 0.2
   }
   resize_left "$CAL" "$TOP_LEFT_PCT"
-  resize_left "$CHAT" "$BOT_LEFT_PCT"
+  resize_left "$SLACK" "$BOT_LEFT_PCT"
 else
   echo "arrange-ws11: could not read monitor width; leaving rows at 50/50" >&2
 fi
