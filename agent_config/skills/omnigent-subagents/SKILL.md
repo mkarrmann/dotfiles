@@ -5,11 +5,13 @@ description: >-
   (Codex, Claude, GPT), or parallel worker, and before shelling out to
   `codex exec` / `claude -p`. Default to an Omnigent child session
   (sys_session_create): durable, visible in the session tree, any harness and
-  model, follow-ups in the same session, a wake notice on completion. Covers
-  choosing the agent and model, writing the brief, collecting results, and
-  the read-only caveat for reviewers. Trigger keywords: subagent, sub-agent,
-  spawn an agent, codex review, have codex review, second opinion, reviewer,
-  delegate, parallel agents, sys_session_create.
+  model, follow-ups in the same session, a wake notice on completion when the
+  work is dispatched with sys_session_send. Covers choosing the agent and
+  model, writing the brief, collecting results, the read-only caveat for
+  reviewers, and running a raw `codex exec` / `claude -p` safely. Trigger
+  keywords: subagent, sub-agent, spawn an agent, codex review, have codex
+  review, second opinion, reviewer, delegate, parallel agents,
+  sys_session_create.
 ---
 
 # Subagents through Omnigent
@@ -24,7 +26,9 @@ bespoke review framework. A child session:
   effort you name, so cross-model work needs no special tooling;
 - is server-owned and durable: its whole transcript is queryable by id and
   visible to the user in the session tree while it runs;
-- wakes you when it finishes, so there is nothing to poll;
+- wakes you when work you dispatched with `sys_session_send` finishes, so
+  there is nothing to poll (a brief passed as `sys_session_create(message=…)`
+  does **not** wake you; see How, step 5);
 - takes follow-up questions in the same context via `sys_session_send`, so a
   disputed finding can be checked without re-briefing;
 - is covered by the harness idle watchdog, so a wedged turn fails visibly
@@ -40,12 +44,24 @@ want to watch it.
 concrete reason to believe a more bespoke tool fits better (for example, a
 framework built for exactly that kind of review). Say which you chose and why.
 
-**Never run a harness CLI as a backgrounded shell command for long work**
-(`codex exec "…" &`, `claude -p` in a background task). A background shell's
-stdin is an open pipe that a CLI may block on forever, nothing enforces a
-timeout, and nobody can see the run stall. If a raw CLI is truly unavoidable,
-redirect stdin (`< prompt.md` or `< /dev/null`), wrap it in `timeout`, and
-confirm it has started producing output before moving on.
+**Running a raw harness CLI** (`codex exec`, `claude -p`) is the fallback, not
+the default. When you do:
+- **Give the CLI its own stdin**: `codex exec "…" < /dev/null` or
+  `codex exec - < prompt.md`. Both CLIs read stdin whenever it is not a terminal
+  and wait for EOF. Claude Code redirects a command's stdin to `/dev/null` only
+  when the command contains no `<` redirect and no heredoc; with either anywhere
+  in the command (e.g. `cat > prompt <<'EOF' … EOF; codex exec "$(cat prompt)"`),
+  every part of it inherits a socket that never closes, foreground or
+  background alike. `~/bin/codex` now swaps a socket stdin for `/dev/null` on
+  `codex exec`, but `claude -p` has no such guard.
+- **Wrap it in `timeout`** and launch it with the shell tool's background mode
+  (`run_in_background`), never `&`, `nohup` or `setsid`: a detached process ends
+  your turn without anything left to wake you.
+- **An interim "waiting on its own background work" notice is not a result.**
+  Wait for the final notice, and confirm the CLI is producing output first.
+- **Don't ask a sandboxed Codex to start agents.** Under `-s read-only` or
+  `workspace-write` (including paladin's reviewer profile) it has no network
+  and cannot write state, so a nested `codex exec` or `claude -p` hangs.
 
 ## How
 
@@ -70,9 +86,14 @@ confirm it has started producing output before moving on.
    - for reviewers: **"read-only: do not edit files, commit, or change the
      checkout."**
    Hand it the code, not your conclusion, when you want an independent read.
-5. **Launch.** `sys_session_create(agent_id=…, model=…, reasoning_effort=…,
-   title=…, message=<brief>)`. Launch independent children in one message so
-   they run in parallel. Then continue other work or end the turn.
+5. **Launch in two calls.** `sys_session_create(agent_id=…, model=…,
+   reasoning_effort=…, title=…)` **without** `message`, then
+   `sys_session_send(session_id=<conversation_id>, args=<brief>)`. Only a send
+   registers the wake: a child given its first message at creation finishes
+   silently, and you would have to poll it (Omnigent documents create as
+   "monitor it with sys_session_get_history / sys_session_get_info"). Send to
+   independent children in one message so they run in parallel. Then continue
+   other work or end the turn.
 6. **Collect.** When the runtime posts `[System: sub-agent … finished …]`, call
    `sys_read_inbox`. `sys_session_get_history` / `sys_session_get_info` read a
    child directly; [[omnigent-sessions]] covers debugging a hung or failed one.
@@ -91,6 +112,13 @@ confirm it has started producing output before moving on.
   patches first if you need to keep working in the tree.
 - **Cost scales with children.** Each child is a full session. Spawn as many as
   the task needs, not one per idea.
+- **A Codex child cannot delegate.** Omnigent never answers tool calls from
+  threads Codex starts with `spawn_agent` (they hang until the parent turn
+  ends), Codex children don't get `sys_session_create`, and this Codex build
+  keeps `spawn_agent` whatever the feature flags say. Never ask a Codex child
+  for parallel reviewers or sub-agents, and add "do not use spawn_agent; do the
+  work yourself" to its brief. Run parallel work as sibling children from your
+  own session.
 
 ## Related
 
