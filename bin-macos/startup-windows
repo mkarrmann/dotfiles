@@ -132,6 +132,17 @@ WORKSPACES=(
   "8|t3|T3: ws8"
 )
 
+# TODO: T3 Code windows are on hold; STARTUP_T3_WINDOWS=1 brings back their rows
+# and the tunnel checks they need (T3 Code forwards, pairing-token minting).
+STARTUP_T3_WINDOWS="${STARTUP_T3_WINDOWS:-0}"
+if [[ "$STARTUP_T3_WINDOWS" != 1 ]]; then
+  enabled_workspaces=()
+  for entry in "${WORKSPACES[@]}"; do
+    [[ "$entry" == *"|t3|"* ]] || enabled_workspaces+=("$entry")
+  done
+  WORKSPACES=("${enabled_workspaces[@]}")
+fi
+
 SWEEP_WORKSPACE="Z"
 
 CHROME_APP="Google Chrome"
@@ -561,14 +572,16 @@ tunnel_command_is_current() {
   esac
   expected="${local_port}:${OMNIGENT_PORT}"
   echo "$cmds" | grep -F -- "-t " | grep -F -- "$expected" >/dev/null || return 1
-  # Likewise each of the host's per-checkout T3 Code forwards, so a tunnel
-  # started before nvs-tunnels added them is rebuilt rather than kept.
-  for expected in $(t3_forwards_for_host "$host"); do
-    echo "$cmds" | grep -F -- "-t " | grep -F -- "$expected" >/dev/null || return 1
-  done
-  # And a session that mints T3 Code pairing tokens (nvs-tunnels' remote command).
-  if [[ -n "$(t3_forwards_for_host "$host")" ]]; then
-    echo "$cmds" | grep -F -- "t3-pairing-tokens" >/dev/null || return 1
+  if [[ "$STARTUP_T3_WINDOWS" == 1 ]]; then
+    # Likewise each of the host's per-checkout T3 Code forwards, so a tunnel
+    # started before nvs-tunnels added them is rebuilt rather than kept.
+    for expected in $(t3_forwards_for_host "$host"); do
+      echo "$cmds" | grep -F -- "-t " | grep -F -- "$expected" >/dev/null || return 1
+    done
+    # And a session that mints T3 Code pairing tokens (nvs-tunnels' remote command).
+    if [[ -n "$(t3_forwards_for_host "$host")" ]]; then
+      echo "$cmds" | grep -F -- "t3-pairing-tokens" >/dev/null || return 1
+    fi
   fi
 
   # A failed ET registration can leave the process alive with all forward

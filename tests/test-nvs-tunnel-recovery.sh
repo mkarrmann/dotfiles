@@ -135,6 +135,7 @@ OMNIGENT_PORT=6767
 T3_BASE_PORT=3780
 T3_PRIMARY_TUNNEL_BASE_PORT=13780
 T3_STANDBY_TUNNEL_BASE_PORT=23780
+STARTUP_T3_WINDOWS=1
 TRANSPORT_STATE=connected
 TUNNEL_FORWARDS="7001:7001,16767:6767,13781:3781"
 TUNNEL_REMOTE='($HOME/dotfiles/bin/t3-pairing-tokens || true) & nvs-status; exec sleep infinity'
@@ -218,6 +219,12 @@ TUNNEL_REMOTE='nvs-status; exec sleep infinity'
 if tunnel_command_is_current primary.example.com; then
   fail "tunnel without the pairing-token step was classified as current"
 fi
+
+echo "8. with T3 Code windows off, a tunnel without T3 Code forwards is current"
+STARTUP_T3_WINDOWS=0
+TUNNEL_FORWARDS="7001:7001,16767:6767"
+tunnel_command_is_current primary.example.com \
+  || fail "tunnel without T3 Code forwards was rebuilt while T3 Code windows are off"
 
 if [[ "$failures" -ne 0 ]]; then
   echo "nvs tunnel recovery tests: $failures failure(s)" >&2
