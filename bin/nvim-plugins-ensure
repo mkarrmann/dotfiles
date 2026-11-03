@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Install any lazy.nvim plugins the config declares but the machine lacks.
+#
+# Without this, the first nvim to start on a fresh machine installs them -- and
+# on a devserver that is every nvs@ unit at once, all cloning into the same
+# ~/.local/share/nvim/lazy. Concurrent clones of one plugin leave a stale
+# <plugin>.cloning marker and no checkout, and the sessions come up with
+# "Plugin X is not installed" errors. init.sh runs this before enabling the
+# units, so they only ever find plugins already in place.
+#
+# Installs missing plugins only; never updates installed ones. Fails if any
+# plugin is still missing afterwards, since `Lazy! install` itself exits 0
+# whether or not its clones succeeded.
+set -euo pipefail
+
+if ! command -v nvim &>/dev/null; then
+  echo "[nvim-plugins] nvim not found; skipping" >&2
+  exit 0
+fi
+
+nvim --headless "+Lazy! install" "+lua
+local missing = {}
+for name, plugin in pairs(require('lazy.core.config').plugins) do
+  if not plugin._.installed then
+    missing[#missing + 1] = name
+  end
+end
+if #missing > 0 then
+  table.sort(missing)
+  io.stderr:write('[nvim-plugins] still missing: ' .. table.concat(missing, ' ') .. '\n')
+  vim.cmd('cquit 1')
+end
+vim.cmd('qall')
+"
+echo "[nvim-plugins] all lazy.nvim plugins installed"

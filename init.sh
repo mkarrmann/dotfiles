@@ -53,6 +53,11 @@ trap summarize_problems EXIT
 "$DOTFILES_DIR/bin/codecompanion-fork-ensure" \
   || warn "CodeCompanion fork bootstrap failed; Lazy may be unable to install it"
 
+# After the fork (a local Lazy plugin) and before stage 3 enables the nvs@
+# units, which would otherwise all race to install the plugins at first start.
+"$DOTFILES_DIR/bin/nvim-plugins-ensure" \
+  || warn "nvim plugin install incomplete; sessions will report missing plugins"
+
 # The MCP client runs on every machine; the worker runs beside the server.
 watcher_project="$DOTFILES_DIR/services/omnigent-watcher"
 if [[ -f "$watcher_project/uv.lock" ]] && command -v uv &>/dev/null; then
