@@ -96,6 +96,16 @@ class T3EnsureTest(unittest.TestCase):
         self.assertEqual(result.stdout, "")
         self.assertFalse([c for c in self.calls_made() if " enable " in c])
 
+    def test_existing_project_counts_as_added(self):
+        write_exe(
+            self.bin / "t3",
+            f'echo "t3 $* home=$T3CODE_HOME" >> {self.calls}\n'
+            "echo \"ProjectAlreadyExistsError: An active project already exists for '$3'.\" >&2; exit 1\n",
+        )
+        result = self.run_ensure()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len([c for c in self.calls_made() if c.startswith("t3 project add")]), 2)
+
     def test_missing_t3_with_unreachable_installer_fails_clearly(self):
         (self.bin / "t3").unlink()
         result = self.run_ensure()
