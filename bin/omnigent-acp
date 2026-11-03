@@ -60,6 +60,8 @@ SESSION_LABEL = "t3.acp_session_id"
 MODEL_CONFIG_ID = "model"
 CANCEL_GRACE_S = 8.0
 QUIESCENT_END_S = 10.0
+# A cold codex-native launch can hold the first stream connection for over 30s.
+STREAM_CONNECT_S = 120.0
 TOOL_OUTPUT_LIMIT = 20_000
 
 # SDK harnesses launch the same binaries as the native ones; the host
@@ -299,10 +301,10 @@ class TurnTracker:
         if event_type == "response.failed":
             return self._end("failed", _error_text((data.get("response") or {}).get("error")))
 
-        if event_type == "response.cancelled":
-            return self._end("cancelled")
-
-        if event_type == "session.interrupted":
+        if event_type in ("response.cancelled", "session.interrupted"):
+            # codex-native reports one Stop twice; the echo can land after the next turn starts.
+            if self._awaiting_native_input() and not self.cancelling:
+                return []
             return self._end("cancelled")
 
         if event_type == "session.status":
@@ -471,6 +473,9 @@ class OmnigentClient:
     async def model_options(self, host_id: str, harness: str) -> list[dict[str, Any]]:
         body = await self._json("GET", f"/v1/hosts/{host_id}/harnesses/{harness}/model-options")
         return [m for m in body.get("models") or [] if not m.get("hidden")]
+
+    async def session(self, session_id: str) -> dict[str, Any]:
+        return await self._json("GET", f"/v1/sessions/{session_id}")
 
     async def find_session_by_label(self, agent_id: str, key: str, value: str) -> dict[str, Any] | None:
         async for session in self._paginate("/v1/sessions", {"agent_id": agent_id, "include_archived": "true"}):
@@ -673,7 +678,8 @@ class OmnigentAgent:
         session = self._sessions.get(session_id) or Session(acp_id=session_id, cwd=cwd, model=target.default_model)
         if existing is not None:
             session.conversation_id = existing["id"]
-            session.model = existing.get("model_override") or session.model
+            # List items omit model_override; the session snapshot has it.
+            session.model = (await self._client.session(existing["id"])).get("model_override") or session.model
         self._sessions[session_id] = session
         return acp.LoadSessionResponse(config_options=self._config_options(session, target))
 
@@ -745,7 +751,10 @@ class OmnigentAgent:
     async def _ensure_stream(self, session: Session, conversation_id: str) -> None:
         if session.stream_task is None or session.stream_task.done():
             session.stream_task = asyncio.create_task(self._pump(session, conversation_id))
-        await asyncio.wait_for(session.connected.wait(), timeout=30.0)
+        try:
+            await asyncio.wait_for(session.connected.wait(), timeout=STREAM_CONNECT_S)
+        except TimeoutError:
+            raise OmnigentError(f"Omnigent stream for {conversation_id} did not connect in {STREAM_CONNECT_S:.0f}s") from None
 
     async def prompt(self, session_id: str, prompt: list[Any], **kwargs: Any) -> acp.PromptResponse:
         session = self._session(session_id)
@@ -848,7 +857,8 @@ async def main() -> None:
     trace = open(args.trace, "a", encoding="utf-8") if args.trace else None
     try:
         agent = OmnigentAgent(client, args.agent, args.host, strip=not args.keep_t3_instructions, trace=trace)
-        await acp.run_agent(agent)
+        # session/close and session/fork are "unstable" in this SDK and 404 without the flag.
+        await acp.run_agent(agent, use_unstable_protocol=True)
     finally:
         await client.aclose()
         if trace is not None:

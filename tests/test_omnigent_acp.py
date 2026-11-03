@@ -72,6 +72,12 @@ class NativeTurnTest(unittest.TestCase):
         )
         self.assertEqual(out, [shim.TextDelta("alive")])
 
+    def test_earlier_turn_interrupt_does_not_end_the_next_turn(self):
+        tracker = self.native_tracker()
+        stale = ("session.interrupted", {"data": {"response_id": "codex_previous"}})
+        out = feed(tracker, [stale, NATIVE_ACK, CONSUMED, assistant_item("alive"), CONFIRMED_IDLE])
+        self.assertEqual(out, [shim.TextDelta("alive"), shim.TurnEnded("completed")])
+
     def test_committed_message_without_deltas_is_forwarded(self):
         tracker = self.native_tracker()
         out = feed(tracker, [NATIVE_ACK, CONSUMED, assistant_item("only committed"), CONFIRMED_IDLE])
