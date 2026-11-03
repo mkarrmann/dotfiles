@@ -27,12 +27,17 @@ whose only project is that workspace's checkout:
   The profile is how the script tells the windows apart; they share a title.
 - Each shim creates sessions on its own host (`--host auto`) in the checkout.
 
-## Pairing (once per workspace)
+## Pairing
 
-After the servers are up and the tunnels carry their forwards, run
-`t3-pair-workspaces` on the Mac (optionally with workspace numbers). It mints a
-token per checkout with one ssh login per devserver and reopens each window on
-its `/pair` URL; the profile stays signed in afterwards.
+Each window's Chrome profile pairs with its server once, with no extra login:
+`nvs-tunnels`' remote command runs `bin/t3-pairing-tokens` inside the ET session
+it already authenticated, which mints a 12-hour one-time token per running
+server; `nvs-tunnels` saves them under `~/.local/state/t3-pairing/HOST/` (not
+shown in the tunnel window). When `startup-windows` creates a window for a
+profile without `~/.t3-workspace-chrome/<name>/.t3-paired`, it opens it on the
+server's `/pair` URL with that token, then marks the profile. To pair a profile
+again (its session expired), delete that marker and its window, reconnect the
+tunnel, and rerun `startup-windows`.
 
 ## Limits
 

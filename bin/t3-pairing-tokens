@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# t3-pairing-tokens — print a one-time pairing token for each running t3@checkoutN server.
+#
+# bin-macos/nvs-tunnels runs this inside its ET session, so minting needs no
+# login beyond the tunnel's own, and hands the tokens to startup-windows, which
+# opens a never-paired workspace window on its server's /pair URL.
+# Output: one "T3_PAIR checkoutN TOKEN" line per server.
+set -uo pipefail
+
+t3="$HOME/.local/bin/t3"
+[[ -x "$t3" ]] || exit 0
+for home in "$HOME"/.t3-workspaces/checkout*; do
+  [[ -d "$home" ]] || continue
+  checkout="$(basename "$home")"
+  systemctl --user is-active --quiet "t3@${checkout}.service" || continue
+  token="$(T3CODE_HOME="$home" "$t3" pair --ttl 12h --label "mac-startup-windows" 2>/dev/null \
+    | sed -n 's/^Token: //p' | tr -d '\r')"
+  [[ -n "$token" ]] && echo "T3_PAIR $checkout $token"
+done
+exit 0

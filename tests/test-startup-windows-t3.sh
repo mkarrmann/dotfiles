@@ -19,7 +19,7 @@ extract_fn() {
     p && $0 == "}" { exit }
   ' "$STARTUP"
 }
-for fn in t3_workspace_window t3_window_ids_for_profile t3_window_ids_json t3_profile_running; do
+for fn in t3_workspace_window t3_window_ids_for_profile t3_window_ids_json t3_profile_running t3_take_pairing_token; do
   body=$(extract_fn "$fn")
   [[ -n "$body" ]] || { echo "could not extract $fn" >&2; exit 1; }
   eval "$body"
@@ -31,7 +31,7 @@ T3_CHROME_DATA_ROOT="/Users/me/.t3-workspace-chrome"
 workspaces() {
   printf '%s' '{"workspaces":[
     {"workspace":"1","kind":"local"},
-    {"workspace":"6","kind":"devserver","t3Url":"http://cco-checkout3.t3.localhost:13783/"}]}'
+    {"workspace":"6","kind":"devserver","host":"cco.example.com","checkout":"/home/me/checkout3","t3Url":"http://cco-checkout3.t3.localhost:13783/"}]}'
 }
 
 # Windows 10 and 11 are regular Chrome, 20 belongs to checkout3's profile, 30 to
@@ -56,8 +56,8 @@ ps() {
   esac
 }
 
-check "a devserver workspace resolves to its profile and URL" \
-  $'/Users/me/.t3-workspace-chrome/cco-checkout3\thttp://cco-checkout3.t3.localhost:13783/' \
+check "a devserver workspace resolves to its profile, URL, devserver and checkout" \
+  $'/Users/me/.t3-workspace-chrome/cco-checkout3\thttp://cco-checkout3.t3.localhost:13783/\tcco.example.com\tcheckout3' \
   "$(t3_workspace_window 6)"
 check "a workspace without a T3 Code server resolves to nothing" "" "$(t3_workspace_window 1 || true)"
 check "only windows of that profile's Chrome process match" "20" \
@@ -68,6 +68,14 @@ check "every T3 Code profile's windows are kept out of the Chrome slots" "[20,30
 check "a running profile is detected" "yes" "$(t3_profile_running /Users/me/.t3-workspace-chrome/cco-checkout3 && echo yes)"
 check "a profile with no Chrome process is not detected" "no" \
   "$(t3_profile_running /Users/me/.t3-workspace-chrome/cco-checkout1 || echo no)"
+
+T3_PAIRING_DIR="$(mktemp -d)"
+trap 'rm -rf "$T3_PAIRING_DIR"' EXIT
+mkdir -p "$T3_PAIRING_DIR/cco.example.com"
+echo TOKEN123 > "$T3_PAIRING_DIR/cco.example.com/checkout3"
+t3_token_waited_hosts=" cco.example.com"
+check "a saved pairing token is handed out" "TOKEN123" "$(t3_take_pairing_token cco.example.com checkout3)"
+check "and only once" "" "$(t3_take_pairing_token cco.example.com checkout3)"
 
 # startup-windows runs under set -euo pipefail and assigns the result directly;
 # a lookup that finds nothing must not end the script.

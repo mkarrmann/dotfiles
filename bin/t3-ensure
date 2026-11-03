@@ -14,7 +14,8 @@ Idempotent; init.sh runs it on the Omnigent hub candidates. It:
   4. enables and starts t3@checkoutN (systemd/t3@.service, bin/t3-workspace-serve)
      when it is not enabled yet. A running server is never restarted.
 
-Pair each workspace's browser window once with bin-macos/t3-pair-workspaces.
+Workspace windows pair on their own: bin-macos/nvs-tunnels has bin/t3-pairing-tokens
+mint tokens in its session, and startup-windows opens a new window on /pair with one.
 
 Env: DOTFILES_DIR (default ~/dotfiles).
 """
@@ -119,7 +120,7 @@ def main() -> int:
         if systemctl("is-enabled", "--quiet", unit) == 0:
             continue
         if systemctl("enable", "--now", unit) == 0:
-            log(f"started {unit}; pair it with bin-macos/t3-pair-workspaces on the Mac")
+            log(f"started {unit}")
         else:
             log(f"WARNING: could not enable {unit} (is systemd/t3@.service linked? run sync.sh)")
             failed = True

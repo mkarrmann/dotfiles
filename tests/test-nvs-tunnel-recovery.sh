@@ -42,6 +42,11 @@ case "$FAKE_MODE" in
     fi
     echo "NVS_TUNNEL_READY"
     ;;
+  t3pair)
+    echo "NVS_TUNNEL_READY"
+    echo "T3_PAIR checkout1 TOKENabc123"
+    sleep 0.5
+    ;;
   serialize)
     echo "$host" >> "$FAKE_ENTRIES"
     if [[ "$host" == primary.example.com ]]; then
@@ -132,6 +137,7 @@ T3_PRIMARY_TUNNEL_BASE_PORT=13780
 T3_STANDBY_TUNNEL_BASE_PORT=23780
 TRANSPORT_STATE=connected
 TUNNEL_FORWARDS="7001:7001,16767:6767,13781:3781"
+TUNNEL_REMOTE='($HOME/dotfiles/bin/t3-pairing-tokens || true) & nvs-status; exec sleep infinity'
 
 workspaces() {
   echo '{"workspaces":[{"workspace":"2","kind":"devserver","host":"primary.example.com","checkout":"/home/u/checkout1"}]}'
@@ -139,7 +145,7 @@ workspaces() {
 
 ps() {
   if [[ "$*" == "-axo command" ]]; then
-    echo "x2ssh -et primary.example.com -t $TUNNEL_FORWARDS"
+    echo "x2ssh -et primary.example.com -t $TUNNEL_FORWARDS -c zsh -lc 'echo NVS_TUNNEL_READY; $TUNNEL_REMOTE'"
   else
     echo "123|50001"
   fi
@@ -171,6 +177,18 @@ lsof() {
   return 1
 }
 
+echo "2b. T3 Code pairing tokens from the session are saved privately, not shown"
+export FAKE_MODE=t3pair
+T3_PAIRING_DIR="$TMP/pairing" run_tunnels 1 primary.example.com TEST-checkout1 > "$TMP/t3pair.out" 2>&1 || true
+[[ "$(cat "$TMP/pairing/primary.example.com/checkout1" 2>/dev/null)" == TOKENabc123 ]] \
+  || fail "pairing token was not saved for primary.example.com/checkout1"
+[[ "$(stat -c %a "$TMP/pairing/primary.example.com/checkout1" 2>/dev/null || stat -f %Lp "$TMP/pairing/primary.example.com/checkout1")" == 600 ]] \
+  || fail "pairing token file is not private"
+if grep -Fq TOKENabc123 "$TMP/t3pair.out"; then
+  fail "pairing token was printed to the tunnel window"
+fi
+grep -Fq -- "t3-pairing-tokens" "$FAKE_ARGS" || fail "remote command does not mint T3 Code pairing tokens"
+
 echo "3. startup-windows accepts a tunnel with a connected ET transport"
 TRANSPORT_STATE=connected
 tunnel_command_is_current primary.example.com \
@@ -192,6 +210,13 @@ TRANSPORT_STATE=connected
 TUNNEL_FORWARDS="7001:7001,16767:6767"
 if tunnel_command_is_current primary.example.com; then
   fail "tunnel without its T3 Code forward was classified as current"
+fi
+
+echo "7. startup-windows rebuilds a tunnel whose session does not mint T3 Code pairing tokens"
+TUNNEL_FORWARDS="7001:7001,16767:6767,13781:3781"
+TUNNEL_REMOTE='nvs-status; exec sleep infinity'
+if tunnel_command_is_current primary.example.com; then
+  fail "tunnel without the pairing-token step was classified as current"
 fi
 
 if [[ "$failures" -ne 0 ]]; then
