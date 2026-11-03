@@ -9,11 +9,14 @@ as T3 Code's "Local command" ACP provider.
 
 T3 Code's desktop app is single-window and has no way to open scoped to a
 project, so each workspace instead gets a browser window on a T3 Code server
-whose only project is that workspace's checkout:
+scoped to that workspace's checkout (other projects, like `~/dotfiles`, can be
+added per window):
 
 - `bin/t3-ensure` (run by `init.sh` on the candidates) installs the `t3` CLI,
   registers the "Omnigent · Claude" (`claude-native-ui`) and "Omnigent · Codex"
-  (`codex-native-ui`) providers in `~/.t3-workspaces/checkoutN`, warms uv's cache
+  (`codex-native-ui`) providers in `~/.t3-workspaces/checkoutN`, turns off T3
+  Code's built-in Codex and Claude (they bypass Omnigent; re-enabling one in
+  Settings sticks), adds `~/checkoutN` as a project, warms uv's cache
   for the shim, and enables `t3@checkoutN` (`systemd/t3@.service`,
   `bin/t3-workspace-serve`) once. It never restarts a running server; after
   `t3 update`, restart the instances to pick up the new version.

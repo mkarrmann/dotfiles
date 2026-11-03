@@ -67,6 +67,7 @@ class T3EnsureTest(unittest.TestCase):
                     },
                 },
             )
+            self.assertEqual(self.settings(checkout)["providerInstances"]["claudeAgent"], {"driver": "claudeAgent", "enabled": False})
             self.assertIn(f"systemctl --user enable --now t3@{checkout}.service", self.calls_made())
             # Added through the CLI, not bootstrapped, so new windows skip T3 Code's first-run wizard.
             self.assertIn(

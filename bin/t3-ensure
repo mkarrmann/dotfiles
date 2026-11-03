@@ -8,7 +8,9 @@ Idempotent; init.sh runs it on the Omnigent hub candidates. It:
      upgrades belong to `t3 update`;
   2. for each ~/checkoutN, registers bin/omnigent-acp as the "Omnigent · Claude"
      and "Omnigent · Codex" providers in ~/.t3-workspaces/checkoutN/userdata/
-     settings.json, keeping every other setting (a running server reloads it);
+     settings.json, keeping every other setting (a running server reloads it).
+     It also turns off T3 Code's built-in Codex and Claude, which would run outside
+     Omnigent, unless the settings already configure them;
   3. warms uv's cache for omnigent-acp, since the services have no proxy to
      fetch its dependencies with;
   4. enables and starts t3@checkoutN (systemd/t3@.service, bin/t3-workspace-serve)
@@ -45,6 +47,7 @@ INSTALLERS = (
 )
 PROJECT_ADD_ATTEMPTS = 30
 PROVIDERS = {"omnigent-claude": ("Omnigent · Claude", "claude-native-ui"), "omnigent-codex": ("Omnigent · Codex", "codex-native-ui")}
+BUILTIN_PROVIDERS = ("codex", "claudeAgent")
 
 
 def log(message: str) -> None:
@@ -95,9 +98,10 @@ def merge_settings(path: Path, shim: Path) -> bool:
     settings = json.loads(path.read_text()) if path.exists() and path.read_text().strip() else {}
     instances = settings.setdefault("providerInstances", {})
     wanted = provider_instances(shim)
-    if all(instances.get(key) == value for key, value in wanted.items()):
+    builtins = {key: {"driver": key, "enabled": False} for key in BUILTIN_PROVIDERS if key not in instances}
+    if not builtins and all(instances.get(key) == value for key, value in wanted.items()):
         return False
-    instances.update(wanted)
+    instances.update(wanted | builtins)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.t3-ensure")
     tmp.write_text(json.dumps(settings, indent=2) + "\n")
