@@ -155,9 +155,10 @@ chrome_restore_settled=false
 # workspaces, so nothing here can keep one next to the window it belongs to.
 # Each devserver workspace's T3 Code window is a Chrome app window running in
 # that workspace's own Chrome profile, pointed at its checkout's T3 Code server
-# (systemd/t3@.service). Every T3 Code window has the same title, so the profile
-# of the owning Chrome process is what identifies a window's workspace; the
-# title only keeps these windows out of the Chrome slots and sweeps below.
+# (systemd/t3@.service). Titles cannot tell these windows apart (they share one,
+# or show an error page's host before the tunnel is up), so the profile of the
+# owning Chrome process identifies a window's workspace and keeps it out of the
+# Chrome slots and sweeps below.
 T3_CHROME_DATA_ROOT="$HOME/.t3-workspace-chrome"
 T3_TITLE_PATTERN="^T3 Code"
 
@@ -736,11 +737,11 @@ find_valid_unclaimed_chrome_window_on_workspace() {
   local ws="$1"
   local wid
   for wid in $(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
-    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --arg t3 "$T3_TITLE_PATTERN" \
+    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --argjson t3ids "$(t3_window_ids_json)" \
       '.[] | select(
         ."app-name" == $app and
         ((.["window-title"] // "") | test($invalid) | not) and
-        ((.["window-title"] // "") | test($t3) | not)
+        (.["window-id"] | IN($t3ids[]) | not)
       ) | .["window-id"]' | sort -n); do
     if ! chrome_id_is_claimed "$wid"; then
       echo "$wid"
@@ -753,11 +754,11 @@ find_valid_unclaimed_chrome_window_on_workspace() {
 find_valid_unclaimed_chrome_window() {
   local wid
   for wid in $(aerospace list-windows --all --json 2>/dev/null \
-    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --arg t3 "$T3_TITLE_PATTERN" \
+    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --argjson t3ids "$(t3_window_ids_json)" \
       '.[] | select(
         ."app-name" == $app and
         ((.["window-title"] // "") | test($invalid) | not) and
-        ((.["window-title"] // "") | test($t3) | not)
+        (.["window-id"] | IN($t3ids[]) | not)
       ) | .["window-id"]' | sort -n); do
     if ! chrome_id_is_claimed "$wid"; then
       echo "$wid"
@@ -770,11 +771,11 @@ find_valid_unclaimed_chrome_window() {
 workspace_has_claimed_chrome_window() {
   local ws="$1" wid
   for wid in $(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
-    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --arg t3 "$T3_TITLE_PATTERN" \
+    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --argjson t3ids "$(t3_window_ids_json)" \
       '.[] | select(
         ."app-name" == $app and
         ((.["window-title"] // "") | test($invalid) | not) and
-        ((.["window-title"] // "") | test($t3) | not)
+        (.["window-id"] | IN($t3ids[]) | not)
       ) | .["window-id"]'); do
     chrome_id_is_claimed "$wid" && return 0
   done
@@ -832,6 +833,24 @@ t3_workspace_window() {
   host="${url#http://}"
   host="${host%%:*}"
   printf '%s/%s\t%s\n' "$T3_CHROME_DATA_ROOT" "${host%.t3.localhost}" "$url"
+}
+
+# t3_window_ids_json -> JSON array of the ids of every window owned by a T3 Code
+# workspace profile's Chrome process.
+t3_window_ids_json() {
+  local wid pid
+  aerospace list-windows --all --json --format '%{window-id}%{app-pid}%{app-name}' 2>/dev/null \
+    | jq -r --arg app "$CHROME_APP" '.[] | select(."app-name" == $app) | "\(.["window-id"]) \(.["app-pid"])"' \
+    | while read -r wid pid; do
+        if ps -o command= -p "$pid" 2>/dev/null | grep -qF -- "--user-data-dir=$T3_CHROME_DATA_ROOT/"; then
+          echo "$wid"
+        fi
+      done | jq -s -c '.'
+}
+
+# t3_profile_running PROFILE_DIR -> whether a Chrome process runs that profile.
+t3_profile_running() {
+  ps -axo command= 2>/dev/null | grep -qE -- "--user-data-dir=${1}( |$)"
 }
 
 # t3_window_ids_for_profile PROFILE_DIR -> ascending ids of windows whose Chrome
@@ -1310,8 +1329,17 @@ for i in "${!WORKSPACES[@]}"; do
       else
         echo "[$title] opening $t3_url on workspace $ws..."
         mkdir -p "$t3_profile"
-        open -na "$CHROME_APP" --args --user-data-dir="$t3_profile" \
-          --no-first-run --no-default-browser-check --app="$t3_url" 2>/dev/null || {
+        if ! t3_profile_running "$t3_profile"; then
+          # Start the profile windowless first: a cold start otherwise also opens
+          # Chrome's startup page, a second window nothing here would claim.
+          open -na "$CHROME_APP" --args --user-data-dir="$t3_profile" \
+            --no-first-run --no-default-browser-check --no-startup-window 2>/dev/null || true
+          for _ in $(seq 1 20); do
+            t3_profile_running "$t3_profile" && break
+            sleep 0.5
+          done
+        fi
+        open -na "$CHROME_APP" --args --user-data-dir="$t3_profile" --app="$t3_url" 2>/dev/null || {
           echo "WARNING: [$title] creation failed, skipping" >&2
           ((failures++)) || true
           continue
@@ -1354,11 +1382,11 @@ for entry in "${WORKSPACES[@]}"; do
 done
 
 extra_chrome_ids=$(aerospace list-windows --all --json 2>/dev/null \
-  | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --arg t3 "$T3_TITLE_PATTERN" \
+  | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --argjson t3ids "$(t3_window_ids_json)" \
     '.[] | select(
       ."app-name" == $app and
       ((.["window-title"] // "") | test($invalid) | not) and
-      ((.["window-title"] // "") | test($t3) | not)
+      (.["window-id"] | IN($t3ids[]) | not)
     ) | .["window-id"]' | sort -n) || true
 for wid in $extra_chrome_ids; do
   chrome_id_is_claimed "$wid" && continue

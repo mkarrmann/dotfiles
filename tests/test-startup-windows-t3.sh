@@ -19,7 +19,7 @@ extract_fn() {
     p && $0 == "}" { exit }
   ' "$STARTUP"
 }
-for fn in t3_workspace_window t3_window_ids_for_profile; do
+for fn in t3_workspace_window t3_window_ids_for_profile t3_window_ids_json t3_profile_running; do
   body=$(extract_fn "$fn")
   [[ -n "$body" ]] || { echo "could not extract $fn" >&2; exit 1; }
   eval "$body"
@@ -45,6 +45,10 @@ aerospace() {
     {"window-id": 40, "app-pid": 200, "app-name": "Omnigent"}]'
 }
 ps() {
+  if [[ "$*" == "-axo command=" ]]; then
+    ps -o command= -p 100; ps -o command= -p 200; ps -o command= -p 300
+    return
+  fi
   case "${@: -1}" in
     100) echo "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --profile-directory=Default" ;;
     200) echo "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/Users/me/.t3-workspace-chrome/cco-checkout3 --app=http://cco-checkout3.t3.localhost:13783/" ;;
@@ -60,6 +64,11 @@ check "only windows of that profile's Chrome process match" "20" \
   "$(t3_window_ids_for_profile /Users/me/.t3-workspace-chrome/cco-checkout3 | tr '\n' ' ' | sed 's/ $//')"
 check "regular Chrome windows match no T3 Code profile" "" \
   "$(t3_window_ids_for_profile /Users/me/.t3-workspace-chrome/cco-checkout1)"
+check "every T3 Code profile's windows are kept out of the Chrome slots" "[20,30]" "$(t3_window_ids_json)"
+check "a running profile is detected" "yes" "$(t3_profile_running /Users/me/.t3-workspace-chrome/cco-checkout3 && echo yes)"
+check "a profile with no Chrome process is not detected" "no" \
+  "$(t3_profile_running /Users/me/.t3-workspace-chrome/cco-checkout1 || echo no)"
+
 # startup-windows runs under set -euo pipefail and assigns the result directly;
 # a lookup that finds nothing must not end the script.
 window_id=$(t3_window_ids_for_profile /Users/me/.t3-workspace-chrome/cco-checkout1 | head -1)

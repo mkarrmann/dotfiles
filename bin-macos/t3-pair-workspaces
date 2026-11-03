@@ -60,8 +60,13 @@ for host in $(cut -f2 <<< "$rows" | sort -u); do
       aerospace close --window-id "$wid" 2>/dev/null || true
     done
     echo "[ws$ws] pairing ${url}"
-    open -na "$CHROME_APP" --args --user-data-dir="$profile" \
-      --no-first-run --no-default-browser-check --app="${url}pair#token=${token}"
+    if ! ps -axo command= | grep -qE -- "--user-data-dir=${profile}( |$)"; then
+      # Windowless first, as in startup-windows: a cold start also opens a startup page.
+      open -na "$CHROME_APP" --args --user-data-dir="$profile" \
+        --no-first-run --no-default-browser-check --no-startup-window
+      sleep 2
+    fi
+    open -na "$CHROME_APP" --args --user-data-dir="$profile" --app="${url}pair#token=${token}"
   done <<< "$rows"
 done
 echo "Done. Run startup-windows to place the windows."
