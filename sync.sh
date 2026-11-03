@@ -512,6 +512,10 @@ tmp=$(jq '
   # meta-lsp plugins from a claude-templates marketplace that work hosts no
   # longer have; strip those stale keys.
   .enabledPlugins |= ((. // {}) | with_entries(select(.key | endswith("@claude-templates") | not))) |
+  # The Meta launcher preset idle_compact adds idle-compact, which compacts
+  # an idle session on its own. A false here is a decline the launcher keeps
+  # (3pai_tooling/launcher/claude/preset.rs); compaction stays manual.
+  .enabledPlugins["idle-compact@agent-market"] = false |
   .statusLine = {"type": "command", "command": "~/.claude/statusline.sh"} |
   .hooks.PreToolUse = [
     {
