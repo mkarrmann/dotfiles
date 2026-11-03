@@ -1,0 +1,859 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["agent-client-protocol==0.12.1", "httpx>=0.28,<1"]
+# ///
+"""omnigent-acp — an ACP agent (stdio) whose sessions are Omnigent sessions.
+
+    omnigent-acp [--agent NAME_OR_ID] [--host auto|NAME|ID] [--url URL]
+                 [--keep-t3-instructions] [--trace FILE]
+
+Lets an ACP client (T3 Code's "Local command" ACP provider) drive Omnigent:
+Omnigent stays the owner of every session — harness, terminal, policies,
+children — and this process only translates one client's view of it.
+
+Semantics:
+  * One ACP session maps to one Omnigent session, created lazily on the first
+    prompt so that clients that open throwaway sessions (T3 Code's model probe)
+    leave nothing behind. The ACP session id is recorded on the Omnigent session
+    as the ``t3.acp_session_id`` label, which is how ``session/load`` finds it.
+  * Sessions run on this machine only (``--host auto`` fails closed unless
+    exactly one online Omnigent host matches this hostname), in the client's cwd.
+  * Updates that arrive while no prompt is running (turns started from another
+    client, wakeups) are not forwarded; ACP has no idle turn to attach them to.
+
+Env: OMNIGENT_URL (default http://127.0.0.1:6767), OMNIGENT_ACP_LOG (log level).
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import logging
+import os
+import re
+import socket
+import sys
+import uuid
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+from typing import Any, Literal
+
+import acp
+import httpx
+from acp.schema import (
+    AgentCapabilities,
+    Implementation,
+    PermissionOption,
+    PromptCapabilities,
+    SessionCapabilities,
+    SessionCloseCapabilities,
+    SessionConfigOptionSelect,
+    SessionConfigSelectOption,
+    ToolCallUpdate,
+    UsageUpdate,
+)
+
+LOG = logging.getLogger("omnigent-acp")
+SESSION_LABEL = "t3.acp_session_id"
+MODEL_CONFIG_ID = "model"
+CANCEL_GRACE_S = 8.0
+QUIESCENT_END_S = 10.0
+TOOL_OUTPUT_LIMIT = 20_000
+
+# SDK harnesses launch the same binaries as the native ones; the host
+# model-options route only accepts the native names (see bin/omnigent-models).
+CATALOG_HARNESS = {
+    "claude-native": "claude-native",
+    "claude-sdk": "claude-native",
+    "codex-native": "codex-native",
+    "codex": "codex-native",
+    "codex-sdk": "codex-native",
+}
+
+IGNORED_EVENTS = frozenset(
+    {
+        "session.heartbeat",
+        "response.heartbeat",
+        "session.presence",
+        "session.resource.created",
+        "session.resource.deleted",
+        "session.changed_files.invalidated",
+        "session.sandbox_status",
+        "session.terminal.activity",
+        "session.todos",
+        "session.skills",
+        "session.mcp_startup",
+        "session.superseded",
+        "session.agent_changed",
+        "session.collaboration_mode",
+        "turn.started",
+        "turn.completed",
+        "turn.failed",
+        "turn.cancelled",
+        "response.queued",
+        "response.retry",
+        "response.incomplete",
+    }
+)
+
+
+# ---------------------------------------------------------------------------
+# Turn tracking: Omnigent SSE events -> client-facing turn outputs (pure).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TextDelta:
+    text: str
+
+
+@dataclass(frozen=True)
+class ThoughtDelta:
+    text: str
+
+
+@dataclass(frozen=True)
+class ToolStarted:
+    call_id: str
+    name: str
+    arguments: Any
+
+
+@dataclass(frozen=True)
+class ToolFinished:
+    call_id: str
+    output: str
+
+
+@dataclass(frozen=True)
+class Usage:
+    used: int
+    size: int
+
+
+@dataclass(frozen=True)
+class Elicitation:
+    elicitation_id: str
+    message: str
+    target_session_id: str | None
+
+
+@dataclass(frozen=True)
+class TurnEnded:
+    outcome: Literal["completed", "cancelled", "failed"]
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class Quiescent:
+    """The turn looks finished but is unconfirmed; it ends if ``generation`` survives a quiet period."""
+
+    generation: int
+
+
+TurnOutput = TextDelta | ThoughtDelta | ToolStarted | ToolFinished | Usage | Elicitation | TurnEnded | Quiescent
+
+
+def _is_native_ack(response: dict[str, Any]) -> bool:
+    model = response.get("model")
+    return isinstance(model, str) and model.endswith("-native-ui") and response.get("usage") is None
+
+
+def _message_text(item: dict[str, Any]) -> str:
+    content = item.get("content")
+    if not isinstance(content, list):
+        return ""
+    return "".join(c["text"] for c in content if isinstance(c, dict) and isinstance(c.get("text"), str))
+
+
+def _error_text(error: Any) -> str:
+    if isinstance(error, dict):
+        return str(error.get("message") or error.get("code") or json.dumps(error))
+    return str(error) if error else "Omnigent turn failed"
+
+
+@dataclass
+class TurnTracker:
+    """Follows one foreground turn on an Omnigent session stream.
+
+    Terminal-backed (``*-native-ui``) agents answer the POST with an empty
+    ``response.completed`` acknowledgement; the real turn starts after
+    ``session.input.consumed`` and ends at the ``session.status: idle`` that
+    carries a ``response_id`` — the harness-confirmed completion (claude-native's
+    Stop hook). Bare idles come from the pane-activity watcher and can fire
+    mid-turn. The confirmed edge is not guaranteed to reach the stream, so a
+    turn whose final assistant message is committed, with no tool call open and
+    the pane idle, is reported ``Quiescent`` and ended by the caller after a
+    quiet period. SDK agents end at ``response.completed``. Adapted from
+    CodeCompanion's omnigent/events.lua reducer.
+    """
+
+    native: bool = False
+    expected_pending_id: str | None = None
+    current_response_id: str | None = None
+    queue_response: bool = False
+    native_consumed: bool = False
+    cancelling: bool = False
+    message_streamed: bool = False
+    emitted_text: str = ""
+    replay_text: str | None = None
+    seen_calls: set[str] = field(default_factory=set)
+    seen_outputs: set[str] = field(default_factory=set)
+    open_calls: set[str] = field(default_factory=set)
+    pane_idle: bool = False
+    reply_committed: bool = False
+    quiet_generation: int = 0
+    ended: bool = False
+
+    @property
+    def quiescent(self) -> bool:
+        return self.native_consumed and self.reply_committed and self.pane_idle and not self.open_calls
+
+    def _activity(self) -> None:
+        self.quiet_generation += 1
+
+    def expect_input(self, pending_id: str | None) -> None:
+        self.expected_pending_id = pending_id
+
+    def on_reconnect(self) -> None:
+        # The server replays the in-flight assistant text on subscribe.
+        self.replay_text = ""
+
+    def request_cancel(self) -> None:
+        self.cancelling = True
+
+    def _awaiting_native_input(self) -> bool:
+        # Items that arrive before our input is consumed belong to an earlier turn.
+        return self.native and not self.native_consumed
+
+    def _end(self, outcome: Literal["completed", "cancelled", "failed"], error: str | None = None) -> list[TurnOutput]:
+        if self.ended:
+            return []
+        self.ended = True
+        return [TurnEnded(outcome, error)]
+
+    def _text_delta(self, delta: str) -> list[TurnOutput]:
+        self.message_streamed = True
+        if self.replay_text is not None:
+            self.replay_text += delta
+            if len(self.replay_text) <= len(self.emitted_text):
+                return []
+            delta = self.replay_text[len(self.emitted_text) :]
+            self.replay_text = None
+        self.emitted_text += delta
+        return [TextDelta(delta)] if delta else []
+
+    def feed(self, event_type: str, data: dict[str, Any]) -> list[TurnOutput]:
+        if self.ended or event_type in IGNORED_EVENTS:
+            return []
+        was_quiescent = self.quiescent
+        outputs = self._feed(event_type, data)
+        if self.quiescent and not was_quiescent and not self.ended:
+            outputs.append(Quiescent(self.quiet_generation))
+        return outputs
+
+    def _feed(self, event_type: str, data: dict[str, Any]) -> list[TurnOutput]:
+        if event_type in ("response.created", "response.in_progress"):
+            response = data.get("response") or {}
+            model = response.get("model")
+            self.queue_response = isinstance(model, str) and model.endswith("-native-ui")
+            if response.get("id") != self.current_response_id:
+                self.current_response_id = response.get("id")
+                self.seen_calls.clear()
+                self.seen_outputs.clear()
+            return []
+
+        if event_type in (
+            "response.output_text.delta",
+            "response.reasoning_text.delta",
+            "response.reasoning_summary_text.delta",
+            "response.output_item.done",
+        ) and self._awaiting_native_input():
+            return []
+
+        if event_type == "response.output_text.delta":
+            self.reply_committed = False
+            self._activity()
+            return self._text_delta(data.get("delta") or "")
+
+        if event_type in ("response.reasoning_text.delta", "response.reasoning_summary_text.delta"):
+            self.reply_committed = False
+            self._activity()
+            delta = data.get("delta") or ""
+            return [ThoughtDelta(delta)] if delta else []
+
+        if event_type == "response.output_item.done":
+            self._activity()
+            return self._item_done(data.get("item") or {})
+
+        if event_type == "response.completed":
+            response = data.get("response") or {}
+            if _is_native_ack(response) or self._awaiting_native_input():
+                self.queue_response = False
+                self.current_response_id = None
+                return []
+            return self._usage(response.get("usage")) + self._end("completed")
+
+        if event_type == "response.failed":
+            return self._end("failed", _error_text((data.get("response") or {}).get("error")))
+
+        if event_type == "response.cancelled":
+            return self._end("cancelled")
+
+        if event_type == "session.interrupted":
+            return self._end("cancelled")
+
+        if event_type == "session.status":
+            status = data.get("status")
+            if status == "failed":
+                return self._end("failed", _error_text(data.get("error")))
+            self.pane_idle = status == "idle"
+            if status != "idle":
+                self._activity()
+                return []
+            if self.cancelling:
+                return self._end("cancelled")
+            if self.native:
+                if self.native_consumed and data.get("response_id"):
+                    return self._end("completed")
+                return []
+            if self.current_response_id and not self.queue_response:
+                return self._end("completed")
+            return []
+
+        if event_type == "session.input.consumed":
+            consumed = data.get("data") or {}
+            matches = (
+                self.expected_pending_id is None or consumed.get("cleared_pending_id") == self.expected_pending_id
+            )
+            if self.native and not self.native_consumed and matches:
+                self.native_consumed = True
+                self.expected_pending_id = None
+            return []
+
+        if event_type == "session.usage":
+            return self._usage(data)
+
+        if event_type == "response.elicitation_request":
+            params = data.get("params") or {}
+            return [
+                Elicitation(
+                    elicitation_id=str(data.get("elicitation_id")),
+                    message=str(params.get("message") or "Omnigent requests approval"),
+                    target_session_id=params.get("target_session_id"),
+                )
+            ]
+
+        LOG.debug("unhandled event %s", event_type)
+        return []
+
+    def _item_done(self, item: dict[str, Any]) -> list[TurnOutput]:
+        item_type = item.get("type")
+        if item_type == "message" and item.get("role") == "assistant" and not item.get("is_meta"):
+            streamed = self.message_streamed
+            self.message_streamed = False
+            self.emitted_text = ""
+            self.replay_text = None
+            self.reply_committed = True
+            text = _message_text(item)
+            return [] if streamed or not text else [TextDelta(text)]
+        if item_type == "function_call" and isinstance(item.get("call_id"), str):
+            if item["call_id"] in self.seen_calls:
+                return []
+            self.seen_calls.add(item["call_id"])
+            self.open_calls.add(item["call_id"])
+            self.reply_committed = False
+            arguments: Any = item.get("arguments")
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except json.JSONDecodeError:
+                    pass
+            return [ToolStarted(item["call_id"], str(item.get("name") or "tool"), arguments)]
+        if item_type == "function_call_output" and isinstance(item.get("call_id"), str):
+            key = f"{item.get('response_id') or self.current_response_id}:{item['call_id']}"
+            if key in self.seen_outputs:
+                return []
+            self.seen_outputs.add(key)
+            self.open_calls.discard(item["call_id"])
+            output = item.get("output")
+            text = output if isinstance(output, str) else json.dumps(output)
+            return [ToolFinished(item["call_id"], text)]
+        LOG.debug("unhandled item type %s", item_type)
+        return []
+
+    def _usage(self, usage: Any) -> list[TurnOutput]:
+        if not isinstance(usage, dict):
+            return []
+        used = usage.get("context_tokens")
+        size = usage.get("context_window")
+        if isinstance(used, int) and isinstance(size, int) and size > 0:
+            return [Usage(used, size)]
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Prompt rewriting.
+# ---------------------------------------------------------------------------
+
+_T3_WRAPPED = re.compile(
+    r"\A\s*<t3_code_instructions>\n(?P<instructions>.*?)\n</t3_code_instructions>\n\n"
+    r"<user_request>\n(?P<request>.*)\n</user_request>\s*\Z",
+    re.DOTALL,
+)
+_T3_PLAN_SECTION = re.compile(r"## T3 Code interaction mode: Plan\n\n.*?(?=\n\n## |\Z)", re.DOTALL)
+
+
+def strip_t3_instructions(blocks: list[str]) -> str:
+    """Reduce T3 Code's ACP prompt to what the user asked.
+
+    HACK: T3 Code has no system-prompt channel over ACP, so it wraps prompts in
+    ``<t3_code_instructions>`` (its MCP tools, which an Omnigent agent cannot
+    reach) and appends a ``<runtime_info>`` block (packages/provider-core/src/
+    server/orchestrationInstructions.ts, runtimeInstructions.ts). Matching its
+    tag names is the only hook; the Plan-mode section is kept because it is how
+    T3 Code expresses its Plan interaction mode.
+    """
+    parts: list[str] = []
+    for text in blocks:
+        if text.lstrip().startswith("<runtime_info>"):
+            continue
+        wrapped = _T3_WRAPPED.match(text)
+        if wrapped is None:
+            parts.append(text)
+            continue
+        plan = _T3_PLAN_SECTION.search(wrapped["instructions"])
+        parts.append(f"{plan[0]}\n\n{wrapped['request']}" if plan else wrapped["request"])
+    return "\n\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Omnigent REST + SSE.
+# ---------------------------------------------------------------------------
+
+
+class OmnigentError(Exception):
+    pass
+
+
+class OmnigentClient:
+    def __init__(self, base_url: str) -> None:
+        # trust_env=False: loopback must bypass the corp proxy.
+        self._http = httpx.AsyncClient(base_url=base_url, trust_env=False, timeout=httpx.Timeout(30.0))
+
+    async def _json(self, method: str, path: str, **kwargs: Any) -> Any:
+        response = await self._http.request(method, path, **kwargs)
+        if response.is_error:
+            raise OmnigentError(f"{method} {path} -> {response.status_code}: {response.text[:500]}")
+        return response.json() if response.content else None
+
+    async def _paginate(self, path: str, params: dict[str, Any] | None = None) -> AsyncIterator[dict[str, Any]]:
+        after: str | None = None
+        while True:
+            page = await self._json(
+                "GET", path, params={**(params or {}), "limit": 100, **({"after": after} if after else {})}
+            )
+            for row in page.get("data", []):
+                yield row
+            if not page.get("has_more"):
+                return
+            after = page.get("last_id")
+
+    async def agents(self) -> list[dict[str, Any]]:
+        return [a async for a in self._paginate("/v1/agents")]
+
+    async def hosts(self) -> list[dict[str, Any]]:
+        body = await self._json("GET", "/v1/hosts")
+        return body.get("hosts") or body.get("data") or []
+
+    async def model_options(self, host_id: str, harness: str) -> list[dict[str, Any]]:
+        body = await self._json("GET", f"/v1/hosts/{host_id}/harnesses/{harness}/model-options")
+        return [m for m in body.get("models") or [] if not m.get("hidden")]
+
+    async def find_session_by_label(self, agent_id: str, key: str, value: str) -> dict[str, Any] | None:
+        async for session in self._paginate("/v1/sessions", {"agent_id": agent_id, "include_archived": "true"}):
+            if (session.get("labels") or {}).get(key) == value:
+                return session
+        return None
+
+    async def create_session(self, body: dict[str, Any]) -> dict[str, Any]:
+        return await self._json("POST", "/v1/sessions", json=body)
+
+    async def update_session(self, session_id: str, body: dict[str, Any]) -> None:
+        await self._json("PATCH", f"/v1/sessions/{session_id}", json=body)
+
+    async def post_event(self, session_id: str, event: dict[str, Any]) -> dict[str, Any]:
+        return await self._json("POST", f"/v1/sessions/{session_id}/events", json=event) or {}
+
+    async def resolve_elicitation(self, session_id: str, elicitation_id: str, action: str) -> None:
+        await self._json(
+            "POST", f"/v1/sessions/{session_id}/elicitations/{elicitation_id}/resolve", json={"action": action}
+        )
+
+    async def stream(self, session_id: str, connected: asyncio.Event) -> AsyncIterator[tuple[str, dict[str, Any]]]:
+        timeout = httpx.Timeout(30.0, read=60.0)  # the server heartbeats every 15s
+        async with self._http.stream("GET", f"/v1/sessions/{session_id}/stream", timeout=timeout) as response:
+            if response.is_error:
+                await response.aread()
+                raise OmnigentError(f"stream {session_id} -> {response.status_code}: {response.text[:500]}")
+            connected.set()
+            event_type: str | None = None
+            data_lines: list[str] = []
+            async for line in response.aiter_lines():
+                if line.startswith("event:"):
+                    event_type = line[6:].strip()
+                elif line.startswith("data:"):
+                    data_lines.append(line[5:].lstrip())
+                elif not line and data_lines:
+                    raw = "\n".join(data_lines)
+                    data_lines = []
+                    if raw == "[DONE]":
+                        return
+                    try:
+                        payload = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(payload, dict):
+                        yield str(event_type or payload.get("type") or ""), payload
+                    event_type = None
+
+    async def aclose(self) -> None:
+        await self._http.aclose()
+
+
+def host_matches(name: str, hostnames: set[str]) -> bool:
+    name = name.lower()
+    return name in hostnames or name.split(".")[0] in {h.split(".")[0] for h in hostnames}
+
+
+def resolve_host(hosts: list[dict[str, Any]], spec: str) -> dict[str, Any]:
+    online = [h for h in hosts if h.get("status") == "online"]
+    if spec == "auto":
+        local = {socket.getfqdn().lower(), socket.gethostname().lower()}
+        matches = [h for h in online if host_matches(str(h.get("name") or ""), local)]
+    else:
+        matches = [h for h in online if spec in (h.get("host_id"), h.get("name"))]
+    if len(matches) != 1:
+        names = sorted(str(h.get("name")) for h in matches) or "none"
+        raise OmnigentError(f"--host {spec!r} must match exactly one online Omnigent host; matched {names}")
+    return matches[0]
+
+
+def resolve_agent(agents: list[dict[str, Any]], spec: str) -> dict[str, Any]:
+    for agent in agents:
+        if agent.get("id") == spec:
+            return agent
+    named = [a for a in agents if a.get("name") == spec]
+    if len(named) != 1:
+        raise OmnigentError(f"--agent {spec!r} matched {len(named)} Omnigent agents")
+    return named[0]
+
+
+# ---------------------------------------------------------------------------
+# ACP agent.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Turn:
+    tracker: TurnTracker
+    outputs: asyncio.Queue[TurnOutput] = field(default_factory=asyncio.Queue)
+    cancel_requested: bool = False
+
+
+@dataclass
+class Session:
+    acp_id: str
+    cwd: str
+    model: str | None
+    conversation_id: str | None = None
+    turn: Turn | None = None
+    connected: asyncio.Event = field(default_factory=asyncio.Event)
+    stream_task: asyncio.Task[None] | None = None
+
+
+@dataclass(frozen=True)
+class Target:
+    agent_id: str
+    host_id: str
+    native: bool
+    models: list[dict[str, Any]]
+
+    @property
+    def default_model(self) -> str | None:
+        default = next((m for m in self.models if m.get("isDefault")), self.models[0] if self.models else None)
+        return default.get("id") if default else None
+
+
+def _tool_kind(name: str) -> str:
+    lowered = name.lower()
+    if lowered in ("bash", "shell", "exec_command", "sys_os_shell") or "command" in lowered:
+        return "execute"
+    if lowered in ("edit", "write", "multiedit", "apply_patch", "notebookedit", "sys_os_edit", "sys_os_write"):
+        return "edit"
+    if lowered in ("read", "sys_os_read", "view"):
+        return "read"
+    if lowered in ("grep", "glob", "search", "find"):
+        return "search"
+    if lowered in ("webfetch", "websearch", "fetch"):
+        return "fetch"
+    return "other"
+
+
+class OmnigentAgent:
+    def __init__(self, client: OmnigentClient, agent_spec: str, host_spec: str, strip: bool, trace: Any) -> None:
+        self._client = client
+        self._agent_spec = agent_spec
+        self._host_spec = host_spec
+        self._strip = strip
+        self._trace = trace
+        self._target: Target | None = None
+        self._sessions: dict[str, Session] = {}
+        self._conn: Any = None
+
+    def on_connect(self, conn: Any) -> None:
+        self._conn = conn
+
+    async def _resolve_target(self) -> Target:
+        if self._target is None:
+            agent = resolve_agent(await self._client.agents(), self._agent_spec)
+            host = resolve_host(await self._client.hosts(), self._host_spec)
+            catalog = CATALOG_HARNESS.get(str(agent.get("harness")))
+            models = await self._client.model_options(host["host_id"], catalog) if catalog else []
+            native = str(agent.get("harness")).endswith("-native")
+            self._target = Target(agent["id"], host["host_id"], native, models)
+        return self._target
+
+    def _config_options(self, session: Session, target: Target) -> list[SessionConfigOptionSelect]:
+        if not target.models:
+            return []
+        return [
+            SessionConfigOptionSelect(
+                id=MODEL_CONFIG_ID,
+                name="Model",
+                category="model",
+                type="select",
+                current_value=session.model or target.default_model or "",
+                options=[
+                    SessionConfigSelectOption(value=m["id"], name=m.get("displayName") or m["id"])
+                    for m in target.models
+                ],
+            )
+        ]
+
+    def _session(self, session_id: str) -> Session:
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise acp.RequestError.invalid_params({"sessionId": f"unknown session {session_id}"})
+        return session
+
+    async def initialize(self, protocol_version: int, **kwargs: Any) -> acp.InitializeResponse:
+        return acp.InitializeResponse(
+            protocol_version=acp.PROTOCOL_VERSION,
+            agent_capabilities=AgentCapabilities(
+                load_session=True,
+                prompt_capabilities=PromptCapabilities(image=False),
+                session_capabilities=SessionCapabilities(close=SessionCloseCapabilities()),
+            ),
+            auth_methods=[],
+            agent_info=Implementation(name="omnigent-acp", title="Omnigent", version="0.1.0"),
+        )
+
+    async def new_session(self, cwd: str, **kwargs: Any) -> acp.NewSessionResponse:
+        target = await self._resolve_target()
+        session = Session(acp_id=uuid.uuid4().hex, cwd=cwd, model=target.default_model)
+        self._sessions[session.acp_id] = session
+        return acp.NewSessionResponse(session_id=session.acp_id, config_options=self._config_options(session, target))
+
+    async def load_session(self, cwd: str, session_id: str, **kwargs: Any) -> acp.LoadSessionResponse:
+        target = await self._resolve_target()
+        existing = await self._client.find_session_by_label(target.agent_id, SESSION_LABEL, session_id)
+        session = self._sessions.get(session_id) or Session(acp_id=session_id, cwd=cwd, model=target.default_model)
+        if existing is not None:
+            session.conversation_id = existing["id"]
+            session.model = existing.get("model_override") or session.model
+        self._sessions[session_id] = session
+        return acp.LoadSessionResponse(config_options=self._config_options(session, target))
+
+    async def set_config_option(
+        self, config_id: str, session_id: str, value: str | bool, **kwargs: Any
+    ) -> acp.SetSessionConfigOptionResponse:
+        session = self._session(session_id)
+        target = await self._resolve_target()
+        if config_id != MODEL_CONFIG_ID or not isinstance(value, str):
+            raise acp.RequestError.invalid_params({"configId": config_id})
+        session.model = value
+        if session.conversation_id is not None:
+            await self._client.update_session(session.conversation_id, {"model_override": value})
+        return acp.SetSessionConfigOptionResponse(config_options=self._config_options(session, target))
+
+    async def close_session(self, session_id: str, **kwargs: Any) -> None:
+        session = self._sessions.pop(session_id, None)
+        if session and session.stream_task:
+            session.stream_task.cancel()
+
+    async def cancel(self, session_id: str, **kwargs: Any) -> None:
+        session = self._sessions.get(session_id)
+        if session is None or session.turn is None or session.conversation_id is None:
+            return
+        turn = session.turn
+        turn.cancel_requested = True
+        turn.tracker.request_cancel()
+        asyncio.get_running_loop().call_later(
+            CANCEL_GRACE_S, lambda: turn.outputs.put_nowait(TurnEnded("cancelled"))
+        )
+        await self._client.post_event(session.conversation_id, {"type": "interrupt", "data": {}})
+
+    async def _ensure_conversation(self, session: Session) -> str:
+        if session.conversation_id is None:
+            target = await self._resolve_target()
+            body: dict[str, Any] = {
+                "agent_id": target.agent_id,
+                "host_id": target.host_id,
+                "workspace": session.cwd,
+                "labels": {SESSION_LABEL: session.acp_id, "t3.client": "t3code"},
+            }
+            if session.model:
+                body["model_override"] = session.model
+            created = await self._client.create_session(body)
+            session.conversation_id = created["id"]
+            LOG.info("created Omnigent session %s for %s", created["id"], session.acp_id)
+        return session.conversation_id
+
+    async def _pump(self, session: Session, conversation_id: str) -> None:
+        while True:
+            try:
+                async for event_type, payload in self._client.stream(conversation_id, session.connected):
+                    if self._trace is not None:
+                        self._trace.write(json.dumps({"type": event_type, "data": payload}) + "\n")
+                        self._trace.flush()
+                    turn = session.turn
+                    if turn is not None:
+                        for output in turn.tracker.feed(event_type, payload):
+                            turn.outputs.put_nowait(output)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - reconnect on any transport failure
+                LOG.warning("stream %s dropped: %s", conversation_id, exc)
+            session.connected.clear()
+            if session.turn is not None:
+                session.turn.tracker.on_reconnect()
+            await asyncio.sleep(1.0)
+
+    async def _ensure_stream(self, session: Session, conversation_id: str) -> None:
+        if session.stream_task is None or session.stream_task.done():
+            session.stream_task = asyncio.create_task(self._pump(session, conversation_id))
+        await asyncio.wait_for(session.connected.wait(), timeout=30.0)
+
+    async def prompt(self, session_id: str, prompt: list[Any], **kwargs: Any) -> acp.PromptResponse:
+        session = self._session(session_id)
+        if session.turn is not None:
+            raise acp.RequestError.invalid_request({"reason": "a prompt is already running"})
+        texts = [block.text for block in prompt if getattr(block, "type", None) == "text"]
+        text = strip_t3_instructions(texts) if self._strip else "\n\n".join(texts)
+        conversation_id = await self._ensure_conversation(session)
+        turn = Turn(TurnTracker(native=(await self._resolve_target()).native))
+        session.turn = turn
+        try:
+            await self._ensure_stream(session, conversation_id)
+            posted = await self._client.post_event(
+                conversation_id,
+                {"type": "message", "data": {"role": "user", "content": [{"type": "input_text", "text": text}]}},
+            )
+            turn.tracker.expect_input(posted.get("pending_id"))
+            quiet: Quiescent | None = None
+            while True:
+                try:
+                    output = await asyncio.wait_for(turn.outputs.get(), QUIESCENT_END_S if quiet else None)
+                except TimeoutError:
+                    tracker = turn.tracker
+                    if quiet is not None and tracker.quiescent and tracker.quiet_generation == quiet.generation:
+                        LOG.info("turn on %s ended by quiescence; no confirmed idle arrived", conversation_id)
+                        return acp.PromptResponse(stop_reason="end_turn")
+                    quiet = Quiescent(tracker.quiet_generation) if tracker.quiescent else None
+                    continue
+                if isinstance(output, Quiescent):
+                    quiet = output
+                    continue
+                if isinstance(output, TurnEnded):
+                    if output.outcome == "cancelled" or turn.cancel_requested:
+                        return acp.PromptResponse(stop_reason="cancelled")
+                    if output.outcome == "failed":
+                        raise acp.RequestError.internal_error({"message": output.error})
+                    return acp.PromptResponse(stop_reason="end_turn")
+                await self._forward(session, conversation_id, output)
+        finally:
+            session.turn = None
+
+    async def _forward(self, session: Session, conversation_id: str, output: TurnOutput) -> None:
+        sid = session.acp_id
+        match output:
+            case TextDelta(text):
+                await self._conn.session_update(sid, acp.update_agent_message_text(text))
+            case ThoughtDelta(text):
+                await self._conn.session_update(sid, acp.update_agent_thought_text(text))
+            case ToolStarted(call_id, name, arguments):
+                await self._conn.session_update(
+                    sid,
+                    acp.start_tool_call(
+                        call_id, name, kind=_tool_kind(name), status="in_progress", raw_input=arguments
+                    ),
+                )
+            case ToolFinished(call_id, text):
+                await self._conn.session_update(
+                    sid,
+                    acp.update_tool_call(
+                        call_id,
+                        status="completed",
+                        content=[acp.tool_content(acp.text_block(text[:TOOL_OUTPUT_LIMIT]))],
+                    ),
+                )
+            case Usage(used, size):
+                await self._conn.session_update(sid, UsageUpdate(session_update="usage_update", used=used, size=size))
+            case Elicitation(elicitation_id, message, target_session_id):
+                await self._approve(session, target_session_id or conversation_id, elicitation_id, message)
+            case TurnEnded():
+                pass
+
+    async def _approve(self, session: Session, conversation_id: str, elicitation_id: str, message: str) -> None:
+        response = await self._conn.request_permission(
+            session.acp_id,
+            ToolCallUpdate(tool_call_id=f"omnigent-elicitation-{elicitation_id}", title=message),
+            [
+                PermissionOption(option_id="accept", name="Approve", kind="allow_once"),
+                PermissionOption(option_id="decline", name="Deny", kind="reject_once"),
+            ],
+        )
+        outcome = response.outcome
+        action = outcome.option_id if getattr(outcome, "outcome", None) == "selected" else "cancel"
+        await self._client.resolve_elicitation(conversation_id, elicitation_id, action)
+
+
+async def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--agent", default="claude-native-ui", help="Omnigent agent name or id")
+    parser.add_argument("--host", default="auto", help="'auto' (this machine), or a host name or id")
+    parser.add_argument("--url", default=os.environ.get("OMNIGENT_URL", "http://127.0.0.1:6767"))
+    parser.add_argument("--keep-t3-instructions", action="store_true", help="forward T3 Code's prompt wrappers")
+    parser.add_argument("--trace", help="append every Omnigent stream event to this JSONL file")
+    args = parser.parse_args()
+    logging.basicConfig(
+        stream=sys.stderr,
+        level=os.environ.get("OMNIGENT_ACP_LOG", "INFO").upper(),
+        format="omnigent-acp %(levelname)s %(message)s",
+    )
+    client = OmnigentClient(args.url)
+    trace = open(args.trace, "a", encoding="utf-8") if args.trace else None
+    try:
+        agent = OmnigentAgent(client, args.agent, args.host, strip=not args.keep_t3_instructions, trace=trace)
+        await acp.run_agent(agent)
+    finally:
+        await client.aclose()
+        if trace is not None:
+            trace.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
