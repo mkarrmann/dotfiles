@@ -29,15 +29,16 @@ whose only project is that workspace's checkout:
 
 ## Pairing
 
-Each window's Chrome profile pairs with its server once, with no extra login:
+Each window's Chrome profile pairs with its server without an extra login:
 `nvs-tunnels`' remote command runs `bin/t3-pairing-tokens` inside the ET session
 it already authenticated, which mints a 12-hour one-time token per running
 server; `nvs-tunnels` saves them under `~/.local/state/t3-pairing/HOST/` (not
-shown in the tunnel window). When `startup-windows` creates a window for a
-profile without `~/.t3-workspace-chrome/<name>/.t3-paired`, it opens it on the
-server's `/pair` URL with that token, then marks the profile. To pair a profile
-again (its session expired), delete that marker and its window, reconnect the
-tunnel, and rerun `startup-windows`.
+shown in the tunnel window). Before `startup-windows` creates a devserver's first
+window it waits for that server to answer through the tunnel and for its token,
+then opens every window it creates on the server's `/pair` URL while a token is
+available. A window it finds on an error page (opened before its tunnel was up)
+is replaced. A window that still asks to pair needs a fresh token: reconnect the
+tunnel, close the window, and rerun `startup-windows`.
 
 ## Limits
 

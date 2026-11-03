@@ -19,7 +19,7 @@ extract_fn() {
     p && $0 == "}" { exit }
   ' "$STARTUP"
 }
-for fn in t3_workspace_window t3_window_ids_for_profile t3_window_ids_json t3_profile_running t3_take_pairing_token; do
+for fn in t3_workspace_window t3_window_ids_for_profile t3_window_ids_json t3_profile_running t3_take_pairing_token t3_wait_for_server; do
   body=$(extract_fn "$fn")
   [[ -n "$body" ]] || { echo "could not extract $fn" >&2; exit 1; }
   eval "$body"
@@ -73,7 +73,11 @@ T3_PAIRING_DIR="$(mktemp -d)"
 trap 'rm -rf "$T3_PAIRING_DIR"' EXIT
 mkdir -p "$T3_PAIRING_DIR/cco.example.com"
 echo TOKEN123 > "$T3_PAIRING_DIR/cco.example.com/checkout3"
-t3_token_waited_hosts=" cco.example.com"
+curl() { return 0; }
+t3_waited_hosts=""
+started=$SECONDS
+t3_wait_for_server cco.example.com http://cco-checkout3.t3.localhost:13783/ checkout3
+check "the server wait returns once the server answers and its token is saved" "0" "$((SECONDS - started))"
 check "a saved pairing token is handed out" "TOKEN123" "$(t3_take_pairing_token cco.example.com checkout3)"
 check "and only once" "" "$(t3_take_pairing_token cco.example.com checkout3)"
 
