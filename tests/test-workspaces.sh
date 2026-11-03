@@ -50,6 +50,13 @@ check "every row carries an origin" "0" \
 # exactly the failure this table exists to prevent.
 check "origins are unique" "$(jq -r '.workspaces | length' <<< "$table")" \
   "$(jq -r '[.workspaces[].origin] | unique | length' <<< "$table")"
+# Each devserver workspace's T3 Code window is its own checkout's server
+# (systemd/t3@.service) on its own hostname; a shared URL would share a server
+# or a cookie jar.
+check "every devserver row has a T3 Code URL" "0" \
+  "$(jq -r '[.workspaces[] | select(.kind == "devserver") | select((.t3Url // "") == "")] | length' <<< "$table")"
+check "T3 Code URLs are unique" "$(jq -r '[.workspaces[] | select(.kind == "devserver")] | length' <<< "$table")" \
+  "$(jq -r '[.workspaces[] | .t3Url // empty] | unique | length' <<< "$table")"
 check "workspace numbers are unique" "$(jq -r '.workspaces | length' <<< "$table")" \
   "$(jq -r '[.workspaces[].workspace] | unique | length' <<< "$table")"
 

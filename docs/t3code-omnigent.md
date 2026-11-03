@@ -5,26 +5,34 @@ owns every session: harness, TUI, policies, watcher wakeups, the Google Chat
 bridge. T3 Code reaches it through `bin/omnigent-acp`, an ACP agent registered
 as T3 Code's "Local command" ACP provider.
 
-## Pieces
+## One server per checkout
 
-- `bin/t3-ensure` (run by `init.sh` on the candidates): installs the `t3` CLI,
-  pins the service to `127.0.0.1:$T3_SERVER_PORT`, registers the
-  "Omnigent · Claude" (`claude-native-ui`) and "Omnigent · Codex"
-  (`codex-native-ui`) providers in `~/.t3/userdata/settings.json`, warms uv's
-  cache for the shim, and installs `t3code.service` once. It never restarts a
-  running service; upgrades go through `t3 update` or the app's update button.
-- `bin-macos/nvs-tunnels`: forwards `T3_PRIMARY_TUNNEL_PORT` / `T3_STANDBY_TUNNEL_PORT`
-  (`omnigent_config/topology.env`) to each candidate's T3 Code server, next to
-  the Omnigent forward. A tunnel picks it up when it next restarts.
-- Each shim creates sessions on its own host (`--host auto`) in the thread's
-  folder, so a thread on the standby runs there.
+T3 Code's desktop app is single-window and has no way to open scoped to a
+project, so each workspace instead gets a browser window on a T3 Code server
+whose only project is that workspace's checkout:
 
-## Pair the Mac (once per devserver)
+- `bin/t3-ensure` (run by `init.sh` on the candidates) installs the `t3` CLI,
+  registers the "Omnigent · Claude" (`claude-native-ui`) and "Omnigent · Codex"
+  (`codex-native-ui`) providers in `~/.t3-workspaces/checkoutN`, warms uv's cache
+  for the shim, and enables `t3@checkoutN` (`systemd/t3@.service`,
+  `bin/t3-workspace-serve`) once. It never restarts a running server; after
+  `t3 update`, restart the instances to pick up the new version.
+- `~/checkoutN` listens on `127.0.0.1:T3_BASE_PORT+N`; `bin-macos/nvs-tunnels`
+  forwards it to the Mac on the candidate's `T3_*_TUNNEL_BASE_PORT+N`
+  (`omnigent_config/topology.env`). A tunnel picks new forwards up when it
+  next restarts.
+- `bin-macos/workspaces` gives each devserver workspace a `t3Url` on its own
+  `*.t3.localhost` hostname, and `bin-macos/startup-windows` opens it as a Chrome
+  app window in a Chrome profile of its own (`~/.t3-workspace-chrome/<name>`).
+  The profile is how the script tells the windows apart; they share a title.
+- Each shim creates sessions on its own host (`--host auto`) in the checkout.
 
-On the devserver: `t3 pair --ttl 30m`. On the Mac, with the tunnel up, open the
-printed app link with the address rewritten to the local tunnel port, e.g.
-`http://127.0.0.1:23773/pair#token=…` for the standby, in **Settings →
-Environments → Add environment**. The app keeps the connection afterwards.
+## Pairing (once per workspace)
+
+After the servers are up and the tunnels carry their forwards, run
+`t3-pair-workspaces` on the Mac (optionally with workspace numbers). It mints a
+token per checkout with one ssh login per devserver and reopens each window on
+its `/pair` URL; the profile stays signed in afterwards.
 
 ## Limits
 

@@ -58,17 +58,42 @@ command -v jq >/dev/null 2>&1 || { echo "ERROR: jq not found." >&2; exit 1; }
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 tls_port="${OMNIGENT_TLS_PORT:-$("$SCRIPT_DIR/../bin/omnigent-server-url" --tls-port)}"
+primary_fqdn="${OMNIGENT_PRIMARY_FQDN:-$("$SCRIPT_DIR/../bin/omnigent-server-url" --primary)}"
+standby_fqdn="${OMNIGENT_STANDBY_FQDN:-$("$SCRIPT_DIR/../bin/omnigent-server-url" --standby)}"
+topology="${OMNIGENT_TOPOLOGY_FILE:-$SCRIPT_DIR/../omnigent_config/topology.env}"
+topology_value() {
+  local value
+  value="$(sed -n "s/^$1=//p" "$topology" 2>/dev/null | tail -n 1)"
+  printf '%s' "${value:-$2}"
+}
+t3_primary_base="$(topology_value T3_PRIMARY_TUNNEL_BASE_PORT 13780)"
+t3_standby_base="$(topology_value T3_STANDBY_TUNNEL_BASE_PORT 23780)"
+
+# The workspace's T3 Code window: that checkout's own server (systemd/t3@.service)
+# through its nvs-tunnels forward, on a hostname of its own so each window keeps
+# separate cookies and storage. Empty when the host or checkout has no server.
+t3_url() {
+  local host="$1" checkout="$2" origin="$3" base
+  [[ "$(basename "$checkout")" =~ ^checkout([0-9]+)$ ]] || return 0
+  case "$host" in
+    "$primary_fqdn") base="$t3_primary_base" ;;
+    "$standby_fqdn") base="$t3_standby_base" ;;
+    *) return 0 ;;
+  esac
+  printf 'http://%s:%s/' "${origin%.omnigent.localhost}.t3.localhost" "$((base + BASH_REMATCH[1]))"
+}
 
 for entry in "${WORKSPACES[@]}"; do
   IFS='|' read -r ws kind rest <<< "$entry"
   case "$kind" in
     local)
       IFS='|' read -r cwd origin <<< "$rest"
-      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$ws" "$kind" "" "${cwd/#\~/$HOME}" "" "$origin"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t\n' "$ws" "$kind" "" "${cwd/#\~/$HOME}" "" "$origin"
       ;;
     devserver)
       IFS='|' read -r host checkout nvs origin <<< "$rest"
-      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$ws" "$kind" "$host" "$checkout" "$nvs" "$origin"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$ws" "$kind" "$host" "$checkout" "$nvs" "$origin" \
+        "$(t3_url "$host" "$checkout" "$origin")"
       ;;
     *)
       echo "ERROR: unknown workspace kind '$kind' in row: $entry" >&2
@@ -87,6 +112,7 @@ done | jq -Rn \
         | { workspace: .[0], kind: .[1], origin: .[5] }
           + (if .[1] == "devserver"
              then { host: .[2], checkout: .[3], nvsSession: .[4] }
+                  + (if (.[6] // "") != "" then { t3Url: .[6] } else {} end)
              else { cwd: .[3] }
              end)
       ]

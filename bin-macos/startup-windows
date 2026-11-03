@@ -88,6 +88,7 @@ trap 'exit 143' TERM
 #   cmux:     ws|cmux|title|title_match
 #   chrome:   ws|chrome|title
 #   omnigent: ws|omnigent|title
+#   t3:       ws|t3|title   (the workspace's checkout server, from bin-macos/workspaces)
 # title_match is a regex used to find existing windows in AeroSpace.
 # ws is the AeroSpace workspace to place the window in.
 # Multiple entries can share a workspace (accordion layout toggles between them).
@@ -104,24 +105,31 @@ WORKSPACES=(
   "2|ghostty|CCO: checkout1|CCO.*checkout1\\b|~|nvs CCO-checkout1"
   "2|chrome|Chrome: ws2"
   "2|omnigent|Omnigent: ws2"
+  "2|t3|T3: ws2"
   "3|ghostty|FTW: checkout1|FTW.*checkout1\\b|~|nvs FTW-checkout1"
   "3|chrome|Chrome: ws3"
   "3|omnigent|Omnigent: ws3"
+  "3|t3|T3: ws3"
   "4|ghostty|CCO: checkout2|CCO.*checkout2\\b|~|nvs CCO-checkout2"
   "4|chrome|Chrome: ws4"
   "4|omnigent|Omnigent: ws4"
+  "4|t3|T3: ws4"
   "5|ghostty|FTW: checkout2|FTW.*checkout2\\b|~|nvs FTW-checkout2"
   "5|chrome|Chrome: ws5"
   "5|omnigent|Omnigent: ws5"
+  "5|t3|T3: ws5"
   "6|ghostty|CCO: checkout3|CCO.*checkout3\\b|~|nvs CCO-checkout3"
   "6|chrome|Chrome: ws6"
   "6|omnigent|Omnigent: ws6"
+  "6|t3|T3: ws6"
   "7|ghostty|FTW: checkout3|FTW.*checkout3\\b|~|nvs FTW-checkout3"
   "7|chrome|Chrome: ws7"
   "7|omnigent|Omnigent: ws7"
+  "7|t3|T3: ws7"
   "8|ghostty|CCO: checkout4|CCO.*checkout4\\b|~|nvs CCO-checkout4"
   "8|chrome|Chrome: ws8"
   "8|omnigent|Omnigent: ws8"
+  "8|t3|T3: ws8"
 )
 
 SWEEP_WORKSPACE="Z"
@@ -145,6 +153,14 @@ chrome_restore_settled=false
 # Getting them off the managed workspaces is arrange-workspaces' job
 # (NON_LAYOUT_TITLE_PATTERN); an overlay does not follow its parent across
 # workspaces, so nothing here can keep one next to the window it belongs to.
+# Each devserver workspace's T3 Code window is a Chrome app window running in
+# that workspace's own Chrome profile, pointed at its checkout's T3 Code server
+# (systemd/t3@.service). Every T3 Code window has the same title, so the profile
+# of the owning Chrome process is what identifies a window's workspace; the
+# title only keeps these windows out of the Chrome slots and sweeps below.
+T3_CHROME_DATA_ROOT="$HOME/.t3-workspace-chrome"
+T3_TITLE_PATTERN="^T3 Code"
+
 OMNIGENT_APP="Omnigent"
 OMNIGENT_INVALID_TITLE_PATTERN="^Omnigent Update$"
 claimed_omnigent_ids=""
@@ -690,10 +706,11 @@ find_valid_unclaimed_chrome_window_on_workspace() {
   local ws="$1"
   local wid
   for wid in $(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
-    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" \
+    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --arg t3 "$T3_TITLE_PATTERN" \
       '.[] | select(
         ."app-name" == $app and
-        ((.["window-title"] // "") | test($invalid) | not)
+        ((.["window-title"] // "") | test($invalid) | not) and
+        ((.["window-title"] // "") | test($t3) | not)
       ) | .["window-id"]' | sort -n); do
     if ! chrome_id_is_claimed "$wid"; then
       echo "$wid"
@@ -706,10 +723,11 @@ find_valid_unclaimed_chrome_window_on_workspace() {
 find_valid_unclaimed_chrome_window() {
   local wid
   for wid in $(aerospace list-windows --all --json 2>/dev/null \
-    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" \
+    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --arg t3 "$T3_TITLE_PATTERN" \
       '.[] | select(
         ."app-name" == $app and
-        ((.["window-title"] // "") | test($invalid) | not)
+        ((.["window-title"] // "") | test($invalid) | not) and
+        ((.["window-title"] // "") | test($t3) | not)
       ) | .["window-id"]' | sort -n); do
     if ! chrome_id_is_claimed "$wid"; then
       echo "$wid"
@@ -722,10 +740,11 @@ find_valid_unclaimed_chrome_window() {
 workspace_has_claimed_chrome_window() {
   local ws="$1" wid
   for wid in $(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
-    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" \
+    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --arg t3 "$T3_TITLE_PATTERN" \
       '.[] | select(
         ."app-name" == $app and
-        ((.["window-title"] // "") | test($invalid) | not)
+        ((.["window-title"] // "") | test($invalid) | not) and
+        ((.["window-title"] // "") | test($t3) | not)
       ) | .["window-id"]'); do
     chrome_id_is_claimed "$wid" && return 0
   done
@@ -772,6 +791,28 @@ workspace_has_claimed_omnigent_window() {
     omnigent_id_is_claimed "$wid" && return 0
   done
   return 1
+}
+
+# t3_workspace_window WS -> "PROFILE_DIR<TAB>URL" for the workspace's T3 Code window.
+t3_workspace_window() {
+  local ws="$1" url host
+  url=$(workspaces --json 2>/dev/null \
+    | jq -r --arg ws "$ws" '.workspaces[] | select(.workspace == $ws) | .t3Url // empty') || return 1
+  [[ -n "$url" ]] || return 1
+  host="${url#http://}"
+  host="${host%%:*}"
+  printf '%s/%s\t%s\n' "$T3_CHROME_DATA_ROOT" "${host%.t3.localhost}" "$url"
+}
+
+# t3_window_ids_for_profile PROFILE_DIR -> ascending ids of windows whose Chrome
+# process runs with that --user-data-dir.
+t3_window_ids_for_profile() {
+  local profile="$1" wid pid
+  aerospace list-windows --all --json --format '%{window-id}%{app-pid}%{app-name}' 2>/dev/null \
+    | jq -r --arg app "$CHROME_APP" '.[] | select(."app-name" == $app) | "\(.["window-id"]) \(.["app-pid"])"' \
+    | while read -r wid pid; do
+        ps -o command= -p "$pid" 2>/dev/null | grep -qE -- "--user-data-dir=${profile}( |$)" && echo "$wid"
+      done | sort -n
 }
 
 close_invalid_chrome_windows_on_workspace() {
@@ -1135,7 +1176,7 @@ for i in "${!WORKSPACES[@]}"; do
           ((failures++)) || true
           continue
         }
-        window_id=$(wait_for_new_window "$app_name" "$before_snapshot") || {
+        window_id=$(wait_for_new_window "$app_name" "$before_snapshot" "$T3_TITLE_PATTERN") || {
           window_id=$(get_focused_window_id)
         }
         if [[ -n "$window_id" ]]; then
@@ -1222,6 +1263,41 @@ for i in "${!WORKSPACES[@]}"; do
         fi
       fi
       ;;
+    t3)
+      t3_row=$(t3_workspace_window "$ws") || t3_row=""
+      if [[ -z "$t3_row" ]]; then
+        echo "WARNING: [$title] workspace $ws has no T3 Code server; skipping" >&2
+        ((failures++)) || true
+        continue
+      fi
+      t3_profile="${t3_row%%$'\t'*}"
+      t3_url="${t3_row#*$'\t'}"
+      window_id=$(t3_window_ids_for_profile "$t3_profile" | head -1)
+      if [[ -n "$window_id" ]]; then
+        echo "[$title] assigning T3 Code window $window_id to workspace $ws..."
+      else
+        echo "[$title] opening $t3_url on workspace $ws..."
+        mkdir -p "$t3_profile"
+        open -na "$CHROME_APP" --args --user-data-dir="$t3_profile" \
+          --no-first-run --no-default-browser-check --app="$t3_url" 2>/dev/null || {
+          echo "WARNING: [$title] creation failed, skipping" >&2
+          ((failures++)) || true
+          continue
+        }
+        for _ in $(seq 1 40); do
+          sleep 0.5
+          window_id=$(t3_window_ids_for_profile "$t3_profile" | head -1)
+          [[ -n "$window_id" ]] && break
+        done
+      fi
+      if [[ -n "$window_id" ]]; then
+        aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || true
+      else
+        echo "WARNING: [$title] could not find its T3 Code window" >&2
+        ((failures++)) || true
+      fi
+      SNAPSHOT=$(snapshot_windows)
+      ;;
   esac
 done
 
@@ -1246,10 +1322,11 @@ for entry in "${WORKSPACES[@]}"; do
 done
 
 extra_chrome_ids=$(aerospace list-windows --all --json 2>/dev/null \
-  | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" \
+  | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --arg t3 "$T3_TITLE_PATTERN" \
     '.[] | select(
       ."app-name" == $app and
-      ((.["window-title"] // "") | test($invalid) | not)
+      ((.["window-title"] // "") | test($invalid) | not) and
+      ((.["window-title"] // "") | test($t3) | not)
     ) | .["window-id"]' | sort -n) || true
 for wid in $extra_chrome_ids; do
   chrome_id_is_claimed "$wid" && continue

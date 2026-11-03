@@ -36,9 +36,9 @@ topology_value() {
   value="$(sed -n "s/^$1=//p" "$TOPOLOGY_FILE" 2>/dev/null | tail -n 1)"
   printf '%s' "${value:-$2}"
 }
-T3_SERVER_PORT="${T3_SERVER_PORT:-$(topology_value T3_SERVER_PORT 3773)}"
-T3_PRIMARY_TUNNEL_PORT="${T3_PRIMARY_TUNNEL_PORT:-$(topology_value T3_PRIMARY_TUNNEL_PORT 13773)}"
-T3_STANDBY_TUNNEL_PORT="${T3_STANDBY_TUNNEL_PORT:-$(topology_value T3_STANDBY_TUNNEL_PORT 23773)}"
+T3_BASE_PORT="${T3_BASE_PORT:-$(topology_value T3_BASE_PORT 3780)}"
+T3_PRIMARY_TUNNEL_BASE_PORT="${T3_PRIMARY_TUNNEL_BASE_PORT:-$(topology_value T3_PRIMARY_TUNNEL_BASE_PORT 13780)}"
+T3_STANDBY_TUNNEL_BASE_PORT="${T3_STANDBY_TUNNEL_BASE_PORT:-$(topology_value T3_STANDBY_TUNNEL_BASE_PORT 23780)}"
 
 host="${1:?usage: nvs-tunnels HOST SESSION[:WORKDIR] ...}"
 shift
@@ -79,25 +79,31 @@ done
 case "$host" in
   "$OMNIGENT_PRIMARY_FQDN")
     omnigent_local_port="$OMNIGENT_PRIMARY_TUNNEL_PORT"
-    t3_local_port="$T3_PRIMARY_TUNNEL_PORT"
+    t3_local_base="$T3_PRIMARY_TUNNEL_BASE_PORT"
     ;;
   "$OMNIGENT_STANDBY_FQDN")
     omnigent_local_port="$OMNIGENT_STANDBY_TUNNEL_PORT"
-    t3_local_port="$T3_STANDBY_TUNNEL_PORT"
+    t3_local_base="$T3_STANDBY_TUNNEL_BASE_PORT"
     ;;
   *)
     omnigent_local_port=""
-    t3_local_port=""
+    t3_local_base=""
     ;;
 esac
 if [[ -n "$omnigent_local_port" ]]; then
   tunnel_spec+=",${omnigent_local_port}:${OMNIGENT_PORT}"
   echo "  Omnigent candidate -> localhost:${omnigent_local_port}"
 fi
-# T3 Code server from bin/t3-ensure; the Mac app pairs once per host at this port.
-if [[ -n "$t3_local_port" ]]; then
-  tunnel_spec+=",${t3_local_port}:${T3_SERVER_PORT}"
-  echo "  T3 Code -> localhost:${t3_local_port}"
+# Each checkout's own T3 Code server (systemd/t3@.service): checkoutN is
+# T3_BASE_PORT+N there and the candidate's tunnel base +N here, the port its
+# workspace window opens (bin-macos/workspaces).
+if [[ -n "$t3_local_base" ]]; then
+  for session in $session_names; do
+    [[ "$session" =~ -checkout([0-9]+)$ ]] || continue
+    n="${BASH_REMATCH[1]}"
+    tunnel_spec+=",$((t3_local_base + n)):$((T3_BASE_PORT + n))"
+    echo "  T3 Code ($session) -> localhost:$((t3_local_base + n))"
+  done
 fi
 
 # Server lifecycle is owned by systemd --user on the devvm

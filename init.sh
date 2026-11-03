@@ -135,8 +135,8 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
   fi
 
   # T3 Code as a UI over this host's Omnigent sessions, on the hub candidates
-  # only (the Mac tunnels to those). Installs the t3 CLI and its user service and
-  # registers bin/omnigent-acp as providers; never restarts a running service.
+  # only (the Mac tunnels to those): one server per ~/checkoutN (t3@checkoutN)
+  # with bin/omnigent-acp as its providers. Never restarts a running server.
   # See bin/t3-ensure.
   if [[ "$(uname -s)" == Linux ]] && "$DOTFILES_DIR/bin/omnigent-server-url" --is-candidate; then
     "$DOTFILES_DIR/bin/t3-ensure" ||

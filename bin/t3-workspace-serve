@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# t3-workspace-serve CHECKOUT — run T3 Code's server for ~/CHECKOUT (systemd/t3@.service).
+#
+# The server's data lives in ~/.t3-workspaces/CHECKOUT and its one project is
+# ~/CHECKOUT (created on first start), so a client sees only that checkout.
+# ~/checkoutN listens on 127.0.0.1:T3_BASE_PORT+N (omnigent_config/topology.env).
+set -euo pipefail
+
+checkout="${1:?usage: t3-workspace-serve CHECKOUT}"
+[[ "$checkout" =~ ^checkout([0-9]+)$ ]] || {
+  echo "t3-workspace-serve: expected a checkoutN directory name, got '$checkout'" >&2
+  exit 2
+}
+index="${BASH_REMATCH[1]}"
+
+dotfiles="${DOTFILES_DIR:-$HOME/dotfiles}"
+topology="${OMNIGENT_TOPOLOGY_FILE:-$dotfiles/omnigent_config/topology.env}"
+base_port="$(sed -n 's/^T3_BASE_PORT=//p' "$topology" 2>/dev/null | tail -n 1)"
+port=$(( ${base_port:-3780} + index ))
+
+t3="$HOME/.local/bin/t3"
+[[ -x "$t3" ]] || t3="$(command -v t3)" || {
+  echo "t3-workspace-serve: no t3 command; run bin/t3-ensure" >&2
+  exit 1
+}
+
+export T3CODE_HOME="$HOME/.t3-workspaces/$checkout"
+cd "$HOME/$checkout"
+exec "$t3" serve --host 127.0.0.1 --port "$port" --no-browser --auto-bootstrap-project-from-cwd

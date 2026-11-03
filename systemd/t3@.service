@@ -1,0 +1,26 @@
+# Templated systemd --user unit for per-checkout T3 Code servers.
+# Instance name (%i) is the checkout directory under $HOME (e.g. t3@checkout3).
+#
+# Each instance is a T3 Code server whose only project is ~/%i, so a browser
+# window on it (bin-macos/startup-windows) opens scoped to that checkout. Its
+# providers drive Omnigent sessions through bin/omnigent-acp. bin/t3-ensure,
+# run by init.sh on the Omnigent hub candidates, `enable --now`s one instance
+# per ~/checkoutN and never restarts a running one; after `t3 update`, restart
+# instances to pick up the new version.
+#
+# Manual ops:
+#   systemctl --user restart t3@checkout3
+#   journalctl --user -u t3@checkout3 -e
+
+[Unit]
+Description=T3 Code server for ~/%i
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/dotfiles/bin/t3-workspace-serve %i
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
