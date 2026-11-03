@@ -99,7 +99,7 @@ ensure_symlink() {
 }
 
 eden_mounts() {
-  eden list 2>/dev/null | awk 'NR>1 {print $1}' | sort -u
+  eden list 2>/dev/null | awk '$1 ~ /^\// {print $1}' | sort -u
 }
 
 is_eden_mount() {
