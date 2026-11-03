@@ -11,6 +11,7 @@ fi
 
 echo "nvs daemons:"
 for s in "$@"; do
-  state=$(systemctl --user is-active "nvs@$s.service" 2>/dev/null || echo unknown)
-  printf '  %s: %s\n' "$s" "$state"
+  # is-active exits non-zero for every state but "active" while still printing it.
+  state=$(systemctl --user is-active "nvs@$s.service" 2>/dev/null) || true
+  printf '  %s: %s\n' "$s" "${state:-unknown}"
 done

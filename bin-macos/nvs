@@ -28,10 +28,12 @@ wait_for_server() {
 
 # Initial connection — wait for tunnel + server
 if ! is_ready; then
-  echo "Waiting for tunnel (session: $session, port: $port)..."
+  echo "Waiting for tunnel and server (session: $session, port: $port)..."
+  echo "If the tunnel window shows the daemon as anything but active, run on the devserver:"
+  echo "  systemctl --user status nvs@$session"
   if ! wait_for_server 7200; then
     echo "ERROR: nvim server not reachable on port $port" >&2
-    echo "Ensure ET tunnel is running (check workspace T)" >&2
+    echo "Ensure ET tunnel is running (check workspace T) and nvs@$session is active on the devserver" >&2
     exit 1
   fi
 fi
