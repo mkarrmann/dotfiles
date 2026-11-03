@@ -4,11 +4,14 @@ Run with: uv run --no-project --with agent-client-protocol==0.12.1 --with httpx 
     python -m unittest discover -s tests -p test_omnigent_acp.py
 """
 
+import json
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
 import sys
 import unittest
+
+from acp.schema import EnvVariable, McpServerStdio
 
 ROOT = Path(__file__).resolve().parents[1]
 _loader = SourceFileLoader("omnigent_acp", str(ROOT / "bin/omnigent-acp"))
@@ -152,32 +155,86 @@ class SdkTurnTest(unittest.TestCase):
             ],
         )
 
+    def test_elicitation_shows_the_command_of_the_serialized_call(self):
+        preview = '{"name": "Bash", "arguments": {"command": "echo hi", "description": "Echo"}}'
+        out = feed(
+            shim.TurnTracker(),
+            [("response.elicitation_request", {"elicitation_id": "e1", "params": {"message": "Run?", "content_preview": preview}})],
+        )
+        self.assertEqual(out, [shim.Elicitation("e1", "Run?", None, "echo hi")])
+
     def test_failed_response_reports_error(self):
         out = feed(shim.TurnTracker(), [("response.failed", {"response": {"error": {"message": "boom"}}})])
         self.assertEqual(out, [shim.TurnEnded("failed", "boom")])
 
 
+DEFAULT_SECTION = "## T3 Code interaction mode: Default\n\nPrefer assumptions."
+PLAN_SECTION = "## T3 Code interaction mode: Plan\n\nDo not edit files."
+TOOLS_SECTION = "## T3 Code browser\n\nTools."
+
+
 class StripT3InstructionsTest(unittest.TestCase):
-    def wrapped(self, instructions, request):
+    def wrapped(self, mode_section, request):
         return (
-            f"<t3_code_instructions>\n{instructions}\n</t3_code_instructions>\n\n"
+            f"<t3_code_instructions>\n{mode_section}\n\n{TOOLS_SECTION}\n</t3_code_instructions>\n\n"
             f"<user_request>\n{request}\n</user_request>"
         )
 
-    def test_default_mode_and_tool_sections_are_dropped(self):
-        instructions = "## T3 Code interaction mode: Default\n\nPrefer assumptions.\n\n## T3 Code browser\n\nTools."
-        blocks = [self.wrapped(instructions, "fix the bug"), "<runtime_info>In case you're asked</runtime_info>"]
-        self.assertEqual(shim.strip_t3_instructions(blocks), "fix the bug")
-
-    def test_plan_mode_section_is_kept(self):
-        instructions = "## T3 Code interaction mode: Plan\n\nDo not edit files.\n\n## T3 Code browser\n\nTools."
+    def test_tool_sections_and_runtime_info_are_dropped(self):
+        blocks = [self.wrapped(DEFAULT_SECTION, "fix the bug"), "<runtime_info>In case you're asked</runtime_info>"]
         self.assertEqual(
-            shim.strip_t3_instructions([self.wrapped(instructions, "design it")]),
-            "## T3 Code interaction mode: Plan\n\nDo not edit files.\n\ndesign it",
+            shim.strip_t3_instructions(blocks, agent_mode="default"),
+            shim.RewrittenPrompt("fix the bug", "default"),
         )
 
+    def test_mode_section_is_forwarded_only_when_the_mode_changes(self):
+        entering = shim.strip_t3_instructions([self.wrapped(PLAN_SECTION, "design it")], agent_mode="default")
+        self.assertEqual(entering, shim.RewrittenPrompt(f"{PLAN_SECTION}\n\ndesign it", "plan"))
+        leaving = shim.strip_t3_instructions([self.wrapped(DEFAULT_SECTION, "build it")], agent_mode="plan")
+        self.assertEqual(leaving.text, f"{DEFAULT_SECTION}\n\nbuild it")
+
+    def test_natively_applied_mode_sections_are_dropped(self):
+        rewritten = shim.strip_t3_instructions([self.wrapped(PLAN_SECTION, "design it")], agent_mode=None)
+        self.assertEqual(rewritten, shim.RewrittenPrompt("design it", "plan"))
+
     def test_unwrapped_prompts_pass_through(self):
-        self.assertEqual(shim.strip_t3_instructions(["/compact"]), "/compact")
+        self.assertEqual(shim.strip_t3_instructions(["/compact"], agent_mode="default").text, "/compact")
+
+
+class TargetAndToolsTest(unittest.TestCase):
+    def test_effort_ladder_is_the_ordered_union_of_model_levels(self):
+        models = [
+            {"id": "a", "supportedReasoningEfforts": [{"reasoningEffort": "high"}, {"reasoningEffort": "low"}]},
+            {"id": "b", "supportedReasoningEfforts": [{"reasoningEffort": "xhigh"}]},
+        ]
+        self.assertEqual(shim.Target("ag", "h", "codex-native", models).efforts, ("low", "high", "xhigh"))
+        self.assertEqual(
+            shim.Target("ag", "h", "claude-native", [{"id": "opus"}]).efforts, ("low", "medium", "high", "xhigh", "max")
+        )
+
+    def test_mcp_launch_args_carry_stdio_servers_with_env(self):
+        server = McpServerStdio(
+            name="t3-code",
+            command="/opt/t3",
+            args=["acp-mcp-bridge"],
+            env=[EnvVariable(name="T3_ACP_MCP_ENDPOINT", value="http://127.0.0.1:1/mcp")],
+        )
+        flag, config = shim.mcp_launch_args([server])
+        self.assertEqual(flag, "--mcp-config")
+        self.assertEqual(
+            json.loads(config),
+            {
+                "mcpServers": {
+                    "t3-code": {
+                        "type": "stdio",
+                        "command": "/opt/t3",
+                        "args": ["acp-mcp-bridge"],
+                        "env": {"T3_ACP_MCP_ENDPOINT": "http://127.0.0.1:1/mcp"},
+                    }
+                }
+            },
+        )
+        self.assertEqual(shim.mcp_launch_args([]), [])
 
 
 if __name__ == "__main__":

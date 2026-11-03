@@ -6,7 +6,7 @@
 """omnigent-acp — an ACP agent (stdio) whose sessions are Omnigent sessions.
 
     omnigent-acp [--agent NAME_OR_ID] [--host auto|NAME|ID] [--url URL]
-                 [--keep-t3-instructions] [--trace FILE]
+                 [--keep-t3-instructions] [--t3-tools] [--trace FILE]
 
 Lets an ACP client (T3 Code's "Local command" ACP provider) drive Omnigent:
 Omnigent stays the owner of every session — harness, terminal, policies,
@@ -17,8 +17,19 @@ Semantics:
     prompt so that clients that open throwaway sessions (T3 Code's model probe)
     leave nothing behind. The ACP session id is recorded on the Omnigent session
     as the ``t3.acp_session_id`` label, which is how ``session/load`` finds it.
+  * ``session/list`` offers this agent's top-level sessions on this host (in the
+    client's cwd when given). Sessions created elsewhere are listed as
+    ``omnigent:<session id>``, which ``session/load`` attaches to directly.
   * Sessions run on this machine only (``--host auto`` fails closed unless
     exactly one online Omnigent host matches this hostname), in the client's cwd.
+  * Model and reasoning effort are config options; codex-native exposes a Plan
+    mode backed by its collaboration mode. Other agents get T3 Code's Plan
+    instructions as prompt text.
+  * Omnigent approval requests become ``session/request_permission``.
+  * ``--t3-tools`` (claude-native only) launches the TUI with the client's MCP
+    servers. T3 Code reissues its MCP token when it reloads a thread, and a
+    running TUI keeps its launch-time token, so the tools stop working until the
+    TUI relaunches.
   * Updates that arrive while no prompt is running (turns started from another
     client, wakeups) are not forwarded; ACP has no idle turn to attach them to.
 
@@ -38,6 +49,7 @@ import sys
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 import acp
@@ -45,12 +57,17 @@ import httpx
 from acp.schema import (
     AgentCapabilities,
     Implementation,
+    ListSessionsResponse,
     PermissionOption,
     PromptCapabilities,
     SessionCapabilities,
     SessionCloseCapabilities,
     SessionConfigOptionSelect,
     SessionConfigSelectOption,
+    SessionInfo,
+    SessionListCapabilities,
+    SessionMode,
+    SessionModeState,
     ToolCallUpdate,
     UsageUpdate,
 )
@@ -58,6 +75,14 @@ from acp.schema import (
 LOG = logging.getLogger("omnigent-acp")
 SESSION_LABEL = "t3.acp_session_id"
 MODEL_CONFIG_ID = "model"
+EFFORT_CONFIG_ID = "effort"
+EFFORT_DEFAULT = "default"
+# Omnigent's ladder and Claude's subset (omnigent/util/reasoning_effort.py).
+EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+CLAUDE_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
+IMPORTED_PREFIX = "omnigent:"
+LIST_PAGE_SIZE = 50
+CODEX_COLLABORATION_LABEL = "omnigent.codex_native.collaboration_mode"
 CANCEL_GRACE_S = 8.0
 QUIESCENT_END_S = 10.0
 # A cold codex-native launch can hold the first stream connection for over 30s.
@@ -140,6 +165,7 @@ class Elicitation:
     elicitation_id: str
     message: str
     target_session_id: str | None
+    preview: str | None = None
 
 
 @dataclass(frozen=True)
@@ -168,6 +194,19 @@ def _message_text(item: dict[str, Any]) -> str:
     if not isinstance(content, list):
         return ""
     return "".join(c["text"] for c in content if isinstance(c, dict) and isinstance(c.get("text"), str))
+
+
+def _command_preview(preview: Any) -> str | None:
+    """The command a policy asks about; its preview is the serialized tool call when it fits."""
+    if not isinstance(preview, str):
+        return None
+    try:
+        call = json.loads(preview)
+    except json.JSONDecodeError:
+        return preview
+    arguments = call.get("arguments") if isinstance(call, dict) else None
+    command = arguments.get("command") if isinstance(arguments, dict) else None
+    return command if isinstance(command, str) else preview
 
 
 def _error_text(error: Any) -> str:
@@ -345,6 +384,7 @@ class TurnTracker:
                     elicitation_id=str(data.get("elicitation_id")),
                     message=str(params.get("message") or "Omnigent requests approval"),
                     target_session_id=params.get("target_session_id"),
+                    preview=_command_preview(params.get("content_preview")),
                 )
             ]
 
@@ -405,20 +445,34 @@ _T3_WRAPPED = re.compile(
     r"<user_request>\n(?P<request>.*)\n</user_request>\s*\Z",
     re.DOTALL,
 )
-_T3_PLAN_SECTION = re.compile(r"## T3 Code interaction mode: Plan\n\n.*?(?=\n\n## |\Z)", re.DOTALL)
+_T3_MODE_SECTION = re.compile(
+    r"## T3 Code interaction mode: (?P<mode>Default|Plan)\n\n.*?(?=\n\n## |\Z)", re.DOTALL
+)
+
+T3Mode = Literal["default", "plan"]
 
 
-def strip_t3_instructions(blocks: list[str]) -> str:
+@dataclass(frozen=True)
+class RewrittenPrompt:
+    text: str
+    announced_mode: T3Mode | None
+    """The interaction mode T3 Code announced in this prompt, if any."""
+
+
+def strip_t3_instructions(blocks: list[str], *, agent_mode: T3Mode | None) -> RewrittenPrompt:
     """Reduce T3 Code's ACP prompt to what the user asked.
 
     HACK: T3 Code has no system-prompt channel over ACP, so it wraps prompts in
     ``<t3_code_instructions>`` (its MCP tools, which an Omnigent agent cannot
     reach) and appends a ``<runtime_info>`` block (packages/provider-core/src/
     server/orchestrationInstructions.ts, runtimeInstructions.ts). Matching its
-    tag names is the only hook; the Plan-mode section is kept because it is how
-    T3 Code expresses its Plan interaction mode.
+    tag names is the only hook. The interaction-mode section is how T3 Code
+    switches Plan on and off, so it is forwarded when it differs from
+    ``agent_mode`` (the mode the agent was last told); ``None`` means the mode
+    is applied natively and the section is always dropped.
     """
     parts: list[str] = []
+    announced: T3Mode | None = None
     for text in blocks:
         if text.lstrip().startswith("<runtime_info>"):
             continue
@@ -426,9 +480,14 @@ def strip_t3_instructions(blocks: list[str]) -> str:
         if wrapped is None:
             parts.append(text)
             continue
-        plan = _T3_PLAN_SECTION.search(wrapped["instructions"])
-        parts.append(f"{plan[0]}\n\n{wrapped['request']}" if plan else wrapped["request"])
-    return "\n\n".join(parts)
+        section = _T3_MODE_SECTION.search(wrapped["instructions"])
+        if section is None:
+            parts.append(wrapped["request"])
+            continue
+        announced = "plan" if section["mode"] == "Plan" else "default"
+        forward = agent_mode is not None and announced != agent_mode
+        parts.append(f"{section[0]}\n\n{wrapped['request']}" if forward else wrapped["request"])
+    return RewrittenPrompt("\n\n".join(parts), announced)
 
 
 # ---------------------------------------------------------------------------
@@ -476,6 +535,9 @@ class OmnigentClient:
 
     async def session(self, session_id: str) -> dict[str, Any]:
         return await self._json("GET", f"/v1/sessions/{session_id}")
+
+    async def session_page(self, params: dict[str, Any]) -> dict[str, Any]:
+        return await self._json("GET", "/v1/sessions", params=params)
 
     async def find_session_by_label(self, agent_id: str, key: str, value: str) -> dict[str, Any] | None:
         async for session in self._paginate("/v1/sessions", {"agent_id": agent_id, "include_archived": "true"}):
@@ -573,6 +635,10 @@ class Session:
     acp_id: str
     cwd: str
     model: str | None
+    effort: str | None = None
+    mode: T3Mode = "default"
+    told_mode: T3Mode = "default"
+    mcp_servers: list[Any] = field(default_factory=list)
     conversation_id: str | None = None
     turn: Turn | None = None
     connected: asyncio.Event = field(default_factory=asyncio.Event)
@@ -583,13 +649,35 @@ class Session:
 class Target:
     agent_id: str
     host_id: str
-    native: bool
+    harness: str
     models: list[dict[str, Any]]
+
+    @property
+    def native(self) -> bool:
+        return self.harness.endswith("-native")
+
+    @property
+    def native_plan(self) -> bool:
+        # claude-native's plan permission mode is not used: Omnigent cannot switch
+        # back to bypassPermissions after launch, so leaving Plan would downgrade it.
+        return self.harness == "codex-native"
 
     @property
     def default_model(self) -> str | None:
         default = next((m for m in self.models if m.get("isDefault")), self.models[0] if self.models else None)
         return default.get("id") if default else None
+
+    @property
+    def efforts(self) -> tuple[str, ...]:
+        offered = {
+            e["reasoningEffort"]
+            for m in self.models
+            for e in m.get("supportedReasoningEfforts") or []
+            if isinstance(e, dict) and isinstance(e.get("reasoningEffort"), str)
+        }
+        if not offered and self.harness.startswith("claude"):
+            offered = set(CLAUDE_EFFORTS)
+        return tuple(e for e in EFFORT_ORDER if e in offered)
 
 
 def _tool_kind(name: str) -> str:
@@ -607,12 +695,34 @@ def _tool_kind(name: str) -> str:
     return "other"
 
 
+def mcp_launch_args(servers: list[Any]) -> list[str]:
+    """Claude Code ``--mcp-config`` for the client's stdio MCP servers (T3 Code's tools)."""
+    config = {
+        server.name: {
+            "type": "stdio",
+            "command": server.command,
+            "args": list(server.args),
+            "env": {env.name: env.value for env in server.env},
+        }
+        for server in servers
+        if isinstance(getattr(server, "command", None), str)
+    }
+    return ["--mcp-config", json.dumps({"mcpServers": config}, separators=(",", ":"))] if config else []
+
+
+def _iso(epoch: Any) -> str | None:
+    return datetime.fromtimestamp(epoch, UTC).isoformat() if isinstance(epoch, int | float) else None
+
+
 class OmnigentAgent:
-    def __init__(self, client: OmnigentClient, agent_spec: str, host_spec: str, strip: bool, trace: Any) -> None:
+    def __init__(
+        self, client: OmnigentClient, agent_spec: str, host_spec: str, *, strip: bool, t3_tools: bool, trace: Any
+    ) -> None:
         self._client = client
         self._agent_spec = agent_spec
         self._host_spec = host_spec
         self._strip = strip
+        self._t3_tools = t3_tools
         self._trace = trace
         self._target: Target | None = None
         self._sessions: dict[str, Session] = {}
@@ -625,28 +735,50 @@ class OmnigentAgent:
         if self._target is None:
             agent = resolve_agent(await self._client.agents(), self._agent_spec)
             host = resolve_host(await self._client.hosts(), self._host_spec)
-            catalog = CATALOG_HARNESS.get(str(agent.get("harness")))
+            harness = str(agent.get("harness"))
+            catalog = CATALOG_HARNESS.get(harness)
             models = await self._client.model_options(host["host_id"], catalog) if catalog else []
-            native = str(agent.get("harness")).endswith("-native")
-            self._target = Target(agent["id"], host["host_id"], native, models)
+            self._target = Target(agent["id"], host["host_id"], harness, models)
         return self._target
 
     def _config_options(self, session: Session, target: Target) -> list[SessionConfigOptionSelect]:
-        if not target.models:
-            return []
-        return [
-            SessionConfigOptionSelect(
-                id=MODEL_CONFIG_ID,
-                name="Model",
-                category="model",
-                type="select",
-                current_value=session.model or target.default_model or "",
-                options=[
-                    SessionConfigSelectOption(value=m["id"], name=m.get("displayName") or m["id"])
-                    for m in target.models
-                ],
+        options: list[SessionConfigOptionSelect] = []
+        if target.models:
+            options.append(
+                SessionConfigOptionSelect(
+                    id=MODEL_CONFIG_ID,
+                    name="Model",
+                    category="model",
+                    type="select",
+                    current_value=session.model or target.default_model or "",
+                    options=[
+                        SessionConfigSelectOption(value=m["id"], name=m.get("displayName") or m["id"])
+                        for m in target.models
+                    ],
+                )
             )
-        ]
+        if target.efforts:
+            # T3 Code v0.1.6 recognizes reasoning controls by id, newer versions by category.
+            options.append(
+                SessionConfigOptionSelect(
+                    id=EFFORT_CONFIG_ID,
+                    name="Effort",
+                    category="thought_level",
+                    type="select",
+                    current_value=session.effort or EFFORT_DEFAULT,
+                    options=[SessionConfigSelectOption(value=EFFORT_DEFAULT, name="Default")]
+                    + [SessionConfigSelectOption(value=e, name=e.capitalize()) for e in target.efforts],
+                )
+            )
+        return options
+
+    def _modes(self, session: Session, target: Target) -> SessionModeState | None:
+        if not target.native_plan:
+            return None
+        return SessionModeState(
+            current_mode_id=session.mode,
+            available_modes=[SessionMode(id="default", name="Default"), SessionMode(id="plan", name="Plan")],
+        )
 
     def _session(self, session_id: str) -> Session:
         session = self._sessions.get(session_id)
@@ -654,46 +786,115 @@ class OmnigentAgent:
             raise acp.RequestError.invalid_params({"sessionId": f"unknown session {session_id}"})
         return session
 
+    def _passes_t3_tools(self, target: Target) -> bool:
+        return self._t3_tools and target.harness == "claude-native"
+
     async def initialize(self, protocol_version: int, **kwargs: Any) -> acp.InitializeResponse:
         return acp.InitializeResponse(
             protocol_version=acp.PROTOCOL_VERSION,
             agent_capabilities=AgentCapabilities(
                 load_session=True,
                 prompt_capabilities=PromptCapabilities(image=False),
-                session_capabilities=SessionCapabilities(close=SessionCloseCapabilities()),
+                session_capabilities=SessionCapabilities(
+                    close=SessionCloseCapabilities(), list=SessionListCapabilities()
+                ),
             ),
             auth_methods=[],
-            agent_info=Implementation(name="omnigent-acp", title="Omnigent", version="0.1.0"),
+            agent_info=Implementation(name="omnigent-acp", title="Omnigent", version="0.2.0"),
         )
 
-    async def new_session(self, cwd: str, **kwargs: Any) -> acp.NewSessionResponse:
+    async def new_session(self, cwd: str, mcp_servers: list[Any] | None = None, **kwargs: Any) -> acp.NewSessionResponse:
         target = await self._resolve_target()
-        session = Session(acp_id=uuid.uuid4().hex, cwd=cwd, model=target.default_model)
+        session = Session(acp_id=uuid.uuid4().hex, cwd=cwd, model=target.default_model, mcp_servers=mcp_servers or [])
         self._sessions[session.acp_id] = session
-        return acp.NewSessionResponse(session_id=session.acp_id, config_options=self._config_options(session, target))
+        return acp.NewSessionResponse(
+            session_id=session.acp_id,
+            config_options=self._config_options(session, target),
+            modes=self._modes(session, target),
+        )
 
-    async def load_session(self, cwd: str, session_id: str, **kwargs: Any) -> acp.LoadSessionResponse:
+    async def load_session(
+        self, cwd: str, session_id: str, mcp_servers: list[Any] | None = None, **kwargs: Any
+    ) -> acp.LoadSessionResponse:
         target = await self._resolve_target()
-        existing = await self._client.find_session_by_label(target.agent_id, SESSION_LABEL, session_id)
         session = self._sessions.get(session_id) or Session(acp_id=session_id, cwd=cwd, model=target.default_model)
-        if existing is not None:
-            session.conversation_id = existing["id"]
-            # List items omit model_override; the session snapshot has it.
-            session.model = (await self._client.session(existing["id"])).get("model_override") or session.model
+        session.mcp_servers = mcp_servers or []
+        if session_id.startswith(IMPORTED_PREFIX):
+            conversation_id: str | None = session_id.removeprefix(IMPORTED_PREFIX)
+        else:
+            found = await self._client.find_session_by_label(target.agent_id, SESSION_LABEL, session_id)
+            conversation_id = found["id"] if found else None
+        if conversation_id is not None:
+            details = await self._client.session(conversation_id)
+            session.conversation_id = conversation_id
+            session.model = details.get("model_override") or session.model
+            session.effort = details.get("reasoning_effort") or session.effort
+            labels = details.get("labels") or {}
+            if labels.get(CODEX_COLLABORATION_LABEL) == "plan":
+                session.mode = "plan"
+            launch_args = mcp_launch_args(session.mcp_servers)
+            if self._passes_t3_tools(target) and launch_args:
+                # The bridge token is per load; a running TUI keeps its launch-time token.
+                await self._client.update_session(conversation_id, {"terminal_launch_args": launch_args})
         self._sessions[session_id] = session
-        return acp.LoadSessionResponse(config_options=self._config_options(session, target))
+        return acp.LoadSessionResponse(
+            config_options=self._config_options(session, target), modes=self._modes(session, target)
+        )
+
+    async def list_sessions(self, cwd: str | None = None, cursor: str | None = None, **kwargs: Any) -> ListSessionsResponse:
+        target = await self._resolve_target()
+        listed: list[SessionInfo] = []
+        after = cursor
+        while len(listed) < LIST_PAGE_SIZE:
+            params: dict[str, Any] = {"agent_id": target.agent_id, "kind": "default", "sort_by": "updated_at", "limit": 100}
+            if after:
+                params["after"] = after
+            page = await self._client.session_page(params)
+            for row in page.get("data", []):
+                workspace = row.get("workspace")
+                if row.get("host_id") != target.host_id or not workspace or (cwd and workspace != cwd):
+                    continue
+                label = (row.get("labels") or {}).get(SESSION_LABEL)
+                listed.append(
+                    SessionInfo(
+                        session_id=label or f"{IMPORTED_PREFIX}{row['id']}",
+                        cwd=workspace,
+                        title=row.get("title"),
+                        updated_at=_iso(row.get("updated_at")),
+                    )
+                )
+            after = page.get("last_id")
+            if not page.get("has_more"):
+                after = None
+                break
+        return ListSessionsResponse(sessions=listed, next_cursor=after)
 
     async def set_config_option(
         self, config_id: str, session_id: str, value: str | bool, **kwargs: Any
     ) -> acp.SetSessionConfigOptionResponse:
         session = self._session(session_id)
         target = await self._resolve_target()
-        if config_id != MODEL_CONFIG_ID or not isinstance(value, str):
+        if not isinstance(value, str) or config_id not in (MODEL_CONFIG_ID, EFFORT_CONFIG_ID):
             raise acp.RequestError.invalid_params({"configId": config_id})
-        session.model = value
+        if config_id == MODEL_CONFIG_ID:
+            session.model = value
+            patch = {"model_override": value}
+        else:
+            session.effort = None if value == EFFORT_DEFAULT else value
+            patch = {"reasoning_effort": value}
         if session.conversation_id is not None:
-            await self._client.update_session(session.conversation_id, {"model_override": value})
+            await self._client.update_session(session.conversation_id, patch)
         return acp.SetSessionConfigOptionResponse(config_options=self._config_options(session, target))
+
+    async def set_session_mode(self, session_id: str, mode_id: str, **kwargs: Any) -> acp.SetSessionModeResponse:
+        session = self._session(session_id)
+        target = await self._resolve_target()
+        if not target.native_plan or mode_id not in ("default", "plan"):
+            raise acp.RequestError.invalid_params({"modeId": mode_id})
+        session.mode = "plan" if mode_id == "plan" else "default"
+        if session.conversation_id is not None:
+            await self._client.update_session(session.conversation_id, {"collaboration_mode": session.mode})
+        return acp.SetSessionModeResponse()
 
     async def close_session(self, session_id: str, **kwargs: Any) -> None:
         session = self._sessions.pop(session_id, None)
@@ -712,9 +913,8 @@ class OmnigentAgent:
         )
         await self._client.post_event(session.conversation_id, {"type": "interrupt", "data": {}})
 
-    async def _ensure_conversation(self, session: Session) -> str:
+    async def _ensure_conversation(self, session: Session, target: Target) -> str:
         if session.conversation_id is None:
-            target = await self._resolve_target()
             body: dict[str, Any] = {
                 "agent_id": target.agent_id,
                 "host_id": target.host_id,
@@ -723,9 +923,16 @@ class OmnigentAgent:
             }
             if session.model:
                 body["model_override"] = session.model
+            if session.effort:
+                body["reasoning_effort"] = session.effort
+            launch_args = mcp_launch_args(session.mcp_servers) if self._passes_t3_tools(target) else []
+            if launch_args:
+                body["terminal_launch_args"] = launch_args
             created = await self._client.create_session(body)
             session.conversation_id = created["id"]
             LOG.info("created Omnigent session %s for %s", created["id"], session.acp_id)
+            if target.native_plan and session.mode == "plan":
+                await self._client.update_session(session.conversation_id, {"collaboration_mode": "plan"})
         return session.conversation_id
 
     async def _pump(self, session: Session, conversation_id: str) -> None:
@@ -760,10 +967,17 @@ class OmnigentAgent:
         session = self._session(session_id)
         if session.turn is not None:
             raise acp.RequestError.invalid_request({"reason": "a prompt is already running"})
+        target = await self._resolve_target()
         texts = [block.text for block in prompt if getattr(block, "type", None) == "text"]
-        text = strip_t3_instructions(texts) if self._strip else "\n\n".join(texts)
-        conversation_id = await self._ensure_conversation(session)
-        turn = Turn(TurnTracker(native=(await self._resolve_target()).native))
+        if self._strip:
+            rewritten = strip_t3_instructions(texts, agent_mode=None if target.native_plan else session.told_mode)
+            text = rewritten.text
+            if rewritten.announced_mode is not None and not target.native_plan:
+                session.told_mode = rewritten.announced_mode
+        else:
+            text = "\n\n".join(texts)
+        conversation_id = await self._ensure_conversation(session, target)
+        turn = Turn(TurnTracker(native=target.native))
         session.turn = turn
         try:
             await self._ensure_stream(session, conversation_id)
@@ -821,23 +1035,31 @@ class OmnigentAgent:
                 )
             case Usage(used, size):
                 await self._conn.session_update(sid, UsageUpdate(session_update="usage_update", used=used, size=size))
-            case Elicitation(elicitation_id, message, target_session_id):
-                await self._approve(session, target_session_id or conversation_id, elicitation_id, message)
-            case TurnEnded():
+            case Elicitation():
+                await self._approve(session, output.target_session_id or conversation_id, output)
+            case TurnEnded() | Quiescent():
                 pass
 
-    async def _approve(self, session: Session, conversation_id: str, elicitation_id: str, message: str) -> None:
+    async def _approve(self, session: Session, conversation_id: str, request: Elicitation) -> None:
         response = await self._conn.request_permission(
             session.acp_id,
-            ToolCallUpdate(tool_call_id=f"omnigent-elicitation-{elicitation_id}", title=message),
+            ToolCallUpdate(
+                tool_call_id=f"omnigent-elicitation-{request.elicitation_id}",
+                title=request.message,
+                kind="execute",
+                raw_input={"command": request.preview} if request.preview else None,
+            ),
             [
                 PermissionOption(option_id="accept", name="Approve", kind="allow_once"),
+                # Omnigent asks per call; T3 Code's "always" button still means approve this one.
+                PermissionOption(option_id="accept_always", name="Approve", kind="allow_always"),
                 PermissionOption(option_id="decline", name="Deny", kind="reject_once"),
             ],
         )
         outcome = response.outcome
-        action = outcome.option_id if getattr(outcome, "outcome", None) == "selected" else "cancel"
-        await self._client.resolve_elicitation(conversation_id, elicitation_id, action)
+        selected = outcome.option_id if getattr(outcome, "outcome", None) == "selected" else None
+        action = {"accept": "accept", "accept_always": "accept", "decline": "decline"}.get(selected or "", "cancel")
+        await self._client.resolve_elicitation(conversation_id, request.elicitation_id, action)
 
 
 async def main() -> None:
@@ -846,6 +1068,11 @@ async def main() -> None:
     parser.add_argument("--host", default="auto", help="'auto' (this machine), or a host name or id")
     parser.add_argument("--url", default=os.environ.get("OMNIGENT_URL", "http://127.0.0.1:6767"))
     parser.add_argument("--keep-t3-instructions", action="store_true", help="forward T3 Code's prompt wrappers")
+    parser.add_argument(
+        "--t3-tools",
+        action="store_true",
+        help="claude-native only: give the TUI the client's MCP servers at launch and keep T3 Code's tool instructions",
+    )
     parser.add_argument("--trace", help="append every Omnigent stream event to this JSONL file")
     args = parser.parse_args()
     logging.basicConfig(
@@ -856,7 +1083,14 @@ async def main() -> None:
     client = OmnigentClient(args.url)
     trace = open(args.trace, "a", encoding="utf-8") if args.trace else None
     try:
-        agent = OmnigentAgent(client, args.agent, args.host, strip=not args.keep_t3_instructions, trace=trace)
+        agent = OmnigentAgent(
+            client,
+            args.agent,
+            args.host,
+            strip=not (args.keep_t3_instructions or args.t3_tools),
+            t3_tools=args.t3_tools,
+            trace=trace,
+        )
         # session/close and session/fork are "unstable" in this SDK and 404 without the flag.
         await acp.run_agent(agent, use_unstable_protocol=True)
     finally:
