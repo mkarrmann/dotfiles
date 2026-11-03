@@ -21,7 +21,9 @@ profile_window_ids() {
   aerospace list-windows --all --json --format '%{window-id}%{app-pid}%{app-name}' 2>/dev/null \
     | jq -r --arg app "$CHROME_APP" '.[] | select(."app-name" == $app) | "\(.["window-id"]) \(.["app-pid"])"' \
     | while read -r wid pid; do
-        ps -o command= -p "$pid" 2>/dev/null | grep -qE -- "--user-data-dir=${profile}( |$)" && echo "$wid"
+        if ps -o command= -p "$pid" 2>/dev/null | grep -qE -- "--user-data-dir=${profile}( |$)"; then
+          echo "$wid"
+        fi
       done
 }
 

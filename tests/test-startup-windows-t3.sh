@@ -60,6 +60,10 @@ check "only windows of that profile's Chrome process match" "20" \
   "$(t3_window_ids_for_profile /Users/me/.t3-workspace-chrome/cco-checkout3 | tr '\n' ' ' | sed 's/ $//')"
 check "regular Chrome windows match no T3 Code profile" "" \
   "$(t3_window_ids_for_profile /Users/me/.t3-workspace-chrome/cco-checkout1)"
+# startup-windows runs under set -euo pipefail and assigns the result directly;
+# a lookup that finds nothing must not end the script.
+window_id=$(t3_window_ids_for_profile /Users/me/.t3-workspace-chrome/cco-checkout1 | head -1)
+check "a lookup that finds nothing does not fail under errexit" "" "$window_id"
 
 if [[ "$failures" -gt 0 ]]; then
   echo "$failures check(s) failed" >&2

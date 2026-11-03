@@ -116,7 +116,7 @@ extract_fn() {
   ' "$STARTUP"
 }
 
-for fn in tunnel_command_is_current tunnel_et_is_stuck; do
+for fn in tunnel_command_is_current tunnel_et_is_stuck t3_forwards_for_host; do
   body=$(extract_fn "$fn")
   [[ -n "$body" ]] || { echo "could not extract $fn" >&2; exit 1; }
   eval "$body"
@@ -127,11 +127,19 @@ OMNIGENT_STANDBY_FQDN=standby.example.com
 OMNIGENT_PRIMARY_TUNNEL_PORT=16767
 OMNIGENT_STANDBY_TUNNEL_PORT=26767
 OMNIGENT_PORT=6767
+T3_BASE_PORT=3780
+T3_PRIMARY_TUNNEL_BASE_PORT=13780
+T3_STANDBY_TUNNEL_BASE_PORT=23780
 TRANSPORT_STATE=connected
+TUNNEL_FORWARDS="7001:7001,16767:6767,13781:3781"
+
+workspaces() {
+  echo '{"workspaces":[{"workspace":"2","kind":"devserver","host":"primary.example.com","checkout":"/home/u/checkout1"}]}'
+}
 
 ps() {
   if [[ "$*" == "-axo command" ]]; then
-    echo "x2ssh -et primary.example.com -t 7001:7001,16767:6767"
+    echo "x2ssh -et primary.example.com -t $TUNNEL_FORWARDS"
   else
     echo "123|50001"
   fi
@@ -178,6 +186,13 @@ echo "5. startup-windows preserves an ET process still waiting for Duo"
 TRANSPORT_STATE=pending
 tunnel_command_is_current primary.example.com \
   || fail "pre-listener ET bootstrap was classified as stale"
+
+echo "6. startup-windows rebuilds a tunnel that lacks a checkout's T3 Code forward"
+TRANSPORT_STATE=connected
+TUNNEL_FORWARDS="7001:7001,16767:6767"
+if tunnel_command_is_current primary.example.com; then
+  fail "tunnel without its T3 Code forward was classified as current"
+fi
 
 if [[ "$failures" -ne 0 ]]; then
   echo "nvs tunnel recovery tests: $failures failure(s)" >&2

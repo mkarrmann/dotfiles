@@ -184,6 +184,15 @@ OMNIGENT_PRIMARY_FQDN="${OMNIGENT_PRIMARY_FQDN:-$(omnigent-server-url --primary)
 OMNIGENT_STANDBY_FQDN="${OMNIGENT_STANDBY_FQDN:-$(omnigent-server-url --standby)}"
 OMNIGENT_PRIMARY_TUNNEL_PORT="${OMNIGENT_PRIMARY_TUNNEL_PORT:-$(omnigent-server-url --primary-tunnel-port)}"
 OMNIGENT_STANDBY_TUNNEL_PORT="${OMNIGENT_STANDBY_TUNNEL_PORT:-$(omnigent-server-url --standby-tunnel-port)}"
+TOPOLOGY_FILE="${OMNIGENT_TOPOLOGY_FILE:-${DOTFILES_DIR:-$HOME/dotfiles}/omnigent_config/topology.env}"
+topology_value() {
+  local value
+  value="$(sed -n "s/^$1=//p" "$TOPOLOGY_FILE" 2>/dev/null | tail -n 1)"
+  printf '%s' "${value:-$2}"
+}
+T3_BASE_PORT="${T3_BASE_PORT:-$(topology_value T3_BASE_PORT 3780)}"
+T3_PRIMARY_TUNNEL_BASE_PORT="${T3_PRIMARY_TUNNEL_BASE_PORT:-$(topology_value T3_PRIMARY_TUNNEL_BASE_PORT 13780)}"
+T3_STANDBY_TUNNEL_BASE_PORT="${T3_STANDBY_TUNNEL_BASE_PORT:-$(topology_value T3_STANDBY_TUNNEL_BASE_PORT 23780)}"
 # ─────────────────────────────────────────────────────────────────────
 
 # ── Window creation ─────────────────────────────────────────────────
@@ -511,6 +520,22 @@ close_window_id() {
   return 1
 }
 
+# t3_forwards_for_host HOST -> the LOCAL:REMOTE forward nvs-tunnels makes for
+# each of the host's workspace checkouts' T3 Code servers, one per line.
+t3_forwards_for_host() {
+  local host="$1" base n
+  case "$host" in
+    "$OMNIGENT_PRIMARY_FQDN") base="$T3_PRIMARY_TUNNEL_BASE_PORT" ;;
+    "$OMNIGENT_STANDBY_FQDN") base="$T3_STANDBY_TUNNEL_BASE_PORT" ;;
+    *) return 0 ;;
+  esac
+  for n in $(workspaces --json 2>/dev/null \
+    | jq -r --arg host "$host" '.workspaces[] | select(.kind == "devserver" and .host == $host) | .checkout' \
+    | sed -n 's|.*/checkout\([0-9][0-9]*\)$|\1|p'); do
+    echo "$((base + n)):$((T3_BASE_PORT + n))"
+  done
+}
+
 tunnel_command_is_current() {
   local host="$1"
   local cmds local_port expected
@@ -530,6 +555,11 @@ tunnel_command_is_current() {
   esac
   expected="${local_port}:${OMNIGENT_PORT}"
   echo "$cmds" | grep -F -- "-t " | grep -F -- "$expected" >/dev/null || return 1
+  # Likewise each of the host's per-checkout T3 Code forwards, so a tunnel
+  # started before nvs-tunnels added them is rebuilt rather than kept.
+  for expected in $(t3_forwards_for_host "$host"); do
+    echo "$cmds" | grep -F -- "-t " | grep -F -- "$expected" >/dev/null || return 1
+  done
 
   # A failed ET registration can leave the process alive with all forward
   # ports listening but no transport to its local SSH proxy. Treat that exact
@@ -811,7 +841,9 @@ t3_window_ids_for_profile() {
   aerospace list-windows --all --json --format '%{window-id}%{app-pid}%{app-name}' 2>/dev/null \
     | jq -r --arg app "$CHROME_APP" '.[] | select(."app-name" == $app) | "\(.["window-id"]) \(.["app-pid"])"' \
     | while read -r wid pid; do
-        ps -o command= -p "$pid" 2>/dev/null | grep -qE -- "--user-data-dir=${profile}( |$)" && echo "$wid"
+        if ps -o command= -p "$pid" 2>/dev/null | grep -qE -- "--user-data-dir=${profile}( |$)"; then
+          echo "$wid"
+        fi
       done | sort -n
 }
 
@@ -1272,7 +1304,7 @@ for i in "${!WORKSPACES[@]}"; do
       fi
       t3_profile="${t3_row%%$'\t'*}"
       t3_url="${t3_row#*$'\t'}"
-      window_id=$(t3_window_ids_for_profile "$t3_profile" | head -1)
+      window_id=$(t3_window_ids_for_profile "$t3_profile" | head -1) || window_id=""
       if [[ -n "$window_id" ]]; then
         echo "[$title] assigning T3 Code window $window_id to workspace $ws..."
       else
@@ -1286,7 +1318,7 @@ for i in "${!WORKSPACES[@]}"; do
         }
         for _ in $(seq 1 40); do
           sleep 0.5
-          window_id=$(t3_window_ids_for_profile "$t3_profile" | head -1)
+          window_id=$(t3_window_ids_for_profile "$t3_profile" | head -1) || window_id=""
           [[ -n "$window_id" ]] && break
         done
       fi
