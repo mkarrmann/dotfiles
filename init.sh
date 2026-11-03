@@ -125,6 +125,27 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
   "$DOTFILES_DIR/bin/omnigent-codex-login-ensure" ||
     warn "omnigent-codex-login-ensure failed (codex-native first turns may fail)"
 
+  if [[ "$(uname -s)" == Linux ]] && command -v systemctl &>/dev/null; then
+    # Per-session nvim daemons (nvs@SESSION.service instances).
+    # The list is host-scoped, because ~/.config/nvs is dotsync2-managed and so
+    # is identical on every devserver; see bin/nvs-sessions-file for which file
+    # wins. Lines: `SESSION_NAME [WORKDIR]`. Comments with #, blank ok.
+    # Ahead of omnigent-agents-ensure, which exits init.sh when the server
+    # activation is deferred; the editor sessions do not depend on it.
+    if nvs_sessions="$("$DOTFILES_DIR/bin/nvs-sessions-file")"; then
+      while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%%#*}"
+        # shellcheck disable=SC2086
+        set -- $line
+        [[ $# -eq 0 ]] && continue
+        session="$1"
+        workdir="${2:-}"
+        "$HOME/bin/nvs-setup" "$session" ${workdir:+"$workdir"} ||
+          warn "nvs-setup failed for $session"
+      done <"$nvs_sessions"
+    fi
+  fi
+
   # Omnigent: reconcile all managed builtin agent bundles (claude-sdk, codex,
   # dvsc, and packaged Polly/Debby) so they show in the CodeCompanion omnigent
   # picker (<leader>aM / <leader>aA). The picker's model/effort steps key off each
@@ -250,23 +271,6 @@ PY
         warn "Omnigent onboarding did not converge; run 'omnigent-hub status' for the specific failing invariant"
       fi
 
-    fi
-
-    # Per-session nvim daemons (nvs@SESSION.service instances).
-    # The list is host-scoped, because ~/.config/nvs is dotsync2-managed and so
-    # is identical on every devserver; see bin/nvs-sessions-file for which file
-    # wins. Lines: `SESSION_NAME [WORKDIR]`. Comments with #, blank ok.
-    if nvs_sessions="$("$DOTFILES_DIR/bin/nvs-sessions-file")"; then
-      while IFS= read -r line || [[ -n "$line" ]]; do
-        line="${line%%#*}"
-        # shellcheck disable=SC2086
-        set -- $line
-        [[ $# -eq 0 ]] && continue
-        session="$1"
-        workdir="${2:-}"
-        "$HOME/bin/nvs-setup" "$session" ${workdir:+"$workdir"} ||
-          warn "nvs-setup failed for $session"
-      done <"$nvs_sessions"
     fi
   fi
 
