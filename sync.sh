@@ -447,7 +447,7 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
     link_one "$DOTFILES_DIR/agent_config/meta-workspace-preferences.md" "$ws_real/AGENTS.md"
     for repo_name in fbsource configerator; do
       repo_path="$ws_real/$repo_name"
-      [[ -d "$repo_path" ]] || continue
+      [[ -e "$repo_path/.hg" ]] || continue
       "$DOTFILES_DIR/bin/omnigent-codex-tmp-ensure" "$repo_path" ||
         echo "WARNING: Codex temp redirect deferred for $repo_path" >&2
     done

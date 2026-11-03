@@ -118,6 +118,16 @@ is_inside_mount() {
   return 1
 }
 
+# An unmounted Eden mountpoint, left behind when a reimage restores $HOME but
+# not Eden's state. Only an empty directory qualifies, so rmdir is safe.
+is_stale_mountpoint() {
+  [[ -d "$1" && ! -L "$1" && -z "$(ls -A "$1")" ]] && ! is_eden_mount "$1"
+}
+
+clear_stale_mountpoint() {
+  if [[ -d "$1" ]]; then run rmdir "$1"; fi
+}
+
 # True iff $path is a linked worktree of the primary's worktree group.
 is_linked_worktree_of_primary() {
   local path="$1"
@@ -207,7 +217,7 @@ for ws in "${WORKSPACES[@]}"; do
 
   # ── fbsource ──
   if [[ "$ws" == "$PRIMARY_NAME" ]]; then
-    if [[ ! -e "$fb" ]]; then
+    if [[ ! -e "$fb" ]] || is_stale_mountpoint "$fb"; then
       FBSOURCE_ACTION["$fb"]="fbclone-primary"
     elif is_eden_mount "$fb"; then
       FBSOURCE_ACTION["$fb"]="skip"
@@ -215,7 +225,7 @@ for ws in "${WORKSPACES[@]}"; do
       FBSOURCE_ACTION["$fb"]="error-exists-not-mount"
     fi
   else
-    if [[ ! -e "$fb" ]]; then
+    if [[ ! -e "$fb" ]] || is_stale_mountpoint "$fb"; then
       FBSOURCE_ACTION["$fb"]="create-worktree"
     elif ! is_eden_mount "$fb"; then
       FBSOURCE_ACTION["$fb"]="error-exists-not-mount"
@@ -232,7 +242,7 @@ for ws in "${WORKSPACES[@]}"; do
   fi
 
   # ── configerator ──
-  if [[ ! -e "$conf" ]]; then
+  if [[ ! -e "$conf" ]] || is_stale_mountpoint "$conf"; then
     CONFIGERATOR_ACTION["$conf"]="fbclone"
   elif is_eden_mount "$conf"; then
     CONFIGERATOR_ACTION["$conf"]="skip"
@@ -295,6 +305,7 @@ log "Phase 3: Primary"
 case "${FBSOURCE_ACTION[$PRIMARY_FBSOURCE]:-}" in
   fbclone-primary)
     run mkdir -p "$PRIMARY_DIR"
+    clear_stale_mountpoint "$PRIMARY_FBSOURCE"
     run fbclone fbsource "$PRIMARY_FBSOURCE" \
       || die "fbclone primary fbsource failed — cannot continue (worktrees need a primary)"
     ;;
@@ -308,7 +319,10 @@ esac
 
 primary_conf_path="$PRIMARY_DIR/configerator"
 case "${CONFIGERATOR_ACTION[$primary_conf_path]:-}" in
-  fbclone)  run fbclone configerator "$primary_conf_path" || warn "fbclone primary configerator failed" ;;
+  fbclone)
+    clear_stale_mountpoint "$primary_conf_path"
+    run fbclone configerator "$primary_conf_path" || warn "fbclone primary configerator failed"
+    ;;
   skip)     echo "  $primary_conf_path already an Eden mount" ;;
 esac
 
@@ -331,6 +345,7 @@ for ws in "${WORKSPACES[@]:1}"; do
       echo "  fbsource: already a worktree of primary"
       ;;
     create-worktree)
+      clear_stale_mountpoint "$fb"
       if ! ( cd "$PRIMARY_FBSOURCE" && run sl worktree add "$fb" --label "$ws" ); then
         warn "sl worktree add $fb failed"
         ((failures++)) || true
@@ -357,6 +372,7 @@ for ws in "${WORKSPACES[@]:1}"; do
   # configerator
   case "${CONFIGERATOR_ACTION[$conf]}" in
     fbclone)
+      clear_stale_mountpoint "$conf"
       if ! run fbclone configerator "$conf"; then
         warn "fbclone configerator $conf failed"
         ((failures++)) || true
@@ -376,7 +392,7 @@ log "Phase 5: Omnigent Codex runtime redirects"
 for ws in "${WORKSPACES[@]}"; do
   for repo in fbsource configerator; do
     repo_path="$HOME/$ws/$repo"
-    [[ -d "$repo_path" ]] || continue
+    [[ -e "$repo_path/.hg" ]] || continue
     "$HOME/dotfiles/bin/omnigent-codex-tmp-ensure" "$repo_path" ||
       warn "Codex temp redirect deferred for $repo_path"
   done
