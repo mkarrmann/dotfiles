@@ -2,7 +2,10 @@
 # t3-workspace-serve CHECKOUT — run T3 Code's server for ~/CHECKOUT (systemd/t3@.service).
 #
 # The server's data lives in ~/.t3-workspaces/CHECKOUT and its one project is
-# ~/CHECKOUT (created on first start), so a client sees only that checkout.
+# ~/CHECKOUT, so a client sees only that checkout. bin/t3-ensure adds that
+# project with `t3 project add` rather than --auto-bootstrap-project-from-cwd:
+# T3 Code shows its first-run wizard while a server's only project is the one
+# it bootstrapped on its current start.
 # ~/checkoutN listens on 127.0.0.1:T3_BASE_PORT+N (omnigent_config/topology.env).
 set -euo pipefail
 
@@ -26,4 +29,4 @@ t3="$HOME/.local/bin/t3"
 
 export T3CODE_HOME="$HOME/.t3-workspaces/$checkout"
 cd "$HOME/$checkout"
-exec "$t3" serve --host 127.0.0.1 --port "$port" --no-browser --auto-bootstrap-project-from-cwd
+exec "$t3" serve --host 127.0.0.1 --port "$port" --no-browser

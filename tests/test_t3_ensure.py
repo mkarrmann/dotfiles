@@ -31,7 +31,7 @@ class T3EnsureTest(unittest.TestCase):
         for d in (self.home / "checkout1", self.home / "checkout2", self.home / "checkoutx", self.dotfiles / "bin", self.bin, self.enabled):
             d.mkdir(parents=True)
         write_exe(self.dotfiles / "bin/omnigent-acp", f'echo "shim $*" >> {self.calls}\n')
-        write_exe(self.bin / "t3", "exit 0\n")
+        write_exe(self.bin / "t3", f'echo "t3 $* home=$T3CODE_HOME" >> {self.calls}\n')
         # Fake systemctl: `is-enabled` succeeds for units marked in $enabled; `enable` marks them.
         write_exe(
             self.bin / "systemctl",
@@ -68,6 +68,10 @@ class T3EnsureTest(unittest.TestCase):
                 },
             )
             self.assertIn(f"systemctl --user enable --now t3@{checkout}.service", self.calls_made())
+            # Added through the CLI, not bootstrapped, so new windows skip T3 Code's first-run wizard.
+            self.assertIn(
+                f"t3 project add {self.home / checkout} home={self.home / '.t3-workspaces' / checkout}", self.calls_made()
+            )
         self.assertFalse((self.home / ".t3-workspaces/checkoutx").exists())
         self.assertIn("shim --help", self.calls_made())
 
