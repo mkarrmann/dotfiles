@@ -897,13 +897,13 @@ if [[ "$DOTFILES_PROFILE" == work && "$(uname -s)" == "Linux" ]] && command -v s
 
   # Pre-create state dirs: systemd opens StandardOutput=append: BEFORE creating
   # StateDirectory=, so a unit's very first start fails 209/STDOUT if the dir is
-  # absent. Creating them up front makes first start idempotent.
-  mkdir -p "$HOME/.local/state/omnigent-server" \
-           "$HOME/.local/state/omnigent-host" \
-           "$HOME/.local/state/omnigent-prodnet" \
-           "$HOME/.local/state/omnigent-client-proxy" \
-           "$HOME/.local/state/omnigent-watcher" \
-           "$HOME/.local/state/omnigent-hub"
+  # absent. Creating them up front makes first start idempotent. The list is
+  # read from the units themselves: a hand-kept list missed nvim-sessions, and
+  # every nvs@ unit on a fresh devserver crash-looped on 209 as a result.
+  grep -ho 'append:%S/[^/]*/' "$DOTFILES_DIR"/systemd/*.service | sed 's|^append:%S/||; s|/$||' | sort -u |
+    while IFS= read -r state_dir; do
+      mkdir -p "$HOME/.local/state/$state_dir"
+    done
 
   # Omnigent env for systemd --user units (nvs@ nvim -> CodeCompanion, and
   # omnigent-host). Every client uses loopback: the owner reaches the
