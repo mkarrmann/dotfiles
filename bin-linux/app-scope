@@ -12,6 +12,11 @@
 # down the whole scope when the kernel OOM-kills any one process in it -- the
 # terminal, its editor and its agent along with the runaway compiler.
 #
+# --description names the scope after the program alone. Without it systemd
+# describes the scope by its whole command line, which then sits in the journal
+# ("Started run-....scope - ...") and in `systemctl --user list-units`, secrets
+# included: startup-windows opens T3 Code windows on /pair#token=....
+#
 # Falls back to a plain exec when no user manager is reachable, so a launch
 # never fails merely because systemd is unavailable.
 set -euo pipefail
@@ -25,6 +30,6 @@ shift
 
 if systemctl --user show --property=Version --value >/dev/null 2>&1; then
   exec systemd-run --user --scope --quiet --collect --slice="$slice" \
-    --property=OOMPolicy=continue -- "$@"
+    --description="${1##*/}" --property=OOMPolicy=continue -- "$@"
 fi
 exec "$@"

@@ -373,14 +373,13 @@ print_layout() { env -u SWAYSOCK HOME="$TMP/t3-home" XDG_CONFIG_HOME="$TMP/t3-co
 layout=$(print_layout) || fail "--print-layout exited non-zero"
 check "workspaces 1-6 each declare a window, named after their terminal slot" \
   '["local","dotfiles","orchest","omnigent-repo","presto","gatech"]' "$(jq -c '[.t3[].slot]' <<< "$layout")"
-check "all of them on the one server" '"desktop" 3780 [3780]' \
-  "$(jq -c '.t3Server, .t3Port, ([.t3[].port] | unique)' <<< "$layout" | paste -sd' ')"
+check "all of them on the one server" '"desktop" 3780' \
+  "$(jq -c '.t3Server, .t3Port' <<< "$layout" | paste -sd' ')"
 check "a row's project is its terminal's workdir, ~ expanded" \
-  "{\"workspace\":\"3\",\"slot\":\"orchest\",\"workdir\":\"$TMP/t3-home/dev/orchest\",\"port\":3780}" \
-  "$(jq -c '.t3[] | select(.slot == "orchest")' <<< "$layout")"
+  "3 $TMP/t3-home/dev/orchest" "$(jq -r '.t3[] | select(.slot == "orchest") | "\(.workspace) \(.workdir)"' <<< "$layout")"
 printf '%s\n' 'WORKSPACES=("7|term|elsewhere|~/x|true" "7|t3")' 'T3_SERVER=other' 'T3_PORT=4000' > "$TMP/t3-port.sh"
-check "a layout override can rename and move the server" '"other" 4000 4000' \
-  "$(print_layout SWAY_WINDOWS_LAYOUT="$TMP/t3-port.sh" 2>/dev/null | jq -c '.t3Server, .t3Port, .t3[0].port' | paste -sd' ')"
+check "a layout override can rename and move the server" '"other" 4000 "elsewhere"' \
+  "$(print_layout SWAY_WINDOWS_LAYOUT="$TMP/t3-port.sh" 2>/dev/null | jq -c '.t3Server, .t3Port, .t3[0].slot' | paste -sd' ')"
 printf '%s\n' 'WORKSPACES=("7|term|elsewhere|~/x|true" "8|t3")' > "$TMP/t3-orphan.sh"
 out=$(print_layout SWAY_WINDOWS_LAYOUT="$TMP/t3-orphan.sh" 2>&1 >/dev/null); rc=$?
 check "a t3 row on a workspace with no terminal fails the whole layout" "1" "$rc"
@@ -390,7 +389,9 @@ echo "== T3 Code window identity: the browser's profile =="
 # A fake /proc. Pid 100 is a T3 Code profile's browser with two --app windows
 # (one claimed), a dialog, and a regular window a link opened; 200 runs a
 # profile whose name merely starts the same; 300 is the everyday Chrome; 400
-# the first profile's browser under XWayland; 500 Orchest; 600 has exited.
+# the first profile's browser under XWayland, with an --app window and a regular
+# window (both class Google-chrome; the instance tells them apart, see
+# CHROME_APP_WINDOW_JQ); 500 Orchest; 600 has exited.
 #
 # A Chrome browser's cmdline is ONE space-joined string with a trailing NUL:
 # Chrome rewrites its process title (verified against the live browser). A
@@ -407,8 +408,8 @@ fake_chrome_proc() { # PID ARG... -> the cmdline Chrome leaves after retitling i
   mkdir -p "$PROC/$pid"; printf '%s\0' "$*" > "$PROC/$pid/cmdline"
 }
 PROFILES=/home/me/.t3-workspace-chrome
-fake_chrome_proc 100 /opt/google/chrome/chrome --no-first-run "--user-data-dir=$PROFILES/orchest" "--app=http://orchest.t3.localhost:3783/pair#token=X"
-fake_chrome_proc 200 /opt/google/chrome/chrome "--user-data-dir=$PROFILES/orchest2" "--app=http://orchest2.t3.localhost:3787/"
+fake_chrome_proc 100 /opt/google/chrome/chrome --no-first-run "--user-data-dir=$PROFILES/orchest" "--app=http://orchest.t3.localhost:3780/pair#token=X"
+fake_chrome_proc 200 /opt/google/chrome/chrome "--user-data-dir=$PROFILES/orchest2" "--app=http://orchest2.t3.localhost:3780/"
 fake_chrome_proc 300 /opt/google/chrome/chrome --profile-directory=Default --new-window
 fake_proc 400 /opt/google/chrome/chrome --ozone-platform=x11 "--user-data-dir=$PROFILES/orchest"
 fake_proc 500 /home/me/dev/orchest/node_modules/electron/dist/electron /home/me/dev/orchest/apps/desktop
@@ -420,7 +421,8 @@ T3_SNAP=$(cat <<'JSON'
   {"id":33,"ws":"3","app_id":"google-chrome","class":null,"title":"Pull request - Google Chrome","marks":[],"pid":100},
   {"id":34,"ws":"7","app_id":"chrome-orchest2.t3.localhost__-Default","class":null,"title":"T3 Code (Beta)","marks":[],"pid":200},
   {"id":35,"ws":"3","app_id":"google-chrome","class":null,"title":"Docs - Google Chrome","marks":["sw:3:chrome"],"pid":300},
-  {"id":36,"ws":"Z","app_id":null,"class":"Google-chrome","title":"T3 Code (Beta)","marks":[],"pid":400},
+  {"id":36,"ws":"Z","app_id":null,"class":"Google-chrome","instance":"orchest.t3.localhost__pair","title":"T3 Code (Beta)","marks":[],"pid":400},
+  {"id":40,"ws":"Z","app_id":null,"class":"Google-chrome","instance":"google-chrome (/home/me/.t3-workspace-chrome/orchest)","title":"Pull request - Google Chrome","marks":[],"pid":400},
   {"id":37,"ws":"3","app_id":null,"class":"@orchest/desktop","title":"x — Orchest [abcd1234]","marks":["sw:3:orchest"],"pid":500},
   {"id":38,"ws":"3","app_id":"chrome-orchest.t3.localhost__-Default","class":null,"title":"T3 Code (Beta)","marks":[],"pid":600},
   {"id":39,"ws":"Z","app_id":"google-chrome","class":null,"title":"New Tab - Google Chrome","marks":[],"pid":300}
@@ -428,7 +430,7 @@ T3_SNAP=$(cat <<'JSON'
 JSON
 )
 SWAY_WINDOWS_PROC="$PROC"
-check "a profile's --app windows, native and XWayland; not its dialog or browser window, a sibling profile's, or an exited process's" \
+check "a profile's --app windows, native and XWayland; not its dialog or browser windows, a sibling profile's, or an exited process's" \
   "30 31 36" "$(chrome_profile_window_ids "$T3_SNAP" "$PROFILES/orchest" | tr '\n' ' ' | sed 's/ $//')"
 check "unclaimed: only those holding no sw: mark" \
   "31 36" "$(chrome_profile_window_ids "$T3_SNAP" "$PROFILES/orchest" unclaimed | tr '\n' ' ' | sed 's/ $//')"
@@ -440,7 +442,7 @@ out=$(chrome_user_data_dir 600 2>&1) && fail "an exited process reported a profi
 
 STARTUP="$ROOT/bin-linux/startup-windows"
 for fn in chrome_slot_match reconcile_entry current_claim_marks current_term_app_ids managed_workspaces t3_rows \
-          t3_pairing_token t3_wait_for_server; do
+          t3_pairing_token t3_wait_for_server t3_error_page reconcile_t3 launch; do
   body=$(extract_fn "$STARTUP" "$fn")
   [[ -n "$body" ]] || { echo "could not extract $fn from $STARTUP" >&2; exit 1; }
   eval "$body"
@@ -468,7 +470,7 @@ body=$(extract_fn "$ROOT/bin-linux/sway-auto-stack" is_orchest_process)
 eval "$body"
 ORCHEST_DIR="$HOME/dev/orchest"
 bash -c 'sleep 30; true' --no-first-run "--user-data-dir=$HOME/.t3-workspace-chrome/orchest" \
-  "--app=http://orchest.t3.localhost:3783/pair#token=X" &
+  "--app=http://orchest.t3.localhost:3780/pair#token=X" &
 t3_pid=$!
 bash -c 'sleep 30; true' "$ORCHEST_DIR/node_modules/electron/dist/electron" "$ORCHEST_DIR/apps/desktop" &
 orchest_pid=$!
@@ -478,23 +480,31 @@ is_orchest_process "$t3_pid" && fail "the orchest slot's T3 Code browser was tak
 is_orchest_process "$orchest_pid" && pass "an Orchest process still is" || fail "an Orchest process was not recognised"
 kill "$t3_pid" "$orchest_pid" 2>/dev/null; wait "$t3_pid" "$orchest_pid" 2>/dev/null
 
-echo "== t3 rows in the reconcile pass =="
-# The shipped dispatch and claim helpers, with the per-type reconcilers
-# replaced by recorders.
-reconcile_term() { echo "term $1 $2"; }
-reconcile_marked() { echo "marked $1 $2"; }
-reconcile_t3() { echo "t3 $*"; }
+echo "== t3 rows in the reconcile pass (the plan a dry run prints) =="
+# The shipped dispatch and T3 Code reconciler, on an empty tree with the server
+# enabled: each row's plan opens its own host on the one server, in its own
+# profile, and scopes the window to its own workdir.
 warn() { echo "warn $*"; }
 refresh() { :; }
-SNAPSHOT='[]'
+systemctl() { [[ "$*" == "--user is-enabled --quiet t3@desktop.service" ]]; }
+DRY_RUN=true; SNAPSHOT='[]'; T3_SERVER=desktop; T3_PORT=3780
+T3_CHROME_CMD=(google-chrome); T3_SCOPE_CMD=(t3-window-scope)
 WORKSPACES=("2|term|dotfiles|~/dotfiles|true" "2|chrome" "2|omnigent" "2|t3" "3|term|orchest|~/dev/orchest|true" "3|t3")
-T3_PORT=3780
 T3_ROWS=$(t3_rows)
-check "a t3 row reconciles its workspace's slot and project on the server's port" \
-  "t3 2 dotfiles $HOME/dotfiles 3780" "$(reconcile_entry "2|t3")"
-check "each row its own slot and project" "t3 3 orchest $HOME/dev/orchest 3780" "$(reconcile_entry "3|t3")"
-check "the rest of its workspace still reconciles" $'term 2 dotfiles\nmarked 2 chrome' \
-  "$(reconcile_entry "2|term|dotfiles|~/dotfiles|true"; reconcile_entry "2|chrome")"
+for row in "2 dotfiles $HOME/dotfiles" "3 orchest $HOME/dev/orchest"; do
+  read -r ws slot workdir <<< "$row"
+  plan=$(reconcile_entry "$ws|t3")
+  launch_line=$(grep 'DRY-RUN launch' <<< "$plan")
+  [[ "$launch_line" == *" --user-data-dir=$PROFILES/$slot "* && "$launch_line" == *" --app=http://$slot.t3.localhost:3780/pair#token="* ]] \
+    && pass "row $ws opens its own host on the one server, in its own profile" || fail "row $ws's plan: $plan"
+  check "and scopes the window to its own project" "$PROFILES/$slot http://$slot.t3.localhost:3780 $workdir" \
+    "$(sed -n 's/^  DRY-RUN scope it to [^:]*: t3-window-scope //p' <<< "$plan" | sed 's/ $//')"
+done
+T3_SERVER=other
+check "a row whose server is not enabled plans nothing" \
+  "[t3:2] t3@other is not enabled; no T3 Code window (bin/t3-ensure enables it)" "$(reconcile_entry "2|t3")"
+unset -f systemctl
+DRY_RUN=false; T3_SERVER=desktop
 DASHBOARD_WS=9; DASHBOARD_PANES=("obsidian|x")
 claims=$(current_claim_marks)
 grep -qx 'sw:2:t3' <<< "$claims" && grep -qx 'sw:3:t3' <<< "$claims" \
@@ -521,18 +531,20 @@ check "T3 Code is among the slots whose order is enforced" \
   "51 52 53 50" "$(DASHBOARD_ORDER="obsidian orchest-overview" ordered_ids "$RANK_SNAP" 2 3 | tr '\n' ' ' | sed 's/ $//')"
 
 echo "== T3 Code pairing tokens =="
+# Like the real t3 pair, it reaches only the server whose state T3CODE_HOME
+# names; here that is the desktop server's.
 cat > "$TMP/t3-pair" <<EOF
 #!/bin/bash
-echo "\$T3CODE_HOME \$*" > "$TMP/t3-pair.args"
-[[ -z "\${FAKE_PAIR_FAIL:-}" ]] || { echo "No running T3 Code server found." >&2; exit 1; }
+[[ -z "\${FAKE_PAIR_FAIL:-}" && "\$T3CODE_HOME" == "$TMP/t3-homes/desktop" ]] \\
+  || { echo "No running T3 Code server found." >&2; exit 1; }
 cat <<OUT
-Pairing with matt-System-Version (http://127.0.0.1:3782).
+Pairing with matt-System-Version (http://127.0.0.1:3780).
 
   █▀▀▀▀▀█ █▄█▀██▀▄ ███▀█ █▀ █▀▀▀▀▀█
   █ ███ █ █ ▀ ██▄ █▄▀█▀▄█▀▄ █ ███ █
 
-Pairing URL: http://127.0.0.1:3782/pair#token=QL7XTEQS8LKL
-App link: t3code://pair?pairingUrl=http%3A%2F%2F127.0.0.1%3A3782%2Fpair%23token%3DQL7XTEQS8LKL
+Pairing URL: http://127.0.0.1:3780/pair#token=QL7XTEQS8LKL
+App link: t3code://pair?pairingUrl=http%3A%2F%2F127.0.0.1%3A3780%2Fpair%23token%3DQL7XTEQS8LKL
 Token: \${FAKE_PAIR_TOKEN:-QL7XTEQS8LKL}
 Expires: 2026-11-03T20:13:08.740Z
 
@@ -541,11 +553,50 @@ OUT
 EOF
 chmod +x "$TMP/t3-pair"
 T3_BIN="$TMP/t3-pair"; T3_HOMES_DIR="$TMP/t3-homes"; T3_SERVER=desktop
-check "the token is read from t3 pair's output" "QL7XTEQS8LKL" "$(t3_pairing_token)"
-check "minted by the server, short-lived and labelled" \
-  "$TMP/t3-homes/desktop pair --ttl 5m --label sway-startup-windows" "$(cat "$TMP/t3-pair.args")"
+check "the token is read from the output of t3 pair against the desktop server's state" "QL7XTEQS8LKL" "$(t3_pairing_token)"
+T3_SERVER=other t3_pairing_token >/dev/null && fail "a token came from a server other than T3_SERVER's" \
+  || pass "another server's state yields none"
 FAKE_PAIR_FAIL=1 t3_pairing_token >/dev/null && fail "a failed t3 pair produced a token" || pass "a failed t3 pair produces none"
 FAKE_PAIR_TOKEN='not a token' t3_pairing_token >/dev/null && fail "garbage was taken for a token" || pass "neither does output without a usable token"
+
+echo "== Chrome's error page is told from T3 Code's page by its title =="
+T3_PORT=3780
+for title in dotfiles.t3.localhost dotfiles.t3.localhost:3780; do
+  t3_error_page "$title" dotfiles.t3.localhost && pass "'$title' is the error page" || fail "'$title' was not taken for the error page"
+done
+for title in "T3 Code (Beta)" "" "Settings · T3 Code" "Pull request - Google Chrome" orchest.t3.localhost dotfiles.t3.localhost:3781; do
+  t3_error_page "$title" dotfiles.t3.localhost && fail "'$title' was taken for the error page" || pass "'$title' is not"
+done
+
+echo "== app-scope keeps a launch's arguments out of its scope's description =="
+# systemd describes a scope it is not given a description for by its command
+# line, which the journal and list-units then show: a T3 Code window's pairing
+# token with it. Fake systemctl/systemd-run: the latter records what systemd
+# would describe the scope as and runs the command as the real one does.
+mkdir -p "$TMP/scope-bin"
+printf '#!/bin/sh\necho 255\n' > "$TMP/scope-bin/systemctl"
+cat > "$TMP/scope-bin/systemd-run" <<EOF
+#!/bin/bash
+description=""
+while [[ \$# -gt 0 && "\$1" != -- ]]; do
+  case "\$1" in --description=*) description=\${1#--description=} ;; esac
+  shift
+done
+shift
+printf '%s\n' "\${description:-\$*}" > "$TMP/scope.description"
+exec "\$@"
+EOF
+cat > "$TMP/scope-bin/google-chrome" <<EOF
+#!/bin/sh
+printf '%s\n' "\$@" > "$TMP/scope.argv"
+EOF
+chmod +x "$TMP/scope-bin/"*
+url="--app=http://dotfiles.t3.localhost:3780/pair#token=SECRET123"
+PATH="$TMP/scope-bin:$PATH" "$ROOT/bin-linux/app-scope" app.slice google-chrome --no-first-run "$url"
+description=$(cat "$TMP/scope.description" 2>/dev/null)
+[[ -n "$description" && "$description" != *SECRET123* ]] && pass "the scope's description ('$description') carries no token" \
+  || fail "the scope would be described as '$description'"
+check "and the program still gets every argument" "$(printf '%s\n' --no-first-run "$url")" "$(cat "$TMP/scope.argv" 2>/dev/null)"
 
 echo "== waiting for a T3 Code server is bounded and shared =="
 if command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
@@ -559,12 +610,12 @@ if command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   other_server=$!
   for _ in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:$t3_port/" && curl -s -o /dev/null "http://127.0.0.1:$other_port/" && break; sleep 0.1; done
   T3_SERVER_WAIT=2; T3_SERVER_DEADLINE=""
-  t3_wait_for_server "$t3_port" && pass "a server answering T3 Code's descriptor route is ready" || fail "a T3 Code server was not seen"
+  T3_PORT="$t3_port" t3_wait_for_server && pass "a server answering T3 Code's descriptor route is ready" || fail "a T3 Code server was not seen"
   check "and an answering server starts no deadline" "" "$T3_SERVER_DEADLINE"
   start=$(date +%s)
-  t3_wait_for_server "$other_port" && fail "a server without the descriptor route was taken for T3 Code" \
+  T3_PORT="$other_port" t3_wait_for_server && fail "a server without the descriptor route was taken for T3 Code" \
     || pass "a server that 404s the descriptor route is not T3 Code"
-  t3_wait_for_server "$closed_port" && fail "a closed port was ready" || pass "nor is a closed port"
+  T3_PORT="$closed_port" t3_wait_for_server && fail "a closed port was ready" || pass "nor is a closed port"
   elapsed=$(( $(date +%s) - start ))
   (( elapsed <= 3 )) && pass "both share one ${T3_SERVER_WAIT}s deadline (${elapsed}s in all)" \
     || fail "two dead servers took ${elapsed}s; the deadline is not shared"

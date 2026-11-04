@@ -183,9 +183,8 @@ if [[ -r "$LAYOUT_OVERRIDE" ]]; then
   source "$LAYOUT_OVERRIDE"
 fi
 # ─────────────────────────────────────────────────────────────────────
-# One "ws<TAB>slot<TAB>workdir<TAB>port" line per t3 row: the term row on the
-# same workspace names its window (slot) and its project (workdir), and port is
-# the shared server's.
+# One "ws<TAB>slot<TAB>workdir" line per t3 row: the term row on the same
+# workspace names its window (slot) and its project (workdir).
 t3_rows() {
   local entry term ws type slot workdir server
   for entry in "${WORKSPACES[@]}"; do
@@ -196,7 +195,7 @@ t3_rows() {
       [[ "$term" == "$ws|term|"* ]] || continue
       [[ -z "$server" ]] || { echo "ERROR: t3 row '$entry': workspace $ws has more than one term row" >&2; return 1; }
       IFS='|' read -r _ _ slot workdir _ <<< "$term"
-      server=$(printf '%s\t%s\t%s\t%s' "$ws" "$slot" "${workdir/#\~/$HOME}" "$T3_PORT")
+      server=$(printf '%s\t%s\t%s' "$ws" "$slot" "${workdir/#\~/$HOME}")
     done
     [[ -n "$server" ]] || {
       echo "ERROR: t3 row '$entry': workspace $ws has no term row to take its slot and workdir from" >&2
@@ -220,7 +219,7 @@ if [[ "$PRINT_LAYOUT" == true ]]; then
     printf '%s\t%s\n' "$app_id" "$pct"
   done | jq -Rn '[inputs | split("\t") | { name: .[0], percent: (if .[1] == "" then null else (.[1] | tonumber) end) }]')
   t3_tsv=$(t3_rows) || exit 1
-  t3_json=$(printf '%s' "$t3_tsv" | jq -Rn '[inputs | split("\t") | { workspace: .[0], slot: .[1], workdir: .[2], port: (.[3] | tonumber) }]')
+  t3_json=$(printf '%s' "$t3_tsv" | jq -Rn '[inputs | split("\t") | { workspace: .[0], slot: .[1], workdir: .[2] }]')
   for entry in "${WORKSPACES[@]}"; do
     IFS='|' read -r ws type rest <<< "$entry"
     [[ "$type" == term ]] || continue
@@ -620,8 +619,6 @@ reconcile_marked() {
 # A row is inert unless t3@T3_SERVER is enabled: bin/t3-ensure enables it
 # where T3 Code is installed, and elsewhere the row only says so.
 
-T3_TITLE_RE='^T3 Code'
-
 # The Chrome slots' matcher, minus every window whose browser runs a T3 Code
 # profile. A link T3 Code opens in a new tab lands in a regular browser window
 # of that profile, and under XWayland an --app window carries Chrome's class:
@@ -647,8 +644,7 @@ chrome_slot_match() {
 # (apps/server/src/cli/pair.ts), which answers without a session.
 T3_SERVER_DEADLINE=""
 t3_wait_for_server() {
-  local port="$1"
-  until curl -sf --noproxy '*' -o /dev/null -m 2 "http://127.0.0.1:${port}/.well-known/t3/environment"; do
+  until curl -sf --noproxy '*' -o /dev/null -m 2 "http://127.0.0.1:${T3_PORT}/.well-known/t3/environment"; do
     [[ -n "$T3_SERVER_DEADLINE" ]] || T3_SERVER_DEADLINE=$(( $(date +%s) + T3_SERVER_WAIT ))
     [[ $(date +%s) -lt "$T3_SERVER_DEADLINE" ]] || return 1
     sleep 0.5
@@ -689,6 +685,14 @@ t3_close_window() {
   ! jq -e --argjson i "$id" 'any(.[]; .id == $i)' <<< "$SNAPSHOT" >/dev/null
 }
 
+# t3_error_page TITLE HOST -> whether a window titled TITLE shows Chrome's
+# error page for HOST rather than T3 Code's page. Chrome titles that page with
+# the bare host; host:port is taken too. Any other title is T3 Code's page, or
+# one still loading, which this must leave alone.
+t3_error_page() {
+  [[ "$1" == "$2" || "$1" == "$2:$T3_PORT" ]]
+}
+
 # Same contract as reconcile_marked -- the mark's holder, else an unclaimed
 # window, else a new one -- except that every candidate must be a window of
 # the slot's profile, and a window stuck on an error page is replaced.
@@ -697,9 +701,9 @@ t3_close_window() {
 # adopted one keeps whatever scope it has: rescoping reloads the page, and a
 # window from before the debug port cannot be reached anyway.
 reconcile_t3() {
-  local ws="$1" slot="$2" workdir="$3" port="$4"
-  local label="t3:$ws" mark="sw:${ws}:t3" profile="$T3_CHROME_PROFILES_DIR/$slot"
-  local url="http://${slot}.t3.localhost:${port}/" ids id held=false title token open_url before deadline new
+  local ws="$1" slot="$2" workdir="$3"
+  local label="t3:$ws" mark="sw:${ws}:t3" profile="$T3_CHROME_PROFILES_DIR/$slot" host="${slot}.t3.localhost"
+  local url="http://${host}:${T3_PORT}/" ids id held=false title token open_url before deadline new
   local opened=false
 
   if ! systemctl --user is-enabled --quiet "t3@${T3_SERVER}.service" 2>/dev/null; then
@@ -710,7 +714,13 @@ reconcile_t3() {
   ids=$(chrome_profile_window_ids "$SNAPSHOT" "$profile")
   id=$(id_with_mark "$SNAPSHOT" "$mark")
   if [[ -n "$id" ]] && ! grep -qx "$id" <<< "$ids"; then
-    echo "[$label] window $id holds $mark but is not a window of $profile; ignoring the claim"
+    if [[ "$DRY_RUN" == true ]]; then
+      echo "  DRY-RUN unmark $mark from window $id, which is not a window of $profile"
+    else
+      echo "[$label] window $id holds $mark but is not a window of $profile; removing the claim"
+      sway_cmd "[con_id=$id] unmark \"$mark\"" || warn "[$label] could not unmark $mark from window $id"
+      refresh
+    fi
     id=""
   fi
   if [[ -n "$id" ]]; then
@@ -722,23 +732,23 @@ reconcile_t3() {
     [[ -z "$id" ]] || echo "[$label] adopting unclaimed window $id"
   fi
 
-  # A window opened while its server was down sits on Chrome's error page,
-  # titled with the host, which never retries (as on the Mac): once the server
+  # A window opened while its server was down sits on Chrome's error page
+  # (t3_error_page), which never retries (as on the Mac): once the server
   # answers, replace it. T3 Code titles its page the same way paired or not,
   # so this cannot tell whether pairing worked.
   if [[ -n "$id" ]]; then
     title=$(jq -r --argjson i "$id" '.[] | select(.id == $i) | .title' <<< "$SNAPSHOT")
-    if [[ ! "$title" =~ $T3_TITLE_RE ]]; then
+    if t3_error_page "$title" "$host"; then
       if [[ "$DRY_RUN" == true ]]; then
-        echo "  DRY-RUN replace window $id (titled '$title', not T3 Code's page) once the server answers"
+        echo "  DRY-RUN replace window $id (on Chrome's error page, titled '$title') once the server answers"
         return 0
-      elif t3_wait_for_server "$port"; then
-        echo "[$label] window $id is titled '$title', not T3 Code's page; replacing it"
+      elif t3_wait_for_server; then
+        echo "[$label] window $id is on Chrome's error page (titled '$title'); replacing it"
         t3_close_window "$id" || { warn "[$label] could not close window $id"; return 1; }
         id=""
         held=false
       else
-        warn "[$label] the T3 Code server is not answering on port $port; window $id stays on its error page"
+        warn "[$label] the T3 Code server is not answering on port $T3_PORT; window $id stays on its error page"
       fi
     fi
   fi
@@ -762,8 +772,8 @@ reconcile_t3() {
       echo "  DRY-RUN scope it to $workdir: $(printf '%q ' "${T3_SCOPE_CMD[@]}" "$profile" "${url%/}" "$workdir")"
       return 0
     fi
-    t3_wait_for_server "$port" || {
-      warn "[$label] the T3 Code server (t3@$T3_SERVER) did not answer on port $port within ${T3_SERVER_WAIT}s; not opening a window"
+    t3_wait_for_server || {
+      warn "[$label] the T3 Code server (t3@$T3_SERVER) did not answer on port $T3_PORT within ${T3_SERVER_WAIT}s; not opening a window"
       return 1
     }
     if token=$(t3_pairing_token); then
@@ -803,7 +813,7 @@ reconcile_t3() {
 refresh
 
 reconcile_entry() {
-  local entry="$1" ws type rest slot workdir cmd port
+  local entry="$1" ws type rest slot workdir cmd
   IFS='|' read -r ws type rest <<< "$entry"
   case "$type" in
     term)
@@ -818,8 +828,8 @@ reconcile_entry() {
       reconcile_marked "$ws" omnigent "$OMNIGENT_MATCH_JQ" "$OMNIGENT_INVALID_TITLE_RE" || true
       ;;
     t3)
-      IFS=$'\t' read -r slot workdir port <<< "$(awk -F'\t' -v ws="$ws" '$1 == ws { print $2 "\t" $3 "\t" $4; exit }' <<< "$T3_ROWS")"
-      reconcile_t3 "$ws" "$slot" "$workdir" "$port" || true
+      IFS=$'\t' read -r slot workdir <<< "$(awk -F'\t' -v ws="$ws" '$1 == ws { print $2 "\t" $3; exit }' <<< "$T3_ROWS")"
+      reconcile_t3 "$ws" "$slot" "$workdir" || true
       ;;
   esac
 }

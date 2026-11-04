@@ -20,7 +20,7 @@
 #   tree), and Electron takes its app_id from the app name. Both are therefore
 #   claimed by MARK, the way the Mac script claims them by window id.
 #
-#   T3 Code windows are Chrome --app windows, one Chrome profile per server,
+#   T3 Code windows are Chrome --app windows, one Chrome profile per t3 row,
 #   and nothing sway shows tells them apart: --class has no effect on a Wayland
 #   --app window and every one is titled T3 Code's way. The profile does, read
 #   from the command line of the browser process that owns the window
@@ -150,6 +150,7 @@ def wins:
         floating: (.type == "floating_con"),
         app_id: (.app_id // null),
         class: (.window_properties.class // null),
+        instance: (.window_properties.instance // null),
         title: (.name // ""),
         marks: (.marks // []),
         pid: .pid }
@@ -195,13 +196,23 @@ CHROME_INVALID_TITLE_RE='^Who.s using Chrome\?$'
 # closes once it has.
 OMNIGENT_INVALID_TITLE_RE='^(Omnigent Update|Opening Omnigent)$'
 
-# A Chrome --app window, as opposed to the dialogs its browser process maps
-# alongside it. Natively its app_id is Chrome's per-app id, fixed when the
-# window is created (chrome-<host>_<path>-<profile directory>, e.g.
-# chrome-dotfiles.t3.localhost__pair-Default), and under XWayland it has an
-# X11 class; the dialogs (a fresh profile's terms dialog, for one) have
-# neither.
-CHROME_APP_WINDOW_JQ='((.app_id // "") | startswith("chrome-")) or (.app_id == null and .class != null)'
+# A Chrome --app window on a *.localhost host (every T3 Code window is on
+# <slot>.t3.localhost), as opposed to the other windows its browser process
+# maps: dialogs (a fresh profile's terms dialog, for one) and regular browser
+# windows (a link T3 Code opens). Chrome names an --app window after its
+# app_name, <host>_<path> (GenerateApplicationNameFromURL), fixed when the
+# window is created; the others take the program's own identity
+# (BrowserNativeWidgetAuraLinux::GetWindowClass, Chromium main a227b00):
+#   - natively the app_id is chrome-<app_name>-<profile directory>, e.g.
+#     chrome-dotfiles.t3.localhost__pair-Default (GetXdgAppIdForWebApp), where
+#     a regular window's is google-chrome and a dialog has none;
+#   - under XWayland the X11 class is Google-chrome for every window, and the
+#     instance is app_name with / made _ and _ trimmed (GetWMClassFromAppName),
+#     e.g. dotfiles.t3.localhost__pair or, on /, dotfiles.t3.localhost. A
+#     regular window's instance is google-chrome, and with --user-data-dir
+#     (every T3 Code profile) "google-chrome (<dir>)", so a non-null class, or
+#     an instance other than google-chrome, does not single out the app window.
+CHROME_APP_WINDOW_JQ='((.app_id // "") | startswith("chrome-")) or (.app_id == null and ((.instance // "") | test("^[a-z0-9.-]+\\.localhost(__|$)")))'
 
 # Where process command lines are read from; the tests point it at a fixture.
 SWAY_WINDOWS_PROC="${SWAY_WINDOWS_PROC:-/proc}"
