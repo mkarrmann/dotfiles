@@ -285,6 +285,8 @@ else
   if [[ "$(uname -s)" == Linux ]]; then
     "$DOTFILES_DIR/bin/omnigent-desktop-app-ensure" ||
       warn "Omnigent desktop app installation failed"
+    "$DOTFILES_DIR/bin/t3-desktop-app-ensure" ||
+      warn "T3 Code desktop app installation failed"
     "$DOTFILES_DIR/bin/coredump-size-cap-ensure" ||
       warn "coredump size cap installation failed"
     "$DOTFILES_DIR/bin/earlyoom-ensure" ||

@@ -14,7 +14,10 @@ warning). It:
      and "Omnigent · Codex" providers in ~/.t3-workspaces/NAME/userdata/
      settings.json, keeping every other setting (a running server reloads it).
      It also turns off T3 Code's built-in Codex and Claude, which would run outside
-     Omnigent, unless the settings already configure them;
+     Omnigent, unless the settings already configure them. The desktop gets the
+     same in the T3 Code app's own local environment (bin/t3-desktop-app-ensure),
+     ~/.t3/userdata/settings.json -- the app's state while T3CODE_HOME is unset,
+     as it is here -- and no server or project for it below;
   3. warms uv's cache for omnigent-acp, since the services have no proxy to
      fetch its dependencies with;
   4. enables and starts t3@NAME (systemd/t3@.service, bin/t3-workspace-serve)
@@ -45,6 +48,7 @@ from typing import NamedTuple
 
 DOTFILES = Path(os.environ.get("DOTFILES_DIR", Path.home() / "dotfiles"))
 WORKSPACES_HOME = Path.home() / ".t3-workspaces"
+DESKTOP_APP_SETTINGS = Path.home() / ".t3/userdata/settings.json"
 SHIM = DOTFILES / "bin/omnigent-acp"
 CHECKOUT = re.compile(r"checkout[0-9]+")
 INSTALLERS = (
@@ -114,10 +118,8 @@ def desktop_workspaces() -> list[Workspace]:
     return found
 
 
-def find_workspaces() -> list[Workspace]:
-    if sys.platform == "linux" and output(str(DOTFILES / "bin/dotfiles-profile")).strip() == "desktop":
-        return desktop_workspaces()
-    return checkouts()
+def on_linux_desktop() -> bool:
+    return sys.platform == "linux" and output(str(DOTFILES / "bin/dotfiles-profile")).strip() == "desktop"
 
 
 def provider_instances(shim: Path) -> dict[str, dict]:
@@ -166,7 +168,10 @@ def main() -> int:
         install_t3()
     t3 = find_t3()
     assert t3 is not None
-    workspaces = find_workspaces()
+    desktop = on_linux_desktop()
+    if desktop and merge_settings(DESKTOP_APP_SETTINGS, SHIM):
+        log("registered the Omnigent providers for the T3 Code desktop app")
+    workspaces = desktop_workspaces() if desktop else checkouts()
     for workspace in workspaces:
         if merge_settings(WORKSPACES_HOME / workspace.name / "userdata/settings.json", SHIM):
             log(f"registered the Omnigent providers for {workspace.directory}")

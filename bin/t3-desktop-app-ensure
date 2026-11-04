@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Install the pinned T3 Code desktop app on personal Linux desktops. Install-only:
+# an installed t3code of any version is left alone, because the .deb updates
+# itself, asking for the password to install each update (T3 Code's
+# docs/user/install.md). The pin only decides where a fresh machine starts.
+set -euo pipefail
+
+[[ $# -eq 0 ]] || { echo "Usage: t3-desktop-app-ensure" >&2; exit 2; }
+
+DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
+if [[ "$("$DOTFILES/bin/dotfiles-profile")" != desktop || "$(uname -s)" != Linux ]]; then
+  exit 0
+fi
+if ! command -v dpkg >/dev/null 2>&1 || ! command -v apt >/dev/null 2>&1; then
+  echo "[t3-app] automatic installation requires Debian/Ubuntu; see https://github.com/pingdotgg/t3code/blob/main/docs/user/install.md"
+  exit 0
+fi
+if [[ "$(dpkg --print-architecture)" != amd64 ]]; then
+  echo "[t3-app] no pinned package for this architecture; skipping"
+  exit 0
+fi
+
+# shellcheck disable=SC1091
+source "$DOTFILES/omnigent_config/t3-desktop-app.env"
+
+package=t3code
+installed="$(dpkg-query -W -f='${Status} ${Version}' "$package" 2>/dev/null || true)"
+if [[ "$installed" == 'install ok installed '* ]]; then
+  echo "[t3-app] ${installed#install ok installed } already installed; leaving it to its own updates"
+  exit 0
+fi
+
+if [[ ! -t 0 || ! -t 1 ]]; then
+  printf '[t3-app] installation needs an interactive terminal for sudo/apt. Run:\n  %q\n' \
+    "$DOTFILES/bin/t3-desktop-app-ensure"
+  exit 0
+fi
+for tool in curl openssl base64 dpkg-deb sudo; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "ERROR: $tool is required to install the T3 Code app" >&2; exit 1; }
+done
+
+download="$(mktemp "${TMPDIR:-/tmp}/t3code-desktop.XXXXXX.deb")"
+trap 'rm -f "$download"' EXIT
+echo "[t3-app] downloading $T3_DESKTOP_APP_VERSION"
+curl -fL --connect-timeout 10 --max-time 300 "$T3_DESKTOP_APP_URL" -o "$download"
+if [[ "$(openssl dgst -sha512 -binary "$download" | base64 -w0)" != "$T3_DESKTOP_APP_SHA512" ]]; then
+  echo "ERROR: T3 Code desktop package checksum mismatch" >&2
+  exit 1
+fi
+if [[ "$(dpkg-deb -f "$download" Package)" != "$package" ||
+      "$(dpkg-deb -f "$download" Version)" != "$T3_DESKTOP_APP_VERSION" ||
+      "$(dpkg-deb -f "$download" Architecture)" != amd64 ]]; then
+  echo "ERROR: unexpected T3 Code desktop package metadata" >&2
+  exit 1
+fi
+chmod 644 "$download"
+sudo apt install "$download"
+echo "[t3-app] installed; later versions arrive through the app's own updates"
