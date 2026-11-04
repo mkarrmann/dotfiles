@@ -278,6 +278,10 @@ else
   echo "[desktop] skipping work plugins and Omnigent hub setup"
   "$DOTFILES_DIR/bin/omnigent-desktop-ensure" ||
     warn "local Omnigent startup failed"
+  # Report only: an upgrade can migrate this machine's chat.db, so it is a
+  # deliberate step, run by hand from a plain terminal (docs/omnigent-upgrades.md).
+  "$DOTFILES_DIR/bin/omnigent-version-ensure" --check ||
+    warn "omnigent-version-ensure --check failed: Omnigent was not upgraded (see above); run $DOTFILES_DIR/bin/omnigent-version-ensure from a plain terminal outside Omnigent"
   if [[ "$(uname -s)" == Linux ]]; then
     "$DOTFILES_DIR/bin/omnigent-desktop-app-ensure" ||
       warn "Omnigent desktop app installation failed"

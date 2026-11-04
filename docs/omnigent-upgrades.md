@@ -1,14 +1,16 @@
 # Upgrading Omnigent
 
 The installed Omnigent is the published PyPI wheel, managed by
-`bin/omnigent-version-ensure` (run from `init.sh`). Nothing runs from
+`bin/omnigent-version-ensure` (run from `init.sh` on work machines; on the
+desktop `init.sh` only checks it, see "Upgrade the desktop"). Nothing runs from
 `~/repos/omnigent`.
 
 > **Never run `omni update` / `omnigent update` on any machine here.** It
 > terminates whatever process holds `:6767`, which on a hub is
 > `omnigent-server.service` and on the Mac is mac_proxy — neither of which it
 > can tell apart from the stray local server it thinks it is cleaning up. Use
-> `./init.sh`, or the explicit `uv tool install` below. See
+> `./init.sh` (on the desktop, `bin/omnigent-version-ensure`), or the explicit
+> `uv tool install` below. See
 > "`omni update` takes the hub down (2026-09-21)".
 
 ## The floor
@@ -25,7 +27,8 @@ not a pin**:
 ## Roll the fleet forward
 
 1. Bump `OMNIGENT_MIN_VERSION` in `omnigent_config/topology.env`, commit, push.
-2. Upgrade the Mac and the standby, then the hub last. On each machine:
+2. Upgrade the Mac and the standby, then the hub last (the desktop is separate:
+   see "Upgrade the desktop"). On each machine:
 
    ```bash
    cd ~/dotfiles && git pull && ./init.sh
@@ -79,12 +82,58 @@ not a pin**:
    from omnigent.llms.context_window import get_model_context_window as g
    print(g('claude-haiku-4-5'), g('gemini-2.5-pro'))"   # expect 200000 1048576
    ```
-   Then run `bin/omnigent-onboard-check` on each Linux machine, and send one
-   message in any session: that is the only check that exercises a runner on
-   the new code.
+   Then run `bin/omnigent-onboard-check` on each work Linux machine, and send
+   one message in any session: that is the only check that exercises a runner
+   on the new code. `omnigent-onboard-check` is a work-role check — it resolves
+   the hub through `bin/omnigent-server-url`, which needs
+   `~/.config/omnigent/active-hub.json`, and requires
+   `omnigent-client-proxy.service` or the hub services — so it fails on the
+   desktop by design; the desktop's checks are under "Upgrade the desktop".
 
 The hub goes last because clients tolerate an older server better than the
 reverse.
+
+## Upgrade the desktop
+
+On the desktop `init.sh` runs `omnigent-version-ensure --check`, which only
+reports: below the floor or missing `--with litellm`, it prints what is wrong
+and the command to run, and `init.sh` repeats that as a warning. It never
+installs. The desktop's `omnigent-host.service` runs the server for the
+desktop's own `chat.db`, so an upgrade migrates that database as soon as the
+host restarts — 0.15.0 → 0.20.0 on 2026-11-03 took it from alembic
+`ii1a2b3c4d5e` to `b2e4f6a8c013` — and is a step to take deliberately.
+
+Run it from a plain terminal outside Omnigent, not from an Omnigent session or
+agent terminal. It refuses to install when `OMNIGENT_RUNNER_ID` is set, because
+the restart at the end kills every session's process tree, its own shell
+included.
+
+```bash
+/home/matt/dotfiles/bin/omnigent-version-ensure
+```
+
+It backs up `~/.omnigent/chat.db` to
+`~/.omnigent/chat.db.pre-upgrade-<YYYYmmdd-HHMMSS>` (a consistent SQLite
+backup, mode 600, verified with `PRAGMA integrity_check`) and refuses the
+upgrade if it cannot; `OMNIGENT_SKIP_RECOVERY_POINT=1` overrides. That copy is
+the only way back to the previous release once the new server has migrated
+`chat.db`. It then installs, and restarts `omnigent-host.service`, which runs
+both the server and the host: in-flight turns and agent terminals die, while
+sessions survive and resume.
+
+Then reload every open Omnigent window (View > Reload, or restart the app). The
+web UI does not reload itself after a server upgrade; the only automatic reload
+is `web/src/lib/chunkLoadRecovery.ts`, and only on a failed chunk load.
+
+Verify with:
+
+```bash
+curl --noproxy '*' --max-time 5 http://127.0.0.1:6767/health
+~/.local/bin/omnigent --version
+```
+
+plus the `import litellm` command in step 4 above, and one message in any
+session.
 
 ## LiteLLM import race breaks HTTP responses (2026-10-08)
 

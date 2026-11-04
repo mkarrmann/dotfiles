@@ -6,7 +6,21 @@
 # deliberate `uv tool install --force omnigent --with litellm` sticks instead of
 # being silently reverted on the next init.sh. Bump OMNIGENT_MIN_VERSION in
 # topology.env to move the whole fleet's floor.
+#
+# --check reports without changing anything: exit 0 when the floor and the
+# litellm extra are satisfied, otherwise print what is wrong and the command
+# that fixes it, and exit 1. init.sh runs it that way on the desktop, where an
+# upgrade is a deliberate step taken from a plain terminal (see
+# docs/omnigent-upgrades.md).
 set -euo pipefail
+
+check_only=false
+if [[ $# -eq 1 && "$1" == --check ]]; then
+  check_only=true
+elif [[ $# -ne 0 ]]; then
+  echo "usage: omnigent-version-ensure [--check]" >&2
+  exit 2
+fi
 
 DOTFILES="${DOTFILES_DIR:-$HOME/dotfiles}"
 TOPOLOGY="${OMNIGENT_TOPOLOGY_FILE:-$DOTFILES/omnigent_config/topology.env}"
@@ -56,7 +70,8 @@ restart_host_daemon() {
     Linux)
       command -v systemctl >/dev/null 2>&1 || return 0
       # try-restart, matching init.sh: reload a daemon that is running, stay a
-      # no-op on a machine that does not run one.
+      # no-op on a machine that does not run one. On a desktop this unit also
+      # runs the server, so this is when its chat.db migrates.
       if systemctl --user try-restart omnigent-host.service 2>/dev/null; then
         echo "[omnigent-version] restarted omnigent-host.service onto the new code"
       else
@@ -137,8 +152,65 @@ if unknown:
 PY
 }
 
-# Take a recovery point before replacing the package, on the host that owns the
-# database the fleet shares.
+# A desktop's omnigent-host.service runs the server for its own chat.db, which a
+# release can migrate: the 0.15.0 -> 0.20.0 upgrade on 2026-11-03 took it from
+# alembic ii1a2b3c4d5e to b2e4f6a8c013, and only a pre-upgrade copy rolls that
+# back. There is no omnigent-hub here, so copy it directly with SQLite's backup
+# API (the sqlite3 CLI is not installed), which unlike `cp` is consistent against
+# the running server. The source is opened read-only so the backup cannot write
+# to the live database. The copy is created 0600 (it holds every conversation),
+# taken out of WAL mode so checking it leaves no -wal/-shm files beside it, and
+# named like the one taken by hand on 2026-09-26. No chat.db (a fresh machine)
+# means there is nothing to protect.
+backup_local_chat_db() {
+  local db="$HOME/.omnigent/chat.db"
+  [[ -f "$db" ]] || return 0
+  local copy
+  copy="$db.pre-upgrade-$(date +%Y%m%d-%H%M%S)"
+  if ! python3 - "$db" "$copy" <<'PY'; then
+import os
+import sqlite3
+import sys
+from contextlib import closing
+from urllib.parse import quote
+
+source, copy = sys.argv[1:]
+
+
+def read_only(path):
+    return sqlite3.connect(f"file:{quote(path)}?mode=ro", uri=True)
+
+
+created = False
+try:
+    os.close(os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    created = True
+    with closing(read_only(source)) as src, closing(sqlite3.connect(copy)) as dst:
+        src.backup(dst)
+        dst.execute("PRAGMA journal_mode=DELETE")
+    with closing(read_only(copy)) as check:
+        result = check.execute("PRAGMA integrity_check").fetchall()
+    if result != [("ok",)]:
+        raise sqlite3.DatabaseError(f"integrity_check reported {result[:3]}")
+except (OSError, sqlite3.Error) as exc:
+    if created:
+        os.unlink(copy)
+    sys.exit(f"ERROR: backing up {source} failed: {exc}")
+PY
+    cat >&2 <<EOF
+ERROR: could not back up $db, and this desktop's server runs on it.
+       A release can migrate chat.db, so the upgrade is refused rather than run
+       without a copy to roll back to. Override deliberately with
+       OMNIGENT_SKIP_RECOVERY_POINT=1.
+EOF
+    return 1
+  fi
+  echo "[omnigent-version] backed up chat.db to $copy"
+}
+
+# Take a recovery point before replacing the package, on a host whose server
+# runs on its own chat.db: the hub that owns the database the fleet shares, or a
+# desktop (backup_local_chat_db above).
 #
 # Supersedes the `cp ~/.omnigent/chat.db ~/.omnigent/chat.db.pre-$VERSION` this
 # used to advise. That copy was worse twice over: `cp` of a live SQLite database
@@ -153,11 +225,20 @@ PY
 # timer has already done the work, and --fallback-local keeps it working while
 # shared storage is unreadable, which is exactly when an upgrade is likeliest.
 #
-# Only the owning hub is protected; every other machine holds no shared state
-# and takes the early return. Set OMNIGENT_SKIP_RECOVERY_POINT=1 to override.
+# Of the work machines only the owning hub is protected; the rest hold no
+# shared state and take the early return. Set OMNIGENT_SKIP_RECOVERY_POINT=1 to
+# override on either profile.
 ensure_recovery_point() {
   if [[ "${OMNIGENT_SKIP_RECOVERY_POINT:-0}" == 1 ]]; then
     return 0
+  fi
+  # Assigned on its own line so an unresolvable profile fails the upgrade
+  # instead of reading as "not a desktop" and skipping the backup.
+  local profile
+  profile="$("$DOTFILES/bin/dotfiles-profile")"
+  if [[ "$profile" == desktop ]]; then
+    backup_local_chat_db
+    return
   fi
   local hub_bin="$DOTFILES/services/omnigent-hub/.venv/bin/omnigent-hub"
   [[ -x "$hub_bin" ]] || return 0
@@ -202,10 +283,6 @@ if version_at_least "$installed" "$min_version" && [[ "$extras_ok" == true ]]; t
   echo "[omnigent-version] omnigent $installed satisfies the >= $min_version floor"
   exit 0
 fi
-if ! command -v uv >/dev/null 2>&1; then
-  echo "ERROR: uv is required to install omnigent >= $min_version" >&2
-  exit 1
-fi
 
 # Default to the newest release that clears the floor. But when the ONLY thing
 # missing is an extra, reinstall the exact version already here -- repairing a
@@ -213,11 +290,44 @@ fi
 # deliberately moved ahead.
 target="omnigent>=$min_version"
 action="installing omnigent >= $min_version"
+problem="omnigent is not installed"
 if version_at_least "$installed" "$min_version"; then
   target="omnigent==$installed"
   action="reinstalling omnigent $installed (missing extras)"
+  problem="omnigent $installed is missing the litellm extra"
 elif [[ -n "$installed" ]]; then
   action="upgrading omnigent $installed -> >= $min_version"
+  problem="omnigent $installed is below the >= $min_version floor"
+fi
+
+fix="$(printf '%q' "$DOTFILES/bin/omnigent-version-ensure")"
+if [[ "$check_only" == true ]]; then
+  printf '[omnigent-version] %s. To fix it, run from a plain terminal outside Omnigent:\n  %s\n' \
+    "$problem" "$fix"
+  exit 1
+fi
+
+# Never from inside an Omnigent session (the host sets OMNIGENT_RUNNER_ID in
+# every runner). The install ends in restart_host_daemon, which kills every
+# runner's process tree -- this script's shell included, so it would die
+# mid-restart along with the session that started it. Verified 2026-11-03:
+# systemd stops omnigent-host.service's whole cgroup, and a session's tree is
+# host -> tmux -> harness -> shell. The panes sit in their own tmux-spawn
+# scopes, which does not save them: they die with the tmux server, and that is
+# in the host's cgroup.
+if [[ -n "${OMNIGENT_RUNNER_ID:-}" ]]; then
+  cat >&2 <<EOF
+ERROR: refusing to start $action from inside an Omnigent session.
+       Installing restarts the Omnigent host, which kills every session's
+       harness and terminal, including the shell running this. Run it from a
+       plain terminal outside Omnigent:
+         $fix
+EOF
+  exit 1
+fi
+if ! command -v uv >/dev/null 2>&1; then
+  echo "ERROR: uv is required to install omnigent >= $min_version" >&2
+  exit 1
 fi
 
 # --with litellm: omnigent resolves context windows via, in order, its own tiny

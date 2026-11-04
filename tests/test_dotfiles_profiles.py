@@ -253,7 +253,7 @@ class InitProfileTest(ProfileFixture):
                 ):
                     self.assertTrue(any(line.startswith(helper + " ") for line in calls), calls)
                 # Omnigent config is universal, but the hub infrastructure is not.
-                universal = ("omnigent-desktop-ensure ", "omnigent-desktop-app-ensure ", "omnigent-config-ensure ", "omnigent-agents-ensure ", "uv sync --frozen --all-groups ")
+                universal = ("omnigent-desktop-ensure ", "omnigent-desktop-app-ensure ", "omnigent-version-ensure --check ", "omnigent-config-ensure ", "omnigent-agents-ensure ", "uv sync --frozen --all-groups ")
                 forbidden = ("omnigent-", "bootstrap-plugins ", "systemctl ", "launchctl ", "uv ", "curl ", "git ")
                 self.assertFalse(any(line.startswith(forbidden) for line in calls if not line.startswith(universal)), calls)
                 self.assertEqual(
@@ -263,10 +263,12 @@ class InitProfileTest(ProfileFixture):
                 # The install comes first: on a fresh machine omnigent-desktop-ensure
                 # is what puts omnigent (and its python) in place for the other two.
                 install = next(index for index, line in enumerate(calls) if line.startswith("omnigent-desktop-ensure "))
+                version = next(index for index, line in enumerate(calls) if line.startswith("omnigent-version-ensure "))
                 config = next(index for index, line in enumerate(calls) if line.startswith("omnigent-config-ensure "))
                 agents = next(index for index, line in enumerate(calls) if line.startswith("omnigent-agents-ensure "))
                 self.assertFalse(any(line.startswith("omnigent-watcher ") for line in calls), calls)
                 self.assertEqual(sum(line.startswith("uv sync --frozen --all-groups ") for line in calls), 1, calls)
+                self.assertLess(install, version, calls)
                 self.assertLess(install, config, calls)
                 self.assertLess(config, agents, calls)
                 self.assertTrue(all("profile=desktop" in line for line in calls), calls)
@@ -310,6 +312,26 @@ class InitProfileTest(ProfileFixture):
         self.assertTrue(summary, result.stderr)
         self.assertTrue(all(line.startswith("  ") for line in summary), result.stderr)
         self.assertTrue(any("omnigent-version-ensure failed" in line for line in summary), result.stderr)
+
+    def test_only_work_lets_init_install_omnigent(self):
+        """A desktop upgrade can migrate its chat.db, so init.sh only checks the
+        floor there and its warning names the command to run by hand."""
+        self.stub(self.dotfiles / "bin/omnigent-version-ensure", self.recorder + "\nexit 1")
+        for profile, args in (("work", ""), ("desktop", "--check")):
+            with self.subTest(profile=profile):
+                self.env["DOTFILES_PROFILE"] = profile
+                self.log.write_text("")
+                result = self.run_script(self.script)
+                self.assert_success(result)
+                self.assertEqual(
+                    [line for line in self.calls() if line.startswith("omnigent-version-ensure ")],
+                    [f"omnigent-version-ensure {args} profile={profile} dotfiles={self.dotfiles}"],
+                )
+                if profile == "desktop":
+                    self.assertIn(
+                        f"run {self.dotfiles}/bin/omnigent-version-ensure from a plain terminal outside Omnigent",
+                        result.stderr.split("init.sh finished with", 1)[1],
+                    )
 
     def test_a_server_older_than_the_package_is_reported_last(self):
         self.env["DOTFILES_PROFILE"] = "work"
