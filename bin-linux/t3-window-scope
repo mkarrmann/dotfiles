@@ -1,0 +1,392 @@
+#!/usr/bin/env python3
+"""Scope a T3 Code window to one project: its new threads and its sidebar.
+
+Usage: t3-window-scope PROFILE_DIR ORIGIN WORKDIR
+
+PROFILE_DIR is the window's Chrome --user-data-dir, ORIGIN its page's origin
+(http://<slot>.t3.localhost:<port>), WORKDIR a project on that server.
+bin-linux/startup-windows runs this once for every T3 Code window it opens.
+
+T3 Code has no URL or setting that opens a window on a project. What it has,
+verified against 0.1.6, is client state in the page's localStorage, which is
+per profile and per origin, so per window:
+
+  t3code:ui-state:v1         projectOrder: where a new thread goes when the
+                             page shows no thread or draft of a project
+                             (resolveDefaultProjectRef, hooks/useHandleNewThread.ts);
+                             WORKDIR's legacy-project-cwd key goes first.
+                             sidebarProjectScopeKeys: the only project groups the
+                             sidebar lists (sidebarProjectGrouping.ts).
+  t3code:client-settings:v1  sidebarProjectGroupingMode "separate", under which a
+                             group's key is <environmentId>:<path>
+                             (client-runtime/src/state/projectGrouping.ts), so the
+                             scope key can be written here; the default groups
+                             by git remote.
+
+That is not enough on its own: the home page, /, opens a draft in the most
+recently active project whatever projectOrder says (routes/_chat.index.tsx),
+and every new-thread command follows the project of the draft or thread on
+screen (lib/chatThreadActions.ts). So the window is finally left on a draft
+of WORKDIR's project that the app makes itself: from /new, a page with no
+project of its own (the prompt-link route, which without a prompt only says
+so), chat.newLocal (Ctrl+Shift+N, its default binding) starts one from
+projectOrder, with the app's own defaults for the draft.
+
+The browser must run with --remote-debugging-port=0, which makes Chrome write
+the port it chose to PROFILE_DIR/DevToolsActivePort; the file outlives the
+browser, so a port is used only once it answers. The page is first taken to a
+same-origin page that runs no app code (the server's descriptor route), so the
+app has unloaded, saving its own state, before the documents are rewritten,
+and loads them again on /new.
+
+The WebSocket client is a copy of bin-linux/nvim-show-resolver's DevTools, kept
+separate so a change to either tool cannot break the other.
+
+Exit 0 scoped, 1 not (reason on stderr), 2 misuse.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+import socket
+import sys
+import time
+import urllib.parse
+import urllib.request
+from collections.abc import Callable
+from typing import Any, TypeVar
+
+UI_STATE_KEY = "t3code:ui-state:v1"
+CLIENT_SETTINGS_KEY = "t3code:client-settings:v1"
+COMPOSER_DRAFTS_KEY = "t3code:composer-drafts:v1"
+DESCRIPTOR_PATH = "/.well-known/t3/environment"
+PROJECTS_PATH = "/api/projects"
+NO_PROJECT_PATH = "/new"
+LEGACY_PROJECT_CWD_PREFIX = "legacy-project-cwd:"
+SEPARATE_GROUPING = "separate"
+# Ctrl+Shift+N for chat.newLocal (packages/shared/src/keybindings.ts), and the
+# Escape that closes the project picker it opens when no project is loaded yet.
+NEW_LOCAL_KEY = {"key": "N", "code": "KeyN", "modifiers": 2 | 8, "windowsVirtualKeyCode": 78}
+ESCAPE_KEY = {"key": "Escape", "code": "Escape", "modifiers": 0, "windowsVirtualKeyCode": 27}
+WAIT = 30.0
+HTTP_TIMEOUT = 2.0
+SOCKET_TIMEOUT = 10.0
+POLL = 0.25
+
+T = TypeVar("T")
+
+
+class ScopeError(Exception):
+    pass
+
+
+# --- the state written --------------------------------------------------------
+
+
+def normalized_path(path: str) -> str:
+    """T3 Code's normalizeProjectPathForComparison, for POSIX paths
+    (packages/shared/src/path.ts): trimmed, without trailing slashes."""
+    path = path.strip()
+    if path == "/" or not path.startswith("/"):
+        return path
+    return path.rstrip("/") or path
+
+
+def parsed_document(raw: str | None) -> dict[str, Any]:
+    """A stored document, or {} for one that is missing or unreadable, which is
+    what T3 Code itself falls back to."""
+    try:
+        doc = json.loads(raw) if raw is not None else {}
+    except ValueError:
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def scoped_ui_state(doc: dict[str, Any], workspace_root: str, scope_key: str) -> dict[str, Any]:
+    first = LEGACY_PROJECT_CWD_PREFIX + normalized_path(workspace_root)
+    order = doc.get("projectOrder")
+    rest = [entry for entry in order if entry != first] if isinstance(order, list) else []
+    return {
+        **doc,
+        "projectOrder": [first, *rest],
+        "sidebarProjectScopeKeys": [scope_key],
+        "sidebarProjectScopeKey": scope_key,
+    }
+
+
+def separately_grouped(doc: dict[str, Any]) -> dict[str, Any]:
+    return {**doc, "sidebarProjectGroupingMode": SEPARATE_GROUPING}
+
+
+def scope_key(environment_id: str, workspace_root: str) -> str:
+    return f"{environment_id}:{normalized_path(workspace_root)}"
+
+
+def project_at(projects: list[dict[str, Any]], workdir: str) -> dict[str, Any] | None:
+    wanted = normalized_path(workdir)
+    for project in projects:
+        if (
+            normalized_path(project.get("workspaceRoot") or "") == wanted
+            and project.get("archivedAt") is None
+            and project.get("deletedAt") is None
+        ):
+            return project
+    return None
+
+
+# --- the window's page --------------------------------------------------------
+
+
+def on_origin(url: str, origin: str) -> bool:
+    return url == origin or url.startswith(origin + "/")
+
+
+def app_page(targets: list[dict[str, Any]], origin: str) -> dict[str, Any] | None:
+    """The page on ORIGIN once it is past pairing: /pair first trades its token
+    for the session cookie, then moves on."""
+    for target in targets:
+        url = target.get("url", "")
+        if (
+            target.get("type") == "page"
+            and target.get("webSocketDebuggerUrl")
+            and on_origin(url, origin)
+            and not urllib.parse.urlsplit(url).path.startswith("/pair")
+        ):
+            return target
+    return None
+
+
+def debug_targets(profile_dir: str) -> list[dict[str, Any]] | None:
+    try:
+        with open(os.path.join(profile_dir, "DevToolsActivePort")) as handle:
+            port = int(handle.readline().strip())
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=HTTP_TIMEOUT) as response:
+            targets = json.load(response)
+    except (OSError, ValueError):
+        return None
+    return targets if isinstance(targets, list) else None
+
+
+def until(deadline: float, what: str, probe: Callable[[], T | None]) -> T:
+    while True:
+        try:
+            value = probe()
+        except OSError:
+            value = None
+        if value is not None:
+            return value
+        if time.monotonic() >= deadline:
+            raise ScopeError(f"gave up waiting for {what}")
+        time.sleep(POLL)
+
+
+class DevTools:
+    """Chrome DevTools Protocol calls over a page's WebSocket, stdlib only."""
+
+    def __init__(self, ws_url: str) -> None:
+        parts = urllib.parse.urlsplit(ws_url)
+        self.sock = socket.create_connection((parts.hostname, parts.port), timeout=SOCKET_TIMEOUT)
+        key = base64.b64encode(os.urandom(16)).decode()
+        request = (
+            f"GET {parts.path} HTTP/1.1\r\nHost: {parts.netloc}\r\nUpgrade: websocket\r\n"
+            f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        )
+        self.sock.sendall(request.encode())
+        head = b""
+        while b"\r\n\r\n" not in head:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise OSError("WebSocket handshake closed")
+            head += chunk
+        if not head.startswith(b"HTTP/1.1 101"):
+            raise OSError(f"WebSocket handshake refused: {head.split(b'\\r\\n', 1)[0]!r}")
+        self.buffer = head.split(b"\r\n\r\n", 1)[1]
+        self.next_id = 0
+
+    def close(self) -> None:
+        self.sock.close()
+
+    def _read(self, size: int) -> bytes:
+        while len(self.buffer) < size:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise OSError("WebSocket closed")
+            self.buffer += chunk
+        data, self.buffer = self.buffer[:size], self.buffer[size:]
+        return data
+
+    def _frame(self) -> tuple[int, bytes]:
+        first, second = self._read(2)
+        opcode, length = first & 0x0F, second & 0x7F
+        if length == 126:
+            length = int.from_bytes(self._read(2), "big")
+        elif length == 127:
+            length = int.from_bytes(self._read(8), "big")
+        mask = self._read(4) if second & 0x80 else b""
+        payload = self._read(length)
+        if mask:
+            payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        return opcode, payload
+
+    def call(self, method: str, params: dict) -> dict:
+        self.next_id += 1
+        body = json.dumps({"id": self.next_id, "method": method, "params": params}).encode()
+        mask = os.urandom(4)
+        header = bytes([0x81])
+        if len(body) < 126:
+            header += bytes([0x80 | len(body)])
+        elif len(body) < 65536:
+            header += bytes([0x80 | 126]) + len(body).to_bytes(2, "big")
+        else:
+            header += bytes([0x80 | 127]) + len(body).to_bytes(8, "big")
+        self.sock.sendall(header + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(body)))
+        while True:
+            opcode, payload = self._frame()
+            if opcode == 0x8:
+                raise OSError("WebSocket closed by peer")
+            if opcode != 0x1:
+                continue
+            message = json.loads(payload)
+            if message.get("id") == self.next_id:
+                if "error" in message:
+                    raise OSError(f"{method}: {message['error']}")
+                return message.get("result", {})
+
+    def evaluate(self, expression: str, await_promise: bool = False):
+        result = self.call(
+            "Runtime.evaluate",
+            {"expression": expression, "returnByValue": True, "awaitPromise": await_promise},
+        )
+        details = result.get("exceptionDetails")
+        if details:
+            raise OSError(f"page threw {(details.get('exception') or {}).get('description') or details.get('text')}")
+        return (result.get("result") or {}).get("value")
+
+
+# --- the steps ----------------------------------------------------------------
+
+
+def navigate(devtools: DevTools, url: str, deadline: float) -> None:
+    devtools.call("Page.navigate", {"url": url})
+    path = urllib.parse.urlsplit(url).path
+    until(
+        deadline,
+        f"{url} to load",
+        lambda: devtools.evaluate("[location.pathname, document.readyState]") == [path, "complete"] or None,
+    )
+
+
+def fetch_json(devtools: DevTools, path: str):
+    """GET PATH from the page, with its session cookie."""
+    return devtools.evaluate(
+        f"fetch({json.dumps(path)}).then(r => r.ok ? r.json()"
+        f" : Promise.reject(new Error({json.dumps(path)} + ' answered ' + r.status)))",
+        await_promise=True,
+    )
+
+
+def press(devtools: DevTools, key: dict[str, Any]) -> None:
+    for kind in ("rawKeyDown", "keyUp"):
+        devtools.call(
+            "Input.dispatchKeyEvent",
+            {"type": kind, "nativeVirtualKeyCode": key["windowsVirtualKeyCode"], **key},
+        )
+
+
+def draft_project_id(devtools: DevTools) -> str | None:
+    """The project of the draft on screen, once the app has saved it."""
+    return devtools.evaluate(
+        "(() => { const id = location.pathname.match(/^\\/draft\\/([^/]+)$/)?.[1];"
+        f" const doc = id && JSON.parse(localStorage.getItem({json.dumps(COMPOSER_DRAFTS_KEY)}) || 'null');"
+        " return doc?.state?.draftThreadsByThreadKey?.[id]?.projectId ?? null; })()"
+    )
+
+
+def open_draft(devtools: DevTools, deadline: float) -> str:
+    """chat.newLocal from a page with no project, retried until the app has
+    loaded both its shortcuts and its projects; the project of the draft it
+    opens.
+
+    The window need not have focus (sway gives it to one window), and in
+    testing a page without it once ignored every press for 30 s, so the page is
+    told it has focus for as long as this session lasts."""
+    devtools.call("Emulation.setFocusEmulationEnabled", {"enabled": True})
+
+    def attempt() -> str | None:
+        press(devtools, NEW_LOCAL_KEY)
+        settle = time.monotonic() + 1.5
+        while time.monotonic() < settle:
+            project_id = draft_project_id(devtools)
+            if project_id is not None:
+                return project_id
+            time.sleep(POLL)
+        press(devtools, ESCAPE_KEY)
+        return None
+
+    return until(deadline, "a new-thread draft (Ctrl+Shift+N, chat.newLocal)", attempt)
+
+
+def scope(profile_dir: str, origin: str, workdir: str) -> str:
+    deadline = time.monotonic() + WAIT
+    page = until(
+        deadline,
+        f"a paired T3 Code page on {origin} in {profile_dir}'s DevTools (Chrome needs --remote-debugging-port)",
+        lambda: app_page(debug_targets(profile_dir) or [], origin),
+    )
+    try:
+        devtools = DevTools(page["webSocketDebuggerUrl"])
+    except OSError as exc:
+        raise ScopeError(f"cannot open {origin}'s page over DevTools ({exc})") from exc
+    left_app = True
+    try:
+        navigate(devtools, origin + DESCRIPTOR_PATH, deadline)
+        environment_id = fetch_json(devtools, DESCRIPTOR_PATH)["environmentId"]
+        project = project_at(fetch_json(devtools, PROJECTS_PATH)["projects"], workdir)
+        if project is None:
+            raise ScopeError(f"{workdir} is not a project on {origin} (bin/t3-ensure adds the t3 rows' workdirs)")
+        root = project["workspaceRoot"]
+        stored = devtools.evaluate(
+            f"[{json.dumps(UI_STATE_KEY)}, {json.dumps(CLIENT_SETTINGS_KEY)}].map(k => localStorage.getItem(k))"
+        )
+        ui_state = scoped_ui_state(parsed_document(stored[0]), root, scope_key(environment_id, root))
+        settings = separately_grouped(parsed_document(stored[1]))
+        devtools.evaluate(
+            f"localStorage.setItem({json.dumps(UI_STATE_KEY)}, {json.dumps(json.dumps(ui_state))});"
+            f" localStorage.setItem({json.dumps(CLIENT_SETTINGS_KEY)}, {json.dumps(json.dumps(settings))})"
+        )
+        navigate(devtools, origin + NO_PROJECT_PATH, deadline)
+        project_id = open_draft(devtools, deadline)
+        left_app = False
+        if project_id != project["id"]:
+            raise ScopeError(f"Ctrl+Shift+N opened a draft in project {project_id}, not {project['id']} ({root})")
+        return project.get("title") or root
+    except (OSError, KeyError, TypeError, ValueError) as exc:
+        raise ScopeError(f"{origin}: {exc}") from exc
+    finally:
+        if left_app:
+            # Back to the app, wherever this stopped, so the window stays usable.
+            try:
+                devtools.call("Page.navigate", {"url": origin + "/"})
+            except OSError:
+                pass
+        devtools.close()
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 3:
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    profile_dir, origin, workdir = argv
+    try:
+        title = scope(profile_dir, origin.rstrip("/"), workdir)
+    except ScopeError as exc:
+        print(f"t3-window-scope: {exc}", file=sys.stderr)
+        return 1
+    print(f"t3-window-scope: {origin} lists only {title} and starts its new threads there")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

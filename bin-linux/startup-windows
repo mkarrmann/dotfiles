@@ -68,8 +68,8 @@ done
 # A t3 row gives the workspace a Chrome --app window on the desktop's one T3
 # Code server (t3@T3_SERVER: bin/t3-ensure, systemd/t3@.service), which has
 # every t3 row's term workdir as a project. The window is claimed by the mark
-# sw:<ws>:t3 (see reconcile_t3); its sidebar's project scope, picked once per
-# window, keeps it to that workspace's project.
+# sw:<ws>:t3 (see reconcile_t3), and scoped to that workspace's project when
+# it is opened: new threads default to it, and the sidebar shows only it.
 #
 # Terminal commands are wrapped in a restart loop so quitting the editor
 # leaves the window in place rather than closing it. They run nvim directly:
@@ -134,16 +134,18 @@ T3_PORT=3780
 # T3_CHROME_PROFILES_DIR/<slot>, as on the Mac. A fresh profile launched
 # without --no-first-run and --no-default-browser-check shows only a terms
 # dialog and never loads the page. Each profile also keeps the window's own
-# sidebar scope: T3 Code stores it in the page's localStorage
-# (t3code:ui-state:v1). Pairing tokens come from T3_BIN run against the
-# server's state in T3_HOMES_DIR/T3_SERVER (bin/t3-workspace-serve's
-# T3CODE_HOME). T3_SERVER_WAIT bounds, in seconds, how long a run waits for the
-# server to answer before it opens a window on it.
+# project scope: T3 Code stores it in the page's localStorage, which
+# T3_SCOPE_CMD (bin-linux/t3-window-scope) writes when the window opens.
+# Pairing tokens come from T3_BIN run against the server's state in
+# T3_HOMES_DIR/T3_SERVER (bin/t3-workspace-serve's T3CODE_HOME).
+# T3_SERVER_WAIT bounds, in seconds, how long a run waits for the server to
+# answer before it opens a window on it.
 T3_CHROME_PROFILES_DIR="$HOME/.t3-workspace-chrome"
 T3_CHROME_CMD=(google-chrome --no-first-run --no-default-browser-check)
 T3_BIN="$HOME/.local/bin/t3"
 T3_HOMES_DIR="$HOME/.t3-workspaces"
 T3_SERVER_WAIT=30
+T3_SCOPE_CMD=("$SCRIPT_DIR/t3-window-scope")
 OMNIGENT_DESKTOP_ENTRY="omnigent-desktop-electron.desktop"
 # Server > New Window is CmdOrCtrl+Shift+N from desktop 0.13.0 (upstream
 # 55717242, 2026-08-31). 0.10.0's menu item had no accelerator at all, so on
@@ -689,10 +691,15 @@ t3_close_window() {
 # Same contract as reconcile_marked -- the mark's holder, else an unclaimed
 # window, else a new one -- except that every candidate must be a window of
 # the slot's profile, and a window stuck on an error page is replaced.
+#
+# Only a window this run opens is scoped to WORKDIR (T3_SCOPE_CMD). A held or
+# adopted one keeps whatever scope it has: rescoping reloads the page, and a
+# window from before the debug port cannot be reached anyway.
 reconcile_t3() {
-  local ws="$1" slot="$2" port="$3"
+  local ws="$1" slot="$2" workdir="$3" port="$4"
   local label="t3:$ws" mark="sw:${ws}:t3" profile="$T3_CHROME_PROFILES_DIR/$slot"
   local url="http://${slot}.t3.localhost:${port}/" ids id held=false title token open_url before deadline new
+  local opened=false
 
   if ! systemctl --user is-enabled --quiet "t3@${T3_SERVER}.service" 2>/dev/null; then
     echo "[$label] t3@${T3_SERVER} is not enabled; no T3 Code window (bin/t3-ensure enables it)"
@@ -739,10 +746,19 @@ reconcile_t3() {
     return 0
   fi
 
+  # --remote-debugging-port=0 is how T3_SCOPE_CMD reaches the new window's
+  # page: Chrome picks a free loopback port and writes it to
+  # $profile/DevToolsActivePort (it refuses the flag only in its default
+  # profile). Same trust as the Omnigent app's debug port
+  # (omnigent_config/omnigent-desktop-electron.desktop): web pages cannot reach
+  # it, any local process can, and any local process can already mint a
+  # pairing token for this server with T3_BIN.
   if [[ -z "$id" ]]; then
     echo "[$label] opening $url on workspace $ws..."
     if [[ "$DRY_RUN" == true ]]; then
-      launch app.slice "${T3_CHROME_CMD[@]}" "--user-data-dir=$profile" "--app=${url}pair#token=TOKEN"
+      launch app.slice "${T3_CHROME_CMD[@]}" "--user-data-dir=$profile" --remote-debugging-port=0 \
+        "--app=${url}pair#token=TOKEN"
+      echo "  DRY-RUN scope it to $workdir: $(printf '%q ' "${T3_SCOPE_CMD[@]}" "$profile" "${url%/}" "$workdir")"
       return 0
     fi
     t3_wait_for_server "$port" || {
@@ -757,8 +773,8 @@ reconcile_t3() {
     fi
     mkdir -p "$profile" || { warn "[$label] cannot create the Chrome profile $profile"; return 1; }
     before=$(chrome_profile_window_ids "$SNAPSHOT" "$profile")
-    launch app.slice "${T3_CHROME_CMD[@]}" "--user-data-dir=$profile" "--app=$open_url" \
-      || { warn "[$label] launch failed"; return 1; }
+    launch app.slice "${T3_CHROME_CMD[@]}" "--user-data-dir=$profile" --remote-debugging-port=0 \
+      "--app=$open_url" || { warn "[$label] launch failed"; return 1; }
     deadline=$(( $(date +%s) + 25 ))
     while [[ -z "$id" && $(date +%s) -lt "$deadline" ]]; do
       sleep 0.5
@@ -768,11 +784,17 @@ reconcile_t3() {
       done
     done
     [[ -n "$id" ]] || { warn "[$label] new window never appeared"; return 1; }
+    opened=true
   fi
 
   place "$id" "$ws" "$label"
   [[ "$DRY_RUN" == true ]] || mark_window "$id" "$mark" || warn "[$label] could not mark $id"
   refresh
+  if [[ "$opened" == true ]]; then
+    echo "[$label] scoping window $id to $workdir..."
+    "${T3_SCOPE_CMD[@]}" "$profile" "${url%/}" "$workdir" \
+      || warn "[$label] could not scope window $id to $workdir; its sidebar and new threads may not keep to that project"
+  fi
 }
 
 # ── Main ─────────────────────────────────────────────────────────────
@@ -795,8 +817,8 @@ reconcile_entry() {
       reconcile_marked "$ws" omnigent "$OMNIGENT_MATCH_JQ" "$OMNIGENT_INVALID_TITLE_RE" || true
       ;;
     t3)
-      read -r slot port <<< "$(awk -F'\t' -v ws="$ws" '$1 == ws { print $2, $4; exit }' <<< "$T3_ROWS")"
-      reconcile_t3 "$ws" "$slot" "$port" || true
+      IFS=$'\t' read -r slot workdir port <<< "$(awk -F'\t' -v ws="$ws" '$1 == ws { print $2 "\t" $3 "\t" $4; exit }' <<< "$T3_ROWS")"
+      reconcile_t3 "$ws" "$slot" "$workdir" "$port" || true
       ;;
   esac
 }

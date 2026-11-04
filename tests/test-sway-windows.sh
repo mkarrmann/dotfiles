@@ -26,6 +26,11 @@
 #     profile on the browser's command line: a dialog of the same browser, a
 #     profile whose name merely starts the same, or a window of an exited
 #     process must never pass for one, and no Chrome slot may take one.
+#   * bin-linux/t3-window-scope rewrites two of T3 Code's localStorage
+#     documents: it must keep every key it does not own, put the window's
+#     project first, scope to exactly the key T3 Code derives, and never take a
+#     page of another origin (a port that merely starts the same) or one still
+#     pairing.
 set -uo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -483,8 +488,9 @@ SNAPSHOT='[]'
 WORKSPACES=("2|term|dotfiles|~/dotfiles|true" "2|chrome" "2|omnigent" "2|t3" "3|term|orchest|~/dev/orchest|true" "3|t3")
 T3_PORT=3780
 T3_ROWS=$(t3_rows)
-check "a t3 row reconciles its workspace's slot on the server's port" "t3 2 dotfiles 3780" "$(reconcile_entry "2|t3")"
-check "each row its own slot" "t3 3 orchest 3780" "$(reconcile_entry "3|t3")"
+check "a t3 row reconciles its workspace's slot and project on the server's port" \
+  "t3 2 dotfiles $HOME/dotfiles 3780" "$(reconcile_entry "2|t3")"
+check "each row its own slot and project" "t3 3 orchest $HOME/dev/orchest 3780" "$(reconcile_entry "3|t3")"
 check "the rest of its workspace still reconciles" $'term 2 dotfiles\nmarked 2 chrome' \
   "$(reconcile_entry "2|term|dotfiles|~/dotfiles|true"; reconcile_entry "2|chrome")"
 DASHBOARD_WS=9; DASHBOARD_PANES=("obsidian|x")
@@ -563,6 +569,86 @@ if command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   kill "$t3_server" "$other_server" 2>/dev/null; wait "$t3_server" "$other_server" 2>/dev/null
 else
   echo "  skip: curl or python3 not installed"
+fi
+
+echo "== the state t3-window-scope writes =="
+# The pure parts of the helper, imported from the shipped file; the CDP steps
+# need a real Chrome and a real server (see docs/t3code-omnigent.md).
+if command -v python3 >/dev/null 2>&1; then
+  mkdir -p "$TMP/devtools"
+  echo '[{"type": "page", "url": "http://a.t3.localhost:3780/", "webSocketDebuggerUrl": "ws://x"}]' > "$TMP/devtools/json"
+  devtools_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+  python3 -m http.server --bind 127.0.0.1 --directory "$TMP/devtools" "$devtools_port" >/dev/null 2>&1 &
+  devtools_server=$!
+  for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:$devtools_port/json" 2>/dev/null && break; sleep 0.1; done
+  while IFS=$'\t' read -r desc expected actual; do
+    check "$desc" "$expected" "$actual"
+  done < <(python3 - "$ROOT/bin-linux/t3-window-scope" "$TMP" "$devtools_port" <<'PY'
+import importlib.machinery, importlib.util, json, os, socket, sys
+loader = importlib.machinery.SourceFileLoader("t3_window_scope", sys.argv[1])
+scope = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(scope)
+tmp, live_port = sys.argv[2], sys.argv[3]
+
+def case(desc, expected, actual):
+    print(f"{desc}\t{json.dumps(expected)}\t{json.dumps(actual)}")
+
+case("paths compare as T3 Code compares them: trimmed, no trailing slash",
+     ["/home/me/dotfiles", "/", "/home/me"],
+     [scope.normalized_path(p) for p in ("/home/me/dotfiles/", "/", " /home/me// ")])
+key = scope.scope_key("env-1", "/home/me/dotfiles/")
+case("the scope key is the separate grouping's <environmentId>:<path>", "env-1:/home/me/dotfiles", key)
+case("a window with no stored state gets the project first and the scope",
+     {"projectOrder": ["legacy-project-cwd:/home/me/dotfiles"],
+      "sidebarProjectScopeKeys": [key], "sidebarProjectScopeKey": key},
+     scope.scoped_ui_state({}, "/home/me/dotfiles", key))
+stored = {"projectOrder": ["env-1:/home/me/x", "legacy-project-cwd:/home/me/dotfiles"],
+          "sidebarProjectScopeKeys": ["env-1:/home/me/x", "env-1:/home/me/y"], "sidebarProjectScopeKey": None,
+          "threadLastVisitedAtById": {"t": "2026-11-03T00:00:00Z"}, "pullRequestMergeMethod": "squash"}
+merged = scope.scoped_ui_state(stored, "/home/me/dotfiles", key)
+case("an existing order keeps its other projects, after this one and without a duplicate",
+     ["legacy-project-cwd:/home/me/dotfiles", "env-1:/home/me/x"], merged["projectOrder"])
+case("a previous scope is replaced, not added to", [[key], key],
+     [merged["sidebarProjectScopeKeys"], merged["sidebarProjectScopeKey"]])
+case("and every key the helper does not own is kept",
+     [{"t": "2026-11-03T00:00:00Z"}, "squash"], [merged["threadLastVisitedAtById"], merged["pullRequestMergeMethod"]])
+case("client settings switch to separate grouping and keep the rest",
+     {"chatWidth": "wide", "sidebarProjectGroupingMode": "separate"},
+     scope.separately_grouped({"chatWidth": "wide", "sidebarProjectGroupingMode": "repository"}))
+case("a missing or unreadable document reads as empty, as T3 Code reads it",
+     [{}, {}, {}, {"a": 1}],
+     [scope.parsed_document(raw) for raw in (None, "{not json", "[1]", '{"a": 1}')])
+projects = [
+    {"id": "old", "workspaceRoot": "/home/me/dotfiles", "archivedAt": "2026-01-01", "deletedAt": None},
+    {"id": "other", "workspaceRoot": "/home/me/dotfiles-2", "archivedAt": None, "deletedAt": None},
+    {"id": "live", "workspaceRoot": "/home/me/dotfiles/", "archivedAt": None, "deletedAt": None},
+]
+case("the project is the live one at the workdir, not an archived one or a longer path",
+     ["live", None], [(scope.project_at(projects, "/home/me/dotfiles") or {}).get("id"), scope.project_at(projects, "/home/me/nope")])
+origin = "http://dotfiles.t3.localhost:3780"
+page = lambda url, kind="page": {"type": kind, "url": url, "webSocketDebuggerUrl": "ws://x/" + url}
+case("the window's page is the one on its own origin past pairing",
+     origin + "/draft/1",
+     (scope.app_page([page(origin + "/pair#token=x"), page("http://dotfiles.t3.localhost:37800/"),
+                      page("http://orchest.t3.localhost:3780/"), page(origin + "/sw.js", "service_worker"),
+                      page(origin + "/draft/1")], origin) or {}).get("url"))
+case("a page still pairing is not taken", None, scope.app_page([page(origin + "/pair")], origin))
+stale = socket.socket(); stale.bind(("127.0.0.1", 0)); stale_port = stale.getsockname()[1]; stale.close()
+os.makedirs(f"{tmp}/stale-profile", exist_ok=True)
+open(f"{tmp}/stale-profile/DevToolsActivePort", "w").write(f"{stale_port}\n/devtools/browser/x\n")
+os.makedirs(f"{tmp}/live-profile", exist_ok=True)
+open(f"{tmp}/live-profile/DevToolsActivePort", "w").write(f"{live_port}\n/devtools/browser/x\n")
+case("a DevToolsActivePort left by an exited browser is not used", None, scope.debug_targets(f"{tmp}/stale-profile"))
+case("a profile without one has no targets", None, scope.debug_targets(f"{tmp}/no-profile"))
+case("a live one lists the browser's targets", ["http://a.t3.localhost:3780/"],
+     [t["url"] for t in scope.debug_targets(f"{tmp}/live-profile") or []])
+PY
+)
+  kill "$devtools_server" 2>/dev/null; wait "$devtools_server" 2>/dev/null
+  rc=$(python3 "$ROOT/bin-linux/t3-window-scope" one two >/dev/null 2>&1; echo $?)
+  check "the helper rejects a call without its three arguments" "2" "$rc"
+else
+  echo "  skip: python3 not installed"
 fi
 
 echo
