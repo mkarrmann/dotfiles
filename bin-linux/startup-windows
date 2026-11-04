@@ -68,8 +68,8 @@ done
 # A t3 row gives the workspace a Chrome --app window on the desktop's one T3
 # Code server (t3@T3_SERVER: bin/t3-ensure, systemd/t3@.service), which has
 # every t3 row's term workdir as a project. The window is claimed by the mark
-# sw:<ws>:t3 (see reconcile_t3), and scoped to that workspace's project when
-# it is opened: new threads default to it, and the sidebar shows only it.
+# sw:<ws>:t3 (see reconcile_t3). When it opens, its new threads are pointed at
+# that workspace's project; its sidebar lists every project.
 #
 # Terminal commands are wrapped in a restart loop so quitting the editor
 # leaves the window in place rather than closing it. They run nvim directly:
@@ -134,8 +134,9 @@ T3_PORT=3780
 # T3_CHROME_PROFILES_DIR/<slot>, as on the Mac. A fresh profile launched
 # without --no-first-run and --no-default-browser-check shows only a terms
 # dialog and never loads the page. Each profile also keeps the window's own
-# project scope: T3 Code stores it in the page's localStorage, which
-# T3_SCOPE_CMD (bin-linux/t3-window-scope) writes when the window opens.
+# default project for new threads: T3 Code stores it in the page's
+# localStorage, which T3_SCOPE_CMD (bin-linux/t3-window-scope) writes when the
+# window opens.
 # Pairing tokens come from T3_BIN run against the server's state in
 # T3_HOMES_DIR/T3_SERVER (bin/t3-workspace-serve's T3CODE_HOME).
 # T3_SERVER_WAIT bounds, in seconds, how long a run waits for the server to

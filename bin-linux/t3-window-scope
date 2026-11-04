@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scope a T3 Code window to one project: its new threads and its sidebar.
+"""Start a T3 Code window's new threads in one project, with all projects in its sidebar.
 
 Usage: t3-window-scope PROFILE_DIR ORIGIN WORKDIR
 
@@ -15,13 +15,10 @@ per profile and per origin, so per window:
                              page shows no thread or draft of a project
                              (resolveDefaultProjectRef, hooks/useHandleNewThread.ts);
                              WORKDIR's legacy-project-cwd key goes first.
-                             sidebarProjectScopeKeys: the only project groups the
-                             sidebar lists (sidebarProjectGrouping.ts).
-  t3code:client-settings:v1  sidebarProjectGroupingMode "separate", under which a
-                             group's key is <environmentId>:<path>
-                             (client-runtime/src/state/projectGrouping.ts), so the
-                             scope key can be written here; the default groups
-                             by git remote.
+                             sidebarProjectScopeKeys: the project groups the
+                             sidebar lists (sidebarProjectGrouping.ts), emptied
+                             so it lists all of them. Every window shows every
+                             thread; only where its new threads go is per window.
 
 That is not enough on its own: the home page, /, opens a draft in the most
 recently active project whatever projectOrder says (routes/_chat.index.tsx),
@@ -59,13 +56,11 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 UI_STATE_KEY = "t3code:ui-state:v1"
-CLIENT_SETTINGS_KEY = "t3code:client-settings:v1"
 COMPOSER_DRAFTS_KEY = "t3code:composer-drafts:v1"
 DESCRIPTOR_PATH = "/.well-known/t3/environment"
 PROJECTS_PATH = "/api/projects"
 NO_PROJECT_PATH = "/new"
 LEGACY_PROJECT_CWD_PREFIX = "legacy-project-cwd:"
-SEPARATE_GROUPING = "separate"
 # Ctrl+Shift+N for chat.newLocal (packages/shared/src/keybindings.ts), and the
 # Escape that closes the project picker it opens when no project is loaded yet.
 NEW_LOCAL_KEY = {"key": "N", "code": "KeyN", "modifiers": 2 | 8, "windowsVirtualKeyCode": 78}
@@ -104,24 +99,16 @@ def parsed_document(raw: str | None) -> dict[str, Any]:
     return doc if isinstance(doc, dict) else {}
 
 
-def scoped_ui_state(doc: dict[str, Any], workspace_root: str, scope_key: str) -> dict[str, Any]:
+def scoped_ui_state(doc: dict[str, Any], workspace_root: str) -> dict[str, Any]:
     first = LEGACY_PROJECT_CWD_PREFIX + normalized_path(workspace_root)
     order = doc.get("projectOrder")
     rest = [entry for entry in order if entry != first] if isinstance(order, list) else []
     return {
         **doc,
         "projectOrder": [first, *rest],
-        "sidebarProjectScopeKeys": [scope_key],
-        "sidebarProjectScopeKey": scope_key,
+        "sidebarProjectScopeKeys": [],
+        "sidebarProjectScopeKey": None,
     }
-
-
-def separately_grouped(doc: dict[str, Any]) -> dict[str, Any]:
-    return {**doc, "sidebarProjectGroupingMode": SEPARATE_GROUPING}
-
-
-def scope_key(environment_id: str, workspace_root: str) -> str:
-    return f"{environment_id}:{normalized_path(workspace_root)}"
 
 
 def project_at(projects: list[dict[str, Any]], workdir: str) -> dict[str, Any] | None:
@@ -342,20 +329,13 @@ def scope(profile_dir: str, origin: str, workdir: str) -> str:
     left_app = True
     try:
         navigate(devtools, origin + DESCRIPTOR_PATH, deadline)
-        environment_id = fetch_json(devtools, DESCRIPTOR_PATH)["environmentId"]
         project = project_at(fetch_json(devtools, PROJECTS_PATH)["projects"], workdir)
         if project is None:
             raise ScopeError(f"{workdir} is not a project on {origin} (bin/t3-ensure adds the t3 rows' workdirs)")
         root = project["workspaceRoot"]
-        stored = devtools.evaluate(
-            f"[{json.dumps(UI_STATE_KEY)}, {json.dumps(CLIENT_SETTINGS_KEY)}].map(k => localStorage.getItem(k))"
-        )
-        ui_state = scoped_ui_state(parsed_document(stored[0]), root, scope_key(environment_id, root))
-        settings = separately_grouped(parsed_document(stored[1]))
-        devtools.evaluate(
-            f"localStorage.setItem({json.dumps(UI_STATE_KEY)}, {json.dumps(json.dumps(ui_state))});"
-            f" localStorage.setItem({json.dumps(CLIENT_SETTINGS_KEY)}, {json.dumps(json.dumps(settings))})"
-        )
+        stored = devtools.evaluate(f"localStorage.getItem({json.dumps(UI_STATE_KEY)})")
+        ui_state = scoped_ui_state(parsed_document(stored), root)
+        devtools.evaluate(f"localStorage.setItem({json.dumps(UI_STATE_KEY)}, {json.dumps(json.dumps(ui_state))})")
         navigate(devtools, origin + NO_PROJECT_PATH, deadline)
         project_id = open_draft(devtools, deadline)
         left_app = False
@@ -384,7 +364,7 @@ def main(argv: list[str]) -> int:
     except ScopeError as exc:
         print(f"t3-window-scope: {exc}", file=sys.stderr)
         return 1
-    print(f"t3-window-scope: {origin} lists only {title} and starts its new threads there")
+    print(f"t3-window-scope: {origin} starts its new threads in {title} and lists every project")
     return 0
 
 

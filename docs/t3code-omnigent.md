@@ -45,8 +45,8 @@ tunnel, close the window, and rerun `startup-windows`.
 
 ## Linux desktop
 
-The desktop runs one server, with no tunnel, and a window per workspace scoped
-to that workspace's project:
+The desktop runs one server, with no tunnel, and a window per workspace whose
+new threads start in that workspace's project:
 
 - One server, `t3@desktop` on `127.0.0.1:3780` (`T3_SERVER` and `T3_PORT` in
   `bin-linux/startup-windows`), whose projects are the workdirs of the table's
@@ -64,29 +64,27 @@ to that workspace's project:
   it is the last window of its workspace's stack. Before opening a window the
   script waits up to 30 s for the server, and it replaces a window left on
   Chrome's error page once the server answers.
-- Each window is scoped to its row's project as `startup-windows` opens it:
-  its new threads start there, and its sidebar lists only that project. T3 Code
-  (0.1.6) has no URL or setting for either; both are client state in the page's
-  localStorage, per profile and per origin, so per window.
+- Each window starts its new threads in its row's project, set as
+  `startup-windows` opens it; its sidebar lists every project, so every window
+  shows every thread. T3 Code (0.1.6) has no URL or setting for the default
+  project; it is client state in the page's localStorage, per profile and per
+  origin, so per window.
   `bin-linux/t3-window-scope` reaches the new window through Chrome's DevTools
   port (the launch adds `--remote-debugging-port=0`: loopback only, the same
-  trust as the Omnigent app's), writes `projectOrder` and the sidebar scope
-  (`t3code:ui-state:v1`, `apps/web/src/uiStateStore.ts`) and separate project
-  grouping (`t3code:client-settings:v1`; it makes a scope key
-  `<environmentId>:<path>`), and leaves the window on a draft in the project,
+  trust as the Omnigent app's), writes `projectOrder` with the project first
+  and clears any sidebar scope (`t3code:ui-state:v1`,
+  `apps/web/src/uiStateStore.ts`), and leaves the window on a draft in the project,
   which the app opens itself (Ctrl+Shift+N from `/new`). If that fails, the run
   warns and the window stays, but may not keep to the project. A window the
   script holds or adopts is left as it is; to scope one opened before this,
   close it and rerun (`$mod+Shift+r`).
-- What follows the scope: the composer the window opens on, Ctrl+Shift+N
-  (`chat.newLocal`), and a Shift-click on the sidebar's New thread button, all
-  of which start in the project of the thread or draft on screen. What does
-  not: the New thread button and Ctrl+N (`chat.new`) open a project picker
-  while the server has more than one project; `/` opens a draft in the most
-  recently active project (`routes/_chat.index.tsx`); and opening a thread
-  outside the scope (a link, the command palette) widens the sidebar back to
-  all projects (`Sidebar.tsx`), until the project is picked again in its
-  filter.
+- What starts in the window's project: the composer the window opens on,
+  Ctrl+Shift+N (`chat.newLocal`), and a Shift-click on the sidebar's New thread
+  button, all of which start in the project of the thread or draft on screen.
+  What does not: the New thread button and Ctrl+N (`chat.new`) open a project
+  picker while the server has more than one project; `/` opens a draft in the
+  most recently active project (`routes/_chat.index.tsx`); and after opening
+  another project's thread, those follow that thread's project.
 - Pairing is local: the script mints a 5-minute token with `t3 pair`
   (`T3CODE_HOME=~/.t3-workspaces/desktop`) and opens a new window on
   `/pair#token=<token>`. The profile stays signed in for about 30 days; a window

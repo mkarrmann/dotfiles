@@ -26,9 +26,9 @@
 #     profile on the browser's command line: a dialog of the same browser, a
 #     profile whose name merely starts the same, or a window of an exited
 #     process must never pass for one, and no Chrome slot may take one.
-#   * bin-linux/t3-window-scope rewrites two of T3 Code's localStorage
-#     documents: it must keep every key it does not own, put the window's
-#     project first, scope to exactly the key T3 Code derives, and never take a
+#   * bin-linux/t3-window-scope rewrites T3 Code's localStorage UI state: it
+#     must keep every key it does not own, put the window's project first,
+#     clear the sidebar scope so every project is listed, and never take a
 #     page of another origin (a port that merely starts the same) or one still
 #     pairing.
 set -uo pipefail
@@ -596,25 +596,20 @@ def case(desc, expected, actual):
 case("paths compare as T3 Code compares them: trimmed, no trailing slash",
      ["/home/me/dotfiles", "/", "/home/me"],
      [scope.normalized_path(p) for p in ("/home/me/dotfiles/", "/", " /home/me// ")])
-key = scope.scope_key("env-1", "/home/me/dotfiles/")
-case("the scope key is the separate grouping's <environmentId>:<path>", "env-1:/home/me/dotfiles", key)
-case("a window with no stored state gets the project first and the scope",
+case("a window with no stored state gets the project first and every project listed",
      {"projectOrder": ["legacy-project-cwd:/home/me/dotfiles"],
-      "sidebarProjectScopeKeys": [key], "sidebarProjectScopeKey": key},
-     scope.scoped_ui_state({}, "/home/me/dotfiles", key))
+      "sidebarProjectScopeKeys": [], "sidebarProjectScopeKey": None},
+     scope.scoped_ui_state({}, "/home/me/dotfiles"))
 stored = {"projectOrder": ["env-1:/home/me/x", "legacy-project-cwd:/home/me/dotfiles"],
           "sidebarProjectScopeKeys": ["env-1:/home/me/x", "env-1:/home/me/y"], "sidebarProjectScopeKey": None,
           "threadLastVisitedAtById": {"t": "2026-11-03T00:00:00Z"}, "pullRequestMergeMethod": "squash"}
-merged = scope.scoped_ui_state(stored, "/home/me/dotfiles", key)
+merged = scope.scoped_ui_state(stored, "/home/me/dotfiles")
 case("an existing order keeps its other projects, after this one and without a duplicate",
      ["legacy-project-cwd:/home/me/dotfiles", "env-1:/home/me/x"], merged["projectOrder"])
-case("a previous scope is replaced, not added to", [[key], key],
+case("a sidebar scope set earlier is cleared, so the sidebar lists every project", [[], None],
      [merged["sidebarProjectScopeKeys"], merged["sidebarProjectScopeKey"]])
 case("and every key the helper does not own is kept",
      [{"t": "2026-11-03T00:00:00Z"}, "squash"], [merged["threadLastVisitedAtById"], merged["pullRequestMergeMethod"]])
-case("client settings switch to separate grouping and keep the rest",
-     {"chatWidth": "wide", "sidebarProjectGroupingMode": "separate"},
-     scope.separately_grouped({"chatWidth": "wide", "sidebarProjectGroupingMode": "repository"}))
 case("a missing or unreadable document reads as empty, as T3 Code reads it",
      [{}, {}, {}, {"a": 1}],
      [scope.parsed_document(raw) for raw in (None, "{not json", "[1]", '{"a": 1}')])

@@ -175,8 +175,8 @@ Orchest workspace window on the left at 12% of the output (300px floor), and
 every other window in one `stacking` container (sway's vertical accordion)
 ordered terminal, Chrome, Omnigent, T3 Code, then anything moved there by hand.
 The T3 Code window is a Chrome app window on the desktop's one T3 Code server,
-opened only while `t3@desktop` is enabled and scoped as it opens to the
-workspace's project (new threads start there; the sidebar lists only it); see
+opened only while `t3@desktop` is enabled; its new threads start in the
+workspace's project, and its sidebar lists every project; see
 `docs/t3code-omnigent.md`. Orchest
 is launched and its windows claimed by `bin-linux/orchest-open-workspaces`, the
 counterpart of the Mac script of the same name. The stack layout is one
