@@ -39,9 +39,9 @@
 #   first retile, and why an instance alone on its workspace survived. Proven by
 #   a WAYLAND_DEBUG trace plus an A/B run: an unpacked copy with that line
 #   changed to `|| 1` survived forced retiles while the unpatched copy died.
-#   Not fixed upstream as of omnigent-ai/omnigent main 3d7dd102 (2026-09-08),
-#   and the 0.14.0 Linux build (the current pin) still ships the `?? 1` line
-#   (checked in its app.asar on 2026-09-26).
+#   Not fixed upstream as of omnigent-ai/omnigent main ad50b94f (2026-10-31),
+#   and the 0.18.1 Linux build (the current pin) still ships the `?? 1` line
+#   (checked in its app.asar on 2026-11-03).
 #   --ozone-platform=x11 sidesteps both triggers by running under XWayland
 #   (verified: the installed binary survived six forced resize/move commands
 #   with it). Cost: XWayland upscaling at scale 1.2 is blurrier than native,
