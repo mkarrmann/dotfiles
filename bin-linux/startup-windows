@@ -59,10 +59,15 @@ done
 #   term:     ws|term|slot|workdir|command
 #   chrome:   ws|chrome
 #   omnigent: ws|omnigent
+#   t3:       ws|t3
 #
 # A term's app_id is sway-ws.term.<slot> and is set at launch, so it needs no
 # title regex -- the identity IS the match. chrome/omnigent slots are claimed
 # by the mark sw:<ws>:<type>.
+#
+# A t3 row gives the workspace a T3 Code server (bin/t3-ensure,
+# systemd/t3@.service) named after its term's slot and serving its workdir on
+# 127.0.0.1:T3_BASE_PORT+ws. This script opens no window for it yet.
 #
 # Terminal commands are wrapped in a restart loop so quitting the editor
 # leaves the window in place rather than closing it. They run nvim directly:
@@ -75,18 +80,23 @@ WORKSPACES=(
   "2|term|dotfiles|~/dotfiles|while true; do nvim --cmd 'set title titlestring=dotfiles\\ —\\ %t'; sleep 0.5; done"
   "2|chrome"
   "2|omnigent"
+  "2|t3"
   "3|term|orchest|~/dev/orchest|while true; do nvim --cmd 'set title titlestring=orchest\\ —\\ %t'; sleep 0.5; done"
   "3|chrome"
   "3|omnigent"
+  "3|t3"
   "4|term|omnigent-repo|~/repos/omnigent|while true; do nvim --cmd 'set title titlestring=omnigent-repo\\ —\\ %t'; sleep 0.5; done"
   "4|chrome"
   "4|omnigent"
+  "4|t3"
   "5|term|presto|~/work/presto|while true; do nvim --cmd 'set title titlestring=presto\\ —\\ %t'; sleep 0.5; done"
   "5|chrome"
   "5|omnigent"
+  "5|t3"
   "6|term|gatech|~/gatech|while true; do nvim --cmd 'set title titlestring=gatech\\ —\\ %t'; sleep 0.5; done"
   "6|chrome"
   "6|omnigent"
+  "6|t3"
 )
 
 SWEEP_WORKSPACE="Z"
@@ -111,6 +121,10 @@ DASHBOARD_PANES=(
 )
 
 CHROME_CMD=(google-chrome --profile-directory=Default --new-window)
+# The t3 rows' servers listen on T3_BASE_PORT+ws: the desktop counterpart of
+# omnigent_config/topology.env's value on the work hubs. A layout override can
+# reassign it.
+T3_BASE_PORT=3780
 OMNIGENT_DESKTOP_ENTRY="omnigent-desktop-electron.desktop"
 # Server > New Window is CmdOrCtrl+Shift+N from desktop 0.13.0 (upstream
 # 55717242, 2026-08-31). 0.10.0's menu item had no accelerator at all, so on
@@ -147,9 +161,36 @@ if [[ -r "$LAYOUT_OVERRIDE" ]]; then
   source "$LAYOUT_OVERRIDE"
 fi
 # ─────────────────────────────────────────────────────────────────────
+# One "ws<TAB>slot<TAB>workdir<TAB>port" line per t3 row, its slot and workdir
+# taken from the term row on the same workspace.
+t3_servers() {
+  local entry term ws type slot workdir server
+  for entry in "${WORKSPACES[@]}"; do
+    IFS='|' read -r ws type _ <<< "$entry"
+    [[ "$type" == t3 ]] || continue
+    [[ "$ws" =~ ^[0-9]+$ ]] || {
+      echo "ERROR: t3 row '$entry': the port is T3_BASE_PORT+workspace, so the workspace must be a number" >&2
+      return 1
+    }
+    server=""
+    for term in "${WORKSPACES[@]}"; do
+      [[ "$term" == "$ws|term|"* ]] || continue
+      [[ -z "$server" ]] || { echo "ERROR: t3 row '$entry': workspace $ws has more than one term row" >&2; return 1; }
+      IFS='|' read -r _ _ slot workdir _ <<< "$term"
+      server=$(printf '%s\t%s\t%s\t%s' "$ws" "$slot" "${workdir/#\~/$HOME}" "$(( T3_BASE_PORT + 10#$ws ))")
+    done
+    [[ -n "$server" ]] || {
+      echo "ERROR: t3 row '$entry': workspace $ws has no term row to take the server's slot and workdir from" >&2
+      return 1
+    }
+    printf '%s\n' "$server"
+  done
+}
+
 # The table above is the only place the workspace-to-checkout mapping is
 # written down, so anything that needs it reads it from here rather than
-# keeping a copy. sync.sh derives Orchest's Omnigent attribution this way.
+# keeping a copy. sync.sh derives Orchest's Omnigent attribution this way, and
+# bin/t3-ensure and bin/t3-workspace-serve the desktop's T3 Code servers.
 # Emitted before the lock and preflight: this reports the DECLARED layout, so
 # it must work with no compositor running.
 if [[ "$PRINT_LAYOUT" == true ]]; then
@@ -158,6 +199,8 @@ if [[ "$PRINT_LAYOUT" == true ]]; then
     IFS='|' read -r app_id _ pct <<< "$pane"
     printf '%s\t%s\n' "$app_id" "$pct"
   done | jq -Rn '[inputs | split("\t") | { name: .[0], percent: (if .[1] == "" then null else (.[1] | tonumber) end) }]')
+  t3_tsv=$(t3_servers) || exit 1
+  t3_json=$(printf '%s' "$t3_tsv" | jq -Rn '[inputs | split("\t") | { workspace: .[0], slot: .[1], workdir: .[2], port: (.[3] | tonumber) }]')
   for entry in "${WORKSPACES[@]}"; do
     IFS='|' read -r ws type rest <<< "$entry"
     [[ "$type" == term ]] || continue
@@ -167,7 +210,8 @@ if [[ "$PRINT_LAYOUT" == true ]]; then
       --arg dashboardLayout "$DASHBOARD_LAYOUT" --argjson dashboardPanes "$panes_json" \
       --arg terminalAppIdPrefix "$TERM_APP_ID_PREFIX" --arg stackLayout "$STACK_LAYOUT" \
       --argjson sidebarPercent "$SIDEBAR_PERCENT" --argjson sidebarMinWidth "$SIDEBAR_MIN_WIDTH" \
-      --argjson orchestEnabled "$ORCHEST_ENABLED" --arg orchestDir "${ORCHEST_DIR/#\~/$HOME}" '
+      --argjson orchestEnabled "$ORCHEST_ENABLED" --arg orchestDir "${ORCHEST_DIR/#\~/$HOME}" \
+      --argjson t3 "$t3_json" '
     {
       sweepWorkspace: $sweep,
       dashboardWorkspace: $dashboard,
@@ -179,7 +223,8 @@ if [[ "$PRINT_LAYOUT" == true ]]; then
       sidebarMinWidth: $sidebarMinWidth,
       orchestEnabled: $orchestEnabled,
       orchestDir: $orchestDir,
-      terminals: [inputs | split("\t") | { workspace: .[0], slot: .[1], workdir: .[2] }]
+      terminals: [inputs | split("\t") | { workspace: .[0], slot: .[1], workdir: .[2] }],
+      t3: $t3
     }'
   exit 0
 fi
@@ -559,6 +604,9 @@ reconcile_entry() {
       ;;
     omnigent)
       reconcile_marked "$ws" omnigent "$OMNIGENT_MATCH_JQ" "$OMNIGENT_INVALID_TITLE_RE" || true
+      ;;
+    t3)
+      # The server is bin/t3-ensure's; this script opens no window for it yet.
       ;;
   esac
 }

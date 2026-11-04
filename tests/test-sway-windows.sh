@@ -19,6 +19,9 @@
 #     and --ozone-platform=x11; losing either means the GUI dies with SIGTRAP
 #     (on a fresh profile, or on the first parent resize, respectively). It also
 #     carries --remote-debugging-port=0, which nvim-show-resolver depends on.
+#   * A t3 row declares a T3 Code server for bin/t3-ensure through
+#     --print-layout, and nothing else: until startup-windows opens windows for
+#     it, the reconcile pass must not launch, claim or keep anything for it.
 set -uo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -350,6 +353,50 @@ check "an empty minimum disables the gate" "yes" "$(gate "" 0.10.0)"
 check "no Debian package installed: let the keystroke try" "yes" "$(gate 0.13.0 "")"
 check "the shipped minimum is the accelerator's first release" "0.13.0" \
   "$(grep -m1 '^OMNIGENT_NEW_WINDOW_MIN_VERSION=' "$STARTUP" | cut -d= -f2)"
+
+echo "== t3 rows in --print-layout =="
+# A private HOME and config dir: the expected workdirs are spelled from it, and
+# no machine-local layout override is read.
+mkdir -p "$TMP/t3-home" "$TMP/t3-config"
+print_layout() { env -u SWAYSOCK HOME="$TMP/t3-home" XDG_CONFIG_HOME="$TMP/t3-config" "$@" "$STARTUP" --print-layout; }
+layout=$(print_layout) || fail "--print-layout exited non-zero"
+check "workspaces 2-6 each declare a server, named after their terminal slot" \
+  '["dotfiles","orchest","omnigent-repo","presto","gatech"]' "$(jq -c '[.t3[].slot]' <<< "$layout")"
+check "each listens on T3_BASE_PORT+workspace" "[3782,3783,3784,3785,3786]" "$(jq -c '[.t3[].port]' <<< "$layout")"
+check "a server serves its terminal's workdir, ~ expanded" \
+  "{\"workspace\":\"3\",\"slot\":\"orchest\",\"workdir\":\"$TMP/t3-home/dev/orchest\",\"port\":3783}" \
+  "$(jq -c '.t3[] | select(.slot == "orchest")' <<< "$layout")"
+printf '%s\n' 'WORKSPACES=("7|term|elsewhere|~/x|true" "7|t3")' 'T3_BASE_PORT=4000' > "$TMP/t3-port.sh"
+check "a layout override can move the base port" "4007" \
+  "$(print_layout SWAY_WINDOWS_LAYOUT="$TMP/t3-port.sh" 2>/dev/null | jq '.t3[0].port')"
+printf '%s\n' 'WORKSPACES=("7|term|elsewhere|~/x|true" "8|t3")' > "$TMP/t3-orphan.sh"
+out=$(print_layout SWAY_WINDOWS_LAYOUT="$TMP/t3-orphan.sh" 2>&1 >/dev/null); rc=$?
+check "a t3 row on a workspace with no terminal fails the whole layout" "1" "$rc"
+[[ "$out" == *"workspace 8 has no term row"* ]] && pass "and says why" || fail "unexpected output: $out"
+
+echo "== t3 rows are inert in the reconcile pass =="
+# The shipped dispatch and claim helpers, with the per-type reconcilers
+# replaced by recorders: a t3 row must reach none of them, and must leave the
+# set of claims, terminal identities and managed workspaces -- everything the
+# sweep keeps a window by -- exactly as it was.
+for fn in reconcile_entry current_claim_marks current_term_app_ids managed_workspaces; do
+  body=$(extract_fn "$STARTUP" "$fn")
+  [[ -n "$body" ]] || { echo "could not extract $fn from $STARTUP" >&2; exit 1; }
+  eval "$body"
+done
+reconcile_term() { echo "term $1 $2"; }
+reconcile_marked() { echo "marked $1 $2"; }
+warn() { echo "warn $*"; }
+refresh() { :; }
+check "a t3 row reconciles nothing" "" "$(reconcile_entry "2|t3")"
+check "the rest of its workspace still reconciles" $'term 2 dotfiles\nmarked 2 chrome' \
+  "$(reconcile_entry "2|term|dotfiles|~/dotfiles|true"; reconcile_entry "2|chrome")"
+DASHBOARD_WS=9; DASHBOARD_PANES=("obsidian|x")
+sweep_keeps() { current_claim_marks; current_term_app_ids; managed_workspaces; }
+WORKSPACES=("2|term|dotfiles|~/dotfiles|true" "2|chrome" "2|omnigent")
+without_t3=$(sweep_keeps)
+WORKSPACES+=("2|t3")
+check "a t3 row adds no claim, terminal or managed workspace" "$without_t3" "$(sweep_keeps)"
 
 echo
 if [[ "$failures" -gt 0 ]]; then

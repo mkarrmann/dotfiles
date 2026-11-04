@@ -1,25 +1,43 @@
-# Templated systemd --user unit for per-checkout T3 Code servers.
-# Instance name (%i) is the checkout directory under $HOME (e.g. t3@checkout3).
+# Templated systemd --user unit for per-workspace T3 Code servers.
+# Instance name (%i) names the workspace: its checkout directory under $HOME on
+# the work hubs (t3@checkout3), its terminal slot in bin-linux/startup-windows'
+# table on the Linux desktop (t3@dotfiles). bin/t3-workspace-serve resolves the
+# directory and port from it.
 #
-# Each instance is a T3 Code server whose only project is ~/%i, so a browser
-# window on it (bin-macos/startup-windows) opens scoped to that checkout. Its
-# providers drive Omnigent sessions through bin/omnigent-acp. bin/t3-ensure,
-# run by init.sh on the Omnigent hub candidates, `enable --now`s one instance
-# per ~/checkoutN and never restarts a running one; after `t3 update`, restart
-# instances to pick up the new version.
+# Each instance is a T3 Code server whose only project is that workspace's
+# directory, so a browser window on it (bin-macos/startup-windows) opens scoped
+# to it. Its providers drive Omnigent sessions through bin/omnigent-acp.
+# bin/t3-ensure, run by init.sh, `enable --now`s one instance per workspace and
+# never restarts a running one; after `t3 update`, restart instances to pick up
+# the new version.
+#
+# Provider processes are not in this unit's cgroup: T3 Code runs each in a
+# transient scope under app-t3code-agents-<hash>.slice
+# (apps/server/src/process/agentScope.ts), so they outlive a restart and the
+# next start stops the leftovers.
 #
 # Manual ops:
 #   systemctl --user restart t3@checkout3
 #   journalctl --user -u t3@checkout3 -e
 
 [Unit]
-Description=T3 Code server for ~/%i
+Description=T3 Code server for workspace %i
 After=network.target
 
 [Service]
 Type=simple
+# T3 Code puts the PATH that `zsh -ilc 'printenv PATH'` prints first at startup
+# (apps/server/src/os-jank.ts), but when that probe fails or takes over 5s the
+# server keeps the user manager's PATH, which has no ~/.local/bin on the
+# desktop (verified 2026-11-03: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin).
+# bin/omnigent-acp runs under `#!/usr/bin/env -S uv run` with uv in
+# ~/.local/bin, so every Omnigent provider would then exit 127.
+Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 ExecStart=%h/dotfiles/bin/t3-workspace-serve %i
 Restart=on-failure
+# Exit 2 is t3-workspace-serve's usage error: an instance whose checkout or t3
+# row no longer exists. Restarting cannot fix it, so stop instead of looping.
+RestartPreventExitStatus=2
 RestartSec=5
 
 [Install]

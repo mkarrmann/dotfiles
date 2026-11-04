@@ -1,26 +1,31 @@
 #!/usr/bin/env python3
-"""t3-ensure — run a T3 Code server per checkout as a UI over its Omnigent sessions.
+"""t3-ensure — run a T3 Code server per workspace as a UI over its Omnigent sessions.
 
     t3-ensure
 
-Idempotent; init.sh runs it on the Omnigent hub candidates. It:
+Idempotent; init.sh runs it on the Omnigent hub candidates and the Linux
+desktop. A workspace NAME is each ~/checkoutN on a candidate, and on the desktop
+each t3 row of bin-linux/startup-windows' table, named after its terminal slot
+and serving that slot's workdir (one whose workdir is missing is skipped with a
+warning). It:
   1. installs the `t3` CLI with T3 Code's installer when it is missing. Later
      upgrades belong to `t3 update`;
-  2. for each ~/checkoutN, registers bin/omnigent-acp as the "Omnigent · Claude"
-     and "Omnigent · Codex" providers in ~/.t3-workspaces/checkoutN/userdata/
+  2. for each workspace, registers bin/omnigent-acp as the "Omnigent · Claude"
+     and "Omnigent · Codex" providers in ~/.t3-workspaces/NAME/userdata/
      settings.json, keeping every other setting (a running server reloads it).
      It also turns off T3 Code's built-in Codex and Claude, which would run outside
      Omnigent, unless the settings already configure them;
   3. warms uv's cache for omnigent-acp, since the services have no proxy to
      fetch its dependencies with;
-  4. enables and starts t3@checkoutN (systemd/t3@.service, bin/t3-workspace-serve)
+  4. enables and starts t3@NAME (systemd/t3@.service, bin/t3-workspace-serve)
      when it is not enabled yet. A running server is never restarted;
-  5. adds ~/checkoutN as a project of its server unless it already is one. A
-     project the server bootstrapped itself would count as a fresh
-     install and open T3 Code's first-run wizard in every new window.
+  5. adds the workspace's directory as a project of its server unless it
+     already is one. A project the server bootstrapped itself would count as a
+     fresh install and open T3 Code's first-run wizard in every new window.
 
-Workspace windows pair on their own: bin-macos/nvs-tunnels has bin/t3-pairing-tokens
-mint tokens in its session, and startup-windows opens a new window on /pair with one.
+The Mac's workspace windows pair on their own: bin-macos/nvs-tunnels has
+bin/t3-pairing-tokens mint tokens in its session, and startup-windows opens a
+new window on /pair with one.
 
 Env: DOTFILES_DIR (default ~/dotfiles).
 """
@@ -36,6 +41,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 DOTFILES = Path(os.environ.get("DOTFILES_DIR", Path.home() / "dotfiles"))
 WORKSPACES_HOME = Path.home() / ".t3-workspaces"
@@ -48,6 +54,11 @@ INSTALLERS = (
 PROJECT_ADD_ATTEMPTS = 30
 PROVIDERS = {"omnigent-claude": ("Omnigent · Claude", "claude-native-ui"), "omnigent-codex": ("Omnigent · Codex", "codex-native-ui")}
 BUILTIN_PROVIDERS = ("codex", "claudeAgent")
+
+
+class Workspace(NamedTuple):
+    name: str  # t3@NAME.service, ~/.t3-workspaces/NAME
+    directory: Path  # the server's project
 
 
 def log(message: str) -> None:
@@ -76,11 +87,37 @@ def install_t3() -> None:
         raise SystemExit("[t3-ensure] ERROR: the installer finished but no t3 command was found")
 
 
-def checkouts() -> list[str]:
-    return sorted(
+def output(*command: str) -> str:
+    result = subprocess.run(command, stdout=subprocess.PIPE, text=True)
+    if result.returncode != 0:
+        raise SystemExit(f"[t3-ensure] ERROR: {' '.join(command)} failed")
+    return result.stdout
+
+
+def checkouts() -> list[Workspace]:
+    names = sorted(
         (p.name for p in Path.home().iterdir() if p.is_dir() and CHECKOUT.fullmatch(p.name)),
         key=lambda name: int(name.removeprefix("checkout")),
     )
+    return [Workspace(name, Path.home() / name) for name in names]
+
+
+def desktop_workspaces() -> list[Workspace]:
+    layout = json.loads(output(str(DOTFILES / "bin-linux/startup-windows"), "--print-layout"))
+    found: list[Workspace] = []
+    for server in layout["t3"]:
+        workspace = Workspace(str(server["slot"]), Path(server["workdir"]))
+        if workspace.directory.is_dir():
+            found.append(workspace)
+        else:
+            log(f"WARNING: skipping t3@{workspace.name}: {workspace.directory} does not exist")
+    return found
+
+
+def find_workspaces() -> list[Workspace]:
+    if sys.platform == "linux" and output(str(DOTFILES / "bin/dotfiles-profile")).strip() == "desktop":
+        return desktop_workspaces()
+    return checkouts()
 
 
 def provider_instances(shim: Path) -> dict[str, dict]:
@@ -109,10 +146,10 @@ def merge_settings(path: Path, shim: Path) -> bool:
     return True
 
 
-def add_project(t3: Path, name: str) -> bool:
-    env = {**os.environ, "T3CODE_HOME": str(WORKSPACES_HOME / name)}
+def add_project(t3: Path, workspace: Workspace) -> bool:
+    env = {**os.environ, "T3CODE_HOME": str(WORKSPACES_HOME / workspace.name)}
     for _ in range(PROJECT_ADD_ATTEMPTS):
-        result = subprocess.run([str(t3), "project", "add", str(Path.home() / name)], env=env, capture_output=True, text=True)
+        result = subprocess.run([str(t3), "project", "add", str(workspace.directory)], env=env, capture_output=True, text=True)
         if result.returncode == 0 or "ProjectAlreadyExistsError" in result.stderr + result.stdout:
             return True
         time.sleep(1)  # a server started a moment ago may not answer yet
@@ -129,15 +166,15 @@ def main() -> int:
         install_t3()
     t3 = find_t3()
     assert t3 is not None
-    names = checkouts()
-    for name in names:
-        if merge_settings(WORKSPACES_HOME / name / "userdata/settings.json", SHIM):
-            log(f"registered the Omnigent providers for ~/{name}")
+    workspaces = find_workspaces()
+    for workspace in workspaces:
+        if merge_settings(WORKSPACES_HOME / workspace.name / "userdata/settings.json", SHIM):
+            log(f"registered the Omnigent providers for {workspace.directory}")
     if subprocess.run([str(SHIM), "--help"], stdout=subprocess.DEVNULL).returncode != 0:
         log("WARNING: omnigent-acp did not start; the Omnigent providers will fail until it does")
     failed = False
-    for name in names:
-        unit = f"t3@{name}.service"
+    for workspace in workspaces:
+        unit = f"t3@{workspace.name}.service"
         if systemctl("is-enabled", "--quiet", unit) != 0:
             if systemctl("enable", "--now", unit) == 0:
                 log(f"started {unit}")
@@ -145,8 +182,8 @@ def main() -> int:
                 log(f"WARNING: could not enable {unit} (is systemd/t3@.service linked? run sync.sh)")
                 failed = True
                 continue
-        if not add_project(t3, name):
-            log(f"WARNING: could not add ~/{name} as {unit}'s project")
+        if not add_project(t3, workspace):
+            log(f"WARNING: could not add {workspace.directory} as {unit}'s project")
             failed = True
     return 1 if failed else 0
 

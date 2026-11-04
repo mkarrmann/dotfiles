@@ -215,7 +215,7 @@ class InitProfileTest(ProfileFixture):
             "bin/omnigent-google-chat-ensure", "bin/omnigent-retire-legacy-standby",
             "bin/omnigent-onboard-check", "bin/stylua-ensure", "bin/marksman-ensure",
             "bin/install-or-upgrade-nori", "bin-macos/omnigent-tls-ensure",
-            "bin/gh-ensure", "bin/aws-agent-toolkit-ensure",
+            "bin/gh-ensure", "bin/aws-agent-toolkit-ensure", "bin/t3-ensure",
         )
         for helper in helpers:
             self.stub(self.dotfiles / helper, recorder)
@@ -259,6 +259,9 @@ class InitProfileTest(ProfileFixture):
                 self.assertEqual(
                     any(line.startswith("omnigent-desktop-app-ensure ") for line in calls),
                     platform == "Linux",
+                )
+                self.assertEqual(
+                    any(line.startswith("t3-ensure ") for line in calls), platform == "Linux", calls
                 )
                 # The install comes first: on a fresh machine omnigent-desktop-ensure
                 # is what puts omnigent (and its python) in place for the other two.
@@ -457,6 +460,7 @@ class SyncProfileTest(ProfileFixture):
             # Linux since 862150e); without it the four desktop SyncProfileTest cases fail
             # with "source missing".
             "systemd/omnigent-watcher.service", "systemd/desktop/omnigent-watcher.service",
+            "systemd/t3@.service",
             "omnigent_config/omnigent-desktop-electron.desktop",
             "launchd/com.mkarrmann.omnigent-host.plist",
             "launchd/com.mkarrmann.omnigent-tls.plist",
@@ -513,6 +517,10 @@ class SyncProfileTest(ProfileFixture):
                     self.assertEqual(
                         (self.home / ".config/systemd/user/omnigent-watcher.service").resolve(),
                         self.dotfiles / "systemd/desktop/omnigent-watcher.service",
+                    )
+                    self.assertEqual(
+                        (self.home / ".config/systemd/user/t3@.service").resolve(),
+                        self.dotfiles / "systemd/t3@.service",
                     )
                     self.assertFalse((self.home / "Library/LaunchAgents").exists())
                 else:
