@@ -233,7 +233,7 @@ echo "== T3 Code URLs follow the topology =="
 # A devserver's windows all reach its one T3 Code server through the one
 # forward its tunnel makes (bin-macos/nvs-tunnels), on the port topology.env
 # gives that candidate. Ports off the shipped values, so they come from here.
-printf '%s\n' T3_PRIMARY_TUNNEL_BASE_PORT=41780 T3_STANDBY_TUNNEL_BASE_PORT=42780 > "$TMP/topology.env"
+printf '%s\n' T3_PRIMARY_TUNNEL_PORT=41780 T3_STANDBY_TUNNEL_PORT=42780 > "$TMP/topology.env"
 read -r host_a host_b < <(jq -r '[.workspaces[] | select(.kind == "devserver") | .host] | unique | join(" ")' <<< "$table")
 t3_table() { OMNIGENT_TOPOLOGY_FILE="$TMP/topology.env" OMNIGENT_PRIMARY_FQDN="$1" OMNIGENT_STANDBY_FQDN="$2" "$WORKSPACES" --json; }
 t3_ports() { # TABLE HOST -> the distinct ports its devserver rows' T3 Code URLs use

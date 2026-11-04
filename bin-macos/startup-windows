@@ -134,14 +134,19 @@ WORKSPACES=(
 
 # TODO: T3 Code windows are on hold; STARTUP_T3_WINDOWS=1 brings back their rows
 # and the tunnel checks they need (the T3 Code forward, pairing-token minting).
+# With the windows on, each tunnel also mints their pairing tokens.
 STARTUP_T3_WINDOWS="${STARTUP_T3_WINDOWS:-0}"
-if [[ "$STARTUP_T3_WINDOWS" != 1 ]]; then
-  enabled_workspaces=()
-  for entry in "${WORKSPACES[@]}"; do
+enabled_workspaces=()
+for entry in "${WORKSPACES[@]}"; do
+  if [[ "$STARTUP_T3_WINDOWS" != 1 ]]; then
     [[ "$entry" == *"|t3|"* ]] || enabled_workspaces+=("$entry")
-  done
-  WORKSPACES=("${enabled_workspaces[@]}")
-fi
+  elif [[ "$entry" =~ ^([^|]*\|ghostty\|[^|]*\|[^|]*\|[^|]*\|nvs-tunnels\ [^ ]+)(.*)$ ]]; then
+    enabled_workspaces+=("${BASH_REMATCH[1]} --t3-pairing${BASH_REMATCH[2]}")
+  else
+    enabled_workspaces+=("$entry")
+  fi
+done
+WORKSPACES=("${enabled_workspaces[@]}")
 
 SWEEP_WORKSPACE="Z"
 
@@ -217,9 +222,9 @@ topology_value() {
   value="$(sed -n "s/^$1=//p" "$TOPOLOGY_FILE" 2>/dev/null | tail -n 1)"
   printf '%s' "${value:-$2}"
 }
-T3_BASE_PORT="${T3_BASE_PORT:-$(topology_value T3_BASE_PORT 3780)}"
-T3_PRIMARY_TUNNEL_BASE_PORT="${T3_PRIMARY_TUNNEL_BASE_PORT:-$(topology_value T3_PRIMARY_TUNNEL_BASE_PORT 13780)}"
-T3_STANDBY_TUNNEL_BASE_PORT="${T3_STANDBY_TUNNEL_BASE_PORT:-$(topology_value T3_STANDBY_TUNNEL_BASE_PORT 23780)}"
+T3_PORT="${T3_PORT:-$(topology_value T3_PORT 3780)}"
+T3_PRIMARY_TUNNEL_PORT="${T3_PRIMARY_TUNNEL_PORT:-$(topology_value T3_PRIMARY_TUNNEL_PORT 13780)}"
+T3_STANDBY_TUNNEL_PORT="${T3_STANDBY_TUNNEL_PORT:-$(topology_value T3_STANDBY_TUNNEL_PORT 23780)}"
 # ─────────────────────────────────────────────────────────────────────
 
 # ── Window creation ─────────────────────────────────────────────────
@@ -552,13 +557,13 @@ close_window_id() {
 t3_forwards_for_host() {
   local host="$1" port
   case "$host" in
-    "$OMNIGENT_PRIMARY_FQDN") port="$T3_PRIMARY_TUNNEL_BASE_PORT" ;;
-    "$OMNIGENT_STANDBY_FQDN") port="$T3_STANDBY_TUNNEL_BASE_PORT" ;;
+    "$OMNIGENT_PRIMARY_FQDN") port="$T3_PRIMARY_TUNNEL_PORT" ;;
+    "$OMNIGENT_STANDBY_FQDN") port="$T3_STANDBY_TUNNEL_PORT" ;;
     *) return 0 ;;
   esac
   if workspaces --json 2>/dev/null \
       | jq -e --arg host "$host" 'any(.workspaces[]; .kind == "devserver" and .host == $host)' >/dev/null; then
-    echo "${port}:${T3_BASE_PORT}"
+    echo "${port}:${T3_PORT}"
   fi
 }
 
@@ -904,6 +909,11 @@ t3_wait_for_server() {
   t3_waited_hosts+=" $host"
 }
 
+# t3_environment_id URL -> the environment id of the T3 Code server at URL.
+t3_environment_id() {
+  curl -s --noproxy '*' -m 5 "$1/.well-known/t3/environment" 2>/dev/null | jq -r '.environmentId // empty' 2>/dev/null || true
+}
+
 # t3_take_pairing_token DEVSERVER [WAIT] -> a token from that devserver's pool,
 # removed so it is used once, waiting up to WAIT seconds for nvs-tunnels to pool
 # one; nothing when none comes.
@@ -979,8 +989,8 @@ t3_profile_debuggable() {
 # new threads in the workspace's checkout. Problems count in $failures.
 reconcile_t3_window() {
   local ws="$1" title="$2" row profile url host checkout workdir window_id token open_url created=false
-  local fresh_profile=false wait link_host link_url link_label link_token scope_rc
-  local link_args=() link_tokens=() link_hosts=()
+  local fresh_profile=false wait link_host link_url link_label link_env link_token scope_rc
+  local link_args=() link_tokens=() link_envs=()
   row=$(t3_workspace_window "$ws") || row=""
   if [[ -z "$row" ]]; then
     echo "WARNING: [$title] workspace $ws has no T3 Code server; skipping" >&2
@@ -1054,11 +1064,20 @@ reconcile_t3_window() {
       echo "         in $workdir; quit that Chrome (Cmd+Q in the window) and rerun" >&2
       ((failures++)) || true
     else
-      # Each other devserver's server the profile has not linked yet (a marker
-      # per host in the profile, written once a link held), with a token of its own.
+      # Each other devserver's server the profile has not linked yet, with a
+      # token of its own. A link that held leaves a marker in the profile named
+      # by the server's environment id, so a server whose state was reset, and
+      # so has a new id, is linked again.
       while IFS=$'\t' read -r link_host link_url link_label; do
-        [[ -n "$link_host" && ! -e "$profile/.t3-linked/$link_host" ]] || continue
+        [[ -n "$link_host" ]] || continue
         t3_wait_for_server "$link_host" "$link_url" || continue
+        link_env=$(t3_environment_id "$link_url")
+        if [[ -z "$link_env" ]]; then
+          echo "WARNING: [$title] $link_host's T3 Code server did not say which it is; not linked" >&2
+          ((failures++)) || true
+          continue
+        fi
+        [[ ! -e "$profile/.t3-linked/$link_env" ]] || continue
         link_token=$(t3_take_pairing_token "$link_host" "$T3_PAIRING_TOKEN_WAIT")
         if [[ -z "$link_token" ]]; then
           echo "WARNING: [$title] no pairing token from $link_host; window $window_id does not list its threads" >&2
@@ -1067,15 +1086,15 @@ reconcile_t3_window() {
         fi
         link_args+=(--link "$link_url" "$link_label")
         link_tokens+=("$link_token")
-        link_hosts+=("$link_host")
+        link_envs+=("$link_env")
       done < <(t3_links "$ws")
       scope_rc=0
       { [[ ${#link_tokens[@]} -eq 0 ]] || printf '%s\n' "${link_tokens[@]}"; } \
         | t3-window-scope "$profile" "${url%/}" "$workdir" ${link_args[@]+"${link_args[@]}"} || scope_rc=$?
       if [[ "$scope_rc" -eq 0 ]]; then
         mkdir -p "$profile/.t3-linked"
-        for link_host in ${link_hosts[@]+"${link_hosts[@]}"}; do
-          : > "$profile/.t3-linked/$link_host"
+        for link_env in ${link_envs[@]+"${link_envs[@]}"}; do
+          : > "$profile/.t3-linked/$link_env"
         done
       else
         echo "WARNING: [$title] could not start window $window_id's new threads in $workdir," >&2

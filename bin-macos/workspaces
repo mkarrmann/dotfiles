@@ -66,8 +66,8 @@ topology_value() {
   value="$(sed -n "s/^$1=//p" "$topology" 2>/dev/null | tail -n 1)"
   printf '%s' "${value:-$2}"
 }
-t3_primary_port="$(topology_value T3_PRIMARY_TUNNEL_BASE_PORT 13780)"
-t3_standby_port="$(topology_value T3_STANDBY_TUNNEL_BASE_PORT 23780)"
+t3_primary_port="$(topology_value T3_PRIMARY_TUNNEL_PORT 13780)"
+t3_standby_port="$(topology_value T3_STANDBY_TUNNEL_PORT 23780)"
 
 # The workspace's T3 Code window: its devserver's one server (t3@checkouts,
 # systemd/t3@.service) through that host's nvs-tunnels forward, on a hostname of

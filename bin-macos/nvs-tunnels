@@ -14,8 +14,10 @@ set -euo pipefail
 # Auto-reconnects if the ET session terminates (devvm restart, network
 # outage beyond ET's tolerance, Duo expiry). Duo re-auth may be required.
 #
-# Usage: nvs-tunnels HOST SESSION[:WORKDIR] [SESSION[:WORKDIR] ...]
+# Usage: nvs-tunnels HOST [--t3-pairing] SESSION[:WORKDIR] [SESSION[:WORKDIR] ...]
 # Example: nvs-tunnels devvm36111.ftw0.facebook.com FTW-checkout1:~/checkout1
+# --t3-pairing also mints the T3 Code pairing tokens the Mac's T3 Code windows
+# need (bin-macos/startup-windows adds it while those windows are on).
 
 NVS_CLIP_PORT="${NVS_CLIP_PORT:-8765}"
 PERSISTENCE_PORT="${PERSISTENCE_PORT:-7847}"
@@ -36,12 +38,18 @@ topology_value() {
   value="$(sed -n "s/^$1=//p" "$TOPOLOGY_FILE" 2>/dev/null | tail -n 1)"
   printf '%s' "${value:-$2}"
 }
-T3_BASE_PORT="${T3_BASE_PORT:-$(topology_value T3_BASE_PORT 3780)}"
-T3_PRIMARY_TUNNEL_BASE_PORT="${T3_PRIMARY_TUNNEL_BASE_PORT:-$(topology_value T3_PRIMARY_TUNNEL_BASE_PORT 13780)}"
-T3_STANDBY_TUNNEL_BASE_PORT="${T3_STANDBY_TUNNEL_BASE_PORT:-$(topology_value T3_STANDBY_TUNNEL_BASE_PORT 23780)}"
+T3_PORT="${T3_PORT:-$(topology_value T3_PORT 3780)}"
+T3_PRIMARY_TUNNEL_PORT="${T3_PRIMARY_TUNNEL_PORT:-$(topology_value T3_PRIMARY_TUNNEL_PORT 13780)}"
+T3_STANDBY_TUNNEL_PORT="${T3_STANDBY_TUNNEL_PORT:-$(topology_value T3_STANDBY_TUNNEL_PORT 23780)}"
 
-host="${1:?usage: nvs-tunnels HOST SESSION[:WORKDIR] ...}"
+host="${1:?usage: nvs-tunnels HOST [--t3-pairing] SESSION[:WORKDIR] ...}"
 shift
+t3_pairing=false
+sessions=()
+for arg in "$@"; do
+  if [[ "$arg" == --t3-pairing ]]; then t3_pairing=true; else sessions+=("$arg"); fi
+done
+set -- ${sessions[@]+"${sessions[@]}"}
 
 if [[ $# -eq 0 ]]; then
   echo "ERROR: at least one SESSION required" >&2
@@ -79,11 +87,11 @@ done
 case "$host" in
   "$OMNIGENT_PRIMARY_FQDN")
     omnigent_local_port="$OMNIGENT_PRIMARY_TUNNEL_PORT"
-    t3_local_port="$T3_PRIMARY_TUNNEL_BASE_PORT"
+    t3_local_port="$T3_PRIMARY_TUNNEL_PORT"
     ;;
   "$OMNIGENT_STANDBY_FQDN")
     omnigent_local_port="$OMNIGENT_STANDBY_TUNNEL_PORT"
-    t3_local_port="$T3_STANDBY_TUNNEL_BASE_PORT"
+    t3_local_port="$T3_STANDBY_TUNNEL_PORT"
     ;;
   *)
     omnigent_local_port=""
@@ -95,10 +103,10 @@ if [[ -n "$omnigent_local_port" ]]; then
   echo "  Omnigent candidate -> localhost:${omnigent_local_port}"
 fi
 # The candidate's one T3 Code server (t3@checkouts, systemd/t3@.service) on
-# T3_BASE_PORT there, and on the candidate's own port here, which every
+# T3_PORT there, and on the candidate's own port here, which every
 # workspace window on this host opens (bin-macos/workspaces).
 if [[ -n "$t3_local_port" ]]; then
-  tunnel_spec+=",${t3_local_port}:${T3_BASE_PORT}"
+  tunnel_spec+=",${t3_local_port}:${T3_PORT}"
   echo "  T3 Code -> localhost:${t3_local_port}"
 fi
 
@@ -116,9 +124,12 @@ ready_marker="NVS_TUNNEL_READY"
 # pools them for startup-windows. Every devserver workspace window pairs with
 # each candidate's server, so it takes one from every host's pool: twice the
 # windows leaves room for windows reopened before the next reconnect.
-t3_windows=$(workspaces --json 2>/dev/null | jq '[.workspaces[] | select((.t3Url // "") != "")] | length' 2>/dev/null || echo 8)
-t3_token_count=$((2 * ${t3_windows:-8}))
-remote_cmd="echo ${ready_marker}; (\$HOME/bin/omnigent-hub cache-routing --force-remount --json >/dev/null 2>&1 || true) & (\$HOME/dotfiles/bin/t3-pairing-tokens ${t3_token_count} 2>/dev/null || true) & nvs-status${session_names}; exec sleep infinity"
+t3_mint=""
+if [[ "$t3_pairing" == true ]]; then
+  t3_windows=$(workspaces --json 2>/dev/null | jq '[.workspaces[] | select((.t3Url // "") != "")] | length' 2>/dev/null || echo 8)
+  t3_mint="(\$HOME/dotfiles/bin/t3-pairing-tokens $((2 * ${t3_windows:-8})) 2>/dev/null || true) & "
+fi
+remote_cmd="echo ${ready_marker}; (\$HOME/bin/omnigent-hub cache-routing --force-remount --json >/dev/null 2>&1 || true) & ${t3_mint}nvs-status${session_names}; exec sleep infinity"
 T3_PAIRING_DIR="${T3_PAIRING_DIR:-$HOME/.local/state/t3-pairing}"
 saved_t3_tokens=""
 
@@ -127,6 +138,7 @@ saved_t3_tokens=""
 # it must not come back.
 save_t3_pairing_tokens() {
   local token
+  [[ "$t3_pairing" == true ]] || return 0
   while read -r _ token; do
     [[ -n "$token" && " $saved_t3_tokens " != *" $token "* ]] || continue
     saved_t3_tokens+=" $token"
@@ -139,6 +151,7 @@ save_t3_pairing_tokens() {
 # A new session's server mints new tokens; the pool's old ones may come from a
 # server that has since restarted, or be past their 12 hours.
 clear_t3_pairing_tokens() {
+  [[ "$t3_pairing" == true ]] || return 0
   rm -rf "${T3_PAIRING_DIR:?}/$host"
 }
 

@@ -299,7 +299,7 @@ class T3WorkspaceServeTest(unittest.TestCase):
 
     def test_work_server_serves_every_checkout_from_home_on_the_topologys_port(self):
         topology = self.root / "topology.env"
-        topology.write_text("T3_BASE_PORT=4100\n")
+        topology.write_text("T3_PORT=4100\n")
         result = self.serve("checkouts", "work", OMNIGENT_TOPOLOGY_FILE=str(topology))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, self.expected(4100, self.home, "checkouts"))

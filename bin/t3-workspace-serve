@@ -8,7 +8,7 @@
 # on its current start.
 #
 # On the work hubs NAME is "checkouts", the one server for every ~/checkoutN,
-# and it listens on 127.0.0.1:T3_BASE_PORT (omnigent_config/topology.env). The
+# and it listens on 127.0.0.1:T3_PORT (omnigent_config/topology.env). The
 # desktop runs one server for every t3 row of bin-linux/startup-windows' table:
 # NAME is that layout's t3Server and it listens on its t3Port. Any other NAME,
 # such as a t3@checkoutN from when each checkout had a server of its own, exits
@@ -31,7 +31,7 @@ else
     exit 2
   }
   topology="${OMNIGENT_TOPOLOGY_FILE:-$dotfiles/omnigent_config/topology.env}"
-  port="$(sed -n 's/^T3_BASE_PORT=//p' "$topology" 2>/dev/null | tail -n 1)"
+  port="$(sed -n 's/^T3_PORT=//p' "$topology" 2>/dev/null | tail -n 1)"
   port="${port:-3780}"
 fi
 

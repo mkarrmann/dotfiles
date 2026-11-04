@@ -63,7 +63,7 @@ esac
 EOF
 chmod +x "$TMP/bin/omnigent-server-url" "$TMP/bin/nvs-clip-listen" "$TMP/bin/x2ssh"
 # T3 Code's ports, off the shipped values so the test sees they come from here.
-printf '%s\n' T3_BASE_PORT=4780 T3_PRIMARY_TUNNEL_BASE_PORT=41780 T3_STANDBY_TUNNEL_BASE_PORT=42780 > "$TMP/topology.env"
+printf '%s\n' T3_PORT=4780 T3_PRIMARY_TUNNEL_PORT=41780 T3_STANDBY_TUNNEL_PORT=42780 > "$TMP/topology.env"
 
 run_tunnels() {
   PATH="$TMP/bin:/usr/bin:/bin" \
@@ -139,9 +139,9 @@ OMNIGENT_STANDBY_FQDN=standby.example.com
 OMNIGENT_PRIMARY_TUNNEL_PORT=16767
 OMNIGENT_STANDBY_TUNNEL_PORT=26767
 OMNIGENT_PORT=6767
-T3_BASE_PORT=4780
-T3_PRIMARY_TUNNEL_BASE_PORT=41780
-T3_STANDBY_TUNNEL_BASE_PORT=42780
+T3_PORT=4780
+T3_PRIMARY_TUNNEL_PORT=41780
+T3_STANDBY_TUNNEL_PORT=42780
 STARTUP_T3_WINDOWS=1
 TRANSPORT_STATE=connected
 TUNNEL_HOST=primary.example.com
@@ -190,7 +190,7 @@ echo "2b. T3 Code pairing tokens from the session are pooled privately, not show
 export FAKE_MODE=t3pair
 mkdir -p "$TMP/pairing/primary.example.com"
 echo STALEtoken > "$TMP/pairing/primary.example.com/token.old"
-T3_PAIRING_DIR="$TMP/pairing" run_tunnels 1 primary.example.com TEST-checkout1 > "$TMP/t3pair.out" 2>&1 || true
+T3_PAIRING_DIR="$TMP/pairing" run_tunnels 1 primary.example.com --t3-pairing TEST-checkout1 > "$TMP/t3pair.out" 2>&1 || true
 [[ "$(cat "$TMP/pairing/primary.example.com/"* 2>/dev/null | sort | tr '\n' ' ')" == "TOKENabc123 TOKENdef456 " ]] \
   || fail "the pool of primary.example.com is not exactly this session's tokens: $(cat "$TMP/pairing/primary.example.com/"* 2>/dev/null | tr '\n' ' ')"
 for token_file in "$TMP/pairing/primary.example.com/"*; do
@@ -201,6 +201,12 @@ if grep -Fq TOKENabc123 "$TMP/t3pair.out"; then
   fail "pairing token was printed to the tunnel window"
 fi
 grep -Eq -- "t3-pairing-tokens [0-9]+" "$FAKE_ARGS" || fail "remote command does not mint a pool of T3 Code pairing tokens"
+grep -Fq -- "--t3-pairing" "$FAKE_ARGS" && fail "the option reached the remote side as a session"
+: > "$FAKE_ARGS"
+T3_PAIRING_DIR="$TMP/pairing-off" run_tunnels 1 primary.example.com TEST-checkout1 > "$TMP/t3pair-off.out" 2>&1 || true
+grep -Fq -- "t3-pairing-tokens" "$FAKE_ARGS" && fail "a tunnel without --t3-pairing mints T3 Code pairing tokens"
+[[ ! -e "$TMP/pairing-off/primary.example.com" ]] || [[ -z "$(ls -A "$TMP/pairing-off/primary.example.com")" ]] \
+  || fail "a tunnel without --t3-pairing pooled tokens"
 
 echo "2c. a candidate's tunnel forwards its one T3 Code server, the forward startup-windows expects"
 export FAKE_MODE=ready

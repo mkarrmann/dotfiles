@@ -24,7 +24,7 @@ extract_fn() {
   ' "$STARTUP"
 }
 for fn in t3_workspace_window t3_window_ids_for_profile t3_window_ids_json t3_profile_running t3_profile_debuggable \
-          t3_take_pairing_token t3_wait_for_server t3_links t3_window_title reconcile_t3_window close_window_id window_exists \
+          t3_take_pairing_token t3_wait_for_server t3_environment_id t3_links t3_window_title reconcile_t3_window close_window_id window_exists \
           snapshot_windows; do
   body=$(extract_fn "$fn")
   [[ -n "$body" ]] || { echo "could not extract $fn" >&2; exit 1; }
@@ -141,7 +141,8 @@ sim_reset() {
   rm -rf "$T3_PAIRING_DIR/cco.example.com" "$T3_PAIRING_DIR/ftw.example.com"
   mkdir -p "$T3_PAIRING_DIR/cco.example.com" "$T3_PAIRING_DIR/ftw.example.com"
   t3_waited_hosts=""; t3_unreachable_hosts=""; failures=0; SCOPE_FAILS=""
-  curl() { return 0; }
+  FTW_ENV=env-ftw-1
+  curl() { [[ "$*" != *"/.well-known/t3/environment"* ]] || echo "{\"environmentId\": \"$FTW_ENV\"}"; }
 }
 pool() { # HOST TOKEN -- pool a token as nvs-tunnels does
   printf '%s\n' "$2" > "$(mktemp "$T3_PAIRING_DIR/$1/token.XXXXXX")"
@@ -227,7 +228,7 @@ check "the window starts its new threads in its checkout and links FTW's server 
   "$LINKED3" "$(cat "$SIM/scoped")"
 check "with no warning" "0" "$failures"
 check "both tokens are used up" "0 0" "$(pooled cco.example.com) $(pooled ftw.example.com)"
-check "the profile remembers the link" "yes" "$([[ -e "$P3/.t3-linked/ftw.example.com" ]] && echo yes || echo no)"
+check "the profile remembers the link, by the FTW server's environment" "yes" "$([[ -e "$P3/.t3-linked/env-ftw-1" ]] && echo yes || echo no)"
 
 aerospace move-node-to-workspace --window-id 102 Z
 : > "$SIM/scoped"
@@ -247,17 +248,26 @@ check "without waiting for a token: the profile paired before" "yes" "$( (( SECO
 check "which is scoped too, without linking FTW again: the browser kept its DevTools port" "$SCOPE3 | " "$(cat "$SIM/scoped")"
 T3_PAIRING_TOKEN_WAIT=0
 
+aerospace close --window-id 103
+: > "$SIM/scoped"
+pool cco.example.com TOKEN3B
+pool ftw.example.com FTWTOKEN2
+FTW_ENV=env-ftw-2
+reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
+check "an FTW server whose state was reset, a new environment, is linked again" \
+  "$SCOPE3 --link http://127.0.0.1:23780 FTW | FTWTOKEN2" "$(cat "$SIM/scoped")"
+
 sim_reset
 pool cco.example.com TOKEN3
 reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
 check "with no FTW token the window is still opened and scoped, without the link" "$SCOPE3 | " "$(cat "$SIM/scoped")"
 check "which warns once, and is not remembered as linked" "1 1 no" \
-  "$failures $(grep -c 'no pairing token from ftw.example.com' "$SIM/out") $([[ -e "$P3/.t3-linked/ftw.example.com" ]] && echo yes || echo no)"
+  "$failures $(grep -c 'no pairing token from ftw.example.com' "$SIM/out") $([[ -e "$P3/.t3-linked/env-ftw-1" ]] && echo yes || echo no)"
 
 sim_reset
 pool cco.example.com TOKEN3
 pool ftw.example.com FTWTOKEN
-curl() { [[ "$*" != *":23780/"* ]]; }
+curl() { [[ "$*" != *":23780"* ]] || return 7; [[ "$*" != *"/.well-known/t3/environment"* ]] || echo '{"environmentId": "env-ftw-1"}'; }
 reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
 check "an FTW server that does not answer is not linked, and its token is kept" "$SCOPE3 | 1" \
   "$(cat "$SIM/scoped")$(pooled ftw.example.com)"
