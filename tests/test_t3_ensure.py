@@ -159,6 +159,30 @@ class T3EnsureTest(unittest.TestCase):
         self.assertFalse((self.home / ".t3-workspaces/checkout1").exists())
         self.assertFalse([c for c in self.calls_made() if "checkout1" in c])
 
+    def test_desktop_gives_the_app_its_own_omnigent_providers(self):
+        app_settings = self.home / ".t3/userdata/settings.json"
+        app_settings.parent.mkdir(parents=True)
+        app_settings.write_text(json.dumps({"theme": "dark", "providerInstances": {"codex": {"driver": "codex", "enabled": True}}}))
+        self.use_desktop_layout({})
+        result = self.run_ensure()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        settings = json.loads(app_settings.read_text())
+        providers = settings["providerInstances"]
+        self.assertEqual(providers["omnigent-codex"]["config"]["commandArgs"], ["--agent", "codex-native-ui"])
+        self.assertEqual(providers["claudeAgent"], {"driver": "claudeAgent", "enabled": False})
+        # A built-in the user configured, and every other setting, are kept.
+        self.assertEqual(providers["codex"], {"driver": "codex", "enabled": True})
+        self.assertEqual(settings["theme"], "dark")
+        # The app runs its own server: no unit and no project for it.
+        self.assertFalse([c for c in self.calls_made() if c.startswith(("systemctl", "t3 project"))])
+        before = app_settings.read_text()
+        self.assertEqual(self.run_ensure().returncode, 0)
+        self.assertEqual(app_settings.read_text(), before)
+
+    def test_work_leaves_the_app_environment_alone(self):
+        self.assertEqual(self.run_ensure().returncode, 0)
+        self.assertFalse((self.home / ".t3").exists())
+
     def test_desktop_layout_failure_fails_clearly(self):
         self.profile = "desktop"
         write_exe(self.dotfiles / "bin-linux/startup-windows", "echo 'ERROR: bad table' >&2; exit 1\n")

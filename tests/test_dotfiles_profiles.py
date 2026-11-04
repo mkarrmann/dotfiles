@@ -216,6 +216,7 @@ class InitProfileTest(ProfileFixture):
             "bin/omnigent-onboard-check", "bin/stylua-ensure", "bin/marksman-ensure",
             "bin/install-or-upgrade-nori", "bin-macos/omnigent-tls-ensure",
             "bin/gh-ensure", "bin/aws-agent-toolkit-ensure", "bin/t3-ensure",
+            "bin/t3-desktop-app-ensure",
         )
         for helper in helpers:
             self.stub(self.dotfiles / helper, recorder)
@@ -262,6 +263,9 @@ class InitProfileTest(ProfileFixture):
                 )
                 self.assertEqual(
                     any(line.startswith("t3-ensure ") for line in calls), platform == "Linux", calls
+                )
+                self.assertEqual(
+                    any(line.startswith("t3-desktop-app-ensure ") for line in calls), platform == "Linux", calls
                 )
                 # The install comes first: on a fresh machine omnigent-desktop-ensure
                 # is what puts omnigent (and its python) in place for the other two.
@@ -330,6 +334,8 @@ class InitProfileTest(ProfileFixture):
                     [line for line in self.calls() if line.startswith("omnigent-version-ensure ")],
                     [f"omnigent-version-ensure {args} profile={profile} dotfiles={self.dotfiles}"],
                 )
+                if profile == "work":
+                    self.assertFalse(any(line.startswith("t3-desktop-app-ensure ") for line in self.calls()))
                 if profile == "desktop":
                     self.assertIn(
                         f"run {self.dotfiles}/bin/omnigent-version-ensure from a plain terminal outside Omnigent",
