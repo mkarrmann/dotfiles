@@ -111,25 +111,35 @@ fi
 # separate Mac discovery login; failure stays non-fatal because the hub startup
 # gate remains fail-closed and the next ET reconnect retries it.
 ready_marker="NVS_TUNNEL_READY"
-# t3-pairing-tokens mints a pairing token per checkout from the candidate's T3
-# Code server inside this already-authenticated session; save_t3_pairing_tokens
-# below hands them to startup-windows, which opens each new workspace window on
-# /pair with its checkout's.
-remote_cmd="echo ${ready_marker}; (\$HOME/bin/omnigent-hub cache-routing --force-remount --json >/dev/null 2>&1 || true) & (\$HOME/dotfiles/bin/t3-pairing-tokens 2>/dev/null || true) & nvs-status${session_names}; exec sleep infinity"
+# t3-pairing-tokens mints one-time pairing tokens from the candidate's T3 Code
+# server inside this already-authenticated session; save_t3_pairing_tokens below
+# pools them for startup-windows. Every devserver workspace window pairs with
+# each candidate's server, so it takes one from every host's pool: twice the
+# windows leaves room for windows reopened before the next reconnect.
+t3_windows=$(workspaces --json 2>/dev/null | jq '[.workspaces[] | select((.t3Url // "") != "")] | length' 2>/dev/null || echo 8)
+t3_token_count=$((2 * ${t3_windows:-8}))
+remote_cmd="echo ${ready_marker}; (\$HOME/bin/omnigent-hub cache-routing --force-remount --json >/dev/null 2>&1 || true) & (\$HOME/dotfiles/bin/t3-pairing-tokens ${t3_token_count} 2>/dev/null || true) & nvs-status${session_names}; exec sleep infinity"
 T3_PAIRING_DIR="${T3_PAIRING_DIR:-$HOME/.local/state/t3-pairing}"
 saved_t3_tokens=""
 
-# Save each "T3_PAIR checkoutN TOKEN" line once, as $T3_PAIRING_DIR/HOST/checkoutN.
-# Once only: startup-windows deletes a token it uses, and it must not come back.
+# Pool each "T3_PAIR TOKEN" line once, as a file of its own in
+# $T3_PAIRING_DIR/HOST. Once only: startup-windows deletes a token it uses, and
+# it must not come back.
 save_t3_pairing_tokens() {
-  local checkout token
-  while read -r _ checkout token; do
+  local token
+  while read -r _ token; do
     [[ -n "$token" && " $saved_t3_tokens " != *" $token "* ]] || continue
     saved_t3_tokens+=" $token"
     mkdir -p "$T3_PAIRING_DIR/$host"
     chmod 700 "$T3_PAIRING_DIR" "$T3_PAIRING_DIR/$host"
-    (umask 077 && printf '%s\n' "$token" > "$T3_PAIRING_DIR/$host/$checkout")
-  done < <(grep -ao 'T3_PAIR checkout[0-9]* [A-Za-z0-9_-]*' "$attempt_log" 2>/dev/null || true)
+    (umask 077 && printf '%s\n' "$token" > "$(mktemp "$T3_PAIRING_DIR/$host/token.XXXXXX")")
+  done < <(grep -aoE 'T3_PAIR [A-Za-z0-9_-]+' "$attempt_log" 2>/dev/null || true)
+}
+
+# A new session's server mints new tokens; the pool's old ones may come from a
+# server that has since restarted, or be past their 12 hours.
+clear_t3_pairing_tokens() {
+  rm -rf "${T3_PAIRING_DIR:?}/$host"
 }
 
 # Start clipboard listener if not already running
@@ -235,6 +245,7 @@ while true; do
   echo ""
 
   attempt_log=$(mktemp "${TMPDIR:-/tmp}/nvs-tunnels.XXXXXX")
+  clear_t3_pairing_tokens
 
   # ET requires reverse tunnels to be merged into a single -r flag
   # (comma-separated), not passed as multiple -r flags. Same shape as

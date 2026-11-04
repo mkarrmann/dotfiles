@@ -24,7 +24,7 @@ extract_fn() {
   ' "$STARTUP"
 }
 for fn in t3_workspace_window t3_window_ids_for_profile t3_window_ids_json t3_profile_running t3_profile_debuggable \
-          t3_take_pairing_token t3_wait_for_server t3_window_title reconcile_t3_window close_window_id window_exists \
+          t3_take_pairing_token t3_wait_for_server t3_links t3_window_title reconcile_t3_window close_window_id window_exists \
           snapshot_windows; do
   body=$(extract_fn "$fn")
   [[ -n "$body" ]] || { echo "could not extract $fn" >&2; exit 1; }
@@ -33,6 +33,10 @@ done
 
 CHROME_APP="Google Chrome"
 T3_CHROME_DATA_ROOT="/Users/me/.t3-workspace-chrome"
+T3_PAIRING_TOKEN_MAX_AGE_MIN=660
+T3_PAIRING_TOKEN_WAIT=0
+T3_SERVER_WAIT=0
+t3_unreachable_hosts=""
 
 workspaces() {
   printf '%s' '{"workspaces":[
@@ -83,14 +87,23 @@ check "one without is not, even when a profile it prefixes has one" "no" \
 T3_PAIRING_DIR="$(mktemp -d)"
 trap 'rm -rf "$T3_PAIRING_DIR"' EXIT
 mkdir -p "$T3_PAIRING_DIR/cco.example.com"
-echo TOKEN123 > "$T3_PAIRING_DIR/cco.example.com/checkout3"
+echo TOKEN123 > "$T3_PAIRING_DIR/cco.example.com/token.a"
+echo STALE > "$T3_PAIRING_DIR/cco.example.com/token.b"
+touch -t "$(date -v-12H +%Y%m%d%H%M 2>/dev/null || date -d '12 hours ago' +%Y%m%d%H%M)" "$T3_PAIRING_DIR/cco.example.com/token.b"
+check "a pooled pairing token is handed out, and one past its 12 hours is not" "TOKEN123" \
+  "$(t3_take_pairing_token cco.example.com)"
+check "each only once" "" "$(t3_take_pairing_token cco.example.com)"
+check "a host with no pool has no token" "" "$(t3_take_pairing_token ftw.example.com)"
+
 curl() { return 0; }
 t3_waited_hosts=""
-started=$SECONDS
-t3_wait_for_server cco.example.com http://cco-checkout3.t3.localhost:13780/ checkout3
-check "the server wait returns once the server answers and its token is saved" "0" "$((SECONDS - started))"
-check "a saved pairing token is handed out" "TOKEN123" "$(t3_take_pairing_token cco.example.com checkout3)"
-check "and only once" "" "$(t3_take_pairing_token cco.example.com checkout3)"
+check "the server wait passes once the server answers" "0" \
+  "$(t3_wait_for_server cco.example.com http://cco-checkout3.t3.localhost:13780/; echo $?)"
+curl() { return 7; }
+t3_waited_hosts=""
+check "and fails, warning, when it does not" "1 1" \
+  "$({ t3_wait_for_server ftw.example.com http://ftw-checkout1.t3.localhost:23780/; echo $?; } 2>&1 | grep -c 'did not answer' | tr '\n' ' ')$(t3_wait_for_server ftw.example.com http://x:23780/ 2>/dev/null; echo $?)"
+curl() { return 0; }
 
 # startup-windows runs under set -euo pipefail and assigns the result directly;
 # a lookup that finds nothing must not end the script.
@@ -114,14 +127,24 @@ curl() { return 0; }
 workspaces() {
   printf '%s' '{"workspaces":[
     {"workspace":"1","kind":"local"},
-    {"workspace":"4","kind":"devserver","host":"cco.example.com","checkout":"/home/me/checkout2","t3Url":"http://cco-checkout2.t3.localhost:13780/"},
-    {"workspace":"6","kind":"devserver","host":"cco.example.com","checkout":"/home/me/checkout3","t3Url":"http://cco-checkout3.t3.localhost:13780/"}]}'
+    {"workspace":"3","kind":"devserver","host":"ftw.example.com","checkout":"/home/me/checkout1","nvsSession":"FTW-checkout1","t3Url":"http://ftw-checkout1.t3.localhost:23780/"},
+    {"workspace":"4","kind":"devserver","host":"cco.example.com","checkout":"/home/me/checkout2","nvsSession":"CCO-checkout2","t3Url":"http://cco-checkout2.t3.localhost:13780/"},
+    {"workspace":"5","kind":"devserver","host":"ftw.example.com","checkout":"/home/me/checkout2","nvsSession":"FTW-checkout2","t3Url":"http://ftw-checkout2.t3.localhost:23780/"},
+    {"workspace":"6","kind":"devserver","host":"cco.example.com","checkout":"/home/me/checkout3","nvsSession":"CCO-checkout3","t3Url":"http://cco-checkout3.t3.localhost:13780/"}]}'
 }
+check "a window links every other devserver's server once, through its forward here, by its sessions' prefix" \
+  $'ftw.example.com\thttp://127.0.0.1:23780\tFTW' "$(t3_links 6)"
+check "and an FTW window links CCO's" $'cco.example.com\thttp://127.0.0.1:13780\tCCO' "$(t3_links 3)"
 sim_reset() {
   rm -rf "$SIM"; mkdir -p "$SIM"
   : > "$SIM/windows"; : > "$SIM/browsers"; : > "$SIM/scoped"; echo 100 > "$SIM/next"
-  rm -rf "$T3_PAIRING_DIR/cco.example.com"; mkdir -p "$T3_PAIRING_DIR/cco.example.com"
-  t3_waited_hosts=""; failures=0; SCOPE_FAILS=""
+  rm -rf "$T3_PAIRING_DIR/cco.example.com" "$T3_PAIRING_DIR/ftw.example.com"
+  mkdir -p "$T3_PAIRING_DIR/cco.example.com" "$T3_PAIRING_DIR/ftw.example.com"
+  t3_waited_hosts=""; t3_unreachable_hosts=""; failures=0; SCOPE_FAILS=""
+  curl() { return 0; }
+}
+pool() { # HOST TOKEN -- pool a token as nvs-tunnels does
+  printf '%s\n' "$2" > "$(mktemp "$T3_PAIRING_DIR/$1/token.XXXXXX")"
 }
 sim_id() { local n; n=$(($(cat "$SIM/next") + 1)); echo "$n" > "$SIM/next"; echo "$n"; }
 sim_browser() { # PROFILE -> the pid of the browser running it
@@ -172,11 +195,13 @@ ps() {
     awk -F'\t' -v pid="${@: -1}" '$1 == pid { print $2 }' "$SIM/browsers"
   fi
 }
+# Records its arguments and the tokens it read for its links, "ARGS | TOKENS".
 t3-window-scope() {
-  local pid
+  local pid tokens
+  tokens=$(tr '\n' ' ' | sed 's/ $//')
   pid=$(sim_browser "$1")
   [[ -z "$SCOPE_FAILS" && -n "$pid" && "$(ps -o command= -p "$pid")" == *" --remote-debugging-port=0"* ]] || return 1
-  printf '%s\n' "$*" >> "$SIM/scoped"
+  printf '%s | %s\n' "$*" "$tokens" >> "$SIM/scoped"
 }
 windows_of() { # PROFILE -> "WID WORKSPACE URL" for each of its browser's windows
   local pid
@@ -187,18 +212,22 @@ windows_of() { # PROFILE -> "WID WORKSPACE URL" for each of its browser's window
 P3="$T3_CHROME_DATA_ROOT/cco-checkout3"
 P2="$T3_CHROME_DATA_ROOT/cco-checkout2"
 SCOPE3="$P3 http://cco-checkout3.t3.localhost:13780 ~/checkout3"
+LINKED3="$SCOPE3 --link http://127.0.0.1:23780 FTW | FTWTOKEN"
+pooled() { find "$T3_PAIRING_DIR/$1" -type f | wc -l | tr -d ' '; }
 
 sim_reset
-echo TOKEN3 > "$T3_PAIRING_DIR/cco.example.com/checkout3"
+pool cco.example.com TOKEN3
+pool ftw.example.com FTWTOKEN
 reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
-check "a cold profile gets one window, on its workspace and its pairing link, and nothing else" \
+check "a cold profile gets one window, on its workspace and its own server's pairing link, and nothing else" \
   "102 6 http://cco-checkout3.t3.localhost:13780/pair#token=TOKEN3" "$(windows_of "$P3")"
 check "its browser runs with a DevTools port and without a startup window" "yes" \
-  "$([[ "$(ps -o command= -p "$(sim_browser "$P3")")" == *" --no-startup-window --remote-debugging-port=0"* ]] && echo yes)"
-check "the window this opened starts its new threads in its checkout, named from the server's home" \
-  "$SCOPE3" "$(cat "$SIM/scoped")"
+  "$(c=$(ps -o command= -p "$(sim_browser "$P3")"); [[ "$c" == *" --no-startup-window"* && "$c" == *" --remote-debugging-port=0"* ]] && echo yes)"
+check "the window starts its new threads in its checkout and links FTW's server with an FTW token" \
+  "$LINKED3" "$(cat "$SIM/scoped")"
 check "with no warning" "0" "$failures"
-check "its pairing token is used up" "no" "$([[ -e "$T3_PAIRING_DIR/cco.example.com/checkout3" ]] && echo yes || echo no)"
+check "both tokens are used up" "0 0" "$(pooled cco.example.com) $(pooled ftw.example.com)"
+check "the profile remembers the link" "yes" "$([[ -e "$P3/.t3-linked/ftw.example.com" ]] && echo yes || echo no)"
 
 aerospace move-node-to-workspace --window-id 102 Z
 : > "$SIM/scoped"
@@ -209,12 +238,32 @@ check "and is left as it is: not scoped again" "" "$(cat "$SIM/scoped")"
 check "with no warning" "0" "$failures"
 
 aerospace close --window-id 102
+T3_PAIRING_TOKEN_WAIT=30
+started=$SECONDS
 reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
-check "after its window closes the profile's browser, still running, opens the next one" \
+check "after its window closes the profile's browser, still running, opens the next one, unpaired with no token" \
   "103 6 http://cco-checkout3.t3.localhost:13780/" "$(windows_of "$P3")"
-check "which is scoped too: the browser kept its DevTools port" "$SCOPE3" "$(cat "$SIM/scoped")"
+check "without waiting for a token: the profile paired before" "yes" "$( (( SECONDS - started < 5 )) && echo yes)"
+check "which is scoped too, without linking FTW again: the browser kept its DevTools port" "$SCOPE3 | " "$(cat "$SIM/scoped")"
+T3_PAIRING_TOKEN_WAIT=0
 
 sim_reset
+pool cco.example.com TOKEN3
+reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
+check "with no FTW token the window is still opened and scoped, without the link" "$SCOPE3 | " "$(cat "$SIM/scoped")"
+check "which warns once, and is not remembered as linked" "1 1 no" \
+  "$failures $(grep -c 'no pairing token from ftw.example.com' "$SIM/out") $([[ -e "$P3/.t3-linked/ftw.example.com" ]] && echo yes || echo no)"
+
+sim_reset
+pool cco.example.com TOKEN3
+pool ftw.example.com FTWTOKEN
+curl() { [[ "$*" != *":23780/"* ]]; }
+reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
+check "an FTW server that does not answer is not linked, and its token is kept" "$SCOPE3 | 1" \
+  "$(cat "$SIM/scoped")$(pooled ftw.example.com)"
+
+sim_reset
+pool ftw.example.com FTWTOKEN
 pid=$(sim_start_browser "$P3" --user-data-dir="$P3" --app=http://cco-checkout3.t3.localhost:13783/)
 sim_window "$pid" "cco-checkout3.t3.localhost" "http://cco-checkout3.t3.localhost:13783/"
 awk -F'\t' -v OFS='\t' '{ $4 = "6" } 1' "$SIM/windows" > "$SIM/w" && mv "$SIM/w" "$SIM/windows"
@@ -223,8 +272,10 @@ check "a window left on an error page is replaced" "103 6 http://cco-checkout3.t
 check "but a browser from before the DevTools port cannot have its window scoped" "" "$(cat "$SIM/scoped")"
 check "which warns once, saying to quit that browser" "1 1" \
   "$failures $(grep -c 'quit that Chrome (Cmd+Q in the window) and rerun' "$SIM/out")"
+check "and takes no token for a link it cannot make" "1" "$(pooled ftw.example.com)"
 
 sim_reset
+pool ftw.example.com FTWTOKEN
 SCOPE_FAILS=1
 reconcile_t3_window 4 "T3: ws4" > "$SIM/out" 2>&1
 check "a window whose scoping fails stays on its workspace" "102 4 http://cco-checkout2.t3.localhost:13780/" "$(windows_of "$P2")"

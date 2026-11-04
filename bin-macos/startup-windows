@@ -165,19 +165,27 @@ chrome_restore_settled=false
 # (NON_LAYOUT_TITLE_PATTERN); an overlay does not follow its parent across
 # workspaces, so nothing here can keep one next to the window it belongs to.
 # Each devserver workspace's T3 Code window is a Chrome app window running in
-# that workspace's own Chrome profile, on its devserver's one T3 Code server
-# (t3@checkouts, systemd/t3@.service), whose projects are every checkout there;
-# a window this script opens starts its new threads in its own checkout
-# (t3-window-scope). Titles cannot tell these windows apart (they share one,
+# that workspace's own Chrome profile, served by its devserver's one T3 Code
+# server (t3@checkouts, systemd/t3@.service), whose projects are every checkout
+# there, and linked to every other devserver's, so each window lists, searches
+# and starts threads on all of them; a window this script opens starts its new
+# threads in its own checkout (t3-window-scope). Titles cannot tell these windows apart (they share one,
 # or show an error page's host before the tunnel is up), so the profile of the
 # owning Chrome process identifies a window's workspace and keeps it out of the
 # Chrome slots and sweeps below.
 T3_CHROME_DATA_ROOT="$HOME/.t3-workspace-chrome"
-# Pairing tokens bin-macos/nvs-tunnels saved from each devserver's session, as
-# HOST/checkoutN. Every window this script creates opens on /pair with one when
-# one is available; pairing an already paired profile again is harmless.
+# Pairing tokens bin-macos/nvs-tunnels pools from each devserver's session, a
+# file each in HOST/. A window this script creates opens on /pair with one of
+# its own host's, and links each other host's server with one of that host's.
+# A new profile waits up to T3_PAIRING_TOKEN_WAIT seconds for each; a profile
+# that has paired before takes one only when one is there. Tokens last 12 hours,
+# so older files are dropped.
 T3_PAIRING_DIR="${T3_PAIRING_DIR:-$HOME/.local/state/t3-pairing}"
+T3_PAIRING_TOKEN_WAIT="${T3_PAIRING_TOKEN_WAIT:-30}"
+T3_PAIRING_TOKEN_MAX_AGE_MIN=660
+T3_SERVER_WAIT="${T3_SERVER_WAIT:-60}"
 t3_waited_hosts=""
+t3_unreachable_hosts=""
 T3_TITLE_PATTERN="^T3 Code"
 
 OMNIGENT_APP="Omnigent"
@@ -574,14 +582,14 @@ tunnel_command_is_current() {
   expected="${local_port}:${OMNIGENT_PORT}"
   echo "$cmds" | grep -F -- "-t " | grep -F -- "$expected" >/dev/null || return 1
   if [[ "$STARTUP_T3_WINDOWS" == 1 ]]; then
-    # Likewise the host's T3 Code forward and a session that mints T3 Code
-    # pairing tokens (nvs-tunnels' remote command), so a tunnel started before
-    # nvs-tunnels made them, or with a forward per checkout from when each had
-    # a server, is rebuilt rather than kept.
+    # Likewise the host's T3 Code forward and a session that mints a pool of
+    # T3 Code pairing tokens (nvs-tunnels' remote command), so a tunnel started
+    # before nvs-tunnels made them, with a forward per checkout from when each
+    # had a server, or minting a token per checkout, is rebuilt rather than kept.
     expected=$(t3_forwards_for_host "$host")
     if [[ -n "$expected" ]]; then
       echo "$cmds" | grep -F -- "-t " | grep -F -- "$expected" >/dev/null || return 1
-      echo "$cmds" | grep -F -- "t3-pairing-tokens" >/dev/null || return 1
+      echo "$cmds" | grep -E -- "t3-pairing-tokens [0-9]+" >/dev/null || return 1
     fi
   fi
 
@@ -861,34 +869,61 @@ t3_workspace_window() {
   printf '%s/%s\t%s\n' "$T3_CHROME_DATA_ROOT" "${origin%.t3.localhost}" "$row"
 }
 
-# t3_wait_for_server DEVSERVER URL CHECKOUT — before the first window for a
-# devserver, wait (up to 60s, while its tunnel may be reconnecting or waiting on
-# Duo) for the URL to answer and that checkout's pairing token to arrive. A
-# window opened earlier lands on an error page that never retries.
+# t3_links WS -> "DEVSERVER<TAB>URL<TAB>LABEL" for each other devserver's T3 Code
+# server, which workspace WS's window links: its tunnel forward here, and the
+# prefix its nvs sessions share (CCO, FTW).
+t3_links() {
+  workspaces --json 2>/dev/null | jq -r --arg ws "$1" '
+    [.workspaces[] | select(.kind == "devserver" and (.t3Url // "") != "")] as $rows
+    | ($rows[] | select(.workspace == $ws) | .host) as $own
+    | [$rows[] | select(.host != $own)] | group_by(.host)[] | first
+    | [.host, ("http://127.0.0.1:" + (.t3Url | capture(":(?<port>[0-9]+)/").port)), (.nvsSession | split("-") | first)]
+    | @tsv'
+}
+
+# t3_wait_for_server DEVSERVER URL — before the first window or link for a
+# devserver, wait (up to T3_SERVER_WAIT seconds, while its tunnel may be
+# reconnecting or waiting on Duo) for its server to answer at URL. A window
+# opened earlier lands on an error page that never retries. Fails, warning
+# once, when it does not answer.
 t3_wait_for_server() {
-  local host="$1" url="$2" checkout="$3" port
+  local host="$1" url="$2" port deadline
+  [[ " $t3_unreachable_hosts " != *" $host "* ]] || return 1
   [[ " $t3_waited_hosts " != *" $host "* ]] || return 0
-  t3_waited_hosts+=" $host"
   port="${url##*:}"
   port="${port%%/*}"
-  for _ in $(seq 1 120); do
-    if curl -s --noproxy '*' -o /dev/null -m 2 "http://127.0.0.1:$port/" \
-      && [[ -s "$T3_PAIRING_DIR/$host/$checkout" ]]; then
-      return 0
+  deadline=$((SECONDS + T3_SERVER_WAIT))
+  until curl -s --noproxy '*' -o /dev/null -m 2 "http://127.0.0.1:$port/"; do
+    if (( SECONDS >= deadline )); then
+      echo "WARNING: [T3] $host's T3 Code server did not answer within ${T3_SERVER_WAIT}s" >&2
+      t3_unreachable_hosts+=" $host"
+      return 1
     fi
     sleep 0.5
   done
-  echo "WARNING: [T3] $host's T3 Code server or $checkout's pairing token did not arrive within 60s" >&2
+  t3_waited_hosts+=" $host"
 }
 
-# t3_take_pairing_token DEVSERVER CHECKOUT -> a token nvs-tunnels saved, removed
-# so it is used once; nothing when none is saved.
+# t3_take_pairing_token DEVSERVER [WAIT] -> a token from that devserver's pool,
+# removed so it is used once, waiting up to WAIT seconds for nvs-tunnels to pool
+# one; nothing when none comes.
 t3_take_pairing_token() {
-  local file="$T3_PAIRING_DIR/$1/$2" token
-  [[ -s "$file" ]] || return 0
-  token=$(head -n 1 "$file")
-  rm -f "$file"
-  printf '%s\n' "$token"
+  local dir="$T3_PAIRING_DIR/$1" deadline=$((SECONDS + ${2:-0})) file token
+  while true; do
+    find "$dir" -type f -mmin "+$T3_PAIRING_TOKEN_MAX_AGE_MIN" -delete 2>/dev/null || true
+    file=$(find "$dir" -type f 2>/dev/null | head -n 1 || true)
+    if [[ -n "$file" ]]; then
+      token=$(head -n 1 "$file")
+      rm -f "$file"
+      if [[ -n "$token" ]]; then
+        printf '%s\n' "$token"
+        return 0
+      fi
+      continue
+    fi
+    (( SECONDS < deadline )) || return 0
+    sleep 0.5
+  done
 }
 
 # t3_window_title WINDOW_ID -> its title.
@@ -944,6 +979,8 @@ t3_profile_debuggable() {
 # new threads in the workspace's checkout. Problems count in $failures.
 reconcile_t3_window() {
   local ws="$1" title="$2" row profile url host checkout workdir window_id token open_url created=false
+  local fresh_profile=false wait link_host link_url link_label link_token scope_rc
+  local link_args=() link_tokens=() link_hosts=()
   row=$(t3_workspace_window "$ws") || row=""
   if [[ -z "$row" ]]; then
     echo "WARNING: [$title] workspace $ws has no T3 Code server; skipping" >&2
@@ -966,8 +1003,13 @@ reconcile_t3_window() {
     echo "[$title] assigning T3 Code window $window_id to workspace $ws..."
   else
     echo "[$title] opening $url on workspace $ws..."
-    t3_wait_for_server "$host" "$url" "$checkout"
-    token=$(t3_take_pairing_token "$host" "$checkout")
+    t3_wait_for_server "$host" "$url" || true
+    # A profile that has paired before keeps its session cookie, so only a new
+    # one waits for a token.
+    [[ -d "$profile" ]] || fresh_profile=true
+    wait=0
+    [[ "$fresh_profile" == false ]] || wait="$T3_PAIRING_TOKEN_WAIT"
+    token=$(t3_take_pairing_token "$host" "$wait")
     open_url="$url${token:+pair#token=$token}"
     mkdir -p "$profile"
     if ! t3_profile_running "$profile"; then
@@ -1011,10 +1053,35 @@ reconcile_t3_window() {
       echo "         startup-windows passed one), so window $window_id's new threads may not start" >&2
       echo "         in $workdir; quit that Chrome (Cmd+Q in the window) and rerun" >&2
       ((failures++)) || true
-    elif ! t3-window-scope "$profile" "${url%/}" "$workdir"; then
-      echo "WARNING: [$title] could not start window $window_id's new threads in $workdir;" >&2
-      echo "         they may start in another checkout" >&2
-      ((failures++)) || true
+    else
+      # Each other devserver's server the profile has not linked yet (a marker
+      # per host in the profile, written once a link held), with a token of its own.
+      while IFS=$'\t' read -r link_host link_url link_label; do
+        [[ -n "$link_host" && ! -e "$profile/.t3-linked/$link_host" ]] || continue
+        t3_wait_for_server "$link_host" "$link_url" || continue
+        link_token=$(t3_take_pairing_token "$link_host" "$T3_PAIRING_TOKEN_WAIT")
+        if [[ -z "$link_token" ]]; then
+          echo "WARNING: [$title] no pairing token from $link_host; window $window_id does not list its threads" >&2
+          ((failures++)) || true
+          continue
+        fi
+        link_args+=(--link "$link_url" "$link_label")
+        link_tokens+=("$link_token")
+        link_hosts+=("$link_host")
+      done < <(t3_links "$ws")
+      scope_rc=0
+      { [[ ${#link_tokens[@]} -eq 0 ]] || printf '%s\n' "${link_tokens[@]}"; } \
+        | t3-window-scope "$profile" "${url%/}" "$workdir" ${link_args[@]+"${link_args[@]}"} || scope_rc=$?
+      if [[ "$scope_rc" -eq 0 ]]; then
+        mkdir -p "$profile/.t3-linked"
+        for link_host in ${link_hosts[@]+"${link_hosts[@]}"}; do
+          : > "$profile/.t3-linked/$link_host"
+        done
+      else
+        echo "WARNING: [$title] could not start window $window_id's new threads in $workdir," >&2
+        echo "         or link every other devserver's T3 Code server (see above)" >&2
+        ((failures++)) || true
+      fi
     fi
   fi
   SNAPSHOT=$(snapshot_windows)

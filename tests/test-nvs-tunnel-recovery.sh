@@ -44,7 +44,8 @@ case "$FAKE_MODE" in
     ;;
   t3pair)
     echo "NVS_TUNNEL_READY"
-    echo "T3_PAIR checkout1 TOKENabc123"
+    echo "T3_PAIR TOKENabc123"
+    echo "T3_PAIR TOKENdef456"
     sleep 0.5
     ;;
   ready)
@@ -145,7 +146,7 @@ STARTUP_T3_WINDOWS=1
 TRANSPORT_STATE=connected
 TUNNEL_HOST=primary.example.com
 TUNNEL_FORWARDS="7001:7001,16767:6767,41780:4780"
-TUNNEL_REMOTE='($HOME/dotfiles/bin/t3-pairing-tokens || true) & nvs-status; exec sleep infinity'
+TUNNEL_REMOTE='($HOME/dotfiles/bin/t3-pairing-tokens 14 || true) & nvs-status; exec sleep infinity'
 
 workspaces() {
   echo '{"workspaces":[{"workspace":"2","kind":"devserver","host":"primary.example.com","checkout":"/home/u/checkout1"}]}'
@@ -185,17 +186,21 @@ lsof() {
   return 1
 }
 
-echo "2b. T3 Code pairing tokens from the session are saved privately, not shown"
+echo "2b. T3 Code pairing tokens from the session are pooled privately, not shown, replacing an earlier session's"
 export FAKE_MODE=t3pair
+mkdir -p "$TMP/pairing/primary.example.com"
+echo STALEtoken > "$TMP/pairing/primary.example.com/token.old"
 T3_PAIRING_DIR="$TMP/pairing" run_tunnels 1 primary.example.com TEST-checkout1 > "$TMP/t3pair.out" 2>&1 || true
-[[ "$(cat "$TMP/pairing/primary.example.com/checkout1" 2>/dev/null)" == TOKENabc123 ]] \
-  || fail "pairing token was not saved for primary.example.com/checkout1"
-[[ "$(stat -c %a "$TMP/pairing/primary.example.com/checkout1" 2>/dev/null || stat -f %Lp "$TMP/pairing/primary.example.com/checkout1")" == 600 ]] \
-  || fail "pairing token file is not private"
+[[ "$(cat "$TMP/pairing/primary.example.com/"* 2>/dev/null | sort | tr '\n' ' ')" == "TOKENabc123 TOKENdef456 " ]] \
+  || fail "the pool of primary.example.com is not exactly this session's tokens: $(cat "$TMP/pairing/primary.example.com/"* 2>/dev/null | tr '\n' ' ')"
+for token_file in "$TMP/pairing/primary.example.com/"*; do
+  [[ "$(stat -c %a "$token_file" 2>/dev/null || stat -f %Lp "$token_file")" == 600 ]] \
+    || fail "pairing token file $token_file is not private"
+done
 if grep -Fq TOKENabc123 "$TMP/t3pair.out"; then
   fail "pairing token was printed to the tunnel window"
 fi
-grep -Fq -- "t3-pairing-tokens" "$FAKE_ARGS" || fail "remote command does not mint T3 Code pairing tokens"
+grep -Eq -- "t3-pairing-tokens [0-9]+" "$FAKE_ARGS" || fail "remote command does not mint a pool of T3 Code pairing tokens"
 
 echo "2c. a candidate's tunnel forwards its one T3 Code server, the forward startup-windows expects"
 export FAKE_MODE=ready
@@ -250,6 +255,10 @@ TUNNEL_FORWARDS="7001:7001,16767:6767,41780:4780"
 TUNNEL_REMOTE='nvs-status; exec sleep infinity'
 if tunnel_command_is_current primary.example.com; then
   fail "tunnel without the pairing-token step was classified as current"
+fi
+TUNNEL_REMOTE='($HOME/dotfiles/bin/t3-pairing-tokens || true) & nvs-status; exec sleep infinity'
+if tunnel_command_is_current primary.example.com; then
+  fail "tunnel minting a token per checkout, from before the pool, was classified as current"
 fi
 
 echo "7b. a candidate with no devserver workspace needs no T3 Code forward"
