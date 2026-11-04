@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Start a T3 Code window's new threads in one project, with all projects in its sidebar.
 
-Usage: t3-window-scope PROFILE_DIR ORIGIN WORKDIR
+Usage: t3-window-scope PROFILE_DIR ORIGIN WORKDIR [--link URL LABEL]...
 
 PROFILE_DIR is the window's Chrome --user-data-dir, ORIGIN its page's origin
 (http://<name>.t3.localhost:<port>), WORKDIR a project on that server: its
@@ -10,6 +10,17 @@ bin-linux/startup-windows (an absolute path) and bin-macos/startup-windows
 (~/checkoutN: its servers are on the devservers, whose home it does not know)
 run this once for every T3 Code window they open.
 
+Each --link URL LABEL first saves another T3 Code server in the window, so it
+lists, searches and starts threads there too: the Mac's windows each pair with
+every devserver's server, not only their own. Its one-time pairing token is the
+next line of stdin, so it stays out of every process's arguments. The window
+opens /pair?host=URL&label=LABEL#token=TOKEN on its own origin, the pairing link
+T3 Code saves a remote environment from (apps/web/src/hostedPairing.ts), and the
+link holds once the window's saved connections (IndexedDB
+t3code:connection-runtime, store catalog, key document) name URL's environment.
+A window that already has it is not paired again. URL must answer here, as the
+helper reads its environment id itself.
+
 T3 Code has no URL or setting that opens a window on a project. What it has,
 verified against 0.1.6, is client state in the page's localStorage, which is
 per profile and per origin, so per window:
@@ -17,7 +28,10 @@ per profile and per origin, so per window:
   t3code:ui-state:v1         projectOrder: where a new thread goes when the
                              page shows no thread or draft of a project
                              (resolveDefaultProjectRef, hooks/useHandleNewThread.ts);
-                             WORKDIR's legacy-project-cwd key goes first.
+                             WORKDIR's ENVIRONMENT_ID:ROOT key goes first
+                             (getProjectOrderKey, projectGrouping.ts), as the
+                             same root can be a project on several linked
+                             servers, then its legacy-project-cwd key.
                              sidebarProjectScopeKeys: the project groups the
                              sidebar lists (sidebarProjectGrouping.ts), emptied
                              so it lists all of them. Every window shows every
@@ -66,6 +80,12 @@ COMPOSER_DRAFTS_KEY = "t3code:composer-drafts:v1"
 DESCRIPTOR_PATH = "/.well-known/t3/environment"
 PROJECTS_PATH = "/api/projects"
 NO_PROJECT_PATH = "/new"
+PAIR_PATH = "/pair"
+CONNECTIONS_DB = "t3code:connection-runtime"
+# What the pairing page says when a link failed: newer releases name the
+# failure, 0.1.6 falls back to its form for pasting a token by hand.
+LINK_REFUSED = ("request a new pairing link", "missing its backend host or token", "Paste a one-time token")
+NAVIGATE_RETRY = 5.0
 LEGACY_PROJECT_CWD_PREFIX = "legacy-project-cwd:"
 HOME_RELATIVE = "~/"
 # Input.dispatchKeyEvent's modifier bits.
@@ -110,13 +130,14 @@ def parsed_document(raw: str | None) -> dict[str, Any]:
     return doc if isinstance(doc, dict) else {}
 
 
-def scoped_ui_state(doc: dict[str, Any], workspace_root: str) -> dict[str, Any]:
-    first = LEGACY_PROJECT_CWD_PREFIX + normalized_path(workspace_root)
+def scoped_ui_state(doc: dict[str, Any], environment_id: str, workspace_root: str) -> dict[str, Any]:
+    root = normalized_path(workspace_root)
+    first = [f"{environment_id}:{root}", LEGACY_PROJECT_CWD_PREFIX + root]
     order = doc.get("projectOrder")
-    rest = [entry for entry in order if entry != first] if isinstance(order, list) else []
+    rest = [entry for entry in order if entry not in first] if isinstance(order, list) else []
     return {
         **doc,
-        "projectOrder": [first, *rest],
+        "projectOrder": [*first, *rest],
         "sidebarProjectScopeKeys": [],
         "sidebarProjectScopeKey": None,
     }
@@ -146,6 +167,16 @@ def project_for(projects: list[dict[str, Any]], workdir: str) -> dict[str, Any]:
     if len(matches) > 1:
         raise ScopeError(f"{workdir} could be any of its projects {', '.join(sorted(root(p) for p in matches))}")
     return matches[0]
+
+
+def pairing_link(origin: str, url: str, label: str, token: str) -> str:
+    query = urllib.parse.urlencode({"host": url, "label": label})
+    return f"{origin}{PAIR_PATH}?{query}#token={urllib.parse.quote(token, safe='')}"
+
+
+def link_refused(text: str) -> bool:
+    """Whether the pairing page says the link failed."""
+    return any(refused in text for refused in LINK_REFUSED)
 
 
 def new_local_key(platform: str) -> dict[str, Any]:
@@ -178,6 +209,11 @@ def app_page(targets: list[dict[str, Any]], origin: str) -> dict[str, Any] | Non
         ):
             return target
     return None
+
+
+def environment_id(url: str) -> str:
+    with LOOPBACK.open(url + DESCRIPTOR_PATH, timeout=HTTP_TIMEOUT) as response:
+        return json.load(response)["environmentId"]
 
 
 def debug_targets(profile_dir: str) -> list[dict[str, Any]] | None:
@@ -292,13 +328,20 @@ class DevTools:
 
 
 def navigate(devtools: DevTools, url: str, deadline: float) -> None:
-    devtools.call("Page.navigate", {"url": url})
+    """Page.navigate to URL until the page has loaded there. Right after pairing
+    the app's own redirect can replace the navigation, so it is sent again."""
     path = urllib.parse.urlsplit(url).path
-    until(
-        deadline,
-        f"{url} to load",
-        lambda: devtools.evaluate("[location.pathname, document.readyState]") == [path, "complete"] or None,
-    )
+
+    def attempt() -> bool | None:
+        devtools.call("Page.navigate", {"url": url})
+        settle = min(deadline, time.monotonic() + NAVIGATE_RETRY)
+        while time.monotonic() < settle:
+            if devtools.evaluate("[location.pathname, document.readyState]") == [path, "complete"]:
+                return True
+            time.sleep(POLL)
+        return None
+
+    until(deadline, f"{url} to load", attempt)
 
 
 def fetch_json(devtools: DevTools, path: str):
@@ -316,6 +359,50 @@ def press(devtools: DevTools, key: dict[str, Any]) -> None:
             "Input.dispatchKeyEvent",
             {"type": kind, "nativeVirtualKeyCode": key["windowsVirtualKeyCode"], **key},
         )
+
+
+def saved_environment_ids(devtools: DevTools) -> list[str]:
+    """The environments the window's saved connections name. The database is
+    opened only when it exists: opening a missing one would create it empty, at
+    a version the app then never upgrades."""
+    return devtools.evaluate(
+        "(async () => {"
+        f" const name = {json.dumps(CONNECTIONS_DB)};"
+        " if (!(await indexedDB.databases()).some(d => d.name === name)) return [];"
+        " const db = await new Promise((ok, no) => { const r = indexedDB.open(name);"
+        " r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });"
+        " try {"
+        "  if (!db.objectStoreNames.contains('catalog')) return [];"
+        "  const raw = await new Promise((ok, no) => { const r = db.transaction('catalog').objectStore('catalog')"
+        ".get('document'); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });"
+        "  const doc = typeof raw === 'string' ? JSON.parse(raw) : raw;"
+        "  return (doc?.targets ?? []).map(t => t.environmentId).filter(Boolean);"
+        " } finally { db.close(); } })()",
+        await_promise=True,
+    ) or []
+
+
+def link(devtools: DevTools, origin: str, url: str, label: str, token: str, deadline: float) -> None:
+    try:
+        wanted = environment_id(url)
+    except (OSError, ValueError, KeyError) as exc:
+        raise ScopeError(f"could not save {label}: {url} does not answer as a T3 Code server ({exc})") from exc
+    if wanted in saved_environment_ids(devtools):
+        return
+    devtools.call("Page.navigate", {"url": pairing_link(origin, url, label, token)})
+
+    def verdict() -> bool | None:
+        if wanted in saved_environment_ids(devtools):
+            return True
+        return False if link_refused(devtools.evaluate("document.body ? document.body.innerText : ''") or "") else None
+
+    try:
+        saved = until(deadline, f"{label} ({url}) to be saved", verdict)
+    except ScopeError as exc:
+        raise ScopeError(f"could not save {label}: {exc}") from exc
+    if not saved:
+        text = devtools.evaluate("document.body.innerText") or ""
+        raise ScopeError(f"could not save {label} ({url}): {' '.join(text.split())[:300]}")
 
 
 def draft_project_id(devtools: DevTools) -> str | None:
@@ -352,10 +439,14 @@ def open_draft(devtools: DevTools, deadline: float) -> str:
     return until(deadline, "a new-thread draft (chat.newLocal, mod+shift+n)", attempt)
 
 
-def scope(profile_dir: str, origin: str, workdir: str) -> str:
-    deadline = time.monotonic() + WAIT
+def scope(
+    profile_dir: str, origin: str, workdir: str, links: list[tuple[str, str, str]]
+) -> tuple[str, dict[str, str]]:
+    """The title of WORKDIR's project, and why each link that failed did, by
+    label; ScopeError when the window could not be scoped."""
+    started = time.monotonic()
     page = until(
-        deadline,
+        started + WAIT,
         f"a paired T3 Code page on {origin} in {profile_dir}'s DevTools (Chrome needs --remote-debugging-port)",
         lambda: app_page(debug_targets(profile_dir) or [], origin),
     )
@@ -364,22 +455,34 @@ def scope(profile_dir: str, origin: str, workdir: str) -> str:
     except OSError as exc:
         raise ScopeError(f"cannot open {origin}'s page over DevTools ({exc})") from exc
     left_app = True
+    link_failures: dict[str, str] = {}
     try:
+        if links:
+            # From a page with no app code, so the pairing link's navigation
+            # cannot be replaced by a redirect of the app's own.
+            navigate(devtools, origin + DESCRIPTOR_PATH, started + WAIT)
+        for url, label, token in links:
+            try:
+                link(devtools, origin, url, label, token, time.monotonic() + WAIT)
+            except (ScopeError, OSError) as exc:
+                link_failures[label] = str(exc)
+        deadline = time.monotonic() + WAIT
         navigate(devtools, origin + DESCRIPTOR_PATH, deadline)
         try:
             project = project_for(fetch_json(devtools, PROJECTS_PATH)["projects"], workdir)
         except ScopeError as exc:
             raise ScopeError(f"{origin}: {exc}") from exc
         root = project["workspaceRoot"]
+        environment_id = fetch_json(devtools, DESCRIPTOR_PATH)["environmentId"]
         stored = devtools.evaluate(f"localStorage.getItem({json.dumps(UI_STATE_KEY)})")
-        ui_state = scoped_ui_state(parsed_document(stored), root)
+        ui_state = scoped_ui_state(parsed_document(stored), environment_id, root)
         devtools.evaluate(f"localStorage.setItem({json.dumps(UI_STATE_KEY)}, {json.dumps(json.dumps(ui_state))})")
         navigate(devtools, origin + NO_PROJECT_PATH, deadline)
         project_id = open_draft(devtools, deadline)
         left_app = False
         if project_id != project["id"]:
             raise ScopeError(f"chat.newLocal opened a draft in project {project_id}, not {project['id']} ({root})")
-        return project.get("title") or root
+        return project.get("title") or root, link_failures
     except (OSError, KeyError, TypeError, ValueError) as exc:
         raise ScopeError(f"{origin}: {exc}") from exc
     finally:
@@ -392,18 +495,41 @@ def scope(profile_dir: str, origin: str, workdir: str) -> str:
         devtools.close()
 
 
+def parsed_args(argv: list[str]) -> tuple[str, str, str, list[tuple[str, str]]] | None:
+    if len(argv) < 3 or not valid_workdir(argv[2]):
+        return None
+    rest = argv[3:]
+    links: list[tuple[str, str]] = []
+    while rest:
+        if len(rest) < 3 or rest[0] != "--link" or not rest[1].startswith(("http://", "https://")):
+            return None
+        links.append((rest[1].rstrip("/"), rest[2]))
+        rest = rest[3:]
+    return argv[0], argv[1], argv[2], links
+
+
 def main(argv: list[str]) -> int:
-    if len(argv) != 3 or not valid_workdir(argv[2]):
+    args = parsed_args(argv)
+    if args is None:
         print(__doc__.split("\n\n")[1], file=sys.stderr)
         return 2
-    profile_dir, origin, workdir = argv
+    profile_dir, origin, workdir, link_targets = args
+    tokens = [sys.stdin.readline().strip() for _ in link_targets]
+    if not all(tokens):
+        print("t3-window-scope: each --link needs its pairing token on a line of stdin", file=sys.stderr)
+        return 2
+    links = [(url, label, token) for (url, label), token in zip(link_targets, tokens)]
     try:
-        title = scope(profile_dir, origin.rstrip("/"), workdir)
+        title, link_failures = scope(profile_dir, origin.rstrip("/"), workdir, links)
     except ScopeError as exc:
         print(f"t3-window-scope: {exc}", file=sys.stderr)
         return 1
-    print(f"t3-window-scope: {origin} starts its new threads in {title} and lists every project")
-    return 0
+    for failure in link_failures.values():
+        print(f"t3-window-scope: {origin}: {failure}", file=sys.stderr)
+    linked = [label for _, label, _ in links if label not in link_failures]
+    also = f", lists {', '.join(linked)} too," if linked else ""
+    print(f"t3-window-scope: {origin} starts its new threads in {title}{also} and lists every project")
+    return 1 if link_failures else 0
 
 
 if __name__ == "__main__":

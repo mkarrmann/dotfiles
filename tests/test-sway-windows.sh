@@ -598,16 +598,17 @@ def case(desc, expected, actual):
 case("paths compare as T3 Code compares them: trimmed, no trailing slash",
      ["/home/me/dotfiles", "/", "/home/me"],
      [scope.normalized_path(p) for p in ("/home/me/dotfiles/", "/", " /home/me// ")])
-case("a window with no stored state gets the project first and every project listed",
-     {"projectOrder": ["legacy-project-cwd:/home/me/dotfiles"],
+case("a window with no stored state gets the project first, on its own server, and every project listed",
+     {"projectOrder": ["env-1:/home/me/dotfiles", "legacy-project-cwd:/home/me/dotfiles"],
       "sidebarProjectScopeKeys": [], "sidebarProjectScopeKey": None},
-     scope.scoped_ui_state({}, "/home/me/dotfiles"))
-stored = {"projectOrder": ["env-1:/home/me/x", "legacy-project-cwd:/home/me/dotfiles"],
+     scope.scoped_ui_state({}, "env-1", "/home/me/dotfiles/"))
+stored = {"projectOrder": ["env-2:/home/me/dotfiles", "env-1:/home/me/x", "legacy-project-cwd:/home/me/dotfiles"],
           "sidebarProjectScopeKeys": ["env-1:/home/me/x", "env-1:/home/me/y"], "sidebarProjectScopeKey": None,
           "threadLastVisitedAtById": {"t": "2026-11-03T00:00:00Z"}, "pullRequestMergeMethod": "squash"}
-merged = scope.scoped_ui_state(stored, "/home/me/dotfiles")
-case("an existing order keeps its other projects, after this one and without a duplicate",
-     ["legacy-project-cwd:/home/me/dotfiles", "env-1:/home/me/x"], merged["projectOrder"])
+merged = scope.scoped_ui_state(stored, "env-1", "/home/me/dotfiles")
+case("an existing order keeps its other projects, the same path on another server too, after this one",
+     ["env-1:/home/me/dotfiles", "legacy-project-cwd:/home/me/dotfiles", "env-2:/home/me/dotfiles", "env-1:/home/me/x"],
+     merged["projectOrder"])
 case("a sidebar scope set earlier is cleared, so the sidebar lists every project", [[], None],
      [merged["sidebarProjectScopeKeys"], merged["sidebarProjectScopeKey"]])
 case("and every key the helper does not own is kept",
@@ -651,6 +652,19 @@ case("the window's page is the one on its own origin past pairing",
                       page("http://orchest.t3.localhost:3780/"), page(origin + "/sw.js", "service_worker"),
                       page(origin + "/draft/1")], origin) or {}).get("url"))
 case("a page still pairing is not taken", None, scope.app_page([page(origin + "/pair")], origin))
+case("a link to another server is the pairing link T3 Code saves a remote environment from",
+     "http://cco-checkout1.t3.localhost:13780/pair?host=http%3A%2F%2F127.0.0.1%3A23780&label=FTW#token=a%2Fb",
+     scope.pairing_link("http://cco-checkout1.t3.localhost:13780", "http://127.0.0.1:23780", "FTW", "a/b"))
+case("the pairing page says when a link failed, and not while it is still connecting", [True, True, True, False],
+     [scope.link_refused(t) for t in ("Unauthorized. If the backend accepted this one-time token, request a new pairing link before retrying.",
+                                      "This pairing link is missing its backend host or token.",
+                                      "Pair with this environment\nPairing token\nPaste a one-time token or pairing secret",
+                                      "Pairing with this environment\nValidating the pairing link and preparing your session.")])
+case("links follow the workdir, each a URL and a label",
+     [("p", "o", "~/checkout1", [("http://127.0.0.1:23780", "FTW")]), None, None],
+     [scope.parsed_args(a) for a in (["p", "o", "~/checkout1", "--link", "http://127.0.0.1:23780/", "FTW"],
+                                     ["p", "o", "~/checkout1", "--link", "http://127.0.0.1:23780"],
+                                     ["p", "o", "~/checkout1", "--link", "127.0.0.1:23780", "FTW"])])
 stale = socket.socket(); stale.bind(("127.0.0.1", 0)); stale_port = stale.getsockname()[1]; stale.close()
 os.makedirs(f"{tmp}/stale-profile", exist_ok=True)
 open(f"{tmp}/stale-profile/DevToolsActivePort", "w").write(f"{stale_port}\n/devtools/browser/x\n")
