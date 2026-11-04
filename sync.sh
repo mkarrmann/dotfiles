@@ -976,7 +976,7 @@ if [[ "$DOTFILES_PROFILE" == desktop && "$(uname -s)" == Linux ]]; then
   mkdir -p "$HOME/.config/systemd/user"
   link_one "$DOTFILES_DIR/systemd/desktop/app-terminals.slice" \
     "$HOME/.config/systemd/user/app-terminals.slice"
-  # Per-workspace T3 Code servers; see bin/t3-ensure. Staged only, with no
+  # The desktop's one T3 Code server, t3@desktop; see bin/t3-ensure. Staged only, with no
   # daemon-reload: t3-ensure's `systemctl --user enable` reads the unit from
   # disk and reloads the manager itself before --now starts the instance.
   link_one "$DOTFILES_DIR/systemd/t3@.service" "$HOME/.config/systemd/user/t3@.service"

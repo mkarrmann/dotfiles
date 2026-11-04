@@ -5,16 +5,23 @@ owns every session: harness, TUI, policies, watcher wakeups, the Google Chat
 bridge. T3 Code reaches it through `bin/omnigent-acp`, an ACP agent registered
 as T3 Code's "Local command" ACP provider.
 
-## One server per host
+## One server per host, every window on all of them
 
 Each host runs one T3 Code server whose projects are all of its workspaces'
-directories, and each workspace gets a browser window on it: a Chrome `--app`
-window on a hostname and in a Chrome profile of its own. A server per workspace
-kept each window to its own directory, but it also split the threads, so that
-no window saw another's. Now every window lists every project and every thread,
-and only where its new threads start is per window (see "A window's project").
-T3 Code's desktop app is single-window and has no way to open on a project, so
-the windows are Chrome's.
+directories: T3 Code's own model, in which a server owns its machine's projects,
+threads, files and terminals, and a client connects to every server and shows
+them as one (`~/repos/t3code/docs/internals/remote.md`). Each workspace gets a
+browser window: a Chrome `--app` window on a hostname and in a Chrome profile of
+its own, served by its host's server and, at work, linked to every other
+devserver's, so every window lists, searches (Cmd+K) and starts threads on every
+host. Only where its new threads start is per window (see "A window's
+project"). T3 Code's desktop app is single-window and has no way to open on a
+project, so the windows are Chrome's.
+
+A thread stays on the server it started on: T3 Code moves a draft between
+machines (Cmd+Shift+H) but neither moves nor forks a sent thread to another
+server, and its fork always stays on the source thread's server. The Omnigent
+session behind a thread likewise runs on that host.
 
 ## Work: devservers and the Mac
 
@@ -31,7 +38,8 @@ the windows are Chrome's.
 - `t3@checkouts` listens on `127.0.0.1:T3_BASE_PORT`. `bin-macos/nvs-tunnels`
   forwards it to the Mac once per candidate, on `T3_PRIMARY_TUNNEL_BASE_PORT`
   or `T3_STANDBY_TUNNEL_BASE_PORT` (`omnigent_config/topology.env`); every
-  window on that devserver shares the forward. A tunnel picks a new forward up
+  window shares the forwards, its own host's as the page's server and the
+  other's as a linked one. A tunnel picks a new forward up
   only when it restarts; with T3 Code windows on, `startup-windows` rebuilds a
   tunnel that lacks it, as it does one that lacks its Omnigent forward.
 - `bin-macos/workspaces` gives each devserver workspace a `t3Url` on its host's
@@ -41,10 +49,14 @@ the windows are Chrome's.
   browser's command line, is how the script tells the windows apart (they share
   a title); the hostname keeps each window's cookies and localStorage its own.
 - A window `startup-windows` opens starts its new threads in its workspace's
-  checkout (`bin/t3-window-scope PROFILE ORIGIN ~/checkoutN`): the Mac knows a
+  checkout and links every other devserver's server
+  (`bin/t3-window-scope PROFILE ORIGIN ~/checkoutN --link http://127.0.0.1:PORT LABEL`,
+  the label the prefix of that host's nvs sessions, CCO or FTW): the Mac knows a
   checkout only by its place under the devserver's home, and `~/checkoutN` is
-  the one live project whose root ends in `/checkoutN`. A window it finds is
-  left as it is. The DevTools port the helper needs is on the launch that starts
+  the one live project whose root ends in `/checkoutN` on the window's own
+  server. A link that held is remembered in the profile
+  (`.t3-linked/HOST`), so a reopened window is not linked again. A window it
+  finds is left as it is. The DevTools port the helper needs is on the launch that starts
   the profile's browser (`--no-startup-window --remote-debugging-port=0`): on
   macOS a later `open -na ... --app=` hands its window to the running browser,
   which ignores new flags, and a browser outlives its last window. So a profile
@@ -54,17 +66,23 @@ the windows are Chrome's.
 
 ## Pairing at work
 
-A pairing token is good once, so each window still pairs with one of its own:
-`nvs-tunnels`' remote command runs `bin/t3-pairing-tokens` inside the ET session
-it already authenticated, which mints a 12-hour token per `~/checkoutN` from
-`t3@checkouts` (none while it is not running); `nvs-tunnels` saves them as
-`~/.local/state/t3-pairing/HOST/checkoutN` (not shown in the tunnel window).
-Before `startup-windows` creates a devserver's first window it waits for the
-server to answer through the tunnel and for that checkout's token, then opens
-every window it creates on `/pair` while a token is available. A window it finds
-on an error page (opened before its tunnel was up) is replaced. A window that
-still asks to pair needs a fresh token: reconnect the tunnel, close the window,
-and rerun `startup-windows`.
+A pairing token is good once, and every window pairs with each devserver's
+server, so each host keeps a pool: `nvs-tunnels`' remote command runs
+`bin/t3-pairing-tokens COUNT` inside the ET session it already authenticated,
+which mints COUNT 12-hour tokens from `t3@checkouts` (none while it is not
+running), twice the Mac's devserver windows so reopened windows have some too.
+`nvs-tunnels` pools them, a file each, in `~/.local/state/t3-pairing/HOST/` (not
+shown in the tunnel window), and empties that pool when a session starts, as
+its tokens came from the session before; `startup-windows` drops tokens past
+11 hours. Before a host's first window or link `startup-windows` waits up to
+60 s for its server to answer through the tunnel. A window it creates opens on
+`/pair` with a token of its own host's, and links each other host with a token
+of that host's; a new profile waits up to 30 s for each, while a profile that
+paired before (its session cookie lasts about 30 days) takes one only when one
+is there. A window it finds on an error page (opened before its tunnel was up)
+is replaced. A window that still asks to pair, or does not list another host's
+threads, needs fresh tokens: reconnect the tunnel, close the window, and rerun
+`startup-windows`.
 
 ## Enabling at work
 
@@ -79,9 +97,9 @@ To turn it on:
    quit every T3 Code window from the old design (Cmd+Q in it: closing the
    window leaves its browser running without a DevTools port).
 3. Run `STARTUP_T3_WINDOWS=1 ~/bin/startup-windows`. It finds both tunnels
-   without their new forward and restarts them (expect Duo), then opens each
-   window, paired and scoped as it is created; that first run takes a few
-   seconds more per window. To keep the windows, set the default of
+   without their new forward or token pool and restarts them (expect Duo), then
+   opens each window, paired with both servers and scoped as it is created; that
+   first run takes a few seconds more per window. To keep the windows, set the default of
    `STARTUP_T3_WINDOWS` in `bin-macos/startup-windows` to 1.
 
 ## Linux desktop
@@ -124,10 +142,15 @@ start in; it is client state in the page's localStorage, per profile and per
 origin, so per window. `bin/t3-window-scope` reaches a new window through its
 browser's DevTools port (`--remote-debugging-port=0`: loopback only, so web
 pages cannot reach it, local processes can, as they can the Omnigent app's
-port on the desktop and the hub's on the Mac), writes `projectOrder` with the
-project first and clears any sidebar scope (`t3code:ui-state:v1`,
-`apps/web/src/uiStateStore.ts`), and leaves the window on a draft in the
-project, which the app opens itself (`chat.newLocal`, mod+shift+n, from `/new`;
+port on the desktop and the hub's on the Mac). It first saves each `--link`
+server in the window by opening T3 Code's pairing link for it,
+`/pair?host=URL&label=LABEL#token=TOKEN` (the token from stdin), and waits until
+the window's saved connections (IndexedDB `t3code:connection-runtime`) name that
+server's environment. It then writes `projectOrder` with the project first,
+keyed `ENVIRONMENT_ID:ROOT` as the same root (`~/checkout1`) is a project on
+both devservers (`getProjectOrderKey`, `packages/client-runtime/src/state/projectGrouping.ts`),
+clears any sidebar scope (`t3code:ui-state:v1`, `apps/web/src/uiStateStore.ts`),
+and leaves the window on a draft in the project, which the app opens itself (`chat.newLocal`, mod+shift+n, from `/new`;
 the helper presses Cmd where the page's `navigator.platform` is a Mac's, as T3
 Code reads mod, and Ctrl elsewhere).
 
@@ -160,9 +183,15 @@ Gotchas:
 
 ## Limits
 
-- Forks and side chats start a new Omnigent session seeded with a summary: T3 Code's
-  ACP registry adapter never asks an ACP agent to fork.
+- Forks and side chats start a new Omnigent session seeded with a summary, on the
+  same host: T3 Code's ACP registry adapter never asks an ACP agent to fork, and
+  T3 Code forks only within a server. Continuing on another host means a new
+  thread there.
+- Each edit's diff shows in its tool call (Claude's Edit/MultiEdit/Write,
+  Codex's apply_patch), as the edited snippet; T3 Code's checkpoint diffs and
+  git panes need a git or jj repository, which the Sapling checkouts are not.
 - Stop on a native session sends Escape, which the agent can survive.
-- Turns started outside T3 Code (wakeups, other clients) do not appear in it.
+- Turns started outside T3 Code (wakeups, other clients) do not appear in it,
+  though their approval requests do.
 - `omnigent-acp --t3-tools` gives the Claude TUI T3 Code's tools, but only with
   the token from launch; the providers above do not enable it.

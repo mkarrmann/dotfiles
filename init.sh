@@ -307,9 +307,9 @@ else
   "$DOTFILES_DIR/bin/omnigent-agents-ensure" ||
     warn "omnigent-agents-ensure failed (managed agents may be stale in the picker)"
 
-  # A T3 Code server per workspace with a t3 row in bin-linux/startup-windows,
-  # each a UI over this host's Omnigent sessions. Never restarts a running
-  # server. See bin/t3-ensure.
+  # One T3 Code server, t3@desktop, whose projects are the workdirs of
+  # bin-linux/startup-windows' t3 rows, a UI over this host's Omnigent sessions.
+  # Never restarts a running server. See bin/t3-ensure.
   if [[ "$(uname -s)" == Linux ]]; then
     "$DOTFILES_DIR/bin/t3-ensure" ||
       warn "t3-ensure failed (T3 Code over Omnigent unavailable on this desktop)"
