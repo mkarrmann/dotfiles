@@ -8,23 +8,23 @@
 # server's only project is the one it bootstrapped on its current start.
 #
 # On the work hubs NAME is a checkout: ~/checkoutN listens on
-# 127.0.0.1:T3_BASE_PORT+N (omnigent_config/topology.env). On the desktop NAME
-# is a terminal slot with a t3 row in bin-linux/startup-windows' table, which
-# gives its directory and port.
+# 127.0.0.1:T3_BASE_PORT+N (omnigent_config/topology.env). The desktop runs one
+# server for every t3 row of bin-linux/startup-windows' table: NAME is that
+# layout's t3Server, it listens on its t3Port, and its projects are the rows'
+# workdirs (bin/t3-ensure adds them).
 set -euo pipefail
 
-name="${1:?usage: t3-workspace-serve CHECKOUT|SLOT}"
+name="${1:?usage: t3-workspace-serve CHECKOUT|SERVER}"
 dotfiles="${DOTFILES_DIR:-$HOME/dotfiles}"
 
 if [[ "$("$dotfiles/bin/dotfiles-profile")" == desktop ]]; then
-  server="$("$dotfiles/bin-linux/startup-windows" --print-layout |
-    jq -c --arg slot "$name" 'first(.t3[] | select(.slot == $slot)) // empty')"
-  [[ -n "$server" ]] || {
-    echo "t3-workspace-serve: no t3 row in bin-linux/startup-windows declares slot '$name'" >&2
+  layout="$("$dotfiles/bin-linux/startup-windows" --print-layout)"
+  [[ "$name" == "$(jq -r .t3Server <<< "$layout")" ]] || {
+    echo "t3-workspace-serve: bin-linux/startup-windows' t3 server is '$(jq -r .t3Server <<< "$layout")', not '$name'" >&2
     exit 2
   }
-  workdir="$(jq -r .workdir <<< "$server")"
-  port="$(jq -r .port <<< "$server")"
+  workdir="$HOME"
+  port="$(jq -r .t3Port <<< "$layout")"
 else
   [[ "$name" =~ ^checkout([0-9]+)$ ]] || {
     echo "t3-workspace-serve: expected a checkoutN directory name, got '$name'" >&2

@@ -45,26 +45,38 @@ tunnel, close the window, and rerun `startup-windows`.
 
 ## Linux desktop
 
-The desktop runs its own servers, one per workspace, with no tunnel:
+The desktop runs one server, with no tunnel, and a window per workspace scoped
+to that workspace's project:
 
-- A `ws|t3` row in `bin-linux/startup-windows`' table declares workspace `ws`'s
-  server, named after the workspace's terminal slot (`t3@dotfiles`), serving that
-  terminal's workdir on `127.0.0.1:T3_BASE_PORT+ws`. `--print-layout` lists the
-  rows under `t3`; `bin/t3-ensure` (run by `init.sh`) enables one `t3@<slot>` per
-  row and `bin/t3-workspace-serve` resolves the instance from the same list.
-- `startup-windows` opens a row's window only while `t3@<slot>` is enabled (the
+- One server, `t3@desktop` on `127.0.0.1:3780` (`T3_SERVER` and `T3_PORT` in
+  `bin-linux/startup-windows`), whose projects are the workdirs of the table's
+  `ws|t3` rows. A server per workspace scoped each window too, but split the
+  threads so that no window saw another's. `--print-layout` lists the server as
+  `t3Server`/`t3Port` and the rows under `t3`; `bin/t3-ensure` (run by `init.sh`)
+  enables `t3@desktop` and adds each row's workdir as a project, and
+  `bin/t3-workspace-serve` reads its port from the same layout.
+- `startup-windows` opens a row's window only while `t3@desktop` is enabled (the
   row is otherwise inert): a Chrome `--app` window on
-  `http://<slot>.t3.localhost:<port>/` in the profile `~/.t3-workspace-chrome/<slot>`.
+  `http://<slot>.t3.localhost:3780/` in the profile `~/.t3-workspace-chrome/<slot>`.
   sway shows nothing that tells these windows apart (their app_ids are Chrome's
   per-app ids, and they share a title), so a window's profile, read from its
   browser's command line, is its identity and the mark `sw:<ws>:t3` its claim;
   it is the last window of its workspace's stack. Before opening a window the
   script waits up to 30 s for the server, and it replaces a window left on
   Chrome's error page once the server answers.
+- Scope each window once: pick its workspace's project in the sidebar's project
+  scope menu. T3 Code keeps the scope in the page's localStorage
+  (`t3code:ui-state:v1`, `apps/web/src/uiStateStore.ts`), which is per profile
+  and per origin, so every window keeps its own across restarts. Opening a
+  thread outside the scope (a link, the command palette) widens it back to all
+  projects (`Sidebar.tsx`); pick the project again.
 - Pairing is local: the script mints a 5-minute token with `t3 pair`
-  (`T3CODE_HOME=~/.t3-workspaces/<slot>`) and opens a new window on
+  (`T3CODE_HOME=~/.t3-workspaces/desktop`) and opens a new window on
   `/pair#token=<token>`. The profile stays signed in for about 30 days; a window
   that asks to pair again needs closing and a rerun (`$mod+Shift+r`).
+- The T3 Code desktop app (`bin/t3-desktop-app-ensure`) runs its own server on
+  `~/.t3`; to see the same threads there, pair it with `t3@desktop`
+  (`t3 pair --base-dir ~/.t3-workspaces/desktop` prints an `App link`).
 
 Gotchas:
 
@@ -78,7 +90,7 @@ Gotchas:
   space-joined string with a single trailing NUL, not one argument per NUL;
   `chrome_user_data_dir` in `bin-linux/sway-windows-lib.sh` reads it that way.
 - `t3 serve` prints a one-time pairing QR code and token to its journal at
-  startup (`journalctl --user -u t3@<slot>`).
+  startup (`journalctl --user -u t3@desktop`).
 - The startup WARN that the host "blocks the sandbox T3's browser runs in" and
   asks for `sudo env "PATH=$PATH" t3 browser setup` concerns only T3 Code's
   built-in browser tabs and HTML previews, not these windows.

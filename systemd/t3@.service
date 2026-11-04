@@ -1,12 +1,10 @@
 # Templated systemd --user unit for per-workspace T3 Code servers.
-# Instance name (%i) names the workspace: its checkout directory under $HOME on
-# the work hubs (t3@checkout3), its terminal slot in bin-linux/startup-windows'
-# table on the Linux desktop (t3@dotfiles). bin/t3-workspace-serve resolves the
-# directory and port from it.
-#
-# Each instance is a T3 Code server whose only project is that workspace's
-# directory, so a browser window on it (bin-macos/startup-windows) opens scoped
-# to it. Its providers drive Omnigent sessions through bin/omnigent-acp.
+# Instance name (%i): on the work hubs a checkout directory under $HOME
+# (t3@checkout3), a server whose only project is that checkout, so a browser
+# window on it (bin-macos/startup-windows) opens scoped to it; on the Linux
+# desktop the one server for every t3 row of bin-linux/startup-windows' table
+# (t3@desktop), whose windows each scope their sidebar to their own project.
+# bin/t3-workspace-serve resolves the directory and port from it. Its providers drive Omnigent sessions through bin/omnigent-acp.
 # bin/t3-ensure, run by init.sh, `enable --now`s one instance per workspace and
 # never restarts a running one; after `t3 update`, restart instances to pick up
 # the new version.

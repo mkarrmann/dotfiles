@@ -64,14 +64,14 @@ class T3EnsureTest(unittest.TestCase):
     def settings(self, name):
         return json.loads((self.home / ".t3-workspaces" / name / "userdata/settings.json").read_text())
 
-    def use_desktop_layout(self, servers: dict[str, Path]) -> None:
-        """Run as the desktop, with --print-layout declaring one t3 row per (slot, workdir)."""
+    def use_desktop_layout(self, rows: dict[str, Path]) -> None:
+        """Run as the desktop, with --print-layout declaring server "desktop" and one t3 row per (slot, workdir)."""
         self.profile = "desktop"
-        rows = [
-            {"workspace": str(n), "slot": slot, "workdir": str(workdir), "port": 3780 + n}
-            for n, (slot, workdir) in enumerate(servers.items(), start=2)
+        t3 = [
+            {"workspace": str(n), "slot": slot, "workdir": str(workdir), "port": 3780}
+            for n, (slot, workdir) in enumerate(rows.items(), start=2)
         ]
-        self.layout.write_text(json.dumps({"terminals": [], "t3": rows}))
+        self.layout.write_text(json.dumps({"terminals": [], "t3Server": "desktop", "t3Port": 3780, "t3": t3}))
 
     def test_each_checkout_gets_providers_and_a_started_server(self):
         result = self.run_ensure()
@@ -137,7 +137,7 @@ class T3EnsureTest(unittest.TestCase):
         self.assertIn("could not download T3 Code's installer", result.stderr)
         self.assertFalse((self.home / ".t3-workspaces").exists())
 
-    def test_desktop_serves_each_t3_row_of_the_layout(self):
+    def test_desktop_runs_one_server_with_every_t3_row_as_a_project(self):
         dotfiles, omnigent = self.home / "dotfiles", self.home / "repos/omnigent"
         dotfiles.mkdir()
         omnigent.mkdir(parents=True)
@@ -145,18 +145,19 @@ class T3EnsureTest(unittest.TestCase):
         result = self.run_ensure()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("startup-windows --print-layout", self.calls_made())
-        for slot, workdir in (("dotfiles", dotfiles), ("omnigent-repo", omnigent)):
-            providers = self.settings(slot)["providerInstances"]
-            self.assertEqual(providers["omnigent-claude"]["config"]["commandArgs"], ["--agent", "claude-native-ui"])
-            self.assertEqual(providers["codex"], {"driver": "codex", "enabled": False})
-            self.assertIn(f"systemctl --user enable --now t3@{slot}.service", self.calls_made())
-            self.assertIn(f"t3 project add {workdir} home={self.home / '.t3-workspaces' / slot}", self.calls_made())
+        providers = self.settings("desktop")["providerInstances"]
+        self.assertEqual(providers["omnigent-claude"]["config"]["commandArgs"], ["--agent", "claude-native-ui"])
+        self.assertEqual(providers["codex"], {"driver": "codex", "enabled": False})
+        self.assertEqual([c for c in self.calls_made() if " enable " in c], ["systemctl --user enable --now t3@desktop.service"])
+        home = self.home / ".t3-workspaces/desktop"
+        self.assertEqual(
+            [c for c in self.calls_made() if c.startswith("t3 project add")],
+            [f"t3 project add {dotfiles} home={home}", f"t3 project add {omnigent} home={home}"],
+        )
         # A declared workspace that is not cloned here is skipped, not a failure.
-        self.assertIn(f"WARNING: skipping t3@gatech: {self.home / 'gatech'} does not exist", result.stdout)
-        self.assertFalse((self.home / ".t3-workspaces/gatech").exists())
-        self.assertFalse([c for c in self.calls_made() if "t3@gatech" in c])
-        # The desktop's servers are the layout's alone; a ~/checkoutN there is not one.
-        self.assertFalse((self.home / ".t3-workspaces/checkout1").exists())
+        self.assertIn(f"WARNING: skipping t3@desktop's project {self.home / 'gatech'} (workspace 4): it does not exist", result.stdout)
+        self.assertEqual(sorted(p.name for p in (self.home / ".t3-workspaces").iterdir()), ["desktop"])
+        # The desktop's server is the layout's alone; a ~/checkoutN there is not one.
         self.assertFalse([c for c in self.calls_made() if "checkout1" in c])
 
     def test_desktop_gives_the_app_its_own_omnigent_providers(self):
@@ -218,26 +219,22 @@ class T3WorkspaceServeTest(unittest.TestCase):
     def expected(self, port: int, workdir: Path, name: str) -> str:
         return f"t3 serve --host 127.0.0.1 --port {port} --no-browser cwd={workdir} home={self.home / '.t3-workspaces' / name}\n"
 
-    def test_desktop_slot_takes_workdir_and_port_from_the_layout(self):
-        (self.home / "dotfiles").mkdir()
-        result = self.serve("dotfiles", "desktop")
+    def test_desktop_server_takes_its_port_from_the_layout(self):
+        result = self.serve("desktop", "desktop")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, self.expected(3782, self.home / "dotfiles", "dotfiles"))
+        self.assertEqual(result.stdout, self.expected(3780, self.home, "desktop"))
 
     def test_desktop_layout_override_reaches_the_server(self):
-        (self.home / "somewhere").mkdir()
         override = self.root / "layout.sh"
-        override.write_text('WORKSPACES=("7|term|elsewhere|~/somewhere|true" "7|t3")\nT3_BASE_PORT=4000\n')
+        override.write_text('T3_SERVER=elsewhere\nT3_PORT=4007\n')
         result = self.serve("elsewhere", "desktop", SWAY_WINDOWS_LAYOUT=str(override))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, self.expected(4007, self.home / "somewhere", "elsewhere"))
+        self.assertEqual(result.stdout, self.expected(4007, self.home, "elsewhere"))
 
-    def test_desktop_slot_without_a_t3_row_fails_clearly(self):
-        override = self.root / "layout.sh"
-        override.write_text('WORKSPACES=("7|term|elsewhere|~/somewhere|true")\n')
-        result = self.serve("elsewhere", "desktop", SWAY_WINDOWS_LAYOUT=str(override))
+    def test_desktop_rejects_a_name_other_than_the_layouts_server(self):
+        result = self.serve("dotfiles", "desktop")
         self.assertEqual(result.returncode, 2)
-        self.assertIn("no t3 row in bin-linux/startup-windows declares slot 'elsewhere'", result.stderr)
+        self.assertIn("bin-linux/startup-windows' t3 server is 'desktop', not 'dotfiles'", result.stderr)
         self.assertEqual(result.stdout, "")
 
     def test_work_checkout_takes_its_port_from_topology(self):

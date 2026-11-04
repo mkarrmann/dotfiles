@@ -364,15 +364,16 @@ echo "== t3 rows in --print-layout =="
 mkdir -p "$TMP/t3-home" "$TMP/t3-config"
 print_layout() { env -u SWAYSOCK HOME="$TMP/t3-home" XDG_CONFIG_HOME="$TMP/t3-config" "$@" "$STARTUP" --print-layout; }
 layout=$(print_layout) || fail "--print-layout exited non-zero"
-check "workspaces 1-6 each declare a server, named after their terminal slot" \
+check "workspaces 1-6 each declare a window, named after their terminal slot" \
   '["local","dotfiles","orchest","omnigent-repo","presto","gatech"]' "$(jq -c '[.t3[].slot]' <<< "$layout")"
-check "each listens on T3_BASE_PORT+workspace" "[3781,3782,3783,3784,3785,3786]" "$(jq -c '[.t3[].port]' <<< "$layout")"
-check "a server serves its terminal's workdir, ~ expanded" \
-  "{\"workspace\":\"3\",\"slot\":\"orchest\",\"workdir\":\"$TMP/t3-home/dev/orchest\",\"port\":3783}" \
+check "all of them on the one server" '"desktop" 3780 [3780]' \
+  "$(jq -c '.t3Server, .t3Port, ([.t3[].port] | unique)' <<< "$layout" | paste -sd' ')"
+check "a row's project is its terminal's workdir, ~ expanded" \
+  "{\"workspace\":\"3\",\"slot\":\"orchest\",\"workdir\":\"$TMP/t3-home/dev/orchest\",\"port\":3780}" \
   "$(jq -c '.t3[] | select(.slot == "orchest")' <<< "$layout")"
-printf '%s\n' 'WORKSPACES=("7|term|elsewhere|~/x|true" "7|t3")' 'T3_BASE_PORT=4000' > "$TMP/t3-port.sh"
-check "a layout override can move the base port" "4007" \
-  "$(print_layout SWAY_WINDOWS_LAYOUT="$TMP/t3-port.sh" 2>/dev/null | jq '.t3[0].port')"
+printf '%s\n' 'WORKSPACES=("7|term|elsewhere|~/x|true" "7|t3")' 'T3_SERVER=other' 'T3_PORT=4000' > "$TMP/t3-port.sh"
+check "a layout override can rename and move the server" '"other" 4000 4000' \
+  "$(print_layout SWAY_WINDOWS_LAYOUT="$TMP/t3-port.sh" 2>/dev/null | jq -c '.t3Server, .t3Port, .t3[0].port' | paste -sd' ')"
 printf '%s\n' 'WORKSPACES=("7|term|elsewhere|~/x|true" "8|t3")' > "$TMP/t3-orphan.sh"
 out=$(print_layout SWAY_WINDOWS_LAYOUT="$TMP/t3-orphan.sh" 2>&1 >/dev/null); rc=$?
 check "a t3 row on a workspace with no terminal fails the whole layout" "1" "$rc"
@@ -431,7 +432,7 @@ chrome_user_data_dir 300 >/dev/null && fail "a browser without --user-data-dir r
 out=$(chrome_user_data_dir 600 2>&1) && fail "an exited process reported a profile" || check "an exited process has none, silently" "" "$out"
 
 STARTUP="$ROOT/bin-linux/startup-windows"
-for fn in chrome_slot_match reconcile_entry current_claim_marks current_term_app_ids managed_workspaces t3_servers \
+for fn in chrome_slot_match reconcile_entry current_claim_marks current_term_app_ids managed_workspaces t3_rows \
           t3_pairing_token t3_wait_for_server; do
   body=$(extract_fn "$STARTUP" "$fn")
   [[ -n "$body" ]] || { echo "could not extract $fn from $STARTUP" >&2; exit 1; }
@@ -480,10 +481,10 @@ warn() { echo "warn $*"; }
 refresh() { :; }
 SNAPSHOT='[]'
 WORKSPACES=("2|term|dotfiles|~/dotfiles|true" "2|chrome" "2|omnigent" "2|t3" "3|term|orchest|~/dev/orchest|true" "3|t3")
-T3_BASE_PORT=3780
-T3_SERVERS=$(t3_servers)
-check "a t3 row reconciles its workspace's slot and port" "t3 2 dotfiles 3782" "$(reconcile_entry "2|t3")"
-check "each row its own" "t3 3 orchest 3783" "$(reconcile_entry "3|t3")"
+T3_PORT=3780
+T3_ROWS=$(t3_rows)
+check "a t3 row reconciles its workspace's slot on the server's port" "t3 2 dotfiles 3780" "$(reconcile_entry "2|t3")"
+check "each row its own slot" "t3 3 orchest 3780" "$(reconcile_entry "3|t3")"
 check "the rest of its workspace still reconciles" $'term 2 dotfiles\nmarked 2 chrome' \
   "$(reconcile_entry "2|term|dotfiles|~/dotfiles|true"; reconcile_entry "2|chrome")"
 DASHBOARD_WS=9; DASHBOARD_PANES=("obsidian|x")
@@ -531,12 +532,12 @@ Note: This URL is only reachable from this machine.
 OUT
 EOF
 chmod +x "$TMP/t3-pair"
-T3_BIN="$TMP/t3-pair"; T3_HOMES_DIR="$TMP/t3-homes"
-check "the token is read from t3 pair's output" "QL7XTEQS8LKL" "$(t3_pairing_token dotfiles)"
-check "minted by that slot's server, short-lived and labelled" \
-  "$TMP/t3-homes/dotfiles pair --ttl 5m --label sway-startup-windows" "$(cat "$TMP/t3-pair.args")"
-FAKE_PAIR_FAIL=1 t3_pairing_token dotfiles >/dev/null && fail "a failed t3 pair produced a token" || pass "a failed t3 pair produces none"
-FAKE_PAIR_TOKEN='not a token' t3_pairing_token dotfiles >/dev/null && fail "garbage was taken for a token" || pass "neither does output without a usable token"
+T3_BIN="$TMP/t3-pair"; T3_HOMES_DIR="$TMP/t3-homes"; T3_SERVER=desktop
+check "the token is read from t3 pair's output" "QL7XTEQS8LKL" "$(t3_pairing_token)"
+check "minted by the server, short-lived and labelled" \
+  "$TMP/t3-homes/desktop pair --ttl 5m --label sway-startup-windows" "$(cat "$TMP/t3-pair.args")"
+FAKE_PAIR_FAIL=1 t3_pairing_token >/dev/null && fail "a failed t3 pair produced a token" || pass "a failed t3 pair produces none"
+FAKE_PAIR_TOKEN='not a token' t3_pairing_token >/dev/null && fail "garbage was taken for a token" || pass "neither does output without a usable token"
 
 echo "== waiting for a T3 Code server is bounded and shared =="
 if command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then

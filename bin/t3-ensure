@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""t3-ensure — run a T3 Code server per workspace as a UI over its Omnigent sessions.
+"""t3-ensure — run T3 Code servers as a UI over this host's Omnigent sessions.
 
     t3-ensure
 
 Idempotent; init.sh runs it on the Omnigent hub candidates and the Linux
-desktop. A workspace NAME is each ~/checkoutN on a candidate, and on the desktop
-each t3 row of bin-linux/startup-windows' table, named after its terminal slot
-and serving that slot's workdir (one whose workdir is missing is skipped with a
-warning). It:
+desktop. A candidate runs a server NAME per ~/checkoutN, whose one project is
+that checkout. The desktop runs one server, NAME being the layout's t3Server
+(bin-linux/startup-windows --print-layout), whose projects are the workdirs of
+the table's t3 rows (one whose workdir is missing is skipped with a warning);
+each row's window scopes its sidebar to its own project. It:
   1. installs the `t3` CLI with T3 Code's installer when it is missing. Later
      upgrades belong to `t3 update`;
-  2. for each workspace, registers bin/omnigent-acp as the "Omnigent · Claude"
+  2. for each server, registers bin/omnigent-acp as the "Omnigent · Claude"
      and "Omnigent · Codex" providers in ~/.t3-workspaces/NAME/userdata/
      settings.json, keeping every other setting (a running server reloads it).
      It also turns off T3 Code's built-in Codex and Claude, which would run outside
@@ -22,7 +23,7 @@ warning). It:
      fetch its dependencies with;
   4. enables and starts t3@NAME (systemd/t3@.service, bin/t3-workspace-serve)
      when it is not enabled yet. A running server is never restarted;
-  5. adds the workspace's directory as a project of its server unless it
+  5. adds each of its directories as a project of the server unless it
      already is one. A project the server bootstrapped itself would count as a
      fresh install and open T3 Code's first-run wizard in every new window.
 
@@ -60,9 +61,9 @@ PROVIDERS = {"omnigent-claude": ("Omnigent · Claude", "claude-native-ui"), "omn
 BUILTIN_PROVIDERS = ("codex", "claudeAgent")
 
 
-class Workspace(NamedTuple):
+class Server(NamedTuple):
     name: str  # t3@NAME.service, ~/.t3-workspaces/NAME
-    directory: Path  # the server's project
+    projects: tuple[Path, ...]
 
 
 def log(message: str) -> None:
@@ -98,24 +99,25 @@ def output(*command: str) -> str:
     return result.stdout
 
 
-def checkouts() -> list[Workspace]:
+def checkouts() -> list[Server]:
     names = sorted(
         (p.name for p in Path.home().iterdir() if p.is_dir() and CHECKOUT.fullmatch(p.name)),
         key=lambda name: int(name.removeprefix("checkout")),
     )
-    return [Workspace(name, Path.home() / name) for name in names]
+    return [Server(name, (Path.home() / name,)) for name in names]
 
 
-def desktop_workspaces() -> list[Workspace]:
+def desktop_servers() -> list[Server]:
     layout = json.loads(output(str(DOTFILES / "bin-linux/startup-windows"), "--print-layout"))
-    found: list[Workspace] = []
-    for server in layout["t3"]:
-        workspace = Workspace(str(server["slot"]), Path(server["workdir"]))
-        if workspace.directory.is_dir():
-            found.append(workspace)
+    name = str(layout["t3Server"])
+    projects: list[Path] = []
+    for row in layout["t3"]:
+        directory = Path(row["workdir"])
+        if directory.is_dir():
+            projects.append(directory)
         else:
-            log(f"WARNING: skipping t3@{workspace.name}: {workspace.directory} does not exist")
-    return found
+            log(f"WARNING: skipping t3@{name}'s project {directory} (workspace {row['workspace']}): it does not exist")
+    return [Server(name, tuple(dict.fromkeys(projects)))] if projects else []
 
 
 def on_linux_desktop() -> bool:
@@ -148,10 +150,10 @@ def merge_settings(path: Path, shim: Path) -> bool:
     return True
 
 
-def add_project(t3: Path, workspace: Workspace) -> bool:
-    env = {**os.environ, "T3CODE_HOME": str(WORKSPACES_HOME / workspace.name)}
+def add_project(t3: Path, server: Server, directory: Path) -> bool:
+    env = {**os.environ, "T3CODE_HOME": str(WORKSPACES_HOME / server.name)}
     for _ in range(PROJECT_ADD_ATTEMPTS):
-        result = subprocess.run([str(t3), "project", "add", str(workspace.directory)], env=env, capture_output=True, text=True)
+        result = subprocess.run([str(t3), "project", "add", str(directory)], env=env, capture_output=True, text=True)
         if result.returncode == 0 or "ProjectAlreadyExistsError" in result.stderr + result.stdout:
             return True
         time.sleep(1)  # a server started a moment ago may not answer yet
@@ -171,15 +173,15 @@ def main() -> int:
     desktop = on_linux_desktop()
     if desktop and merge_settings(DESKTOP_APP_SETTINGS, SHIM):
         log("registered the Omnigent providers for the T3 Code desktop app")
-    workspaces = desktop_workspaces() if desktop else checkouts()
-    for workspace in workspaces:
-        if merge_settings(WORKSPACES_HOME / workspace.name / "userdata/settings.json", SHIM):
-            log(f"registered the Omnigent providers for {workspace.directory}")
+    servers = desktop_servers() if desktop else checkouts()
+    for server in servers:
+        if merge_settings(WORKSPACES_HOME / server.name / "userdata/settings.json", SHIM):
+            log(f"registered the Omnigent providers for t3@{server.name}")
     if subprocess.run([str(SHIM), "--help"], stdout=subprocess.DEVNULL).returncode != 0:
         log("WARNING: omnigent-acp did not start; the Omnigent providers will fail until it does")
     failed = False
-    for workspace in workspaces:
-        unit = f"t3@{workspace.name}.service"
+    for server in servers:
+        unit = f"t3@{server.name}.service"
         if systemctl("is-enabled", "--quiet", unit) != 0:
             if systemctl("enable", "--now", unit) == 0:
                 log(f"started {unit}")
@@ -187,9 +189,10 @@ def main() -> int:
                 log(f"WARNING: could not enable {unit} (is systemd/t3@.service linked? run sync.sh)")
                 failed = True
                 continue
-        if not add_project(t3, workspace):
-            log(f"WARNING: could not add {workspace.directory} as {unit}'s project")
-            failed = True
+        for directory in server.projects:
+            if not add_project(t3, server, directory):
+                log(f"WARNING: could not add {directory} as {unit}'s project")
+                failed = True
     return 1 if failed else 0
 
 

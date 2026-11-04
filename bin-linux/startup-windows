@@ -65,10 +65,11 @@ done
 # title regex -- the identity IS the match. chrome/omnigent slots are claimed
 # by the mark sw:<ws>:<type>.
 #
-# A t3 row gives the workspace a T3 Code server (bin/t3-ensure,
-# systemd/t3@.service) named after its term's slot and serving its workdir on
-# 127.0.0.1:T3_BASE_PORT+ws, and a Chrome --app window on that server claimed
-# by the mark sw:<ws>:t3 (see reconcile_t3).
+# A t3 row gives the workspace a Chrome --app window on the desktop's one T3
+# Code server (t3@T3_SERVER: bin/t3-ensure, systemd/t3@.service), which has
+# every t3 row's term workdir as a project. The window is claimed by the mark
+# sw:<ws>:t3 (see reconcile_t3); its sidebar's project scope, picked once per
+# window, keeps it to that workspace's project.
 #
 # Terminal commands are wrapped in a restart loop so quitting the editor
 # leaves the window in place rather than closing it. They run nvim directly:
@@ -123,17 +124,21 @@ DASHBOARD_PANES=(
 )
 
 CHROME_CMD=(google-chrome --profile-directory=Default --new-window)
-# The t3 rows' servers listen on T3_BASE_PORT+ws: the desktop counterpart of
-# omnigent_config/topology.env's value on the work hubs. A layout override can
-# reassign it.
-T3_BASE_PORT=3780
+# The t3 rows share one T3 Code server, t3@T3_SERVER on 127.0.0.1:T3_PORT. A
+# server per workspace would scope each window, but it would also split the
+# threads, so no window could see another's; T3 Code's sidebar scope does the
+# scoping instead. A layout override can reassign either.
+T3_SERVER=desktop
+T3_PORT=3780
 # Each t3 row's window runs in a Chrome profile of its own,
 # T3_CHROME_PROFILES_DIR/<slot>, as on the Mac. A fresh profile launched
 # without --no-first-run and --no-default-browser-check shows only a terms
-# dialog and never loads the page. Pairing tokens come from T3_BIN run against
-# the server's state in T3_HOMES_DIR/<slot> (bin/t3-workspace-serve's
+# dialog and never loads the page. Each profile also keeps the window's own
+# sidebar scope: T3 Code stores it in the page's localStorage
+# (t3code:ui-state:v1). Pairing tokens come from T3_BIN run against the
+# server's state in T3_HOMES_DIR/T3_SERVER (bin/t3-workspace-serve's
 # T3CODE_HOME). T3_SERVER_WAIT bounds, in seconds, how long a run waits for the
-# servers to answer before it opens a window on one.
+# server to answer before it opens a window on it.
 T3_CHROME_PROFILES_DIR="$HOME/.t3-workspace-chrome"
 T3_CHROME_CMD=(google-chrome --no-first-run --no-default-browser-check)
 T3_BIN="$HOME/.local/bin/t3"
@@ -175,26 +180,23 @@ if [[ -r "$LAYOUT_OVERRIDE" ]]; then
   source "$LAYOUT_OVERRIDE"
 fi
 # ─────────────────────────────────────────────────────────────────────
-# One "ws<TAB>slot<TAB>workdir<TAB>port" line per t3 row, its slot and workdir
-# taken from the term row on the same workspace.
-t3_servers() {
+# One "ws<TAB>slot<TAB>workdir<TAB>port" line per t3 row: the term row on the
+# same workspace names its window (slot) and its project (workdir), and port is
+# the shared server's.
+t3_rows() {
   local entry term ws type slot workdir server
   for entry in "${WORKSPACES[@]}"; do
     IFS='|' read -r ws type _ <<< "$entry"
     [[ "$type" == t3 ]] || continue
-    [[ "$ws" =~ ^[0-9]+$ ]] || {
-      echo "ERROR: t3 row '$entry': the port is T3_BASE_PORT+workspace, so the workspace must be a number" >&2
-      return 1
-    }
     server=""
     for term in "${WORKSPACES[@]}"; do
       [[ "$term" == "$ws|term|"* ]] || continue
       [[ -z "$server" ]] || { echo "ERROR: t3 row '$entry': workspace $ws has more than one term row" >&2; return 1; }
       IFS='|' read -r _ _ slot workdir _ <<< "$term"
-      server=$(printf '%s\t%s\t%s\t%s' "$ws" "$slot" "${workdir/#\~/$HOME}" "$(( T3_BASE_PORT + 10#$ws ))")
+      server=$(printf '%s\t%s\t%s\t%s' "$ws" "$slot" "${workdir/#\~/$HOME}" "$T3_PORT")
     done
     [[ -n "$server" ]] || {
-      echo "ERROR: t3 row '$entry': workspace $ws has no term row to take the server's slot and workdir from" >&2
+      echo "ERROR: t3 row '$entry': workspace $ws has no term row to take its slot and workdir from" >&2
       return 1
     }
     printf '%s\n' "$server"
@@ -204,7 +206,8 @@ t3_servers() {
 # The table above is the only place the workspace-to-checkout mapping is
 # written down, so anything that needs it reads it from here rather than
 # keeping a copy. sync.sh derives Orchest's Omnigent attribution this way, and
-# bin/t3-ensure and bin/t3-workspace-serve the desktop's T3 Code servers.
+# bin/t3-ensure and bin/t3-workspace-serve the desktop's T3 Code server and its
+# projects.
 # Emitted before the lock and preflight: this reports the DECLARED layout, so
 # it must work with no compositor running.
 if [[ "$PRINT_LAYOUT" == true ]]; then
@@ -213,7 +216,7 @@ if [[ "$PRINT_LAYOUT" == true ]]; then
     IFS='|' read -r app_id _ pct <<< "$pane"
     printf '%s\t%s\n' "$app_id" "$pct"
   done | jq -Rn '[inputs | split("\t") | { name: .[0], percent: (if .[1] == "" then null else (.[1] | tonumber) end) }]')
-  t3_tsv=$(t3_servers) || exit 1
+  t3_tsv=$(t3_rows) || exit 1
   t3_json=$(printf '%s' "$t3_tsv" | jq -Rn '[inputs | split("\t") | { workspace: .[0], slot: .[1], workdir: .[2], port: (.[3] | tonumber) }]')
   for entry in "${WORKSPACES[@]}"; do
     IFS='|' read -r ws type rest <<< "$entry"
@@ -225,7 +228,7 @@ if [[ "$PRINT_LAYOUT" == true ]]; then
       --arg terminalAppIdPrefix "$TERM_APP_ID_PREFIX" --arg stackLayout "$STACK_LAYOUT" \
       --argjson sidebarPercent "$SIDEBAR_PERCENT" --argjson sidebarMinWidth "$SIDEBAR_MIN_WIDTH" \
       --argjson orchestEnabled "$ORCHEST_ENABLED" --arg orchestDir "${ORCHEST_DIR/#\~/$HOME}" \
-      --argjson t3 "$t3_json" '
+      --arg t3Server "$T3_SERVER" --argjson t3Port "$T3_PORT" --argjson t3 "$t3_json" '
     {
       sweepWorkspace: $sweep,
       dashboardWorkspace: $dashboard,
@@ -238,6 +241,8 @@ if [[ "$PRINT_LAYOUT" == true ]]; then
       orchestEnabled: $orchestEnabled,
       orchestDir: $orchestDir,
       terminals: [inputs | split("\t") | { workspace: .[0], slot: .[1], workdir: .[2] }],
+      t3Server: $t3Server,
+      t3Port: $t3Port,
       t3: $t3
     }'
   exit 0
@@ -338,9 +343,9 @@ validate_dashboard_panes() {
   done
   return "$bad"
 }
-# One line per t3 row (see t3_servers), resolved once for reconcile_entry.
-T3_SERVERS=""
-validate_term_app_ids && validate_dashboard_panes && T3_SERVERS=$(t3_servers) || {
+# One line per t3 row (see t3_rows), resolved once for reconcile_entry.
+T3_ROWS=""
+validate_term_app_ids && validate_dashboard_panes && T3_ROWS=$(t3_rows) || {
   echo "ERROR: fix the workspace table before running." >&2
   exit 1
 }
@@ -603,14 +608,14 @@ reconcile_marked() {
 }
 
 # ── T3 Code windows ──────────────────────────────────────────────────
-# A t3 row's window is a Chrome --app window on its workspace's T3 Code
-# server, at a hostname of its own (Chrome resolves *.localhost to loopback)
+# A t3 row's window is a Chrome --app window on the T3 Code server, at a
+# hostname of its own (Chrome resolves *.localhost to loopback)
 # and in a Chrome profile of its own. It is found by that profile alone (see
 # chrome_profile_window_ids in sway-windows-lib.sh), so it never takes another
 # slot's window, and claimed by the mark sw:<ws>:t3.
 #
-# A row is inert unless its server's unit is enabled: bin/t3-ensure enables one
-# per row where T3 Code is installed, and elsewhere the row only says so.
+# A row is inert unless t3@T3_SERVER is enabled: bin/t3-ensure enables it
+# where T3 Code is installed, and elsewhere the row only says so.
 
 T3_TITLE_RE='^T3 Code'
 
@@ -632,9 +637,9 @@ chrome_slot_match() {
   fi
 }
 
-# Every T3 Code server starts with the user manager, so they come up together.
-# The slots therefore share one deadline, set by the first server found not
-# answering: a broken install costs a run one wait, not one per slot. The probe
+# The slots share one server, so they share one deadline, set the first time it
+# is found not answering: a broken install costs a run one wait, not one per
+# slot. The probe
 # is the descriptor route `t3 pair` itself checks
 # (apps/server/src/cli/pair.ts), which answers without a session.
 T3_SERVER_DEADLINE=""
@@ -647,12 +652,12 @@ t3_wait_for_server() {
   done
 }
 
-# t3_pairing_token SLOT -> a one-time token minted by SLOT's running server.
+# t3_pairing_token -> a one-time token minted by the running server.
 # A window opened on /pair#token=<token> pairs its profile; the session cookie
 # lasts about 30 days, and a later window on / comes back signed in.
 t3_pairing_token() {
   local out token
-  out=$(T3CODE_HOME="$T3_HOMES_DIR/$1" timeout 30 "$T3_BIN" pair --ttl 5m --label sway-startup-windows 2>/dev/null) \
+  out=$(T3CODE_HOME="$T3_HOMES_DIR/$T3_SERVER" timeout 30 "$T3_BIN" pair --ttl 5m --label sway-startup-windows 2>/dev/null) \
     || return 1
   token=$(sed -n 's/^Token: //p' <<< "$out")
   token="${token%%$'\n'*}"
@@ -689,8 +694,8 @@ reconcile_t3() {
   local label="t3:$ws" mark="sw:${ws}:t3" profile="$T3_CHROME_PROFILES_DIR/$slot"
   local url="http://${slot}.t3.localhost:${port}/" ids id held=false title token open_url before deadline new
 
-  if ! systemctl --user is-enabled --quiet "t3@${slot}.service" 2>/dev/null; then
-    echo "[$label] t3@${slot} is not enabled; no T3 Code window (bin/t3-ensure enables it)"
+  if ! systemctl --user is-enabled --quiet "t3@${T3_SERVER}.service" 2>/dev/null; then
+    echo "[$label] t3@${T3_SERVER} is not enabled; no T3 Code window (bin/t3-ensure enables it)"
     return 0
   fi
 
@@ -717,7 +722,7 @@ reconcile_t3() {
     title=$(jq -r --argjson i "$id" '.[] | select(.id == $i) | .title' <<< "$SNAPSHOT")
     if [[ ! "$title" =~ $T3_TITLE_RE ]]; then
       if [[ "$DRY_RUN" == true ]]; then
-        echo "  DRY-RUN replace window $id (titled '$title', not T3 Code's page) once $slot's server answers"
+        echo "  DRY-RUN replace window $id (titled '$title', not T3 Code's page) once the server answers"
         return 0
       elif t3_wait_for_server "$port"; then
         echo "[$label] window $id is titled '$title', not T3 Code's page; replacing it"
@@ -725,7 +730,7 @@ reconcile_t3() {
         id=""
         held=false
       else
-        warn "[$label] $slot's T3 Code server is not answering on port $port; window $id stays on its error page"
+        warn "[$label] the T3 Code server is not answering on port $port; window $id stays on its error page"
       fi
     fi
   fi
@@ -741,13 +746,13 @@ reconcile_t3() {
       return 0
     fi
     t3_wait_for_server "$port" || {
-      warn "[$label] $slot's T3 Code server (t3@$slot) did not answer on port $port within ${T3_SERVER_WAIT}s; not opening a window"
+      warn "[$label] the T3 Code server (t3@$T3_SERVER) did not answer on port $port within ${T3_SERVER_WAIT}s; not opening a window"
       return 1
     }
-    if token=$(t3_pairing_token "$slot"); then
+    if token=$(t3_pairing_token); then
       open_url="${url}pair#token=${token}"
     else
-      warn "[$label] could not mint a pairing token (T3CODE_HOME=$T3_HOMES_DIR/$slot $T3_BIN pair); opening $url unpaired"
+      warn "[$label] could not mint a pairing token (T3CODE_HOME=$T3_HOMES_DIR/$T3_SERVER $T3_BIN pair); opening $url unpaired"
       open_url="$url"
     fi
     mkdir -p "$profile" || { warn "[$label] cannot create the Chrome profile $profile"; return 1; }
@@ -790,7 +795,7 @@ reconcile_entry() {
       reconcile_marked "$ws" omnigent "$OMNIGENT_MATCH_JQ" "$OMNIGENT_INVALID_TITLE_RE" || true
       ;;
     t3)
-      read -r slot port <<< "$(awk -F'\t' -v ws="$ws" '$1 == ws { print $2, $4; exit }' <<< "$T3_SERVERS")"
+      read -r slot port <<< "$(awk -F'\t' -v ws="$ws" '$1 == ws { print $2, $4; exit }' <<< "$T3_ROWS")"
       reconcile_t3 "$ws" "$slot" "$port" || true
       ;;
   esac

@@ -154,9 +154,10 @@ printf '[Desktop Entry]\nExec=%s %%U\nType=Application\n' "$TMP/bin/obsidian-stu
 # --user-data-dir, the one thing startup-windows knows the window by, the way a
 # real Chrome browser's does: inside one space-joined string, which is what
 # Chrome leaves after rewriting its process title. `t3 pair` mints numbered
-# tokens; `systemctl --user is-enabled` answers from $TMP/t3-enabled, and every
+# tokens; `systemctl --user is-enabled t3@NAME` answers from $TMP/t3-enabled, and every
 # other systemctl call (app-scope's) goes to the real one as before. Each T3
-# Code server is a python http.server answering T3 Code's descriptor route.
+# Code server is a python http.server answering T3 Code's descriptor route;
+# both t3 rows share the one on T3_BASE+1.
 cat > "$TMP/bin/t3-chrome-stub" <<EOF
 #!/bin/bash
 printf '%s\n' "\$*" >> "$TMP/t3-chrome.log"
@@ -178,8 +179,8 @@ EOF
 cat > "$TMP/bin/systemctl" <<EOF
 #!/bin/bash
 if [[ " \$* " == *" is-enabled "* ]]; then
-  unit=\${*: -1}; slot=\${unit#t3@}; slot=\${slot%.service}
-  grep -qx -- "\$slot" "$TMP/t3-enabled" 2>/dev/null
+  unit=\${*: -1}; name=\${unit#t3@}; name=\${name%.service}
+  grep -qx -- "\$name" "$TMP/t3-enabled" 2>/dev/null
   exit
 fi
 exec $(command -v systemctl || echo false) "\$@"
@@ -543,7 +544,8 @@ DASHBOARD_PANES=()
 CHROME_CMD=("$TMP/bin/chrome-stub")
 OMNIGENT_NEW_WINDOW_MIN_VERSION=""
 ORCHEST_ENABLED=false
-T3_BASE_PORT=$T3_BASE
+T3_SERVER=stub
+T3_PORT=$((T3_BASE + 1))
 T3_CHROME_CMD=("$TMP/bin/t3-chrome-stub" --no-first-run --no-default-browser-check)
 T3_CHROME_PROFILES_DIR="$TMP/t3-chrome"
 T3_BIN="$TMP/bin/t3-stub"
@@ -553,38 +555,44 @@ EOF
 }
 echo "== T3 Code windows =="
 reset_windows; layout_t3
-: > "$TMP/t3-chrome.log"; : > "$TMP/t3-pair.log"; echo alpha > "$TMP/t3-enabled"
-start_t3_server $((T3_BASE + 1)) || fail "setup: the stand-in T3 Code server did not start"
+: > "$TMP/t3-chrome.log"; : > "$TMP/t3-pair.log"; echo stub > "$TMP/t3-enabled"
+T3_PORT=$((T3_BASE + 1))
+start_t3_server "$T3_PORT" || fail "setup: the stand-in T3 Code server did not start"
 T3_APP="chrome-alpha.t3.localhost__pair-Default"
-T3_LAUNCH="--no-first-run --no-default-browser-check --user-data-dir=$TMP/t3-chrome/alpha --app=http://alpha.t3.localhost:$((T3_BASE + 1))/pair#token="
+T3_LAUNCH="--no-first-run --no-default-browser-check --user-data-dir=$TMP/t3-chrome/alpha --app=http://alpha.t3.localhost:$T3_PORT/pair#token="
+T3_LAUNCH_BETA="--no-first-run --no-default-browser-check --user-data-dir=$TMP/t3-chrome/beta --app=http://beta.t3.localhost:$T3_PORT/pair#token="
+T3_PAIR="$TMP/t3-homes/stub pair --ttl 5m --label sway-startup-windows"
 WS1_T3_EXPECT="sway-ws.term.alpha[] -> google-chrome.stub1[sw:1:chrome] -> Omnigent.stub1[sw:1:omnigent] -> ${T3_APP}[sw:1:t3]"
+WS2_T3_EXPECT="sway-ws.term.beta[] -> chrome-beta.t3.localhost__pair-Default[sw:2:t3]"
 
 run_startup --dry-run; rc=$?
 check "a dry run exits 0" "0" "$rc"; [[ "$rc" == 0 ]] || show_log "$TMP/run.log"
 check "opens nothing" "0" "$(window_count)"
 check "mints no token" "" "$(cat "$TMP/t3-pair.log")"
 grep -qF "DRY-RUN launch (app.slice): $TMP/bin/t3-chrome-stub ${T3_LAUNCH}" "$TMP/run.log" \
-  && pass "and prints the T3 Code launch" || fail "no T3 Code launch in the plan"
+  && grep -qF "DRY-RUN launch (app.slice): $TMP/bin/t3-chrome-stub ${T3_LAUNCH_BETA}" "$TMP/run.log" \
+  && pass "and prints a T3 Code launch per row, both on the one server" || fail "missing a T3 Code launch in the plan"
 
 run_startup; rc=$?
 check "a fresh build exits 0 with no warnings" "0" "$rc"; [[ "$rc" == 0 ]] || show_log "$TMP/run.log"
 check "workspace 1's T3 Code window is claimed and last in its stack" "$WS1_T3_EXPECT" "$(ws_order 1)"
 check "workspace 1 is one stack of 4" "4" "$(ws_stacked 1)"
-t3id=$(id_by_mark sw:1:t3)
+check "workspace 2 gets its own window, on the same server" "$WS2_T3_EXPECT" "$(ws_order 2)"
+t3id=$(id_by_mark sw:1:t3); t3id2=$(id_by_mark sw:2:t3)
 check "its page loaded" "T3 Code (Beta)" "$(title_of "${t3id:-0}")"
 grep -q "^Sweeping stray window ${t3id:-0} " "$TMP/run.log" && fail "the sweep moved the T3 Code window" || pass "the sweep keeps it"
-check "one Chrome launch, in alpha's profile, on /pair with a token" "${T3_LAUNCH}STUBTOKEN1" "$(cat "$TMP/t3-chrome.log")"
-check "the token was minted by alpha's server" "$TMP/t3-homes/alpha pair --ttl 5m --label sway-startup-windows" "$(cat "$TMP/t3-pair.log")"
-grep -q '^\[t3:2\] t3@beta is not enabled' "$TMP/run.log" \
-  && pass "a slot whose server is not enabled says so" || fail "no not-enabled line for t3@beta"
+check "one Chrome launch per row, each in its own profile, on /pair with a token of its own" \
+  "$(printf '%s\n' "${T3_LAUNCH}STUBTOKEN1" "${T3_LAUNCH_BETA}STUBTOKEN2")" "$(cat "$TMP/t3-chrome.log")"
+check "both tokens minted by the one server" "$(printf '%s\n' "$T3_PAIR" "$T3_PAIR")" "$(cat "$TMP/t3-pair.log")"
 grep -q '^WARNING:' "$TMP/run.log" && fail "the run warned: $(grep '^WARNING:' "$TMP/run.log")" || pass "and does not warn"
-check "and opens nothing" "sway-ws.term.beta[]" "$(ws_order 2)"
 
 run_startup; rc=$?
 check "a re-run exits 0" "0" "$rc"; [[ "$rc" == 0 ]] || show_log "$TMP/run.log"
-grep -q "^\[t3:1\] holding mark sw:1:t3 (id=$t3id)" "$TMP/run.log" && pass "holds the claimed window" || fail "did not hold window $t3id"
-check "launches no Chrome" "1" "$(wc -l < "$TMP/t3-chrome.log")"
-check "mints no token" "1" "$(wc -l < "$TMP/t3-pair.log")"
+grep -q "^\[t3:1\] holding mark sw:1:t3 (id=$t3id)" "$TMP/run.log" \
+  && grep -q "^\[t3:2\] holding mark sw:2:t3 (id=$t3id2)" "$TMP/run.log" \
+  && pass "holds both claimed windows" || fail "did not hold windows $t3id and $t3id2"
+check "launches no Chrome" "2" "$(wc -l < "$TMP/t3-chrome.log")"
+check "mints no token" "2" "$(wc -l < "$TMP/t3-pair.log")"
 check "and the layout is unchanged" "$WS1_T3_EXPECT" "$(ws_order 1)"
 
 swaymsg "[con_id=$t3id] unmark sw:1:t3" >/dev/null
@@ -593,14 +601,14 @@ run_startup; rc=$?
 check "with the claim gone, a re-run exits 0" "0" "$rc"; [[ "$rc" == 0 ]] || show_log "$TMP/run.log"
 grep -q "^\[t3:1\] adopting unclaimed window $t3id" "$TMP/run.log" && pass "adopts the profile's window" || fail "did not adopt window $t3id"
 check "brings it home and claims it" "$WS1_T3_EXPECT" "$(ws_order 1)"
-check "without launching" "1" "$(wc -l < "$TMP/t3-chrome.log")"
+check "without launching" "2" "$(wc -l < "$TMP/t3-chrome.log")"
 
 echo "== a Chrome slot never takes a window of a T3 Code profile =="
 # A link opened from T3 Code lands in a regular browser window of its profile,
 # which is a Chrome window by app_id but must not fill the Chrome slot.
 swaymsg "workspace 7" >/dev/null
 STUB_APP_ID=google-chrome STUB_TITLE='Pull request - Google Chrome' "$TMP/bin/t3-chrome-stub" \
-  "--user-data-dir=$TMP/t3-chrome/alpha" "--app=http://alpha.t3.localhost:$((T3_BASE + 1))/" >/dev/null 2>&1 &
+  "--user-data-dir=$TMP/t3-chrome/alpha" "--app=http://alpha.t3.localhost:$T3_PORT/" >/dev/null 2>&1 &
 for _ in $(seq 1 20); do [[ -n "$(id_by_app google-chrome)" ]] && break; sleep 0.25; done
 linkid=$(id_by_app google-chrome)
 close_window "$(id_by_mark sw:1:chrome)"
@@ -613,38 +621,51 @@ check "unclaimed" "" "$(marks_of "${linkid:-0}")"
 close_window "${linkid:-0}"
 
 echo "== a T3 Code window on an error page is replaced =="
-stop_t3_server $((T3_BASE + 1))
+stop_t3_server "$T3_PORT"
 close_window "$t3id"
-"$TMP/bin/t3-chrome-stub" "--user-data-dir=$TMP/t3-chrome/alpha" "--app=http://alpha.t3.localhost:$((T3_BASE + 1))/" >/dev/null 2>&1 &
+"$TMP/bin/t3-chrome-stub" "--user-data-dir=$TMP/t3-chrome/alpha" "--app=http://alpha.t3.localhost:$T3_PORT/" >/dev/null 2>&1 &
 for _ in $(seq 1 20); do [[ -n "$(id_by_app chrome-alpha.t3.localhost__-Default)" ]] && break; sleep 0.25; done
 errid=$(id_by_app chrome-alpha.t3.localhost__-Default)
 check "setup: a window opened while the server was down shows the error page" "alpha.t3.localhost" "$(title_of "${errid:-0}")"
 swaymsg "[con_id=$errid] mark --add sw:1:t3" >/dev/null
-start_t3_server $((T3_BASE + 1)) || fail "setup: the stand-in T3 Code server did not restart"
+start_t3_server "$T3_PORT" || fail "setup: the stand-in T3 Code server did not restart"
 : > "$TMP/t3-chrome.log"
 run_startup; rc=$?
 check "exits 0" "0" "$rc"; [[ "$rc" == 0 ]] || show_log "$TMP/run.log"
 grep -qF "[t3:1] window $errid is titled 'alpha.t3.localhost', not T3 Code's page; replacing it" "$TMP/run.log" \
   && pass "says it is replacing it" || fail "no replacement line in the run log"
 check "the error page is closed" "" "$(ws_of_id "${errid:-0}")"
-check "a new window opened on /pair with a fresh token" "${T3_LAUNCH}STUBTOKEN2" "$(cat "$TMP/t3-chrome.log")"
+check "a new window opened on /pair with a fresh token" "${T3_LAUNCH}STUBTOKEN3" "$(cat "$TMP/t3-chrome.log")"
 check "holds the claim, on T3 Code's page" "T3 Code (Beta)" "$(title_of "$(id_by_mark sw:1:t3)")"
 check "in its place in the stack" \
   "sway-ws.term.alpha[] -> google-chrome.stub2[sw:1:chrome] -> Omnigent.stub1[sw:1:omnigent] -> ${T3_APP}[sw:1:t3]" "$(ws_order 1)"
+check "workspace 2's window is left alone" "$WS2_T3_EXPECT" "$(ws_order 2)"
 
 echo "== a T3 Code server that never answers =="
-echo beta >> "$TMP/t3-enabled"
+stop_t3_server "$T3_PORT"
+close_window "$(id_by_mark sw:1:t3)"; close_window "$(id_by_mark sw:2:t3)"
 : > "$TMP/t3-chrome.log"; : > "$TMP/t3-pair.log"
 started=$(date +%s); run_startup; rc=$?; elapsed=$(( $(date +%s) - started ))
 check "the run reports it" "1" "$rc"
-grep -qF "WARNING: [t3:2] beta's T3 Code server (t3@beta) did not answer on port $((T3_BASE + 2)) within 2s; not opening a window" "$TMP/run.log" \
-  && pass "with a warning naming the server" || { fail "no warning for t3@beta"; show_log "$TMP/run.log"; }
+for ws in 1 2; do
+  grep -qF "WARNING: [t3:$ws] the T3 Code server (t3@stub) did not answer on port $T3_PORT within 2s; not opening a window" "$TMP/run.log" \
+    && pass "row $ws warns, naming the server" || { fail "no warning for row $ws"; show_log "$TMP/run.log"; }
+done
 check "opens no window" "" "$(cat "$TMP/t3-chrome.log")"
 check "mints no token" "" "$(cat "$TMP/t3-pair.log")"
 check "workspace 2 holds only its terminal" "sway-ws.term.beta[]" "$(ws_order 2)"
-(( elapsed < 20 )) && pass "the wait is bounded (${elapsed}s run)" || fail "the run took ${elapsed}s"
-check "workspace 1 is untouched" \
-  "sway-ws.term.alpha[] -> google-chrome.stub2[sw:1:chrome] -> Omnigent.stub1[sw:1:omnigent] -> ${T3_APP}[sw:1:t3]" "$(ws_order 1)"
+(( elapsed < 20 )) && pass "the rows share one bounded wait (${elapsed}s run)" || fail "the run took ${elapsed}s"
+check "workspace 1 keeps the rest of its stack" \
+  "sway-ws.term.alpha[] -> google-chrome.stub2[sw:1:chrome] -> Omnigent.stub1[sw:1:omnigent]" "$(ws_order 1)"
+
+echo "== a server whose unit is not enabled =="
+: > "$TMP/t3-enabled"
+run_startup; rc=$?
+check "the run exits 0" "0" "$rc"; [[ "$rc" == 0 ]] || show_log "$TMP/run.log"
+grep -q '^\[t3:1\] t3@stub is not enabled' "$TMP/run.log" && grep -q '^\[t3:2\] t3@stub is not enabled' "$TMP/run.log" \
+  && pass "each row says so" || fail "no not-enabled lines for t3@stub"
+grep -q '^WARNING:' "$TMP/run.log" && fail "the run warned: $(grep '^WARNING:' "$TMP/run.log")" || pass "without a warning"
+check "and opens nothing" "" "$(cat "$TMP/t3-chrome.log")"
 
 echo
 if [[ "$failures" -gt 0 ]]; then echo "$failures e2e test(s) failed." >&2; exit 1; fi

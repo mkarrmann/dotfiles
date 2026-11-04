@@ -174,9 +174,9 @@ Each standard workspace is laid out as `[ Orchest sidebar | stack ]`: the
 Orchest workspace window on the left at 12% of the output (300px floor), and
 every other window in one `stacking` container (sway's vertical accordion)
 ordered terminal, Chrome, Omnigent, T3 Code, then anything moved there by hand.
-The T3 Code window is a Chrome app window on the workspace's own T3 Code server,
-opened only while that server's `t3@<slot>` unit is enabled; see
-`docs/t3code-omnigent.md`. Orchest
+The T3 Code window is a Chrome app window on the desktop's one T3 Code server,
+opened only while `t3@desktop` is enabled, with its sidebar scoped (once, by
+hand) to the workspace's project; see `docs/t3code-omnigent.md`. Orchest
 is launched and its windows claimed by `bin-linux/orchest-open-workspaces`, the
 counterpart of the Mac script of the same name. The stack layout is one
 constant (`STACK_LAYOUT` in `bin-linux/sway-windows-lib.sh`); `tabbed` is the
