@@ -24,11 +24,21 @@ fi
 source "$DOTFILES/omnigent_config/t3-desktop-app.env"
 
 package=t3code
-installed="$(dpkg-query -W -f='${Status} ${Version}' "$package" 2>/dev/null || true)"
-if [[ "$installed" == 'install ok installed '* ]]; then
-  echo "[t3-app] ${installed#install ok installed } already installed; leaving it to its own updates"
-  exit 0
-fi
+# ${Status} is "WANT ERROR STATE". Any want (install, hold) with the package
+# installed, or installed and only waiting on triggers, is the app being there.
+# Half-configured is an install that stopped in its postinst: leave that to
+# dpkg rather than offer this pin, which may be older, on top of it.
+read -r _ _ state version < <(dpkg-query -W -f='${Status} ${Version}' "$package" 2>/dev/null || true) || true
+case "${state:-}" in
+  installed|triggers-awaited|triggers-pending)
+    echo "[t3-app] $version already installed; leaving it to its own updates"
+    exit 0
+    ;;
+  half-configured)
+    echo "[t3-app] $version is installed but not configured; finish it with: sudo dpkg --configure $package"
+    exit 0
+    ;;
+esac
 
 if [[ ! -t 0 || ! -t 1 ]]; then
   printf '[t3-app] installation needs an interactive terminal for sudo/apt. Run:\n  %q\n' \
@@ -39,8 +49,9 @@ for tool in curl openssl base64 dpkg-deb sudo; do
   command -v "$tool" >/dev/null 2>&1 || { echo "ERROR: $tool is required to install the T3 Code app" >&2; exit 1; }
 done
 
-download="$(mktemp "${TMPDIR:-/tmp}/t3code-desktop.XXXXXX.deb")"
-trap 'rm -f "$download"' EXIT
+download_dir="$(mktemp -d "${TMPDIR:-/tmp}/t3code-desktop.XXXXXX")"
+trap 'rm -rf "$download_dir"' EXIT
+download="$download_dir/t3code_${T3_DESKTOP_APP_VERSION}_amd64.deb"
 echo "[t3-app] downloading $T3_DESKTOP_APP_VERSION"
 curl -fL --connect-timeout 10 --max-time 300 "$T3_DESKTOP_APP_URL" -o "$download"
 if [[ "$(openssl dgst -sha512 -binary "$download" | base64 -w0)" != "$T3_DESKTOP_APP_SHA512" ]]; then
@@ -53,6 +64,8 @@ if [[ "$(dpkg-deb -f "$download" Package)" != "$package" ||
   echo "ERROR: unexpected T3 Code desktop package metadata" >&2
   exit 1
 fi
+# apt reads a local package as its unprivileged _apt user where it can.
+chmod 755 "$download_dir"
 chmod 644 "$download"
 sudo apt install "$download"
 echo "[t3-app] installed; later versions arrive through the app's own updates"

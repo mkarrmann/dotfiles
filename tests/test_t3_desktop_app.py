@@ -48,6 +48,8 @@ elif name == "curl":
     if os.environ.get("TEST_DOWNLOAD_FAIL"):
         raise SystemExit(22)
     output = pathlib.Path(args[args.index("-o") + 1])
+    with open(os.environ["TEST_CALLS"], "a") as calls:
+        calls.write(json.dumps(["curl-target-dir", str(output.parent), oct(output.parent.stat().st_mode & 0o777)]) + "\n")
     payload = b"bad package" if os.environ.get("TEST_BAD_CHECKSUM") else b"isolated test package\n"
     output.write_bytes(payload)
 elif name == "dpkg-deb":
@@ -73,9 +75,8 @@ elif name == "apt":
 
 # Linux only, for the reasons tests/test_omnigent_desktop_app.py spells out: the
 # script exits before doing anything off Linux, and past the stubbed uname/dpkg/apt
-# it needs GNU-style userland -- BSD mktemp leaves "t3code-desktop.XXXXXX.deb"
-# literal and BSD base64 has no -w0 -- so the refusal cases would pass for the
-# wrong reason there.
+# it needs GNU-style userland -- BSD base64 has no -w0 -- so the refusal cases
+# would pass for the wrong reason there.
 @unittest.skipUnless(sys.platform.startswith("linux"), "Debian installer; needs GNU-style coreutils")
 class T3DesktopAppTest(unittest.TestCase):
     def setUp(self):
@@ -209,6 +210,24 @@ class T3DesktopAppTest(unittest.TestCase):
                 self.assertIn(f"{version} already installed", result.stdout)
                 self.assert_no_install()
 
+    def test_any_installed_state_is_left_alone(self):
+        for status in ("hold ok installed", "install ok triggers-pending", "install ok triggers-awaited"):
+            with self.subTest(status=status):
+                self.env["TEST_INSTALLED_VERSION"] = "0.0.1"
+                self.env["TEST_PACKAGE_STATUS"] = status
+                result = self.run_helper(interactive=True)
+                self.assert_success(result)
+                self.assertIn("0.0.1 already installed", result.stdout)
+                self.assert_no_install()
+
+    def test_half_configured_package_is_left_to_dpkg(self):
+        self.env["TEST_INSTALLED_VERSION"] = "0.0.1"
+        self.env["TEST_PACKAGE_STATUS"] = "install ok half-configured"
+        result = self.run_helper(interactive=True)
+        self.assert_success(result)
+        self.assertIn("dpkg --configure t3code", result.stdout)
+        self.assert_no_install()
+
     def test_unattended_run_with_the_app_installed_prints_no_command(self):
         self.env["TEST_INSTALLED_VERSION"] = "0.0.1"
         result = self.run_helper()
@@ -246,6 +265,13 @@ class T3DesktopAppTest(unittest.TestCase):
         self.assertTrue(Path(installs[0][-1]).is_absolute())
         self.assertEqual(len(self.recorded("sudo")), 1)
         self.assertEqual(list(self.downloads.iterdir()), [])
+
+    def test_download_goes_to_a_private_directory_of_its_own(self):
+        self.assert_success(self.run_helper(interactive=True))
+        [(_, target_dir, mode)] = self.recorded("curl-target-dir")
+        self.assertEqual(Path(target_dir).parent, self.downloads)
+        self.assertEqual(mode, "0o700")
+        self.assertFalse(Path(target_dir).exists())
 
     def test_download_failure_prevents_install_and_cleans_up(self):
         self.env["TEST_DOWNLOAD_FAIL"] = "1"
