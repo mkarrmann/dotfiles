@@ -25,13 +25,20 @@ Semantics:
   * Model and reasoning effort are config options; codex-native exposes a Plan
     mode backed by its collaboration mode. Other agents get T3 Code's Plan
     instructions as prompt text.
-  * Omnigent approval requests become ``session/request_permission``.
+  * Omnigent approval requests become ``session/request_permission``, also
+    between prompts.
+  * File edits (Claude's Edit/MultiEdit/Write, Codex's apply_patch) are reported
+    as ACP ``diff`` content. Edits carry the replaced snippet, not whole files, and
+    Write shows as a new file.
   * ``--t3-tools`` (claude-native only) launches the TUI with the client's MCP
     servers. T3 Code reissues its MCP token when it reloads a thread, and a
     running TUI keeps its launch-time token, so the tools stop working until the
     TUI relaunches.
   * Updates that arrive while no prompt is running (turns started from another
     client, wakeups) are not forwarded; ACP has no idle turn to attach them to.
+  * The stream has no replay, so every (re)connect reads the session snapshot:
+    approvals still pending are re-raised, and a turn that ended while the
+    stream was down is ended here.
 
 Env: OMNIGENT_URL (default http://127.0.0.1:6767), OMNIGENT_ACP_LOG (log level).
 """
@@ -47,7 +54,7 @@ import re
 import socket
 import sys
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -56,6 +63,7 @@ import acp
 import httpx
 from acp.schema import (
     AgentCapabilities,
+    FileEditToolCallContent,
     Implementation,
     ListSessionsResponse,
     PermissionOption,
@@ -68,6 +76,7 @@ from acp.schema import (
     SessionListCapabilities,
     SessionMode,
     SessionModeState,
+    ToolCallLocation,
     ToolCallUpdate,
     UsageUpdate,
 )
@@ -88,6 +97,7 @@ QUIESCENT_END_S = 10.0
 # A cold codex-native launch can hold the first stream connection for over 30s.
 STREAM_CONNECT_S = 120.0
 TOOL_OUTPUT_LIMIT = 20_000
+STREAM_OPENED = "omnigent-acp.stream_opened"
 
 # SDK harnesses launch the same binaries as the native ones; the host
 # model-options route only accepts the native names (see bin/omnigent-models).
@@ -209,6 +219,20 @@ def _command_preview(preview: Any) -> str | None:
     return command if isinstance(command, str) else preview
 
 
+def elicitation_from(data: dict[str, Any]) -> Elicitation:
+    params = data.get("params") or {}
+    return Elicitation(
+        elicitation_id=str(data.get("elicitation_id")),
+        message=str(params.get("message") or "Omnigent requests approval"),
+        target_session_id=params.get("target_session_id"),
+        preview=_command_preview(params.get("content_preview")),
+    )
+
+
+def _is_reply(item: dict[str, Any]) -> bool:
+    return item.get("type") == "message" and item.get("role") == "assistant" and not item.get("is_meta")
+
+
 def _error_text(error: Any) -> str:
     if isinstance(error, dict):
         return str(error.get("message") or error.get("code") or json.dumps(error))
@@ -233,6 +257,7 @@ class TurnTracker:
 
     native: bool = False
     expected_pending_id: str | None = None
+    expected_item_id: str | None = None
     current_response_id: str | None = None
     queue_response: bool = False
     native_consumed: bool = False
@@ -255,8 +280,9 @@ class TurnTracker:
     def _activity(self) -> None:
         self.quiet_generation += 1
 
-    def expect_input(self, pending_id: str | None) -> None:
+    def expect_input(self, pending_id: str | None, item_id: str | None = None) -> None:
         self.expected_pending_id = pending_id
+        self.expected_item_id = item_id
 
     def on_reconnect(self) -> None:
         # The server replays the in-flight assistant text on subscribe.
@@ -286,14 +312,51 @@ class TurnTracker:
         self.emitted_text += delta
         return [TextDelta(delta)] if delta else []
 
+    def _observe(self, outputs: list[TurnOutput], was_quiescent: bool) -> list[TurnOutput]:
+        if self.quiescent and not was_quiescent and not self.ended:
+            outputs.append(Quiescent(self.quiet_generation))
+        return outputs
+
     def feed(self, event_type: str, data: dict[str, Any]) -> list[TurnOutput]:
         if self.ended or event_type in IGNORED_EVENTS:
             return []
         was_quiescent = self.quiescent
-        outputs = self._feed(event_type, data)
-        if self.quiescent and not was_quiescent and not self.ended:
-            outputs.append(Quiescent(self.quiet_generation))
-        return outputs
+        return self._observe(self._feed(event_type, data), was_quiescent)
+
+    def on_snapshot(self, snapshot: dict[str, Any]) -> list[TurnOutput]:
+        """Catch up from a ``GET /v1/sessions/{id}`` snapshot taken after our input was posted."""
+        if self.ended:
+            return []
+        was_quiescent = self.quiescent
+        return self._observe(self._snapshot(snapshot), was_quiescent)
+
+    def _snapshot(self, snapshot: dict[str, Any]) -> list[TurnOutput]:
+        status = snapshot.get("status")
+        items = [i for i in snapshot.get("items") or [] if isinstance(i, dict)]
+        if self.native:
+            if not self.native_consumed:
+                pending = {p.get("pending_id") for p in snapshot.get("pending_inputs") or [] if isinstance(p, dict)}
+                if self.expected_pending_id is None or self.expected_pending_id in pending:
+                    return []
+                self.native_consumed = True
+                self.expected_pending_id = None
+            if status == "failed":
+                return self._end("failed", _error_text(snapshot.get("last_task_error")))
+            # The confirmed idle's response_id is not in the snapshot, so a finished turn ends by quiescence.
+            self.pane_idle = status == "idle"
+            if self.pane_idle and items and _is_reply(items[-1]):
+                self.reply_committed = True
+                self.open_calls.clear()
+            return []
+        ours = next((n for n, i in enumerate(items) if self.expected_item_id and i.get("id") == self.expected_item_id), None)
+        # A status from before our turn started would be the previous turn's.
+        if self.current_response_id is None and (ours is None or ours + 1 == len(items)):
+            return []
+        if status == "failed":
+            return self._end("failed", _error_text(snapshot.get("last_task_error")))
+        if status == "idle":
+            return self._end("completed")
+        return []
 
     def _feed(self, event_type: str, data: dict[str, Any]) -> list[TurnOutput]:
         if event_type in ("response.created", "response.in_progress"):
@@ -378,22 +441,14 @@ class TurnTracker:
             return self._usage(data)
 
         if event_type == "response.elicitation_request":
-            params = data.get("params") or {}
-            return [
-                Elicitation(
-                    elicitation_id=str(data.get("elicitation_id")),
-                    message=str(params.get("message") or "Omnigent requests approval"),
-                    target_session_id=params.get("target_session_id"),
-                    preview=_command_preview(params.get("content_preview")),
-                )
-            ]
+            return [elicitation_from(data)]
 
         LOG.debug("unhandled event %s", event_type)
         return []
 
     def _item_done(self, item: dict[str, Any]) -> list[TurnOutput]:
         item_type = item.get("type")
-        if item_type == "message" and item.get("role") == "assistant" and not item.get("is_meta"):
+        if _is_reply(item):
             streamed = self.message_streamed
             self.message_streamed = False
             self.emitted_text = ""
@@ -536,6 +591,10 @@ class OmnigentClient:
     async def session(self, session_id: str) -> dict[str, Any]:
         return await self._json("GET", f"/v1/sessions/{session_id}")
 
+    async def session_snapshot(self, session_id: str, *, items: bool) -> dict[str, Any]:
+        params = {"include_items": str(items).lower(), "include_liveness": "false", "include_usage": "false"}
+        return await self._json("GET", f"/v1/sessions/{session_id}", params=params)
+
     async def session_page(self, params: dict[str, Any]) -> dict[str, Any]:
         return await self._json("GET", "/v1/sessions", params=params)
 
@@ -566,6 +625,7 @@ class OmnigentClient:
                 await response.aread()
                 raise OmnigentError(f"stream {session_id} -> {response.status_code}: {response.text[:500]}")
             connected.set()
+            yield STREAM_OPENED, {}
             event_type: str | None = None
             data_lines: list[str] = []
             async for line in response.aiter_lines():
@@ -627,7 +687,13 @@ def resolve_agent(agents: list[dict[str, Any]], spec: str) -> dict[str, Any]:
 class Turn:
     tracker: TurnTracker
     outputs: asyncio.Queue[TurnOutput] = field(default_factory=asyncio.Queue)
-    cancel_requested: bool = False
+    cancelled: asyncio.Event = field(default_factory=asyncio.Event)
+    posted: bool = False
+    """Our message reached Omnigent; only then is there an Omnigent turn to interrupt."""
+
+    @property
+    def cancel_requested(self) -> bool:
+        return self.cancelled.is_set()
 
 
 @dataclass
@@ -643,6 +709,9 @@ class Session:
     turn: Turn | None = None
     connected: asyncio.Event = field(default_factory=asyncio.Event)
     stream_task: asyncio.Task[None] | None = None
+    elicitations: set[str] = field(default_factory=set)
+    background: set[asyncio.Task[None]] = field(default_factory=set)
+    tool_diffs: dict[str, list[FileEditToolCallContent]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -693,6 +762,67 @@ def _tool_kind(name: str) -> str:
     if lowered in ("webfetch", "websearch", "fetch"):
         return "fetch"
     return "other"
+
+
+def _absolute(path: str, cwd: str) -> str:
+    return os.path.normpath(os.path.join(cwd, path))
+
+
+def _unified_hunks(diff: str) -> list[tuple[str, str]]:
+    """Each hunk of a unified diff as its (old, new) snippet."""
+    hunks: list[tuple[list[str], list[str]]] = []
+    for line in diff.splitlines(keepends=True):
+        if line.startswith("@@"):
+            hunks.append(([], []))
+            continue
+        if not hunks or line.startswith("\\"):
+            continue
+        tag, text = (" ", line) if line in ("\n", "\r\n") else (line[:1], line[1:])
+        old, new = hunks[-1]
+        if tag in (" ", "-"):
+            old.append(text)
+        if tag in (" ", "+"):
+            new.append(text)
+    return [("".join(old), "".join(new)) for old, new in hunks]
+
+
+def _codex_change_diffs(change: dict[str, Any], cwd: str) -> list[FileEditToolCallContent]:
+    # codex-native's fileChange: add/delete carry the file's content, update a unified diff.
+    path, diff, kind = change.get("path"), change.get("diff"), change.get("kind")
+    if not isinstance(path, str) or not isinstance(diff, str) or not isinstance(kind, dict):
+        return []
+    moved = kind.get("move_path") or kind.get("movePath")
+    path = _absolute(moved if isinstance(moved, str) else path, cwd)
+    match kind.get("type"):
+        case "add":
+            return [acp.tool_diff_content(path, diff)]
+        case "delete":
+            return [acp.tool_diff_content(path, "", diff)]
+        case _:
+            return [acp.tool_diff_content(path, new, old) for old, new in _unified_hunks(diff)]
+
+
+def edit_diffs(name: str, arguments: Any, cwd: str) -> list[FileEditToolCallContent]:
+    """ACP diff content for a file-editing tool call; relative paths resolve against ``cwd``."""
+    if not isinstance(arguments, dict):
+        return []
+    lowered = name.lower()
+    if lowered == "apply_patch":
+        changes = arguments.get("changes")
+        return [d for c in changes if isinstance(c, dict) for d in _codex_change_diffs(c, cwd)] if isinstance(changes, list) else []
+    file_path = arguments.get("file_path")
+    if not isinstance(file_path, str):
+        return []
+    path = _absolute(file_path, cwd)
+    if lowered == "write":
+        content = arguments.get("content")
+        return [acp.tool_diff_content(path, content)] if isinstance(content, str) else []
+    edits = arguments.get("edits") if lowered == "multiedit" else [arguments] if lowered == "edit" else None
+    return [
+        acp.tool_diff_content(path, edit["new_string"], edit["old_string"])
+        for edit in (edits if isinstance(edits, list) else [])
+        if isinstance(edit, dict) and isinstance(edit.get("old_string"), str) and isinstance(edit.get("new_string"), str)
+    ]
 
 
 def mcp_launch_args(servers: list[Any]) -> list[str]:
@@ -898,20 +1028,37 @@ class OmnigentAgent:
 
     async def close_session(self, session_id: str, **kwargs: Any) -> None:
         session = self._sessions.pop(session_id, None)
-        if session and session.stream_task:
-            session.stream_task.cancel()
+        if session is None:
+            return
+        for task in [session.stream_task, *session.background]:
+            if task is not None:
+                task.cancel()
+        turn = session.turn
+        if turn is None:
+            return
+        turn.cancelled.set()
+        turn.outputs.put_nowait(TurnEnded("cancelled"))
+        if turn.posted and session.conversation_id is not None:
+            try:
+                await self._client.post_event(session.conversation_id, {"type": "interrupt", "data": {}})
+            except (OmnigentError, httpx.HTTPError) as exc:
+                LOG.warning("interrupt on close of %s failed: %s", session.conversation_id, exc)
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
         session = self._sessions.get(session_id)
-        if session is None or session.turn is None or session.conversation_id is None:
+        if session is None or session.turn is None:
             return
         turn = session.turn
-        turn.cancel_requested = True
+        turn.cancelled.set()
+        if turn.posted and session.conversation_id is not None:
+            await self._interrupt(session.conversation_id, turn)
+
+    async def _interrupt(self, conversation_id: str, turn: Turn) -> None:
         turn.tracker.request_cancel()
         asyncio.get_running_loop().call_later(
             CANCEL_GRACE_S, lambda: turn.outputs.put_nowait(TurnEnded("cancelled"))
         )
-        await self._client.post_event(session.conversation_id, {"type": "interrupt", "data": {}})
+        await self._client.post_event(conversation_id, {"type": "interrupt", "data": {}})
 
     async def _ensure_conversation(self, session: Session, target: Target) -> str:
         if session.conversation_id is None:
@@ -935,15 +1082,48 @@ class OmnigentAgent:
                 await self._client.update_session(session.conversation_id, {"collaboration_mode": "plan"})
         return session.conversation_id
 
+    def _in_background(self, session: Session, work: Coroutine[Any, Any, None]) -> None:
+        task: asyncio.Task[None] = asyncio.create_task(work)
+        session.background.add(task)
+
+        def settled(done: asyncio.Task[None]) -> None:
+            session.background.discard(done)
+            if not done.cancelled() and done.exception() is not None:
+                LOG.warning("background work on %s failed: %s", session.acp_id, done.exception())
+
+        task.add_done_callback(settled)
+
+    async def _resync(self, session: Session, conversation_id: str) -> None:
+        turn = session.turn if session.turn is not None and session.turn.posted else None
+        try:
+            snapshot = await self._client.session_snapshot(conversation_id, items=turn is not None)
+        except (OmnigentError, httpx.HTTPError) as exc:
+            LOG.warning("snapshot of %s failed: %s", conversation_id, exc)
+            return
+        if turn is not None and session.turn is turn:
+            for output in turn.tracker.on_snapshot(snapshot):
+                turn.outputs.put_nowait(output)
+        for event in snapshot.get("pending_elicitations") or []:
+            if isinstance(event, dict):
+                self._in_background(session, self._approve(session, conversation_id, elicitation_from(event)))
+
     async def _pump(self, session: Session, conversation_id: str) -> None:
         while True:
             try:
                 async for event_type, payload in self._client.stream(conversation_id, session.connected):
+                    if event_type == STREAM_OPENED:
+                        await self._resync(session, conversation_id)
+                        continue
                     if self._trace is not None:
                         self._trace.write(json.dumps({"type": event_type, "data": payload}) + "\n")
                         self._trace.flush()
                     turn = session.turn
-                    if turn is not None:
+                    # Approvals outside a running prompt still block the agent until answered.
+                    if event_type == "response.elicitation_request" and (
+                        turn is None or not turn.posted or turn.tracker.ended
+                    ):
+                        self._in_background(session, self._approve(session, conversation_id, elicitation_from(payload)))
+                    elif turn is not None:
                         for output in turn.tracker.feed(event_type, payload):
                             turn.outputs.put_nowait(output)
             except asyncio.CancelledError:
@@ -963,29 +1143,52 @@ class OmnigentAgent:
         except TimeoutError:
             raise OmnigentError(f"Omnigent stream for {conversation_id} did not connect in {STREAM_CONNECT_S:.0f}s") from None
 
+    async def _connect_unless_cancelled(self, session: Session, conversation_id: str, turn: Turn) -> bool:
+        connect = asyncio.ensure_future(self._ensure_stream(session, conversation_id))
+        cancelled = asyncio.ensure_future(turn.cancelled.wait())
+        await asyncio.wait((connect, cancelled), return_when=asyncio.FIRST_COMPLETED)
+        cancelled.cancel()
+        if turn.cancel_requested:
+            connect.cancel()
+            return False
+        connect.result()
+        return True
+
     async def prompt(self, session_id: str, prompt: list[Any], **kwargs: Any) -> acp.PromptResponse:
         session = self._session(session_id)
         if session.turn is not None:
             raise acp.RequestError.invalid_request({"reason": "a prompt is already running"})
-        target = await self._resolve_target()
-        texts = [block.text for block in prompt if getattr(block, "type", None) == "text"]
-        if self._strip:
-            rewritten = strip_t3_instructions(texts, agent_mode=None if target.native_plan else session.told_mode)
-            text = rewritten.text
-            if rewritten.announced_mode is not None and not target.native_plan:
-                session.told_mode = rewritten.announced_mode
-        else:
-            text = "\n\n".join(texts)
-        conversation_id = await self._ensure_conversation(session, target)
-        turn = Turn(TurnTracker(native=target.native))
+        # The turn exists from the start so that a cancel during setup is not lost.
+        turn = Turn(TurnTracker())
         session.turn = turn
         try:
-            await self._ensure_stream(session, conversation_id)
+            target = await self._resolve_target()
+            turn.tracker.native = target.native
+            texts = [block.text for block in prompt if getattr(block, "type", None) == "text"]
+            if self._strip:
+                rewritten = strip_t3_instructions(texts, agent_mode=None if target.native_plan else session.told_mode)
+                text = rewritten.text
+                if rewritten.announced_mode is not None and not target.native_plan:
+                    session.told_mode = rewritten.announced_mode
+            else:
+                text = "\n\n".join(texts)
+            if turn.cancel_requested:
+                return acp.PromptResponse(stop_reason="cancelled")
+            conversation_id = await self._ensure_conversation(session, target)
+            if not await self._connect_unless_cancelled(session, conversation_id, turn):
+                return acp.PromptResponse(stop_reason="cancelled")
             posted = await self._client.post_event(
                 conversation_id,
                 {"type": "message", "data": {"role": "user", "content": [{"type": "input_text", "text": text}]}},
             )
-            turn.tracker.expect_input(posted.get("pending_id"))
+            if posted.get("denied"):
+                reason = str(posted.get("reason") or "Denied by policy")
+                await self._conn.session_update(session.acp_id, acp.update_agent_message_text(reason))
+                return acp.PromptResponse(stop_reason="refusal")
+            turn.posted = True
+            turn.tracker.expect_input(posted.get("pending_id"), posted.get("item_id"))
+            if turn.cancel_requested:
+                await self._interrupt(conversation_id, turn)
             quiet: Quiescent | None = None
             while True:
                 try:
@@ -1018,29 +1221,47 @@ class OmnigentAgent:
             case ThoughtDelta(text):
                 await self._conn.session_update(sid, acp.update_agent_thought_text(text))
             case ToolStarted(call_id, name, arguments):
+                diffs = edit_diffs(name, arguments, session.cwd)
+                if diffs:
+                    session.tool_diffs[call_id] = diffs
+                paths = dict.fromkeys(diff.path for diff in diffs)
                 await self._conn.session_update(
                     sid,
                     acp.start_tool_call(
-                        call_id, name, kind=_tool_kind(name), status="in_progress", raw_input=arguments
+                        call_id,
+                        name,
+                        kind=_tool_kind(name),
+                        status="in_progress",
+                        content=diffs or None,
+                        locations=[ToolCallLocation(path=path) for path in paths] or None,
+                        raw_input=arguments,
                     ),
                 )
             case ToolFinished(call_id, text):
+                # Updated content replaces the call's content, so an edit's diff is sent again.
                 await self._conn.session_update(
                     sid,
                     acp.update_tool_call(
                         call_id,
                         status="completed",
-                        content=[acp.tool_content(acp.text_block(text[:TOOL_OUTPUT_LIMIT]))],
+                        content=[
+                            *session.tool_diffs.pop(call_id, []),
+                            acp.tool_content(acp.text_block(text[:TOOL_OUTPUT_LIMIT])),
+                        ],
                     ),
                 )
             case Usage(used, size):
                 await self._conn.session_update(sid, UsageUpdate(session_update="usage_update", used=used, size=size))
             case Elicitation():
-                await self._approve(session, output.target_session_id or conversation_id, output)
+                await self._approve(session, conversation_id, output)
             case TurnEnded() | Quiescent():
                 pass
 
     async def _approve(self, session: Session, conversation_id: str, request: Elicitation) -> None:
+        # The snapshot re-lists approvals the stream already delivered.
+        if request.elicitation_id in session.elicitations:
+            return
+        session.elicitations.add(request.elicitation_id)
         response = await self._conn.request_permission(
             session.acp_id,
             ToolCallUpdate(
@@ -1059,7 +1280,12 @@ class OmnigentAgent:
         outcome = response.outcome
         selected = outcome.option_id if getattr(outcome, "outcome", None) == "selected" else None
         action = {"accept": "accept", "accept_always": "accept", "decline": "decline"}.get(selected or "", "cancel")
-        await self._client.resolve_elicitation(conversation_id, request.elicitation_id, action)
+        target = request.target_session_id or conversation_id
+        try:
+            await self._client.resolve_elicitation(target, request.elicitation_id, action)
+        except (OmnigentError, httpx.HTTPError) as exc:
+            # Resolved elsewhere or timed out; the agent has moved on either way.
+            LOG.warning("resolving approval %s on %s failed: %s", request.elicitation_id, target, exc)
 
 
 async def main() -> None:

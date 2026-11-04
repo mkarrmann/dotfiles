@@ -4,6 +4,7 @@ Run with: uv run --no-project --with agent-client-protocol==0.12.1 --with httpx 
     python -m unittest discover -s tests -p test_omnigent_acp.py
 """
 
+import asyncio
 import json
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
@@ -11,7 +12,9 @@ from pathlib import Path
 import sys
 import unittest
 
-from acp.schema import EnvVariable, McpServerStdio
+import acp
+from acp.schema import AllowedOutcome, EnvVariable, McpServerStdio, RequestPermissionResponse
+import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 _loader = SourceFileLoader("omnigent_acp", str(ROOT / "bin/omnigent-acp"))
@@ -235,6 +238,327 @@ class TargetAndToolsTest(unittest.TestCase):
             },
         )
         self.assertEqual(shim.mcp_launch_args([]), [])
+
+
+
+class EditDiffsTest(unittest.TestCase):
+    def diffs(self, name, arguments):
+        return [(d.path, d.old_text, d.new_text) for d in shim.edit_diffs(name, arguments, "/repo")]
+
+    def test_claude_edits_carry_snippets_at_absolute_paths(self):
+        self.assertEqual(
+            self.diffs("Edit", {"file_path": "src/a.py", "old_string": "x = 1", "new_string": "x = 2"}),
+            [("/repo/src/a.py", "x = 1", "x = 2")],
+        )
+        multi = {"file_path": "/abs/b.py", "edits": [{"old_string": "a", "new_string": "b"}, {"old_string": "c", "new_string": "d"}]}
+        self.assertEqual(self.diffs("MultiEdit", multi), [("/abs/b.py", "a", "b"), ("/abs/b.py", "c", "d")])
+        self.assertEqual(self.diffs("Write", {"file_path": "./new.txt", "content": "hi\n"}), [("/repo/new.txt", None, "hi\n")])
+
+    def test_codex_file_changes_become_one_diff_per_hunk(self):
+        changes = [
+            {"path": "/repo/new.py", "kind": {"type": "add"}, "diff": "print(1)\n"},
+            {"path": "/repo/old.py", "kind": {"type": "delete"}, "diff": "gone\n"},
+            {
+                "path": "/repo/mod.py",
+                "kind": {"type": "update", "move_path": None},
+                "diff": "--- a/mod.py\n+++ b/mod.py\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n@@ -9,2 +9,3 @@\n y\n+z\n w\n",
+            },
+        ]
+        self.assertEqual(
+            self.diffs("apply_patch", {"changes": changes}),
+            [
+                ("/repo/new.py", None, "print(1)\n"),
+                ("/repo/old.py", "gone\n", ""),
+                ("/repo/mod.py", "a\nb\nc\n", "a\nB\nc\n"),
+                ("/repo/mod.py", "y\nw\n", "y\nz\nw\n"),
+            ],
+        )
+
+    def test_other_tools_have_no_diff(self):
+        self.assertEqual(self.diffs("Bash", {"command": "ls", "file_path": "x"}), [])
+        self.assertEqual(self.diffs("Edit", "not json"), [])
+
+
+DROP = object()
+
+
+class FakeOmnigent:
+    """An Omnigent server whose stream the test drives event by event."""
+
+    def __init__(self, harness):
+        self.harness = harness
+        self.agents_gate = asyncio.Event()
+        self.agents_gate.set()
+        self.connect_gate = asyncio.Event()
+        self.connect_gate.set()
+        self.agents_called = asyncio.Event()
+        self.connect_attempts = 0
+        self.connections = []
+        self.posted = []
+        self.created = []
+        self.resolved = []
+        self.post_response = {"queued": True, "item_id": "item_user"}
+        self.snapshot = {"status": "idle", "items": [], "pending_inputs": []}
+        self.resolve_error = None
+
+    async def agents(self):
+        self.agents_called.set()
+        await self.agents_gate.wait()
+        return [{"id": "ag_1", "name": "agent", "harness": self.harness}]
+
+    async def hosts(self):
+        return [{"host_id": "host_1", "name": "box", "status": "online"}]
+
+    async def model_options(self, host_id, harness):
+        return []
+
+    async def create_session(self, body):
+        self.created.append(body)
+        return {"id": "conv_1"}
+
+    async def update_session(self, session_id, body):
+        pass
+
+    async def post_event(self, session_id, event):
+        self.posted.append(event)
+        return self.post_response if event["type"] == "message" else {"queued": True}
+
+    async def session_snapshot(self, session_id, *, items):
+        return self.snapshot
+
+    async def resolve_elicitation(self, session_id, elicitation_id, action):
+        if self.resolve_error is not None:
+            raise self.resolve_error
+        self.resolved.append((session_id, elicitation_id, action))
+
+    async def stream(self, session_id, connected):
+        self.connect_attempts += 1
+        await self.connect_gate.wait()
+        events = asyncio.Queue()
+        self.connections.append(events)
+        connected.set()
+        yield shim.STREAM_OPENED, {}
+        while True:
+            event = await events.get()
+            if event is DROP:
+                raise httpx.ReadError("dropped")
+            yield event
+
+    def emit(self, *events):
+        for event in events:
+            self.connections[-1].put_nowait(event)
+
+    def messages(self):
+        return [e for e in self.posted if e["type"] == "message"]
+
+    def interrupts(self):
+        return [e for e in self.posted if e["type"] == "interrupt"]
+
+
+class FakeClientConnection:
+    def __init__(self):
+        self.updates = []
+        self.permission_requests = []
+
+    async def session_update(self, session_id, update):
+        self.updates.append(update)
+
+    async def request_permission(self, session_id, tool_call, options):
+        self.permission_requests.append(tool_call)
+        return RequestPermissionResponse(outcome=AllowedOutcome(outcome="selected", option_id="accept"))
+
+    def agent_text(self):
+        return "".join(u.content.text for u in self.updates if getattr(u, "session_update", None) == "agent_message_chunk")
+
+
+async def until(predicate, timeout=5.0):
+    async with asyncio.timeout(timeout):
+        while not predicate():
+            await asyncio.sleep(0.005)
+
+
+def text_prompt(text):
+    return [acp.text_block(text)]
+
+
+SDK_STARTED = ("response.created", {"response": {"id": "resp_1", "model": "claude-haiku"}})
+SDK_COMPLETED = ("response.completed", {"response": {"id": "resp_1"}})
+
+
+class AgentTest(unittest.IsolatedAsyncioTestCase):
+    def make_agent(self, harness="claude-sdk"):
+        self.omnigent = FakeOmnigent(harness)
+        self.client = FakeClientConnection()
+        agent = shim.OmnigentAgent(self.omnigent, "agent", "host_1", strip=False, t3_tools=False, trace=None)
+        agent.on_connect(self.client)
+        return agent
+
+    async def open_session(self, agent):
+        return (await agent.new_session(cwd="/repo")).session_id
+
+    async def start_prompt(self, agent, sid, text="hi"):
+        task = asyncio.create_task(agent.prompt(session_id=sid, prompt=text_prompt(text)))
+        await until(lambda: self.omnigent.messages() or task.done())
+        return task
+
+    async def test_policy_denied_message_ends_the_turn_as_a_refusal_with_its_reason(self):
+        agent = self.make_agent("claude-native")
+        sid = await self.open_session(agent)
+        self.omnigent.post_response = {"queued": False, "denied": True, "reason": "Blocked by the secrets policy"}
+        response = await asyncio.wait_for(agent.prompt(session_id=sid, prompt=text_prompt("cat .env")), 5)
+        self.assertEqual(response.stop_reason, "refusal")
+        self.assertIn("Blocked by the secrets policy", self.client.agent_text())
+
+    async def test_turn_that_finished_while_the_stream_was_down_ends_from_the_snapshot(self):
+        agent = self.make_agent()
+        sid = await self.open_session(agent)
+        task = await self.start_prompt(agent, sid)
+        self.omnigent.snapshot = {
+            "status": "idle",
+            "items": [
+                {"id": "item_user", "type": "message", "role": "user"},
+                {"id": "item_reply", "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "done"}]},
+            ],
+        }
+        self.omnigent.emit(DROP)
+        response = await asyncio.wait_for(task, 5)
+        self.assertEqual(response.stop_reason, "end_turn")
+
+    async def test_snapshot_from_before_the_turn_started_does_not_end_it(self):
+        agent = self.make_agent()
+        sid = await self.open_session(agent)
+        task = await self.start_prompt(agent, sid)
+        self.omnigent.snapshot = {"status": "idle", "items": [{"id": "item_user", "type": "message", "role": "user"}]}
+        self.omnigent.emit(DROP)
+        await until(lambda: len(self.omnigent.connections) == 2)
+        await asyncio.sleep(0.05)
+        self.assertFalse(task.done())
+        self.omnigent.emit(SDK_STARTED, ("response.output_text.delta", {"delta": "late"}), SDK_COMPLETED)
+        response = await asyncio.wait_for(task, 5)
+        self.assertEqual((response.stop_reason, self.client.agent_text()), ("end_turn", "late"))
+
+    async def test_native_turn_that_finished_while_the_stream_was_down_ends_after_a_quiet_period(self):
+        agent = self.make_agent("claude-native")
+        sid = await self.open_session(agent)
+        self.omnigent.post_response = {"queued": True, "pending_id": "pending_1"}
+        quiet = shim.QUIESCENT_END_S
+        shim.QUIESCENT_END_S = 0.05
+        self.addCleanup(setattr, shim, "QUIESCENT_END_S", quiet)
+        task = await self.start_prompt(agent, sid)
+        self.omnigent.snapshot = {
+            "status": "idle",
+            "pending_inputs": [],
+            "items": [{"id": "i2", "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]}],
+        }
+        self.omnigent.emit(DROP)
+        response = await asyncio.wait_for(task, 5)
+        self.assertEqual(response.stop_reason, "end_turn")
+
+    async def test_cancel_while_the_stream_connects_does_not_send_the_message(self):
+        agent = self.make_agent()
+        sid = await self.open_session(agent)
+        self.omnigent.connect_gate.clear()
+        task = asyncio.create_task(agent.prompt(session_id=sid, prompt=text_prompt("hi")))
+        await until(lambda: self.omnigent.connect_attempts > 0)
+        await agent.cancel(session_id=sid)
+        response = await asyncio.wait_for(task, 5)
+        self.assertEqual(response.stop_reason, "cancelled")
+        self.omnigent.connect_gate.set()
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.omnigent.posted, [])
+
+    async def test_cancel_before_the_turn_is_set_up_cancels_the_prompt(self):
+        agent = self.make_agent()
+        sid = await self.open_session(agent)
+        agent._target = None
+        self.omnigent.agents_called.clear()
+        self.omnigent.agents_gate.clear()
+        task = asyncio.create_task(agent.prompt(session_id=sid, prompt=text_prompt("hi")))
+        await asyncio.wait_for(self.omnigent.agents_called.wait(), 5)
+        await agent.cancel(session_id=sid)
+        self.omnigent.agents_gate.set()
+        response = await asyncio.wait_for(task, 5)
+        self.assertEqual(response.stop_reason, "cancelled")
+        self.assertEqual((self.omnigent.created, self.omnigent.posted), ([], []))
+
+    async def test_cancel_after_posting_interrupts_and_ends_cancelled(self):
+        agent = self.make_agent()
+        sid = await self.open_session(agent)
+        task = await self.start_prompt(agent, sid)
+        await agent.cancel(session_id=sid)
+        self.omnigent.emit(("response.cancelled", {}))
+        response = await asyncio.wait_for(task, 5)
+        self.assertEqual((response.stop_reason, len(self.omnigent.interrupts())), ("cancelled", 1))
+
+    async def test_closing_the_session_ends_its_running_prompt_and_interrupts_omnigent(self):
+        agent = self.make_agent()
+        sid = await self.open_session(agent)
+        task = await self.start_prompt(agent, sid)
+        await agent.close_session(session_id=sid)
+        response = await asyncio.wait_for(task, 5)
+        self.assertEqual((response.stop_reason, len(self.omnigent.interrupts())), ("cancelled", 1))
+
+    async def test_approval_requested_between_prompts_is_asked_and_resolved(self):
+        agent = self.make_agent()
+        sid = await self.open_session(agent)
+        task = await self.start_prompt(agent, sid)
+        self.omnigent.emit(SDK_STARTED, SDK_COMPLETED)
+        await asyncio.wait_for(task, 5)
+        self.omnigent.emit(("response.elicitation_request", {"elicitation_id": "el_1", "params": {"message": "Run rm?"}}))
+        await until(lambda: self.omnigent.resolved)
+        self.assertEqual([r.title for r in self.client.permission_requests], ["Run rm?"])
+        self.assertEqual(self.omnigent.resolved, [("conv_1", "el_1", "accept")])
+
+    async def test_approval_pending_in_the_snapshot_is_asked_once(self):
+        agent = self.make_agent()
+        sid = await self.open_session(agent)
+        request = {"elicitation_id": "el_2", "params": {"message": "Write file?"}}
+        self.omnigent.snapshot = {"status": "running", "pending_elicitations": [request]}
+        task = await self.start_prompt(agent, sid)
+        self.omnigent.emit(SDK_STARTED, ("response.elicitation_request", request), SDK_COMPLETED)
+        await asyncio.wait_for(task, 5)
+        await until(lambda: self.omnigent.resolved)
+        self.assertEqual(len(self.client.permission_requests), 1)
+
+    async def test_approval_that_cannot_be_resolved_does_not_fail_the_prompt(self):
+        agent = self.make_agent()
+        sid = await self.open_session(agent)
+        self.omnigent.resolve_error = shim.OmnigentError("409: already resolved")
+        task = await self.start_prompt(agent, sid)
+        self.omnigent.emit(
+            SDK_STARTED,
+            ("response.elicitation_request", {"elicitation_id": "el_3", "params": {"message": "Run?"}}),
+            SDK_COMPLETED,
+        )
+        response = await asyncio.wait_for(task, 5)
+        self.assertEqual((response.stop_reason, len(self.client.permission_requests)), ("end_turn", 1))
+
+    async def test_edit_tool_call_reports_its_diff_through_completion(self):
+        agent = self.make_agent()
+        sid = await self.open_session(agent)
+        task = await self.start_prompt(agent, sid)
+        call = {
+            "type": "function_call",
+            "call_id": "toolu_1",
+            "name": "Edit",
+            "arguments": json.dumps({"file_path": "a.py", "old_string": "x", "new_string": "y"}),
+        }
+        self.omnigent.emit(
+            SDK_STARTED,
+            ("response.output_item.done", {"item": call}),
+            ("response.output_item.done", {"item": {"type": "function_call_output", "call_id": "toolu_1", "output": "ok"}}),
+            SDK_COMPLETED,
+        )
+        await asyncio.wait_for(task, 5)
+        started, finished = [u for u in self.client.updates if getattr(u, "tool_call_id", None) == "toolu_1"]
+        diff = ("/repo/a.py", "x", "y")
+        self.assertEqual(started.kind, "edit")
+        self.assertEqual([loc.path for loc in started.locations], ["/repo/a.py"])
+        self.assertEqual([(c.path, c.old_text, c.new_text) for c in started.content], [diff])
+        self.assertEqual(
+            [(c.path, c.old_text, c.new_text) if c.type == "diff" else c.content.text for c in finished.content],
+            [diff, "ok"],
+        )
 
 
 if __name__ == "__main__":
