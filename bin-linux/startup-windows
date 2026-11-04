@@ -78,6 +78,7 @@ WORKSPACES=(
   "1|term|local|~|while true; do nvim --cmd 'set title titlestring=local\\ —\\ %t'; sleep 0.5; done"
   "1|chrome"
   "1|omnigent"
+  "1|t3"
   "2|term|dotfiles|~/dotfiles|while true; do nvim --cmd 'set title titlestring=dotfiles\\ —\\ %t'; sleep 0.5; done"
   "2|chrome"
   "2|omnigent"

@@ -161,7 +161,7 @@ anything.
 
 | WS  | Contents                                                 |
 | --- | -------------------------------------------------------- |
-| 1   | local terminal (bare nvim) + Chrome + Omnigent           |
+| 1   | local terminal (bare nvim) + Chrome + Omnigent + T3 Code |
 | 2   | nvim in `~/dotfiles` + Chrome + Omnigent + T3 Code       |
 | 3   | nvim in `~/dev/orchest` + Chrome + Omnigent + T3 Code    |
 | 4   | nvim in `~/repos/omnigent` + Chrome + Omnigent + T3 Code |

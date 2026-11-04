@@ -209,9 +209,11 @@ class T3WorkspaceServeTest(unittest.TestCase):
         self.assertEqual(result.stdout, self.expected(4007, self.home / "somewhere", "elsewhere"))
 
     def test_desktop_slot_without_a_t3_row_fails_clearly(self):
-        result = self.serve("local", "desktop")
+        override = self.root / "layout.sh"
+        override.write_text('WORKSPACES=("7|term|elsewhere|~/somewhere|true")\n')
+        result = self.serve("elsewhere", "desktop", SWAY_WINDOWS_LAYOUT=str(override))
         self.assertEqual(result.returncode, 2)
-        self.assertIn("no t3 row in bin-linux/startup-windows declares slot 'local'", result.stderr)
+        self.assertIn("no t3 row in bin-linux/startup-windows declares slot 'elsewhere'", result.stderr)
         self.assertEqual(result.stdout, "")
 
     def test_work_checkout_takes_its_port_from_topology(self):

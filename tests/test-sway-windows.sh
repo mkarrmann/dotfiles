@@ -364,9 +364,9 @@ echo "== t3 rows in --print-layout =="
 mkdir -p "$TMP/t3-home" "$TMP/t3-config"
 print_layout() { env -u SWAYSOCK HOME="$TMP/t3-home" XDG_CONFIG_HOME="$TMP/t3-config" "$@" "$STARTUP" --print-layout; }
 layout=$(print_layout) || fail "--print-layout exited non-zero"
-check "workspaces 2-6 each declare a server, named after their terminal slot" \
-  '["dotfiles","orchest","omnigent-repo","presto","gatech"]' "$(jq -c '[.t3[].slot]' <<< "$layout")"
-check "each listens on T3_BASE_PORT+workspace" "[3782,3783,3784,3785,3786]" "$(jq -c '[.t3[].port]' <<< "$layout")"
+check "workspaces 1-6 each declare a server, named after their terminal slot" \
+  '["local","dotfiles","orchest","omnigent-repo","presto","gatech"]' "$(jq -c '[.t3[].slot]' <<< "$layout")"
+check "each listens on T3_BASE_PORT+workspace" "[3781,3782,3783,3784,3785,3786]" "$(jq -c '[.t3[].port]' <<< "$layout")"
 check "a server serves its terminal's workdir, ~ expanded" \
   "{\"workspace\":\"3\",\"slot\":\"orchest\",\"workdir\":\"$TMP/t3-home/dev/orchest\",\"port\":3783}" \
   "$(jq -c '.t3[] | select(.slot == "orchest")' <<< "$layout")"
