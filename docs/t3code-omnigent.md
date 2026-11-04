@@ -43,6 +43,46 @@ available. A window it finds on an error page (opened before its tunnel was up)
 is replaced. A window that still asks to pair needs a fresh token: reconnect the
 tunnel, close the window, and rerun `startup-windows`.
 
+## Linux desktop
+
+The desktop runs its own servers, one per workspace, with no tunnel:
+
+- A `ws|t3` row in `bin-linux/startup-windows`' table declares workspace `ws`'s
+  server, named after the workspace's terminal slot (`t3@dotfiles`), serving that
+  terminal's workdir on `127.0.0.1:T3_BASE_PORT+ws`. `--print-layout` lists the
+  rows under `t3`; `bin/t3-ensure` (run by `init.sh`) enables one `t3@<slot>` per
+  row and `bin/t3-workspace-serve` resolves the instance from the same list.
+- `startup-windows` opens a row's window only while `t3@<slot>` is enabled (the
+  row is otherwise inert): a Chrome `--app` window on
+  `http://<slot>.t3.localhost:<port>/` in the profile `~/.t3-workspace-chrome/<slot>`.
+  sway shows nothing that tells these windows apart (their app_ids are Chrome's
+  per-app ids, and they share a title), so a window's profile, read from its
+  browser's command line, is its identity and the mark `sw:<ws>:t3` its claim;
+  it is the last window of its workspace's stack. Before opening a window the
+  script waits up to 30 s for the server, and it replaces a window left on
+  Chrome's error page once the server answers.
+- Pairing is local: the script mints a 5-minute token with `t3 pair`
+  (`T3CODE_HOME=~/.t3-workspaces/<slot>`) and opens a new window on
+  `/pair#token=<token>`. The profile stays signed in for about 30 days; a window
+  that asks to pair again needs closing and a rerun (`$mod+Shift+r`).
+
+Gotchas:
+
+- T3 Code finds `~/.local/bin` only through a login-shell PATH probe that gives up
+  after 5 s (`apps/server/src/os-jank.ts`), and the shim's `uv` lives there, so
+  `systemd/t3@.service` sets PATH itself.
+- Provider processes are not in the unit: T3 Code runs each in a transient scope
+  under `app-t3code-agents-<hash>.slice`, so they outlive a restart and the next
+  start stops the leftovers.
+- Chrome rewrites its process title, so a browser's `/proc/<pid>/cmdline` is one
+  space-joined string with a single trailing NUL, not one argument per NUL;
+  `chrome_user_data_dir` in `bin-linux/sway-windows-lib.sh` reads it that way.
+- `t3 serve` prints a one-time pairing QR code and token to its journal at
+  startup (`journalctl --user -u t3@<slot>`).
+- The startup WARN that the host "blocks the sandbox T3's browser runs in" and
+  asks for `sudo env "PATH=$PATH" t3 browser setup` concerns only T3 Code's
+  built-in browser tabs and HTML previews, not these windows.
+
 ## Limits
 
 - Forks and side chats start a new Omnigent session seeded with a summary: T3 Code's

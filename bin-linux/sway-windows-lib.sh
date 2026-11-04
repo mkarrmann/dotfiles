@@ -20,6 +20,12 @@
 #   tree), and Electron takes its app_id from the app name. Both are therefore
 #   claimed by MARK, the way the Mac script claims them by window id.
 #
+#   T3 Code windows are Chrome --app windows, one Chrome profile per server,
+#   and nothing sway shows tells them apart: --class has no effect on a Wayland
+#   --app window and every one is titled T3 Code's way. The profile does, read
+#   from the command line of the browser process that owns the window
+#   (chrome_profile_window_ids). They are claimed by mark as well.
+#
 #   Marks are the right primitive because sway enforces their uniqueness:
 #   cmd_mark calls container_find_and_unmark() unconditionally
 #   (sway/commands/mark.c), so assigning a mark to a window removes it from
@@ -163,9 +169,12 @@ snapshot_windows() {
   printf '%s' "$tree" | jq -c "$SWAY_WINS_JQ wins"
 }
 
-# App matchers. Chrome runs under XWayland here so it carries an X11 class and
-# a null app_id; matching both fields keeps this correct if it is ever run
-# with --ozone-platform=wayland.
+# App matchers. Chrome runs as a native Wayland client on the desktop (every
+# process of the live browser carries --ozone-platform=wayland, 2026-11-03),
+# where the identity is the app_id; under XWayland it is a null app_id and the
+# X11 class "Google-chrome". Matching both fields keeps either backend working.
+# A Wayland --app window matches neither: its app_id is Chrome's per-app id
+# (see CHROME_APP_WINDOW_JQ).
 CHROME_MATCH_JQ='((.app_id // "") | test("^(google-chrome|Google-chrome)"; "i")) or ((.class // "") | test("^google-chrome"; "i"))'
 # Matched case-insensitively and on both fields: the desktop entry says
 # StartupWMClass=Omnigent, but the launcher override currently forces
@@ -185,6 +194,56 @@ CHROME_INVALID_TITLE_RE='^Who.s using Chrome\?$'
 # whose page takes more than 300 ms to load (src/connection_loading.js) and
 # closes once it has.
 OMNIGENT_INVALID_TITLE_RE='^(Omnigent Update|Opening Omnigent)$'
+
+# A Chrome --app window, as opposed to the dialogs its browser process maps
+# alongside it. Natively its app_id is Chrome's per-app id, fixed when the
+# window is created (chrome-<host>_<path>-<profile directory>, e.g.
+# chrome-dotfiles.t3.localhost__pair-Default), and under XWayland it has an
+# X11 class; the dialogs (a fresh profile's terms dialog, for one) have
+# neither.
+CHROME_APP_WINDOW_JQ='((.app_id // "") | startswith("chrome-")) or (.app_id == null and .class != null)'
+
+# Where process command lines are read from; the tests point it at a fixture.
+SWAY_WINDOWS_PROC="${SWAY_WINDOWS_PROC:-/proc}"
+
+# chrome_user_data_dir PID -> the --user-data-dir process PID was started with.
+# Nothing, and nonzero, when it has none or is gone.
+#
+# Spaces separate arguments as well as NULs: Chrome rewrites its process title,
+# which leaves /proc/<pid>/cmdline one space-joined string with a single
+# trailing NUL (verified 2026-11-03, Chrome 153 and 154). A profile path with a
+# space in it therefore cannot be read back; none here has one.
+chrome_user_data_dir() {
+  local arg
+  local -a args=()
+  read -r -d '' -a args < <(tr '\0' ' ' 2>/dev/null < "$SWAY_WINDOWS_PROC/$1/cmdline") || true
+  for arg in "${args[@]}"; do
+    if [[ "$arg" == --user-data-dir=* ]]; then
+      printf '%s\n' "${arg#--user-data-dir=}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# chrome_profile_window_ids SNAPSHOT PROFILE_DIR [unclaimed] -> ascending ids
+# of the Chrome --app windows whose browser runs with exactly
+# --user-data-dir=PROFILE_DIR; with "unclaimed", only those holding no sw:
+# mark.
+#
+# The window's pid is the browser process: app-scope and the google-chrome
+# wrapper both exec in place, and a launch into a profile that is already
+# running hands its window to that browser and exits. So the browser's own
+# command line names the profile, whichever launch opened the window.
+chrome_profile_window_ids() {
+  local snapshot="$1" profile="$2" unclaimed="${3:-}" id pid
+  while read -r id pid; do
+    if [[ "$(chrome_user_data_dir "$pid")" == "$profile" ]]; then echo "$id"; fi
+  done < <(echo "$snapshot" | jq -r --arg unclaimed "$unclaimed" "
+    [ .[] | select($CHROME_APP_WINDOW_JQ)
+          | select(\$unclaimed == \"\" or ([.marks[] | select(startswith(\"sw:\"))] | length == 0)) ]
+    | sort_by(.id) | .[] | \"\\(.id) \\(.pid)\"")
+}
 
 # window_ids_matching SNAPSHOT MATCH_JQ [INVALID_TITLE_RE] -> ascending ids
 window_ids_matching() {

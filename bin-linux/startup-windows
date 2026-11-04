@@ -67,7 +67,8 @@ done
 #
 # A t3 row gives the workspace a T3 Code server (bin/t3-ensure,
 # systemd/t3@.service) named after its term's slot and serving its workdir on
-# 127.0.0.1:T3_BASE_PORT+ws. This script opens no window for it yet.
+# 127.0.0.1:T3_BASE_PORT+ws, and a Chrome --app window on that server claimed
+# by the mark sw:<ws>:t3 (see reconcile_t3).
 #
 # Terminal commands are wrapped in a restart loop so quitting the editor
 # leaves the window in place rather than closing it. They run nvim directly:
@@ -125,6 +126,18 @@ CHROME_CMD=(google-chrome --profile-directory=Default --new-window)
 # omnigent_config/topology.env's value on the work hubs. A layout override can
 # reassign it.
 T3_BASE_PORT=3780
+# Each t3 row's window runs in a Chrome profile of its own,
+# T3_CHROME_PROFILES_DIR/<slot>, as on the Mac. A fresh profile launched
+# without --no-first-run and --no-default-browser-check shows only a terms
+# dialog and never loads the page. Pairing tokens come from T3_BIN run against
+# the server's state in T3_HOMES_DIR/<slot> (bin/t3-workspace-serve's
+# T3CODE_HOME). T3_SERVER_WAIT bounds, in seconds, how long a run waits for the
+# servers to answer before it opens a window on one.
+T3_CHROME_PROFILES_DIR="$HOME/.t3-workspace-chrome"
+T3_CHROME_CMD=(google-chrome --no-first-run --no-default-browser-check)
+T3_BIN="$HOME/.local/bin/t3"
+T3_HOMES_DIR="$HOME/.t3-workspaces"
+T3_SERVER_WAIT=30
 OMNIGENT_DESKTOP_ENTRY="omnigent-desktop-electron.desktop"
 # Server > New Window is CmdOrCtrl+Shift+N from desktop 0.13.0 (upstream
 # 55717242, 2026-08-31). 0.10.0's menu item had no accelerator at all, so on
@@ -324,7 +337,9 @@ validate_dashboard_panes() {
   done
   return "$bad"
 }
-validate_term_app_ids && validate_dashboard_panes || {
+# One line per t3 row (see t3_servers), resolved once for reconcile_entry.
+T3_SERVERS=""
+validate_term_app_ids && validate_dashboard_panes && T3_SERVERS=$(t3_servers) || {
   echo "ERROR: fix the workspace table before running." >&2
   exit 1
 }
@@ -342,7 +357,7 @@ current_claim_marks() {
   local entry ws type rest pane app_id
   for entry in "${WORKSPACES[@]}"; do
     IFS='|' read -r ws type rest <<< "$entry"
-    case "$type" in chrome|omnigent) echo "sw:${ws}:${type}" ;; esac
+    case "$type" in chrome|omnigent|t3) echo "sw:${ws}:${type}" ;; esac
   done
   for pane in "${DASHBOARD_PANES[@]}"; do
     IFS='|' read -r app_id _ <<< "$pane"
@@ -586,12 +601,180 @@ reconcile_marked() {
   refresh
 }
 
+# ── T3 Code windows ──────────────────────────────────────────────────
+# A t3 row's window is a Chrome --app window on its workspace's T3 Code
+# server, at a hostname of its own (Chrome resolves *.localhost to loopback)
+# and in a Chrome profile of its own. It is found by that profile alone (see
+# chrome_profile_window_ids in sway-windows-lib.sh), so it never takes another
+# slot's window, and claimed by the mark sw:<ws>:t3.
+#
+# A row is inert unless its server's unit is enabled: bin/t3-ensure enables one
+# per row where T3 Code is installed, and elsewhere the row only says so.
+
+T3_TITLE_RE='^T3 Code'
+
+# The Chrome slots' matcher, minus every window whose browser runs a T3 Code
+# profile. A link T3 Code opens in a new tab lands in a regular browser window
+# of that profile, and under XWayland an --app window carries Chrome's class:
+# CHROME_MATCH_JQ alone would hand either to a Chrome slot.
+chrome_slot_match() {
+  local pid pids=""
+  while read -r pid; do
+    if [[ "$(chrome_user_data_dir "$pid")" == "$T3_CHROME_PROFILES_DIR/"* ]]; then
+      pids="${pids}${pids:+, }${pid}"
+    fi
+  done < <(jq -r "[.[] | select($CHROME_MATCH_JQ) | .pid] | unique | .[]" <<< "$SNAPSHOT")
+  if [[ -n "$pids" ]]; then
+    echo "($CHROME_MATCH_JQ) and (.pid | IN($pids) | not)"
+  else
+    echo "$CHROME_MATCH_JQ"
+  fi
+}
+
+# Every T3 Code server starts with the user manager, so they come up together.
+# The slots therefore share one deadline, set by the first server found not
+# answering: a broken install costs a run one wait, not one per slot. The probe
+# is the descriptor route `t3 pair` itself checks
+# (apps/server/src/cli/pair.ts), which answers without a session.
+T3_SERVER_DEADLINE=""
+t3_wait_for_server() {
+  local port="$1"
+  until curl -sf --noproxy '*' -o /dev/null -m 2 "http://127.0.0.1:${port}/.well-known/t3/environment"; do
+    [[ -n "$T3_SERVER_DEADLINE" ]] || T3_SERVER_DEADLINE=$(( $(date +%s) + T3_SERVER_WAIT ))
+    [[ $(date +%s) -lt "$T3_SERVER_DEADLINE" ]] || return 1
+    sleep 0.5
+  done
+}
+
+# t3_pairing_token SLOT -> a one-time token minted by SLOT's running server.
+# A window opened on /pair#token=<token> pairs its profile; the session cookie
+# lasts about 30 days, and a later window on / comes back signed in.
+t3_pairing_token() {
+  local out token
+  out=$(T3CODE_HOME="$T3_HOMES_DIR/$1" timeout 30 "$T3_BIN" pair --ttl 5m --label sway-startup-windows 2>/dev/null) \
+    || return 1
+  token=$(sed -n 's/^Token: //p' <<< "$out")
+  token="${token%%$'\n'*}"
+  [[ "$token" =~ ^[A-Za-z0-9_-]+$ ]] || return 1
+  printf '%s\n' "$token"
+}
+
+# t3_close_window ID -- close a window and wait, bounded, until it is gone and
+# its browser has either exited or kept other windows, so the launch that
+# replaces it does not hand its window to a browser that is shutting down.
+t3_close_window() {
+  local id="$1" pid _
+  pid=$(jq -r --argjson i "$id" '.[] | select(.id == $i) | .pid' <<< "$SNAPSHOT")
+  sway_cmd "[con_id=$id] kill" || return 1
+  for _ in $(seq 1 40); do
+    sleep 0.25
+    refresh
+    jq -e --argjson i "$id" 'any(.[]; .id == $i)' <<< "$SNAPSHOT" >/dev/null && continue
+    if jq -e --argjson p "${pid:-0}" 'any(.[]; .pid == $p)' <<< "$SNAPSHOT" >/dev/null \
+        || [[ ! -e "$SWAY_WINDOWS_PROC/$pid" ]]; then
+      return 0
+    fi
+  done
+  # A browser that outlives its last window (one running background apps) is
+  # not shutting down: a launch reaches it like any running profile.
+  ! jq -e --argjson i "$id" 'any(.[]; .id == $i)' <<< "$SNAPSHOT" >/dev/null
+}
+
+# Same contract as reconcile_marked -- the mark's holder, else an unclaimed
+# window, else a new one -- except that every candidate must be a window of
+# the slot's profile, and a window stuck on an error page is replaced.
+reconcile_t3() {
+  local ws="$1" slot="$2" port="$3"
+  local label="t3:$ws" mark="sw:${ws}:t3" profile="$T3_CHROME_PROFILES_DIR/$slot"
+  local url="http://${slot}.t3.localhost:${port}/" ids id held=false title token open_url before deadline new
+
+  if ! systemctl --user is-enabled --quiet "t3@${slot}.service" 2>/dev/null; then
+    echo "[$label] t3@${slot} is not enabled; no T3 Code window (bin/t3-ensure enables it)"
+    return 0
+  fi
+
+  ids=$(chrome_profile_window_ids "$SNAPSHOT" "$profile")
+  id=$(id_with_mark "$SNAPSHOT" "$mark")
+  if [[ -n "$id" ]] && ! grep -qx "$id" <<< "$ids"; then
+    echo "[$label] window $id holds $mark but is not a window of $profile; ignoring the claim"
+    id=""
+  fi
+  if [[ -n "$id" ]]; then
+    echo "[$label] holding mark $mark (id=$id)"
+    held=true
+  else
+    ids=$(chrome_profile_window_ids "$SNAPSHOT" "$profile" unclaimed)
+    id="${ids%%$'\n'*}"
+    [[ -z "$id" ]] || echo "[$label] adopting unclaimed window $id"
+  fi
+
+  # A window opened while its server was down sits on Chrome's error page,
+  # titled with the host, which never retries (as on the Mac): once the server
+  # answers, replace it. T3 Code titles its page the same way paired or not,
+  # so this cannot tell whether pairing worked.
+  if [[ -n "$id" ]]; then
+    title=$(jq -r --argjson i "$id" '.[] | select(.id == $i) | .title' <<< "$SNAPSHOT")
+    if [[ ! "$title" =~ $T3_TITLE_RE ]]; then
+      if [[ "$DRY_RUN" == true ]]; then
+        echo "  DRY-RUN replace window $id (titled '$title', not T3 Code's page) once $slot's server answers"
+        return 0
+      elif t3_wait_for_server "$port"; then
+        echo "[$label] window $id is titled '$title', not T3 Code's page; replacing it"
+        t3_close_window "$id" || { warn "[$label] could not close window $id"; return 1; }
+        id=""
+        held=false
+      else
+        warn "[$label] $slot's T3 Code server is not answering on port $port; window $id stays on its error page"
+      fi
+    fi
+  fi
+  if [[ "$held" == true ]]; then
+    place "$id" "$ws" "$label"
+    return 0
+  fi
+
+  if [[ -z "$id" ]]; then
+    echo "[$label] opening $url on workspace $ws..."
+    if [[ "$DRY_RUN" == true ]]; then
+      launch app.slice "${T3_CHROME_CMD[@]}" "--user-data-dir=$profile" "--app=${url}pair#token=TOKEN"
+      return 0
+    fi
+    t3_wait_for_server "$port" || {
+      warn "[$label] $slot's T3 Code server (t3@$slot) did not answer on port $port within ${T3_SERVER_WAIT}s; not opening a window"
+      return 1
+    }
+    if token=$(t3_pairing_token "$slot"); then
+      open_url="${url}pair#token=${token}"
+    else
+      warn "[$label] could not mint a pairing token (T3CODE_HOME=$T3_HOMES_DIR/$slot $T3_BIN pair); opening $url unpaired"
+      open_url="$url"
+    fi
+    mkdir -p "$profile" || { warn "[$label] cannot create the Chrome profile $profile"; return 1; }
+    before=$(chrome_profile_window_ids "$SNAPSHOT" "$profile")
+    launch app.slice "${T3_CHROME_CMD[@]}" "--user-data-dir=$profile" "--app=$open_url" \
+      || { warn "[$label] launch failed"; return 1; }
+    deadline=$(( $(date +%s) + 25 ))
+    while [[ -z "$id" && $(date +%s) -lt "$deadline" ]]; do
+      sleep 0.5
+      refresh
+      for new in $(chrome_profile_window_ids "$SNAPSHOT" "$profile"); do
+        if ! grep -qx "$new" <<< "$before"; then id="$new"; break; fi
+      done
+    done
+    [[ -n "$id" ]] || { warn "[$label] new window never appeared"; return 1; }
+  fi
+
+  place "$id" "$ws" "$label"
+  [[ "$DRY_RUN" == true ]] || mark_window "$id" "$mark" || warn "[$label] could not mark $id"
+  refresh
+}
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 refresh
 
 reconcile_entry() {
-  local entry="$1" ws type rest slot workdir cmd
+  local entry="$1" ws type rest slot workdir cmd port
   IFS='|' read -r ws type rest <<< "$entry"
   case "$type" in
     term)
@@ -600,13 +783,14 @@ reconcile_entry() {
       refresh
       ;;
     chrome)
-      reconcile_marked "$ws" chrome "$CHROME_MATCH_JQ" "$CHROME_INVALID_TITLE_RE" || true
+      reconcile_marked "$ws" chrome "$(chrome_slot_match)" "$CHROME_INVALID_TITLE_RE" || true
       ;;
     omnigent)
       reconcile_marked "$ws" omnigent "$OMNIGENT_MATCH_JQ" "$OMNIGENT_INVALID_TITLE_RE" || true
       ;;
     t3)
-      # The server is bin/t3-ensure's; this script opens no window for it yet.
+      read -r slot port <<< "$(awk -F'\t' -v ws="$ws" '$1 == ws { print $2, $4; exit }' <<< "$T3_SERVERS")"
+      reconcile_t3 "$ws" "$slot" "$port" || true
       ;;
   esac
 }

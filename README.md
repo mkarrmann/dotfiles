@@ -159,21 +159,24 @@ and sway starts it once per session via the `exec` line at the bottom of
 `~/bin/startup-windows` directly; `--dry-run` prints the plan without touching
 anything.
 
-| WS  | Contents                                       |
-| --- | ---------------------------------------------- |
-| 1   | local terminal (bare nvim) + Chrome + Omnigent |
-| 2   | nvim in `~/dotfiles` + Chrome + Omnigent       |
-| 3   | nvim in `~/dev/orchest` + Chrome + Omnigent    |
-| 4   | nvim in `~/repos/omnigent` + Chrome + Omnigent |
-| 5   | nvim in `~/work/presto` + Chrome + Omnigent    |
-| 6   | nvim in `~/gatech` + Chrome + Omnigent         |
+| WS  | Contents                                                 |
+| --- | -------------------------------------------------------- |
+| 1   | local terminal (bare nvim) + Chrome + Omnigent           |
+| 2   | nvim in `~/dotfiles` + Chrome + Omnigent + T3 Code       |
+| 3   | nvim in `~/dev/orchest` + Chrome + Omnigent + T3 Code    |
+| 4   | nvim in `~/repos/omnigent` + Chrome + Omnigent + T3 Code |
+| 5   | nvim in `~/work/presto` + Chrome + Omnigent + T3 Code    |
+| 6   | nvim in `~/gatech` + Chrome + Omnigent + T3 Code         |
 | 9   | second-monitor dashboard (Obsidian, Orchest Overview at 30%) |
 | Z   | overflow / stray sweep (`$mod+z`)              |
 
 Each standard workspace is laid out as `[ Orchest sidebar | stack ]`: the
 Orchest workspace window on the left at 12% of the output (300px floor), and
 every other window in one `stacking` container (sway's vertical accordion)
-ordered terminal, Chrome, Omnigent, then anything moved there by hand. Orchest
+ordered terminal, Chrome, Omnigent, T3 Code, then anything moved there by hand.
+The T3 Code window is a Chrome app window on the workspace's own T3 Code server,
+opened only while that server's `t3@<slot>` unit is enabled; see
+`docs/t3code-omnigent.md`. Orchest
 is launched and its windows claimed by `bin-linux/orchest-open-workspaces`, the
 counterpart of the Mac script of the same name. The stack layout is one
 constant (`STACK_LAYOUT` in `bin-linux/sway-windows-lib.sh`); `tabbed` is the
@@ -215,6 +218,10 @@ supplies what AeroSpace does not:
   window inherits the first's `--class`), so they are claimed by sway marks.
   Marks are globally unique in sway, which makes double-claiming impossible and
   lets a re-run read back the previous run's claims.
+- T3 Code windows are Chrome `--app` windows that sway cannot tell apart (an
+  app_id fixed by Chrome, one shared title), so each runs in a Chrome profile
+  of its own, `~/.t3-workspace-chrome/<slot>`: the profile on the owning
+  browser's command line is the identity, and `sw:<ws>:t3` the claim.
 - `bin-linux/arrange-workspaces` addresses every window by container id, so
   it never focuses or switches workspaces: a rebuild is invisible from another
   workspace, and a keybind move does not flip the view. A workspace already in

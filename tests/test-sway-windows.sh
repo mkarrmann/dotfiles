@@ -8,9 +8,10 @@
 # Every case below is a bug that actually happened while building this, or a
 # property the design depends on:
 #
-#   * Chrome is an XWayland client: app_id is null and the identity lives in
-#     window_properties.class as "Google-chrome" (capital G). A matcher
-#     "simplified" to app_id only silently stops finding Chrome at all.
+#   * Under XWayland Chrome's app_id is null and the identity lives in
+#     window_properties.class as "Google-chrome" (capital G); natively it is
+#     the app_id. A matcher "simplified" to one field silently stops finding
+#     Chrome on the other backend.
 #   * ghostty accepts an invalid --class and falls back to its default, which
 #     would collapse every managed terminal onto one app_id.
 #   * A slot must never steal a window another slot already claimed.
@@ -20,8 +21,11 @@
 #     (on a fresh profile, or on the first parent resize, respectively). It also
 #     carries --remote-debugging-port=0, which nvim-show-resolver depends on.
 #   * A t3 row declares a T3 Code server for bin/t3-ensure through
-#     --print-layout, and nothing else: until startup-windows opens windows for
-#     it, the reconcile pass must not launch, claim or keep anything for it.
+#     --print-layout, and a window on it. T3 Code windows are Chrome --app
+#     windows that sway cannot tell apart, so their identity is the Chrome
+#     profile on the browser's command line: a dialog of the same browser, a
+#     profile whose name merely starts the same, or a window of an exited
+#     process must never pass for one, and no Chrome slot may take one.
 set -uo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -374,29 +378,191 @@ out=$(print_layout SWAY_WINDOWS_LAYOUT="$TMP/t3-orphan.sh" 2>&1 >/dev/null); rc=
 check "a t3 row on a workspace with no terminal fails the whole layout" "1" "$rc"
 [[ "$out" == *"workspace 8 has no term row"* ]] && pass "and says why" || fail "unexpected output: $out"
 
-echo "== t3 rows are inert in the reconcile pass =="
-# The shipped dispatch and claim helpers, with the per-type reconcilers
-# replaced by recorders: a t3 row must reach none of them, and must leave the
-# set of claims, terminal identities and managed workspaces -- everything the
-# sweep keeps a window by -- exactly as it was.
-for fn in reconcile_entry current_claim_marks current_term_app_ids managed_workspaces; do
+echo "== T3 Code window identity: the browser's profile =="
+# A fake /proc. Pid 100 is a T3 Code profile's browser with two --app windows
+# (one claimed), a dialog, and a regular window a link opened; 200 runs a
+# profile whose name merely starts the same; 300 is the everyday Chrome; 400
+# the first profile's browser under XWayland; 500 Orchest; 600 has exited.
+#
+# A Chrome browser's cmdline is ONE space-joined string with a trailing NUL:
+# Chrome rewrites its process title (verified against the live browser). A
+# reader that only splits on NUL never finds --user-data-dir in it, which is
+# exactly how a stub with an ordinary argv passed while real Chrome was never
+# recognised. 400 keeps an ordinary NUL-separated argv, so both forms are read.
+PROC="$TMP/proc"
+fake_proc() { # PID ARG... -> $PROC/PID/cmdline, NUL-separated like the kernel's
+  local pid="$1"; shift
+  mkdir -p "$PROC/$pid"; printf '%s\0' "$@" > "$PROC/$pid/cmdline"
+}
+fake_chrome_proc() { # PID ARG... -> the cmdline Chrome leaves after retitling itself
+  local pid="$1"; shift
+  mkdir -p "$PROC/$pid"; printf '%s\0' "$*" > "$PROC/$pid/cmdline"
+}
+PROFILES=/home/me/.t3-workspace-chrome
+fake_chrome_proc 100 /opt/google/chrome/chrome --no-first-run "--user-data-dir=$PROFILES/orchest" "--app=http://orchest.t3.localhost:3783/pair#token=X"
+fake_chrome_proc 200 /opt/google/chrome/chrome "--user-data-dir=$PROFILES/orchest2" "--app=http://orchest2.t3.localhost:3787/"
+fake_chrome_proc 300 /opt/google/chrome/chrome --profile-directory=Default --new-window
+fake_proc 400 /opt/google/chrome/chrome --ozone-platform=x11 "--user-data-dir=$PROFILES/orchest"
+fake_proc 500 /home/me/dev/orchest/node_modules/electron/dist/electron /home/me/dev/orchest/apps/desktop
+T3_SNAP=$(cat <<'JSON'
+[
+  {"id":30,"ws":"3","app_id":"chrome-orchest.t3.localhost__pair-Default","class":null,"title":"T3 Code (Beta)","marks":["sw:3:t3"],"pid":100},
+  {"id":31,"ws":"3","app_id":"chrome-orchest.t3.localhost__-Default","class":null,"title":"T3 Code (Beta)","marks":[],"pid":100},
+  {"id":32,"ws":"3","app_id":null,"class":null,"title":"","marks":[],"pid":100},
+  {"id":33,"ws":"3","app_id":"google-chrome","class":null,"title":"Pull request - Google Chrome","marks":[],"pid":100},
+  {"id":34,"ws":"7","app_id":"chrome-orchest2.t3.localhost__-Default","class":null,"title":"T3 Code (Beta)","marks":[],"pid":200},
+  {"id":35,"ws":"3","app_id":"google-chrome","class":null,"title":"Docs - Google Chrome","marks":["sw:3:chrome"],"pid":300},
+  {"id":36,"ws":"Z","app_id":null,"class":"Google-chrome","title":"T3 Code (Beta)","marks":[],"pid":400},
+  {"id":37,"ws":"3","app_id":null,"class":"@orchest/desktop","title":"x — Orchest [abcd1234]","marks":["sw:3:orchest"],"pid":500},
+  {"id":38,"ws":"3","app_id":"chrome-orchest.t3.localhost__-Default","class":null,"title":"T3 Code (Beta)","marks":[],"pid":600},
+  {"id":39,"ws":"Z","app_id":"google-chrome","class":null,"title":"New Tab - Google Chrome","marks":[],"pid":300}
+]
+JSON
+)
+SWAY_WINDOWS_PROC="$PROC"
+check "a profile's --app windows, native and XWayland; not its dialog or browser window, a sibling profile's, or an exited process's" \
+  "30 31 36" "$(chrome_profile_window_ids "$T3_SNAP" "$PROFILES/orchest" | tr '\n' ' ' | sed 's/ $//')"
+check "unclaimed: only those holding no sw: mark" \
+  "31 36" "$(chrome_profile_window_ids "$T3_SNAP" "$PROFILES/orchest" unclaimed | tr '\n' ' ' | sed 's/ $//')"
+check "the sibling profile is matched exactly too" "34" "$(chrome_profile_window_ids "$T3_SNAP" "$PROFILES/orchest2")"
+check "the profile is read from Chrome's retitled command line" "$PROFILES/orchest" "$(chrome_user_data_dir 100)"
+check "and from an ordinary argv" "$PROFILES/orchest" "$(chrome_user_data_dir 400)"
+chrome_user_data_dir 300 >/dev/null && fail "a browser without --user-data-dir reported one" || pass "a browser without --user-data-dir has none"
+out=$(chrome_user_data_dir 600 2>&1) && fail "an exited process reported a profile" || check "an exited process has none, silently" "" "$out"
+
+STARTUP="$ROOT/bin-linux/startup-windows"
+for fn in chrome_slot_match reconcile_entry current_claim_marks current_term_app_ids managed_workspaces t3_servers \
+          t3_pairing_token t3_wait_for_server; do
   body=$(extract_fn "$STARTUP" "$fn")
   [[ -n "$body" ]] || { echo "could not extract $fn from $STARTUP" >&2; exit 1; }
   eval "$body"
 done
+T3_CHROME_PROFILES_DIR="$PROFILES"
+SNAPSHOT="$T3_SNAP"
+check "without the T3 Code exclusion a Chrome slot would adopt the profile's browser window" \
+  "33" "$(unclaimed_window_id "$SNAPSHOT" "$CHROME_MATCH_JQ" "$CHROME_INVALID_TITLE_RE")"
+check "a Chrome slot adopts only a window of a browser outside the T3 Code profiles" \
+  "39" "$(unclaimed_window_id "$SNAPSHOT" "$(chrome_slot_match)" "$CHROME_INVALID_TITLE_RE")"
+check "and never counts one as its new window" \
+  "35 39" "$(window_ids_matching "$SNAPSHOT" "$(chrome_slot_match)" "$CHROME_INVALID_TITLE_RE" | tr '\n' ' ' | sed 's/ $//')"
+check "without T3 Code windows the matcher is CHROME_MATCH_JQ itself" \
+  "$CHROME_MATCH_JQ" "$(SNAPSHOT=$(jq -c 'map(select(.pid != 100 and .pid != 400))' <<< "$T3_SNAP") chrome_slot_match)"
+unset SWAY_WINDOWS_PROC
+# shellcheck source=../bin-linux/sway-windows-lib.sh
+source "$LIB"
+
+echo "== an Orchest sidebar is told from the orchest slot's T3 Code window (sway-auto-stack) =="
+# sway-auto-stack never stacks a window whose process runs from the Orchest
+# checkout. The orchest slot's T3 Code browser has "orchest" in its profile
+# path and URL, and must still be stacked like any other window.
+body=$(extract_fn "$ROOT/bin-linux/sway-auto-stack" is_orchest_process)
+[[ -n "$body" ]] || { echo "could not extract is_orchest_process" >&2; exit 1; }
+eval "$body"
+ORCHEST_DIR="$HOME/dev/orchest"
+bash -c 'sleep 30; true' --no-first-run "--user-data-dir=$HOME/.t3-workspace-chrome/orchest" \
+  "--app=http://orchest.t3.localhost:3783/pair#token=X" &
+t3_pid=$!
+bash -c 'sleep 30; true' "$ORCHEST_DIR/node_modules/electron/dist/electron" "$ORCHEST_DIR/apps/desktop" &
+orchest_pid=$!
+sleep 0.2
+is_orchest_process "$t3_pid" && fail "the orchest slot's T3 Code browser was taken for Orchest" \
+  || pass "the orchest slot's T3 Code browser is not Orchest"
+is_orchest_process "$orchest_pid" && pass "an Orchest process still is" || fail "an Orchest process was not recognised"
+kill "$t3_pid" "$orchest_pid" 2>/dev/null; wait "$t3_pid" "$orchest_pid" 2>/dev/null
+
+echo "== t3 rows in the reconcile pass =="
+# The shipped dispatch and claim helpers, with the per-type reconcilers
+# replaced by recorders.
 reconcile_term() { echo "term $1 $2"; }
 reconcile_marked() { echo "marked $1 $2"; }
+reconcile_t3() { echo "t3 $*"; }
 warn() { echo "warn $*"; }
 refresh() { :; }
-check "a t3 row reconciles nothing" "" "$(reconcile_entry "2|t3")"
+SNAPSHOT='[]'
+WORKSPACES=("2|term|dotfiles|~/dotfiles|true" "2|chrome" "2|omnigent" "2|t3" "3|term|orchest|~/dev/orchest|true" "3|t3")
+T3_BASE_PORT=3780
+T3_SERVERS=$(t3_servers)
+check "a t3 row reconciles its workspace's slot and port" "t3 2 dotfiles 3782" "$(reconcile_entry "2|t3")"
+check "each row its own" "t3 3 orchest 3783" "$(reconcile_entry "3|t3")"
 check "the rest of its workspace still reconciles" $'term 2 dotfiles\nmarked 2 chrome' \
   "$(reconcile_entry "2|term|dotfiles|~/dotfiles|true"; reconcile_entry "2|chrome")"
 DASHBOARD_WS=9; DASHBOARD_PANES=("obsidian|x")
-sweep_keeps() { current_claim_marks; current_term_app_ids; managed_workspaces; }
-WORKSPACES=("2|term|dotfiles|~/dotfiles|true" "2|chrome" "2|omnigent")
-without_t3=$(sweep_keeps)
-WORKSPACES+=("2|t3")
-check "a t3 row adds no claim, terminal or managed workspace" "$without_t3" "$(sweep_keeps)"
+claims=$(current_claim_marks)
+grep -qx 'sw:2:t3' <<< "$claims" && grep -qx 'sw:3:t3' <<< "$claims" \
+  && pass "the sweep keeps each t3 row's claim" || fail "t3 claims missing from: $(tr '\n' ' ' <<< "$claims")"
+check "and adds no terminal or managed workspace" $'sway-ws.term.dotfiles\nsway-ws.term.orchest\n2\n3' \
+  "$(current_term_app_ids; managed_workspaces)"
+
+echo "== a T3 Code window is the last of the stack's slots =="
+# Rank 3 in arrange-workspaces: after the terminal, Chrome and Omnigent, ahead
+# of anything unclaimed, even when it is the oldest window there.
+RANK_SNAP=$(cat <<'JSON'
+[
+  {"id":50,"ws":"2","app_id":"chrome-dotfiles.t3.localhost__pair-Default","class":null,"title":"T3 Code (Beta)","marks":["sw:2:t3"],"pid":1,"floating":false},
+  {"id":51,"ws":"2","app_id":"sway-ws.term.dotfiles","class":null,"title":"nvim","marks":[],"pid":2,"floating":false},
+  {"id":52,"ws":"2","app_id":"google-chrome","class":null,"title":"Docs","marks":["sw:2:chrome"],"pid":3,"floating":false},
+  {"id":53,"ws":"2","app_id":"omnigent","class":null,"title":"chat","marks":["sw:2:omnigent"],"pid":4,"floating":false},
+  {"id":54,"ws":"2","app_id":"org.gnome.Calculator","class":null,"title":"Calculator","marks":[],"pid":5,"floating":false}
+]
+JSON
+)
+check "terminal, Chrome, Omnigent, T3 Code, then the rest" \
+  "51 52 53 50 54" "$(DASHBOARD_ORDER="obsidian orchest-overview" ordered_ids "$RANK_SNAP" 2 | tr '\n' ' ' | sed 's/ $//')"
+check "T3 Code is among the slots whose order is enforced" \
+  "51 52 53 50" "$(DASHBOARD_ORDER="obsidian orchest-overview" ordered_ids "$RANK_SNAP" 2 3 | tr '\n' ' ' | sed 's/ $//')"
+
+echo "== T3 Code pairing tokens =="
+cat > "$TMP/t3-pair" <<EOF
+#!/bin/bash
+echo "\$T3CODE_HOME \$*" > "$TMP/t3-pair.args"
+[[ -z "\${FAKE_PAIR_FAIL:-}" ]] || { echo "No running T3 Code server found." >&2; exit 1; }
+cat <<OUT
+Pairing with matt-System-Version (http://127.0.0.1:3782).
+
+  █▀▀▀▀▀█ █▄█▀██▀▄ ███▀█ █▀ █▀▀▀▀▀█
+  █ ███ █ █ ▀ ██▄ █▄▀█▀▄█▀▄ █ ███ █
+
+Pairing URL: http://127.0.0.1:3782/pair#token=QL7XTEQS8LKL
+App link: t3code://pair?pairingUrl=http%3A%2F%2F127.0.0.1%3A3782%2Fpair%23token%3DQL7XTEQS8LKL
+Token: \${FAKE_PAIR_TOKEN:-QL7XTEQS8LKL}
+Expires: 2026-11-03T20:13:08.740Z
+
+Note: This URL is only reachable from this machine.
+OUT
+EOF
+chmod +x "$TMP/t3-pair"
+T3_BIN="$TMP/t3-pair"; T3_HOMES_DIR="$TMP/t3-homes"
+check "the token is read from t3 pair's output" "QL7XTEQS8LKL" "$(t3_pairing_token dotfiles)"
+check "minted by that slot's server, short-lived and labelled" \
+  "$TMP/t3-homes/dotfiles pair --ttl 5m --label sway-startup-windows" "$(cat "$TMP/t3-pair.args")"
+FAKE_PAIR_FAIL=1 t3_pairing_token dotfiles >/dev/null && fail "a failed t3 pair produced a token" || pass "a failed t3 pair produces none"
+FAKE_PAIR_TOKEN='not a token' t3_pairing_token dotfiles >/dev/null && fail "garbage was taken for a token" || pass "neither does output without a usable token"
+
+echo "== waiting for a T3 Code server is bounded and shared =="
+if command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
+  mkdir -p "$TMP/www/t3/.well-known/t3" "$TMP/www/other"
+  echo '{"serverVersion":"0.1.6"}' > "$TMP/www/t3/.well-known/t3/environment"
+  t3_port=$(free_port); other_port=$(free_port); closed_port=$(free_port)
+  python3 -m http.server --bind 127.0.0.1 --directory "$TMP/www/t3" "$t3_port" >/dev/null 2>&1 &
+  t3_server=$!
+  python3 -m http.server --bind 127.0.0.1 --directory "$TMP/www/other" "$other_port" >/dev/null 2>&1 &
+  other_server=$!
+  for _ in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:$t3_port/" && curl -s -o /dev/null "http://127.0.0.1:$other_port/" && break; sleep 0.1; done
+  T3_SERVER_WAIT=2; T3_SERVER_DEADLINE=""
+  t3_wait_for_server "$t3_port" && pass "a server answering T3 Code's descriptor route is ready" || fail "a T3 Code server was not seen"
+  check "and an answering server starts no deadline" "" "$T3_SERVER_DEADLINE"
+  start=$(date +%s)
+  t3_wait_for_server "$other_port" && fail "a server without the descriptor route was taken for T3 Code" \
+    || pass "a server that 404s the descriptor route is not T3 Code"
+  t3_wait_for_server "$closed_port" && fail "a closed port was ready" || pass "nor is a closed port"
+  elapsed=$(( $(date +%s) - start ))
+  (( elapsed <= 3 )) && pass "both share one ${T3_SERVER_WAIT}s deadline (${elapsed}s in all)" \
+    || fail "two dead servers took ${elapsed}s; the deadline is not shared"
+  kill "$t3_server" "$other_server" 2>/dev/null; wait "$t3_server" "$other_server" 2>/dev/null
+else
+  echo "  skip: curl or python3 not installed"
+fi
 
 echo
 if [[ "$failures" -gt 0 ]]; then
