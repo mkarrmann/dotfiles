@@ -83,6 +83,9 @@ check "a window another workspace claimed is never offered" \
   "17" "$(unclaimed_window_id "$SNAP" "$OMNIGENT_MATCH_JQ" "$OMNIGENT_INVALID_TITLE_RE")"
 check "the update overlay is never offered as a slot" \
   "" "$(unclaimed_window_id "$SNAP" '(.title == "Omnigent Update")' "$OMNIGENT_INVALID_TITLE_RE")"
+check "the connection loader is never offered as a slot" \
+  "" "$(unclaimed_window_id '[{"id":20,"ws":"1","app_id":null,"class":"omnigent","title":"Opening Omnigent","marks":[],"pid":9}]' \
+          "$OMNIGENT_MATCH_JQ" "$OMNIGENT_INVALID_TITLE_RE")"
 check "id lookup by mark" "12" "$(id_with_mark "$SNAP" "sw:1:omnigent")"
 check "id lookup by app_id" "10" "$(id_with_app_id "$SNAP" "sway-ws.term.local")"
 check "workspace lookup" "2" "$(workspace_of "$SNAP" 15)"

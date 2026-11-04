@@ -180,8 +180,11 @@ OMNIGENT_MATCH_JQ='((.app_id // "") | test("^omnigent"; "i")) or ((.class // "")
 CHROME_INVALID_TITLE_RE='^Who.s using Chrome\?$'
 # Omnigent's 344x1 transparent update overlay (desktop 0.10.0,
 # web/electron/src/update_overlay.js) is a real window one id after its parent.
-# It can never fill a slot and must never join a layout.
-OMNIGENT_INVALID_TITLE_RE='^Omnigent Update$'
+# It can never fill a slot and must never join a layout. Neither can the
+# 340x64 "Opening Omnigent" loader that desktop 0.18.1 shows over a window
+# whose page takes more than 300 ms to load (src/connection_loading.js) and
+# closes once it has.
+OMNIGENT_INVALID_TITLE_RE='^(Omnigent Update|Opening Omnigent)$'
 
 # window_ids_matching SNAPSHOT MATCH_JQ [INVALID_TITLE_RE] -> ascending ids
 window_ids_matching() {
