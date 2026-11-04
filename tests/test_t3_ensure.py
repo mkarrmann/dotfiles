@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -190,6 +191,7 @@ class T3EnsureTest(unittest.TestCase):
         self.assertIn("could not download T3 Code's installer", result.stderr)
         self.assertFalse((self.home / ".t3-workspaces").exists())
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "t3-ensure takes the desktop path only on Linux")
     def test_desktop_runs_one_server_with_every_t3_row_as_a_project(self):
         dotfiles, omnigent = self.home / "dotfiles", self.home / "repos/omnigent"
         dotfiles.mkdir()
@@ -216,6 +218,7 @@ class T3EnsureTest(unittest.TestCase):
         self.assertFalse([c for c in self.calls_made() if "checkout1" in c])
         self.assertEqual(self.units_in("active"), ["t3@checkout1.service", "t3@desktop.service"])
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "t3-ensure takes the desktop path only on Linux")
     def test_desktop_gives_the_app_its_own_omnigent_providers(self):
         app_settings = self.home / ".t3/userdata/settings.json"
         app_settings.parent.mkdir(parents=True)
@@ -240,6 +243,7 @@ class T3EnsureTest(unittest.TestCase):
         self.assertEqual(self.run_ensure().returncode, 0)
         self.assertFalse((self.home / ".t3").exists())
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "t3-ensure takes the desktop path only on Linux")
     def test_desktop_layout_failure_fails_clearly(self):
         self.profile = "desktop"
         write_exe(self.dotfiles / "bin-linux/startup-windows", "echo 'ERROR: bad table' >&2; exit 1\n")
@@ -334,17 +338,22 @@ class T3PairingTokensTest(unittest.TestCase):
         )
         write_fake_systemctl(self.bin / "systemctl", self.root / "calls.log", self.units)
 
-    def tokens(self):
+    def tokens(self, *args):
         env = {"HOME": str(self.home), "PATH": f"{self.bin}:/usr/bin:/bin"}
-        return subprocess.run([str(PAIRING_TOKENS)], env=env, capture_output=True, text=True)
+        return subprocess.run([str(PAIRING_TOKENS), *args], env=env, capture_output=True, text=True)
 
-    def test_one_token_per_checkout_from_the_one_server(self):
+    def test_as_many_distinct_tokens_as_asked_from_the_one_server(self):
         (self.units / "active/t3@checkouts.service").touch()
-        result = self.tokens()
+        result = self.tokens("3")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.splitlines(), ["T3_PAIR checkout1 TOKEN1", "T3_PAIR checkout2 TOKEN2"])
+        self.assertEqual(result.stdout.splitlines(), ["T3_PAIR TOKEN1", "T3_PAIR TOKEN2", "T3_PAIR TOKEN3"])
         servers = {line.split()[0] for line in self.mints.read_text().splitlines()}
         self.assertEqual(servers, {str(self.home / ".t3-workspaces/checkouts")})
+
+    def test_a_count_that_is_no_number_is_misuse(self):
+        (self.units / "active/t3@checkouts.service").touch()
+        self.assertEqual(self.tokens("all").returncode, 2)
+        self.assertFalse(self.mints.exists())
 
     def test_nothing_while_the_server_is_not_running(self):
         # A server per checkout, as before t3@checkouts, mints nothing either.
