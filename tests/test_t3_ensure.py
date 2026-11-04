@@ -4,13 +4,20 @@ temp home, fake t3/systemctl/curl, no network.
 Run with: python3 -m unittest discover -s tests -p test_t3_ensure.py
 """
 
+import hashlib
+import importlib.machinery
+import importlib.util
+import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "bin/t3-ensure"
@@ -92,7 +99,7 @@ class T3EnsureTest(unittest.TestCase):
         """Run as the desktop, with --print-layout declaring server "desktop" and one t3 row per (slot, workdir)."""
         self.profile = "desktop"
         t3 = [
-            {"workspace": str(n), "slot": slot, "workdir": str(workdir), "port": 3780}
+            {"workspace": str(n), "slot": slot, "workdir": str(workdir)}
             for n, (slot, workdir) in enumerate(rows.items(), start=2)
         ]
         self.layout.write_text(json.dumps({"terminals": [], "t3Server": "desktop", "t3Port": 3780, "t3": t3}))
@@ -184,11 +191,12 @@ class T3EnsureTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(len([c for c in self.calls_made() if c.startswith("t3 project add")]), 2)
 
-    def test_missing_t3_with_unreachable_installer_fails_clearly(self):
+    def test_missing_t3_that_cannot_be_installed_fails_clearly(self):
         (self.bin / "t3").unlink()
         result = self.run_ensure()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("could not download T3 Code's installer", result.stderr)
+        self.assertIn("[t3-ensure] ERROR:", result.stderr)
+        self.assertFalse((self.home / ".local/bin/t3").exists())
         self.assertFalse((self.home / ".t3-workspaces").exists())
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "t3-ensure takes the desktop path only on Linux")
@@ -196,7 +204,6 @@ class T3EnsureTest(unittest.TestCase):
         dotfiles, omnigent = self.home / "dotfiles", self.home / "repos/omnigent"
         dotfiles.mkdir()
         omnigent.mkdir(parents=True)
-        self.run_unit("t3@checkout1.service")
         self.use_desktop_layout({"dotfiles": dotfiles, "omnigent-repo": omnigent, "gatech": self.home / "gatech"})
         result = self.run_ensure()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -213,10 +220,50 @@ class T3EnsureTest(unittest.TestCase):
         # A declared workspace that is not cloned here is skipped, not a failure.
         self.assertIn(f"WARNING: skipping t3@desktop's project {self.home / 'gatech'} (workspace 4): it does not exist", result.stdout)
         self.assertEqual(sorted(p.name for p in (self.home / ".t3-workspaces").iterdir()), ["desktop"])
-        # The desktop's server is the layout's alone; a ~/checkoutN there is not one,
-        # and a t3@checkoutN there is not the work hubs' to retire.
+        # The desktop's server is the layout's alone; a ~/checkoutN there is no project of it.
         self.assertFalse([c for c in self.calls_made() if "checkout1" in c])
-        self.assertEqual(self.units_in("active"), ["t3@checkout1.service", "t3@desktop.service"])
+        self.assertEqual(self.units_in("active"), ["t3@desktop.service"])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "t3-ensure takes the desktop path only on Linux")
+    def test_desktop_retires_every_other_server(self):
+        (self.home / "dotfiles").mkdir()
+        self.use_desktop_layout({"dotfiles": self.home / "dotfiles"})
+        self.run_unit("t3@desktop.service")
+        # A server per t3 row, as before t3@desktop: found by the state t3-ensure
+        # wrote for it, or by the link `systemctl --user enable` left.
+        old_state = self.home / ".t3-workspaces/dotfiles/userdata/settings.json"
+        old_state.parent.mkdir(parents=True)
+        old_state.write_text('{"theme": "dark"}')
+        self.run_unit("t3@dotfiles.service")
+        wants = self.home / ".config/systemd/user/default.target.wants"
+        wants.mkdir(parents=True)
+        (wants / "t3@orchest.service").symlink_to("/nonexistent/t3@.service")
+        self.run_unit("t3@orchest.service")
+        # State of a server that is no longer enabled is not a server to stop.
+        (self.home / ".t3-workspaces/presto").mkdir()
+        result = self.run_ensure()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.units_in("enabled"), ["t3@desktop.service"])
+        self.assertEqual(self.units_in("active"), ["t3@desktop.service"])
+        self.assertIn("retired t3@dotfiles.service", result.stdout)
+        self.assertIn("retired t3@orchest.service", result.stdout)
+        self.assertEqual(old_state.read_text(), '{"theme": "dark"}')
+        self.assertFalse([c for c in self.calls_made() if "presto" in c and "disable" in c])
+        self.calls.unlink()
+        rerun = self.run_ensure()
+        self.assertEqual((rerun.returncode, rerun.stdout), (0, ""))
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "t3-ensure takes the desktop path only on Linux")
+    def test_desktop_reports_a_server_it_could_not_retire(self):
+        (self.home / "dotfiles").mkdir()
+        self.use_desktop_layout({"dotfiles": self.home / "dotfiles"})
+        (self.home / ".t3-workspaces/gatech").mkdir(parents=True)
+        self.run_unit("t3@gatech.service")
+        (self.units / "disable-fails").touch()
+        result = self.run_ensure()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("WARNING: could not disable t3@gatech.service", result.stdout)
+        self.assertEqual(self.units_in("active"), ["t3@desktop.service", "t3@gatech.service"])
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "t3-ensure takes the desktop path only on Linux")
     def test_desktop_gives_the_app_its_own_omnigent_providers(self):
@@ -253,6 +300,106 @@ class T3EnsureTest(unittest.TestCase):
         self.assertIn("--print-layout failed", result.stderr)
         self.assertFalse((self.home / ".t3-workspaces").exists())
         self.assertFalse([c for c in self.calls_made() if c.startswith("systemctl")])
+
+
+def load_t3_ensure():
+    loader = importlib.machinery.SourceFileLoader("t3_ensure", str(SCRIPT))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
+
+class T3CliInstallTest(unittest.TestCase):
+    """Step 1 against a release archive built here and a fake curl serving it."""
+
+    VERSION = "0.1.6"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.t3_home = self.root / "home/.t3"
+        self.bin_dir = self.root / "home/.local/bin"
+        self.fetched = self.root / "fetched.log"
+        self.module = load_t3_ensure()
+        self.platform = self.module.cli_platform()
+        self.archive = self.root / "release" / f"t3-{self.VERSION}-{self.platform}.tar.gz"
+        self.archive.parent.mkdir()
+        script = f'#!/bin/sh\n[ "$1" = --version ] && echo {self.VERSION}\n'.encode()
+        with tarfile.open(self.archive, "w:gz") as tar:
+            info = tarfile.TarInfo(f"t3-{self.VERSION}-{self.platform}/t3")
+            info.size, info.mode = len(script), 0o755
+            tar.addfile(info, io.BytesIO(script))
+        self.checksums = {self.platform: hashlib.sha256(self.archive.read_bytes()).hexdigest()}
+        fake_bin = self.root / "bin"
+        write_exe(
+            fake_bin / "curl",
+            f'out=""; url=""; while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; -*) ;; *) url="$1" ;; esac; shift; done\n'
+            f'echo "$url" >> {self.fetched}\n'
+            f'[ -n "$FAKE_RELEASE_ARCHIVE" ] || exit 22\n'
+            f'cp "$FAKE_RELEASE_ARCHIVE" "$out"\n',
+        )
+        patcher = mock.patch.dict(os.environ, {"PATH": f"{fake_bin}:/usr/bin:/bin", "FAKE_RELEASE_ARCHIVE": str(self.archive)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def install(self, checksums=None):
+        return self.module.install_t3(self.VERSION, self.checksums if checksums is None else checksums, self.t3_home, self.bin_dir)
+
+    def fetches(self):
+        return self.fetched.read_text().splitlines() if self.fetched.exists() else []
+
+    def versions(self):
+        directory = self.t3_home / "runtime/versions"
+        return sorted(p.name for p in directory.iterdir()) if directory.exists() else []
+
+    def test_installs_the_pinned_release_where_install_sh_would(self):
+        link = self.install()
+        self.assertEqual(link, self.bin_dir / "t3")
+        version_dir = self.t3_home / "runtime/versions" / self.VERSION
+        self.assertEqual(link.resolve(), (version_dir / "t3").resolve())
+        self.assertEqual(subprocess.run([str(link), "--version"], capture_output=True, text=True).stdout, f"{self.VERSION}\n")
+        self.assertEqual((version_dir / ".install-complete").read_text().strip(), self.VERSION)
+        self.assertEqual((self.t3_home / "runtime/launchers").read_text().splitlines(), [str(self.bin_dir.resolve() / "t3")])
+        self.assertEqual(self.versions(), [self.VERSION])
+        self.assertEqual(
+            self.fetches(),
+            [f"https://github.com/pingdotgg/t3code/releases/download/v{self.VERSION}/t3-{self.VERSION}-{self.platform}.tar.gz"],
+        )
+        # A second run reuses the download and records the launcher once.
+        self.install()
+        self.assertEqual(len(self.fetches()), 1)
+        self.assertEqual(len((self.t3_home / "runtime/launchers").read_text().splitlines()), 1)
+
+    def test_an_archive_that_does_not_match_the_pin_is_not_installed(self):
+        with self.assertRaises(SystemExit) as raised:
+            self.install({self.platform: "0" * 64})
+        self.assertIn("checksum mismatch", str(raised.exception))
+        self.assertFalse((self.bin_dir / "t3").exists())
+        self.assertEqual(self.versions(), [])
+
+    def test_a_failed_download_installs_nothing(self):
+        os.environ["FAKE_RELEASE_ARCHIVE"] = ""
+        with self.assertRaises(SystemExit) as raised:
+            self.install()
+        self.assertIn("could not download", str(raised.exception))
+        self.assertFalse((self.bin_dir / "t3").exists())
+        self.assertEqual(self.versions(), [])
+
+    def test_a_host_without_a_pin_downloads_nothing(self):
+        with self.assertRaises(SystemExit) as raised:
+            self.install({})
+        self.assertIn(f"no pinned t3 CLI for {self.platform}", str(raised.exception))
+        self.assertEqual(self.fetches(), [])
+
+    def test_a_version_already_unpacked_is_linked_without_a_download(self):
+        version_dir = self.t3_home / "runtime/versions" / self.VERSION
+        write_exe(version_dir / "t3", "exit 0\n")
+        (version_dir / ".install-complete").write_text(f"{self.VERSION}\n")
+        os.environ["FAKE_RELEASE_ARCHIVE"] = ""
+        link = self.install()
+        self.assertEqual(link.resolve(), (version_dir / "t3").resolve())
+        self.assertEqual(self.fetches(), [])
 
 
 class T3WorkspaceServeTest(unittest.TestCase):

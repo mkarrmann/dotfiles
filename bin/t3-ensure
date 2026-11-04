@@ -10,8 +10,10 @@ projects are every ~/checkoutN. On the desktop NAME is the layout's t3Server
 the table's t3 rows (one whose workdir is missing is skipped with a warning).
 Either way each window's new threads start in its own workspace's project
 (bin/t3-window-scope) while its sidebar lists every project. It:
-  1. installs the `t3` CLI with T3 Code's installer when it is missing. Later
-     upgrades belong to `t3 update`;
+  1. installs the pinned `t3` CLI (T3_CLI_VERSION) when it is missing, laid
+     out as T3 Code's install.sh lays it out but checked against the pinned
+     T3_CLI_SHA256 rather than whatever the release serves. Later upgrades
+     belong to `t3 update`;
   2. registers bin/omnigent-acp as the server's "Omnigent · Claude" and
      "Omnigent · Codex" providers in ~/.t3-workspaces/NAME/userdata/
      settings.json, keeping every other setting (a running server reloads it).
@@ -22,11 +24,12 @@ Either way each window's new threads start in its own workspace's project
      as it is here -- and no server or project for it below;
   3. warms uv's cache for omnigent-acp, since the services have no proxy to
      fetch its dependencies with;
-  4. on a candidate, retires the servers it ran before t3@checkouts, one per
-     checkout: `disable --now` every enabled t3@checkoutN. Each held only its
-     own checkout's threads, so no window saw a thread started in another, and
-     bin/t3-workspace-serve no longer serves them. Their state
-     (~/.t3-workspaces/checkoutN) is left where it is;
+  4. retires the servers it ran before this one: `disable --now` every
+     enabled t3@checkoutN on a candidate, and every enabled t3@X other than
+     t3@NAME on the desktop (one per t3 row, t3@dotfiles and the like, before
+     t3@desktop). Each held only its own workspace's threads, so no window saw
+     a thread started in another, and bin/t3-workspace-serve no longer serves
+     them. Their state (~/.t3-workspaces/X) is left where it is;
   5. enables and starts t3@NAME (systemd/t3@.service, bin/t3-workspace-serve)
      when it is not enabled yet. A running server is never restarted;
   6. adds each of its directories as a project of the server unless it
@@ -42,8 +45,10 @@ Env: DOTFILES_DIR (default ~/dotfiles).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -59,10 +64,19 @@ DESKTOP_APP_SETTINGS = Path.home() / ".t3/userdata/settings.json"
 SHIM = DOTFILES / "bin/omnigent-acp"
 CHECKOUT = re.compile(r"checkout[0-9]+")
 WORK_SERVER = "checkouts"  # bin/t3-workspace-serve, bin/t3-pairing-tokens
-INSTALLERS = (
-    "https://t3.codes/install.sh",
-    "https://raw.githubusercontent.com/pingdotgg/t3code/main/scripts/install.sh",
-)
+# Step 1's t3 CLI, from https://github.com/pingdotgg/t3code/releases/tag/v0.1.6,
+# the release omnigent_config/t3-desktop-app.env pins the desktop app to. Each
+# checksum is the archive's line in that release's SHA256SUMS (GitHub's asset
+# digests agree), keyed by install.sh's <os>-<arch>. Bump the version and every
+# checksum together; the pin only decides where a fresh host starts.
+T3_CLI_VERSION = "0.1.6"
+T3_CLI_SHA256 = {
+    "linux-x64": "7cf31da90dee41f524dd5b679ebb6d404637ca5d9dc6fd8bc019511d57bb77e6",
+    "linux-arm64": "b708f059200776f50623a766854841e40eda0bb67614211cf8b6909295ce20da",
+}
+T3_RELEASES = "https://github.com/pingdotgg/t3code/releases/download"
+T3_HOME = Path(os.environ.get("T3CODE_HOME") or Path.home() / ".t3").absolute()
+T3_BIN_DIR = Path.home() / ".local/bin"
 PROJECT_ADD_ATTEMPTS = 30
 PROVIDERS = {"omnigent-claude": ("Omnigent · Claude", "claude-native-ui"), "omnigent-codex": ("Omnigent · Codex", "codex-native-ui")}
 BUILTIN_PROVIDERS = ("codex", "claudeAgent")
@@ -85,18 +99,67 @@ def find_t3() -> Path | None:
     return default if default.exists() else None
 
 
-def install_t3() -> None:
-    # Plain curl on purpose: ~/.curlrc carries the proxy and client cert that reach GitHub.
-    with tempfile.TemporaryDirectory() as tmp:
-        script = Path(tmp) / "install.sh"
-        for url in INSTALLERS:
-            if subprocess.run(["curl", "-fsSL", "-o", str(script), url]).returncode == 0:
-                break
-        else:
-            raise SystemExit("[t3-ensure] ERROR: could not download T3 Code's installer")
-        subprocess.run(["sh", str(script)], check=True, env={**os.environ, "T3CODE_CHANNEL": "stable"})
-    if find_t3() is None:
-        raise SystemExit("[t3-ensure] ERROR: the installer finished but no t3 command was found")
+def cli_platform() -> str:
+    """This host as T3 Code's release archives name it (install.sh's platform-arch)."""
+    machine = platform.machine().lower()
+    arch = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}.get(machine, machine)
+    return f"{sys.platform}-{arch}"
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def install_t3(version: str, checksums: dict[str, str], t3_home: Path, bin_dir: Path) -> Path:
+    """Step 1: install.sh's install of VERSION -- the archive unpacked into
+    T3_HOME/runtime/versions/VERSION (where `t3 service install` and `t3 update`
+    look for it), BIN_DIR/t3 linked to it, the link recorded in
+    T3_HOME/runtime/launchers -- with the archive checked against CHECKSUMS.
+    Returns the link."""
+    target = cli_platform()
+    expected = checksums.get(target)
+    if expected is None:
+        raise SystemExit(f"[t3-ensure] ERROR: no pinned t3 CLI for {target} (T3_CLI_SHA256); install t3 by hand")
+    archive = f"t3-{version}-{target}.tar.gz"
+    versions = t3_home / "runtime/versions"
+    version_dir = versions / version
+    marker = version_dir / ".install-complete"
+    if not (marker.is_file() and marker.read_text().strip() == version):
+        versions.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=versions))
+        try:
+            download = staging / archive
+            # Plain curl on purpose: ~/.curlrc carries the proxy and client cert that reach GitHub.
+            if subprocess.run(["curl", "-fsSL", "-o", str(download), f"{T3_RELEASES}/v{version}/{archive}"]).returncode != 0:
+                raise SystemExit(f"[t3-ensure] ERROR: could not download {archive}")
+            if sha256(download) != expected:
+                raise SystemExit(f"[t3-ensure] ERROR: checksum mismatch for {archive}; not installing it")
+            if subprocess.run(["tar", "-xzf", str(download), "-C", str(staging), "--strip-components=1"]).returncode != 0:
+                raise SystemExit(f"[t3-ensure] ERROR: could not unpack {archive}")
+            download.unlink()
+            if subprocess.run([str(staging / "t3"), "--version"], stdout=subprocess.DEVNULL).returncode != 0:
+                raise SystemExit(f"[t3-ensure] ERROR: the t3 in {archive} does not run")
+            (staging / ".install-complete").write_text(version + "\n")
+            shutil.rmtree(version_dir, ignore_errors=True)
+            staging.rename(version_dir)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    link = bin_dir / "t3"
+    new_link = bin_dir / ".t3.t3-ensure"
+    new_link.unlink(missing_ok=True)
+    new_link.symlink_to(version_dir / "t3")
+    new_link.replace(link)
+    launcher = str(bin_dir.resolve() / "t3")
+    launchers = t3_home / "runtime/launchers"
+    if launcher not in (launchers.read_text().splitlines() if launchers.exists() else []):
+        with launchers.open("a") as f:
+            f.write(launcher + "\n")
+    return link
 
 
 def output(*command: str) -> str:
@@ -122,7 +185,7 @@ def work_servers() -> list[Server]:
     return [Server(WORK_SERVER, projects)] if projects else []
 
 
-def desktop_servers() -> list[Server]:
+def desktop_server() -> Server:
     layout = json.loads(output(str(DOTFILES / "bin-linux/startup-windows"), "--print-layout"))
     name = str(layout["t3Server"])
     projects: list[Path] = []
@@ -132,7 +195,7 @@ def desktop_servers() -> list[Server]:
             projects.append(directory)
         else:
             log(f"WARNING: skipping t3@{name}'s project {directory} (workspace {row['workspace']}): it does not exist")
-    return [Server(name, tuple(dict.fromkeys(projects)))] if projects else []
+    return Server(name, tuple(dict.fromkeys(projects)))
 
 
 def on_linux_desktop() -> bool:
@@ -179,38 +242,60 @@ def systemctl(*args: str) -> int:
     return subprocess.run(["systemctl", "--user", *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
 
 
-def retire_checkout_servers() -> bool:
-    """Step 4. An old instance is found by its checkout or by the state the old
-    t3-ensure wrote for it before enabling it; False when one would not stop."""
+def retire_servers(names: list[str], current: str) -> bool:
+    """Step 4: `disable --now` each enabled t3@NAME in NAMES but t3@CURRENT;
+    False when one would not stop."""
     retired = True
-    for name in sorted({*checkout_names(Path.home()), *checkout_names(WORKSPACES_HOME)}, key=checkout_number):
+    for name in names:
         unit = f"t3@{name}.service"
-        if systemctl("is-enabled", "--quiet", unit) != 0:
+        if name == current or systemctl("is-enabled", "--quiet", unit) != 0:
             continue
         if systemctl("disable", "--now", unit) == 0:
-            log(f"retired {unit}: t3@{WORK_SERVER} serves every checkout")
+            log(f"retired {unit}: t3@{current} serves its projects")
         else:
             log(f"WARNING: could not disable {unit}")
             retired = False
     return retired
 
 
+def old_checkout_servers() -> list[str]:
+    """A candidate's old instances, each found by its checkout or by the state
+    the old t3-ensure wrote for it before enabling it."""
+    return sorted({*checkout_names(Path.home()), *checkout_names(WORKSPACES_HOME)}, key=checkout_number)
+
+
+def old_desktop_servers() -> list[str]:
+    """Every t3@ instance the desktop may have enabled: one per state directory
+    (t3-ensure wrote ~/.t3-workspaces/NAME before enabling t3@NAME), and one per
+    t3@NAME.service link `systemctl --user enable` left in a wants directory."""
+    names = {p.name for p in WORKSPACES_HOME.iterdir() if p.is_dir()} if WORKSPACES_HOME.is_dir() else set()
+    units = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "systemd/user"
+    names.update(link.name.removeprefix("t3@").removesuffix(".service") for link in units.glob("*.wants/t3@*.service"))
+    return sorted(names)
+
+
 def main() -> int:
-    if find_t3() is None:
-        log("installing the t3 CLI")
-        install_t3()
     t3 = find_t3()
-    assert t3 is not None
+    if t3 is None:
+        log(f"installing the t3 CLI {T3_CLI_VERSION}")
+        t3 = install_t3(T3_CLI_VERSION, T3_CLI_SHA256, T3_HOME, T3_BIN_DIR)
     desktop = on_linux_desktop()
     if desktop and merge_settings(DESKTOP_APP_SETTINGS, SHIM):
         log("registered the Omnigent providers for the T3 Code desktop app")
-    servers = desktop_servers() if desktop else work_servers()
+    layout_server = desktop_server() if desktop else None
+    if layout_server is not None:
+        servers = [layout_server] if layout_server.projects else []
+    else:
+        servers = work_servers()
     for server in servers:
         if merge_settings(WORKSPACES_HOME / server.name / "userdata/settings.json", SHIM):
             log(f"registered the Omnigent providers for t3@{server.name}")
     if subprocess.run([str(SHIM), "--help"], stdout=subprocess.DEVNULL).returncode != 0:
         log("WARNING: omnigent-acp did not start; the Omnigent providers will fail until it does")
-    failed = not desktop and not retire_checkout_servers()
+    if layout_server is not None:
+        failed = not retire_servers(old_desktop_servers(), layout_server.name)
+    else:
+        failed = not retire_servers(old_checkout_servers(), WORK_SERVER)
     for server in servers:
         unit = f"t3@{server.name}.service"
         if systemctl("is-enabled", "--quiet", unit) != 0:
