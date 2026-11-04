@@ -158,7 +158,7 @@ printf '[Desktop Entry]\nExec=%s %%U\nType=Application\n' "$TMP/bin/obsidian-stu
 # other systemctl call (app-scope's) goes to the real one as before. Each T3
 # Code server is a python http.server answering T3 Code's descriptor route;
 # both t3 rows share the one on T3_BASE+1. The scope command stands in for
-# bin-linux/t3-window-scope, which needs a real Chrome (tests/test-sway-windows.sh
+# bin/t3-window-scope, which needs a real Chrome (tests/test-sway-windows.sh
 # covers its state merge): it logs its arguments and fails while
 # $TMP/t3-scope-fails exists.
 cat > "$TMP/bin/t3-chrome-stub" <<EOF

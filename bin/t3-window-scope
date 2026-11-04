@@ -4,8 +4,11 @@
 Usage: t3-window-scope PROFILE_DIR ORIGIN WORKDIR
 
 PROFILE_DIR is the window's Chrome --user-data-dir, ORIGIN its page's origin
-(http://<slot>.t3.localhost:<port>), WORKDIR a project on that server.
-bin-linux/startup-windows runs this once for every T3 Code window it opens.
+(http://<name>.t3.localhost:<port>), WORKDIR a project on that server: its
+absolute path, or ~/REL for the one live project whose root ends in /REL.
+bin-linux/startup-windows (an absolute path) and bin-macos/startup-windows
+(~/checkoutN: its servers are on the devservers, whose home it does not know)
+run this once for every T3 Code window they open.
 
 T3 Code has no URL or setting that opens a window on a project. What it has,
 verified against 0.1.6, is client state in the page's localStorage, which is
@@ -26,7 +29,7 @@ and every new-thread command follows the project of the draft or thread on
 screen (lib/chatThreadActions.ts). So the window is finally left on a draft
 of WORKDIR's project that the app makes itself: from /new, a page with no
 project of its own (the prompt-link route, which without a prompt only says
-so), chat.newLocal (Ctrl+Shift+N, its default binding) starts one from
+so), chat.newLocal (mod+shift+n, its default binding) starts one from
 projectOrder, with the app's own defaults for the draft.
 
 The browser must run with --remote-debugging-port=0, which makes Chrome write
@@ -37,7 +40,9 @@ app has unloaded, saving its own state, before the documents are rewritten,
 and loads them again on /new.
 
 The WebSocket client is a copy of bin-linux/nvim-show-resolver's DevTools, kept
-separate so a change to either tool cannot break the other.
+separate so a change to either tool cannot break the other. Stdlib only, and no
+syntax newer than Python 3.9: on the Mac this runs on whatever python3 is first
+on PATH, which may be Apple's.
 
 Exit 0 scoped, 1 not (reason on stderr), 2 misuse.
 """
@@ -47,6 +52,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import socket
 import sys
 import time
@@ -61,9 +67,11 @@ DESCRIPTOR_PATH = "/.well-known/t3/environment"
 PROJECTS_PATH = "/api/projects"
 NO_PROJECT_PATH = "/new"
 LEGACY_PROJECT_CWD_PREFIX = "legacy-project-cwd:"
-# Ctrl+Shift+N for chat.newLocal (packages/shared/src/keybindings.ts), and the
-# Escape that closes the project picker it opens when no project is loaded yet.
-NEW_LOCAL_KEY = {"key": "N", "code": "KeyN", "modifiers": 2 | 8, "windowsVirtualKeyCode": 78}
+HOME_RELATIVE = "~/"
+# Input.dispatchKeyEvent's modifier bits.
+CTRL, META, SHIFT = 2, 4, 8
+# The Escape that closes the project picker chat.newLocal opens when no project
+# is loaded yet.
 ESCAPE_KEY = {"key": "Escape", "code": "Escape", "modifiers": 0, "windowsVirtualKeyCode": 27}
 WAIT = 30.0
 HTTP_TIMEOUT = 2.0
@@ -71,6 +79,9 @@ SOCKET_TIMEOUT = 10.0
 POLL = 0.25
 
 T = TypeVar("T")
+# The DevTools port is loopback, so never through a proxy: on the Mac
+# x2pagentd puts HTTP_PROXY in the environment startup-windows runs in.
+LOOPBACK = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 class ScopeError(Exception):
@@ -111,16 +122,40 @@ def scoped_ui_state(doc: dict[str, Any], workspace_root: str) -> dict[str, Any]:
     }
 
 
-def project_at(projects: list[dict[str, Any]], workdir: str) -> dict[str, Any] | None:
-    wanted = normalized_path(workdir)
-    for project in projects:
-        if (
-            normalized_path(project.get("workspaceRoot") or "") == wanted
-            and project.get("archivedAt") is None
-            and project.get("deletedAt") is None
-        ):
-            return project
-    return None
+def valid_workdir(workdir: str) -> bool:
+    if workdir.startswith(HOME_RELATIVE):
+        return normalized_path("/" + workdir[len(HOME_RELATIVE) :]) != "/"
+    return workdir.startswith("/")
+
+
+def project_for(projects: list[dict[str, Any]], workdir: str) -> dict[str, Any]:
+    """The live (not archived or deleted) project WORKDIR names; ScopeError
+    when none does, or when ~/REL could be more than one."""
+
+    def root(project: dict[str, Any]) -> str:
+        return normalized_path(project.get("workspaceRoot") or "")
+
+    live = [p for p in projects if p.get("archivedAt") is None and p.get("deletedAt") is None]
+    if workdir.startswith(HOME_RELATIVE):
+        suffix = normalized_path("/" + workdir[len(HOME_RELATIVE) :])
+        matches = [p for p in live if root(p).endswith(suffix)]
+    else:
+        matches = [p for p in live if root(p) == normalized_path(workdir)]
+    if not matches:
+        raise ScopeError(f"{workdir} is not a project of this server (bin/t3-ensure adds the workspaces' directories)")
+    if len(matches) > 1:
+        raise ScopeError(f"{workdir} could be any of its projects {', '.join(sorted(root(p) for p in matches))}")
+    return matches[0]
+
+
+def new_local_key(platform: str) -> dict[str, Any]:
+    """chat.newLocal's default binding, mod+shift+n (packages/shared/src/keybindings.ts),
+    for a page whose navigator.platform is PLATFORM. T3 Code's shortcut handler
+    reads mod as Meta where navigator.platform names an Apple OS
+    (/mac|iphone|ipad|ipod/i) and as Ctrl elsewhere, and requires the other
+    one up: Cmd+Shift+N on the Mac, Ctrl+Shift+N on Linux."""
+    mod = META if re.search("mac|iphone|ipad|ipod", platform, re.IGNORECASE) else CTRL
+    return {"key": "N", "code": "KeyN", "modifiers": mod | SHIFT, "windowsVirtualKeyCode": 78}
 
 
 # --- the window's page --------------------------------------------------------
@@ -149,7 +184,7 @@ def debug_targets(profile_dir: str) -> list[dict[str, Any]] | None:
     try:
         with open(os.path.join(profile_dir, "DevToolsActivePort")) as handle:
             port = int(handle.readline().strip())
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=HTTP_TIMEOUT) as response:
+        with LOOPBACK.open(f"http://127.0.0.1:{port}/json", timeout=HTTP_TIMEOUT) as response:
             targets = json.load(response)
     except (OSError, ValueError):
         return None
@@ -188,7 +223,8 @@ class DevTools:
                 raise OSError("WebSocket handshake closed")
             head += chunk
         if not head.startswith(b"HTTP/1.1 101"):
-            raise OSError(f"WebSocket handshake refused: {head.split(b'\\r\\n', 1)[0]!r}")
+            status = head.split(b"\r\n", 1)[0]
+            raise OSError(f"WebSocket handshake refused: {status!r}")
         self.buffer = head.split(b"\r\n\r\n", 1)[1]
         self.next_id = 0
 
@@ -296,13 +332,14 @@ def open_draft(devtools: DevTools, deadline: float) -> str:
     loaded both its shortcuts and its projects; the project of the draft it
     opens.
 
-    The window need not have focus (sway gives it to one window), and in
+    The window need not have focus (the window manager gives it to one), and in
     testing a page without it once ignored every press for 30 s, so the page is
     told it has focus for as long as this session lasts."""
     devtools.call("Emulation.setFocusEmulationEnabled", {"enabled": True})
+    key = new_local_key(devtools.evaluate("navigator.platform") or "")
 
     def attempt() -> str | None:
-        press(devtools, NEW_LOCAL_KEY)
+        press(devtools, key)
         settle = time.monotonic() + 1.5
         while time.monotonic() < settle:
             project_id = draft_project_id(devtools)
@@ -312,7 +349,7 @@ def open_draft(devtools: DevTools, deadline: float) -> str:
         press(devtools, ESCAPE_KEY)
         return None
 
-    return until(deadline, "a new-thread draft (Ctrl+Shift+N, chat.newLocal)", attempt)
+    return until(deadline, "a new-thread draft (chat.newLocal, mod+shift+n)", attempt)
 
 
 def scope(profile_dir: str, origin: str, workdir: str) -> str:
@@ -329,9 +366,10 @@ def scope(profile_dir: str, origin: str, workdir: str) -> str:
     left_app = True
     try:
         navigate(devtools, origin + DESCRIPTOR_PATH, deadline)
-        project = project_at(fetch_json(devtools, PROJECTS_PATH)["projects"], workdir)
-        if project is None:
-            raise ScopeError(f"{workdir} is not a project on {origin} (bin/t3-ensure adds the t3 rows' workdirs)")
+        try:
+            project = project_for(fetch_json(devtools, PROJECTS_PATH)["projects"], workdir)
+        except ScopeError as exc:
+            raise ScopeError(f"{origin}: {exc}") from exc
         root = project["workspaceRoot"]
         stored = devtools.evaluate(f"localStorage.getItem({json.dumps(UI_STATE_KEY)})")
         ui_state = scoped_ui_state(parsed_document(stored), root)
@@ -340,7 +378,7 @@ def scope(profile_dir: str, origin: str, workdir: str) -> str:
         project_id = open_draft(devtools, deadline)
         left_app = False
         if project_id != project["id"]:
-            raise ScopeError(f"Ctrl+Shift+N opened a draft in project {project_id}, not {project['id']} ({root})")
+            raise ScopeError(f"chat.newLocal opened a draft in project {project_id}, not {project['id']} ({root})")
         return project.get("title") or root
     except (OSError, KeyError, TypeError, ValueError) as exc:
         raise ScopeError(f"{origin}: {exc}") from exc
@@ -355,7 +393,7 @@ def scope(profile_dir: str, origin: str, workdir: str) -> str:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 3:
+    if len(argv) != 3 or not valid_workdir(argv[2]):
         print(__doc__.split("\n\n")[1], file=sys.stderr)
         return 2
     profile_dir, origin, workdir = argv

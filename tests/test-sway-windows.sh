@@ -26,11 +26,13 @@
 #     profile on the browser's command line: a dialog of the same browser, a
 #     profile whose name merely starts the same, or a window of an exited
 #     process must never pass for one, and no Chrome slot may take one.
-#   * bin-linux/t3-window-scope rewrites T3 Code's localStorage UI state: it
-#     must keep every key it does not own, put the window's project first,
-#     clear the sidebar scope so every project is listed, and never take a
-#     page of another origin (a port that merely starts the same) or one still
-#     pairing.
+#   * bin/t3-window-scope (shared with the Mac) rewrites T3 Code's localStorage
+#     UI state: it must keep every key it does not own, put the window's
+#     project first, clear the sidebar scope so every project is listed, and
+#     never take a page of another origin (a port that merely starts the same)
+#     or one still pairing. The Mac names a devserver's project ~/REL, which
+#     must resolve to exactly one live project or fail, and its pages want
+#     Cmd where Linux pages want Ctrl.
 set -uo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -583,7 +585,7 @@ if command -v python3 >/dev/null 2>&1; then
   for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:$devtools_port/json" 2>/dev/null && break; sleep 0.1; done
   while IFS=$'\t' read -r desc expected actual; do
     check "$desc" "$expected" "$actual"
-  done < <(python3 - "$ROOT/bin-linux/t3-window-scope" "$TMP" "$devtools_port" <<'PY'
+  done < <(python3 - "$ROOT/bin/t3-window-scope" "$TMP" "$devtools_port" <<'PY'
 import importlib.machinery, importlib.util, json, os, socket, sys
 loader = importlib.machinery.SourceFileLoader("t3_window_scope", sys.argv[1])
 scope = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
@@ -613,13 +615,34 @@ case("and every key the helper does not own is kept",
 case("a missing or unreadable document reads as empty, as T3 Code reads it",
      [{}, {}, {}, {"a": 1}],
      [scope.parsed_document(raw) for raw in (None, "{not json", "[1]", '{"a": 1}')])
-projects = [
-    {"id": "old", "workspaceRoot": "/home/me/dotfiles", "archivedAt": "2026-01-01", "deletedAt": None},
-    {"id": "other", "workspaceRoot": "/home/me/dotfiles-2", "archivedAt": None, "deletedAt": None},
-    {"id": "live", "workspaceRoot": "/home/me/dotfiles/", "archivedAt": None, "deletedAt": None},
-]
-case("the project is the live one at the workdir, not an archived one or a longer path",
-     ["live", None], [(scope.project_at(projects, "/home/me/dotfiles") or {}).get("id"), scope.project_at(projects, "/home/me/nope")])
+def resolved(projects, workdir):
+    try:
+        return scope.project_for(projects, workdir)["id"]
+    except scope.ScopeError as exc:
+        return f"error: {exc}"
+def project(id, root, archived=None, deleted=None):
+    return {"id": id, "workspaceRoot": root, "archivedAt": archived, "deletedAt": deleted}
+projects = [project("old", "/home/me/dotfiles", archived="2026-01-01"), project("other", "/home/me/dotfiles-2"),
+            project("live", "/home/me/dotfiles/")]
+case("the project at an absolute workdir is the live one there, not an archived one or a longer path",
+     "live", resolved(projects, "/home/me/dotfiles"))
+case("a workdir that is no project is an error", True, resolved(projects, "/home/me/nope").startswith("error: "))
+devserver = [project("c1", "/home/u/checkout1"), project("c10", "/home/u/checkout10"),
+             project("c2-old", "/home/u/checkout2", archived="2026-01-01"), project("c2", "/home/u/checkout2/"),
+             project("c3", "/home/u/checkout3"), project("c3-data", "/data/users/u/checkout3"),
+             project("c4", "/home/u/checkout4", deleted="2026-01-01"), project("c5", "/home/u/mycheckout5")]
+case("~/REL is the one live project whose root ends in /REL, not one that only ends in REL",
+     ["c1", "c2"], [resolved(devserver, "~/checkout1"), resolved(devserver, "~/checkout2")])
+case("~/REL that no live project ends in is an error: none, a deleted one, a name that only ends the same",
+     [True, True, True], [resolved(devserver, f"~/{rel}").startswith("error: ") for rel in ("checkout9", "checkout4", "checkout5")])
+ambiguous = resolved(devserver, "~/checkout3")
+case("~/REL that several live projects end in is an error naming them", [True, True, True],
+     [ambiguous.startswith("error: "), "/home/u/checkout3" in ambiguous, "/data/users/u/checkout3" in ambiguous])
+case("a workdir is absolute or ~/REL", [True, True, False, False, False],
+     [scope.valid_workdir(w) for w in ("/home/me/dotfiles", "~/checkout1", "~/", "~", "checkout1")])
+# Input.dispatchKeyEvent modifier bits: Ctrl 2, Meta 4, Shift 8.
+case("chat.newLocal is pressed as the page reads mod: Cmd+Shift+N on the Mac, Ctrl+Shift+N on Linux",
+     [12, 10, 12], [scope.new_local_key(p)["modifiers"] for p in ("MacIntel", "Linux x86_64", "iPad")])
 origin = "http://dotfiles.t3.localhost:3780"
 page = lambda url, kind="page": {"type": kind, "url": url, "webSocketDebuggerUrl": "ws://x/" + url}
 case("the window's page is the one on its own origin past pairing",
@@ -633,15 +656,21 @@ os.makedirs(f"{tmp}/stale-profile", exist_ok=True)
 open(f"{tmp}/stale-profile/DevToolsActivePort", "w").write(f"{stale_port}\n/devtools/browser/x\n")
 os.makedirs(f"{tmp}/live-profile", exist_ok=True)
 open(f"{tmp}/live-profile/DevToolsActivePort", "w").write(f"{live_port}\n/devtools/browser/x\n")
+# A proxy in the environment, as x2pagentd leaves one on the Mac, must not
+# carry the loopback DevTools listing.
+os.environ.update({"http_proxy": f"http://127.0.0.1:{stale_port}", "HTTP_PROXY": f"http://127.0.0.1:{stale_port}",
+                   "no_proxy": "", "NO_PROXY": ""})
 case("a DevToolsActivePort left by an exited browser is not used", None, scope.debug_targets(f"{tmp}/stale-profile"))
 case("a profile without one has no targets", None, scope.debug_targets(f"{tmp}/no-profile"))
-case("a live one lists the browser's targets", ["http://a.t3.localhost:3780/"],
+case("a live one lists the browser's targets, directly even with a proxy set", ["http://a.t3.localhost:3780/"],
      [t["url"] for t in scope.debug_targets(f"{tmp}/live-profile") or []])
 PY
 )
   kill "$devtools_server" 2>/dev/null; wait "$devtools_server" 2>/dev/null
-  rc=$(python3 "$ROOT/bin-linux/t3-window-scope" one two >/dev/null 2>&1; echo $?)
+  rc=$(python3 "$ROOT/bin/t3-window-scope" one two >/dev/null 2>&1; echo $?)
   check "the helper rejects a call without its three arguments" "2" "$rc"
+  rc=$(python3 "$ROOT/bin/t3-window-scope" "$TMP/no-profile" http://a.t3.localhost:3780 checkout1 >/dev/null 2>&1; echo $?)
+  check "and one whose workdir is neither absolute nor ~/REL" "2" "$rc"
 else
   echo "  skip: python3 not installed"
 fi

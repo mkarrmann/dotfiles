@@ -135,7 +135,7 @@ T3_PORT=3780
 # without --no-first-run and --no-default-browser-check shows only a terms
 # dialog and never loads the page. Each profile also keeps the window's own
 # default project for new threads: T3 Code stores it in the page's
-# localStorage, which T3_SCOPE_CMD (bin-linux/t3-window-scope) writes when the
+# localStorage, which T3_SCOPE_CMD (bin/t3-window-scope) writes when the
 # window opens.
 # Pairing tokens come from T3_BIN run against the server's state in
 # T3_HOMES_DIR/T3_SERVER (bin/t3-workspace-serve's T3CODE_HOME).
@@ -146,7 +146,7 @@ T3_CHROME_CMD=(google-chrome --no-first-run --no-default-browser-check)
 T3_BIN="$HOME/.local/bin/t3"
 T3_HOMES_DIR="$HOME/.t3-workspaces"
 T3_SERVER_WAIT=30
-T3_SCOPE_CMD=("$SCRIPT_DIR/t3-window-scope")
+T3_SCOPE_CMD=("$SCRIPT_DIR/../bin/t3-window-scope")
 OMNIGENT_DESKTOP_ENTRY="omnigent-desktop-electron.desktop"
 # Server > New Window is CmdOrCtrl+Shift+N from desktop 0.13.0 (upstream
 # 55717242, 2026-08-31). 0.10.0's menu item had no accelerator at all, so on
