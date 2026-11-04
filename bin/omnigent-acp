@@ -16,7 +16,11 @@ Semantics:
   * One ACP session maps to one Omnigent session, created lazily on the first
     prompt so that clients that open throwaway sessions (T3 Code's model probe)
     leave nothing behind. The ACP session id is recorded on the Omnigent session
-    as the ``t3.acp_session_id`` label, which is how ``session/load`` finds it.
+    as the ``t3.acp_session_id`` label, which is how ``session/load`` finds it
+    (among the agent's 2000 most recently updated sessions; Omnigent has no
+    label filter). A load that finds none fails rather than starting afresh, and
+    a found one replays its messages and tool calls. T3 Code drops the replay:
+    a thread's transcript is T3 Code's own, and an imported thread starts empty.
   * ``session/list`` offers this agent's top-level sessions on this host (in the
     client's cwd when given). Sessions created elsewhere are listed as
     ``omnigent:<session id>``, which ``session/load`` attaches to directly.
@@ -38,7 +42,13 @@ Semantics:
     client, wakeups) are not forwarded; ACP has no idle turn to attach them to.
   * The stream has no replay, so every (re)connect reads the session snapshot:
     approvals still pending are re-raised, and a turn that ended while the
-    stream was down is ended here.
+    stream was down is ended here. A deleted session (404/410) fails the running
+    prompt and is not reconnected.
+  * ``/fork-to HOST [CHECKOUT]`` (an ACP slash command) forks the Omnigent
+    session and starts the fork on another online host (name, short name or
+    prefix), in CHECKOUT under that host's home, by default the checkout of the
+    same name as this one. The fork appears in the Omnigent app, and in that
+    host's ``session/list`` as ``omnigent:<fork id>``; nothing reaches the agent.
 
 Env: OMNIGENT_URL (default http://127.0.0.1:6767), OMNIGENT_ACP_LOG (log level).
 """
@@ -57,12 +67,15 @@ import uuid
 from collections.abc import AsyncIterator, Coroutine
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, TextIO
 
 import acp
 import httpx
 from acp.schema import (
     AgentCapabilities,
+    AvailableCommand,
+    AvailableCommandInput,
+    AvailableCommandsUpdate,
     FileEditToolCallContent,
     Implementation,
     ListSessionsResponse,
@@ -78,11 +91,16 @@ from acp.schema import (
     SessionModeState,
     ToolCallLocation,
     ToolCallUpdate,
+    UnstructuredCommandInput,
     UsageUpdate,
 )
 
 LOG = logging.getLogger("omnigent-acp")
 SESSION_LABEL = "t3.acp_session_id"
+# Omnigent stamps a fork with its source; a fork also copies the source's labels, ours included.
+FORK_SOURCE_LABEL = "omnigent.fork.source_id"
+FORK_COMMAND = "fork-to"
+FORK_HINT = "HOST [CHECKOUT]"
 MODEL_CONFIG_ID = "model"
 EFFORT_CONFIG_ID = "effort"
 EFFORT_DEFAULT = "default"
@@ -91,6 +109,8 @@ EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ult
 CLAUDE_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 IMPORTED_PREFIX = "omnigent:"
 LIST_PAGE_SIZE = 50
+LABEL_SCAN_PAGE = 500
+LABEL_SCAN_LIMIT = 2000
 CODEX_COLLABORATION_LABEL = "omnigent.codex_native.collaboration_mode"
 CANCEL_GRACE_S = 8.0
 QUIESCENT_END_S = 10.0
@@ -118,7 +138,6 @@ IGNORED_EVENTS = frozenset(
         "session.resource.deleted",
         "session.changed_files.invalidated",
         "session.sandbox_status",
-        "session.terminal.activity",
         "session.todos",
         "session.skills",
         "session.mcp_startup",
@@ -246,13 +265,15 @@ class TurnTracker:
     Terminal-backed (``*-native-ui``) agents answer the POST with an empty
     ``response.completed`` acknowledgement; the real turn starts after
     ``session.input.consumed`` and ends at the ``session.status: idle`` that
-    carries a ``response_id`` — the harness-confirmed completion (claude-native's
-    Stop hook). Bare idles come from the pane-activity watcher and can fire
-    mid-turn. The confirmed edge is not guaranteed to reach the stream, so a
-    turn whose final assistant message is committed, with no tool call open and
-    the pane idle, is reported ``Quiescent`` and ended by the caller after a
-    quiet period. SDK agents end at ``response.completed``. Adapted from
-    CodeCompanion's omnigent/events.lua reducer.
+    carries a ``response_id`` or a ``background_task_count`` — the
+    harness-confirmed completion (claude-native's Stop hook). Bare idles come
+    from the pane-activity watcher and can fire mid-turn. The confirmed edge is
+    not guaranteed to reach the stream, so a turn whose final assistant message
+    is committed, with no tool call open and the pane idle, is reported
+    ``Quiescent`` and ended by the caller once a quiet period passes without
+    any event, terminal activity pulses included. SDK agents end at
+    ``response.completed``. Adapted from CodeCompanion's omnigent/events.lua
+    reducer.
     """
 
     native: bool = False
@@ -409,6 +430,11 @@ class TurnTracker:
                 return []
             return self._end("cancelled")
 
+        if event_type == "session.terminal.activity":
+            # Claude redraws its busy line while it thinks, so a pulse means the turn may still be running.
+            self._activity()
+            return []
+
         if event_type == "session.status":
             status = data.get("status")
             if status == "failed":
@@ -420,7 +446,9 @@ class TurnTracker:
             if self.cancelling:
                 return self._end("cancelled")
             if self.native:
-                if self.native_consumed and data.get("response_id"):
+                # Only harness-confirmed edges carry a response id or a background-task count (Stop hook).
+                confirmed = data.get("response_id") or data.get("background_task_count") is not None
+                if self.native_consumed and confirmed:
                     return self._end("completed")
                 return []
             if self.current_response_id and not self.queue_response:
@@ -545,37 +573,69 @@ def strip_t3_instructions(blocks: list[str], *, agent_mode: T3Mode | None) -> Re
     return RewrittenPrompt("\n\n".join(parts), announced)
 
 
+_FORK_INVOCATION = re.compile(rf"\A\s*/{re.escape(FORK_COMMAND)}(?:\s+(?P<args>.*?))?\s*\Z", re.DOTALL)
+
+
+def fork_invocation(text: str) -> list[str] | None:
+    """The arguments of a ``/fork-to`` prompt, or ``None`` when the prompt is anything else."""
+    match = _FORK_INVOCATION.match(text)
+    return None if match is None else (match["args"] or "").split()
+
+
+def fork_workspace(checkout: str | None, cwd: str, home: str | None) -> str:
+    """Where a fork runs: ``checkout`` (default: the basename of ``cwd``) under the target's home.
+
+    Without a known home the fork assumes the target lays its checkouts out as this machine does.
+    """
+    name = checkout or os.path.basename(os.path.normpath(cwd))
+    if os.path.isabs(name):
+        return os.path.normpath(name)
+    base = home or os.path.dirname(os.path.normpath(cwd))
+    return os.path.normpath(os.path.join(base, name.removeprefix("~/")))
+
+
 # ---------------------------------------------------------------------------
 # Omnigent REST + SSE.
 # ---------------------------------------------------------------------------
 
 
 class OmnigentError(Exception):
-    pass
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        """The HTTP status Omnigent answered with, if it answered."""
+
+    @property
+    def gone(self) -> bool:
+        return self.status in (404, 410)
 
 
 class OmnigentClient:
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, transport: httpx.AsyncBaseTransport | None = None) -> None:
         # trust_env=False: loopback must bypass the corp proxy.
-        self._http = httpx.AsyncClient(base_url=base_url, trust_env=False, timeout=httpx.Timeout(30.0))
+        self._http = httpx.AsyncClient(
+            base_url=base_url, trust_env=False, timeout=httpx.Timeout(30.0), transport=transport
+        )
 
     async def _json(self, method: str, path: str, **kwargs: Any) -> Any:
         response = await self._http.request(method, path, **kwargs)
         if response.is_error:
-            raise OmnigentError(f"{method} {path} -> {response.status_code}: {response.text[:500]}")
+            raise OmnigentError(f"{method} {path} -> {response.status_code}: {response.text[:500]}", response.status_code)
         return response.json() if response.content else None
 
-    async def _paginate(self, path: str, params: dict[str, Any] | None = None) -> AsyncIterator[dict[str, Any]]:
+    async def _paginate(
+        self, path: str, params: dict[str, Any] | None = None, *, page_size: int = 100
+    ) -> AsyncIterator[dict[str, Any]]:
         after: str | None = None
         while True:
             page = await self._json(
-                "GET", path, params={**(params or {}), "limit": 100, **({"after": after} if after else {})}
+                "GET", path, params={**(params or {}), "limit": page_size, **({"after": after} if after else {})}
             )
             for row in page.get("data", []):
                 yield row
-            if not page.get("has_more"):
+            after = next_cursor(page, after)
+            if after is None:
                 return
-            after = page.get("last_id")
 
     async def agents(self) -> list[dict[str, Any]]:
         return [a async for a in self._paginate("/v1/agents")]
@@ -599,13 +659,42 @@ class OmnigentClient:
         return await self._json("GET", "/v1/sessions", params=params)
 
     async def find_session_by_label(self, agent_id: str, key: str, value: str) -> dict[str, Any] | None:
-        async for session in self._paginate("/v1/sessions", {"agent_id": agent_id, "include_archived": "true"}):
-            if (session.get("labels") or {}).get(key) == value:
+        """The agent's session labelled ``key=value`` among its ``LABEL_SCAN_LIMIT`` most recently updated.
+
+        ``GET /v1/sessions`` has no label filter, so this scans; a thread being
+        loaded was almost always active recently.
+        """
+        params = {"agent_id": agent_id, "include_archived": "true", "sort_by": "updated_at"}
+        scanned = 0
+        async for session in self._paginate("/v1/sessions", params, page_size=LABEL_SCAN_PAGE):
+            labels = session.get("labels") or {}
+            if labels.get(key) == value and FORK_SOURCE_LABEL not in labels:
                 return session
+            scanned += 1
+            if scanned >= LABEL_SCAN_LIMIT:
+                break
         return None
 
     async def create_session(self, body: dict[str, Any]) -> dict[str, Any]:
         return await self._json("POST", "/v1/sessions", json=body)
+
+    async def session_items(self, session_id: str) -> AsyncIterator[dict[str, Any]]:
+        async for item in self._paginate(f"/v1/sessions/{session_id}/items", {"order": "asc"}, page_size=1000):
+            yield item
+
+    async def fork_session(self, session_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        return await self._json("POST", f"/v1/sessions/{session_id}/fork", json=body)
+
+    async def launch_runner(self, host_id: str, session_id: str, workspace: str) -> dict[str, Any]:
+        return await self._json(
+            "POST", f"/v1/hosts/{host_id}/runners", json={"session_id": session_id, "workspace": workspace}
+        )
+
+    async def host_home(self, host_id: str) -> str | None:
+        """The host daemon's home directory, read off an entry of its listing; ``None`` when it is empty."""
+        body = await self._json("GET", f"/v1/hosts/{host_id}/filesystem", params={"limit": 1})
+        entries = [e for e in body.get("data") or [] if isinstance(e, dict) and isinstance(e.get("path"), str)]
+        return os.path.dirname(entries[0]["path"]) if entries else None
 
     async def update_session(self, session_id: str, body: dict[str, Any]) -> None:
         await self._json("PATCH", f"/v1/sessions/{session_id}", json=body)
@@ -623,7 +712,9 @@ class OmnigentClient:
         async with self._http.stream("GET", f"/v1/sessions/{session_id}/stream", timeout=timeout) as response:
             if response.is_error:
                 await response.aread()
-                raise OmnigentError(f"stream {session_id} -> {response.status_code}: {response.text[:500]}")
+                raise OmnigentError(
+                    f"stream {session_id} -> {response.status_code}: {response.text[:500]}", response.status_code
+                )
             connected.set()
             yield STREAM_OPENED, {}
             event_type: str | None = None
@@ -650,6 +741,14 @@ class OmnigentClient:
         await self._http.aclose()
 
 
+def next_cursor(page: dict[str, Any], after: str | None) -> str | None:
+    """The cursor for the page after ``page``, or ``None`` at the end or when the server makes no progress."""
+    last = page.get("last_id")
+    if not page.get("has_more") or not isinstance(last, str) or not last or last == after:
+        return None
+    return last
+
+
 def host_matches(name: str, hostnames: set[str]) -> bool:
     name = name.lower()
     return name in hostnames or name.split(".")[0] in {h.split(".")[0] for h in hostnames}
@@ -661,10 +760,16 @@ def resolve_host(hosts: list[dict[str, Any]], spec: str) -> dict[str, Any]:
         local = {socket.getfqdn().lower(), socket.gethostname().lower()}
         matches = [h for h in online if host_matches(str(h.get("name") or ""), local)]
     else:
-        matches = [h for h in online if spec in (h.get("host_id"), h.get("name"))]
+        lowered = spec.lower()
+        matches = (
+            [h for h in online if spec in (h.get("host_id"), h.get("name"))]
+            or [h for h in online if host_matches(str(h.get("name") or ""), {lowered})]
+            or [h for h in online if str(h.get("name") or "").lower().startswith(lowered)]
+        )
     if len(matches) != 1:
-        names = sorted(str(h.get("name")) for h in matches) or "none"
-        raise OmnigentError(f"--host {spec!r} must match exactly one online Omnigent host; matched {names}")
+        names = sorted(str(h.get("name")) for h in (matches or online)) or "none"
+        found = "matched" if matches else "online hosts are"
+        raise OmnigentError(f"host {spec!r} must match exactly one online Omnigent host; {found} {names}")
     return matches[0]
 
 
@@ -709,6 +814,8 @@ class Session:
     turn: Turn | None = None
     connected: asyncio.Event = field(default_factory=asyncio.Event)
     stream_task: asyncio.Task[None] | None = None
+    gone: str | None = None
+    """Why the Omnigent session can no longer be streamed (deleted), once it cannot."""
     elicitations: set[str] = field(default_factory=set)
     background: set[asyncio.Task[None]] = field(default_factory=set)
     tool_diffs: dict[str, list[FileEditToolCallContent]] = field(default_factory=dict)
@@ -762,6 +869,11 @@ def _tool_kind(name: str) -> str:
     if lowered in ("webfetch", "websearch", "fetch"):
         return "fetch"
     return "other"
+
+
+def same_dir(a: str, b: str) -> bool:
+    """Whether two paths name one directory, regardless of trailing slashes or symlinks on this machine."""
+    return os.path.normpath(a) == os.path.normpath(b) or os.path.realpath(a) == os.path.realpath(b)
 
 
 def _absolute(path: str, cwd: str) -> str:
@@ -823,6 +935,60 @@ def edit_diffs(name: str, arguments: Any, cwd: str) -> list[FileEditToolCallCont
         for edit in (edits if isinstance(edits, list) else [])
         if isinstance(edit, dict) and isinstance(edit.get("old_string"), str) and isinstance(edit.get("new_string"), str)
     ]
+
+
+COMMANDS = [
+    AvailableCommand(
+        name=FORK_COMMAND,
+        description="Fork this session onto another Omnigent host, in CHECKOUT (default: this checkout's name) there",
+        input=AvailableCommandInput(root=UnstructuredCommandInput(hint=FORK_HINT)),
+    )
+]
+
+
+def history_updates(items: list[dict[str, Any]], cwd: str) -> list[Any]:
+    """``session/load``'s replay of an Omnigent transcript: its messages and tool calls."""
+    outputs = {
+        item["call_id"]: item.get("output")
+        for item in items
+        if item.get("type") == "function_call_output" and isinstance(item.get("call_id"), str)
+    }
+    updates: list[Any] = []
+    seen: set[str] = set()
+    for item in items:
+        if item.get("type") == "message" and not item.get("is_meta"):
+            text = _message_text(item)
+            if text and item.get("role") == "user":
+                updates.append(acp.update_user_message_text(text))
+            elif text and item.get("role") == "assistant":
+                updates.append(acp.update_agent_message_text(text))
+        elif item.get("type") == "function_call" and isinstance(item.get("call_id"), str) and item["call_id"] not in seen:
+            call_id = item["call_id"]
+            seen.add(call_id)
+            name = str(item.get("name") or "tool")
+            arguments: Any = item.get("arguments")
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except json.JSONDecodeError:
+                    pass
+            content: list[Any] = list(edit_diffs(name, arguments, cwd))
+            done = call_id in outputs
+            if done:
+                output = outputs[call_id]
+                text = output if isinstance(output, str) else json.dumps(output)
+                content.append(acp.tool_content(acp.text_block(text[:TOOL_OUTPUT_LIMIT])))
+            updates.append(
+                acp.start_tool_call(
+                    call_id,
+                    name,
+                    kind=_tool_kind(name),
+                    status="completed" if done else "in_progress",
+                    content=content or None,
+                    raw_input=arguments,
+                )
+            )
+    return updates
 
 
 def mcp_launch_args(servers: list[Any]) -> list[str]:
@@ -937,6 +1103,7 @@ class OmnigentAgent:
         target = await self._resolve_target()
         session = Session(acp_id=uuid.uuid4().hex, cwd=cwd, model=target.default_model, mcp_servers=mcp_servers or [])
         self._sessions[session.acp_id] = session
+        self._advertise_commands(session)
         return acp.NewSessionResponse(
             session_id=session.acp_id,
             config_options=self._config_options(session, target),
@@ -947,26 +1114,37 @@ class OmnigentAgent:
         self, cwd: str, session_id: str, mcp_servers: list[Any] | None = None, **kwargs: Any
     ) -> acp.LoadSessionResponse:
         target = await self._resolve_target()
-        session = self._sessions.get(session_id) or Session(acp_id=session_id, cwd=cwd, model=target.default_model)
-        session.mcp_servers = mcp_servers or []
         if session_id.startswith(IMPORTED_PREFIX):
-            conversation_id: str | None = session_id.removeprefix(IMPORTED_PREFIX)
+            conversation_id = session_id.removeprefix(IMPORTED_PREFIX)
         else:
             found = await self._client.find_session_by_label(target.agent_id, SESSION_LABEL, session_id)
-            conversation_id = found["id"] if found else None
-        if conversation_id is not None:
-            details = await self._client.session(conversation_id)
-            session.conversation_id = conversation_id
-            session.model = details.get("model_override") or session.model
-            session.effort = details.get("reasoning_effort") or session.effort
-            labels = details.get("labels") or {}
-            if labels.get(CODEX_COLLABORATION_LABEL) == "plan":
-                session.mode = "plan"
-            launch_args = mcp_launch_args(session.mcp_servers)
-            if self._passes_t3_tools(target) and launch_args:
-                # The bridge token is per load; a running TUI keeps its launch-time token.
-                await self._client.update_session(conversation_id, {"terminal_launch_args": launch_args})
+            if found is None:
+                raise acp.RequestError.resource_not_found(session_id)
+            conversation_id = str(found["id"])
+        try:
+            details = await self._client.session_snapshot(conversation_id, items=False)
+            # Read in full first: T3 Code ends a load whose replay pauses for 2s, and takes later chunks as turn output.
+            history = [item async for item in self._client.session_items(conversation_id)]
+        except OmnigentError as exc:
+            if exc.gone:
+                raise acp.RequestError.resource_not_found(session_id) from None
+            raise
+        session = self._sessions.get(session_id) or Session(acp_id=session_id, cwd=cwd, model=target.default_model)
+        session.mcp_servers = mcp_servers or []
+        session.conversation_id = conversation_id
+        session.model = details.get("model_override") or session.model
+        session.effort = details.get("reasoning_effort") or session.effort
+        labels = details.get("labels") or {}
+        if labels.get(CODEX_COLLABORATION_LABEL) == "plan":
+            session.mode = "plan"
+        launch_args = mcp_launch_args(session.mcp_servers)
+        if self._passes_t3_tools(target) and launch_args:
+            # The bridge token is per load; a running TUI keeps its launch-time token.
+            await self._client.update_session(conversation_id, {"terminal_launch_args": launch_args})
         self._sessions[session_id] = session
+        for update in history_updates(history, session.cwd):
+            await self._conn.session_update(session_id, update)
+        self._advertise_commands(session)
         return acp.LoadSessionResponse(
             config_options=self._config_options(session, target), modes=self._modes(session, target)
         )
@@ -982,7 +1160,7 @@ class OmnigentAgent:
             page = await self._client.session_page(params)
             for row in page.get("data", []):
                 workspace = row.get("workspace")
-                if row.get("host_id") != target.host_id or not workspace or (cwd and workspace != cwd):
+                if row.get("host_id") != target.host_id or not workspace or (cwd and not same_dir(workspace, cwd)):
                     continue
                 label = (row.get("labels") or {}).get(SESSION_LABEL)
                 listed.append(
@@ -993,9 +1171,8 @@ class OmnigentAgent:
                         updated_at=_iso(row.get("updated_at")),
                     )
                 )
-            after = page.get("last_id")
-            if not page.get("has_more"):
-                after = None
+            after = next_cursor(page, after)
+            if after is None:
                 break
         return ListSessionsResponse(sessions=listed, next_cursor=after)
 
@@ -1082,6 +1259,11 @@ class OmnigentAgent:
                 await self._client.update_session(session.conversation_id, {"collaboration_mode": "plan"})
         return session.conversation_id
 
+    def _advertise_commands(self, session: Session) -> None:
+        """Offer this agent's slash commands once the session's response is out (T3 Code waits 500ms for them)."""
+        update = AvailableCommandsUpdate(session_update="available_commands_update", available_commands=COMMANDS)
+        self._in_background(session, self._conn.session_update(session.acp_id, update))
+
     def _in_background(self, session: Session, work: Coroutine[Any, Any, None]) -> None:
         task: asyncio.Task[None] = asyncio.create_task(work)
         session.background.add(task)
@@ -1129,6 +1311,12 @@ class OmnigentAgent:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - reconnect on any transport failure
+                if isinstance(exc, OmnigentError) and exc.gone:
+                    session.gone = f"Omnigent session {conversation_id} no longer exists (HTTP {exc.status})"
+                    LOG.warning("%s; not reconnecting", session.gone)
+                    if session.turn is not None:
+                        session.turn.outputs.put_nowait(TurnEnded("failed", session.gone))
+                    return
                 LOG.warning("stream %s dropped: %s", conversation_id, exc)
             session.connected.clear()
             if session.turn is not None:
@@ -1137,11 +1325,20 @@ class OmnigentAgent:
 
     async def _ensure_stream(self, session: Session, conversation_id: str) -> None:
         if session.stream_task is None or session.stream_task.done():
+            session.gone = None
             session.stream_task = asyncio.create_task(self._pump(session, conversation_id))
+        connected = asyncio.ensure_future(session.connected.wait())
         try:
-            await asyncio.wait_for(session.connected.wait(), timeout=STREAM_CONNECT_S)
-        except TimeoutError:
-            raise OmnigentError(f"Omnigent stream for {conversation_id} did not connect in {STREAM_CONNECT_S:.0f}s") from None
+            await asyncio.wait(
+                (connected, session.stream_task), timeout=STREAM_CONNECT_S, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            connected.cancel()
+        if session.connected.is_set():
+            return
+        if session.gone is not None:
+            raise OmnigentError(session.gone)
+        raise OmnigentError(f"Omnigent stream for {conversation_id} did not connect in {STREAM_CONNECT_S:.0f}s")
 
     async def _connect_unless_cancelled(self, session: Session, conversation_id: str, turn: Turn) -> bool:
         connect = asyncio.ensure_future(self._ensure_stream(session, conversation_id))
@@ -1165,13 +1362,19 @@ class OmnigentAgent:
             target = await self._resolve_target()
             turn.tracker.native = target.native
             texts = [block.text for block in prompt if getattr(block, "type", None) == "text"]
+            told: T3Mode | None = None
             if self._strip:
                 rewritten = strip_t3_instructions(texts, agent_mode=None if target.native_plan else session.told_mode)
                 text = rewritten.text
-                if rewritten.announced_mode is not None and not target.native_plan:
-                    session.told_mode = rewritten.announced_mode
+                if not target.native_plan:
+                    told = rewritten.announced_mode
             else:
                 text = "\n\n".join(texts)
+            fork_args = fork_invocation(strip_t3_instructions(texts, agent_mode=None).text)
+            if fork_args is not None:
+                reply = await self._fork_to(session, fork_args)
+                await self._conn.session_update(session.acp_id, acp.update_agent_message_text(reply))
+                return acp.PromptResponse(stop_reason="end_turn")
             if turn.cancel_requested:
                 return acp.PromptResponse(stop_reason="cancelled")
             conversation_id = await self._ensure_conversation(session, target)
@@ -1186,6 +1389,8 @@ class OmnigentAgent:
                 await self._conn.session_update(session.acp_id, acp.update_agent_message_text(reason))
                 return acp.PromptResponse(stop_reason="refusal")
             turn.posted = True
+            if told is not None:
+                session.told_mode = told
             turn.tracker.expect_input(posted.get("pending_id"), posted.get("item_id"))
             if turn.cancel_requested:
                 await self._interrupt(conversation_id, turn)
@@ -1212,6 +1417,42 @@ class OmnigentAgent:
                 await self._forward(session, conversation_id, output)
         finally:
             session.turn = None
+
+    async def _fork_to(self, session: Session, args: list[str]) -> str:
+        """Fork this thread's Omnigent session onto another host; the reply to show in the thread."""
+        if not args or len(args) > 2:
+            return f"Usage: /{FORK_COMMAND} {FORK_HINT}"
+        if session.conversation_id is None:
+            return "Nothing to fork yet: this thread gets its Omnigent session with its first message."
+        try:
+            host = resolve_host(await self._client.hosts(), args[0])
+        except (OmnigentError, httpx.HTTPError) as exc:
+            return f"Fork failed: {exc}"
+        try:
+            home = await self._client.host_home(host["host_id"])
+        except (OmnigentError, httpx.HTTPError) as exc:
+            LOG.warning("home of %s unknown, assuming this machine's layout: %s", host["host_id"], exc)
+            home = None
+        name = str(host.get("name") or host["host_id"])
+        workspace = fork_workspace(args[1] if len(args) == 2 else None, session.cwd, home)
+        try:
+            fork_id = str((await self._client.fork_session(session.conversation_id, {}))["id"])
+        except (OmnigentError, httpx.HTTPError) as exc:
+            return f"Fork failed: {exc}"
+        imported = f"{IMPORTED_PREFIX}{fork_id}"
+        try:
+            # The copied label would make the fork answer for this thread on its new host.
+            await self._client.update_session(fork_id, {"labels": {SESSION_LABEL: imported}})
+            await self._client.launch_runner(host["host_id"], fork_id, workspace)
+        except (OmnigentError, httpx.HTTPError) as exc:
+            return (
+                f"Forked this session to `{fork_id}`, but could not start it on {name} in `{workspace}`: {exc}\n"
+                "Pick its host and directory in the Omnigent app."
+            )
+        return (
+            f"Forked this session to `{fork_id}` on {name}, in `{workspace}`.\n"
+            f"Continue it in the Omnigent app, or in T3 Code on {name}, where it is listed as `{imported}`."
+        )
 
     async def _forward(self, session: Session, conversation_id: str, output: TurnOutput) -> None:
         sid = session.acp_id
@@ -1288,6 +1529,13 @@ class OmnigentAgent:
             LOG.warning("resolving approval %s on %s failed: %s", request.elicitation_id, target, exc)
 
 
+def open_trace(path: str) -> TextIO:
+    """Open the trace for appending, readable by its owner only: it holds every prompt and output."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.fchmod(fd, 0o600)
+    return os.fdopen(fd, "a", encoding="utf-8")
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--agent", default="claude-native-ui", help="Omnigent agent name or id")
@@ -1307,7 +1555,7 @@ async def main() -> None:
         format="omnigent-acp %(levelname)s %(message)s",
     )
     client = OmnigentClient(args.url)
-    trace = open(args.trace, "a", encoding="utf-8") if args.trace else None
+    trace = open_trace(args.trace) if args.trace else None
     try:
         agent = OmnigentAgent(
             client,

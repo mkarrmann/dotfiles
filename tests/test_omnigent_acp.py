@@ -295,11 +295,24 @@ class FakeOmnigent:
         self.connect_attempts = 0
         self.connections = []
         self.posted = []
+        self.posted_to = []
         self.created = []
         self.resolved = []
         self.post_response = {"queued": True, "item_id": "item_user"}
         self.snapshot = {"status": "idle", "items": [], "pending_inputs": []}
         self.resolve_error = None
+        self.post_error = None
+        self.stream_error = None
+        self.host_list = [{"host_id": "host_1", "name": "box", "status": "online"}]
+        self.home = "/home/far"
+        self.updates = []
+        self.forks = []
+        self.runners = []
+        self.runner_error = None
+        self.sessions = []
+        self.items = []
+        self.pages = []
+        self.page_requests = []
 
     async def agents(self):
         self.agents_called.set()
@@ -307,7 +320,10 @@ class FakeOmnigent:
         return [{"id": "ag_1", "name": "agent", "harness": self.harness}]
 
     async def hosts(self):
-        return [{"host_id": "host_1", "name": "box", "status": "online"}]
+        return self.host_list
+
+    async def host_home(self, host_id):
+        return self.home
 
     async def model_options(self, host_id, harness):
         return []
@@ -317,10 +333,35 @@ class FakeOmnigent:
         return {"id": "conv_1"}
 
     async def update_session(self, session_id, body):
-        pass
+        self.updates.append((session_id, body))
+
+    async def fork_session(self, session_id, body):
+        self.forks.append((session_id, body))
+        return {"id": "conv_fork"}
+
+    async def launch_runner(self, host_id, session_id, workspace):
+        if self.runner_error is not None:
+            raise self.runner_error
+        self.runners.append((host_id, session_id, workspace))
+        return {"status": "launching"}
+
+    async def find_session_by_label(self, agent_id, key, value):
+        return next((s for s in self.sessions if (s.get("labels") or {}).get(key) == value), None)
+
+    async def session_items(self, session_id):
+        for item in self.items:
+            yield item
+
+    async def session_page(self, params):
+        self.page_requests.append(params)
+        await asyncio.sleep(0)
+        return self.pages[min(len(self.page_requests), len(self.pages)) - 1]
 
     async def post_event(self, session_id, event):
+        if self.post_error is not None and event["type"] == "message":
+            raise self.post_error
         self.posted.append(event)
+        self.posted_to.append(session_id)
         return self.post_response if event["type"] == "message" else {"queued": True}
 
     async def session_snapshot(self, session_id, *, items):
@@ -334,6 +375,8 @@ class FakeOmnigent:
     async def stream(self, session_id, connected):
         self.connect_attempts += 1
         await self.connect_gate.wait()
+        if self.stream_error is not None:
+            raise self.stream_error
         events = asyncio.Queue()
         self.connections.append(events)
         connected.set()
@@ -386,10 +429,10 @@ SDK_COMPLETED = ("response.completed", {"response": {"id": "resp_1"}})
 
 
 class AgentTest(unittest.IsolatedAsyncioTestCase):
-    def make_agent(self, harness="claude-sdk"):
+    def make_agent(self, harness="claude-sdk", strip=False):
         self.omnigent = FakeOmnigent(harness)
         self.client = FakeClientConnection()
-        agent = shim.OmnigentAgent(self.omnigent, "agent", "host_1", strip=False, t3_tools=False, trace=None)
+        agent = shim.OmnigentAgent(self.omnigent, "agent", "host_1", strip=strip, t3_tools=False, trace=None)
         agent.on_connect(self.client)
         return agent
 
@@ -559,6 +602,285 @@ class AgentTest(unittest.IsolatedAsyncioTestCase):
             [(c.path, c.old_text, c.new_text) if c.type == "diff" else c.content.text for c in finished.content],
             [diff, "ok"],
         )
+
+    async def test_terminal_activity_keeps_a_quiet_looking_native_turn_open(self):
+        agent = self.make_agent("claude-native")
+        sid = await self.open_session(agent)
+        self.omnigent.post_response = {"queued": True, "pending_id": "pending_1"}
+        quiet = shim.QUIESCENT_END_S
+        shim.QUIESCENT_END_S = 0.1
+        self.addCleanup(setattr, shim, "QUIESCENT_END_S", quiet)
+        self.omnigent.snapshot = {"status": "running", "items": [], "pending_inputs": [{"pending_id": "pending_1"}]}
+        task = await self.start_prompt(agent, sid)
+        self.omnigent.emit(NATIVE_ACK, CONSUMED, assistant_item("Let me check."), BARE_IDLE)
+        for _ in range(10):
+            self.omnigent.emit(TERMINAL_ACTIVITY)
+            await asyncio.sleep(0.05)
+        self.assertFalse(task.done())
+        response = await asyncio.wait_for(task, 5)
+        self.assertEqual((response.stop_reason, self.client.agent_text()), ("end_turn", "Let me check."))
+
+    async def test_deleted_session_fails_the_running_prompt_and_stops_reconnecting(self):
+        agent = self.make_agent()
+        sid = await self.open_session(agent)
+        task = await self.start_prompt(agent, sid)
+        self.omnigent.stream_error = shim.OmnigentError("stream conv_1 -> 404: gone", 404)
+        self.omnigent.emit(DROP)
+        with self.assertRaises(acp.RequestError) as raised:
+            await asyncio.wait_for(task, 5)
+        self.assertIn("no longer exists", str(raised.exception.data))
+        attempts = self.omnigent.connect_attempts
+        await asyncio.sleep(1.5)
+        self.assertEqual(self.omnigent.connect_attempts, attempts)
+
+    async def test_prompting_a_deleted_session_fails_without_waiting_for_the_connect_timeout(self):
+        agent = self.make_agent()
+        sid = await self.open_session(agent)
+        self.omnigent.stream_error = shim.OmnigentError("stream conv_1 -> 410: gone", 410)
+        with self.assertRaises(shim.OmnigentError) as raised:
+            await asyncio.wait_for(agent.prompt(session_id=sid, prompt=text_prompt("hi")), 5)
+        self.assertIn("no longer exists", str(raised.exception))
+        self.assertEqual(self.omnigent.posted, [])
+
+    async def test_mode_change_is_announced_again_when_its_message_failed_to_post(self):
+        agent = self.make_agent(strip=True)
+        sid = await self.open_session(agent)
+        plan = (
+            f"<t3_code_instructions>\n{PLAN_SECTION}\n</t3_code_instructions>\n\n<user_request>\ndesign it\n</user_request>"
+        )
+        self.omnigent.post_error = shim.OmnigentError("POST -> 503", 503)
+        with self.assertRaises(shim.OmnigentError):
+            await agent.prompt(session_id=sid, prompt=text_prompt(plan))
+        self.omnigent.post_error = None
+        for sent in (1, 2):
+            task = asyncio.create_task(agent.prompt(session_id=sid, prompt=text_prompt(plan)))
+            await until(lambda: len(self.omnigent.messages()) == sent)
+            self.omnigent.emit(SDK_STARTED, SDK_COMPLETED)
+            await asyncio.wait_for(task, 5)
+        self.assertEqual(
+            [m["data"]["content"][0]["text"] for m in self.omnigent.messages()],
+            [f"{PLAN_SECTION}\n\ndesign it", "design it"],
+        )
+
+
+class QuiescenceTest(unittest.TestCase):
+    def test_stop_hook_idle_without_a_response_id_ends_the_turn(self):
+        tracker = shim.TurnTracker(native=True)
+        tracker.expect_input("pending_1")
+        stop_hook = ("session.status", {"status": "idle", "background_task_count": 0})
+        out = feed(tracker, [NATIVE_ACK, CONSUMED, assistant_item("done"), stop_hook])
+        self.assertEqual(out, [shim.TextDelta("done"), shim.TurnEnded("completed")])
+
+
+TERMINAL_ACTIVITY = ("session.terminal.activity", {"session_id": "conv_1", "terminal_id": "claude"})
+
+
+class LoadSessionTest(unittest.IsolatedAsyncioTestCase):
+    def make_agent(self):
+        self.omnigent = FakeOmnigent("claude-native")
+        self.client = FakeClientConnection()
+        agent = shim.OmnigentAgent(self.omnigent, "agent", "host_1", strip=False, t3_tools=False, trace=None)
+        agent.on_connect(self.client)
+        return agent
+
+    async def test_loading_a_thread_omnigent_does_not_have_fails_and_creates_nothing(self):
+        agent = self.make_agent()
+        with self.assertRaises(acp.RequestError) as raised:
+            await agent.load_session(cwd="/repo", session_id="acp_unknown")
+        self.assertEqual(raised.exception.code, -32002)
+        with self.assertRaises(acp.RequestError):
+            await agent.prompt(session_id="acp_unknown", prompt=text_prompt("hi"))
+        self.assertEqual((self.omnigent.created, self.omnigent.posted), ([], []))
+
+    async def test_loading_replays_messages_and_tool_calls_before_answering(self):
+        agent = self.make_agent()
+        self.omnigent.sessions = [{"id": "conv_9", "labels": {shim.SESSION_LABEL: "acp_1"}}]
+        self.omnigent.items = [
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "list files"}]},
+            {"type": "message", "role": "user", "is_meta": True, "content": [{"type": "input_text", "text": "wake"}]},
+            {"type": "function_call", "call_id": "toolu_1", "name": "Bash", "arguments": '{"command": "ls"}'},
+            {"type": "function_call_output", "call_id": "toolu_1", "output": "a.py"},
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "One file."}]},
+        ]
+        await agent.load_session(cwd="/repo", session_id="acp_1")
+        replay = [
+            (u.session_update, getattr(getattr(u, "content", None), "text", None) or getattr(u, "tool_call_id", None))
+            for u in self.client.updates
+            if u.session_update != "available_commands_update"
+        ]
+        self.assertEqual(
+            replay,
+            [("user_message_chunk", "list files"), ("tool_call", "toolu_1"), ("agent_message_chunk", "One file.")],
+        )
+        tool = next(u for u in self.client.updates if u.session_update == "tool_call")
+        self.assertEqual((tool.status, tool.raw_input, tool.content[0].content.text), ("completed", {"command": "ls"}, "a.py"))
+
+    async def test_a_loaded_thread_prompts_its_omnigent_session(self):
+        agent = self.make_agent()
+        self.omnigent.sessions = [{"id": "conv_9", "labels": {shim.SESSION_LABEL: "acp_1"}}]
+        await agent.load_session(cwd="/repo", session_id="acp_1")
+        task = asyncio.create_task(agent.prompt(session_id="acp_1", prompt=text_prompt("hi")))
+        await until(lambda: self.omnigent.messages())
+        task.cancel()
+        self.assertEqual((self.omnigent.created, self.omnigent.posted_to), ([], ["conv_9"]))
+
+
+class SlashCommandTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.omnigent = FakeOmnigent("claude-native")
+        self.omnigent.host_list = [
+            {"host_id": "host_1", "name": "box", "status": "online"},
+            {"host_id": "host_2", "name": "devvm7.example.com", "status": "online"},
+            {"host_id": "host_3", "name": "devvm8.example.com", "status": "offline"},
+        ]
+        self.client = FakeClientConnection()
+        self.agent = shim.OmnigentAgent(self.omnigent, "agent", "host_1", strip=True, t3_tools=False, trace=None)
+        self.agent.on_connect(self.client)
+        self.omnigent.sessions = [{"id": "conv_1", "labels": {shim.SESSION_LABEL: "acp_1"}}]
+        self.sid = "acp_1"
+        await self.agent.load_session(cwd="/home/me/checkout3", session_id=self.sid)
+
+    async def fork(self, text):
+        self.client.updates.clear()
+        response = await asyncio.wait_for(self.agent.prompt(session_id=self.sid, prompt=text_prompt(text)), 5)
+        self.assertEqual(response.stop_reason, "end_turn")
+        return self.client.agent_text()
+
+    async def test_sessions_advertise_fork_to(self):
+        await until(lambda: any(u.session_update == "available_commands_update" for u in self.client.updates))
+        update = next(u for u in self.client.updates if u.session_update == "available_commands_update")
+        self.assertEqual(
+            [(c.name, c.input.root.hint) for c in update.available_commands], [("fork-to", "HOST [CHECKOUT]")]
+        )
+
+    async def test_fork_to_starts_the_fork_on_the_host_in_the_same_checkout(self):
+        reply = await self.fork("/fork-to devvm7")
+        self.assertEqual(self.omnigent.forks, [("conv_1", {})])
+        self.assertEqual(self.omnigent.runners, [("host_2", "conv_fork", "/home/far/checkout3")])
+        self.assertIn(("conv_fork", {"labels": {shim.SESSION_LABEL: "omnigent:conv_fork"}}), self.omnigent.updates)
+        for detail in ("conv_fork", "devvm7.example.com", "/home/far/checkout3", "omnigent:conv_fork"):
+            self.assertIn(detail, reply)
+        self.assertEqual(self.omnigent.messages(), [])
+
+    async def test_fork_to_takes_a_checkout_and_falls_back_to_this_layout(self):
+        self.omnigent.home = None
+        await self.fork("/fork-to devvm7.example.com checkout9")
+        self.assertEqual(self.omnigent.runners, [("host_2", "conv_fork", "/home/me/checkout9")])
+
+    async def test_fork_to_an_unknown_or_offline_host_forks_nothing_and_names_the_hosts(self):
+        reply = await self.fork("/fork-to devvm8")
+        self.assertIn("devvm7.example.com", reply)
+        self.assertEqual((self.omnigent.forks, self.omnigent.messages()), ([], []))
+
+    async def test_fork_to_without_a_host_shows_usage(self):
+        self.assertIn("Usage: /fork-to HOST [CHECKOUT]", await self.fork("/fork-to"))
+        self.assertEqual(self.omnigent.forks, [])
+
+    async def test_a_fork_that_cannot_start_names_it(self):
+        self.omnigent.runner_error = shim.OmnigentError("400: workspace does not exist", 400)
+        reply = await self.fork("/fork-to devvm7")
+        self.assertIn("conv_fork", reply)
+        self.assertIn("workspace does not exist", reply)
+
+    async def test_other_slash_prompts_reach_the_agent(self):
+        task = asyncio.create_task(self.agent.prompt(session_id=self.sid, prompt=text_prompt("/fork-tomorrow")))
+        await until(lambda: self.omnigent.messages())
+        task.cancel()
+        self.assertEqual(self.omnigent.forks, [])
+
+    async def test_a_thread_without_an_omnigent_session_has_nothing_to_fork(self):
+        sid = (await self.agent.new_session(cwd="/home/me/checkout3")).session_id
+        await asyncio.wait_for(self.agent.prompt(session_id=sid, prompt=text_prompt("/fork-to devvm7")), 5)
+        self.assertEqual((self.omnigent.forks, self.omnigent.created), ([], []))
+
+
+class ListSessionsTest(unittest.IsolatedAsyncioTestCase):
+    def make_agent(self):
+        self.omnigent = FakeOmnigent("claude-native")
+        agent = shim.OmnigentAgent(self.omnigent, "agent", "host_1", strip=False, t3_tools=False, trace=None)
+        agent.on_connect(FakeClientConnection())
+        return agent
+
+    async def test_listing_ends_when_the_server_gives_no_cursor_to_continue_from(self):
+        agent = self.make_agent()
+        elsewhere = {"id": "conv_x", "host_id": "host_other", "workspace": "/repo"}
+        self.omnigent.pages = [{"data": [elsewhere], "has_more": True, "last_id": None}]
+        listed = await asyncio.wait_for(agent.list_sessions(cwd="/repo"), 5)
+        self.assertEqual((listed.sessions, listed.next_cursor), ([], None))
+        self.omnigent.pages = [{"data": [elsewhere], "has_more": True, "last_id": "conv_x"}]
+        listed = await asyncio.wait_for(agent.list_sessions(cwd="/repo", cursor="conv_x"), 5)
+        self.assertEqual((listed.sessions, listed.next_cursor), ([], None))
+
+    async def test_cwd_matches_regardless_of_trailing_slash(self):
+        agent = self.make_agent()
+        row = {"id": "conv_1", "host_id": "host_1", "workspace": "/repo/", "labels": {shim.SESSION_LABEL: "acp_1"}}
+        self.omnigent.pages = [{"data": [row], "has_more": False}]
+        listed = await agent.list_sessions(cwd="/repo")
+        self.assertEqual([s.session_id for s in listed.sessions], ["acp_1"])
+
+
+class OmnigentClientTest(unittest.IsolatedAsyncioTestCase):
+    def client(self, handler):
+        self.requests = []
+
+        def record(request):
+            self.requests.append(request)
+            return handler(request)
+
+        return shim.OmnigentClient("http://omnigent", transport=httpx.MockTransport(record))
+
+    async def test_label_lookup_scans_a_bounded_number_of_sessions(self):
+        def many(request):
+            n = len(self.requests)
+            rows = [{"id": f"conv_{n}_{i}", "labels": {}} for i in range(int(request.url.params["limit"]))]
+            more = n * len(rows) < 10 * shim.LABEL_SCAN_LIMIT
+            return httpx.Response(200, json={"data": rows, "has_more": more, "last_id": rows[-1]["id"]})
+
+        client = self.client(many)
+        self.assertIsNone(await client.find_session_by_label("ag_1", "k", "v"))
+        self.assertLessEqual(sum(int(r.url.params["limit"]) for r in self.requests), shim.LABEL_SCAN_LIMIT)
+
+    async def test_label_lookup_skips_forks_that_copied_the_label(self):
+        rows = [
+            {"id": "conv_fork", "labels": {"k": "v", shim.FORK_SOURCE_LABEL: "conv_src"}},
+            {"id": "conv_src", "labels": {"k": "v"}},
+        ]
+        client = self.client(lambda request: httpx.Response(200, json={"data": rows, "has_more": False}))
+        self.assertEqual((await client.find_session_by_label("ag_1", "k", "v"))["id"], "conv_src")
+
+    async def test_pagination_stops_when_the_cursor_does_not_advance(self):
+        page = {"data": [{"id": "a"}], "has_more": True, "last_id": None}
+        client = self.client(lambda request: httpx.Response(200, json=page))
+        self.assertEqual([a["id"] for a in await asyncio.wait_for(client.agents(), 5)], ["a"])
+
+    async def test_deleted_sessions_are_reported_as_gone(self):
+        client = self.client(lambda request: httpx.Response(404, json={"detail": "not found"}))
+        with self.assertRaises(shim.OmnigentError) as raised:
+            await client.session("conv_gone")
+        self.assertTrue(raised.exception.gone)
+
+
+class TraceFileTest(unittest.TestCase):
+    def test_trace_is_readable_by_its_owner_only(self):
+        import os
+        import stat
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old = os.umask(0o022)
+            try:
+                fresh = Path(tmp, "fresh.jsonl")
+                shim.open_trace(str(fresh)).close()
+                existing = Path(tmp, "existing.jsonl")
+                existing.write_text("old\n")
+                existing.chmod(0o644)
+                with shim.open_trace(str(existing)) as trace:
+                    trace.write("new\n")
+            finally:
+                os.umask(old)
+            self.assertEqual(stat.S_IMODE(fresh.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(existing.stat().st_mode), 0o600)
+            self.assertEqual(existing.read_text(), "old\nnew\n")
 
 
 if __name__ == "__main__":
