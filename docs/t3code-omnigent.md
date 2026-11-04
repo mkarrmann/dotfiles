@@ -35,9 +35,9 @@ session behind a thread likewise runs on that host.
   replaced: every enabled `t3@checkoutN` is disabled and stopped, and its state
   in `~/.t3-workspaces/checkoutN` left. It never restarts a running server;
   after `t3 update`, restart `t3@checkouts` to pick up the new version.
-- `t3@checkouts` listens on `127.0.0.1:T3_BASE_PORT`. `bin-macos/nvs-tunnels`
-  forwards it to the Mac once per candidate, on `T3_PRIMARY_TUNNEL_BASE_PORT`
-  or `T3_STANDBY_TUNNEL_BASE_PORT` (`omnigent_config/topology.env`); every
+- `t3@checkouts` listens on `127.0.0.1:T3_PORT`. `bin-macos/nvs-tunnels`
+  forwards it to the Mac once per candidate, on `T3_PRIMARY_TUNNEL_PORT`
+  or `T3_STANDBY_TUNNEL_PORT` (`omnigent_config/topology.env`); every
   window shares the forwards, its own host's as the page's server and the
   other's as a linked one. A tunnel picks a new forward up
   only when it restarts; with T3 Code windows on, `startup-windows` rebuilds a
@@ -54,8 +54,9 @@ session behind a thread likewise runs on that host.
   the label the prefix of that host's nvs sessions, CCO or FTW): the Mac knows a
   checkout only by its place under the devserver's home, and `~/checkoutN` is
   the one live project whose root ends in `/checkoutN` on the window's own
-  server. A link that held is remembered in the profile
-  (`.t3-linked/HOST`), so a reopened window is not linked again. A window it
+  server. A link that held is remembered in the profile by the linked server's
+  environment id (`.t3-linked/ENVIRONMENT_ID`), so a reopened window is not
+  linked again, while a server whose state was reset, and so has a new id, is. A window it
   finds is left as it is. The DevTools port the helper needs is on the launch that starts
   the profile's browser (`--no-startup-window --remote-debugging-port=0`): on
   macOS a later `open -na ... --app=` hands its window to the running browser,
@@ -67,8 +68,9 @@ session behind a thread likewise runs on that host.
 ## Pairing at work
 
 A pairing token is good once, and every window pairs with each devserver's
-server, so each host keeps a pool: `nvs-tunnels`' remote command runs
-`bin/t3-pairing-tokens COUNT` inside the ET session it already authenticated,
+server, so each host keeps a pool: with T3 Code windows on, `startup-windows`
+starts each tunnel as `nvs-tunnels HOST --t3-pairing ...`, whose remote command
+runs `bin/t3-pairing-tokens COUNT` inside the ET session it already authenticated,
 which mints COUNT 12-hour tokens from `t3@checkouts` (none while it is not
 running), twice the Mac's devserver windows so reopened windows have some too.
 `nvs-tunnels` pools them, a file each, in `~/.local/state/t3-pairing/HOST/` (not
@@ -99,7 +101,8 @@ To turn it on:
 3. Run `STARTUP_T3_WINDOWS=1 ~/bin/startup-windows`. It finds both tunnels
    without their new forward or token pool and restarts them (expect Duo), then
    opens each window, paired with both servers and scoped as it is created; that
-   first run takes a few seconds more per window. To keep the windows, set the default of
+   first run takes a few seconds more per window. Without
+   `STARTUP_T3_WINDOWS=1` the tunnels mint no tokens. To keep the windows, set the default of
    `STARTUP_T3_WINDOWS` in `bin-macos/startup-windows` to 1.
 
 ## Linux desktop
@@ -165,6 +168,12 @@ Code reads mod, and Ctrl elsewhere).
 
 Gotchas:
 
+- The links and the scoping depend on T3 Code's client internals (its pairing
+  link, the IndexedDB where it saves connections, the localStorage keys above),
+  which differ between 0.1.6 and later releases. After `t3 update`, rerun
+  `tests/test-t3-window-scope-e2e.sh`, which checks them against the installed
+  `t3` and Chrome.
+
 - T3 Code finds `~/.local/bin` only through a login-shell PATH probe that gives up
   after 5 s (`apps/server/src/os-jank.ts`), and the shim's `uv` lives there, so
   `systemd/t3@.service` sets PATH itself.
@@ -185,8 +194,15 @@ Gotchas:
 
 - Forks and side chats start a new Omnigent session seeded with a summary, on the
   same host: T3 Code's ACP registry adapter never asks an ACP agent to fork, and
-  T3 Code forks only within a server. Continuing on another host means a new
-  thread there.
+  T3 Code forks only within a server. To continue on another host, the shim's
+  `/fork-to HOST [CHECKOUT]` slash command forks the Omnigent session with its
+  history and starts it on HOST (an Omnigent host's name, short name or prefix)
+  in CHECKOUT (default: the same `~/checkoutN` there). The fork is not a T3
+  thread on that host's server, which this one cannot reach: continue it in the
+  Omnigent app, or import it in T3 Code there (Settings, listed as
+  `omnigent:<id>`).
+- Opening a thread whose Omnigent session is gone, or not among the 2000 most
+  recently updated, fails the turn instead of quietly starting a fresh session.
 - Each edit's diff shows in its tool call (Claude's Edit/MultiEdit/Write,
   Codex's apply_patch), as the edited snippet; T3 Code's checkpoint diffs and
   git panes need a git or jj repository, which the Sapling checkouts are not.
