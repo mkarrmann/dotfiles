@@ -47,6 +47,9 @@ case "$FAKE_MODE" in
     echo "T3_PAIR checkout1 TOKENabc123"
     sleep 0.5
     ;;
+  ready)
+    echo "NVS_TUNNEL_READY"
+    ;;
   serialize)
     echo "$host" >> "$FAKE_ENTRIES"
     if [[ "$host" == primary.example.com ]]; then
@@ -58,10 +61,13 @@ case "$FAKE_MODE" in
 esac
 EOF
 chmod +x "$TMP/bin/omnigent-server-url" "$TMP/bin/nvs-clip-listen" "$TMP/bin/x2ssh"
+# T3 Code's ports, off the shipped values so the test sees they come from here.
+printf '%s\n' T3_BASE_PORT=4780 T3_PRIMARY_TUNNEL_BASE_PORT=41780 T3_STANDBY_TUNNEL_BASE_PORT=42780 > "$TMP/topology.env"
 
 run_tunnels() {
   PATH="$TMP/bin:/usr/bin:/bin" \
     TMPDIR="$TMP" \
+    OMNIGENT_TOPOLOGY_FILE="$TMP/topology.env" \
     NVS_TUNNEL_BOOTSTRAP_LOCK_DIR="$TMP/bootstrap.lock" \
     NVS_TUNNEL_MONITOR_INTERVAL=0.05 \
     NVS_TUNNEL_RETRY_DELAY=0 \
@@ -132,12 +138,13 @@ OMNIGENT_STANDBY_FQDN=standby.example.com
 OMNIGENT_PRIMARY_TUNNEL_PORT=16767
 OMNIGENT_STANDBY_TUNNEL_PORT=26767
 OMNIGENT_PORT=6767
-T3_BASE_PORT=3780
-T3_PRIMARY_TUNNEL_BASE_PORT=13780
-T3_STANDBY_TUNNEL_BASE_PORT=23780
+T3_BASE_PORT=4780
+T3_PRIMARY_TUNNEL_BASE_PORT=41780
+T3_STANDBY_TUNNEL_BASE_PORT=42780
 STARTUP_T3_WINDOWS=1
 TRANSPORT_STATE=connected
-TUNNEL_FORWARDS="7001:7001,16767:6767,13781:3781"
+TUNNEL_HOST=primary.example.com
+TUNNEL_FORWARDS="7001:7001,16767:6767,41780:4780"
 TUNNEL_REMOTE='($HOME/dotfiles/bin/t3-pairing-tokens || true) & nvs-status; exec sleep infinity'
 
 workspaces() {
@@ -146,7 +153,7 @@ workspaces() {
 
 ps() {
   if [[ "$*" == "-axo command" ]]; then
-    echo "x2ssh -et primary.example.com -t $TUNNEL_FORWARDS -c zsh -lc 'echo NVS_TUNNEL_READY; $TUNNEL_REMOTE'"
+    echo "x2ssh -et $TUNNEL_HOST -t $TUNNEL_FORWARDS -c zsh -lc 'echo NVS_TUNNEL_READY; $TUNNEL_REMOTE'"
   else
     echo "123|50001"
   fi
@@ -190,6 +197,25 @@ if grep -Fq TOKENabc123 "$TMP/t3pair.out"; then
 fi
 grep -Fq -- "t3-pairing-tokens" "$FAKE_ARGS" || fail "remote command does not mint T3 Code pairing tokens"
 
+echo "2c. a candidate's tunnel forwards its one T3 Code server, the forward startup-windows expects"
+export FAKE_MODE=ready
+# t3_forwards HOST SESSION... -> the forwards nvs-tunnels gives x2ssh other than
+# each nvim session's (PORT:PORT) and the candidate's Omnigent one (to 6767).
+t3_forwards() {
+  : > "$FAKE_ARGS"
+  run_tunnels 1 "$@" > /dev/null 2>&1 || true
+  sed -n 's/.* -t \([^ ]*\) .*/\1/p' "$FAKE_ARGS" | head -1 | tr ',' '\n' \
+    | awk -F: '$1 != $2 && $2 != 6767' | paste -sd, -
+}
+got=$(t3_forwards primary.example.com TEST-checkout1 TEST-checkout2 TEST-checkout4)
+[[ "$got" == 41780:4780 ]] || fail "the primary's T3 Code forwards are '$got', not its one server's 41780:4780"
+[[ "$got" == "$(t3_forwards_for_host primary.example.com)" ]] \
+  || fail "startup-windows expects '$(t3_forwards_for_host primary.example.com)' of the primary's tunnel, which forwards '$got'"
+got=$(t3_forwards standby.example.com TEST-checkout1)
+[[ "$got" == 42780:4780 ]] || fail "the standby's T3 Code forwards are '$got', not its one server's 42780:4780"
+got=$(t3_forwards other.example.com TEST-checkout1)
+[[ -z "$got" ]] || fail "a host that is not a candidate got T3 Code forwards '$got'"
+
 echo "3. startup-windows accepts a tunnel with a connected ET transport"
 TRANSPORT_STATE=connected
 tunnel_command_is_current primary.example.com \
@@ -206,19 +232,32 @@ TRANSPORT_STATE=pending
 tunnel_command_is_current primary.example.com \
   || fail "pre-listener ET bootstrap was classified as stale"
 
-echo "6. startup-windows rebuilds a tunnel that lacks a checkout's T3 Code forward"
+echo "6. startup-windows rebuilds a tunnel that lacks its T3 Code forward"
 TRANSPORT_STATE=connected
 TUNNEL_FORWARDS="7001:7001,16767:6767"
 if tunnel_command_is_current primary.example.com; then
   fail "tunnel without its T3 Code forward was classified as current"
 fi
 
+echo "6b. startup-windows rebuilds a tunnel that forwards a T3 Code server per checkout"
+TUNNEL_FORWARDS="7001:7001,16767:6767,41781:4781,41782:4782"
+if tunnel_command_is_current primary.example.com; then
+  fail "tunnel with the old per-checkout T3 Code forwards was classified as current"
+fi
+
 echo "7. startup-windows rebuilds a tunnel whose session does not mint T3 Code pairing tokens"
-TUNNEL_FORWARDS="7001:7001,16767:6767,13781:3781"
+TUNNEL_FORWARDS="7001:7001,16767:6767,41780:4780"
 TUNNEL_REMOTE='nvs-status; exec sleep infinity'
 if tunnel_command_is_current primary.example.com; then
   fail "tunnel without the pairing-token step was classified as current"
 fi
+
+echo "7b. a candidate with no devserver workspace needs no T3 Code forward"
+TUNNEL_HOST=standby.example.com
+TUNNEL_FORWARDS="7001:7001,26767:6767"
+tunnel_command_is_current standby.example.com \
+  || fail "the standby's tunnel was rebuilt for a T3 Code forward no workspace uses"
+TUNNEL_HOST=primary.example.com
 
 echo "8. with T3 Code windows off, a tunnel without T3 Code forwards is current"
 STARTUP_T3_WINDOWS=0

@@ -79,31 +79,27 @@ done
 case "$host" in
   "$OMNIGENT_PRIMARY_FQDN")
     omnigent_local_port="$OMNIGENT_PRIMARY_TUNNEL_PORT"
-    t3_local_base="$T3_PRIMARY_TUNNEL_BASE_PORT"
+    t3_local_port="$T3_PRIMARY_TUNNEL_BASE_PORT"
     ;;
   "$OMNIGENT_STANDBY_FQDN")
     omnigent_local_port="$OMNIGENT_STANDBY_TUNNEL_PORT"
-    t3_local_base="$T3_STANDBY_TUNNEL_BASE_PORT"
+    t3_local_port="$T3_STANDBY_TUNNEL_BASE_PORT"
     ;;
   *)
     omnigent_local_port=""
-    t3_local_base=""
+    t3_local_port=""
     ;;
 esac
 if [[ -n "$omnigent_local_port" ]]; then
   tunnel_spec+=",${omnigent_local_port}:${OMNIGENT_PORT}"
   echo "  Omnigent candidate -> localhost:${omnigent_local_port}"
 fi
-# Each checkout's own T3 Code server (systemd/t3@.service): checkoutN is
-# T3_BASE_PORT+N there and the candidate's tunnel base +N here, the port its
-# workspace window opens (bin-macos/workspaces).
-if [[ -n "$t3_local_base" ]]; then
-  for session in $session_names; do
-    [[ "$session" =~ -checkout([0-9]+)$ ]] || continue
-    n="${BASH_REMATCH[1]}"
-    tunnel_spec+=",$((t3_local_base + n)):$((T3_BASE_PORT + n))"
-    echo "  T3 Code ($session) -> localhost:$((t3_local_base + n))"
-  done
+# The candidate's one T3 Code server (t3@checkouts, systemd/t3@.service) on
+# T3_BASE_PORT there, and on the candidate's own port here, which every
+# workspace window on this host opens (bin-macos/workspaces).
+if [[ -n "$t3_local_port" ]]; then
+  tunnel_spec+=",${t3_local_port}:${T3_BASE_PORT}"
+  echo "  T3 Code -> localhost:${t3_local_port}"
 fi
 
 # Server lifecycle is owned by systemd --user on the devvm
@@ -115,9 +111,10 @@ fi
 # separate Mac discovery login; failure stays non-fatal because the hub startup
 # gate remains fail-closed and the next ET reconnect retries it.
 ready_marker="NVS_TUNNEL_READY"
-# t3-pairing-tokens mints a pairing token per checkout's T3 Code server inside
-# this already-authenticated session; save_t3_pairing_tokens below hands them to
-# startup-windows, which pairs never-paired workspace windows with them.
+# t3-pairing-tokens mints a pairing token per checkout from the candidate's T3
+# Code server inside this already-authenticated session; save_t3_pairing_tokens
+# below hands them to startup-windows, which opens each new workspace window on
+# /pair with its checkout's.
 remote_cmd="echo ${ready_marker}; (\$HOME/bin/omnigent-hub cache-routing --force-remount --json >/dev/null 2>&1 || true) & (\$HOME/dotfiles/bin/t3-pairing-tokens 2>/dev/null || true) & nvs-status${session_names}; exec sleep infinity"
 T3_PAIRING_DIR="${T3_PAIRING_DIR:-$HOME/.local/state/t3-pairing}"
 saved_t3_tokens=""

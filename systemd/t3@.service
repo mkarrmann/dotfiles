@@ -1,13 +1,14 @@
-# Templated systemd --user unit for per-workspace T3 Code servers.
-# Instance name (%i): on the work hubs a checkout directory under $HOME
-# (t3@checkout3), a server whose only project is that checkout, so a browser
-# window on it (bin-macos/startup-windows) opens scoped to it; on the Linux
-# desktop the one server for every t3 row of bin-linux/startup-windows' table
-# (t3@desktop), whose windows each scope their sidebar to their own project.
-# bin/t3-workspace-serve resolves the directory and port from it. Its providers drive Omnigent sessions through bin/omnigent-acp.
-# bin/t3-ensure, run by init.sh, `enable --now`s one instance per workspace and
-# never restarts a running one; after `t3 update`, restart instances to pick up
-# the new version.
+# Templated systemd --user unit for this host's T3 Code server, one per host.
+# Instance name (%i): on the work hubs "checkouts" (t3@checkouts), whose projects
+# are every ~/checkoutN; on the Linux desktop the server for every t3 row of
+# bin-linux/startup-windows' table (t3@desktop), whose projects are the rows'
+# workdirs. Each workspace's browser window on it (bin-macos/startup-windows,
+# bin-linux/startup-windows) starts its new threads in its own project and
+# lists every project. bin/t3-workspace-serve resolves the port from it. Its
+# providers drive Omnigent sessions through bin/omnigent-acp.
+# bin/t3-ensure, run by init.sh, `enable --now`s the instance and never
+# restarts a running one; after `t3 update`, restart it to pick up the new
+# version.
 #
 # Provider processes are not in this unit's cgroup: T3 Code runs each in a
 # transient scope under app-t3code-agents-<hash>.slice
@@ -15,11 +16,11 @@
 # next start stops the leftovers.
 #
 # Manual ops:
-#   systemctl --user restart t3@checkout3
-#   journalctl --user -u t3@checkout3 -e
+#   systemctl --user restart t3@checkouts
+#   journalctl --user -u t3@checkouts -e
 
 [Unit]
-Description=T3 Code server for workspace %i
+Description=T3 Code server %i
 After=network.target
 
 [Service]
@@ -33,8 +34,9 @@ Type=simple
 Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 ExecStart=%h/dotfiles/bin/t3-workspace-serve %i
 Restart=on-failure
-# Exit 2 is t3-workspace-serve's usage error: an instance whose checkout or t3
-# row no longer exists. Restarting cannot fix it, so stop instead of looping.
+# Exit 2 is t3-workspace-serve's usage error: an instance this host no longer
+# runs, such as a t3@checkoutN from when each checkout had a server, or a
+# renamed t3 server. Restarting cannot fix it, so stop instead of looping.
 RestartPreventExitStatus=2
 RestartSec=5
 

@@ -4,15 +4,16 @@
     t3-ensure
 
 Idempotent; init.sh runs it on the Omnigent hub candidates and the Linux
-desktop. A candidate runs a server NAME per ~/checkoutN, whose one project is
-that checkout. The desktop runs one server, NAME being the layout's t3Server
-(bin-linux/startup-windows --print-layout), whose projects are the workdirs of
-the table's t3 rows (one whose workdir is missing is skipped with a warning);
-each row's window scopes its sidebar to its own project. It:
+desktop. Each runs one server, NAME. On a candidate NAME is "checkouts" and its
+projects are every ~/checkoutN. On the desktop NAME is the layout's t3Server
+(bin-linux/startup-windows --print-layout) and its projects are the workdirs of
+the table's t3 rows (one whose workdir is missing is skipped with a warning).
+Either way each window's new threads start in its own workspace's project
+(bin/t3-window-scope) while its sidebar lists every project. It:
   1. installs the `t3` CLI with T3 Code's installer when it is missing. Later
      upgrades belong to `t3 update`;
-  2. for each server, registers bin/omnigent-acp as the "Omnigent · Claude"
-     and "Omnigent · Codex" providers in ~/.t3-workspaces/NAME/userdata/
+  2. registers bin/omnigent-acp as the server's "Omnigent · Claude" and
+     "Omnigent · Codex" providers in ~/.t3-workspaces/NAME/userdata/
      settings.json, keeping every other setting (a running server reloads it).
      It also turns off T3 Code's built-in Codex and Claude, which would run outside
      Omnigent, unless the settings already configure them. The desktop gets the
@@ -21,9 +22,14 @@ each row's window scopes its sidebar to its own project. It:
      as it is here -- and no server or project for it below;
   3. warms uv's cache for omnigent-acp, since the services have no proxy to
      fetch its dependencies with;
-  4. enables and starts t3@NAME (systemd/t3@.service, bin/t3-workspace-serve)
+  4. on a candidate, retires the servers it ran before t3@checkouts, one per
+     checkout: `disable --now` every enabled t3@checkoutN. Each held only its
+     own checkout's threads, so no window saw a thread started in another, and
+     bin/t3-workspace-serve no longer serves them. Their state
+     (~/.t3-workspaces/checkoutN) is left where it is;
+  5. enables and starts t3@NAME (systemd/t3@.service, bin/t3-workspace-serve)
      when it is not enabled yet. A running server is never restarted;
-  5. adds each of its directories as a project of the server unless it
+  6. adds each of its directories as a project of the server unless it
      already is one. A project the server bootstrapped itself would count as a
      fresh install and open T3 Code's first-run wizard in every new window.
 
@@ -52,6 +58,7 @@ WORKSPACES_HOME = Path.home() / ".t3-workspaces"
 DESKTOP_APP_SETTINGS = Path.home() / ".t3/userdata/settings.json"
 SHIM = DOTFILES / "bin/omnigent-acp"
 CHECKOUT = re.compile(r"checkout[0-9]+")
+WORK_SERVER = "checkouts"  # bin/t3-workspace-serve, bin/t3-pairing-tokens
 INSTALLERS = (
     "https://t3.codes/install.sh",
     "https://raw.githubusercontent.com/pingdotgg/t3code/main/scripts/install.sh",
@@ -99,12 +106,20 @@ def output(*command: str) -> str:
     return result.stdout
 
 
-def checkouts() -> list[Server]:
-    names = sorted(
-        (p.name for p in Path.home().iterdir() if p.is_dir() and CHECKOUT.fullmatch(p.name)),
-        key=lambda name: int(name.removeprefix("checkout")),
-    )
-    return [Server(name, (Path.home() / name,)) for name in names]
+def checkout_number(name: str) -> int:
+    return int(name.removeprefix("checkout"))
+
+
+def checkout_names(directory: Path) -> list[str]:
+    """The checkoutN directories in DIRECTORY, by N."""
+    if not directory.is_dir():
+        return []
+    return sorted((p.name for p in directory.iterdir() if p.is_dir() and CHECKOUT.fullmatch(p.name)), key=checkout_number)
+
+
+def work_servers() -> list[Server]:
+    projects = tuple(Path.home() / name for name in checkout_names(Path.home()))
+    return [Server(WORK_SERVER, projects)] if projects else []
 
 
 def desktop_servers() -> list[Server]:
@@ -164,6 +179,22 @@ def systemctl(*args: str) -> int:
     return subprocess.run(["systemctl", "--user", *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
 
 
+def retire_checkout_servers() -> bool:
+    """Step 4. An old instance is found by its checkout or by the state the old
+    t3-ensure wrote for it before enabling it; False when one would not stop."""
+    retired = True
+    for name in sorted({*checkout_names(Path.home()), *checkout_names(WORKSPACES_HOME)}, key=checkout_number):
+        unit = f"t3@{name}.service"
+        if systemctl("is-enabled", "--quiet", unit) != 0:
+            continue
+        if systemctl("disable", "--now", unit) == 0:
+            log(f"retired {unit}: t3@{WORK_SERVER} serves every checkout")
+        else:
+            log(f"WARNING: could not disable {unit}")
+            retired = False
+    return retired
+
+
 def main() -> int:
     if find_t3() is None:
         log("installing the t3 CLI")
@@ -173,13 +204,13 @@ def main() -> int:
     desktop = on_linux_desktop()
     if desktop and merge_settings(DESKTOP_APP_SETTINGS, SHIM):
         log("registered the Omnigent providers for the T3 Code desktop app")
-    servers = desktop_servers() if desktop else checkouts()
+    servers = desktop_servers() if desktop else work_servers()
     for server in servers:
         if merge_settings(WORKSPACES_HOME / server.name / "userdata/settings.json", SHIM):
             log(f"registered the Omnigent providers for t3@{server.name}")
     if subprocess.run([str(SHIM), "--help"], stdout=subprocess.DEVNULL).returncode != 0:
         log("WARNING: omnigent-acp did not start; the Omnigent providers will fail until it does")
-    failed = False
+    failed = not desktop and not retire_checkout_servers()
     for server in servers:
         unit = f"t3@{server.name}.service"
         if systemctl("is-enabled", "--quiet", unit) != 0:

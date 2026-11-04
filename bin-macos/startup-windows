@@ -88,7 +88,7 @@ trap 'exit 143' TERM
 #   cmux:     ws|cmux|title|title_match
 #   chrome:   ws|chrome|title
 #   omnigent: ws|omnigent|title
-#   t3:       ws|t3|title   (the workspace's checkout server, from bin-macos/workspaces)
+#   t3:       ws|t3|title   (a window on its devserver's T3 Code server, from bin-macos/workspaces)
 # title_match is a regex used to find existing windows in AeroSpace.
 # ws is the AeroSpace workspace to place the window in.
 # Multiple entries can share a workspace (accordion layout toggles between them).
@@ -133,7 +133,7 @@ WORKSPACES=(
 )
 
 # TODO: T3 Code windows are on hold; STARTUP_T3_WINDOWS=1 brings back their rows
-# and the tunnel checks they need (T3 Code forwards, pairing-token minting).
+# and the tunnel checks they need (the T3 Code forward, pairing-token minting).
 STARTUP_T3_WINDOWS="${STARTUP_T3_WINDOWS:-0}"
 if [[ "$STARTUP_T3_WINDOWS" != 1 ]]; then
   enabled_workspaces=()
@@ -165,8 +165,10 @@ chrome_restore_settled=false
 # (NON_LAYOUT_TITLE_PATTERN); an overlay does not follow its parent across
 # workspaces, so nothing here can keep one next to the window it belongs to.
 # Each devserver workspace's T3 Code window is a Chrome app window running in
-# that workspace's own Chrome profile, pointed at its checkout's T3 Code server
-# (systemd/t3@.service). Titles cannot tell these windows apart (they share one,
+# that workspace's own Chrome profile, on its devserver's one T3 Code server
+# (t3@checkouts, systemd/t3@.service), whose projects are every checkout there;
+# a window this script opens starts its new threads in its own checkout
+# (t3-window-scope). Titles cannot tell these windows apart (they share one,
 # or show an error page's host before the tunnel is up), so the profile of the
 # owning Chrome process identifies a window's workspace and keeps it out of the
 # Chrome slots and sweeps below.
@@ -538,19 +540,18 @@ close_window_id() {
 }
 
 # t3_forwards_for_host HOST -> the LOCAL:REMOTE forward nvs-tunnels makes for
-# each of the host's workspace checkouts' T3 Code servers, one per line.
+# the host's T3 Code server, when a workspace is on that host; else nothing.
 t3_forwards_for_host() {
-  local host="$1" base n
+  local host="$1" port
   case "$host" in
-    "$OMNIGENT_PRIMARY_FQDN") base="$T3_PRIMARY_TUNNEL_BASE_PORT" ;;
-    "$OMNIGENT_STANDBY_FQDN") base="$T3_STANDBY_TUNNEL_BASE_PORT" ;;
+    "$OMNIGENT_PRIMARY_FQDN") port="$T3_PRIMARY_TUNNEL_BASE_PORT" ;;
+    "$OMNIGENT_STANDBY_FQDN") port="$T3_STANDBY_TUNNEL_BASE_PORT" ;;
     *) return 0 ;;
   esac
-  for n in $(workspaces --json 2>/dev/null \
-    | jq -r --arg host "$host" '.workspaces[] | select(.kind == "devserver" and .host == $host) | .checkout' \
-    | sed -n 's|.*/checkout\([0-9][0-9]*\)$|\1|p'); do
-    echo "$((base + n)):$((T3_BASE_PORT + n))"
-  done
+  if workspaces --json 2>/dev/null \
+      | jq -e --arg host "$host" 'any(.workspaces[]; .kind == "devserver" and .host == $host)' >/dev/null; then
+    echo "${port}:${T3_BASE_PORT}"
+  fi
 }
 
 tunnel_command_is_current() {
@@ -573,13 +574,13 @@ tunnel_command_is_current() {
   expected="${local_port}:${OMNIGENT_PORT}"
   echo "$cmds" | grep -F -- "-t " | grep -F -- "$expected" >/dev/null || return 1
   if [[ "$STARTUP_T3_WINDOWS" == 1 ]]; then
-    # Likewise each of the host's per-checkout T3 Code forwards, so a tunnel
-    # started before nvs-tunnels added them is rebuilt rather than kept.
-    for expected in $(t3_forwards_for_host "$host"); do
+    # Likewise the host's T3 Code forward and a session that mints T3 Code
+    # pairing tokens (nvs-tunnels' remote command), so a tunnel started before
+    # nvs-tunnels made them, or with a forward per checkout from when each had
+    # a server, is rebuilt rather than kept.
+    expected=$(t3_forwards_for_host "$host")
+    if [[ -n "$expected" ]]; then
       echo "$cmds" | grep -F -- "-t " | grep -F -- "$expected" >/dev/null || return 1
-    done
-    # And a session that mints T3 Code pairing tokens (nvs-tunnels' remote command).
-    if [[ -n "$(t3_forwards_for_host "$host")" ]]; then
       echo "$cmds" | grep -F -- "t3-pairing-tokens" >/dev/null || return 1
     fi
   fi
@@ -877,7 +878,7 @@ t3_wait_for_server() {
     fi
     sleep 0.5
   done
-  echo "WARNING: [T3] $host's T3 Code servers or pairing tokens did not arrive within 60s" >&2
+  echo "WARNING: [T3] $host's T3 Code server or $checkout's pairing token did not arrive within 60s" >&2
 }
 
 # t3_take_pairing_token DEVSERVER CHECKOUT -> a token nvs-tunnels saved, removed
@@ -910,6 +911,8 @@ t3_window_ids_json() {
 }
 
 # t3_profile_running PROFILE_DIR -> whether a Chrome process runs that profile.
+# TODO: under pipefail, grep -q can end the pipeline early and ps's SIGPIPE then
+# reads as "not running" once ps prints more than a pipe buffer after the match.
 t3_profile_running() {
   ps -axo command= 2>/dev/null | grep -qE -- "--user-data-dir=${1}( |$)"
 }
@@ -925,6 +928,96 @@ t3_window_ids_for_profile() {
           echo "$wid"
         fi
       done | sort -n
+}
+
+# t3_profile_debuggable PROFILE_DIR -> whether that profile's Chrome runs with a
+# DevTools port, which t3-window-scope needs. On macOS a browser outlives its
+# last window, so one started before this script passed the flag keeps running
+# without it. Not grep -q: see t3_profile_running.
+t3_profile_debuggable() {
+  ps -axo command= 2>/dev/null | grep -E -- "--user-data-dir=${1}( |$)" \
+    | grep -F -- "--remote-debugging-port=" >/dev/null
+}
+
+# reconcile_t3_window WS TITLE -- find or open workspace WS's T3 Code window and
+# move it there. A window found is left as it is; a window this opens starts its
+# new threads in the workspace's checkout. Problems count in $failures.
+reconcile_t3_window() {
+  local ws="$1" title="$2" row profile url host checkout workdir window_id token open_url created=false
+  row=$(t3_workspace_window "$ws") || row=""
+  if [[ -z "$row" ]]; then
+    echo "WARNING: [$title] workspace $ws has no T3 Code server; skipping" >&2
+    ((failures++)) || true
+    return 0
+  fi
+  IFS=$'\t' read -r profile url host checkout <<< "$row"
+  # The server is on the devserver, so its project is named by its path under
+  # the server's home, which t3-window-scope resolves.
+  # shellcheck disable=SC2088
+  workdir="~/$checkout"
+  window_id=$(t3_window_ids_for_profile "$profile" | head -1) || window_id=""
+  # A window left on an error page (it opened before its tunnel was up) never
+  # retries, and its title is the host rather than T3 Code's; replace it.
+  if [[ -n "$window_id" ]] && ! [[ "$(t3_window_title "$window_id")" =~ $T3_TITLE_PATTERN ]]; then
+    close_window_id "$window_id" "T3 Code error page" || true
+    window_id=""
+  fi
+  if [[ -n "$window_id" ]]; then
+    echo "[$title] assigning T3 Code window $window_id to workspace $ws..."
+  else
+    echo "[$title] opening $url on workspace $ws..."
+    t3_wait_for_server "$host" "$url" "$checkout"
+    token=$(t3_take_pairing_token "$host" "$checkout")
+    open_url="$url${token:+pair#token=$token}"
+    mkdir -p "$profile"
+    if ! t3_profile_running "$profile"; then
+      # Start the profile windowless first: a cold start otherwise also opens
+      # Chrome's startup page, a second window nothing here would claim. This
+      # launch starts the browser, so it carries the DevTools port
+      # t3-window-scope reaches the window through; the --app launch below
+      # hands its window to the running browser, which ignores new flags.
+      # Chrome picks a free loopback port and writes it to
+      # $profile/DevToolsActivePort: web pages cannot reach it, local
+      # processes can, as they can the hub on OMNIGENT_PORT.
+      open -na "$CHROME_APP" --args --user-data-dir="$profile" \
+        --no-first-run --no-default-browser-check --no-startup-window --remote-debugging-port=0 2>/dev/null || true
+      for _ in $(seq 1 20); do
+        t3_profile_running "$profile" && break
+        sleep 0.5
+      done
+    fi
+    open -na "$CHROME_APP" --args --user-data-dir="$profile" --app="$open_url" 2>/dev/null || {
+      echo "WARNING: [$title] creation failed, skipping" >&2
+      ((failures++)) || true
+      return 0
+    }
+    for _ in $(seq 1 40); do
+      sleep 0.5
+      window_id=$(t3_window_ids_for_profile "$profile" | head -1) || window_id=""
+      [[ -n "$window_id" ]] && break
+    done
+    [[ -z "$window_id" ]] || created=true
+  fi
+  if [[ -z "$window_id" ]]; then
+    echo "WARNING: [$title] could not find its T3 Code window" >&2
+    ((failures++)) || true
+  else
+    aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || true
+  fi
+  if [[ "$created" == true ]]; then
+    echo "[$title] starting window $window_id's new threads in $workdir..."
+    if ! t3_profile_debuggable "$profile"; then
+      echo "WARNING: [$title] $profile's Chrome has no DevTools port (it was started before" >&2
+      echo "         startup-windows passed one), so window $window_id's new threads may not start" >&2
+      echo "         in $workdir; quit that Chrome (Cmd+Q in the window) and rerun" >&2
+      ((failures++)) || true
+    elif ! t3-window-scope "$profile" "${url%/}" "$workdir"; then
+      echo "WARNING: [$title] could not start window $window_id's new threads in $workdir;" >&2
+      echo "         they may start in another checkout" >&2
+      ((failures++)) || true
+    fi
+  fi
+  SNAPSHOT=$(snapshot_windows)
 }
 
 close_invalid_chrome_windows_on_workspace() {
@@ -1376,56 +1469,7 @@ for i in "${!WORKSPACES[@]}"; do
       fi
       ;;
     t3)
-      t3_row=$(t3_workspace_window "$ws") || t3_row=""
-      if [[ -z "$t3_row" ]]; then
-        echo "WARNING: [$title] workspace $ws has no T3 Code server; skipping" >&2
-        ((failures++)) || true
-        continue
-      fi
-      IFS=$'\t' read -r t3_profile t3_url t3_host t3_checkout <<< "$t3_row"
-      window_id=$(t3_window_ids_for_profile "$t3_profile" | head -1) || window_id=""
-      # A window left on an error page (it opened before its tunnel was up) never
-      # retries, and its title is the host rather than T3 Code's; replace it.
-      if [[ -n "$window_id" ]] && ! [[ "$(t3_window_title "$window_id")" =~ $T3_TITLE_PATTERN ]]; then
-        close_window_id "$window_id" "T3 Code error page" || true
-        window_id=""
-      fi
-      if [[ -n "$window_id" ]]; then
-        echo "[$title] assigning T3 Code window $window_id to workspace $ws..."
-      else
-        echo "[$title] opening $t3_url on workspace $ws..."
-        t3_wait_for_server "$t3_host" "$t3_url" "$t3_checkout"
-        t3_token=$(t3_take_pairing_token "$t3_host" "$t3_checkout")
-        t3_open_url="$t3_url${t3_token:+pair#token=$t3_token}"
-        mkdir -p "$t3_profile"
-        if ! t3_profile_running "$t3_profile"; then
-          # Start the profile windowless first: a cold start otherwise also opens
-          # Chrome's startup page, a second window nothing here would claim.
-          open -na "$CHROME_APP" --args --user-data-dir="$t3_profile" \
-            --no-first-run --no-default-browser-check --no-startup-window 2>/dev/null || true
-          for _ in $(seq 1 20); do
-            t3_profile_running "$t3_profile" && break
-            sleep 0.5
-          done
-        fi
-        open -na "$CHROME_APP" --args --user-data-dir="$t3_profile" --app="$t3_open_url" 2>/dev/null || {
-          echo "WARNING: [$title] creation failed, skipping" >&2
-          ((failures++)) || true
-          continue
-        }
-        for _ in $(seq 1 40); do
-          sleep 0.5
-          window_id=$(t3_window_ids_for_profile "$t3_profile" | head -1) || window_id=""
-          [[ -n "$window_id" ]] && break
-        done
-      fi
-      if [[ -n "$window_id" ]]; then
-        aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || true
-      else
-        echo "WARNING: [$title] could not find its T3 Code window" >&2
-        ((failures++)) || true
-      fi
-      SNAPSHOT=$(snapshot_windows)
+      reconcile_t3_window "$ws" "$title"
       ;;
   esac
 done

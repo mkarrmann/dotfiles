@@ -66,21 +66,23 @@ topology_value() {
   value="$(sed -n "s/^$1=//p" "$topology" 2>/dev/null | tail -n 1)"
   printf '%s' "${value:-$2}"
 }
-t3_primary_base="$(topology_value T3_PRIMARY_TUNNEL_BASE_PORT 13780)"
-t3_standby_base="$(topology_value T3_STANDBY_TUNNEL_BASE_PORT 23780)"
+t3_primary_port="$(topology_value T3_PRIMARY_TUNNEL_BASE_PORT 13780)"
+t3_standby_port="$(topology_value T3_STANDBY_TUNNEL_BASE_PORT 23780)"
 
-# The workspace's T3 Code window: that checkout's own server (systemd/t3@.service)
-# through its nvs-tunnels forward, on a hostname of its own so each window keeps
-# separate cookies and storage. Empty when the host or checkout has no server.
+# The workspace's T3 Code window: its devserver's one server (t3@checkouts,
+# systemd/t3@.service) through that host's nvs-tunnels forward, on a hostname of
+# its own so each window keeps its own cookies and localStorage, and with them
+# its own project for new threads (bin/t3-window-scope). Empty when the host has
+# no server or the checkout is not one of its ~/checkoutN projects.
 t3_url() {
-  local host="$1" checkout="$2" origin="$3" base
-  [[ "$(basename "$checkout")" =~ ^checkout([0-9]+)$ ]] || return 0
+  local host="$1" checkout="$2" origin="$3" port
+  [[ "$(basename "$checkout")" =~ ^checkout[0-9]+$ ]] || return 0
   case "$host" in
-    "$primary_fqdn") base="$t3_primary_base" ;;
-    "$standby_fqdn") base="$t3_standby_base" ;;
+    "$primary_fqdn") port="$t3_primary_port" ;;
+    "$standby_fqdn") port="$t3_standby_port" ;;
     *) return 0 ;;
   esac
-  printf 'http://%s:%s/' "${origin%.omnigent.localhost}.t3.localhost" "$((base + BASH_REMATCH[1]))"
+  printf 'http://%s:%s/' "${origin%.omnigent.localhost}.t3.localhost" "$port"
 }
 
 for entry in "${WORKSPACES[@]}"; do

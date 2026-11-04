@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
-# t3-workspace-serve NAME — run T3 Code's server for one workspace (systemd/t3@.service).
+# t3-workspace-serve NAME — run this host's T3 Code server (systemd/t3@.service).
 #
-# The server's data lives in ~/.t3-workspaces/NAME and its one project is the
-# workspace's directory, so a client sees only that workspace. bin/t3-ensure
-# adds that project with `t3 project add` rather than
-# --auto-bootstrap-project-from-cwd: T3 Code shows its first-run wizard while a
-# server's only project is the one it bootstrapped on its current start.
+# The server's data lives in ~/.t3-workspaces/NAME and it serves from $HOME;
+# its projects are the workspaces' directories, which bin/t3-ensure adds with
+# `t3 project add` rather than --auto-bootstrap-project-from-cwd: T3 Code shows
+# its first-run wizard while a server's only project is the one it bootstrapped
+# on its current start.
 #
-# On the work hubs NAME is a checkout: ~/checkoutN listens on
-# 127.0.0.1:T3_BASE_PORT+N (omnigent_config/topology.env). The desktop runs one
-# server for every t3 row of bin-linux/startup-windows' table: NAME is that
-# layout's t3Server, it listens on its t3Port, and its projects are the rows'
-# workdirs (bin/t3-ensure adds them).
+# On the work hubs NAME is "checkouts", the one server for every ~/checkoutN,
+# and it listens on 127.0.0.1:T3_BASE_PORT (omnigent_config/topology.env). The
+# desktop runs one server for every t3 row of bin-linux/startup-windows' table:
+# NAME is that layout's t3Server and it listens on its t3Port. Any other NAME,
+# such as a t3@checkoutN from when each checkout had a server of its own, exits
+# 2, which the unit takes as a stop rather than a restart.
 set -euo pipefail
 
-name="${1:?usage: t3-workspace-serve CHECKOUT|SERVER}"
+name="${1:?usage: t3-workspace-serve SERVER}"
 dotfiles="${DOTFILES_DIR:-$HOME/dotfiles}"
 
 if [[ "$("$dotfiles/bin/dotfiles-profile")" == desktop ]]; then
@@ -23,18 +24,15 @@ if [[ "$("$dotfiles/bin/dotfiles-profile")" == desktop ]]; then
     echo "t3-workspace-serve: bin-linux/startup-windows' t3 server is '$(jq -r .t3Server <<< "$layout")', not '$name'" >&2
     exit 2
   }
-  workdir="$HOME"
   port="$(jq -r .t3Port <<< "$layout")"
 else
-  [[ "$name" =~ ^checkout([0-9]+)$ ]] || {
-    echo "t3-workspace-serve: expected a checkoutN directory name, got '$name'" >&2
+  [[ "$name" == checkouts ]] || {
+    echo "t3-workspace-serve: the work hubs' t3 server is 'checkouts', not '$name'" >&2
     exit 2
   }
-  index="${BASH_REMATCH[1]}"
   topology="${OMNIGENT_TOPOLOGY_FILE:-$dotfiles/omnigent_config/topology.env}"
-  base_port="$(sed -n 's/^T3_BASE_PORT=//p' "$topology" 2>/dev/null | tail -n 1)"
-  port=$(( ${base_port:-3780} + index ))
-  workdir="$HOME/$name"
+  port="$(sed -n 's/^T3_BASE_PORT=//p' "$topology" 2>/dev/null | tail -n 1)"
+  port="${port:-3780}"
 fi
 
 t3="$HOME/.local/bin/t3"
@@ -44,5 +42,5 @@ t3="$HOME/.local/bin/t3"
 }
 
 export T3CODE_HOME="$HOME/.t3-workspaces/$name"
-cd "$workdir"
+cd "$HOME"
 exec "$t3" serve --host 127.0.0.1 --port "$port" --no-browser
