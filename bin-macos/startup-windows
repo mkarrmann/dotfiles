@@ -74,8 +74,9 @@ if ! mkdir "$STARTUP_LOCK_DIR" 2>/dev/null; then
   fi
 fi
 echo "$$" > "$STARTUP_LOCK_DIR/pid"
+T3_WINDOWS_CACHE="$STARTUP_LOCK_DIR/t3-windows"
 cleanup_startup_lock() {
-  rm -f "$STARTUP_LOCK_DIR/pid"
+  rm -f "$STARTUP_LOCK_DIR/pid" "$T3_WINDOWS_CACHE"
   rmdir "$STARTUP_LOCK_DIR" 2>/dev/null || true
 }
 trap cleanup_startup_lock EXIT
@@ -170,21 +171,31 @@ chrome_restore_settled=false
 # Getting them off the managed workspaces is arrange-workspaces' job
 # (NON_LAYOUT_TITLE_PATTERN); an overlay does not follow its parent across
 # workspaces, so nothing here can keep one next to the window it belongs to.
-# Each workspace's T3 Code window is a Chrome app window running in that
-# workspace's own Chrome profile, served by its host's one T3 Code server (a
+# Each workspace's T3 Code window is an app window of your own Chrome, in its
+# T3 profile, on the workspace's own origin, served by its host's one T3 Code server (a
 # devserver's t3@checkouts, whose projects are every checkout there; the Mac's
 # t3@local, whose project is ~/dotfiles, for workspace 1), and linked to every
 # other one, so each window lists, searches and starts threads on all of them; a window this script opens starts its new
 # threads in its own checkout (t3-window-scope). Titles cannot tell these windows apart (they share one,
-# or show an error page's host before the tunnel is up), so the profile of the
-# owning Chrome process identifies a window's workspace and keeps it out of the
-# Chrome slots and sweeps below.
-T3_CHROME_DATA_ROOT="$HOME/.t3-workspace-chrome"
+# or show an error page's host before the tunnel is up), so the origin a window
+# is on, which t3-window-scope --list-windows reads through AppleScript,
+# identifies its workspace and keeps it out of the Chrome slots and sweeps below.
+# That needs View > Developer > Allow JavaScript from Apple Events on in the T3
+# profile. What this script knows of each window's servers is kept in
+# T3_STATE_DIR/<origin's first label>.
+T3_CHROME_PROFILE="T3"
+T3_STATE_DIR="$HOME/.local/state/t3-windows"
+# Each window used to be its own Chrome instance on a data directory here. They
+# share Chrome's bundle id, so macOS handed Chrome launches, links and the Dock
+# to one of them when your own Chrome was not running; any still running are
+# quit (retire_t3_profile_chromes).
+# TODO: drop once no Mac has them, along with the directory itself.
+T3_LEGACY_CHROME_DATA_ROOT="$HOME/.t3-workspace-chrome"
 # Pairing tokens bin-macos/nvs-tunnels pools from each devserver's session, a
 # file each in HOST/. A window this script creates opens on /pair with one of
 # its own host's, and links each other host's server with one of that host's.
-# A new profile waits up to T3_PAIRING_TOKEN_WAIT seconds for each; a profile
-# that has paired before takes one only when one is there. Tokens last 12 hours,
+# A window on a new origin waits up to T3_PAIRING_TOKEN_WAIT seconds for each; one
+# on an origin that has paired before takes one only when one is there. Tokens last 12 hours,
 # so older files are dropped.
 T3_PAIRING_DIR="${T3_PAIRING_DIR:-$HOME/.local/state/t3-pairing}"
 T3_PAIRING_TOKEN_WAIT="${T3_PAIRING_TOKEN_WAIT:-30}"
@@ -866,7 +877,7 @@ workspace_has_claimed_omnigent_window() {
 # (t3@local, launchd/com.mkarrmann.t3-local.plist), which mints its tokens here.
 T3_LOCAL_HOST="local"
 
-# t3_workspace_window WS -> "PROFILE_DIR<TAB>URL<TAB>HOST<TAB>PROJECT" for the
+# t3_workspace_window WS -> "STATE_DIR<TAB>URL<TAB>HOST<TAB>PROJECT" for the
 # workspace's T3 Code window: PROJECT is ~/checkoutN on a devserver (its home is
 # not known here), an absolute path on the Mac.
 t3_workspace_window() {
@@ -878,7 +889,7 @@ t3_workspace_window() {
   url="${row%%$'\t'*}"
   origin="${url#http://}"
   origin="${origin%%:*}"
-  printf '%s/%s\t%s\n' "$T3_CHROME_DATA_ROOT" "${origin%.t3.localhost}" "$row"
+  printf '%s/%s\t%s\n' "$T3_STATE_DIR" "${origin%.t3.localhost}" "$row"
 }
 
 # t3_links WS -> "HOST<TAB>URL<TAB>LABEL" for each other T3 Code server, which
@@ -965,76 +976,82 @@ t3_window_title() {
     | jq -r --argjson wid "$1" '.[] | select(.["window-id"] == $wid) | .["window-title"] // empty'
 }
 
-# t3_window_ids_json -> JSON array of the ids of every window owned by a T3 Code
-# workspace profile's Chrome process.
+# t3_windows -> "WINDOW_ID ORIGIN" for each T3 Code window in your Chrome.
+# Listing tags window titles for a moment, so it is redone only when the set of
+# Chrome windows changed since the last listing, which T3_WINDOWS_CACHE keeps
+# (first line) with its result: callers run in command substitutions, whose
+# variables die with them.
+t3_windows() {
+  local key list
+  key=$(aerospace list-windows --all --json 2>/dev/null \
+    | jq -c --arg app "$CHROME_APP" '[.[] | select(."app-name" == $app) | .["window-id"]] | sort') || key=""
+  if [[ ! -e "$T3_WINDOWS_CACHE" || "$(head -n 1 "$T3_WINDOWS_CACHE")" != "$key" ]]; then
+    list=$(t3-window-scope --list-windows 2>/dev/null) || list=""
+    printf '%s\n%s' "$key" "${list:+$list$'\n'}" > "$T3_WINDOWS_CACHE"
+  fi
+  tail -n +2 "$T3_WINDOWS_CACHE"
+}
+
+# t3_window_ids_json -> JSON array of the ids of every T3 Code window.
 t3_window_ids_json() {
-  local wid pid
-  aerospace list-windows --all --json --format '%{window-id}%{app-pid}%{app-name}' 2>/dev/null \
-    | jq -r --arg app "$CHROME_APP" '.[] | select(."app-name" == $app) | "\(.["window-id"]) \(.["app-pid"])"' \
-    | while read -r wid pid; do
-        if ps -o command= -p "$pid" 2>/dev/null | grep -qF -- "--user-data-dir=$T3_CHROME_DATA_ROOT/"; then
-          echo "$wid"
-        fi
-      done | jq -s -c '.'
+  t3_windows | awk '{ print $1 }' | jq -s -c '.'
 }
 
-# t3_profile_running PROFILE_DIR -> whether a Chrome process runs that profile.
-# TODO: under pipefail, grep -q can end the pipeline early and ps's SIGPIPE then
-# reads as "not running" once ps prints more than a pipe buffer after the match.
-t3_profile_running() {
-  ps -axo command= 2>/dev/null | grep -qE -- "--user-data-dir=${1}( |$)"
+# t3_window_id_for_origin ORIGIN -> the lowest id of a T3 Code window on ORIGIN.
+t3_window_id_for_origin() {
+  t3_windows | awk -v o="$1" '$2 == o { print $1 }' | sort -n | head -n 1
 }
 
-# t3_window_ids_for_profile PROFILE_DIR -> ascending ids of windows whose Chrome
-# process runs with that --user-data-dir.
-t3_window_ids_for_profile() {
-  local profile="$1" wid pid
-  aerospace list-windows --all --json --format '%{window-id}%{app-pid}%{app-name}' 2>/dev/null \
-    | jq -r --arg app "$CHROME_APP" '.[] | select(."app-name" == $app) | "\(.["window-id"]) \(.["app-pid"])"' \
-    | while read -r wid pid; do
-        if ps -o command= -p "$pid" 2>/dev/null | grep -qE -- "--user-data-dir=${profile}( |$)"; then
-          echo "$wid"
-        fi
-      done | sort -n
+# retire_t3_profile_chromes -- quit the Chrome instances T3 Code windows used to
+# run in (T3_LEGACY_CHROME_DATA_ROOT), waiting up to 10s for them to go.
+retire_t3_profile_chromes() {
+  local pids
+  pids=$(ps -axo pid=,command= 2>/dev/null \
+    | awk -v root="--user-data-dir=$T3_LEGACY_CHROME_DATA_ROOT/" 'index($0, root) && !/--type=/ { print $1 }') || pids=""
+  [[ -n "$pids" ]] || return 0
+  echo "[T3] quitting the Chrome instances of the old per-workspace T3 Code profiles..."
+  # shellcheck disable=SC2086
+  kill -TERM $pids 2>/dev/null || true
+  local pid alive
+  for _ in $(seq 1 20); do
+    alive=""
+    for pid in $pids; do
+      ! kill -0 "$pid" 2>/dev/null || alive+=" $pid"
+    done
+    [[ -n "$alive" ]] || return 0
+    sleep 0.5
+  done
+  echo "WARNING: [T3] an old T3 Code Chrome instance is still running (pids:$alive)" >&2
 }
 
-# t3_profile_debuggable PROFILE_DIR -> whether that profile's Chrome runs with a
-# DevTools port, which t3-window-scope needs. On macOS a browser outlives its
-# last window, so one started before this script passed the flag keeps running
-# without it. Not grep -q: see t3_profile_running.
-t3_profile_debuggable() {
-  ps -axo command= 2>/dev/null | grep -E -- "--user-data-dir=${1}( |$)" \
-    | grep -F -- "--remote-debugging-port=" >/dev/null
-}
-
-# A profile records the T3 Code servers it is set up with as files named by
-# their environment ids in PROFILE/$T3_SERVERS_DIR: its own host's once a window
-# of it was paired and scoped, each other host's once linked. A server whose
+# A window's state directory records the T3 Code servers its origin is set up
+# with as files named by their environment ids in STATE/$T3_SERVERS_DIR: its own
+# host's once a window on it was paired and scoped, each other host's once linked. A server whose
 # state was reset has a new id, and so does a server of an earlier design (a
 # server per checkout, on another port, whose session cookie this origin does
 # not get), so neither counts.
 T3_SERVERS_DIR=".t3-servers"
 
-# t3_set_up PROFILE ENVIRONMENT_ID -> whether PROFILE is set up with that server.
+# t3_set_up STATE ENVIRONMENT_ID -> whether STATE's origin is set up with that server.
 t3_set_up() {
   [[ -n "$2" && -e "$1/$T3_SERVERS_DIR/$2" ]]
 }
 
-# t3_mark_set_up PROFILE ENVIRONMENT_ID...
+# t3_mark_set_up STATE ENVIRONMENT_ID...
 t3_mark_set_up() {
-  local profile="$1" env
+  local state="$1" env
   shift
-  mkdir -p "$profile/$T3_SERVERS_DIR"
+  mkdir -p "$state/$T3_SERVERS_DIR"
   for env; do
-    : > "$profile/$T3_SERVERS_DIR/$env"
+    : > "$state/$T3_SERVERS_DIR/$env"
   done
 }
 
-# t3_collect_links WS PROFILE TITLE -- each other devserver's server the profile
+# t3_collect_links WS STATE TITLE -- each other devserver's server the window
 # has not linked yet, with a token of its own, in T3_LINK_ARGS (t3-window-scope's
 # --link arguments), T3_LINK_TOKENS and T3_LINK_ENVS.
 t3_collect_links() {
-  local ws="$1" profile="$2" title="$3" link_host link_url link_label link_env link_token
+  local ws="$1" state="$2" title="$3" link_host link_url link_label link_env link_token
   T3_LINK_ARGS=() T3_LINK_TOKENS=() T3_LINK_ENVS=()
   while IFS=$'\t' read -r link_host link_url link_label; do
     [[ -n "$link_host" ]] || continue
@@ -1045,7 +1062,7 @@ t3_collect_links() {
       ((failures++)) || true
       continue
     fi
-    ! t3_set_up "$profile" "$link_env" || continue
+    ! t3_set_up "$state" "$link_env" || continue
     link_token=$(t3_take_pairing_token "$link_host" "$T3_PAIRING_TOKEN_WAIT")
     if [[ -z "$link_token" ]]; then
       echo "WARNING: [$title] no pairing token from $link_host; its threads are not listed here" >&2
@@ -1062,16 +1079,17 @@ t3_collect_links() {
 # move it there. A window found is left as it is; a window this opens starts its
 # new threads in the workspace's checkout. Problems count in $failures.
 reconcile_t3_window() {
-  local ws="$1" title="$2" row profile url host workdir window_id token open_url created=false
-  local fresh_profile=false wait scope_rc own_env=""
+  local ws="$1" title="$2" row state url origin host workdir window_id token open_url created=false
+  local fresh=false wait scope_rc own_env=""
   row=$(t3_workspace_window "$ws") || row=""
   if [[ -z "$row" ]]; then
     echo "WARNING: [$title] workspace $ws has no T3 Code server; skipping" >&2
     ((failures++)) || true
     return 0
   fi
-  IFS=$'\t' read -r profile url host workdir <<< "$row"
-  window_id=$(t3_window_ids_for_profile "$profile" | head -1) || window_id=""
+  IFS=$'\t' read -r state url host workdir <<< "$row"
+  origin="${url%/}"
+  window_id=$(t3_window_id_for_origin "$origin") || window_id=""
   # A window left on an error page (it opened before its tunnel was up) never
   # retries, and its title is the host rather than T3 Code's; replace it.
   if [[ -n "$window_id" ]] && ! [[ "$(t3_window_title "$window_id")" =~ $T3_TITLE_PATTERN ]]; then
@@ -1081,11 +1099,11 @@ reconcile_t3_window() {
   if t3_wait_for_server "$host" "$url"; then
     own_env=$(t3_environment_id "http://127.0.0.1:$(t3_url_port "$url")")
   fi
-  # A window of a profile not set up with its server (a run that failed to pair
-  # or scope it, a window that loaded only once its tunnel came up, a profile
-  # from an earlier server) sits on the pairing page or in no project; open it
-  # again, paired, once its server answers.
-  if [[ -n "$window_id" && -n "$own_env" ]] && ! t3_set_up "$profile" "$own_env"; then
+  # A window whose origin is not set up with its server (a run that failed to
+  # pair or scope it, a window that loaded only once its tunnel came up, an
+  # origin paired with an earlier server) sits on the pairing page or in no
+  # project; open it again, paired, once its server answers.
+  if [[ -n "$window_id" && -n "$own_env" ]] && ! t3_set_up "$state" "$own_env"; then
     close_window_id "$window_id" "T3 Code window not set up with its server" || true
     window_id=""
   fi
@@ -1093,12 +1111,12 @@ reconcile_t3_window() {
     echo "[$title] assigning T3 Code window $window_id to workspace $ws..."
     # Link servers it has not listed yet (the other host was down when it was
     # set up, or a server's state was reset) in place, leaving its project.
-    if t3_set_up "$profile" "$own_env" && t3_profile_debuggable "$profile"; then
-      t3_collect_links "$ws" "$profile" "$title"
+    if t3_set_up "$state" "$own_env"; then
+      t3_collect_links "$ws" "$state" "$title"
       if [[ ${#T3_LINK_TOKENS[@]} -gt 0 ]]; then
         if printf '%s\n' "${T3_LINK_TOKENS[@]}" \
-            | t3-window-scope "$profile" "${url%/}" --link-only "${T3_LINK_ARGS[@]}"; then
-          t3_mark_set_up "$profile" "${T3_LINK_ENVS[@]}"
+            | t3-window-scope @chrome "$origin" --link-only "${T3_LINK_ARGS[@]}"; then
+          t3_mark_set_up "$state" "${T3_LINK_ENVS[@]}"
         else
           echo "WARNING: [$title] could not link every other devserver's T3 Code server into window $window_id (see above)" >&2
           ((failures++)) || true
@@ -1116,67 +1134,46 @@ reconcile_t3_window() {
       return 0
     fi
     echo "[$title] opening $url on workspace $ws..."
-    # A profile set up with this server keeps its session cookie, so only one
+    # An origin set up with this server keeps its session cookie, so only one
     # that is not waits for a token.
-    t3_set_up "$profile" "$own_env" || fresh_profile=true
+    t3_set_up "$state" "$own_env" || fresh=true
     wait=0
-    [[ "$fresh_profile" == false ]] || wait="$T3_PAIRING_TOKEN_WAIT"
+    [[ "$fresh" == false ]] || wait="$T3_PAIRING_TOKEN_WAIT"
     token=$(t3_take_pairing_token "$host" "$wait")
     open_url="$url${token:+pair#token=$token}"
-    mkdir -p "$profile"
-    if ! t3_profile_running "$profile"; then
-      # Start the profile windowless first: a cold start otherwise also opens
-      # Chrome's startup page, a second window nothing here would claim. This
-      # launch starts the browser, so it carries the DevTools port
-      # t3-window-scope reaches the window through; the --app launch below
-      # hands its window to the running browser, which ignores new flags.
-      # Chrome picks a free loopback port and writes it to
-      # $profile/DevToolsActivePort: web pages cannot reach it, local
-      # processes can, as they can the hub on OMNIGENT_PORT.
-      open -na "$CHROME_APP" --args --user-data-dir="$profile" \
-        --no-first-run --no-default-browser-check --no-startup-window --remote-debugging-port=0 2>/dev/null || true
-      for _ in $(seq 1 20); do
-        t3_profile_running "$profile" && break
-        sleep 0.5
-      done
-    fi
-    open -na "$CHROME_APP" --args --user-data-dir="$profile" --app="$open_url" 2>/dev/null || {
+    # -n: a launch Chrome's own singleton hands to your running Chrome, or that
+    # starts it, rather than one LaunchServices may route elsewhere.
+    open -na "$CHROME_APP" --args --profile-directory="$T3_CHROME_PROFILE" --app="$open_url" 2>/dev/null || {
       echo "WARNING: [$title] creation failed, skipping" >&2
       ((failures++)) || true
       return 0
     }
     for _ in $(seq 1 40); do
       sleep 0.5
-      window_id=$(t3_window_ids_for_profile "$profile" | head -1) || window_id=""
+      window_id=$(t3_window_id_for_origin "$origin") || window_id=""
       [[ -n "$window_id" ]] && break
     done
     [[ -z "$window_id" ]] || created=true
   fi
   if [[ -z "$window_id" ]]; then
-    echo "WARNING: [$title] could not find its T3 Code window" >&2
+    echo "WARNING: [$title] could not find its T3 Code window (is Allow JavaScript from Apple Events" >&2
+    echo "         on in Chrome's $T3_CHROME_PROFILE profile? see t3-window-scope --list-windows)" >&2
     ((failures++)) || true
   else
     aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || true
   fi
   if [[ "$created" == true ]]; then
     echo "[$title] starting window $window_id's new threads in $workdir..."
-    if ! t3_profile_debuggable "$profile"; then
-      echo "WARNING: [$title] $profile's Chrome has no DevTools port (it was started before" >&2
-      echo "         startup-windows passed one), so window $window_id's new threads may not start" >&2
-      echo "         in $workdir; quit that Chrome (Cmd+Q in the window) and rerun" >&2
-      ((failures++)) || true
+    t3_collect_links "$ws" "$state" "$title"
+    scope_rc=0
+    { [[ ${#T3_LINK_TOKENS[@]} -eq 0 ]] || printf '%s\n' "${T3_LINK_TOKENS[@]}"; } \
+      | t3-window-scope @chrome "$origin" "$workdir" ${T3_LINK_ARGS[@]+"${T3_LINK_ARGS[@]}"} || scope_rc=$?
+    if [[ "$scope_rc" -eq 0 ]]; then
+      t3_mark_set_up "$state" "$own_env" ${T3_LINK_ENVS[@]+"${T3_LINK_ENVS[@]}"}
     else
-      t3_collect_links "$ws" "$profile" "$title"
-      scope_rc=0
-      { [[ ${#T3_LINK_TOKENS[@]} -eq 0 ]] || printf '%s\n' "${T3_LINK_TOKENS[@]}"; } \
-        | t3-window-scope "$profile" "${url%/}" "$workdir" ${T3_LINK_ARGS[@]+"${T3_LINK_ARGS[@]}"} || scope_rc=$?
-      if [[ "$scope_rc" -eq 0 ]]; then
-        t3_mark_set_up "$profile" "$own_env" ${T3_LINK_ENVS[@]+"${T3_LINK_ENVS[@]}"}
-      else
-        echo "WARNING: [$title] could not start window $window_id's new threads in $workdir," >&2
-        echo "         or link every other devserver's T3 Code server (see above)" >&2
-        ((failures++)) || true
-      fi
+      echo "WARNING: [$title] could not start window $window_id's new threads in $workdir," >&2
+      echo "         or link every other devserver's T3 Code server (see above)" >&2
+      ((failures++)) || true
     fi
   fi
   SNAPSHOT=$(snapshot_windows)
@@ -1399,6 +1396,9 @@ if ! osascript -e 'application "Ghostty" is running' 2>/dev/null | grep -q 'true
   open -a Ghostty
   sleep 2
 fi
+
+# Before anything opens Chrome, so the launch reaches your own.
+retire_t3_profile_chromes
 
 # Snapshot all windows
 SNAPSHOT=$(snapshot_windows)

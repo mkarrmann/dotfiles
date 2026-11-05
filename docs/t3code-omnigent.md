@@ -11,8 +11,8 @@ Each host runs one T3 Code server whose projects are all of its workspaces'
 directories: T3 Code's own model, in which a server owns its machine's projects,
 threads, files and terminals, and a client connects to every server and shows
 them as one (`~/repos/t3code/docs/internals/remote.md`). Each workspace gets a
-browser window: a Chrome `--app` window on a hostname and in a Chrome profile of
-its own, served by its host's server and, at work, linked to every other
+browser window: a Chrome `--app` window on a hostname of its own (on the Mac in
+your own Chrome's T3 profile, on Linux in a Chrome profile of its own), served by its host's server and, at work, linked to every other
 devserver's, so every window lists, searches (Cmd+K) and starts threads on every
 host. Only where its new threads start is per window (see "A window's
 project"). T3 Code's desktop app is one instance with one window (`t3 app PATH`
@@ -46,29 +46,32 @@ session behind a thread likewise runs on that host.
   tunnel that lacks it, as it does one that lacks its Omnigent forward.
 - `bin-macos/workspaces` gives each devserver workspace a `t3Url` on its host's
   port at a hostname of its own, `<origin>.t3.localhost`, and
-  `bin-macos/startup-windows` opens it as a Chrome `--app` window in a profile of
-  its own, `~/.t3-workspace-chrome/<name>`. The profile, read from the owning
-  browser's command line, is how the script tells the windows apart (they share
-  a title); the hostname keeps each window's cookies and localStorage its own.
+  `bin-macos/startup-windows` opens it as an `--app` window of your own Chrome,
+  in its T3 profile (`open -na "Google Chrome" --args --profile-directory=T3
+  --app=URL`). One Chrome instance holds them all: macOS hands a launch of
+  Google Chrome, a Dock click or a link to whichever instance runs, so the
+  instance per window this replaced (`~/.t3-workspace-chrome/<name>`, which
+  `startup-windows` now quits) took over your browsing whenever your own Chrome
+  was not running. The script tells the windows apart (they share a title) by
+  their origin, which `bin/t3-window-scope --list-windows` reads through
+  AppleScript; the hostname keeps each window's cookies and localStorage its
+  own. AppleScript runs page JavaScript only with View > Developer > Allow
+  JavaScript from Apple Events on in the T3 profile (it is per profile; leave
+  it off in your others).
 - A window `startup-windows` opens starts its new threads in its workspace's
   checkout and links every other devserver's server
-  (`bin/t3-window-scope PROFILE ORIGIN ~/checkoutN --link http://127.0.0.1:PORT LABEL`,
+  (`bin/t3-window-scope @chrome ORIGIN ~/checkoutN --link http://127.0.0.1:PORT LABEL`,
   the label the prefix of that host's nvs sessions, CCO or FTW): the Mac knows a
   checkout only by its place under the devserver's home, and `~/checkoutN` is
   the one live project whose root ends in `/checkoutN` on the window's own
-  server. A profile records the servers it is set up with by environment id
-  (`.t3-servers/ENVIRONMENT_ID`): its own once a window was paired and scoped,
-  the other once linked. A run reopens, paired, a found window whose profile is
-  not set up with its own server (a run that failed, a profile from the server
-  per checkout), and links a set-up window into a server it does not list yet in
+  server. `~/.local/state/t3-windows/<name>` records the servers a window's
+  origin is set up with by environment id (`.t3-servers/ENVIRONMENT_ID`): its
+  own once a window was paired and scoped, the other once linked. A run reopens,
+  paired, a found window whose origin is not set up with its own server (a run
+  that failed, an origin paired with an earlier server), and links a set-up window into a server it does not list yet in
   place (`--link-only`, which leaves its page). A server whose state was reset
   has a new id and is set up again. A window it
-  finds is left as it is. The DevTools port the helper needs is on the launch that starts
-  the profile's browser (`--no-startup-window --remote-debugging-port=0`): on
-  macOS a later `open -na ... --app=` hands its window to the running browser,
-  which ignores new flags, and a browser outlives its last window. So a profile
-  whose browser was started without the port warns instead of being scoped
-  until that browser is quit. A failure warns and the window stays.
+  finds is left as it is. A failure warns and the window stays.
 - Each shim creates sessions on its own host (`--host auto`) in the checkout.
 
 ## The Mac's own server: workspace 1
@@ -99,7 +102,7 @@ its tokens came from the session before; `startup-windows` drops tokens past
 180 s for its server to answer through the tunnel, and opens no window on a
 server that does not (approve Duo in the tunnel window and rerun). A window it creates opens on
 `/pair` with a token of its own host's, and links each other host with a token
-of that host's; a new profile waits up to 30 s for each, while a profile that
+of that host's; a new origin waits up to 30 s for each, while an origin that
 paired before (its session cookie lasts about 30 days) takes one only when one
 is there. A window it finds on an error page (opened before its tunnel was up)
 is replaced. A window that still asks to pair, or does not list another host's
@@ -115,9 +118,10 @@ To turn it on:
    `~/checkoutN` as a project and retires the old `t3@checkoutN` servers (their
    `~/.t3-workspaces/checkoutN` stays; delete it by hand once unneeded). Check
    with `systemctl --user list-units 't3@*'`.
-2. On the Mac, run `~/dotfiles/sync.sh` so `~/bin/t3-window-scope` exists, and
-   quit every T3 Code window from the old design (Cmd+Q in it: closing the
-   window leaves its browser running without a DevTools port).
+2. On the Mac, run `~/dotfiles/sync.sh` so `~/bin/t3-window-scope` exists.
+   The first `--profile-directory=T3` launch creates the T3 profile (Chrome
+   calls it "Your Chrome" until renamed in its profile menu); in a window of
+   it, turn on View > Developer > Allow JavaScript from Apple Events.
 3. Run `STARTUP_T3_WINDOWS=1 ~/bin/startup-windows`. It finds both tunnels
    without their new forward or token pool and restarts them (expect Duo), then
    opens each window, paired with both servers and scoped as it is created; that
@@ -183,7 +187,8 @@ T3 Code has two kinds of settings, kept two ways:
   the desktop app only while it is not running. Both `startup-windows` run it
   after their T3 Code windows are up; run `~/bin/t3-client-settings` to sync
   sooner. Two windows that changed one setting differently stop the sync until
-  `--prefer PROFILE` picks one.
+  `--prefer NAME` picks one (a Mac window's origin's first label, a Linux
+  window's profile directory name, or `desktop`).
 
 ## A window's project
 
