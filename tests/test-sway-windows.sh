@@ -711,11 +711,14 @@ case("the pairing page says when a link failed, and not while it is still connec
                                       "This pairing link is missing its backend host or token.",
                                       "Pair with this environment\nPairing token\nPaste a one-time token or pairing secret",
                                       "Pairing with this environment\nValidating the pairing link and preparing your session.")])
-case("links follow the workdir, each a URL and a label",
-     [("p", "o", "~/checkout1", [("http://127.0.0.1:23780", "FTW")]), None, None],
+case("links follow the workdir, each a URL and a label, or stand alone with --link-only",
+     [("p", "o", "~/checkout1", [("http://127.0.0.1:23780", "FTW")]), None, None,
+      ("p", "o", None, [("http://127.0.0.1:23780", "FTW")]), None],
      [scope.parsed_args(a) for a in (["p", "o", "~/checkout1", "--link", "http://127.0.0.1:23780/", "FTW"],
                                      ["p", "o", "~/checkout1", "--link", "http://127.0.0.1:23780"],
-                                     ["p", "o", "~/checkout1", "--link", "127.0.0.1:23780", "FTW"])])
+                                     ["p", "o", "~/checkout1", "--link", "127.0.0.1:23780", "FTW"],
+                                     ["p", "o", "--link-only", "--link", "http://127.0.0.1:23780", "FTW"],
+                                     ["p", "o", "--link-only"])])
 stale = socket.socket(); stale.bind(("127.0.0.1", 0)); stale_port = stale.getsockname()[1]; stale.close()
 os.makedirs(f"{tmp}/stale-profile", exist_ok=True)
 open(f"{tmp}/stale-profile/DevToolsActivePort", "w").write(f"{stale_port}\n/devtools/browser/x\n")

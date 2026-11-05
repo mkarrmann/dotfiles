@@ -188,7 +188,8 @@ T3_CHROME_DATA_ROOT="$HOME/.t3-workspace-chrome"
 T3_PAIRING_DIR="${T3_PAIRING_DIR:-$HOME/.local/state/t3-pairing}"
 T3_PAIRING_TOKEN_WAIT="${T3_PAIRING_TOKEN_WAIT:-30}"
 T3_PAIRING_TOKEN_MAX_AGE_MIN=660
-T3_SERVER_WAIT="${T3_SERVER_WAIT:-60}"
+# A tunnel this run just rebuilt waits on Duo, one host after the other.
+T3_SERVER_WAIT="${T3_SERVER_WAIT:-180}"
 t3_waited_hosts=""
 t3_unreachable_hosts=""
 T3_TITLE_PATTERN="^T3 Code"
@@ -898,6 +899,8 @@ t3_wait_for_server() {
   port="${url##*:}"
   port="${port%%/*}"
   deadline=$((SECONDS + T3_SERVER_WAIT))
+  curl -s --noproxy '*' -o /dev/null -m 2 "http://127.0.0.1:$port/" \
+    || echo "[T3] waiting up to ${T3_SERVER_WAIT}s for $host's T3 Code server (approve Duo in its tunnel window)..."
   until curl -s --noproxy '*' -o /dev/null -m 2 "http://127.0.0.1:$port/"; do
     if (( SECONDS >= deadline )); then
       echo "WARNING: [T3] $host's T3 Code server did not answer within ${T3_SERVER_WAIT}s" >&2
@@ -907,6 +910,12 @@ t3_wait_for_server() {
     sleep 0.5
   done
   t3_waited_hosts+=" $host"
+}
+
+# t3_url_port URL -> its port.
+t3_url_port() {
+  local port="${1##*:}"
+  printf '%s' "${port%%/*}"
 }
 
 # t3_environment_id URL -> the environment id of the T3 Code server at URL.
@@ -984,13 +993,63 @@ t3_profile_debuggable() {
     | grep -F -- "--remote-debugging-port=" >/dev/null
 }
 
+# A profile records the T3 Code servers it is set up with as files named by
+# their environment ids in PROFILE/$T3_SERVERS_DIR: its own host's once a window
+# of it was paired and scoped, each other host's once linked. A server whose
+# state was reset has a new id, and so does a server of an earlier design (a
+# server per checkout, on another port, whose session cookie this origin does
+# not get), so neither counts.
+T3_SERVERS_DIR=".t3-servers"
+
+# t3_set_up PROFILE ENVIRONMENT_ID -> whether PROFILE is set up with that server.
+t3_set_up() {
+  [[ -n "$2" && -e "$1/$T3_SERVERS_DIR/$2" ]]
+}
+
+# t3_mark_set_up PROFILE ENVIRONMENT_ID...
+t3_mark_set_up() {
+  local profile="$1" env
+  shift
+  mkdir -p "$profile/$T3_SERVERS_DIR"
+  for env; do
+    : > "$profile/$T3_SERVERS_DIR/$env"
+  done
+}
+
+# t3_collect_links WS PROFILE TITLE -- each other devserver's server the profile
+# has not linked yet, with a token of its own, in T3_LINK_ARGS (t3-window-scope's
+# --link arguments), T3_LINK_TOKENS and T3_LINK_ENVS.
+t3_collect_links() {
+  local ws="$1" profile="$2" title="$3" link_host link_url link_label link_env link_token
+  T3_LINK_ARGS=() T3_LINK_TOKENS=() T3_LINK_ENVS=()
+  while IFS=$'\t' read -r link_host link_url link_label; do
+    [[ -n "$link_host" ]] || continue
+    t3_wait_for_server "$link_host" "$link_url" || continue
+    link_env=$(t3_environment_id "$link_url")
+    if [[ -z "$link_env" ]]; then
+      echo "WARNING: [$title] $link_host's T3 Code server did not say which it is; not linked" >&2
+      ((failures++)) || true
+      continue
+    fi
+    ! t3_set_up "$profile" "$link_env" || continue
+    link_token=$(t3_take_pairing_token "$link_host" "$T3_PAIRING_TOKEN_WAIT")
+    if [[ -z "$link_token" ]]; then
+      echo "WARNING: [$title] no pairing token from $link_host; its threads are not listed here" >&2
+      ((failures++)) || true
+      continue
+    fi
+    T3_LINK_ARGS+=(--link "$link_url" "$link_label")
+    T3_LINK_TOKENS+=("$link_token")
+    T3_LINK_ENVS+=("$link_env")
+  done < <(t3_links "$ws")
+}
+
 # reconcile_t3_window WS TITLE -- find or open workspace WS's T3 Code window and
 # move it there. A window found is left as it is; a window this opens starts its
 # new threads in the workspace's checkout. Problems count in $failures.
 reconcile_t3_window() {
   local ws="$1" title="$2" row profile url host checkout workdir window_id token open_url created=false
-  local fresh_profile=false wait link_host link_url link_label link_env link_token scope_rc
-  local link_args=() link_tokens=() link_envs=()
+  local fresh_profile=false wait scope_rc own_env=""
   row=$(t3_workspace_window "$ws") || row=""
   if [[ -z "$row" ]]; then
     echo "WARNING: [$title] workspace $ws has no T3 Code server; skipping" >&2
@@ -1009,22 +1068,46 @@ reconcile_t3_window() {
     close_window_id "$window_id" "T3 Code error page" || true
     window_id=""
   fi
+  if t3_wait_for_server "$host" "$url"; then
+    own_env=$(t3_environment_id "http://127.0.0.1:$(t3_url_port "$url")")
+  fi
+  # A window of a profile not set up with its server (a run that failed to pair
+  # or scope it, a window that loaded only once its tunnel came up, a profile
+  # from an earlier server) sits on the pairing page or in no project; open it
+  # again, paired, once its server answers.
+  if [[ -n "$window_id" && -n "$own_env" ]] && ! t3_set_up "$profile" "$own_env"; then
+    close_window_id "$window_id" "T3 Code window not set up with its server" || true
+    window_id=""
+  fi
   if [[ -n "$window_id" ]]; then
     echo "[$title] assigning T3 Code window $window_id to workspace $ws..."
+    # Link servers it has not listed yet (the other host was down when it was
+    # set up, or a server's state was reset) in place, leaving its project.
+    if t3_set_up "$profile" "$own_env" && t3_profile_debuggable "$profile"; then
+      t3_collect_links "$ws" "$profile" "$title"
+      if [[ ${#T3_LINK_TOKENS[@]} -gt 0 ]]; then
+        if printf '%s\n' "${T3_LINK_TOKENS[@]}" \
+            | t3-window-scope "$profile" "${url%/}" --link-only "${T3_LINK_ARGS[@]}"; then
+          t3_mark_set_up "$profile" "${T3_LINK_ENVS[@]}"
+        else
+          echo "WARNING: [$title] could not link every other devserver's T3 Code server into window $window_id (see above)" >&2
+          ((failures++)) || true
+        fi
+      fi
+    fi
   else
     # A window opened on a server that does not answer lands on Chrome's error
     # page and cannot be paired or scoped; the next run opens it instead.
-    if ! t3_wait_for_server "$host" "$url"; then
+    if [[ -z "$own_env" ]]; then
       echo "WARNING: [$title] not opening a window on $host's T3 Code server; once its tunnel" >&2
       echo "         is up (approve Duo in its tunnel window) and t3@checkouts runs there, rerun" >&2
       ((failures++)) || true
       return 0
     fi
     echo "[$title] opening $url on workspace $ws..."
-    # A profile that has paired before keeps its session cookie, so only one
-    # never paired (no marker, written once a window of it was scoped) waits
-    # for a token.
-    [[ -e "$profile/.t3-paired" ]] || fresh_profile=true
+    # A profile set up with this server keeps its session cookie, so only one
+    # that is not waits for a token.
+    t3_set_up "$profile" "$own_env" || fresh_profile=true
     wait=0
     [[ "$fresh_profile" == false ]] || wait="$T3_PAIRING_TOKEN_WAIT"
     token=$(t3_take_pairing_token "$host" "$wait")
@@ -1072,39 +1155,12 @@ reconcile_t3_window() {
       echo "         in $workdir; quit that Chrome (Cmd+Q in the window) and rerun" >&2
       ((failures++)) || true
     else
-      # Each other devserver's server the profile has not linked yet, with a
-      # token of its own. A link that held leaves a marker in the profile named
-      # by the server's environment id, so a server whose state was reset, and
-      # so has a new id, is linked again.
-      while IFS=$'\t' read -r link_host link_url link_label; do
-        [[ -n "$link_host" ]] || continue
-        t3_wait_for_server "$link_host" "$link_url" || continue
-        link_env=$(t3_environment_id "$link_url")
-        if [[ -z "$link_env" ]]; then
-          echo "WARNING: [$title] $link_host's T3 Code server did not say which it is; not linked" >&2
-          ((failures++)) || true
-          continue
-        fi
-        [[ ! -e "$profile/.t3-linked/$link_env" ]] || continue
-        link_token=$(t3_take_pairing_token "$link_host" "$T3_PAIRING_TOKEN_WAIT")
-        if [[ -z "$link_token" ]]; then
-          echo "WARNING: [$title] no pairing token from $link_host; window $window_id does not list its threads" >&2
-          ((failures++)) || true
-          continue
-        fi
-        link_args+=(--link "$link_url" "$link_label")
-        link_tokens+=("$link_token")
-        link_envs+=("$link_env")
-      done < <(t3_links "$ws")
+      t3_collect_links "$ws" "$profile" "$title"
       scope_rc=0
-      { [[ ${#link_tokens[@]} -eq 0 ]] || printf '%s\n' "${link_tokens[@]}"; } \
-        | t3-window-scope "$profile" "${url%/}" "$workdir" ${link_args[@]+"${link_args[@]}"} || scope_rc=$?
+      { [[ ${#T3_LINK_TOKENS[@]} -eq 0 ]] || printf '%s\n' "${T3_LINK_TOKENS[@]}"; } \
+        | t3-window-scope "$profile" "${url%/}" "$workdir" ${T3_LINK_ARGS[@]+"${T3_LINK_ARGS[@]}"} || scope_rc=$?
       if [[ "$scope_rc" -eq 0 ]]; then
-        : > "$profile/.t3-paired"
-        mkdir -p "$profile/.t3-linked"
-        for link_env in ${link_envs[@]+"${link_envs[@]}"}; do
-          : > "$profile/.t3-linked/$link_env"
-        done
+        t3_mark_set_up "$profile" "$own_env" ${T3_LINK_ENVS[@]+"${T3_LINK_ENVS[@]}"}
       else
         echo "WARNING: [$title] could not start window $window_id's new threads in $workdir," >&2
         echo "         or link every other devserver's T3 Code server (see above)" >&2

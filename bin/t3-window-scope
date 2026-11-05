@@ -2,6 +2,7 @@
 """Start a T3 Code window's new threads in one project, with all projects in its sidebar.
 
 Usage: t3-window-scope PROFILE_DIR ORIGIN WORKDIR [--link URL LABEL]...
+       t3-window-scope PROFILE_DIR ORIGIN --link-only --link URL LABEL...
 
 PROFILE_DIR is the window's Chrome --user-data-dir, ORIGIN its page's origin
 (http://<name>.t3.localhost:<port>), WORKDIR a project on that server: its
@@ -20,6 +21,9 @@ link holds once the window's saved connections (IndexedDB
 t3code:connection-runtime, store catalog, key document) name URL's environment.
 A window that already has it is not paired again. URL must answer here, as the
 helper reads its environment id itself.
+
+--link-only links into a window that is already in use and leaves its project
+alone: the window goes back to the page it was on once the links are saved.
 
 T3 Code has no URL or setting that opens a window on a project. What it has,
 verified against 0.1.6, is client state in the page's localStorage, which is
@@ -414,10 +418,12 @@ def draft_project_id(devtools: DevTools) -> str | None:
     )
 
 
-def open_draft(devtools: DevTools, deadline: float) -> str:
+def open_draft(devtools: DevTools, origin: str, project_id: str, deadline: float) -> str:
     """chat.newLocal from a page with no project, retried until the app has
-    loaded both its shortcuts and its projects; the project of the draft it
-    opens.
+    loaded its shortcuts and its projects and opens a draft in PROJECT_ID; the
+    project of the last draft it opened. With linked servers the app can load
+    another server's projects first and open the draft there, so such a draft
+    is left for /new and the press repeated.
 
     The window need not have focus (the window manager gives it to one), and in
     testing a page without it once ignored every press for 30 s, so the page is
@@ -425,18 +431,61 @@ def open_draft(devtools: DevTools, deadline: float) -> str:
     devtools.call("Emulation.setFocusEmulationEnabled", {"enabled": True})
     key = new_local_key(devtools.evaluate("navigator.platform") or "")
 
+    opened: list[str] = []
+
     def attempt() -> str | None:
         press(devtools, key)
         settle = time.monotonic() + 1.5
         while time.monotonic() < settle:
-            project_id = draft_project_id(devtools)
-            if project_id is not None:
-                return project_id
+            draft = draft_project_id(devtools)
+            if draft == project_id:
+                return draft
+            if draft is not None:
+                opened.append(draft)
+                navigate(devtools, origin + NO_PROJECT_PATH, deadline)
+                return None
             time.sleep(POLL)
         press(devtools, ESCAPE_KEY)
         return None
 
-    return until(deadline, "a new-thread draft (chat.newLocal, mod+shift+n)", attempt)
+    try:
+        return until(deadline, "a new-thread draft (chat.newLocal, mod+shift+n)", attempt)
+    except ScopeError:
+        if opened:
+            return opened[-1]
+        raise
+
+
+def link_only(profile_dir: str, origin: str, links: list[tuple[str, str, str]]) -> dict[str, str]:
+    """Save LINKS in the window and return it to the page it was on; why each
+    link that failed did, by label."""
+    page = until(
+        time.monotonic() + WAIT,
+        f"a paired T3 Code page on {origin} in {profile_dir}'s DevTools (Chrome needs --remote-debugging-port)",
+        lambda: app_page(debug_targets(profile_dir) or [], origin),
+    )
+    try:
+        devtools = DevTools(page["webSocketDebuggerUrl"])
+    except OSError as exc:
+        raise ScopeError(f"cannot open {origin}'s page over DevTools ({exc})") from exc
+    back = page.get("url") or origin + "/"
+    failures: dict[str, str] = {}
+    try:
+        navigate(devtools, origin + DESCRIPTOR_PATH, time.monotonic() + WAIT)
+        for url, label, token in links:
+            try:
+                link(devtools, origin, url, label, token, time.monotonic() + WAIT)
+            except (ScopeError, OSError) as exc:
+                failures[label] = str(exc)
+    except OSError as exc:
+        raise ScopeError(f"{origin}: {exc}") from exc
+    finally:
+        try:
+            devtools.call("Page.navigate", {"url": back})
+        except OSError:
+            pass
+        devtools.close()
+    return failures
 
 
 def scope(
@@ -478,7 +527,7 @@ def scope(
         ui_state = scoped_ui_state(parsed_document(stored), environment_id, root)
         devtools.evaluate(f"localStorage.setItem({json.dumps(UI_STATE_KEY)}, {json.dumps(json.dumps(ui_state))})")
         navigate(devtools, origin + NO_PROJECT_PATH, deadline)
-        project_id = open_draft(devtools, deadline)
+        project_id = open_draft(devtools, origin, project["id"], deadline)
         left_app = False
         if project_id != project["id"]:
             raise ScopeError(f"chat.newLocal opened a draft in project {project_id}, not {project['id']} ({root})")
@@ -495,8 +544,14 @@ def scope(
         devtools.close()
 
 
-def parsed_args(argv: list[str]) -> tuple[str, str, str, list[tuple[str, str]]] | None:
-    if len(argv) < 3 or not valid_workdir(argv[2]):
+def parsed_args(argv: list[str]) -> tuple[str, str, str | None, list[tuple[str, str]]] | None:
+    """PROFILE, ORIGIN, WORKDIR (None for --link-only) and the links."""
+    if len(argv) < 3:
+        return None
+    workdir: str | None = argv[2]
+    if workdir == "--link-only":
+        workdir = None
+    elif not valid_workdir(workdir):
         return None
     rest = argv[3:]
     links: list[tuple[str, str]] = []
@@ -505,7 +560,9 @@ def parsed_args(argv: list[str]) -> tuple[str, str, str, list[tuple[str, str]]] 
             return None
         links.append((rest[1].rstrip("/"), rest[2]))
         rest = rest[3:]
-    return argv[0], argv[1], argv[2], links
+    if workdir is None and not links:
+        return None
+    return argv[0], argv[1], workdir, links
 
 
 def main(argv: list[str]) -> int:
@@ -519,6 +576,18 @@ def main(argv: list[str]) -> int:
         print("t3-window-scope: each --link needs its pairing token on a line of stdin", file=sys.stderr)
         return 2
     links = [(url, label, token) for (url, label), token in zip(link_targets, tokens)]
+    if workdir is None:
+        try:
+            failures = link_only(profile_dir, origin.rstrip("/"), links)
+        except ScopeError as exc:
+            print(f"t3-window-scope: {exc}", file=sys.stderr)
+            return 1
+        for failure in failures.values():
+            print(f"t3-window-scope: {origin}: {failure}", file=sys.stderr)
+        linked = [label for _, label, _ in links if label not in failures]
+        if linked:
+            print(f"t3-window-scope: {origin} lists {', '.join(linked)} too")
+        return 1 if failures else 0
     try:
         title, link_failures = scope(profile_dir, origin.rstrip("/"), workdir, links)
     except ScopeError as exc:

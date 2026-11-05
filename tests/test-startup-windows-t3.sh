@@ -24,7 +24,7 @@ extract_fn() {
   ' "$STARTUP"
 }
 for fn in t3_workspace_window t3_window_ids_for_profile t3_window_ids_json t3_profile_running t3_profile_debuggable \
-          t3_take_pairing_token t3_wait_for_server t3_environment_id t3_links t3_window_title reconcile_t3_window close_window_id window_exists \
+          t3_take_pairing_token t3_wait_for_server t3_environment_id t3_links t3_collect_links t3_set_up t3_mark_set_up t3_url_port t3_window_title reconcile_t3_window close_window_id window_exists \
           snapshot_windows; do
   body=$(extract_fn "$fn")
   [[ -n "$body" ]] || { echo "could not extract $fn" >&2; exit 1; }
@@ -33,6 +33,7 @@ done
 
 CHROME_APP="Google Chrome"
 T3_CHROME_DATA_ROOT="/Users/me/.t3-workspace-chrome"
+T3_SERVERS_DIR=".t3-servers"
 T3_PAIRING_TOKEN_MAX_AGE_MIN=660
 T3_PAIRING_TOKEN_WAIT=0
 T3_SERVER_WAIT=0
@@ -102,7 +103,7 @@ check "the server wait passes once the server answers" "0" \
 curl() { return 7; }
 t3_waited_hosts=""
 check "and fails, warning, when it does not" "1 1" \
-  "$({ t3_wait_for_server ftw.example.com http://ftw-checkout1.t3.localhost:23780/; echo $?; } 2>&1 | grep -c 'did not answer' | tr '\n' ' ')$(t3_wait_for_server ftw.example.com http://x:23780/ 2>/dev/null; echo $?)"
+  "$({ t3_wait_for_server ftw.example.com http://ftw-checkout1.t3.localhost:23780/; } 2>&1 | grep -c 'did not answer' | tr '\n' ' ')$(t3_wait_for_server ftw.example.com http://x:23780/ >/dev/null 2>&1; echo $?)"
 curl() { return 0; }
 
 # startup-windows runs under set -euo pipefail and assigns the result directly;
@@ -142,7 +143,14 @@ sim_reset() {
   mkdir -p "$T3_PAIRING_DIR/cco.example.com" "$T3_PAIRING_DIR/ftw.example.com"
   t3_waited_hosts=""; t3_unreachable_hosts=""; failures=0; SCOPE_FAILS=""
   FTW_ENV=env-ftw-1
-  curl() { [[ "$*" != *"/.well-known/t3/environment"* ]] || echo "{\"environmentId\": \"$FTW_ENV\"}"; }
+  curl() { sim_curl "$@"; }
+}
+sim_curl() { # both servers answer, FTW's as $FTW_ENV, CCO's as env-cco-1
+  [[ "$*" == *"/.well-known/t3/environment"* ]] || return 0
+  case "$*" in
+    *:23780*) echo "{\"environmentId\": \"$FTW_ENV\"}" ;;
+    *) echo '{"environmentId": "env-cco-1"}' ;;
+  esac
 }
 pool() { # HOST TOKEN -- pool a token as nvs-tunnels does
   printf '%s\n' "$2" > "$(mktemp "$T3_PAIRING_DIR/$1/token.XXXXXX")"
@@ -196,7 +204,8 @@ ps() {
     awk -F'\t' -v pid="${@: -1}" '$1 == pid { print $2 }' "$SIM/browsers"
   fi
 }
-# Records its arguments and the tokens it read for its links, "ARGS | TOKENS".
+# Records its arguments and the tokens it read for its links, "ARGS | TOKENS";
+# with --link-only it needs only a DevTools port, as the real one.
 t3-window-scope() {
   local pid tokens
   tokens=$(tr '\n' ' ' | sed 's/ $//')
@@ -228,8 +237,8 @@ check "the window starts its new threads in its checkout and links FTW's server 
   "$LINKED3" "$(cat "$SIM/scoped")"
 check "with no warning" "0" "$failures"
 check "both tokens are used up" "0 0" "$(pooled cco.example.com) $(pooled ftw.example.com)"
-check "the profile remembers the link, by the FTW server's environment" "yes" "$([[ -e "$P3/.t3-linked/env-ftw-1" ]] && echo yes || echo no)"
-check "and that it paired" "yes" "$([[ -e "$P3/.t3-paired" ]] && echo yes || echo no)"
+check "the profile records both servers it is set up with, by environment" "env-cco-1 env-ftw-1" \
+  "$(ls "$P3/.t3-servers" | tr '\n' ' ' | sed 's/ $//')"
 
 aerospace move-node-to-workspace --window-id 102 Z
 : > "$SIM/scoped"
@@ -263,15 +272,48 @@ pool cco.example.com TOKEN3
 reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
 check "with no FTW token the window is still opened and scoped, without the link" "$SCOPE3 | " "$(cat "$SIM/scoped")"
 check "which warns once, and is not remembered as linked" "1 1 no" \
-  "$failures $(grep -c 'no pairing token from ftw.example.com' "$SIM/out") $([[ -e "$P3/.t3-linked/env-ftw-1" ]] && echo yes || echo no)"
+  "$failures $(grep -c 'no pairing token from ftw.example.com' "$SIM/out") $([[ -e "$P3/.t3-servers/env-ftw-1" ]] && echo yes || echo no)"
 
 sim_reset
 pool cco.example.com TOKEN3
 pool ftw.example.com FTWTOKEN
-curl() { [[ "$*" != *":23780"* ]] || return 7; [[ "$*" != *"/.well-known/t3/environment"* ]] || echo '{"environmentId": "env-ftw-1"}'; }
+curl() { [[ "$*" != *":23780"* ]] || return 7; sim_curl "$@"; }
 reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
 check "an FTW server that does not answer is not linked, and its token is kept" "$SCOPE3 | 1" \
   "$(cat "$SIM/scoped")$(pooled ftw.example.com)"
+
+sim_reset
+pool cco.example.com TOKEN3
+pool ftw.example.com FTWTOKEN
+pid=$(sim_start_browser "$P3" --user-data-dir="$P3" --no-startup-window --remote-debugging-port=0)
+sim_window "$pid" "T3 Code" "http://cco-checkout3.t3.localhost:13780/pair"
+reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
+check "a found window of a profile never set up is opened again, paired, linked and scoped" \
+  "103 6 http://cco-checkout3.t3.localhost:13780/pair#token=TOKEN3|$LINKED3" \
+  "$(windows_of "$P3")|$(cat "$SIM/scoped")"
+
+sim_reset
+pool cco.example.com TOKEN3
+pool ftw.example.com FTWTOKEN
+pid=$(sim_start_browser "$P3" --user-data-dir="$P3" --no-startup-window --remote-debugging-port=0)
+sim_window "$pid" "T3 Code" "http://cco-checkout3.t3.localhost:13780/pair"
+mkdir -p "$P3/.t3-servers"; : > "$P3/.t3-paired"; : > "$P3/.t3-servers/env-of-an-old-server"
+reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
+check "a window whose profile was set up only with another server (an old one) is opened again, paired" \
+  "103 6 http://cco-checkout3.t3.localhost:13780/pair#token=TOKEN3" "$(windows_of "$P3")"
+
+sim_reset
+pid=$(sim_start_browser "$P3" --user-data-dir="$P3" --no-startup-window --remote-debugging-port=0)
+sim_window "$pid" "T3 Code" "http://cco-checkout3.t3.localhost:13780/draft/1"
+mkdir -p "$P3/.t3-servers"; : > "$P3/.t3-servers/env-cco-1"
+pool ftw.example.com FTWTOKEN
+reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
+check "a set-up window FTW is not linked into yet is kept and linked in place, its project left alone" \
+  "102 6 http://cco-checkout3.t3.localhost:13780/draft/1|$P3 http://cco-checkout3.t3.localhost:13780 --link-only --link http://127.0.0.1:23780 FTW | FTWTOKEN|yes" \
+  "$(windows_of "$P3")|$(cat "$SIM/scoped")|$([[ -e "$P3/.t3-servers/env-ftw-1" ]] && echo yes || echo no)"
+: > "$SIM/scoped"
+reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
+check "and not again" "" "$(cat "$SIM/scoped")"
 
 sim_reset
 pool ftw.example.com FTWTOKEN

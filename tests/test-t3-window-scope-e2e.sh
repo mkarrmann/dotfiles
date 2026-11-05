@@ -136,6 +136,37 @@ sed 's/^/    /' "$TMP/refused.out"
 check "fails, naming the link" "1 yes" "$rc $(grep -q 'could not save third' "$TMP/refused.out" && echo yes || echo no)"
 check "but still scopes the window" "yes" "$(grep -q 'starts its new threads in' "$TMP/refused.out" && echo yes || echo no)"
 
+echo "== --link-only links a window in use and leaves it where it was =="
+where() {
+  python3 - "$ROOT/bin/t3-window-scope" "$PROFILE" "$ORIGIN" "$PORT_C" <<'PY'
+import importlib.machinery, importlib.util, json, sys, time
+loader = importlib.machinery.SourceFileLoader("t3_window_scope", sys.argv[1])
+scope = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(scope)
+profile, origin, port_c = sys.argv[2:5]
+page = None
+for _ in range(40):
+    page = scope.app_page(scope.debug_targets(profile) or [], origin)
+    if page and "/draft/" in page["url"]:
+        break
+    time.sleep(0.5)
+devtools = scope.DevTools(page["webSocketDebuggerUrl"])
+print(json.dumps({"url": page["url"], "linked": scope.environment_id(f"http://127.0.0.1:{port_c}") in scope.saved_environment_ids(devtools)}))
+PY
+}
+before=$(where)
+rc=0
+token c | python3 "$ROOT/bin/t3-window-scope" "$PROFILE" "$ORIGIN" --link-only \
+  --link "http://127.0.0.1:$PORT_C" third >"$TMP/linkonly.out" 2>&1 || rc=$?
+sed 's/^/    /' "$TMP/linkonly.out"
+after=$(where)
+echo "    before $before"
+echo "    after  $after"
+check "links the third server" "0 True" "$rc $(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["linked"])' "$after")"
+check "and the window is back on its draft" \
+  "$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["url"])' "$before")" \
+  "$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["url"])' "$after")"
+
 if [[ "$failed_checks" -gt 0 ]]; then
   echo "$failed_checks check(s) failed" >&2
   exit 1

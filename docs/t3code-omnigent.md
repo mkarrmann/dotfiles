@@ -54,9 +54,13 @@ session behind a thread likewise runs on that host.
   the label the prefix of that host's nvs sessions, CCO or FTW): the Mac knows a
   checkout only by its place under the devserver's home, and `~/checkoutN` is
   the one live project whose root ends in `/checkoutN` on the window's own
-  server. A link that held is remembered in the profile by the linked server's
-  environment id (`.t3-linked/ENVIRONMENT_ID`), so a reopened window is not
-  linked again, while a server whose state was reset, and so has a new id, is. A window it
+  server. A profile records the servers it is set up with by environment id
+  (`.t3-servers/ENVIRONMENT_ID`): its own once a window was paired and scoped,
+  the other once linked. A run reopens, paired, a found window whose profile is
+  not set up with its own server (a run that failed, a profile from the server
+  per checkout), and links a set-up window into a server it does not list yet in
+  place (`--link-only`, which leaves its page). A server whose state was reset
+  has a new id and is set up again. A window it
   finds is left as it is. The DevTools port the helper needs is on the launch that starts
   the profile's browser (`--no-startup-window --remote-debugging-port=0`): on
   macOS a later `open -na ... --app=` hands its window to the running browser,
@@ -77,7 +81,7 @@ running), twice the Mac's devserver windows so reopened windows have some too.
 shown in the tunnel window), and empties that pool when a session starts, as
 its tokens came from the session before; `startup-windows` drops tokens past
 11 hours. Before a host's first window or link `startup-windows` waits up to
-60 s for its server to answer through the tunnel, and opens no window on a
+180 s for its server to answer through the tunnel, and opens no window on a
 server that does not (approve Duo in the tunnel window and rerun). A window it creates opens on
 `/pair` with a token of its own host's, and links each other host with a token
 of that host's; a new profile waits up to 30 s for each, while a profile that
