@@ -92,7 +92,7 @@ scope = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.n
 loader.exec_module(scope)
 profile, origin, port_a, port_b = sys.argv[2:6]
 page = scope.app_page(scope.debug_targets(profile) or [], origin)
-devtools = scope.DevTools(page["webSocketDebuggerUrl"])
+devtools = scope.DevToolsPage(page["webSocketDebuggerUrl"])
 projects_a = scope.fetch_json(devtools, scope.PROJECTS_PATH)["projects"]
 checkout1_a = scope.project_for(projects_a, "~/checkout1")["id"]
 saved = scope.saved_environment_ids(devtools)
@@ -150,7 +150,7 @@ for _ in range(40):
     if page and "/draft/" in page["url"]:
         break
     time.sleep(0.5)
-devtools = scope.DevTools(page["webSocketDebuggerUrl"])
+devtools = scope.DevToolsPage(page["webSocketDebuggerUrl"])
 print(json.dumps({"url": page["url"], "linked": scope.environment_id(f"http://127.0.0.1:{port_c}") in scope.saved_environment_ids(devtools)}))
 PY
 }

@@ -1,10 +1,24 @@
 #!/usr/bin/env python3
 """Start a T3 Code window's new threads in one project, with all projects in its sidebar.
 
-Usage: t3-window-scope PROFILE_DIR ORIGIN WORKDIR [--link URL LABEL]...
-       t3-window-scope PROFILE_DIR ORIGIN --link-only --link URL LABEL...
+Usage: t3-window-scope PROFILE_DIR|@chrome ORIGIN WORKDIR [--link URL LABEL]...
+       t3-window-scope PROFILE_DIR|@chrome ORIGIN --link-only --link URL LABEL...
+       t3-window-scope --list-windows
 
-PROFILE_DIR is the window's Chrome --user-data-dir, ORIGIN its page's origin
+PROFILE_DIR is the window's Chrome --user-data-dir, reached over the DevTools
+port that Chrome was started with (bin-linux/startup-windows). @chrome is the
+user's own Chrome on macOS, whose app window on ORIGIN is reached through
+AppleScript instead (bin-macos/startup-windows): one Chrome instance holds every
+workspace window, in its T3 profile, because macOS hands a launch of "Google
+Chrome", a Dock click or a link from another app to whichever instance of it
+runs, and a second instance there takes the user's own browsing. Chrome refuses
+remote debugging of its default data directory, and AppleScript's `execute
+javascript` needs "Allow JavaScript from Apple Events" (View > Developer) on in
+that profile. --list-windows prints "AEROSPACE_WINDOW_ID ORIGIN" for each of
+those windows: the page titles are set to unique tags for a moment and found in
+AeroSpace's window list, as nothing else ties a Chrome window to AeroSpace's (a
+window on Chrome's error page cannot run script, and is matched by its title,
+the page's host). ORIGIN is the window's page's origin
 (http://<name>.t3.localhost:<port>), WORKDIR a project on that server: its
 absolute path, or ~/REL for the one live project whose root ends in /REL.
 bin-linux/startup-windows (an absolute path) and bin-macos/startup-windows
@@ -103,6 +117,51 @@ SOCKET_TIMEOUT = 10.0
 POLL = 0.25
 
 T = TypeVar("T")
+CHROME_BINARY = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+OWN_CHROME = "@chrome"
+T3_HOST_SUFFIX = ".t3.localhost"
+APPLE_EVENTS_OFF = "Allow JavaScript from Apple Events"
+OSASCRIPT_TIMEOUT = 30.0
+# One JXA program for every AppleScript call: OP and its arguments come in argv
+# and the answer goes out as JSON, so nothing is ever spliced into script text.
+_JXA = r"""
+function run(argv) {
+  const chrome = Application(Number(argv[0]));
+  const op = argv[1];
+  // JXA has no URL class.
+  const t3 = u => { const m = /^[a-z]+:\/\/([^/:?#]+)/i.exec(u || ""); return !!m && m[1].endsWith(argv[2]); };
+  if (op === "find") {
+    for (const w of chrome.windows()) {
+      try { const u = w.activeTab().url(); if (u === argv[2] || u.startsWith(argv[2] + "/")) return JSON.stringify({id: w.id(), url: u}); } catch (e) {}
+    }
+    return "null";
+  }
+  if (op === "tag" || op === "untag") {
+    const out = [];
+    chrome.windows().forEach((w, i) => {
+      let tab, u;
+      try { tab = w.activeTab(); u = tab.url(); } catch (e) { return; }
+      if (!t3(u)) return;
+      const tag = argv[3] + "-" + i;
+      let tagged = false;
+      try {
+        tab.execute({javascript: op === "tag"
+          ? "window.__t3wsTitle = document.title; document.title = " + JSON.stringify(tag) + "; 1"
+          : "if (window.__t3wsTitle !== undefined) { document.title = window.__t3wsTitle; delete window.__t3wsTitle; } 1"});
+        tagged = true;
+      } catch (e) {}
+      out.push({id: w.id(), url: u, tag: tagged ? tag : null, title: tab.title()});
+    });
+    return JSON.stringify(out);
+  }
+  const w = chrome.windows.byId(Number(argv[2]));
+  if (op === "url") return JSON.stringify(w.activeTab().url());
+  if (op === "go") { w.activeTab().url = argv[3]; return "null"; }
+  if (op === "js") return JSON.stringify(w.activeTab().execute({javascript: argv[3]}));
+  if (op === "close") { w.close(); return "null"; }
+  throw new Error("unknown op " + op);
+}
+"""
 # The DevTools port is loopback, so never through a proxy: on the Mac
 # x2pagentd puts HTTP_PROXY in the environment startup-windows runs in.
 LOOPBACK = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -328,16 +387,187 @@ class DevTools:
         return (result.get("result") or {}).get("value")
 
 
+class DevToolsPage(DevTools):
+    """A page reached over its browser's DevTools port."""
+
+    def navigate(self, url: str) -> None:
+        self.call("Page.navigate", {"url": url})
+
+    def press(self, key: dict[str, Any]) -> None:
+        for kind in ("rawKeyDown", "keyUp"):
+            self.call(
+                "Input.dispatchKeyEvent",
+                {"type": kind, "nativeVirtualKeyCode": key["windowsVirtualKeyCode"], **key},
+            )
+
+    def focus(self) -> None:
+        # The window need not have focus (the window manager gives it to one),
+        # and in testing a page without it once ignored every press for 30 s.
+        self.call("Emulation.setFocusEmulationEnabled", {"enabled": True})
+
+
+def own_chrome_pid() -> int:
+    """The user's own Chrome: the instance on its default data directory."""
+    import subprocess
+
+    listing = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True).stdout
+    for line in listing.splitlines():
+        pid, _, command = line.strip().partition(" ")
+        if command.startswith(CHROME_BINARY) and "--user-data-dir" not in command and "--type=" not in command:
+            return int(pid)
+    raise OSError("your Chrome is not running")
+
+
+def jxa(pid: int, *args: str) -> Any:
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["osascript", "-l", "JavaScript", "-e", _JXA, str(pid), *args],
+            capture_output=True, text=True, timeout=OSASCRIPT_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise OSError("AppleScript to Chrome timed out") from exc
+    if result.returncode != 0:
+        message = result.stderr.strip()
+        if APPLE_EVENTS_OFF in message:
+            raise OSError(
+                "Chrome runs no JavaScript from AppleScript: turn on View > Developer > "
+                "Allow JavaScript from Apple Events in a window of its T3 profile"
+            )
+        raise OSError(f"AppleScript to Chrome failed: {message[-300:]}")
+    return json.loads(result.stdout or "null")
+
+
+class ChromeWindowPage:
+    """A page in an app window of the user's own Chrome, through AppleScript.
+
+    Runs only expressions, as `execute javascript` returns the value of the
+    last one; a promise is settled into a window property and polled."""
+
+    def __init__(self, pid: int, window_id: int) -> None:
+        self.pid, self.window_id = pid, window_id
+        self._next = 0
+
+    def _js(self, code: str) -> Any:
+        raw = jxa(self.pid, "js", str(self.window_id), code)
+        return json.loads(raw) if isinstance(raw, str) else raw
+
+    def evaluate(self, expression: str, await_promise: bool = False) -> Any:
+        if not await_promise:
+            return self._js(f"JSON.stringify((() => {{ const v = ({expression}); return v === undefined ? null : v; }})())")
+        self._next += 1
+        slot = json.dumps(f"__t3ws{os.getpid()}_{self._next}")
+        self._js(
+            f"(window[{slot}] = undefined, Promise.resolve().then(() => ({expression})).then("
+            f"v => {{ window[{slot}] = JSON.stringify({{ok: v === undefined ? null : v}}); }},"
+            f" e => {{ window[{slot}] = JSON.stringify({{error: String((e && e.message) || e)}}); }}), null)"
+        )
+        deadline = time.monotonic() + SOCKET_TIMEOUT
+        while time.monotonic() < deadline:
+            settled = self._js(f"(() => {{ const v = window[{slot}]; if (v !== undefined) delete window[{slot}]; return v === undefined ? null : v; }})()")
+            if settled is not None:
+                outcome = settled  # _js has already decoded the page's JSON
+                if "error" in outcome:
+                    raise OSError(f"page threw {outcome['error']}")
+                return outcome["ok"]
+            time.sleep(0.1)
+        raise OSError("the page did not settle its promise")
+
+    def navigate(self, url: str) -> None:
+        jxa(self.pid, "go", str(self.window_id), url)
+
+    def press(self, key: dict[str, Any]) -> None:
+        modifiers = key.get("modifiers", 0)
+        init = {
+            "key": key["key"], "code": key["code"], "bubbles": True, "cancelable": True,
+            "ctrlKey": bool(modifiers & CTRL), "metaKey": bool(modifiers & META), "shiftKey": bool(modifiers & SHIFT),
+        }
+        self.evaluate(
+            "(document.hasFocus = () => true,"
+            f" [window, document].forEach(t => t.dispatchEvent(new KeyboardEvent('keydown', {json.dumps(init)}))), null)"
+        )
+
+    def focus(self) -> None:
+        pass  # press() tells the page it has focus, after each navigation too
+
+    def close(self) -> None:
+        pass
+
+
+def chrome_page(origin: str) -> tuple[ChromeWindowPage, str] | None:
+    """The user's Chrome's app window on ORIGIN, once past pairing, and its URL."""
+    pid = own_chrome_pid()
+    found = jxa(pid, "find", origin)
+    if not found or urllib.parse.urlsplit(found["url"]).path.startswith(PAIR_PATH):
+        return None
+    return ChromeWindowPage(pid, int(found["id"])), found["url"]
+
+
+def open_page(profile_dir: str, origin: str, deadline: float) -> tuple[Any, str]:
+    """ORIGIN's page in the window PROFILE_DIR names, and the URL it is on."""
+    if profile_dir == OWN_CHROME:
+        return until(deadline, f"a paired T3 Code window on {origin} in your Chrome", lambda: chrome_page(origin))
+    page = until(
+        deadline,
+        f"a paired T3 Code page on {origin} in {profile_dir}'s DevTools (Chrome needs --remote-debugging-port)",
+        lambda: app_page(debug_targets(profile_dir) or [], origin),
+    )
+    try:
+        return DevToolsPage(page["webSocketDebuggerUrl"]), page.get("url") or origin + "/"
+    except OSError as exc:
+        raise ScopeError(f"cannot open {origin}'s page over DevTools ({exc})") from exc
+
+
+def list_windows() -> list[tuple[int, str]]:
+    """(AeroSpace window id, origin) of each T3 Code window in the user's Chrome."""
+    import subprocess
+
+    pid = own_chrome_pid()
+    tag = f"t3ws{os.getpid()}"
+    windows = jxa(pid, "tag", T3_HOST_SUFFIX, tag) or []
+    try:
+        found: dict[int, int] = {}
+        deadline = time.monotonic() + 3
+        while True:
+            listing = json.loads(
+                subprocess.run(
+                    ["aerospace", "list-windows", "--all", "--json"], capture_output=True, text=True
+                ).stdout or "[]"
+            )
+            for n, window in enumerate(windows):
+                host = urllib.parse.urlsplit(window["url"]).hostname or ""
+                for entry in listing:
+                    title = entry.get("window-title") or ""
+                    if entry.get("app-name") != "Google Chrome" or entry["window-id"] in found.values():
+                        continue
+                    if (window["tag"] and window["tag"] in title) or (not window["tag"] and host and host in title):
+                        found[n] = entry["window-id"]
+                        break
+            if len(found) == len(windows) or time.monotonic() >= deadline:
+                break
+            time.sleep(0.2)
+    finally:
+        if any(window["tag"] for window in windows):
+            jxa(pid, "untag", T3_HOST_SUFFIX, tag)
+    result = []
+    for n, window in enumerate(windows):
+        if n in found:
+            parts = urllib.parse.urlsplit(window["url"])
+            result.append((found[n], f"{parts.scheme}://{parts.netloc}"))
+    return result
+
+
 # --- the steps ----------------------------------------------------------------
 
 
-def navigate(devtools: DevTools, url: str, deadline: float) -> None:
-    """Page.navigate to URL until the page has loaded there. Right after pairing
-    the app's own redirect can replace the navigation, so it is sent again."""
+def navigate(devtools: Any, url: str, deadline: float) -> None:
+    """Navigate to URL until the page has loaded there. Right after pairing the
+    app's own redirect can replace the navigation, so it is sent again."""
     path = urllib.parse.urlsplit(url).path
 
     def attempt() -> bool | None:
-        devtools.call("Page.navigate", {"url": url})
+        devtools.navigate(url)
         settle = min(deadline, time.monotonic() + NAVIGATE_RETRY)
         while time.monotonic() < settle:
             if devtools.evaluate("[location.pathname, document.readyState]") == [path, "complete"]:
@@ -357,12 +587,8 @@ def fetch_json(devtools: DevTools, path: str):
     )
 
 
-def press(devtools: DevTools, key: dict[str, Any]) -> None:
-    for kind in ("rawKeyDown", "keyUp"):
-        devtools.call(
-            "Input.dispatchKeyEvent",
-            {"type": kind, "nativeVirtualKeyCode": key["windowsVirtualKeyCode"], **key},
-        )
+def press(devtools: Any, key: dict[str, Any]) -> None:
+    devtools.press(key)
 
 
 def saved_environment_ids(devtools: DevTools) -> list[str]:
@@ -393,7 +619,7 @@ def link(devtools: DevTools, origin: str, url: str, label: str, token: str, dead
         raise ScopeError(f"could not save {label}: {url} does not answer as a T3 Code server ({exc})") from exc
     if wanted in saved_environment_ids(devtools):
         return
-    devtools.call("Page.navigate", {"url": pairing_link(origin, url, label, token)})
+    devtools.navigate(pairing_link(origin, url, label, token))
 
     def verdict() -> bool | None:
         if wanted in saved_environment_ids(devtools):
@@ -425,10 +651,8 @@ def open_draft(devtools: DevTools, origin: str, project_id: str, deadline: float
     another server's projects first and open the draft there, so such a draft
     is left for /new and the press repeated.
 
-    The window need not have focus (the window manager gives it to one), and in
-    testing a page without it once ignored every press for 30 s, so the page is
-    told it has focus for as long as this session lasts."""
-    devtools.call("Emulation.setFocusEmulationEnabled", {"enabled": True})
+    The window need not have focus, so the page is told it has (DevToolsPage.focus)."""
+    devtools.focus()
     key = new_local_key(devtools.evaluate("navigator.platform") or "")
 
     opened: list[str] = []
@@ -459,16 +683,7 @@ def open_draft(devtools: DevTools, origin: str, project_id: str, deadline: float
 def link_only(profile_dir: str, origin: str, links: list[tuple[str, str, str]]) -> dict[str, str]:
     """Save LINKS in the window and return it to the page it was on; why each
     link that failed did, by label."""
-    page = until(
-        time.monotonic() + WAIT,
-        f"a paired T3 Code page on {origin} in {profile_dir}'s DevTools (Chrome needs --remote-debugging-port)",
-        lambda: app_page(debug_targets(profile_dir) or [], origin),
-    )
-    try:
-        devtools = DevTools(page["webSocketDebuggerUrl"])
-    except OSError as exc:
-        raise ScopeError(f"cannot open {origin}'s page over DevTools ({exc})") from exc
-    back = page.get("url") or origin + "/"
+    devtools, back = open_page(profile_dir, origin, time.monotonic() + WAIT)
     failures: dict[str, str] = {}
     try:
         navigate(devtools, origin + DESCRIPTOR_PATH, time.monotonic() + WAIT)
@@ -481,7 +696,7 @@ def link_only(profile_dir: str, origin: str, links: list[tuple[str, str, str]]) 
         raise ScopeError(f"{origin}: {exc}") from exc
     finally:
         try:
-            devtools.call("Page.navigate", {"url": back})
+            devtools.navigate(back)
         except OSError:
             pass
         devtools.close()
@@ -494,15 +709,7 @@ def scope(
     """The title of WORKDIR's project, and why each link that failed did, by
     label; ScopeError when the window could not be scoped."""
     started = time.monotonic()
-    page = until(
-        started + WAIT,
-        f"a paired T3 Code page on {origin} in {profile_dir}'s DevTools (Chrome needs --remote-debugging-port)",
-        lambda: app_page(debug_targets(profile_dir) or [], origin),
-    )
-    try:
-        devtools = DevTools(page["webSocketDebuggerUrl"])
-    except OSError as exc:
-        raise ScopeError(f"cannot open {origin}'s page over DevTools ({exc})") from exc
+    devtools, _ = open_page(profile_dir, origin, started + WAIT)
     left_app = True
     link_failures: dict[str, str] = {}
     try:
@@ -538,7 +745,7 @@ def scope(
         if left_app:
             # Back to the app, wherever this stopped, so the window stays usable.
             try:
-                devtools.call("Page.navigate", {"url": origin + "/"})
+                devtools.navigate(origin + "/")
             except OSError:
                 pass
         devtools.close()
@@ -566,6 +773,14 @@ def parsed_args(argv: list[str]) -> tuple[str, str, str | None, list[tuple[str, 
 
 
 def main(argv: list[str]) -> int:
+    if argv == ["--list-windows"]:
+        try:
+            for window_id, origin in list_windows():
+                print(f"{window_id} {origin}")
+        except (OSError, ValueError) as exc:
+            print(f"t3-window-scope: {exc}", file=sys.stderr)
+            return 1
+        return 0
     args = parsed_args(argv)
     if args is None:
         print(__doc__.split("\n\n")[1], file=sys.stderr)
