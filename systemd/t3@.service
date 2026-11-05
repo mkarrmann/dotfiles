@@ -5,7 +5,7 @@
 # workdirs. Each workspace's browser window on it (bin-macos/startup-windows,
 # bin-linux/startup-windows) starts its new threads in its own project and
 # lists every project. bin/t3-workspace-serve resolves the port from it. Its
-# providers drive Omnigent sessions through bin/omnigent-acp.
+# provider drives Omnigent sessions through bin/omnigent-opencode.
 # bin/t3-ensure, run by init.sh, `enable --now`s the instance and never
 # restarts a running one; after `t3 update`, restart it to pick up the new
 # version.
@@ -29,8 +29,8 @@ Type=simple
 # (apps/server/src/os-jank.ts), but when that probe fails or takes over 5s the
 # server keeps the user manager's PATH, which has no ~/.local/bin on the
 # desktop (verified 2026-11-03: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin).
-# bin/omnigent-acp runs under `#!/usr/bin/env -S uv run` with uv in
-# ~/.local/bin, so every Omnigent provider would then exit 127.
+# The Omnigent provider is found by bare name on this PATH (bin/omnigent-opencode
+# through ~/bin), as is the t3 CLI in ~/.local/bin.
 Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 ExecStart=%h/dotfiles/bin/t3-workspace-serve %i
 Restart=on-failure

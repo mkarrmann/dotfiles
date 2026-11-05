@@ -5,11 +5,11 @@
   sessions (this Mac is an Omnigent host) whose project is ~/dotfiles, on
   127.0.0.1:T3_PORT. Workspace 1's T3 Code window is served by it, and every
   other workspace window links it (bin-macos/startup-windows). bin/t3-ensure
-  registers its Omnigent providers and adds its project; see
+  registers its Omnigent provider and adds its project; see
   docs/t3code-omnigent.md.
 
   KeepAlive: t3 serve is a long-running daemon. PATH carries ~/.local/bin, where
-  t3 and the uv that runs bin/omnigent-acp live.
+  t3 lives, and ~/bin, where the Omnigent provider (bin/omnigent-opencode) is.
 
   Activation is automatic via ~/dotfiles/sync.sh.
 

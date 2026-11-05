@@ -2,8 +2,11 @@
 
 T3 Code is a UI over the Omnigent sessions on the hub candidates. Omnigent still
 owns every session: harness, TUI, policies, watcher wakeups, the Google Chat
-bridge. T3 Code reaches it through `bin/omnigent-acp`, an ACP agent registered
-as T3 Code's "Local command" ACP provider.
+bridge. T3 Code reaches it through `bin/omnigent-opencode`
+(`services/omnigent-opencode`), an OpenCode 2 server whose sessions are
+Omnigent sessions, registered as T3 Code's OpenCode provider "Omnigent". Each
+Omnigent agent (`claude-native-ui`, `codex-native-ui`) is a model group in it.
+See "The provider" below, and the service's README for its design.
 
 ## One server per host, every window on all of them
 
@@ -26,13 +29,13 @@ session behind a thread likewise runs on that host.
 ## Work: devservers and the Mac
 
 - `bin/t3-ensure` (run by `init.sh` on the candidates) installs the `t3` CLI,
-  registers the "Omnigent · Claude" (`claude-native-ui`) and "Omnigent · Codex"
-  (`codex-native-ui`) providers in the shared settings (see "Settings in the
-  dotfiles"), to which it links `~/.t3-workspaces/checkouts`', turns off T3
+  registers the "Omnigent" provider in the shared settings (see "Settings in the
+  dotfiles"), to which it links `~/.t3-workspaces/checkouts`', removes the
+  ACP providers `bin/omnigent-acp` used to be, turns off T3
   Code's built-in Codex and Claude (they bypass Omnigent; re-enabling one in
   Settings sticks), adds every `~/checkoutN` as a project, named after its host
-  (`checkout1 · cco`, so the windows can tell CCO's from FTW's), warms uv's cache for
-  the shim, and enables `t3@checkouts` (`systemd/t3@.service`,
+  (`checkout1 · cco`, so the windows can tell CCO's from FTW's), installs the
+  provider's runtime (`uv sync` of `services/omnigent-opencode`), and enables `t3@checkouts` (`systemd/t3@.service`,
   `bin/t3-workspace-serve`) once. It also retires the server per checkout this
   replaced: every enabled `t3@checkoutN` is disabled and stopped, and its state
   in `~/.t3-workspaces/checkoutN` left. It never restarts a running server;
@@ -72,7 +75,8 @@ session behind a thread likewise runs on that host.
   place (`--link-only`, which leaves its page). A server whose state was reset
   has a new id and is set up again. A window it
   finds is left as it is. A failure warns and the window stays.
-- Each shim creates sessions on its own host (`--host auto`) in the checkout.
+- The provider creates sessions on its own host (`OMNIGENT_OPENCODE_HOST`,
+  default `auto`) in the thread's project.
 
 ## The Mac's own server: workspace 1
 
@@ -80,8 +84,8 @@ Workspace 1 is the Mac's own (`1|local|~|...|~/dotfiles` in `bin-macos/workspace
 so its window is on a T3 Code server on the Mac: `t3@local` on
 `127.0.0.1:T3_PORT`, run by `launchd/com.mkarrmann.t3-local.plist` (loaded by
 `sync.sh`; `bin/t3-workspace-serve local`), whose project is `~/dotfiles`. The
-Mac is an Omnigent host, so its providers' sessions run here (`--host auto`).
-`bin/t3-ensure` (run by `init.sh`, and by hand) registers the providers and adds
+Mac is an Omnigent host, so its provider's sessions run here.
+`bin/t3-ensure` (run by `init.sh`, and by hand) registers the provider and adds
 the project. The window is at `http://local.t3.localhost:T3_PORT/`, pairs with a
 token `startup-windows` mints on the spot (`t3 pair` with
 `T3CODE_HOME=~/.t3-workspaces/local`), links both devservers' servers, and
@@ -174,7 +178,7 @@ T3 Code has two kinds of settings, kept two ways:
   changes (since 0.1.6), and writes only what differs from its defaults, so a
   change in any window's server settings shows up as a dotfiles diff on that
   host, to commit and pull to the others like any other. The Omnigent
-  providers are registered by bare name (`omnigent-acp`, found on PATH via
+  provider is registered by bare name (`omnigent-opencode`, found on PATH via
   `~/bin`), as one file cannot hold each host's home. Being shared, an
   environment theme or icon set on one server is every server's.
 - **Client settings** (appearance, fonts, diff layout, notifications): a window
@@ -227,8 +231,8 @@ Gotchas:
   `tests/test-t3-window-scope-e2e.sh`, which checks them against the installed
   `t3` and Chrome.
 
-- T3 Code finds `~/.local/bin` only through a login-shell PATH probe that gives up
-  after 5 s (`apps/server/src/os-jank.ts`), and the shim's `uv` lives there, so
+- T3 Code finds `~/.local/bin` and `~/bin` only through a login-shell PATH probe
+  that gives up after 5 s (`apps/server/src/os-jank.ts`), so
   `systemd/t3@.service` sets PATH itself.
 - Provider processes are not in the unit: T3 Code runs each in a transient scope
   under `app-t3code-agents-<hash>.slice`, so they outlive a restart and the next
@@ -243,33 +247,65 @@ Gotchas:
   asks for `sudo env "PATH=$PATH" t3 browser setup` concerns only T3 Code's
   built-in browser tabs and HTML previews, not these windows.
 
+## The provider
+
+`bin/omnigent-opencode` runs `services/omnigent-opencode`'s virtualenv (made
+by `bin/t3-ensure`). T3 Code starts one per server on first use and stops it 30
+seconds after its last thread closes; threads resume by id
+(`ses_<Omnigent session id>`), and what Omnigent cannot tell it (T3 Code's
+message ids, rollbacks) is kept in `~/.local/state/omnigent-opencode/state.db`.
+Env, set in the provider's environment in T3 Code's settings: `OMNIGENT_URL`
+(default `http://127.0.0.1:6767`), `OMNIGENT_OPENCODE_AGENTS` (default
+`claude-native-ui,codex-native-ui`), `OMNIGENT_OPENCODE_HOST`,
+`OMNIGENT_OPENCODE_LOG` (a log file), `OMNIGENT_OPENCODE_DEBUG`.
+
+What T3 Code gets:
+
+- **Steering.** A message sent while the agent works goes into the running turn
+  (codex-native `turn/steer`, Claude's own input queue) without interrupting
+  it; T3 Code shows it delivered when the harness takes it.
+- **Stop** interrupts the turn (Escape on Claude, which the agent can survive).
+- **Turns started outside T3 Code** (a watcher's wakeup, a background task's
+  notification, a message from the Omnigent app or the TUI) show in the thread
+  as turns the agent started.
+- **Subagents.** Claude's Agent tool and Codex's spawn_agent show as T3 Code
+  subagent calls, each with a child thread following the child Omnigent
+  session; a background subagent's result wakes the parent with its report.
+- **Approvals** follow the thread's runtime mode: outside full access (and in
+  plan mode) the provider turns on an Omnigent session policy
+  (`t3-code-runtime-mode`, the built-in `ask_on_os_tools`) and answers its asks
+  by T3 Code's rules, so "allow for this session" works on both harnesses.
+  Your own Omnigent policies (`no_new_environments`, ...) always ask, even in
+  full access. See the service README.
+- **Questions** (Claude's AskUserQuestion, Codex's requestUserInput) are T3 Code
+  forms.
+- **Fork** from any turn keeps the history before it (an Omnigent fork, on the
+  same host); **rollback** is a fork at the boundary that the thread then
+  continues in.
+- **Model and effort** switch live; **plan mode** is codex-native's plan
+  collaboration mode and, on Claude, the approval policy with edits denied;
+  **/compact** compacts the Omnigent session; **images** are sent inline.
+- **Titles** and other text T3 Code generates come from a one-shot `claude -p`
+  (`OMNIGENT_OPENCODE_TEXTGEN_MODEL`, or the whole command in
+  `OMNIGENT_OPENCODE_TEXTGEN_COMMAND`).
+
 ## Limits
 
-- Forks and side chats start a new Omnigent session seeded with a summary, on the
-  same host: T3 Code's ACP registry adapter never asks an ACP agent to fork, and
-  T3 Code forks only within a server. To continue on another host, the shim's
-  `/fork-to HOST [CHECKOUT]` slash command forks the Omnigent session with its
-  history and starts it on HOST (an Omnigent host's name, short name or prefix)
-  in CHECKOUT (default: the same `~/checkoutN` there). The fork is not a T3
-  thread on that host's server, which this one cannot reach: continue it in the
-  Omnigent app, or import it in T3 Code there (Settings, listed as
-  `omnigent:<id>`).
-- Opening a thread whose Omnigent session is gone, or not among the 2000 most
-  recently updated, fails the turn instead of quietly starting a fresh session.
-- Each edit's diff shows in its tool call (Claude's Edit/MultiEdit/Write,
-  Codex's apply_patch), as the edited snippet; T3 Code's checkpoint diffs and
-  git panes need a git or jj repository, which the Sapling checkouts are not.
-- Stop on a native session sends Escape, which the agent can survive.
-- A turn started outside T3 Code (a watcher's wakeup, a background task's
-  notification, a message from the Omnigent app) shows in its thread as a
-  one-line message (the input's first line, or the task's summary) followed by
-  the agent's reply. The shim echoes the input with `t3 thread send`, carrying
-  a `⟦omnigent-echo:…⟧` marker, and answers T3 Code's prompt for it with that
-  turn's output instead of passing it on, so the agent answers once. T3 Code
-  releases an idle ACP session after 30 minutes; the shim sends an empty
-  `session_info_update` every 20 so it does not, for a week after the
-  thread's last turn. A thread whose shim is gone (released after that week,
-  or after a server restart) does not hear outside turns until it is next
-  used. Native agents only.
-- `omnigent-acp --t3-tools` gives the Claude TUI T3 Code's tools, but only with
-  the token from launch; the providers above do not enable it.
+- Switching a claude-native session's model makes Claude Code save it as your
+  default model in `~/.claude/settings.json` (Omnigent types `/model` in its
+  terminal). This is Omnigent's switch, not the provider's; it was so with the
+  ACP providers too.
+- A fork stays on its host: T3 Code forks only within a server. `omnigent-acp`'s
+  `/fork-to HOST` slash command is not carried over; fork to another host from
+  the Omnigent app.
+- Codex is less covered than Claude: its subagents and its file edits under the
+  approval policy are untested, and a declined Codex request ends the turn.
+- A denial by the approval policy reaches the model as the policy's reason, not
+  T3 Code's note.
+- Opening a thread whose Omnigent session is gone fails instead of quietly
+  starting a fresh session.
+- Each edit's diff shows in its tool call; T3 Code's checkpoint diffs and git
+  panes need a git or jj repository, which the Sapling checkouts are not.
+- Threads from the ACP providers (`omnigent-claude`, `omnigent-codex`) keep
+  their history in T3 Code but cannot be continued there; their Omnigent
+  sessions continue in the Omnigent app.

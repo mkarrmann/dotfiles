@@ -66,7 +66,8 @@ class T3EnsureTest(unittest.TestCase):
         for d in (self.home / "checkout1", self.home / "checkout2", self.home / "checkoutx", self.dotfiles / "bin", self.bin):
             d.mkdir(parents=True)
         shutil.copy2(ROOT / "bin/dotfiles-profile", self.dotfiles / "bin/dotfiles-profile")
-        write_exe(self.dotfiles / "bin/omnigent-acp", f'echo "shim $*" >> {self.calls}\n')
+        write_exe(self.dotfiles / "bin/omnigent-opencode", f'echo "shim $*" >> {self.calls}\n')
+        write_exe(self.bin / "uv", f'echo "uv $*" >> {self.calls}\n')
         write_exe(self.dotfiles / "bin-linux/startup-windows", f'echo "startup-windows $*" >> {self.calls}\ncat {self.layout}\n')
         write_exe(self.bin / "t3", f'echo "t3 $* home=$T3CODE_HOME" >> {self.calls}\n')
         write_fake_systemctl(self.bin / "systemctl", self.calls, self.units)
@@ -113,16 +114,8 @@ class T3EnsureTest(unittest.TestCase):
         result = self.run_ensure()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
-            self.settings("checkouts")["providerInstances"]["omnigent-codex"],
-            {
-                "driver": "acpRegistry",
-                "displayName": "Omnigent · Codex",
-                "config": {
-                    "source": "local",
-                    "commandPath": "omnigent-acp",
-                    "commandArgs": ["--agent", "codex-native-ui"],
-                },
-            },
+            self.settings("checkouts")["providerInstances"]["omnigent"],
+            {"driver": "opencode", "displayName": "Omnigent", "config": {"binaryPath": "omnigent-opencode"}},
         )
         self.assertEqual(self.settings("checkouts")["providerInstances"]["claudeAgent"], {"driver": "claudeAgent", "enabled": False})
         self.assertEqual(self.units_in("enabled"), ["t3@checkouts.service"])
@@ -134,7 +127,8 @@ class T3EnsureTest(unittest.TestCase):
             sorted(f"t3 project add {self.home / name} home={home}" for name in ("checkout1", "checkout2", "checkout10")),
         )
         self.assertEqual([p.name for p in (self.home / ".t3-workspaces").iterdir()], ["checkouts"])
-        self.assertIn("shim --help", self.calls_made())
+        self.assertIn(f"uv sync --frozen --quiet --project {self.dotfiles / 'services/omnigent-opencode'}", self.calls_made())
+        self.assertIn("shim --version", self.calls_made())
         self.assertFalse([c for c in self.calls_made() if c.startswith("startup-windows")])
 
     def test_work_names_each_checkout_after_its_host(self):
@@ -192,7 +186,24 @@ class T3EnsureTest(unittest.TestCase):
         settings = self.settings("checkouts")
         self.assertEqual(settings["theme"], "dark")
         self.assertEqual(settings["providerInstances"]["codex"], {"driver": "codex"})
-        self.assertIn("omnigent-claude", settings["providerInstances"])
+        self.assertIn("omnigent", settings["providerInstances"])
+
+    def test_the_retired_acp_providers_are_removed(self):
+        path = self.home / ".t3-workspaces/checkouts/userdata/settings.json"
+        path.parent.mkdir(parents=True)
+        acp = {"driver": "acpRegistry", "config": {"source": "local", "commandPath": "omnigent-acp"}}
+        path.write_text(json.dumps({"providerInstances": {"omnigent-claude": acp, "omnigent-codex": acp}}))
+        result = self.run_ensure()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        providers = self.settings("checkouts")["providerInstances"]
+        self.assertNotIn("omnigent-claude", providers)
+        self.assertNotIn("omnigent-codex", providers)
+        self.assertEqual(providers["omnigent"]["driver"], "opencode")
+
+    def test_a_runtime_that_cannot_be_installed_is_reported(self):
+        write_exe(self.bin / "uv", "exit 1\n")
+        result = self.run_ensure()
+        self.assertIn("WARNING: could not install omnigent-opencode's runtime", result.stdout)
 
     def test_server_settings_are_the_dotfiles_settings(self):
         shared = self.dotfiles / "t3code/settings.json"
@@ -210,7 +221,7 @@ class T3EnsureTest(unittest.TestCase):
             {k: settings[k] for k in ("idleCompaction", "defaultThreadEnvMode", "projectSettingsFolded")},
             {"idleCompaction": "onReturn", "defaultThreadEnvMode": "local", "projectSettingsFolded": True},
         )
-        self.assertIn("omnigent-claude", settings["providerInstances"])
+        self.assertIn("omnigent", settings["providerInstances"])
         self.assertEqual(
             json.loads(path.with_name("settings.json.pre-dotfiles").read_text()),
             {"defaultThreadEnvMode": "worktree", "projectSettingsFolded": True},
@@ -222,7 +233,7 @@ class T3EnsureTest(unittest.TestCase):
         shared = self.dotfiles / "t3code/settings.json"
         path = self.home / ".t3-workspaces/checkouts/userdata/settings.json"
         self.assertEqual(path.resolve(), shared.resolve())
-        self.assertIn("omnigent-codex", json.loads(shared.read_text())["providerInstances"])
+        self.assertIn("omnigent", json.loads(shared.read_text())["providerInstances"])
         self.assertFalse(path.with_name("settings.json.pre-dotfiles").exists())
 
     def test_rerun_leaves_settings_and_enabled_servers_alone(self):
@@ -264,7 +275,7 @@ class T3EnsureTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("startup-windows --print-layout", self.calls_made())
         providers = self.settings("desktop")["providerInstances"]
-        self.assertEqual(providers["omnigent-claude"]["config"]["commandArgs"], ["--agent", "claude-native-ui"])
+        self.assertEqual(providers["omnigent"]["config"]["binaryPath"], "omnigent-opencode")
         self.assertEqual(providers["codex"], {"driver": "codex", "enabled": False})
         self.assertEqual([c for c in self.calls_made() if " enable " in c], ["systemctl --user enable --now t3@desktop.service"])
         home = self.home / ".t3-workspaces/desktop"
@@ -327,7 +338,7 @@ class T3EnsureTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         settings = json.loads(app_settings.read_text())
         providers = settings["providerInstances"]
-        self.assertEqual(providers["omnigent-codex"]["config"]["commandArgs"], ["--agent", "codex-native-ui"])
+        self.assertEqual(providers["omnigent"]["config"]["binaryPath"], str(self.dotfiles / "bin/omnigent-opencode"))
         self.assertEqual(providers["claudeAgent"], {"driver": "claudeAgent", "enabled": False})
         # A built-in the user configured, and every other setting, are kept.
         self.assertEqual(providers["codex"], {"driver": "codex", "enabled": True})
@@ -471,7 +482,7 @@ class T3EnsureMacTest(unittest.TestCase):
         result = self.run_ensure()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         providers = self.settings("local")["providerInstances"]
-        self.assertEqual(providers["omnigent-claude"]["config"]["commandArgs"], ["--agent", "claude-native-ui"])
+        self.assertEqual(providers["omnigent"]["config"]["binaryPath"], "omnigent-opencode")
         self.assertEqual(providers["codex"], {"driver": "codex", "enabled": False})
         self.assertIn(f"t3 project add {self.home / 'dotfiles'} home={self.home / '.t3-workspaces/local'}", self.calls_made())
         # No systemd here: nothing enabled, started or retired, and no work server.

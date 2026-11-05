@@ -148,7 +148,7 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
 
   # T3 Code as a UI over this host's Omnigent sessions, on the hub candidates
   # only (the Mac tunnels to those): one server, t3@checkouts, whose projects
-  # are every ~/checkoutN, with bin/omnigent-acp as its providers; it retires
+  # are every ~/checkoutN, with bin/omnigent-opencode as its provider; it retires
   # the per-checkout t3@checkoutN servers it replaced. Never restarts a running
   # server. See bin/t3-ensure. Ahead of omnigent-agents-ensure, which exits
   # init.sh when the active hub's server activation is deferred.
