@@ -1012,8 +1012,15 @@ reconcile_t3_window() {
   if [[ -n "$window_id" ]]; then
     echo "[$title] assigning T3 Code window $window_id to workspace $ws..."
   else
+    # A window opened on a server that does not answer lands on Chrome's error
+    # page and cannot be paired or scoped; the next run opens it instead.
+    if ! t3_wait_for_server "$host" "$url"; then
+      echo "WARNING: [$title] not opening a window on $host's T3 Code server; once its tunnel" >&2
+      echo "         is up (approve Duo in its tunnel window) and t3@checkouts runs there, rerun" >&2
+      ((failures++)) || true
+      return 0
+    fi
     echo "[$title] opening $url on workspace $ws..."
-    t3_wait_for_server "$host" "$url" || true
     # A profile that has paired before keeps its session cookie, so only a new
     # one waits for a token.
     [[ -d "$profile" ]] || fresh_profile=true
@@ -1335,7 +1342,9 @@ failures=0
 # rather than on whichever copy happened to win the port.
 retire_unsupervised_mac_proxy
 close_retired_omnigent_tunnel_windows
-if ! curl -sf "http://127.0.0.1:${OMNIGENT_PORT}/health" >/dev/null 2>&1; then
+# Bounded: while a tunnel waits on Duo the proxy accepts and then holds the
+# connection, which hung a run before it printed anything.
+if ! curl -sf -m 5 "http://127.0.0.1:${OMNIGENT_PORT}/health" >/dev/null 2>&1; then
   echo "Omnigent proxy is not healthy at http://127.0.0.1:${OMNIGENT_PORT} (check: launchctl print gui/\$UID/com.mkarrmann.omnigent-tunnel, and ~/.local/state/omnigent-tunnel/stderr.log); the nvs-tunnels windows below supply its upstream forwards" >&2
 fi
 
@@ -1343,7 +1352,7 @@ fi
 # needs its own probe: the plain-HTTP check above passes even when this is down.
 # Deliberately not `-k` — an untrusted CA fails the app exactly like an outage,
 # so the probe has to exercise the same trust path Chromium will.
-if ! curl -sf "https://localhost:${OMNIGENT_TLS_PORT}/health" >/dev/null 2>&1; then
+if ! curl -sf -m 5 "https://localhost:${OMNIGENT_TLS_PORT}/health" >/dev/null 2>&1; then
   echo "Omnigent TLS front door is not healthy at https://localhost:${OMNIGENT_TLS_PORT}; the app will fail to connect (check: launchctl print gui/\$UID/com.mkarrmann.omnigent-tls, and 'caddy trust' for the local CA)" >&2
 fi
 

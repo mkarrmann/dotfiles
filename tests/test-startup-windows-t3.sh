@@ -292,6 +292,16 @@ check "a window whose scoping fails stays on its workspace" "102 4 http://cco-ch
 check "and the run counts a warning" "1" "$failures"
 
 sim_reset
+pool cco.example.com TOKEN3
+curl() { return 7; }
+reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
+check "a window whose own server does not answer is not opened, and its token is kept" "0 1" \
+  "$(wc -l < "$SIM/windows" | tr -d ' ') $(pooled cco.example.com)"
+check "which warns once, saying to rerun" "1 1" "$failures $(grep -c 'rerun' "$SIM/out")"
+reconcile_t3_window 4 "T3: ws4" > "$SIM/out" 2>&1
+check "and the host's other windows do not wait for it again" "0 2" "$(grep -c 'did not answer' "$SIM/out") $failures"
+
+sim_reset
 reconcile_t3_window 1 "T3: ws1" > "$SIM/out" 2>&1
 check "a workspace without a T3 Code server warns and opens nothing" "1 0" "$failures $(wc -l < "$SIM/browsers" | tr -d ' ')"
 

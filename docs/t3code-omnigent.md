@@ -77,7 +77,8 @@ running), twice the Mac's devserver windows so reopened windows have some too.
 shown in the tunnel window), and empties that pool when a session starts, as
 its tokens came from the session before; `startup-windows` drops tokens past
 11 hours. Before a host's first window or link `startup-windows` waits up to
-60 s for its server to answer through the tunnel. A window it creates opens on
+60 s for its server to answer through the tunnel, and opens no window on a
+server that does not (approve Duo in the tunnel window and rerun). A window it creates opens on
 `/pair` with a token of its own host's, and links each other host with a token
 of that host's; a new profile waits up to 30 s for each, while a profile that
 paired before (its session cookie lasts about 30 days) takes one only when one
