@@ -57,6 +57,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Every line of output, the child scripts' too, starts with the time and the
+# seconds since the run started, to find slow steps. The script reruns itself
+# through the stamper and waits for both, so no line lands after it returns
+# (bash 3.2 cannot wait on an `exec > >(...)`). STARTUP_WINDOWS_TIMESTAMPS=0
+# turns it off.
+if [[ "${STARTUP_WINDOWS_TIMESTAMPS:-1}" == 1 && -z "${STARTUP_WINDOWS_STAMPED:-}" ]]; then
+  STARTUP_WINDOWS_STAMPED=1 PYTHONUNBUFFERED=1 "$0" "$@" 2>&1 \
+    | perl -MPOSIX=strftime -MTime::HiRes=time -ne '
+        BEGIN { $| = 1; $start = time }
+        $now = time;
+        printf "%s.%03d +%5.1fs %s", strftime("%H:%M:%S", localtime $now),
+          ($now - int $now) * 1000, $now - $start, $_;'
+  exit "${PIPESTATUS[0]}"
+fi
+
 # AeroSpace can invoke after-startup-command more than once across a config
 # reload/restart. Only one reconciler may mutate the workspace tree at a time.
 STARTUP_LOCK_DIR="/tmp/startup-windows.lock"
