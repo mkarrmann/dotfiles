@@ -118,7 +118,7 @@ class T3EnsureTest(unittest.TestCase):
                 "displayName": "Omnigent · Codex",
                 "config": {
                     "source": "local",
-                    "commandPath": str(self.dotfiles / "bin/omnigent-acp"),
+                    "commandPath": "omnigent-acp",
                     "commandArgs": ["--agent", "codex-native-ui"],
                 },
             },
@@ -172,6 +172,37 @@ class T3EnsureTest(unittest.TestCase):
         self.assertEqual(settings["theme"], "dark")
         self.assertEqual(settings["providerInstances"]["codex"], {"driver": "codex"})
         self.assertIn("omnigent-claude", settings["providerInstances"])
+
+    def test_server_settings_are_the_dotfiles_settings(self):
+        shared = self.dotfiles / "t3code/settings.json"
+        shared.parent.mkdir(parents=True)
+        shared.write_text(json.dumps({"idleCompaction": "onReturn", "defaultThreadEnvMode": "local"}))
+        path = self.home / ".t3-workspaces/checkouts/userdata/settings.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"defaultThreadEnvMode": "worktree", "projectSettingsFolded": True}))
+        result = self.run_ensure()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(path.resolve(), shared.resolve())
+        settings = json.loads(shared.read_text())
+        # The server's own settings join the dotfiles', which win where both have one.
+        self.assertEqual(
+            {k: settings[k] for k in ("idleCompaction", "defaultThreadEnvMode", "projectSettingsFolded")},
+            {"idleCompaction": "onReturn", "defaultThreadEnvMode": "local", "projectSettingsFolded": True},
+        )
+        self.assertIn("omnigent-claude", settings["providerInstances"])
+        self.assertEqual(
+            json.loads(path.with_name("settings.json.pre-dotfiles").read_text()),
+            {"defaultThreadEnvMode": "worktree", "projectSettingsFolded": True},
+        )
+
+    def test_a_server_without_settings_starts_the_dotfiles_settings(self):
+        result = self.run_ensure()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        shared = self.dotfiles / "t3code/settings.json"
+        path = self.home / ".t3-workspaces/checkouts/userdata/settings.json"
+        self.assertEqual(path.resolve(), shared.resolve())
+        self.assertIn("omnigent-codex", json.loads(shared.read_text())["providerInstances"])
+        self.assertFalse(path.with_name("settings.json.pre-dotfiles").exists())
 
     def test_rerun_leaves_settings_and_enabled_servers_alone(self):
         self.run_ensure()

@@ -7,7 +7,7 @@ Idempotent; init.sh runs it on the Omnigent hub candidates, the work Mac and
 the Linux desktop. Each runs one server, NAME. On a candidate NAME is
 "checkouts" and its projects are every ~/checkoutN. On the Mac NAME is "local",
 its project ~/dotfiles (workspace 1's), and launchd runs it
-(launchd/com.mkarrmann.t3-local.plist, loaded by sync.sh), so steps 4 and 5
+(launchd/com.mkarrmann.t3-local.plist, loaded by sync.sh), so steps 5 and 6
 below do not apply there. On the desktop NAME is the layout's t3Server
 (bin-linux/startup-windows --print-layout) and its projects are the workdirs of
 the table's t3 rows (one whose workdir is missing is skipped with a warning).
@@ -17,25 +17,34 @@ Either way each window's new threads start in its own workspace's project
      out as T3 Code's install.sh lays it out but checked against the pinned
      T3_CLI_SHA256 rather than whatever the release serves. Later upgrades
      belong to `t3 update`;
-  2. registers bin/omnigent-acp as the server's "Omnigent · Claude" and
-     "Omnigent · Codex" providers in ~/.t3-workspaces/NAME/userdata/
-     settings.json, keeping every other setting (a running server reloads it).
-     It also turns off T3 Code's built-in Codex and Claude, which would run outside
-     Omnigent, unless the settings already configure them. The desktop gets the
-     same in the T3 Code app's own local environment (bin/t3-desktop-app-ensure),
-     ~/.t3/userdata/settings.json -- the app's state while T3CODE_HOME is unset,
-     as it is here -- and no server or project for it below;
-  3. warms uv's cache for omnigent-acp, since the services have no proxy to
+  2. links the server's settings, ~/.t3-workspaces/NAME/userdata/
+     settings.json, to t3code/settings.json in the dotfiles, which every
+     server shares: T3 Code saves through the link and reloads the file when
+     it changes (00eb8f6183, in 0.1.6), so a setting changed in any window's
+     server settings lands in the dotfiles, and T3 Code writes only what
+     differs from its defaults. A server's own settings from before are merged
+     in, the dotfiles' winning, and kept as settings.json.pre-dotfiles;
+  3. registers bin/omnigent-acp as the "Omnigent · Claude" and "Omnigent ·
+     Codex" providers in those settings, keeping every other setting, by its
+     bare name, which T3 Code finds on PATH (~/bin on every host), as the
+     shared file cannot hold one host's home. It also turns off T3 Code's
+     built-in Codex and Claude, which would run outside Omnigent, unless the
+     settings already configure them. The desktop gets the same in the T3
+     Code app's own local environment (bin/t3-desktop-app-ensure),
+     ~/.t3/userdata/settings.json -- the app's state while T3CODE_HOME is
+     unset, as it is here -- by absolute path, as the app's PATH may lack
+     ~/bin, and that file is not shared; no server or project for it below;
+  4. warms uv's cache for omnigent-acp, since the services have no proxy to
      fetch its dependencies with;
-  4. retires the servers it ran before this one: `disable --now` every
+  5. retires the servers it ran before this one: `disable --now` every
      enabled t3@checkoutN on a candidate, and every enabled t3@X other than
      t3@NAME on the desktop (one per t3 row, t3@dotfiles and the like, before
      t3@desktop). Each held only its own workspace's threads, so no window saw
      a thread started in another, and bin/t3-workspace-serve no longer serves
      them. Their state (~/.t3-workspaces/X) is left where it is;
-  5. enables and starts t3@NAME (systemd/t3@.service, bin/t3-workspace-serve)
+  6. enables and starts t3@NAME (systemd/t3@.service, bin/t3-workspace-serve)
      when it is not enabled yet. A running server is never restarted;
-  6. adds each of its directories as a project of the server unless it
+  7. adds each of its directories as a project of the server unless it
      already is one. A project the server bootstrapped itself would count as a
      fresh install and open T3 Code's first-run wizard in every new window.
 
@@ -65,6 +74,8 @@ DOTFILES = Path(os.environ.get("DOTFILES_DIR", Path.home() / "dotfiles"))
 WORKSPACES_HOME = Path.home() / ".t3-workspaces"
 DESKTOP_APP_SETTINGS = Path.home() / ".t3/userdata/settings.json"
 SHIM = DOTFILES / "bin/omnigent-acp"
+SHIM_COMMAND = SHIM.name
+SHARED_SETTINGS = DOTFILES / "t3code/settings.json"
 CHECKOUT = re.compile(r"checkout[0-9]+")
 WORK_SERVER = "checkouts"  # bin/t3-workspace-serve, bin/t3-pairing-tokens
 # The Mac's server (launchd/com.mkarrmann.t3-local.plist, not systemd) and its
@@ -219,29 +230,54 @@ def on_linux_desktop() -> bool:
     return host_os() == "Linux" and output(str(DOTFILES / "bin/dotfiles-profile")).strip() == "desktop"
 
 
-def provider_instances(shim: Path) -> dict[str, dict]:
+def provider_instances(command: str) -> dict[str, dict]:
     return {
         instance_id: {
             "driver": "acpRegistry",
             "displayName": name,
-            "config": {"source": "local", "commandPath": str(shim), "commandArgs": ["--agent", agent]},
+            "config": {"source": "local", "commandPath": command, "commandArgs": ["--agent", agent]},
         }
         for instance_id, (name, agent) in PROVIDERS.items()
     }
 
 
-def merge_settings(path: Path, shim: Path) -> bool:
-    settings = json.loads(path.read_text()) if path.exists() and path.read_text().strip() else {}
+def read_settings(path: Path) -> dict:
+    return json.loads(path.read_text()) if path.exists() and path.read_text().strip() else {}
+
+
+def write_settings(path: Path, settings: dict) -> None:
+    """Replaces PATH's target, so a link to the shared settings stays one."""
+    target = path.resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(".json.t3-ensure")
+    tmp.write_text(json.dumps(settings, indent=2) + "\n")
+    tmp.replace(target)
+
+
+def link_settings(path: Path, shared: Path) -> bool:
+    """Step 2: PATH a link to SHARED, PATH's own settings merged into SHARED
+    under SHARED's and kept beside it as .pre-dotfiles. False when it already was."""
+    if path.is_symlink() and path.resolve() == shared.resolve():
+        return False
+    own = read_settings(path)
+    if own or not shared.exists():
+        write_settings(shared, {**own, **read_settings(shared)})
+    if path.exists() or path.is_symlink():
+        path.replace(path.with_name(path.name + ".pre-dotfiles"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(shared)
+    return True
+
+
+def merge_settings(path: Path, command: str) -> bool:
+    settings = read_settings(path)
     instances = settings.setdefault("providerInstances", {})
-    wanted = provider_instances(shim)
+    wanted = provider_instances(command)
     builtins = {key: {"driver": key, "enabled": False} for key in BUILTIN_PROVIDERS if key not in instances}
     if not builtins and all(instances.get(key) == value for key, value in wanted.items()):
         return False
     instances.update(wanted | builtins)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.t3-ensure")
-    tmp.write_text(json.dumps(settings, indent=2) + "\n")
-    tmp.replace(path)
+    write_settings(path, settings)
     return True
 
 
@@ -260,7 +296,7 @@ def systemctl(*args: str) -> int:
 
 
 def retire_servers(names: list[str], current: str) -> bool:
-    """Step 4: `disable --now` each enabled t3@NAME in NAMES but t3@CURRENT;
+    """Step 5: `disable --now` each enabled t3@NAME in NAMES but t3@CURRENT;
     False when one would not stop."""
     retired = True
     for name in names:
@@ -298,7 +334,7 @@ def main() -> int:
         t3 = install_t3(T3_CLI_VERSION, T3_CLI_SHA256, T3_HOME, T3_BIN_DIR)
     mac = host_os() == "Darwin"
     desktop = not mac and on_linux_desktop()
-    if desktop and merge_settings(DESKTOP_APP_SETTINGS, SHIM):
+    if desktop and merge_settings(DESKTOP_APP_SETTINGS, str(SHIM)):
         log("registered the Omnigent providers for the T3 Code desktop app")
     layout_server = desktop_server() if desktop else None
     if layout_server is not None:
@@ -306,7 +342,10 @@ def main() -> int:
     else:
         servers = mac_servers() if mac else work_servers()
     for server in servers:
-        if merge_settings(WORKSPACES_HOME / server.name / "userdata/settings.json", SHIM):
+        settings = WORKSPACES_HOME / server.name / "userdata/settings.json"
+        if link_settings(settings, SHARED_SETTINGS):
+            log(f"linked t3@{server.name}'s settings to {SHARED_SETTINGS}")
+        if merge_settings(settings, SHIM_COMMAND):
             log(f"registered the Omnigent providers for t3@{server.name}")
     if subprocess.run([str(SHIM), "--help"], stdout=subprocess.DEVNULL).returncode != 0:
         log("WARNING: omnigent-acp did not start; the Omnigent providers will fail until it does")
