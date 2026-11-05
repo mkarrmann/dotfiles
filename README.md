@@ -60,7 +60,7 @@ runners alone), on a desktop only when no session is connected, because there
 the server lives inside `omnigent-host.service` and restarting it ends every
 live session -- and otherwise prints the command and exits 1. What stays
 work-only: `agents/dvsc`, `agents/muse`, the hub/reconcile/snapshot/Google Chat services,
-`runtime_ext` (Sapling), and
+`runtime_ext` (Sapling, claude-native tmux self-heal), and
 `topology.env`.
 
 An agent about to spawn a subagent can list the models this host's Codex or

@@ -66,7 +66,10 @@ Environment=LITELLM_LOCAL_MODEL_COST_MAP=True
 # tree is the managed uv-tool install (replaced wholesale on upgrade) and its
 # environment is scrubbed. The host itself sets no PYTHONPATH, so this
 # introduces one rather than overriding anything. See omnigent_config/runtime_ext/.
-# Disable without editing this unit: OMNIGENT_SAPLING_REGISTRY=0.
+# The same sitecustomize also installs the claude-native tmux.json self-heal
+# (omnigent_tmux_self_heal.py), which re-advertises a live pane when a /tmp
+# purge deletes tmux.json. Disable without editing this unit:
+# OMNIGENT_SAPLING_REGISTRY=0 / OMNIGENT_TMUX_SELF_HEAL=0.
 # NOTE: agent shells inherit this too (omnigent strips only its own entry from
 # PYTHONPATH), so every python run in a session imports that sitecustomize. It
 # arms one meta_path hook, chains to any sitecustomize it shadows, and fails

@@ -1,4 +1,11 @@
-"""Install the Sapling changed-files backend into an Omnigent runner.
+"""Install dotfiles-owned patches into Omnigent runner processes.
+
+Two patches are installed, each into the module named:
+
+- ``omnigent.runtime.filesystem_registry``: the Sapling changed-files backend
+  (``omnigent_sapling_registry``).
+- ``omnigent.runner.native.orchestration``: the claude-native ``tmux.json``
+  self-heal (``omnigent_tmux_self_heal``).
 
 Python imports ``sitecustomize`` automatically at interpreter start when it is
 importable, which is the only injection point available here: the runner is
@@ -13,37 +20,69 @@ The patch is deferred rather than applied here. Importing ``omnigent`` from
 inside ``sitecustomize`` would drag the package in before the interpreter has
 finished starting, and would re-enter partially-initialized modules whenever
 Omnigent is itself the program being launched. Instead a meta-path finder waits
-for ``omnigent.runtime.filesystem_registry`` to be imported through the normal
-machinery and rewrites its factory afterwards.
+for each target module to be imported through the normal machinery and patches
+it afterwards. The host's runner zygote (``omnigent.runner._zygote``) imports
+the runner graph once, at startup, and forks every runner from it. So a change
+here reaches runners only after the host, and with it the zygote, restarts.
 
 Fails open in every direction: any error leaves stock Omnigent behavior in
-place, because an empty Files panel is a far better outcome than a runner that
-will not boot. Set ``OMNIGENT_SAPLING_REGISTRY=0`` to disable, or
-``OMNIGENT_SAPLING_REGISTRY_DEBUG=1`` to surface patch failures on stderr.
+place, because a missing patch is a far better outcome than a runner that will
+not boot. Set ``OMNIGENT_SAPLING_REGISTRY=0`` or ``OMNIGENT_TMUX_SELF_HEAL=0``
+to disable one patch, or ``OMNIGENT_SAPLING_REGISTRY_DEBUG=1`` to report on
+stderr what each patch did and any failure.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Callable
 from types import ModuleType
 
-_TARGET = "omnigent.runtime.filesystem_registry"
-_ENABLE_ENV = "OMNIGENT_SAPLING_REGISTRY"
 _DEBUG_ENV = "OMNIGENT_SAPLING_REGISTRY_DEBUG"
 
 
 def _debug(message: str) -> None:
     if os.environ.get(_DEBUG_ENV) == "1":
-        print(f"[sapling-registry] {message}", file=sys.stderr)
+        print(f"[runtime-ext] {message}", file=sys.stderr)
 
 
-def _apply(module: ModuleType) -> None:
+def _apply_sapling_registry(module: ModuleType) -> None:
     """Swap the factory on a freshly imported filesystem_registry module."""
     from omnigent_sapling_registry import create_filesystem_registry
 
     module.create_filesystem_registry = create_filesystem_registry  # type: ignore[assignment]
-    _debug(f"patched {_TARGET}.create_filesystem_registry")
+    _debug(f"patched {module.__name__}.create_filesystem_registry")
+
+
+def _apply_tmux_self_heal(module: ModuleType) -> None:
+    """Wrap the native-terminal ensure so it re-advertises a lost tmux.json."""
+    from omnigent_tmux_self_heal import install
+
+    if install(module):
+        _debug(f"patched {module.__name__}._ensure_native_terminal")
+    else:
+        _debug(f"{module.__name__} lacks a patched name; tmux self-heal not installed")
+
+
+# target module -> (env var that disables it when "0", patch function)
+_PATCHES: dict[str, tuple[str, Callable[[ModuleType], None]]] = {
+    "omnigent.runtime.filesystem_registry": (
+        "OMNIGENT_SAPLING_REGISTRY",
+        _apply_sapling_registry,
+    ),
+    "omnigent.runner.native.orchestration": (
+        "OMNIGENT_TMUX_SELF_HEAL",
+        _apply_tmux_self_heal,
+    ),
+}
+
+
+def _apply(module: ModuleType, patch: Callable[[ModuleType], None]) -> None:
+    try:
+        patch(module)
+    except Exception as exc:  # noqa: BLE001 -- must never break a runner
+        _debug(f"patch of {module.__name__} failed, leaving upstream behavior: {exc!r}")
 
 
 def _chain() -> None:
@@ -79,8 +118,13 @@ def _install() -> None:
     except Exception as exc:  # noqa: BLE001 -- chaining is best-effort
         _debug(f"chaining failed: {exc!r}")
 
-    if os.environ.get(_ENABLE_ENV) == "0":
-        _debug(f"disabled via {_ENABLE_ENV}=0")
+    patches: dict[str, Callable[[ModuleType], None]] = {}
+    for target, (enable_env, patch) in _PATCHES.items():
+        if os.environ.get(enable_env) == "0":
+            _debug(f"{target} patch disabled via {enable_env}=0")
+        else:
+            patches[target] = patch
+    if not patches:
         return
 
     import importlib.util
@@ -90,24 +134,23 @@ def _install() -> None:
     class _PatchingLoader(Loader):
         """Delegate to the real loader, then patch the executed module."""
 
-        def __init__(self, inner: Loader) -> None:
+        def __init__(self, inner: Loader, patch: Callable[[ModuleType], None]) -> None:
             self._inner = inner
+            self._patch = patch
 
         def create_module(self, spec: ModuleSpec) -> ModuleType | None:
             return self._inner.create_module(spec)
 
         def exec_module(self, module: ModuleType) -> None:
             self._inner.exec_module(module)
-            try:
-                _apply(module)
-            except Exception as exc:  # noqa: BLE001 -- must never break a runner
-                _debug(f"patch failed, leaving upstream behavior: {exc!r}")
+            _apply(module, self._patch)
 
     class _Finder(MetaPathFinder):
         def find_spec(
             self, fullname: str, path: object = None, target: object = None
         ) -> ModuleSpec | None:
-            if fullname != _TARGET:
+            patch = patches.get(fullname)
+            if patch is None:
                 return None
             # Step aside while resolving, or find_spec would re-enter this
             # finder and recurse until the stack blows.
@@ -121,20 +164,18 @@ def _install() -> None:
                 sys.meta_path.insert(0, self)
             if spec is None or spec.loader is None:
                 return None
-            spec.loader = _PatchingLoader(spec.loader)
+            spec.loader = _PatchingLoader(spec.loader, patch)
             return spec
 
-    if _TARGET in sys.modules:
+    for target in [t for t in patches if t in sys.modules]:
         # Already imported (an in-process import ordering we did not expect):
         # patch it directly rather than silently doing nothing.
-        try:
-            _apply(sys.modules[_TARGET])
-        except Exception as exc:  # noqa: BLE001
-            _debug(f"late patch failed: {exc!r}")
+        _apply(sys.modules[target], patches.pop(target))
+    if not patches:
         return
 
     sys.meta_path.insert(0, _Finder())
-    _debug("armed")
+    _debug(f"armed for {sorted(patches)}")
 
 
 try:
