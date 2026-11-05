@@ -229,6 +229,7 @@ check "the window starts its new threads in its checkout and links FTW's server 
 check "with no warning" "0" "$failures"
 check "both tokens are used up" "0 0" "$(pooled cco.example.com) $(pooled ftw.example.com)"
 check "the profile remembers the link, by the FTW server's environment" "yes" "$([[ -e "$P3/.t3-linked/env-ftw-1" ]] && echo yes || echo no)"
+check "and that it paired" "yes" "$([[ -e "$P3/.t3-paired" ]] && echo yes || echo no)"
 
 aerospace move-node-to-workspace --window-id 102 Z
 : > "$SIM/scoped"
@@ -290,6 +291,16 @@ SCOPE_FAILS=1
 reconcile_t3_window 4 "T3: ws4" > "$SIM/out" 2>&1
 check "a window whose scoping fails stays on its workspace" "102 4 http://cco-checkout2.t3.localhost:13780/" "$(windows_of "$P2")"
 check "and the run counts a warning" "1" "$failures"
+
+sim_reset
+mkdir -p "$P3"
+pool ftw.example.com FTWTOKEN
+T3_PAIRING_TOKEN_WAIT=2
+started=$SECONDS
+reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
+check "a profile left by a run that never paired it still waits for its token" "yes" \
+  "$( (( SECONDS - started >= 2 )) && echo yes)"
+T3_PAIRING_TOKEN_WAIT=0
 
 sim_reset
 pool cco.example.com TOKEN3

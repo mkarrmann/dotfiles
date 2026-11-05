@@ -485,8 +485,8 @@ class T3PairingTokensTest(unittest.TestCase):
         )
         write_fake_systemctl(self.bin / "systemctl", self.root / "calls.log", self.units)
 
-    def tokens(self, *args):
-        env = {"HOME": str(self.home), "PATH": f"{self.bin}:/usr/bin:/bin"}
+    def tokens(self, *args, wait="0"):
+        env = {"HOME": str(self.home), "PATH": f"{self.bin}:/usr/bin:/bin", "T3_PAIRING_SERVER_WAIT": wait}
         return subprocess.run([str(PAIRING_TOKENS), *args], env=env, capture_output=True, text=True)
 
     def test_as_many_distinct_tokens_as_asked_from_the_one_server(self):
@@ -509,6 +509,13 @@ class T3PairingTokensTest(unittest.TestCase):
         result = self.tokens()
         self.assertEqual((result.returncode, result.stdout), (0, ""))
         self.assertFalse(self.mints.exists())
+
+    def test_a_server_that_starts_after_the_session_still_mints(self):
+        # The fake systemctl reports the server active once this file exists.
+        starter = subprocess.Popen(["sh", "-c", f"sleep 2; touch {self.units / 'active/t3@checkouts.service'}"])
+        self.addCleanup(starter.wait)
+        result = self.tokens("2", wait="30")
+        self.assertEqual(result.stdout.splitlines(), ["T3_PAIR TOKEN1", "T3_PAIR TOKEN2"])
 
     def test_nothing_without_t3(self):
         (self.units / "active/t3@checkouts.service").touch()

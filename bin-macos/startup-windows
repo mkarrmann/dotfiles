@@ -1021,9 +1021,10 @@ reconcile_t3_window() {
       return 0
     fi
     echo "[$title] opening $url on workspace $ws..."
-    # A profile that has paired before keeps its session cookie, so only a new
-    # one waits for a token.
-    [[ -d "$profile" ]] || fresh_profile=true
+    # A profile that has paired before keeps its session cookie, so only one
+    # never paired (no marker, written once a window of it was scoped) waits
+    # for a token.
+    [[ -e "$profile/.t3-paired" ]] || fresh_profile=true
     wait=0
     [[ "$fresh_profile" == false ]] || wait="$T3_PAIRING_TOKEN_WAIT"
     token=$(t3_take_pairing_token "$host" "$wait")
@@ -1099,6 +1100,7 @@ reconcile_t3_window() {
       { [[ ${#link_tokens[@]} -eq 0 ]] || printf '%s\n' "${link_tokens[@]}"; } \
         | t3-window-scope "$profile" "${url%/}" "$workdir" ${link_args[@]+"${link_args[@]}"} || scope_rc=$?
       if [[ "$scope_rc" -eq 0 ]]; then
+        : > "$profile/.t3-paired"
         mkdir -p "$profile/.t3-linked"
         for link_env in ${link_envs[@]+"${link_envs[@]}"}; do
           : > "$profile/.t3-linked/$link_env"
