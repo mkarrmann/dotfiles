@@ -26,7 +26,7 @@ extract_fn() {
 }
 for fn in t3_workspace_window t3_windows t3_window_ids_json t3_window_id_for_origin retire_t3_profile_chromes \
           t3_take_pairing_token t3_wait_for_server t3_environment_id t3_links t3_collect_links t3_set_up t3_mark_set_up t3_url_port t3_window_title reconcile_t3_window close_window_id window_exists \
-          snapshot_windows; do
+          snapshot_windows chrome_id_is_claimed find_valid_unclaimed_chrome_window; do
   body=$(extract_fn "$fn")
   [[ -n "$body" ]] || { echo "could not extract $fn" >&2; exit 1; }
   eval "$body"
@@ -153,7 +153,7 @@ check "a window links every other devserver's server once, through its forward h
 check "and an FTW window links CCO's" $'cco.example.com\thttp://127.0.0.1:13780\tCCO' "$(t3_links 3)"
 sim_reset() {
   rm -rf "$SIM"; mkdir -p "$SIM"
-  : > "$SIM/windows"; : > "$SIM/scoped"; : > "$SIM/opened"; echo 100 > "$SIM/next"
+  : > "$SIM/windows"; : > "$SIM/scoped"; : > "$SIM/opened"; : > "$SIM/loading"; echo 100 > "$SIM/next"
   rm -rf "$T3_PAIRING_DIR/cco.example.com" "$T3_PAIRING_DIR/ftw.example.com"
   mkdir -p "$T3_PAIRING_DIR/cco.example.com" "$T3_PAIRING_DIR/ftw.example.com"
   t3_waited_hosts=""; t3_unreachable_hosts=""; rm -f "$T3_WINDOWS_CACHE"; failures=0; SCOPE_FAILS=""
@@ -187,6 +187,7 @@ open() {
   done
   [[ "$profile" == T3 && -n "$app" ]] || return 0
   sim_window "T3 Code (Beta)" "$app"
+  [[ -z "${SIM_LOADING:-}" ]] || tail -n 1 "$SIM/windows" | cut -f1 >> "$SIM/loading"
 }
 aerospace() {
   case "$1" in
@@ -199,12 +200,15 @@ aerospace() {
       awk -F'\t' -v wid="$3" '$1 != wid' "$SIM/windows" > "$SIM/w" && mv "$SIM/w" "$SIM/windows" ;;
   esac
 }
-# --list-windows lists the windows on T3 Code origins. Otherwise it records its
+# --list-windows lists the windows on T3 Code origins, missing a window still
+# loading (SIM_LOADING) the first time. Otherwise it records its
 # arguments and the tokens it read for its links, "ARGS | TOKENS", and needs a
 # window on the origin, as the real one does.
 t3-window-scope() {
   if [[ "$1" == --list-windows ]]; then
-    awk -F'\t' '$4 ~ /\.t3\.localhost/ { split($4, u, "/"); print $1, u[1] "//" u[3] }' "$SIM/windows"
+    awk -F'\t' -v loading=" $(tr '\n' ' ' < "$SIM/loading") " \
+      '$4 ~ /\.t3\.localhost/ && index(loading, " " $1 " ") == 0 { split($4, u, "/"); print $1, u[1] "//" u[3] }' "$SIM/windows"
+    : > "$SIM/loading"
     return 0
   fi
   local tokens
@@ -236,6 +240,27 @@ check "both tokens are used up" "0 0" "$(pooled cco.example.com) $(pooled ftw.ex
 check "its state records both servers it is set up with, by environment" "env-cco-1 env-ftw-1" \
   "$(ls "$P3/.t3-servers" | tr '\n' ' ' | sed 's/ $//')"
 
+sim_reset
+pool cco.example.com TOKEN3
+pool ftw.example.com FTWTOKEN
+SIM_LOADING=1 reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
+check "a new window the listing misses while it loads is still found, moved and scoped" \
+  "101 6 $O3/pair#token=TOKEN3|$LINKED3|0" "$(windows_of "$O3")|$(cat "$SIM/scoped")|$failures"
+
+sim_reset
+CHROME_INVALID_TITLE_PATTERN="^Who.s using Chrome\\?$"
+T3_ANY_TITLE_PATTERN='^T3 Code|\.t3\.localhost'
+claimed_chrome_ids=""
+sim_window "T3 Code (Beta)" "about:blank"
+sim_window "cco-checkout3.t3.localhost" "chrome-error://chromewebdata/"
+sim_window "New Tab - Google Chrome - Me" "chrome://newtab/"
+check "a T3 Code window the origin listing misses is never handed to a Chrome slot" "103" \
+  "$(find_valid_unclaimed_chrome_window)"
+
+sim_reset
+pool cco.example.com TOKEN3
+pool ftw.example.com FTWTOKEN
+reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
 aerospace move-node-to-workspace --window-id 101 Z
 : > "$SIM/scoped"
 reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1

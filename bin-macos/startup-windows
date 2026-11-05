@@ -209,6 +209,10 @@ T3_LOCAL_SERVER_WAIT="${T3_LOCAL_SERVER_WAIT:-15}"
 t3_waited_hosts=""
 t3_unreachable_hosts=""
 T3_TITLE_PATTERN="^T3 Code"
+# What AeroSpace shows as a T3 Code window's title: T3 Code's own, or the host on
+# an error page. Keeps a T3 Code window out of the Chrome slots even when the
+# origin listing missed it.
+T3_ANY_TITLE_PATTERN='^T3 Code|\.t3\.localhost'
 
 OMNIGENT_APP="Omnigent"
 OMNIGENT_INVALID_TITLE_PATTERN="^Omnigent Update$"
@@ -790,10 +794,11 @@ find_valid_unclaimed_chrome_window_on_workspace() {
   local ws="$1"
   local wid
   for wid in $(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
-    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --argjson t3ids "$(t3_window_ids_json)" \
+    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --arg t3title "$T3_ANY_TITLE_PATTERN" --argjson t3ids "$(t3_window_ids_json)" \
       '.[] | select(
         ."app-name" == $app and
         ((.["window-title"] // "") | test($invalid) | not) and
+        ((.["window-title"] // "") | test($t3title) | not) and
         (.["window-id"] | IN($t3ids[]) | not)
       ) | .["window-id"]' | sort -n); do
     if ! chrome_id_is_claimed "$wid"; then
@@ -807,10 +812,11 @@ find_valid_unclaimed_chrome_window_on_workspace() {
 find_valid_unclaimed_chrome_window() {
   local wid
   for wid in $(aerospace list-windows --all --json 2>/dev/null \
-    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --argjson t3ids "$(t3_window_ids_json)" \
+    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --arg t3title "$T3_ANY_TITLE_PATTERN" --argjson t3ids "$(t3_window_ids_json)" \
       '.[] | select(
         ."app-name" == $app and
         ((.["window-title"] // "") | test($invalid) | not) and
+        ((.["window-title"] // "") | test($t3title) | not) and
         (.["window-id"] | IN($t3ids[]) | not)
       ) | .["window-id"]' | sort -n); do
     if ! chrome_id_is_claimed "$wid"; then
@@ -824,10 +830,11 @@ find_valid_unclaimed_chrome_window() {
 workspace_has_claimed_chrome_window() {
   local ws="$1" wid
   for wid in $(aerospace list-windows --workspace "$ws" --json 2>/dev/null \
-    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --argjson t3ids "$(t3_window_ids_json)" \
+    | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --arg t3title "$T3_ANY_TITLE_PATTERN" --argjson t3ids "$(t3_window_ids_json)" \
       '.[] | select(
         ."app-name" == $app and
         ((.["window-title"] // "") | test($invalid) | not) and
+        ((.["window-title"] // "") | test($t3title) | not) and
         (.["window-id"] | IN($t3ids[]) | not)
       ) | .["window-id"]'); do
     chrome_id_is_claimed "$wid" && return 0
@@ -1151,6 +1158,9 @@ reconcile_t3_window() {
     }
     for _ in $(seq 1 40); do
       sleep 0.5
+      # A listing taken while the page was still loading can miss it, and the
+      # set of Chrome windows it is cached by does not change again.
+      rm -f "$T3_WINDOWS_CACHE"
       window_id=$(t3_window_id_for_origin "$origin") || window_id=""
       [[ -n "$window_id" ]] && break
     done
@@ -1670,10 +1680,11 @@ for entry in "${WORKSPACES[@]}"; do
 done
 
 extra_chrome_ids=$(aerospace list-windows --all --json 2>/dev/null \
-  | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --argjson t3ids "$(t3_window_ids_json)" \
+  | jq -r --arg app "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --arg t3title "$T3_ANY_TITLE_PATTERN" --argjson t3ids "$(t3_window_ids_json)" \
     '.[] | select(
       ."app-name" == $app and
       ((.["window-title"] // "") | test($invalid) | not) and
+      ((.["window-title"] // "") | test($t3title) | not) and
       (.["window-id"] | IN($t3ids[]) | not)
     ) | .["window-id"]' | sort -n) || true
 for wid in $extra_chrome_ids; do
