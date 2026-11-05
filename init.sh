@@ -146,6 +146,17 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
     fi
   fi
 
+  # T3 Code as a UI over this host's Omnigent sessions, on the hub candidates
+  # only (the Mac tunnels to those): one server, t3@checkouts, whose projects
+  # are every ~/checkoutN, with bin/omnigent-acp as its providers; it retires
+  # the per-checkout t3@checkoutN servers it replaced. Never restarts a running
+  # server. See bin/t3-ensure. Ahead of omnigent-agents-ensure, which exits
+  # init.sh when the active hub's server activation is deferred.
+  if [[ "$(uname -s)" == Linux ]] && "$DOTFILES_DIR/bin/omnigent-server-url" --is-candidate; then
+    "$DOTFILES_DIR/bin/t3-ensure" ||
+      warn "t3-ensure failed (T3 Code over Omnigent unavailable on this host)"
+  fi
+
   # Omnigent: reconcile all managed builtin agent bundles (claude-sdk, codex,
   # dvsc, and packaged Polly/Debby) so they show in the CodeCompanion omnigent
   # picker (<leader>aM / <leader>aA). The picker's model/effort steps key off each
@@ -158,16 +169,6 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
       report ERROR "Omnigent server activation deferred or failed; skipping further worker convergence. Rerun init.sh when the server can be refreshed."
       exit 1
     fi
-  fi
-
-  # T3 Code as a UI over this host's Omnigent sessions, on the hub candidates
-  # only (the Mac tunnels to those): one server, t3@checkouts, whose projects
-  # are every ~/checkoutN, with bin/omnigent-acp as its providers; it retires
-  # the per-checkout t3@checkoutN servers it replaced. Never restarts a running
-  # server. See bin/t3-ensure.
-  if [[ "$(uname -s)" == Linux ]] && "$DOTFILES_DIR/bin/omnigent-server-url" --is-candidate; then
-    "$DOTFILES_DIR/bin/t3-ensure" ||
-      warn "t3-ensure failed (T3 Code over Omnigent unavailable on this host)"
   fi
 
   # A work Mac is a client. Retire only a desktop worker we installed, during
