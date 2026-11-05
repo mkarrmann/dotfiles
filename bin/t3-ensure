@@ -47,6 +47,10 @@ Either way each window's new threads start in its own workspace's project
   7. adds each of its directories as a project of the server unless it
      already is one. A project the server bootstrapped itself would count as a
      fresh install and open T3 Code's first-run wizard in every new window.
+     On a candidate it also names each project after its host, "checkout1 ·
+     cco": every window lists both candidates' projects, and a name is all a
+     project row shows (T3 Code marks only the other server's copy, with an
+     icon). A name changed in the UI is put back on the next run.
 
 The Mac's workspace windows pair on their own: bin-macos/nvs-tunnels has
 bin/t3-pairing-tokens mint tokens in its session, and startup-windows opens a
@@ -103,6 +107,7 @@ BUILTIN_PROVIDERS = ("codex", "claudeAgent")
 class Server(NamedTuple):
     name: str  # t3@NAME.service, ~/.t3-workspaces/NAME
     projects: tuple[Path, ...]
+    label: str | None = None  # appended to each project's name, as "checkout1 · cco"
 
 
 def log(message: str) -> None:
@@ -198,9 +203,17 @@ def checkout_names(directory: Path) -> list[str]:
     return sorted((p.name for p in directory.iterdir() if p.is_dir() and CHECKOUT.fullmatch(p.name)), key=checkout_number)
 
 
+def host_label() -> str | None:
+    """This host's region, as startup-windows labels its servers: devvm1.cco0.facebook.com is "cco"."""
+    parts = output("hostname", "-f").strip().split(".")
+    if len(parts) < 3:
+        return None
+    return parts[1].rstrip("0123456789") or None
+
+
 def work_servers() -> list[Server]:
     projects = tuple(Path.home() / name for name in checkout_names(Path.home()))
-    return [Server(WORK_SERVER, projects)] if projects else []
+    return [Server(WORK_SERVER, projects, host_label())] if projects else []
 
 
 def desktop_server() -> Server:
@@ -291,6 +304,14 @@ def add_project(t3: Path, server: Server, directory: Path) -> bool:
     return False
 
 
+def name_project(t3: Path, server: Server, directory: Path, title: str) -> bool:
+    env = {**os.environ, "T3CODE_HOME": str(WORKSPACES_HOME / server.name)}
+    result = subprocess.run([str(t3), "project", "rename", str(directory), title], env=env, capture_output=True, text=True)
+    if result.returncode == 0 and result.stdout.startswith("Renamed"):
+        log(f"named {directory} {title!r} on t3@{server.name}")
+    return result.returncode == 0
+
+
 def systemctl(*args: str) -> int:
     return subprocess.run(["systemctl", "--user", *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
 
@@ -367,6 +388,9 @@ def main() -> int:
         for directory in server.projects:
             if not add_project(t3, server, directory):
                 log(f"WARNING: could not add {directory} as {unit}'s project")
+                failed = True
+            elif server.label and not name_project(t3, server, directory, f"{directory.name} \u00b7 {server.label}"):
+                log(f"WARNING: could not name {unit}'s project {directory}")
                 failed = True
     return 1 if failed else 0
 

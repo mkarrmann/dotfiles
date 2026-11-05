@@ -72,6 +72,7 @@ class T3EnsureTest(unittest.TestCase):
         write_fake_systemctl(self.bin / "systemctl", self.calls, self.units)
         write_exe(self.bin / "curl", "exit 22\n")
         write_exe(self.bin / "uname", 'echo "$FAKE_UNAME"\n')
+        write_exe(self.bin / "hostname", 'echo "${FAKE_FQDN:-devvm1.cco0.facebook.com}"\n')
         self.os = "Linux"
 
     def run_ensure(self):
@@ -135,6 +136,26 @@ class T3EnsureTest(unittest.TestCase):
         self.assertEqual([p.name for p in (self.home / ".t3-workspaces").iterdir()], ["checkouts"])
         self.assertIn("shim --help", self.calls_made())
         self.assertFalse([c for c in self.calls_made() if c.startswith("startup-windows")])
+
+    def test_work_names_each_checkout_after_its_host(self):
+        result = self.run_ensure()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        home = self.home / ".t3-workspaces/checkouts"
+        self.assertEqual(
+            sorted(c for c in self.calls_made() if c.startswith("t3 project rename")),
+            sorted(f"t3 project rename {self.home / n} {n} \u00b7 cco home={home}" for n in ("checkout1", "checkout2")),
+        )
+
+    def test_a_project_that_cannot_be_named_is_reported(self):
+        write_exe(
+            self.bin / "t3",
+            f'echo "t3 $* home=$T3CODE_HOME" >> {self.calls}\n'
+            '[ "$2" = rename ] && exit 1\n'
+            "exit 0\n",
+        )
+        result = self.run_ensure()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"WARNING: could not name t3@checkouts.service's project {self.home / 'checkout1'}", result.stdout)
 
     def test_work_retires_the_server_per_checkout(self):
         self.run_unit("t3@checkout1.service")
@@ -219,6 +240,7 @@ class T3EnsureTest(unittest.TestCase):
         write_exe(
             self.bin / "t3",
             f'echo "t3 $* home=$T3CODE_HOME" >> {self.calls}\n'
+            '[ "$2" = add ] || exit 0\n'
             "echo \"ProjectAlreadyExistsError: An active project already exists for '$3'.\" >&2; exit 1\n",
         )
         result = self.run_ensure()
@@ -475,6 +497,7 @@ class T3WorkspaceServeTest(unittest.TestCase):
         write_exe(self.home / ".local/bin/t3", 'echo "t3 $* cwd=$PWD home=$T3CODE_HOME"\n')
         self.bin = self.root / "bin"
         write_exe(self.bin / "uname", 'echo "${FAKE_UNAME:-Linux}"\n')
+        write_exe(self.bin / "hostname", 'echo "${FAKE_FQDN:-devvm1.cco0.facebook.com}"\n')
 
     def serve(self, name: str, profile: str, **env: str):
         full_env = {

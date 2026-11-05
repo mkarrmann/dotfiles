@@ -30,7 +30,8 @@ session behind a thread likewise runs on that host.
   (`codex-native-ui`) providers in the shared settings (see "Settings in the
   dotfiles"), to which it links `~/.t3-workspaces/checkouts`', turns off T3
   Code's built-in Codex and Claude (they bypass Omnigent; re-enabling one in
-  Settings sticks), adds every `~/checkoutN` as a project, warms uv's cache for
+  Settings sticks), adds every `~/checkoutN` as a project, named after its host
+  (`checkout1 · cco`, so the windows can tell CCO's from FTW's), warms uv's cache for
   the shim, and enables `t3@checkouts` (`systemd/t3@.service`,
   `bin/t3-workspace-serve`) once. It also retires the server per checkout this
   replaced: every enabled `t3@checkoutN` is disabled and stopped, and its state
