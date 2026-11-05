@@ -39,13 +39,16 @@ if ! is_ready; then
 fi
 
 # Reconnect loop — if the server dies (e.g. nvs-restart), wait for the
-# watchdog to relaunch it (~5s) and reconnect automatically.
+# watchdog to relaunch it (~5s) and reconnect automatically. The tunnel can be
+# gone far longer (startup-windows rebuilding it, waiting on Duo), so wait as
+# long as for the first connection: a client that gave up leaves a dead window
+# startup-windows only moves.
 while true; do
   nvim --server "localhost:$port" --remote-ui || true
 
   echo "Server disconnected. Reconnecting (session: $session)..."
-  if ! wait_for_server 120; then
-    echo "ERROR: server did not come back after 120s" >&2
+  if ! wait_for_server 7200; then
+    echo "ERROR: server did not come back after 2h" >&2
     exit 1
   fi
 done
