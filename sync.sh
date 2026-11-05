@@ -847,12 +847,15 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     mkdir -p "$HOME/Library/LaunchAgents" \
              "$HOME/.local/state/omnigent-host" \
              "$HOME/.local/state/omnigent-tls" \
-             "$HOME/.local/state/omnigent-tunnel"
+             "$HOME/.local/state/omnigent-tunnel" \
+             "$HOME/.local/state/t3-local"
     sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-host.plist"
     sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-tls.plist"
     # Owns OMNIGENT_PORT. Supervised rather than run from a Ghostty window
     # because `omnigent stop`/`omnigent update` kill whatever holds :6767.
     sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-tunnel.plist"
+    # The Mac's own T3 Code server, t3@local (bin/t3-ensure, docs/t3code-omnigent.md).
+    sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.t3-local.plist"
     # The Omnigent server moved to the HUB devserver (systemd omnigent-server).
     # Retire the old Mac-local server job so it can't bind :6767 and collide with
     # the local failover proxy that exposes the HUB server on Mac localhost.

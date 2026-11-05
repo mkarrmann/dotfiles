@@ -171,6 +171,13 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
     fi
   fi
 
+  # The Mac's own T3 Code server, t3@local (launchd, loaded by sync.sh), whose
+  # project is ~/dotfiles: its providers and project. See bin/t3-ensure.
+  if [[ "$(uname -s)" == Darwin ]]; then
+    "$DOTFILES_DIR/bin/t3-ensure" ||
+      warn "t3-ensure failed (the Mac's T3 Code server unavailable)"
+  fi
+
   # A work Mac is a client. Retire only a desktop worker we installed, during
   # explicit convergence; sync.sh leaves running jobs alone.
   if [[ "$(uname -s)" == Darwin ]]; then

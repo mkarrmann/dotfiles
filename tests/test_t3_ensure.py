@@ -71,6 +71,8 @@ class T3EnsureTest(unittest.TestCase):
         write_exe(self.bin / "t3", f'echo "t3 $* home=$T3CODE_HOME" >> {self.calls}\n')
         write_fake_systemctl(self.bin / "systemctl", self.calls, self.units)
         write_exe(self.bin / "curl", "exit 22\n")
+        write_exe(self.bin / "uname", 'echo "$FAKE_UNAME"\n')
+        self.os = "Linux"
 
     def run_ensure(self):
         env = {
@@ -78,6 +80,7 @@ class T3EnsureTest(unittest.TestCase):
             "DOTFILES_DIR": str(self.dotfiles),
             "DOTFILES_PROFILE": self.profile,
             "PATH": f"{self.bin}:/usr/bin:/bin",
+            "FAKE_UNAME": self.os,
         }
         return subprocess.run([str(SCRIPT)], env=env, capture_output=True, text=True)
 
@@ -199,7 +202,6 @@ class T3EnsureTest(unittest.TestCase):
         self.assertFalse((self.home / ".local/bin/t3").exists())
         self.assertFalse((self.home / ".t3-workspaces").exists())
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "t3-ensure takes the desktop path only on Linux")
     def test_desktop_runs_one_server_with_every_t3_row_as_a_project(self):
         dotfiles, omnigent = self.home / "dotfiles", self.home / "repos/omnigent"
         dotfiles.mkdir()
@@ -224,7 +226,6 @@ class T3EnsureTest(unittest.TestCase):
         self.assertFalse([c for c in self.calls_made() if "checkout1" in c])
         self.assertEqual(self.units_in("active"), ["t3@desktop.service"])
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "t3-ensure takes the desktop path only on Linux")
     def test_desktop_retires_every_other_server(self):
         (self.home / "dotfiles").mkdir()
         self.use_desktop_layout({"dotfiles": self.home / "dotfiles"})
@@ -253,7 +254,6 @@ class T3EnsureTest(unittest.TestCase):
         rerun = self.run_ensure()
         self.assertEqual((rerun.returncode, rerun.stdout), (0, ""))
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "t3-ensure takes the desktop path only on Linux")
     def test_desktop_reports_a_server_it_could_not_retire(self):
         (self.home / "dotfiles").mkdir()
         self.use_desktop_layout({"dotfiles": self.home / "dotfiles"})
@@ -265,7 +265,6 @@ class T3EnsureTest(unittest.TestCase):
         self.assertIn("WARNING: could not disable t3@gatech.service", result.stdout)
         self.assertEqual(self.units_in("active"), ["t3@desktop.service", "t3@gatech.service"])
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "t3-ensure takes the desktop path only on Linux")
     def test_desktop_gives_the_app_its_own_omnigent_providers(self):
         app_settings = self.home / ".t3/userdata/settings.json"
         app_settings.parent.mkdir(parents=True)
@@ -290,7 +289,6 @@ class T3EnsureTest(unittest.TestCase):
         self.assertEqual(self.run_ensure().returncode, 0)
         self.assertFalse((self.home / ".t3").exists())
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "t3-ensure takes the desktop path only on Linux")
     def test_desktop_layout_failure_fails_clearly(self):
         self.profile = "desktop"
         write_exe(self.dotfiles / "bin-linux/startup-windows", "echo 'ERROR: bad table' >&2; exit 1\n")
@@ -402,6 +400,38 @@ class T3CliInstallTest(unittest.TestCase):
         self.assertEqual(self.fetches(), [])
 
 
+class T3EnsureMacTest(unittest.TestCase):
+    """The Mac's own server: launchd runs it, so t3-ensure only configures it."""
+
+    run_ensure = T3EnsureTest.run_ensure
+    calls_made = T3EnsureTest.calls_made
+    settings = T3EnsureTest.settings
+    run_unit = T3EnsureTest.run_unit
+
+    def setUp(self):
+        T3EnsureTest.setUp(self)
+        self.os = "Darwin"
+        (self.home / "dotfiles").mkdir()
+
+    def test_mac_configures_its_local_server_with_dotfiles_as_its_project(self):
+        self.run_unit("t3@checkout1.service")
+        result = self.run_ensure()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        providers = self.settings("local")["providerInstances"]
+        self.assertEqual(providers["omnigent-claude"]["config"]["commandArgs"], ["--agent", "claude-native-ui"])
+        self.assertEqual(providers["codex"], {"driver": "codex", "enabled": False})
+        self.assertIn(f"t3 project add {self.home / 'dotfiles'} home={self.home / '.t3-workspaces/local'}", self.calls_made())
+        # No systemd here: nothing enabled, started or retired, and no work server.
+        self.assertFalse([c for c in self.calls_made() if c.startswith("systemctl")])
+        self.assertFalse((self.home / ".t3-workspaces/checkouts").exists())
+
+    def test_mac_without_dotfiles_has_no_server_to_configure(self):
+        (self.home / "dotfiles").rmdir()
+        result = self.run_ensure()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((self.home / ".t3-workspaces/local").exists())
+
+
 class T3WorkspaceServeTest(unittest.TestCase):
     """Runs against this checkout's own bin-linux/startup-windows table and topology.env."""
 
@@ -412,13 +442,15 @@ class T3WorkspaceServeTest(unittest.TestCase):
         self.home = self.root / "home"
         self.home.mkdir()
         write_exe(self.home / ".local/bin/t3", 'echo "t3 $* cwd=$PWD home=$T3CODE_HOME"\n')
+        self.bin = self.root / "bin"
+        write_exe(self.bin / "uname", 'echo "${FAKE_UNAME:-Linux}"\n')
 
     def serve(self, name: str, profile: str, **env: str):
         full_env = {
             "HOME": str(self.home),
             "DOTFILES_DIR": str(ROOT),
             "DOTFILES_PROFILE": profile,
-            "PATH": "/usr/bin:/bin",
+            "PATH": f"{self.bin}:/usr/bin:/bin",
             **env,
         }
         return subprocess.run([str(SERVE), name], env=full_env, capture_output=True, text=True)
@@ -455,7 +487,19 @@ class T3WorkspaceServeTest(unittest.TestCase):
         (self.home / "checkout3").mkdir()
         result = self.serve("checkout3", "work")
         self.assertEqual(result.returncode, 2)
-        self.assertIn("the work hubs' t3 server is 'checkouts', not 'checkout3'", result.stderr)
+        self.assertIn("this host's t3 server is 'checkouts', not 'checkout3'", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_mac_serves_its_local_server_from_home_on_the_topologys_port(self):
+        topology = self.root / "topology.env"
+        topology.write_text("T3_PORT=4100\n")
+        result = self.serve("local", "work", FAKE_UNAME="Darwin", OMNIGENT_TOPOLOGY_FILE=str(topology))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, self.expected(4100, self.home, "local"))
+
+    def test_mac_rejects_the_work_hubs_server(self):
+        result = self.serve("checkouts", "work", FAKE_UNAME="Darwin")
+        self.assertEqual(result.returncode, 2)
         self.assertEqual(result.stdout, "")
 
     def test_work_rejects_a_slot_name(self):

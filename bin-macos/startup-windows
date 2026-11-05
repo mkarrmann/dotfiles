@@ -88,7 +88,7 @@ trap 'exit 143' TERM
 #   cmux:     ws|cmux|title|title_match
 #   chrome:   ws|chrome|title
 #   omnigent: ws|omnigent|title
-#   t3:       ws|t3|title   (a window on its devserver's T3 Code server, from bin-macos/workspaces)
+#   t3:       ws|t3|title   (a window on its host's T3 Code server, the Mac's for a local workspace, from bin-macos/workspaces)
 # title_match is a regex used to find existing windows in AeroSpace.
 # ws is the AeroSpace workspace to place the window in.
 # Multiple entries can share a workspace (accordion layout toggles between them).
@@ -97,6 +97,7 @@ WORKSPACES=(
   "1|ghostty|Local MacOS|^Local MacOS$|~|while true; do nvim --cmd 'set title titlestring=Local\\ MacOS'; sleep 0.5; done"
   "1|chrome|Chrome: ws1"
   "1|omnigent|Omnigent: ws1"
+  "1|t3|T3: ws1"
   "T|ghostty|FTW: tunnels|FTW.*tunnels|~|nvs-tunnels devvm36111.ftw0.facebook.com FTW-checkout1:~/checkout1 FTW-checkout2:~/checkout2 FTW-checkout3:~/checkout3"
   "T|ghostty|CCO: tunnels|CCO.*tunnels|~|nvs-tunnels devvm20365.cco0.facebook.com CCO-checkout1:~/checkout1 CCO-checkout2:~/checkout2 CCO-checkout3:~/checkout3 CCO-checkout4:~/checkout4"
   # No "Omnigent: tunnel" entry: mac_proxy is owned by the launchd job
@@ -169,11 +170,11 @@ chrome_restore_settled=false
 # Getting them off the managed workspaces is arrange-workspaces' job
 # (NON_LAYOUT_TITLE_PATTERN); an overlay does not follow its parent across
 # workspaces, so nothing here can keep one next to the window it belongs to.
-# Each devserver workspace's T3 Code window is a Chrome app window running in
-# that workspace's own Chrome profile, served by its devserver's one T3 Code
-# server (t3@checkouts, systemd/t3@.service), whose projects are every checkout
-# there, and linked to every other devserver's, so each window lists, searches
-# and starts threads on all of them; a window this script opens starts its new
+# Each workspace's T3 Code window is a Chrome app window running in that
+# workspace's own Chrome profile, served by its host's one T3 Code server (a
+# devserver's t3@checkouts, whose projects are every checkout there; the Mac's
+# t3@local, whose project is ~/dotfiles, for workspace 1), and linked to every
+# other one, so each window lists, searches and starts threads on all of them; a window this script opens starts its new
 # threads in its own checkout (t3-window-scope). Titles cannot tell these windows apart (they share one,
 # or show an error page's host before the tunnel is up), so the profile of the
 # owning Chrome process identifies a window's workspace and keeps it out of the
@@ -861,13 +862,18 @@ workspace_has_claimed_omnigent_window() {
   return 1
 }
 
-# t3_workspace_window WS -> "PROFILE_DIR<TAB>URL<TAB>DEVSERVER<TAB>CHECKOUT" for
-# the workspace's T3 Code window.
+# T3 Code servers by host: a devserver's FQDN, or this for the Mac's own server
+# (t3@local, launchd/com.mkarrmann.t3-local.plist), which mints its tokens here.
+T3_LOCAL_HOST="local"
+
+# t3_workspace_window WS -> "PROFILE_DIR<TAB>URL<TAB>HOST<TAB>PROJECT" for the
+# workspace's T3 Code window: PROJECT is ~/checkoutN on a devserver (its home is
+# not known here), an absolute path on the Mac.
 t3_workspace_window() {
   local ws="$1" row url origin
-  row=$(workspaces --json 2>/dev/null | jq -r --arg ws "$ws" '
+  row=$(workspaces --json 2>/dev/null | jq -r --arg ws "$ws" --arg local "$T3_LOCAL_HOST" '
     .workspaces[] | select(.workspace == $ws and (.t3Url // "") != "")
-    | [.t3Url, .host, (.checkout | split("/") | last)] | @tsv') || return 1
+    | [.t3Url, (.host // $local), .t3Project] | @tsv') || return 1
   [[ -n "$row" ]] || return 1
   url="${row%%$'\t'*}"
   origin="${url#http://}"
@@ -875,15 +881,17 @@ t3_workspace_window() {
   printf '%s/%s\t%s\n' "$T3_CHROME_DATA_ROOT" "${origin%.t3.localhost}" "$row"
 }
 
-# t3_links WS -> "DEVSERVER<TAB>URL<TAB>LABEL" for each other devserver's T3 Code
-# server, which workspace WS's window links: its tunnel forward here, and the
-# prefix its nvs sessions share (CCO, FTW).
+# t3_links WS -> "HOST<TAB>URL<TAB>LABEL" for each other T3 Code server, which
+# workspace WS's window links: its port here (a devserver's tunnel forward, the
+# Mac's own server), and a label (the prefix a devserver's nvs sessions share,
+# CCO or FTW; Mac).
 t3_links() {
-  workspaces --json 2>/dev/null | jq -r --arg ws "$1" '
-    [.workspaces[] | select(.kind == "devserver" and (.t3Url // "") != "")] as $rows
+  workspaces --json 2>/dev/null | jq -r --arg ws "$1" --arg local "$T3_LOCAL_HOST" '
+    [.workspaces[] | select((.t3Url // "") != "") | .host //= $local] as $rows
     | ($rows[] | select(.workspace == $ws) | .host) as $own
     | [$rows[] | select(.host != $own)] | group_by(.host)[] | first
-    | [.host, ("http://127.0.0.1:" + (.t3Url | capture(":(?<port>[0-9]+)/").port)), (.nvsSession | split("-") | first)]
+    | [.host, ("http://127.0.0.1:" + (.t3Url | capture(":(?<port>[0-9]+)/").port)),
+       (if .host == $local then "Mac" else (.nvsSession | split("-") | first) end)]
     | @tsv'
 }
 
@@ -928,6 +936,12 @@ t3_environment_id() {
 # one; nothing when none comes.
 t3_take_pairing_token() {
   local dir="$T3_PAIRING_DIR/$1" deadline=$((SECONDS + ${2:-0})) file token
+  if [[ "$1" == "$T3_LOCAL_HOST" ]]; then
+    # The Mac's own server mints one on the spot.
+    T3CODE_HOME="$HOME/.t3-workspaces/local" "${T3_BIN:-$HOME/.local/bin/t3}" pair --ttl 5m --label startup-windows 2>/dev/null \
+      | sed -n 's/^Token: //p' | tr -d '\r' || true
+    return 0
+  fi
   while true; do
     find "$dir" -type f -mmin "+$T3_PAIRING_TOKEN_MAX_AGE_MIN" -delete 2>/dev/null || true
     file=$(find "$dir" -type f 2>/dev/null | head -n 1 || true)
@@ -1048,7 +1062,7 @@ t3_collect_links() {
 # move it there. A window found is left as it is; a window this opens starts its
 # new threads in the workspace's checkout. Problems count in $failures.
 reconcile_t3_window() {
-  local ws="$1" title="$2" row profile url host checkout workdir window_id token open_url created=false
+  local ws="$1" title="$2" row profile url host workdir window_id token open_url created=false
   local fresh_profile=false wait scope_rc own_env=""
   row=$(t3_workspace_window "$ws") || row=""
   if [[ -z "$row" ]]; then
@@ -1056,11 +1070,7 @@ reconcile_t3_window() {
     ((failures++)) || true
     return 0
   fi
-  IFS=$'\t' read -r profile url host checkout <<< "$row"
-  # The server is on the devserver, so its project is named by its path under
-  # the server's home, which t3-window-scope resolves.
-  # shellcheck disable=SC2088
-  workdir="~/$checkout"
+  IFS=$'\t' read -r profile url host workdir <<< "$row"
   window_id=$(t3_window_ids_for_profile "$profile" | head -1) || window_id=""
   # A window left on an error page (it opened before its tunnel was up) never
   # retries, and its title is the host rather than T3 Code's; replace it.
@@ -1099,8 +1109,9 @@ reconcile_t3_window() {
     # A window opened on a server that does not answer lands on Chrome's error
     # page and cannot be paired or scoped; the next run opens it instead.
     if [[ -z "$own_env" ]]; then
-      echo "WARNING: [$title] not opening a window on $host's T3 Code server; once its tunnel" >&2
-      echo "         is up (approve Duo in its tunnel window) and t3@checkouts runs there, rerun" >&2
+      echo "WARNING: [$title] not opening a window on $host's T3 Code server; once it answers" >&2
+      echo "         (a devserver's tunnel up, Duo approved, t3@checkouts running there; the Mac's" >&2
+      echo "         com.mkarrmann.t3-local loaded), rerun" >&2
       ((failures++)) || true
       return 0
     fi

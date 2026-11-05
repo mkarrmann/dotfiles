@@ -34,6 +34,7 @@ done
 CHROME_APP="Google Chrome"
 T3_CHROME_DATA_ROOT="/Users/me/.t3-workspace-chrome"
 T3_SERVERS_DIR=".t3-servers"
+T3_LOCAL_HOST="local"
 T3_PAIRING_TOKEN_MAX_AGE_MIN=660
 T3_PAIRING_TOKEN_WAIT=0
 T3_SERVER_WAIT=0
@@ -42,7 +43,7 @@ t3_unreachable_hosts=""
 workspaces() {
   printf '%s' '{"workspaces":[
     {"workspace":"1","kind":"local"},
-    {"workspace":"6","kind":"devserver","host":"cco.example.com","checkout":"/home/me/checkout3","t3Url":"http://cco-checkout3.t3.localhost:13780/"}]}'
+    {"workspace":"6","kind":"devserver","host":"cco.example.com","checkout":"/home/me/checkout3","t3Url":"http://cco-checkout3.t3.localhost:13780/","t3Project":"~/checkout3"}]}'
 }
 
 # Windows 10 and 11 are regular Chrome, 20 belongs to checkout3's profile, 30 to
@@ -68,8 +69,8 @@ ps() {
   esac
 }
 
-check "a devserver workspace resolves to its profile, URL, devserver and checkout" \
-  $'/Users/me/.t3-workspace-chrome/cco-checkout3\thttp://cco-checkout3.t3.localhost:13780/\tcco.example.com\tcheckout3' \
+check "a devserver workspace resolves to its profile, URL, devserver and project under that host's home" \
+  $'/Users/me/.t3-workspace-chrome/cco-checkout3\thttp://cco-checkout3.t3.localhost:13780/\tcco.example.com\t~/checkout3' \
   "$(t3_workspace_window 6)"
 check "a workspace without a T3 Code server resolves to nothing" "" "$(t3_workspace_window 1 || true)"
 check "only windows of that profile's Chrome process match" "20" \
@@ -128,10 +129,10 @@ curl() { return 0; }
 workspaces() {
   printf '%s' '{"workspaces":[
     {"workspace":"1","kind":"local"},
-    {"workspace":"3","kind":"devserver","host":"ftw.example.com","checkout":"/home/me/checkout1","nvsSession":"FTW-checkout1","t3Url":"http://ftw-checkout1.t3.localhost:23780/"},
-    {"workspace":"4","kind":"devserver","host":"cco.example.com","checkout":"/home/me/checkout2","nvsSession":"CCO-checkout2","t3Url":"http://cco-checkout2.t3.localhost:13780/"},
-    {"workspace":"5","kind":"devserver","host":"ftw.example.com","checkout":"/home/me/checkout2","nvsSession":"FTW-checkout2","t3Url":"http://ftw-checkout2.t3.localhost:23780/"},
-    {"workspace":"6","kind":"devserver","host":"cco.example.com","checkout":"/home/me/checkout3","nvsSession":"CCO-checkout3","t3Url":"http://cco-checkout3.t3.localhost:13780/"}]}'
+    {"workspace":"3","kind":"devserver","host":"ftw.example.com","checkout":"/home/me/checkout1","nvsSession":"FTW-checkout1","t3Url":"http://ftw-checkout1.t3.localhost:23780/","t3Project":"~/checkout1"},
+    {"workspace":"4","kind":"devserver","host":"cco.example.com","checkout":"/home/me/checkout2","nvsSession":"CCO-checkout2","t3Url":"http://cco-checkout2.t3.localhost:13780/","t3Project":"~/checkout2"},
+    {"workspace":"5","kind":"devserver","host":"ftw.example.com","checkout":"/home/me/checkout2","nvsSession":"FTW-checkout2","t3Url":"http://ftw-checkout2.t3.localhost:23780/","t3Project":"~/checkout2"},
+    {"workspace":"6","kind":"devserver","host":"cco.example.com","checkout":"/home/me/checkout3","nvsSession":"CCO-checkout3","t3Url":"http://cco-checkout3.t3.localhost:13780/","t3Project":"~/checkout3"}]}'
 }
 check "a window links every other devserver's server once, through its forward here, by its sessions' prefix" \
   $'ftw.example.com\thttp://127.0.0.1:23780\tFTW' "$(t3_links 6)"
@@ -353,6 +354,34 @@ check "a window whose own server does not answer is not opened, and its token is
 check "which warns once, saying to rerun" "1 1" "$failures $(grep -c 'rerun' "$SIM/out")"
 reconcile_t3_window 4 "T3: ws4" > "$SIM/out" 2>&1
 check "and the host's other windows do not wait for it again" "0 2" "$(grep -c 'did not answer' "$SIM/out") $failures"
+
+echo "== the Mac's own server, workspace 1's =="
+workspaces_without_local() { :; }
+eval "$(declare -f workspaces | sed '1s/workspaces/workspaces_without_local/')"
+workspaces() {
+  workspaces_without_local | jq -c '.workspaces[0] += {"t3Url": "http://local.t3.localhost:3780/", "t3Project": "/Users/me/dotfiles"}'
+}
+check "workspace 1 resolves to the Mac's server and its absolute project" \
+  "$T3_CHROME_DATA_ROOT/local	http://local.t3.localhost:3780/	local	/Users/me/dotfiles" "$(t3_workspace_window 1)"
+check "workspace 1's window links both devservers" $'cco.example.com\thttp://127.0.0.1:13780\tCCO\nftw.example.com\thttp://127.0.0.1:23780\tFTW' \
+  "$(t3_links 1)"
+check "and a devserver window links the Mac's server as well" $'ftw.example.com\thttp://127.0.0.1:23780\tFTW\nlocal\thttp://127.0.0.1:3780\tMac' \
+  "$(t3_links 6)"
+T3_BIN="$SIM/t3"
+printf '#!/bin/sh\n[ "$T3CODE_HOME" = "$HOME/.t3-workspaces/local" ] && printf "Token: LOCALTOKEN\\n"\n' > "$T3_BIN"
+chmod +x "$T3_BIN"
+check "the Mac's server mints its token on the spot, from its own state" "LOCALTOKEN" "$(t3_take_pairing_token local)"
+sim_reset
+printf '#!/bin/sh\n[ "$T3CODE_HOME" = "$HOME/.t3-workspaces/local" ] && printf "Token: LOCALTOKEN\\n"\n' > "$T3_BIN"
+chmod +x "$T3_BIN"
+pool cco.example.com CCOTOKEN
+pool ftw.example.com FTWTOKEN
+P1="$T3_CHROME_DATA_ROOT/local"
+reconcile_t3_window 1 "T3: ws1" > "$SIM/out" 2>&1
+check "workspace 1 gets a window on the Mac's server, paired with a local token, linked to both devservers, in ~/dotfiles" \
+  "102 1 http://local.t3.localhost:3780/pair#token=LOCALTOKEN|$P1 http://local.t3.localhost:3780 /Users/me/dotfiles --link http://127.0.0.1:13780 CCO --link http://127.0.0.1:23780 FTW | CCOTOKEN FTWTOKEN" \
+  "$(windows_of "$P1")|$(cat "$SIM/scoped")"
+eval "$(declare -f workspaces_without_local | sed '1s/workspaces_without_local/workspaces/')"
 
 sim_reset
 reconcile_t3_window 1 "T3: ws1" > "$SIM/out" 2>&1

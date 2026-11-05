@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The Mac's own T3 Code server, t3@local: a UI over the Mac's Omnigent
+  sessions (this Mac is an Omnigent host) whose project is ~/dotfiles, on
+  127.0.0.1:T3_PORT. Workspace 1's T3 Code window is served by it, and every
+  other workspace window links it (bin-macos/startup-windows). bin/t3-ensure
+  registers its Omnigent providers and adds its project; see
+  docs/t3code-omnigent.md.
+
+  KeepAlive: t3 serve is a long-running daemon. PATH carries ~/.local/bin, where
+  t3 and the uv that runs bin/omnigent-acp live.
+
+  Activation is automatic via ~/dotfiles/sync.sh.
+
+  Quick verify:
+    launchctl print gui/$UID/com.mkarrmann.t3-local | head
+    curl -s http://127.0.0.1:3780/.well-known/t3/environment
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.mkarrmann.t3-local</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/mkarrmann/dotfiles/bin/t3-workspace-serve</string>
+      <string>local</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/Users/mkarrmann/.local/bin:/Users/mkarrmann/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/mkarrmann/.local/state/t3-local/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mkarrmann/.local/state/t3-local/stderr.log</string>
+  </dict>
+</plist>

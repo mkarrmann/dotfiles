@@ -3,9 +3,12 @@
 
     t3-ensure
 
-Idempotent; init.sh runs it on the Omnigent hub candidates and the Linux
-desktop. Each runs one server, NAME. On a candidate NAME is "checkouts" and its
-projects are every ~/checkoutN. On the desktop NAME is the layout's t3Server
+Idempotent; init.sh runs it on the Omnigent hub candidates, the work Mac and
+the Linux desktop. Each runs one server, NAME. On a candidate NAME is
+"checkouts" and its projects are every ~/checkoutN. On the Mac NAME is "local",
+its project ~/dotfiles (workspace 1's), and launchd runs it
+(launchd/com.mkarrmann.t3-local.plist, loaded by sync.sh), so steps 4 and 5
+below do not apply there. On the desktop NAME is the layout's t3Server
 (bin-linux/startup-windows --print-layout) and its projects are the workdirs of
 the table's t3 rows (one whose workdir is missing is skipped with a warning).
 Either way each window's new threads start in its own workspace's project
@@ -64,6 +67,10 @@ DESKTOP_APP_SETTINGS = Path.home() / ".t3/userdata/settings.json"
 SHIM = DOTFILES / "bin/omnigent-acp"
 CHECKOUT = re.compile(r"checkout[0-9]+")
 WORK_SERVER = "checkouts"  # bin/t3-workspace-serve, bin/t3-pairing-tokens
+# The Mac's server (launchd/com.mkarrmann.t3-local.plist, not systemd) and its
+# project, workspace 1's (bin-macos/workspaces).
+MAC_SERVER = "local"
+MAC_PROJECTS = (Path.home() / "dotfiles",)
 # Step 1's t3 CLI, from https://github.com/pingdotgg/t3code/releases/tag/v0.1.6,
 # the release omnigent_config/t3-desktop-app.env pins the desktop app to. Each
 # checksum is the archive's line in that release's SHA256SUMS (GitHub's asset
@@ -198,8 +205,18 @@ def desktop_server() -> Server:
     return Server(name, tuple(dict.fromkeys(projects)))
 
 
+def mac_servers() -> list[Server]:
+    projects = tuple(p for p in MAC_PROJECTS if p.is_dir())
+    return [Server(MAC_SERVER, projects)] if projects else []
+
+
+def host_os() -> str:
+    """`uname -s`: Linux or Darwin."""
+    return output("uname", "-s").strip()
+
+
 def on_linux_desktop() -> bool:
-    return sys.platform == "linux" and output(str(DOTFILES / "bin/dotfiles-profile")).strip() == "desktop"
+    return host_os() == "Linux" and output(str(DOTFILES / "bin/dotfiles-profile")).strip() == "desktop"
 
 
 def provider_instances(shim: Path) -> dict[str, dict]:
@@ -279,26 +296,29 @@ def main() -> int:
     if t3 is None:
         log(f"installing the t3 CLI {T3_CLI_VERSION}")
         t3 = install_t3(T3_CLI_VERSION, T3_CLI_SHA256, T3_HOME, T3_BIN_DIR)
-    desktop = on_linux_desktop()
+    mac = host_os() == "Darwin"
+    desktop = not mac and on_linux_desktop()
     if desktop and merge_settings(DESKTOP_APP_SETTINGS, SHIM):
         log("registered the Omnigent providers for the T3 Code desktop app")
     layout_server = desktop_server() if desktop else None
     if layout_server is not None:
         servers = [layout_server] if layout_server.projects else []
     else:
-        servers = work_servers()
+        servers = mac_servers() if mac else work_servers()
     for server in servers:
         if merge_settings(WORKSPACES_HOME / server.name / "userdata/settings.json", SHIM):
             log(f"registered the Omnigent providers for t3@{server.name}")
     if subprocess.run([str(SHIM), "--help"], stdout=subprocess.DEVNULL).returncode != 0:
         log("WARNING: omnigent-acp did not start; the Omnigent providers will fail until it does")
-    if layout_server is not None:
+    if mac:
+        failed = False
+    elif layout_server is not None:
         failed = not retire_servers(old_desktop_servers(), layout_server.name)
     else:
         failed = not retire_servers(old_checkout_servers(), WORK_SERVER)
     for server in servers:
         unit = f"t3@{server.name}.service"
-        if systemctl("is-enabled", "--quiet", unit) != 0:
+        if not mac and systemctl("is-enabled", "--quiet", unit) != 0:
             if systemctl("enable", "--now", unit) == 0:
                 log(f"started {unit}")
             else:

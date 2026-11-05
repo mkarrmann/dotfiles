@@ -19,8 +19,12 @@ set -euo pipefail
 # Usage: workspaces [--json]
 
 # Format:
-#   local:      ws|local|cwd|origin
+#   local:      ws|local|cwd|origin[|t3_project]
 #   devserver:  ws|devserver|fqdn|checkout|nvs_session|origin
+#
+# t3_project is the project a local workspace's T3 Code window starts its new
+# threads in, on the Mac's own server (t3@local, launchd/com.mkarrmann.t3-local.plist);
+# a local row without one has no T3 Code window.
 #
 # origin is the hostname that workspace's Omnigent window is pinned to. Each is
 # a distinct ORIGIN on the single TLS listener, which is what makes the app's
@@ -28,7 +32,7 @@ set -euo pipefail
 # services/omnigent-tls/Caddyfile. Keep these two in step -- tests/test-workspaces.sh
 # fails if the Caddyfile's address list and this table disagree.
 WORKSPACES=(
-  "1|local|~|local.omnigent.localhost"
+  "1|local|~|local.omnigent.localhost|~/dotfiles"
   "2|devserver|devvm20365.cco0.facebook.com|/home/mkarrmann/checkout1|CCO-checkout1|cco-checkout1.omnigent.localhost"
   "3|devserver|devvm36111.ftw0.facebook.com|/home/mkarrmann/checkout1|FTW-checkout1|ftw-checkout1.omnigent.localhost"
   "4|devserver|devvm20365.cco0.facebook.com|/home/mkarrmann/checkout2|CCO-checkout2|cco-checkout2.omnigent.localhost"
@@ -66,6 +70,7 @@ topology_value() {
   value="$(sed -n "s/^$1=//p" "$topology" 2>/dev/null | tail -n 1)"
   printf '%s' "${value:-$2}"
 }
+t3_local_port="$(topology_value T3_PORT 3780)"
 t3_primary_port="$(topology_value T3_PRIMARY_TUNNEL_PORT 13780)"
 t3_standby_port="$(topology_value T3_STANDBY_TUNNEL_PORT 23780)"
 
@@ -89,13 +94,16 @@ for entry in "${WORKSPACES[@]}"; do
   IFS='|' read -r ws kind rest <<< "$entry"
   case "$kind" in
     local)
-      IFS='|' read -r cwd origin <<< "$rest"
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t\n' "$ws" "$kind" "" "${cwd/#\~/$HOME}" "" "$origin"
+      IFS='|' read -r cwd origin t3_project <<< "$rest"
+      t3=""
+      [[ -z "$t3_project" ]] || t3="http://${origin%.omnigent.localhost}.t3.localhost:${t3_local_port}/"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$ws" "$kind" "" "${cwd/#\~/$HOME}" "" "$origin" \
+        "$t3" "${t3_project/#\~/$HOME}"
       ;;
     devserver)
       IFS='|' read -r host checkout nvs origin <<< "$rest"
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$ws" "$kind" "$host" "$checkout" "$nvs" "$origin" \
-        "$(t3_url "$host" "$checkout" "$origin")"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$ws" "$kind" "$host" "$checkout" "$nvs" "$origin" \
+        "$(t3_url "$host" "$checkout" "$origin")" "~/$(basename "$checkout")"
       ;;
     *)
       echo "ERROR: unknown workspace kind '$kind' in row: $entry" >&2
@@ -114,8 +122,8 @@ done | jq -Rn \
         | { workspace: .[0], kind: .[1], origin: .[5] }
           + (if .[1] == "devserver"
              then { host: .[2], checkout: .[3], nvsSession: .[4] }
-                  + (if (.[6] // "") != "" then { t3Url: .[6] } else {} end)
              else { cwd: .[3] }
              end)
+          + (if (.[6] // "") != "" then { t3Url: .[6], t3Project: .[7] } else {} end)
       ]
     }' "${CHECKOUT_SUBDIRS[@]}"

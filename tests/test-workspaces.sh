@@ -56,7 +56,7 @@ check "origins are unique" "$(jq -r '.workspaces | length' <<< "$table")" \
 # start in.
 check "every devserver row has a T3 Code URL" "0" \
   "$(jq -r '[.workspaces[] | select(.kind == "devserver") | select((.t3Url // "") == "")] | length' <<< "$table")"
-check "T3 Code hostnames are unique" "$(jq -r '[.workspaces[] | select(.kind == "devserver")] | length' <<< "$table")" \
+check "T3 Code hostnames are unique" "$(jq -r '[.workspaces[] | select(has("t3Url"))] | length' <<< "$table")" \
   "$(jq -r '[.workspaces[] | .t3Url // empty | ltrimstr("http://") | split(":")[0]] | unique | length' <<< "$table")"
 check "workspace numbers are unique" "$(jq -r '.workspaces | length' <<< "$table")" \
   "$(jq -r '[.workspaces[].workspace] | unique | length' <<< "$table")"
@@ -244,7 +244,13 @@ swapped="$(t3_table "$host_b" "$host_a")"
 check "every workspace on the primary opens the primary's one T3 Code port" "41780" "$(t3_ports "$swapped" "$host_b")"
 check "every workspace on the standby opens the standby's" "42780" "$(t3_ports "$swapped" "$host_a")"
 check "a devserver that is no candidate has no T3 Code URL" "0" \
-  "$(t3_table elsewhere.example.com other.example.com | jq '[.workspaces[] | select(has("t3Url"))] | length')"
+  "$(t3_table elsewhere.example.com other.example.com | jq '[.workspaces[] | select(.kind == "devserver" and has("t3Url"))] | length')"
+printf '%s\n' T3_PORT=4780 >> "$TMP/topology.env"
+check "workspace 1 opens the Mac's own T3 Code server on T3_PORT, in ~/dotfiles" \
+  "http://local.t3.localhost:4780/ $HOME/dotfiles" \
+  "$(t3_table "$host_a" "$host_b" | jq -r '.workspaces[] | select(.workspace == "1") | "\(.t3Url) \(.t3Project)"')"
+check "a devserver workspace's T3 Code project is its checkout under that host's home" "~/checkout1" \
+  "$(t3_table "$host_a" "$host_b" | jq -r '.workspaces[] | select(.workspace == "2") | .t3Project')"
 
 echo
 if [[ "$failures" -gt 0 ]]; then

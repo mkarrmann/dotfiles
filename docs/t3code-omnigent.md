@@ -69,6 +69,19 @@ session behind a thread likewise runs on that host.
   until that browser is quit. A failure warns and the window stays.
 - Each shim creates sessions on its own host (`--host auto`) in the checkout.
 
+## The Mac's own server: workspace 1
+
+Workspace 1 is the Mac's own (`1|local|~|...|~/dotfiles` in `bin-macos/workspaces`),
+so its window is on a T3 Code server on the Mac: `t3@local` on
+`127.0.0.1:T3_PORT`, run by `launchd/com.mkarrmann.t3-local.plist` (loaded by
+`sync.sh`; `bin/t3-workspace-serve local`), whose project is `~/dotfiles`. The
+Mac is an Omnigent host, so its providers' sessions run here (`--host auto`).
+`bin/t3-ensure` (run by `init.sh`, and by hand) registers the providers and adds
+the project. The window is at `http://local.t3.localhost:T3_PORT/`, pairs with a
+token `startup-windows` mints on the spot (`t3 pair` with
+`T3CODE_HOME=~/.t3-workspaces/local`), links both devservers' servers, and
+every devserver window links it ("Mac").
+
 ## Pairing at work
 
 A pairing token is good once, and every window pairs with each devserver's
