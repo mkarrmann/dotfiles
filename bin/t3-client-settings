@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+"""Keep T3 Code's client settings (appearance and the like) in ~/dotfiles.
+
+Usage: t3-client-settings [--dry-run] [--prefer SOURCE]
+
+T3 Code keeps a client's settings in the client, not on a server: a browser
+window in its page's localStorage (t3code:client-settings:v1,
+apps/web/src/clientPersistenceStorage.ts), the desktop app in
+~/.t3/userdata/client-settings.json. Neither is a file a symlink can share
+across the workspace windows (each its own Chrome profile under
+~/.t3-workspace-chrome) and hosts, so this syncs them with
+t3code/client-settings.json, which holds only the settings that differ from
+T3 Code's defaults (t3code/client-settings.defaults.json, from
+t3code/generate-client-defaults):
+
+  1. reads every source: each running window's stored settings, over its
+     Chrome's DevTools port, and the desktop app's file;
+  2. takes from each what changed since this tool last wrote it (the copy it
+     left in PROFILE/.t3-client-settings.json, or for the desktop app
+     ~/.t3/userdata/.t3-client-settings.json). A source it never wrote counts
+     every setting it holds that differs from the defaults as changed, and a
+     source with no stored settings changed nothing;
+  3. applies those changes to client-settings.json, keeping only what differs
+     from the defaults. Two sources that changed one setting to different
+     values stop it, with nothing written, unless --prefer names the one to
+     take (a profile's directory name, or "desktop");
+  4. writes the result into every source: each window gets every default
+     setting overridden by the file's (its other keys kept) and is reloaded
+     if that changed anything, as the page reads its settings only on load.
+     A running desktop app is left alone, as it would save its own copy over
+     the file, and catches up on a later run.
+
+So a setting changed in any window's settings reaches the file and every other
+window the next time this runs; bin-macos/startup-windows and
+bin-linux/startup-windows run it after setting up their T3 Code windows.
+onboardingCompletedAt is each client's own and never synced. A window whose
+Chrome is not running is skipped; its profile's database is Chrome's alone.
+
+Stdlib only, and no syntax newer than Python 3.9 (t3-window-scope's reasons).
+Exit 0 synced, 1 not (reason on stderr), 2 misuse.
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+import os
+import sys
+import urllib.parse
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+HERE = Path(os.path.realpath(__file__)).parent
+DOTFILES = Path(os.environ.get("DOTFILES_DIR", HERE.parent))
+SETTINGS_FILE = Path(os.environ.get("T3_CLIENT_SETTINGS_FILE", DOTFILES / "t3code/client-settings.json"))
+DEFAULTS_FILE = Path(os.environ.get("T3_CLIENT_DEFAULTS_FILE", DOTFILES / "t3code/client-settings.defaults.json"))
+PROFILES_ROOT = Path(os.environ.get("T3_CHROME_PROFILES_DIR", Path.home() / ".t3-workspace-chrome"))
+DESKTOP_SETTINGS = Path(os.environ.get("T3_DESKTOP_CLIENT_SETTINGS", Path.home() / ".t3/userdata/client-settings.json"))
+# Electron's single-instance lock in the desktop app's userData
+# (apps/desktop/src/app/DesktopUserData.ts), present while it runs.
+DESKTOP_LOCKS = [
+    Path(p)
+    for p in os.environ.get(
+        "T3_DESKTOP_LOCKS",
+        os.pathsep.join(
+            [
+                str(Path.home() / "Library/Application Support/t3code-v2/SingletonLock"),
+                str(Path.home() / ".config/t3code-v2/SingletonLock"),
+            ]
+        ),
+    ).split(os.pathsep)
+    if p
+]
+STORAGE_KEY = "t3code:client-settings:v1"
+MARKER = ".t3-client-settings.json"
+DESKTOP = "desktop"
+UNSYNCED = frozenset({"onboardingCompletedAt"})
+T3_ORIGIN_SUFFIX = ".t3.localhost"
+ABSENT = object()
+
+Settings = dict  # str -> JSON value
+
+
+class SyncError(Exception):
+    pass
+
+
+# --- the merge ----------------------------------------------------------------
+
+
+def sparse(settings: Settings, defaults: Settings) -> Settings:
+    """SETTINGS without the unsynced keys and those at their default."""
+    return {k: v for k, v in settings.items() if k not in UNSYNCED and defaults.get(k, ABSENT) != v}
+
+
+def changes(stored: Optional[Settings], last_written: Optional[Settings], defaults: Settings) -> dict[str, Any]:
+    """What a source's STORED settings changed since LAST_WRITTEN, each key to
+    its new value or ABSENT when it went back to its default."""
+    if stored is None:
+        return {}
+    now, before = sparse(stored, defaults), sparse(last_written or {}, defaults)
+    return {k: now.get(k, ABSENT) for k in sorted(now.keys() | before.keys()) if now.get(k, ABSENT) != before.get(k, ABSENT)}
+
+
+def merged(
+    current: Settings, changed: dict[str, dict[str, Any]], defaults: Settings, prefer: Optional[str]
+) -> Settings:
+    """CURRENT (the file) with every source's changes, CHANGED by source name.
+    SyncError when two sources changed a key to different values and PREFER
+    is not one of them."""
+    result = dict(current)
+    by_key: dict[str, dict[str, Any]] = {}
+    for source, source_changes in changed.items():
+        for key, value in source_changes.items():
+            by_key.setdefault(key, {})[source] = value
+    conflicts = []
+    for key, values in sorted(by_key.items()):
+        distinct = {json.dumps(v, sort_keys=True) if v is not ABSENT else "<default>" for v in values.values()}
+        if len(distinct) > 1:
+            if prefer not in values:
+                conflicts.append(f"  {key}: " + ", ".join(f"{s}={describe(v)}" for s, v in sorted(values.items())))
+                continue
+            value = values[prefer]
+        else:
+            value = next(iter(values.values()))
+        if value is ABSENT:
+            result.pop(key, None)
+        else:
+            result[key] = value
+    if conflicts:
+        raise SyncError("sources changed the same settings differently; rerun with --prefer SOURCE:\n" + "\n".join(conflicts))
+    return dict(sorted(sparse(result, defaults).items()))
+
+
+def applied(stored: Optional[Settings], wanted: Settings, defaults: Settings) -> Settings:
+    """A source's settings once synced: every default overridden by WANTED,
+    over whatever else it STORED (newer keys, the unsynced ones)."""
+    return {**(stored or {}), **{k: v for k, v in defaults.items() if k not in UNSYNCED}, **wanted}
+
+
+def describe(value: Any) -> str:
+    return "<default>" if value is ABSENT else json.dumps(value)
+
+
+# --- the sources --------------------------------------------------------------
+
+
+def load_json(path: Path) -> Optional[Settings]:
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def write_json(path: Path, value: Settings) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    target = Path(os.path.realpath(path))
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(value, indent=2) + "\n")
+    tmp.replace(target)
+
+
+def window_scope_module():
+    # HACK: the DevTools client and target lookup live in bin/t3-window-scope,
+    # a script rather than a module, so it is loaded by path.
+    loader = importlib.machinery.SourceFileLoader("t3_window_scope", str(HERE / "t3-window-scope"))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
+
+@dataclass
+class Source:
+    name: str
+    marker: Path
+    read: Callable[[], Optional[Settings]]
+    write: Optional[Callable[[Settings], None]]  # None: cannot be written now
+    why_not: str = ""
+
+
+def window_sources() -> list[Source]:
+    if not PROFILES_ROOT.is_dir():
+        return []
+    scope = window_scope_module()
+    sources = []
+    for profile in sorted(p for p in PROFILES_ROOT.iterdir() if p.is_dir()):
+        targets = scope.debug_targets(str(profile)) or []
+        pages = [
+            t
+            for t in targets
+            if t.get("type") == "page"
+            and t.get("webSocketDebuggerUrl")
+            and (urllib.parse.urlsplit(t.get("url", "")).hostname or "").endswith(T3_ORIGIN_SUFFIX)
+        ]
+        if not pages:
+            continue
+        sources.append(window_source(scope, profile, pages[0]["webSocketDebuggerUrl"]))
+    return sources
+
+
+def window_source(scope: Any, profile: Path, ws_url: str) -> Source:
+    def evaluate(expression: str) -> Any:
+        devtools = scope.DevTools(ws_url)
+        try:
+            return devtools.evaluate(expression)
+        finally:
+            devtools.close()
+
+    def read() -> Optional[Settings]:
+        raw = evaluate(f"localStorage.getItem({json.dumps(STORAGE_KEY)})")
+        return scope.parsed_document(raw) if raw is not None else None
+
+    def write(settings: Settings) -> None:
+        evaluate(
+            f"localStorage.setItem({json.dumps(STORAGE_KEY)}, {json.dumps(json.dumps(settings))});"
+            " setTimeout(() => location.reload(), 0);"
+        )
+
+    return Source(profile.name, profile / MARKER, read, write)
+
+
+def desktop_running() -> bool:
+    for lock in DESKTOP_LOCKS:
+        if not os.path.lexists(lock):
+            continue
+        try:
+            pid = int(os.readlink(lock).rsplit("-", 1)[-1])
+            os.kill(pid, 0)
+        except (OSError, ValueError):
+            continue
+        return True
+    return False
+
+
+def desktop_source() -> Optional[Source]:
+    if not DESKTOP_SETTINGS.exists():
+        return None
+    running = desktop_running()
+    return Source(
+        DESKTOP,
+        DESKTOP_SETTINGS.parent / MARKER,
+        lambda: load_json(DESKTOP_SETTINGS),
+        None if running else (lambda settings: write_json(DESKTOP_SETTINGS, settings)),
+        "it is running" if running else "",
+    )
+
+
+# --- the run ------------------------------------------------------------------
+
+
+def sync(sources: list[Source], dry_run: bool, prefer: Optional[str]) -> None:
+    defaults = load_json(DEFAULTS_FILE)
+    if defaults is None:
+        raise SyncError(f"no defaults in {DEFAULTS_FILE} (t3code/generate-client-defaults)")
+    current = sparse(load_json(SETTINGS_FILE) or {}, defaults)
+    stored = {s.name: s.read() for s in sources}
+    changed = {s.name: changes(stored[s.name], load_json(s.marker), defaults) for s in sources}
+    for name, source_changes in changed.items():
+        for key, value in source_changes.items():
+            print(f"{name} changed {key} to {describe(value)}")
+    wanted = merged(current, changed, defaults, prefer)
+    if wanted != (load_json(SETTINGS_FILE) or {}):
+        print(f"{'would write' if dry_run else 'writing'} {SETTINGS_FILE}: {json.dumps(wanted)}")
+        if not dry_run:
+            write_json(SETTINGS_FILE, wanted)
+    for source in sources:
+        if source.write is None:
+            print(f"left {source.name} alone: {source.why_not}")
+            continue
+        new = applied(stored[source.name], wanted, defaults)
+        if new != stored[source.name]:
+            print(f"{'would update' if dry_run else 'updating'} {source.name}")
+            if not dry_run:
+                source.write(new)
+        if not dry_run:
+            write_json(source.marker, wanted)
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="Sync T3 Code's client settings with ~/dotfiles.")
+    parser.add_argument("--dry-run", action="store_true", help="say what would change, change nothing")
+    parser.add_argument("--prefer", metavar="SOURCE", help="the source whose value wins a conflict")
+    args = parser.parse_args(argv)
+    sources = window_sources()
+    desktop = desktop_source()
+    if desktop is not None:
+        sources.append(desktop)
+    try:
+        sync(sources, args.dry_run, args.prefer)
+    except (SyncError, OSError) as error:
+        print(f"t3-client-settings: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

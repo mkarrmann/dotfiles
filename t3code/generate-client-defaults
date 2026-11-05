@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# generate-client-defaults VERSION -- write T3 Code VERSION's default client
+# settings, as its web client stores them, to client-settings.defaults.json
+# beside this script, for bin/t3-client-settings to strip defaults against.
+#
+# It runs T3 Code's own schema rather than reading values off the source:
+# packages/contracts at tag vVERSION of ~/repos/t3code (T3CODE_REPO) is bundled
+# with that tag's catalog version of effect, from npm, and prints
+# encodeSync(ClientSettingsSchema)(DEFAULT_CLIENT_SETTINGS), which is what
+# writeBrowserClientSettings puts in localStorage for an unchanged client.
+# Rerun it whenever bin/t3-ensure's T3_CLI_VERSION moves.
+set -euo pipefail
+
+version="${1:?usage: generate-client-defaults VERSION}"
+repo="${T3CODE_REPO:-$HOME/repos/t3code}"
+out="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/client-settings.defaults.json"
+tag="v$version"
+
+git -C "$repo" rev-parse --verify --quiet "$tag^{commit}" >/dev/null || {
+  echo "generate-client-defaults: $repo has no tag $tag (git -C $repo fetch --tags)" >&2
+  exit 1
+}
+effect="$(git -C "$repo" show "$tag:pnpm-workspace.yaml" | sed -n 's/^  effect: *//p' | head -n 1)"
+[[ -n "$effect" ]] || { echo "generate-client-defaults: no effect version in $tag's catalog" >&2; exit 1; }
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+git -C "$repo" archive "$tag" packages/contracts/src | tar -x -C "$work"
+cat > "$work/entry.ts" <<'TS'
+import * as Schema from "effect/Schema";
+import { ClientSettingsSchema, DEFAULT_CLIENT_SETTINGS } from "./packages/contracts/src/settings.ts";
+const encoded = Schema.encodeSync(ClientSettingsSchema)(DEFAULT_CLIENT_SETTINGS) as Record<string, unknown>;
+const sorted = Object.fromEntries(Object.keys(encoded).sort().map((key) => [key, encoded[key]]));
+console.log(JSON.stringify(sorted, null, 2));
+TS
+(cd "$work" && npm init -y >/dev/null && npm install --silent --no-audit --no-fund "effect@$effect" esbuild >/dev/null)
+"$work/node_modules/.bin/esbuild" "$work/entry.ts" --bundle --platform=node --format=esm --log-level=error \
+  --outfile="$work/entry.mjs"
+node "$work/entry.mjs" > "$out.tmp"
+mv "$out.tmp" "$out"
+echo "wrote $out ($tag, effect $effect)"

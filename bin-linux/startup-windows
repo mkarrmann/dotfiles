@@ -845,6 +845,16 @@ for entry in "${WORKSPACES[@]}"; do
   if [[ "$entry" == *"|omnigent" ]]; then reconcile_entry "$entry"; fi
 done
 
+# Once the T3 Code windows are up, sync their client settings (appearance and
+# the like) with ~/dotfiles/t3code/client-settings.json: a setting changed in
+# any window reaches the file and every other window.
+if [[ -n "$T3_ROWS" ]]; then
+  sync_args=()
+  [[ "$DRY_RUN" != true ]] || sync_args=(--dry-run)
+  "$SCRIPT_DIR/../bin/t3-client-settings" ${sync_args[@]+"${sync_args[@]}"} \
+    || warn "T3 Code's client settings were not synced (above); rerun ~/bin/t3-client-settings"
+fi
+
 # ── Orchest ──────────────────────────────────────────────────────────
 # After the application windows: Orchest's workspace activation must not race
 # the focus-sensitive Omnigent New Window accelerator. Before the dashboard:

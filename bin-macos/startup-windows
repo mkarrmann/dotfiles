@@ -1638,6 +1638,16 @@ for i in "${!WORKSPACES[@]}"; do
   esac
 done
 
+# Once the T3 Code windows are up, sync their client settings (appearance and
+# the like) with ~/dotfiles/t3code/client-settings.json: a setting changed in
+# any window reaches the file and every other window.
+if [[ "$STARTUP_T3_WINDOWS" == 1 ]]; then
+  t3-client-settings || {
+    echo "WARNING: T3 Code's client settings were not synced (above); rerun ~/bin/t3-client-settings" >&2
+    ((failures++)) || true
+  }
+fi
+
 # Chrome session restore can continue after an individual wait_for_new_window
 # returns. Fill any still-missing Chrome slots from the restored pool, then put
 # surplus restored windows on the overflow workspace rather than leaving them
