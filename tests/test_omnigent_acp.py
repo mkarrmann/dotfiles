@@ -725,6 +725,197 @@ class LoadSessionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((self.omnigent.created, self.omnigent.posted_to), ([], ["conv_9"]))
 
 
+class FakeT3:
+    """T3 Code's orchestrator tools: the thread they name and the messages sent to it."""
+
+    def __init__(self):
+        self.sent = []
+
+    async def call(self, tool, arguments):
+        assert tool == "orchestrator_capabilities", tool
+        return {"parentThreadId": "thread_7"}
+
+    async def send(self, thread_id, message):
+        self.sent.append({"threadId": thread_id, "message": message})
+
+    async def aclose(self):
+        pass
+
+
+def outside_input(item_id, text, pending_id="pending_elsewhere"):
+    return (
+        "session.input.consumed",
+        {
+            "data": {
+                "item_id": item_id,
+                "type": "message",
+                "data": {"role": "user", "content": [{"type": "input_text", "text": text}]},
+                "cleared_pending_id": pending_id,
+            }
+        },
+    )
+
+
+class OutsideTurnTest(unittest.IsolatedAsyncioTestCase):
+    """Turns started outside T3 Code reach the thread through an echo, and only once."""
+
+    async def asyncSetUp(self):
+        self.omnigent = FakeOmnigent("claude-native")
+        self.client = FakeClientConnection()
+        self.agent = shim.OmnigentAgent(self.omnigent, "agent", "host_1", strip=True, t3_tools=False, trace=None)
+        self.agent.on_connect(self.client)
+        self.t3 = FakeT3()
+        self.omnigent.sessions = [{"id": "conv_9", "labels": {shim.SESSION_LABEL: "acp_1"}}]
+        await self.agent.load_session(cwd="/repo", session_id="acp_1")
+        self.agent._sessions["acp_1"].t3 = self.t3
+        await until(lambda: self.omnigent.connections)
+
+    def echoes(self):
+        return self.t3.sent
+
+    async def prompt(self, text):
+        return await asyncio.wait_for(self.agent.prompt(session_id="acp_1", prompt=text_prompt(text)), 5)
+
+    async def test_a_loaded_thread_echoes_a_turn_started_elsewhere_into_itself(self):
+        self.omnigent.emit(outside_input("item_w", "[Watcher dwb_1] D1 has 1 CI failure. Fix it.\nMore detail"))
+        await until(lambda: self.echoes())
+        (echo,) = self.echoes()
+        self.assertEqual(echo["threadId"], "thread_7")
+        self.assertEqual(echo["message"], "\u21aa [Watcher dwb_1] D1 has 1 CI failure. Fix it.\n\n\u27e6omnigent-echo:item_w\u27e7")
+        self.assertEqual(self.omnigent.messages(), [])
+
+    async def test_the_echo_prompt_shows_the_outside_turn_and_never_reaches_the_agent(self):
+        self.omnigent.emit(outside_input("item_w", "wake up"), ("response.output_text.delta", {"delta": "Look"}))
+        await until(lambda: self.echoes())
+        echo = self.echoes()[0]["message"]
+        # T3 Code wraps the echo like any prompt it sends.
+        task = asyncio.create_task(self.agent.prompt(session_id="acp_1", prompt=text_prompt(
+            f"<t3_code_instructions>\ntools\n</t3_code_instructions>\n\n<user_request>\n{echo}\n</user_request>")))
+        await asyncio.sleep(0.05)
+        self.omnigent.emit(("response.output_text.delta", {"delta": "ing now."}), assistant_item("Looking now."), CONFIRMED_IDLE)
+        response = await asyncio.wait_for(task, 5)
+        self.assertEqual((response.stop_reason, self.client.agent_text()), ("end_turn", "Looking now."))
+        self.assertEqual(self.omnigent.messages(), [])
+
+    async def test_a_background_task_notification_is_echoed_by_its_summary(self):
+        self.omnigent.emit(outside_input("item_n", "<task-notification>\n<task-id>b1</task-id>\n<summary>Build finished</summary>\n</task-notification>"))
+        await until(lambda: self.echoes())
+        self.assertTrue(self.echoes()[0]["message"].startswith("\u21aa Background task: Build finished\n"))
+
+    async def test_the_threads_own_prompts_are_not_echoed(self):
+        self.omnigent.post_response = {"queued": True, "pending_id": "pending_mine"}
+        task = asyncio.create_task(self.agent.prompt(session_id="acp_1", prompt=text_prompt("hi")))
+        await until(lambda: self.omnigent.messages())
+        self.omnigent.emit(outside_input("item_mine", "hi", pending_id="pending_mine"), assistant_item("hello"), CONFIRMED_IDLE)
+        await asyncio.wait_for(task, 5)
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.echoes(), [])
+
+    async def test_an_outside_input_ends_the_turn_before_it_without_lending_it_output(self):
+        self.omnigent.post_response = {"queued": True, "pending_id": "pending_mine"}
+        quiet = shim.QUIESCENT_END_S
+        shim.QUIESCENT_END_S = 5
+        self.addCleanup(setattr, shim, "QUIESCENT_END_S", quiet)
+        task = asyncio.create_task(self.agent.prompt(session_id="acp_1", prompt=text_prompt("hi")))
+        await until(lambda: self.omnigent.messages())
+        # The thread's turn looks finished but its confirmed idle never comes; then a wakeup arrives.
+        self.omnigent.emit(outside_input("item_mine", "hi", pending_id="pending_mine"), assistant_item("hello"), BARE_IDLE)
+        self.omnigent.emit(outside_input("item_w", "wake"), assistant_item("woken"))
+        response = await asyncio.wait_for(task, 2)
+        self.assertEqual((response.stop_reason, self.client.agent_text()), ("end_turn", "hello"))
+
+    async def test_an_echo_for_a_turn_this_process_did_not_follow_replays_it(self):
+        self.omnigent.items = [
+            {"id": "item_old", "type": "message", "role": "user", "content": [{"type": "input_text", "text": "earlier"}]},
+            {"id": "item_w", "type": "message", "role": "user", "content": [{"type": "input_text", "text": "wake"}]},
+            {"id": "c1", "type": "function_call", "call_id": "toolu_1", "name": "Bash", "arguments": '{"command": "ls"}'},
+            {"id": "c2", "type": "function_call_output", "call_id": "toolu_1", "output": "a.py"},
+            {"id": "r1", "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Done."}]},
+            {"id": "item_next", "type": "message", "role": "user", "content": [{"type": "input_text", "text": "later"}]},
+        ]
+        self.client.updates.clear()
+        response = await self.prompt("\u21aa wake\n\n\u27e6omnigent-echo:item_w\u27e7")
+        self.assertEqual(response.stop_reason, "end_turn")
+        self.assertEqual(
+            [u.session_update for u in self.client.updates if u.session_update != "available_commands_update"],
+            ["tool_call", "agent_message_chunk"],
+        )
+        self.assertEqual(self.client.agent_text(), "Done.")
+        self.assertEqual(self.omnigent.messages(), [])
+
+    async def echo_prompt(self, item_id):
+        return asyncio.create_task(
+            self.agent.prompt(session_id="acp_1", prompt=text_prompt(f"\u21aa x\n\n\u27e6omnigent-echo:{item_id}\u27e7"))
+        )
+
+    async def test_a_turn_of_the_thread_after_an_unconfirmed_outside_turn_is_not_shown_twice(self):
+        # The wakeup's turn ends without a confirmed idle; the user prompts before its echo is answered.
+        self.omnigent.emit(outside_input("item_w", "wake"), assistant_item("woken"), BARE_IDLE)
+        await until(lambda: self.echoes())
+        self.omnigent.post_response = {"queued": True, "pending_id": "pending_mine"}
+        task = asyncio.create_task(self.agent.prompt(session_id="acp_1", prompt=text_prompt("hi")))
+        await until(lambda: self.omnigent.messages())
+        self.omnigent.emit(outside_input("item_mine", "hi", pending_id="pending_mine"), assistant_item("hello"), CONFIRMED_IDLE)
+        await asyncio.wait_for(task, 5)
+        self.client.updates.clear()
+        response = await asyncio.wait_for(await self.echo_prompt("item_w"), 5)
+        self.assertEqual((response.stop_reason, self.client.agent_text()), ("end_turn", "woken"))
+
+    async def test_an_outside_input_while_the_threads_message_posts_is_not_taken_for_it(self):
+        gate = asyncio.Event()
+        post = self.omnigent.post_event
+
+        async def slow_post(session_id, event):
+            await gate.wait()
+            return await post(session_id, event)
+
+        self.omnigent.post_event = slow_post
+        self.omnigent.post_response = {"queued": True, "pending_id": "pending_mine"}
+        task = asyncio.create_task(self.agent.prompt(session_id="acp_1", prompt=text_prompt("hi")))
+        await asyncio.sleep(0.05)
+        self.omnigent.emit(outside_input("item_w", "wake"), assistant_item("woken"), CONFIRMED_IDLE)
+        await until(lambda: self.echoes())
+        gate.set()
+        await until(lambda: self.omnigent.messages())
+        self.omnigent.emit(outside_input("item_mine", "hi", pending_id="pending_mine"), assistant_item("hello"), CONFIRMED_IDLE)
+        await asyncio.wait_for(task, 5)
+        self.assertEqual(self.client.agent_text(), "hello")
+
+    async def test_an_echo_answered_after_its_turn_ended_shows_all_of_it(self):
+        self.omnigent.emit(
+            outside_input("item_w", "wake"), ("response.output_text.delta", {"delta": "all "}),
+            ("response.output_text.delta", {"delta": "done"}), assistant_item("all done"), CONFIRMED_IDLE,
+        )
+        await until(lambda: self.echoes())
+        await asyncio.sleep(0.05)
+        response = await asyncio.wait_for(await self.echo_prompt("item_w"), 5)
+        self.assertEqual((response.stop_reason, self.client.agent_text()), ("end_turn", "all done"))
+
+    async def test_stopping_the_echo_of_a_finished_turn_does_not_interrupt_the_agent(self):
+        self.omnigent.emit(outside_input("item_w", "wake"), assistant_item("woken"), CONFIRMED_IDLE)
+        await until(lambda: self.echoes())
+        await asyncio.sleep(0.05)
+        session = self.agent._sessions["acp_1"]
+        turn = session.outside["item_w"]
+        turn.outputs = asyncio.Queue()  # its output already shown; the row is still open
+        task = await self.echo_prompt("item_w")
+        await until(lambda: session.turn is turn)
+        await self.agent.cancel(session_id="acp_1")
+        response = await asyncio.wait_for(task, 5)
+        self.assertEqual((response.stop_reason, self.omnigent.interrupts()), ("cancelled", []))
+
+    async def test_an_idle_thread_sends_heartbeats(self):
+        beat = shim.HEARTBEAT_S
+        shim.HEARTBEAT_S = 0.05
+        self.addCleanup(setattr, shim, "HEARTBEAT_S", beat)
+        agent = shim.OmnigentAgent(self.omnigent, "agent", "host_1", strip=True, t3_tools=False, trace=None)
+        client = FakeClientConnection()
+        agent.on_connect(client)
+        await agent.load_session(cwd="/repo", session_id="acp_1")
+        await until(lambda: [u for u in client.updates if u.session_update == shim.HEARTBEAT_KIND])
+        await agent.close_session(session_id="acp_1")
+
+
 class SlashCommandTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.omnigent = FakeOmnigent("claude-native")

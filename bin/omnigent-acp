@@ -6,7 +6,7 @@
 """omnigent-acp — an ACP agent (stdio) whose sessions are Omnigent sessions.
 
     omnigent-acp [--agent NAME_OR_ID] [--host auto|NAME|ID] [--url URL]
-                 [--keep-t3-instructions] [--t3-tools] [--trace FILE]
+                 [--keep-t3-instructions] [--t3-tools] [--trace FILE] [--log FILE]
 
 Lets an ACP client (T3 Code's "Local command" ACP provider) drive Omnigent:
 Omnigent stays the owner of every session — harness, terminal, policies,
@@ -38,8 +38,14 @@ Semantics:
     servers. T3 Code reissues its MCP token when it reloads a thread, and a
     running TUI keeps its launch-time token, so the tools stop working until the
     TUI relaunches.
-  * Updates that arrive while no prompt is running (turns started from another
-    client, wakeups) are not forwarded; ACP has no idle turn to attach them to.
+  * A turn started outside T3 Code (a wakeup, a background task's notification,
+    a message from another client: any input this process did not post) is
+    echoed into the thread with ``t3 thread send`` (queued, with a marker), as
+    ACP has no idle turn to attach it to. T3 Code's prompt
+    for the echo never reaches the agent: it is answered with that turn's
+    output, live while it runs. Native agents only. The session is listened to
+    from its first prompt or its load, and a heartbeat keeps T3 Code from
+    releasing it (and this process) after 30 idle minutes, for a week of quiet.
   * The stream has no replay, so every (re)connect reads the session snapshot:
     approvals still pending are re-raised, and a turn that ended while the
     stream was down is ended here. A deleted session (404/410) fails the running
@@ -61,6 +67,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import socket
 import sys
 import uuid
@@ -86,6 +93,7 @@ from acp.schema import (
     SessionConfigOptionSelect,
     SessionConfigSelectOption,
     SessionInfo,
+    SessionInfoUpdate,
     SessionListCapabilities,
     SessionMode,
     SessionModeState,
@@ -118,6 +126,24 @@ QUIESCENT_END_S = 10.0
 STREAM_CONNECT_S = 120.0
 TOOL_OUTPUT_LIMIT = 20_000
 STREAM_OPENED = "omnigent-acp.stream_opened"
+# A turn started outside T3 Code (a wakeup, a background task's notification, a
+# message from another client) is echoed into the thread as a T3 Code message
+# carrying this marker, and the prompt T3 Code sends for it is answered with
+# that turn's output instead of reaching the agent.
+ECHO_MARKER = re.compile(r"\u27e6omnigent-echo:(?P<item>[A-Za-z0-9_-]+)\u27e7")
+ECHO_PREVIEW_CHARS = 200
+ECHO_KEEP = 20
+POSTED_KEEP = 100
+# T3 Code releases an idle ACP session after 30 minutes (ProviderSessionManager's
+# DEFAULT_IDLE_TIMEOUT_MS), and with it this process, which is what hears the
+# turns to echo; any provider event restarts that timer.
+HEARTBEAT_S = 20 * 60
+HEARTBEAT_FOR_S = 7 * 24 * 60 * 60
+T3_MCP_ENDPOINT_ENV = "T3_ACP_MCP_ENDPOINT"
+T3_MCP_AUTHORIZATION_ENV = "T3_ACP_MCP_AUTHORIZATION"
+T3_BIN_ENV = "T3_ACP_MCP_NODE"  # the t3 binary T3 Code runs its MCP bridge with
+MCP_PROTOCOL_VERSION = "2025-06-18"  # the one T3 Code's MCP server speaks (McpHttpServer.ts)
+_TASK_SUMMARY = re.compile(r"<summary>(?P<summary>.*?)</summary>", re.DOTALL)
 
 # SDK harnesses launch the same binaries as the native ones; the host
 # model-options route only accepts the native names (see bin/omnigent-models).
@@ -599,6 +625,126 @@ def fork_workspace(checkout: str | None, cwd: str, home: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 
+def echo_preview(text: str) -> str:
+    """One line for the T3 Code row that stands for an outside turn's input."""
+    if text.lstrip().startswith("<task-notification>"):
+        summary = _TASK_SUMMARY.search(text)
+        line = f"Background task: {summary['summary'].strip()}" if summary else "A background task finished"
+    else:
+        line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "Omnigent message")
+    return line if len(line) <= ECHO_PREVIEW_CHARS else line[: ECHO_PREVIEW_CHARS - 1] + "\u2026"
+
+
+def echo_message(text: str, item_id: str) -> str:
+    return f"\u21aa {echo_preview(text)}\n\n\u27e6omnigent-echo:{item_id}\u27e7"
+
+
+class T3Error(Exception):
+    pass
+
+
+class T3Orchestrator:
+    """The client's own MCP tools (T3 Code's orchestrator), over its HTTP endpoint.
+
+    T3 Code hands each ACP session's process the endpoint and a bearer token
+    scoped to its thread, in the environment of the ``t3-code`` stdio server
+    it lists in ``mcpServers`` (and of the process at spawn); the stdio bridge
+    only relays to that endpoint.
+    """
+
+    def __init__(
+        self, endpoint: str, authorization: str, t3: str, transport: httpx.AsyncBaseTransport | None = None
+    ) -> None:
+        self._t3 = t3
+        self._endpoint = endpoint
+        self._headers = {"Authorization": authorization, "Accept": "application/json, text/event-stream"}
+        self._http = httpx.AsyncClient(trust_env=False, timeout=httpx.Timeout(30.0), transport=transport)
+        self._initialized = False
+        self._next_id = 0
+
+    @classmethod
+    def from_servers(cls, servers: list[Any]) -> T3Orchestrator | None:
+        env = dict(os.environ)
+        for server in servers:
+            for variable in getattr(server, "env", None) or []:
+                env[variable.name] = variable.value
+        endpoint, authorization = env.get(T3_MCP_ENDPOINT_ENV), env.get(T3_MCP_AUTHORIZATION_ENV)
+        t3 = env.get(T3_BIN_ENV) or shutil.which("t3")
+        return cls(endpoint, authorization, t3) if endpoint and authorization and t3 else None
+
+    async def send(self, thread_id: str, message: str) -> None:
+        """Queue MESSAGE as the thread's next turn.
+
+        HACK: not ``t3_thread_send`` over this session's token, which T3 Code
+        refuses once the thread has no run (parent_not_active), so for every
+        outside turn worth echoing. ``t3 thread send`` signs in as the
+        machine's owner against the server in T3CODE_HOME, which this process
+        inherits from it, and always queues.
+        """
+        process = await asyncio.create_subprocess_exec(
+            self._t3, "thread", "send", thread_id, message,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            out, err = await process.communicate()
+        except asyncio.CancelledError:
+            process.kill()
+            raise
+        if process.returncode != 0:
+            raise T3Error(f"t3 thread send exited {process.returncode}: {(err or out).decode(errors='replace')[-300:]}")
+
+    async def _rpc(self, method: str, params: dict[str, Any], *, notify: bool = False) -> Any:
+        body: dict[str, Any] = {"jsonrpc": "2.0", "method": method, "params": params}
+        if not notify:
+            self._next_id += 1
+            body["id"] = self._next_id
+        response = await self._http.post(self._endpoint, json=body, headers=self._headers)
+        if response.is_error:
+            raise T3Error(f"{method} -> {response.status_code}: {response.text[:300]}")
+        session = response.headers.get("mcp-session-id")
+        if session:
+            self._headers["Mcp-Session-Id"] = session
+        if notify or not response.content:
+            return None
+        if response.headers.get("content-type", "").startswith("text/event-stream"):
+            messages = [json.loads(ln[5:]) for ln in response.text.splitlines() if ln.startswith("data:")]
+            message = next((m for m in messages if m.get("id") == body["id"]), {})
+        else:
+            message = response.json()
+        if "error" in message:
+            raise T3Error(f"{method}: {message['error']}")
+        return message.get("result")
+
+    async def call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if not self._initialized:
+            await self._rpc(
+                "initialize",
+                {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "omnigent-acp", "version": "0.2.0"},
+                },
+            )
+            self._headers["Mcp-Protocol-Version"] = MCP_PROTOCOL_VERSION
+            await self._rpc("notifications/initialized", {}, notify=True)
+            self._initialized = True
+        result = await self._rpc("tools/call", {"name": tool, "arguments": arguments}) or {}
+        if result.get("isError"):
+            raise T3Error(f"{tool}: {_message_text(result)}")
+        structured = result.get("structuredContent")
+        if isinstance(structured, dict):
+            return structured
+        text = _message_text(result)
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {"text": text}
+        return parsed if isinstance(parsed, dict) else {"value": parsed}
+
+    async def aclose(self) -> None:
+        await self._http.aclose()
+
+
 class OmnigentError(Exception):
     def __init__(self, message: str, status: int | None = None) -> None:
         super().__init__(message)
@@ -819,6 +965,18 @@ class Session:
     elicitations: set[str] = field(default_factory=set)
     background: set[asyncio.Task[None]] = field(default_factory=set)
     tool_diffs: dict[str, list[FileEditToolCallContent]] = field(default_factory=dict)
+    posted_pending: dict[str, None] = field(default_factory=dict)
+    """The pending ids of the messages this process posted; any other consumed input is an outside turn's."""
+    posting: str | None = None
+    """The text of the message being posted, until its pending id is known."""
+    outside: dict[str, Turn] = field(default_factory=dict)
+    echoing: asyncio.Lock = field(default_factory=asyncio.Lock)
+    """Echoes are sent one at a time, so the thread gets them in the order the inputs came."""
+    """Outside turns by the item id of their input, followed until T3 Code's prompt for their echo takes them."""
+    t3: T3Orchestrator | None = None
+    thread_id: str | None = None
+    last_activity: float = field(default_factory=lambda: asyncio.get_running_loop().time())
+    heartbeat: asyncio.Task[None] | None = None
 
 
 @dataclass(frozen=True)
@@ -991,6 +1149,19 @@ def history_updates(items: list[dict[str, Any]], cwd: str) -> list[Any]:
     return updates
 
 
+HEARTBEAT_KIND = "session_info_update"
+
+
+def heartbeat_update() -> SessionInfoUpdate:
+    """An update T3 Code takes as provider activity and changes nothing for: session info with no fields.
+
+    T3 Code merges its empty metadata into what it has and emits
+    ``provider_thread.updated``, which restarts the idle timer; with no run
+    listening it is not stored (packages/provider-acp adapter.ts handleSessionUpdate).
+    """
+    return SessionInfoUpdate(session_update=HEARTBEAT_KIND)
+
+
 def mcp_launch_args(servers: list[Any]) -> list[str]:
     """Claude Code ``--mcp-config`` for the client's stdio MCP servers (T3 Code's tools)."""
     config = {
@@ -1102,6 +1273,7 @@ class OmnigentAgent:
     async def new_session(self, cwd: str, mcp_servers: list[Any] | None = None, **kwargs: Any) -> acp.NewSessionResponse:
         target = await self._resolve_target()
         session = Session(acp_id=uuid.uuid4().hex, cwd=cwd, model=target.default_model, mcp_servers=mcp_servers or [])
+        session.t3 = T3Orchestrator.from_servers(session.mcp_servers)
         self._sessions[session.acp_id] = session
         self._advertise_commands(session)
         return acp.NewSessionResponse(
@@ -1131,6 +1303,10 @@ class OmnigentAgent:
             raise
         session = self._sessions.get(session_id) or Session(acp_id=session_id, cwd=cwd, model=target.default_model)
         session.mcp_servers = mcp_servers or []
+        if session.t3 is not None:
+            await session.t3.aclose()
+        session.t3 = T3Orchestrator.from_servers(session.mcp_servers)
+        session.thread_id = None
         session.conversation_id = conversation_id
         session.model = details.get("model_override") or session.model
         session.effort = details.get("reasoning_effort") or session.effort
@@ -1145,6 +1321,9 @@ class OmnigentAgent:
         for update in history_updates(history, session.cwd):
             await self._conn.session_update(session_id, update)
         self._advertise_commands(session)
+        # Listen from now on, not from the next prompt, so turns started elsewhere are echoed.
+        self._in_background(session, self._listen(session, conversation_id))
+        self._in_background(session, self._learn_thread(session))
         return acp.LoadSessionResponse(
             config_options=self._config_options(session, target), modes=self._modes(session, target)
         )
@@ -1210,6 +1389,8 @@ class OmnigentAgent:
         for task in [session.stream_task, *session.background]:
             if task is not None:
                 task.cancel()
+        if session.t3 is not None:
+            await session.t3.aclose()
         turn = session.turn
         if turn is None:
             return
@@ -1227,7 +1408,10 @@ class OmnigentAgent:
             return
         turn = session.turn
         turn.cancelled.set()
-        if turn.posted and session.conversation_id is not None:
+        if turn.tracker.ended:
+            # An echo of a turn that already finished: stopping it must not interrupt whatever runs now.
+            turn.outputs.put_nowait(TurnEnded("cancelled"))
+        elif turn.posted and session.conversation_id is not None:
             await self._interrupt(session.conversation_id, turn)
 
     async def _interrupt(self, conversation_id: str, turn: Turn) -> None:
@@ -1264,7 +1448,7 @@ class OmnigentAgent:
         update = AvailableCommandsUpdate(session_update="available_commands_update", available_commands=COMMANDS)
         self._in_background(session, self._conn.session_update(session.acp_id, update))
 
-    def _in_background(self, session: Session, work: Coroutine[Any, Any, None]) -> None:
+    def _in_background(self, session: Session, work: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
         task: asyncio.Task[None] = asyncio.create_task(work)
         session.background.add(task)
 
@@ -1274,6 +1458,7 @@ class OmnigentAgent:
                 LOG.warning("background work on %s failed: %s", session.acp_id, done.exception())
 
         task.add_done_callback(settled)
+        return task
 
     async def _resync(self, session: Session, conversation_id: str) -> None:
         turn = session.turn if session.turn is not None and session.turn.posted else None
@@ -1285,6 +1470,10 @@ class OmnigentAgent:
         if turn is not None and session.turn is turn:
             for output in turn.tracker.on_snapshot(snapshot):
                 turn.outputs.put_nowait(output)
+        for outside in session.outside.values():
+            if outside is not turn:
+                for output in outside.tracker.on_snapshot(snapshot):
+                    outside.outputs.put_nowait(output)
         for event in snapshot.get("pending_elicitations") or []:
             if isinstance(event, dict):
                 self._in_background(session, self._approve(session, conversation_id, elicitation_from(event)))
@@ -1299,15 +1488,27 @@ class OmnigentAgent:
                     if self._trace is not None:
                         self._trace.write(json.dumps({"type": event_type, "data": payload}) + "\n")
                         self._trace.flush()
+                    outside = event_type == "session.input.consumed" and self._outside_input(session, payload)
+                    if event_type == "session.input.consumed":
+                        # Any new input means the agent finished the outside turns before it.
+                        self._end_outside_turns(session)
+                    if outside:
+                        self._begin_outside_turn(session, conversation_id, payload)
+                        # Its own turn starts consumed; no other turn may take this input for its own.
+                        continue
                     turn = session.turn
                     # Approvals outside a running prompt still block the agent until answered.
                     if event_type == "response.elicitation_request" and (
                         turn is None or not turn.posted or turn.tracker.ended
                     ):
                         self._in_background(session, self._approve(session, conversation_id, elicitation_from(payload)))
-                    elif turn is not None:
-                        for output in turn.tracker.feed(event_type, payload):
-                            turn.outputs.put_nowait(output)
+                        continue
+                    followed = [turn] if turn is not None else []
+                    if event_type != "response.elicitation_request":
+                        followed += [t for t in session.outside.values() if t is not turn and not t.tracker.ended]
+                    for each in followed:
+                        for output in each.tracker.feed(event_type, payload):
+                            each.outputs.put_nowait(output)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - reconnect on any transport failure
@@ -1319,11 +1520,14 @@ class OmnigentAgent:
                     return
                 LOG.warning("stream %s dropped: %s", conversation_id, exc)
             session.connected.clear()
-            if session.turn is not None:
-                session.turn.tracker.on_reconnect()
+            for each in [session.turn, *session.outside.values()]:
+                if each is not None:
+                    each.tracker.on_reconnect()
             await asyncio.sleep(1.0)
 
     async def _ensure_stream(self, session: Session, conversation_id: str) -> None:
+        if (session.heartbeat is None or session.heartbeat.done()) and self._target is not None and self._target.native:
+            session.heartbeat = self._in_background(session, self._heartbeat(session))
         if session.stream_task is None or session.stream_task.done():
             session.gone = None
             session.stream_task = asyncio.create_task(self._pump(session, conversation_id))
@@ -1355,13 +1559,19 @@ class OmnigentAgent:
         session = self._session(session_id)
         if session.turn is not None:
             raise acp.RequestError.invalid_request({"reason": "a prompt is already running"})
+        session.last_activity = asyncio.get_running_loop().time()
+        if session.thread_id is None and session.t3 is not None:
+            self._in_background(session, self._learn_thread(session))
+        texts = [block.text for block in prompt if getattr(block, "type", None) == "text"]
+        if ECHO_MARKER.search("\n".join(texts)):
+            # Never forwarded: the agent already has this input, from wherever it came.
+            return await self._answer_echo(session, texts)
         # The turn exists from the start so that a cancel during setup is not lost.
         turn = Turn(TurnTracker())
         session.turn = turn
         try:
             target = await self._resolve_target()
             turn.tracker.native = target.native
-            texts = [block.text for block in prompt if getattr(block, "type", None) == "text"]
             told: T3Mode | None = None
             if self._strip:
                 rewritten = strip_t3_instructions(texts, agent_mode=None if target.native_plan else session.told_mode)
@@ -1380,10 +1590,18 @@ class OmnigentAgent:
             conversation_id = await self._ensure_conversation(session, target)
             if not await self._connect_unless_cancelled(session, conversation_id, turn):
                 return acp.PromptResponse(stop_reason="cancelled")
-            posted = await self._client.post_event(
-                conversation_id,
-                {"type": "message", "data": {"role": "user", "content": [{"type": "input_text", "text": text}]}},
-            )
+            session.posting = text
+            try:
+                posted = await self._client.post_event(
+                    conversation_id,
+                    {"type": "message", "data": {"role": "user", "content": [{"type": "input_text", "text": text}]}},
+                )
+            finally:
+                session.posting = None
+            if posted.get("pending_id"):
+                session.posted_pending[str(posted["pending_id"])] = None
+                while len(session.posted_pending) > POSTED_KEEP:
+                    session.posted_pending.pop(next(iter(session.posted_pending)))
             if posted.get("denied"):
                 reason = str(posted.get("reason") or "Denied by policy")
                 await self._conn.session_update(session.acp_id, acp.update_agent_message_text(reason))
@@ -1394,29 +1612,147 @@ class OmnigentAgent:
             turn.tracker.expect_input(posted.get("pending_id"), posted.get("item_id"))
             if turn.cancel_requested:
                 await self._interrupt(conversation_id, turn)
-            quiet: Quiescent | None = None
-            while True:
-                try:
-                    output = await asyncio.wait_for(turn.outputs.get(), QUIESCENT_END_S if quiet else None)
-                except TimeoutError:
-                    tracker = turn.tracker
-                    if quiet is not None and tracker.quiescent and tracker.quiet_generation == quiet.generation:
-                        LOG.info("turn on %s ended by quiescence; no confirmed idle arrived", conversation_id)
-                        return acp.PromptResponse(stop_reason="end_turn")
-                    quiet = Quiescent(tracker.quiet_generation) if tracker.quiescent else None
-                    continue
-                if isinstance(output, Quiescent):
-                    quiet = output
-                    continue
-                if isinstance(output, TurnEnded):
-                    if output.outcome == "cancelled" or turn.cancel_requested:
-                        return acp.PromptResponse(stop_reason="cancelled")
-                    if output.outcome == "failed":
-                        raise acp.RequestError.internal_error({"message": output.error})
-                    return acp.PromptResponse(stop_reason="end_turn")
-                await self._forward(session, conversation_id, output)
+            return await self._follow(session, conversation_id, turn)
         finally:
             session.turn = None
+            session.last_activity = asyncio.get_running_loop().time()
+
+    async def _follow(self, session: Session, conversation_id: str, turn: Turn) -> acp.PromptResponse:
+        """Forward a turn's output until it ends: the prompt's own, or an outside turn's for its echo."""
+        quiet: Quiescent | None = None
+        while True:
+            try:
+                output = await asyncio.wait_for(turn.outputs.get(), QUIESCENT_END_S if quiet else None)
+            except TimeoutError:
+                tracker = turn.tracker
+                if quiet is not None and tracker.quiescent and tracker.quiet_generation == quiet.generation:
+                    LOG.info("turn on %s ended by quiescence; no confirmed idle arrived", conversation_id)
+                    return acp.PromptResponse(stop_reason="end_turn")
+                quiet = Quiescent(tracker.quiet_generation) if tracker.quiescent else None
+                continue
+            if isinstance(output, Quiescent):
+                quiet = output
+                continue
+            if isinstance(output, TurnEnded):
+                if output.outcome == "cancelled" or turn.cancel_requested:
+                    return acp.PromptResponse(stop_reason="cancelled")
+                if output.outcome == "failed":
+                    raise acp.RequestError.internal_error({"message": output.error})
+                return acp.PromptResponse(stop_reason="end_turn")
+            await self._forward(session, conversation_id, output)
+
+    def _outside_input(self, session: Session, payload: dict[str, Any]) -> bool:
+        """Whether a consumed input came from anywhere but this process's prompts."""
+        consumed = payload.get("data") or {}
+        if consumed.get("type") != "message" or not consumed.get("item_id"):
+            return False
+        if consumed.get("cleared_pending_id") in session.posted_pending:
+            return False
+        text = _message_text(consumed.get("data") or {})
+        return not (session.posting is not None and text == session.posting)
+
+    @staticmethod
+    def _end_outside_turns(session: Session) -> None:
+        for turn in session.outside.values():
+            if not turn.tracker.ended:
+                turn.tracker.ended = True
+                turn.outputs.put_nowait(TurnEnded("completed"))
+
+    def _begin_outside_turn(self, session: Session, conversation_id: str, payload: dict[str, Any]) -> None:
+        """Follow the turn an outside input starts, and echo the input into the thread."""
+        target = self._target
+        if target is None or not target.native:
+            return  # SDK agents' turns are told apart by response ids this process never saw.
+        consumed = payload.get("data") or {}
+        item_id = str(consumed["item_id"])
+        # A new input means the agent finished whatever turn came before it.
+        previous = session.turn
+        if previous is not None and previous.tracker.native_consumed and not previous.tracker.ended:
+            previous.tracker.ended = True
+            previous.outputs.put_nowait(TurnEnded("completed"))
+        turn = Turn(TurnTracker(native=True, native_consumed=True), posted=True)
+        session.outside[item_id] = turn
+        while len(session.outside) > ECHO_KEEP:
+            session.outside.pop(next(iter(session.outside)))
+        session.last_activity = asyncio.get_running_loop().time()
+        text = _message_text(consumed.get("data") or {})
+        self._in_background(session, self._send_echo(session, item_id, text))
+
+    async def _send_echo(self, session: Session, item_id: str, text: str) -> None:
+        if session.t3 is None:
+            LOG.warning("no T3 Code tools in this session's environment; not echoing outside turn %s", item_id)
+            return
+        try:
+            async with session.echoing:
+                await self._learn_thread(session)
+                if session.thread_id is None:
+                    raise T3Error("this session's T3 Code thread is unknown")
+                await session.t3.send(session.thread_id, echo_message(text, item_id))
+            LOG.info("echoed outside turn %s into thread %s", item_id, session.thread_id)
+        except (T3Error, OSError) as exc:
+            LOG.warning("echoing outside turn %s into the thread failed: %s", item_id, exc)
+
+    async def _learn_thread(self, session: Session) -> None:
+        """Ask T3 Code which thread this session is, while its token is fresh: it lapses after a day unused."""
+        if session.thread_id is not None or session.t3 is None:
+            return
+        try:
+            capabilities = await session.t3.call("orchestrator_capabilities", {})
+            session.thread_id = str(capabilities["parentThreadId"])
+        except (T3Error, httpx.HTTPError, KeyError) as exc:
+            LOG.warning("could not learn the T3 Code thread of %s: %s", session.acp_id, exc)
+
+    async def _answer_echo(self, session: Session, texts: list[str]) -> acp.PromptResponse:
+        """T3 Code's prompt for an echo: the outside turn's output, followed live while it runs."""
+        found = ECHO_MARKER.search("\n".join(texts))
+        conversation_id = session.conversation_id
+        if found is None or conversation_id is None:
+            await self._conn.session_update(
+                session.acp_id, acp.update_agent_message_text("This echo names no Omnigent turn of this thread.")
+            )
+            return acp.PromptResponse(stop_reason="end_turn")
+        item_id = found["item"]
+        turn = session.outside.pop(item_id, None)
+        if turn is None:
+            return await self._replay_outside_turn(session, conversation_id, item_id)
+        session.turn = turn
+        try:
+            return await self._follow(session, conversation_id, turn)
+        finally:
+            session.turn = None
+            session.last_activity = asyncio.get_running_loop().time()
+
+    async def _replay_outside_turn(self, session: Session, conversation_id: str, item_id: str) -> acp.PromptResponse:
+        """An outside turn this process did not follow (it started before this process): its transcript."""
+        try:
+            items = [item async for item in self._client.session_items(conversation_id)]
+        except (OmnigentError, httpx.HTTPError) as exc:
+            raise acp.RequestError.internal_error({"message": f"could not read the Omnigent turn: {exc}"}) from None
+        start = next((n for n, item in enumerate(items) if item.get("id") == item_id), None)
+        if start is None:
+            await self._conn.session_update(
+                session.acp_id, acp.update_agent_message_text("That Omnigent turn is no longer in the session.")
+            )
+            return acp.PromptResponse(stop_reason="end_turn")
+        rest = items[start + 1 :]
+        end = next((n for n, item in enumerate(rest) if item.get("type") == "message" and item.get("role") == "user"), len(rest))
+        for update in history_updates(rest[:end], session.cwd):
+            await self._conn.session_update(session.acp_id, update)
+        return acp.PromptResponse(stop_reason="end_turn")
+
+    async def _listen(self, session: Session, conversation_id: str) -> None:
+        try:
+            await self._ensure_stream(session, conversation_id)
+        except OmnigentError as exc:
+            LOG.warning("not listening to %s for outside turns: %s", conversation_id, exc)
+
+    async def _heartbeat(self, session: Session) -> None:
+        """Keep T3 Code from releasing this session, so outside turns keep reaching it, for a week of quiet."""
+        loop = asyncio.get_running_loop()
+        while loop.time() - session.last_activity < HEARTBEAT_FOR_S:
+            await asyncio.sleep(HEARTBEAT_S)
+            if session.turn is None:
+                await self._conn.session_update(session.acp_id, heartbeat_update())
 
     async def _fork_to(self, session: Session, args: list[str]) -> str:
         """Fork this thread's Omnigent session onto another host; the reply to show in the thread."""
@@ -1548,11 +1884,15 @@ async def main() -> None:
         help="claude-native only: give the TUI the client's MCP servers at launch and keep T3 Code's tool instructions",
     )
     parser.add_argument("--trace", help="append every Omnigent stream event to this JSONL file")
+    parser.add_argument("--log", help="log here as well as to stderr, which T3 Code does not keep")
     args = parser.parse_args()
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
+    if args.log:
+        handlers.append(logging.FileHandler(args.log))
     logging.basicConfig(
-        stream=sys.stderr,
+        handlers=handlers,
         level=os.environ.get("OMNIGENT_ACP_LOG", "INFO").upper(),
-        format="omnigent-acp %(levelname)s %(message)s",
+        format="%(asctime)s omnigent-acp %(levelname)s %(message)s",
     )
     client = OmnigentClient(args.url)
     trace = open_trace(args.trace) if args.trace else None

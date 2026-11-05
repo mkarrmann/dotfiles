@@ -253,7 +253,16 @@ Gotchas:
   Codex's apply_patch), as the edited snippet; T3 Code's checkpoint diffs and
   git panes need a git or jj repository, which the Sapling checkouts are not.
 - Stop on a native session sends Escape, which the agent can survive.
-- Turns started outside T3 Code (wakeups, other clients) do not appear in it,
-  though their approval requests do.
+- A turn started outside T3 Code (a watcher's wakeup, a background task's
+  notification, a message from the Omnigent app) shows in its thread as a
+  one-line message (the input's first line, or the task's summary) followed by
+  the agent's reply. The shim echoes the input with `t3 thread send`, carrying
+  a `⟦omnigent-echo:…⟧` marker, and answers T3 Code's prompt for it with that
+  turn's output instead of passing it on, so the agent answers once. T3 Code
+  releases an idle ACP session after 30 minutes; the shim sends an empty
+  `session_info_update` every 20 so it does not, for a week after the
+  thread's last turn. A thread whose shim is gone (released after that week,
+  or after a server restart) does not hear outside turns until it is next
+  used. Native agents only.
 - `omnigent-acp --t3-tools` gives the Claude TUI T3 Code's tools, but only with
   the token from launch; the providers above do not enable it.
