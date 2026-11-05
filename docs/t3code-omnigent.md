@@ -15,8 +15,8 @@ browser window: a Chrome `--app` window on a hostname and in a Chrome profile of
 its own, served by its host's server and, at work, linked to every other
 devserver's, so every window lists, searches (Cmd+K) and starts threads on every
 host. Only where its new threads start is per window (see "A window's
-project"). T3 Code's desktop app is single-window and has no way to open on a
-project, so the windows are Chrome's.
+project"). T3 Code's desktop app is one instance with one window (`t3 app PATH`
+only switches that window's project), so the windows are Chrome's.
 
 A thread stays on the server it started on: T3 Code moves a draft between
 machines (Cmd+Shift+H) but neither moves nor forks a sent thread to another
@@ -27,7 +27,8 @@ session behind a thread likewise runs on that host.
 
 - `bin/t3-ensure` (run by `init.sh` on the candidates) installs the `t3` CLI,
   registers the "Omnigent · Claude" (`claude-native-ui`) and "Omnigent · Codex"
-  (`codex-native-ui`) providers in `~/.t3-workspaces/checkouts`, turns off T3
+  (`codex-native-ui`) providers in the shared settings (see "Settings in the
+  dotfiles"), to which it links `~/.t3-workspaces/checkouts`', turns off T3
   Code's built-in Codex and Claude (they bypass Omnigent; re-enabling one in
   Settings sticks), adds every `~/checkoutN` as a project, warms uv's cache for
   the shim, and enables `t3@checkouts` (`systemd/t3@.service`,
@@ -155,6 +156,33 @@ new threads start in that workspace's project:
 - The T3 Code desktop app (`bin/t3-desktop-app-ensure`) runs its own server on
   `~/.t3`; to see the same threads there, pair it with `t3@desktop`
   (`t3 pair --base-dir ~/.t3-workspaces/desktop` prints an `App link`).
+
+## Settings in the dotfiles
+
+T3 Code has two kinds of settings, kept two ways:
+
+- **Server settings** (providers, models, compaction, the environment theme):
+  each server's `userdata/settings.json` is a symlink, made by `bin/t3-ensure`,
+  to `t3code/settings.json`, which every server at work, the Mac's and the
+  desktop's share. T3 Code saves through the link and reloads the file when it
+  changes (since 0.1.6), and writes only what differs from its defaults, so a
+  change in any window's server settings shows up as a dotfiles diff on that
+  host, to commit and pull to the others like any other. The Omnigent
+  providers are registered by bare name (`omnigent-acp`, found on PATH via
+  `~/bin`), as one file cannot hold each host's home. Being shared, an
+  environment theme or icon set on one server is every server's.
+- **Client settings** (appearance, fonts, diff layout, notifications): a window
+  keeps them in its page's localStorage and the desktop app in
+  `~/.t3/userdata/client-settings.json`; neither can be a symlink. `bin/t3-client-settings`
+  syncs them with `t3code/client-settings.json`, which holds only what differs
+  from 0.1.6's defaults (`t3code/client-settings.defaults.json`; regenerate with
+  `t3code/generate-client-defaults VERSION` when the pin moves). Each run takes
+  what changed in any window or the desktop app since its last run, writes the
+  file, and puts the result in every window (reloading the ones it changed);
+  the desktop app only while it is not running. Both `startup-windows` run it
+  after their T3 Code windows are up; run `~/bin/t3-client-settings` to sync
+  sooner. Two windows that changed one setting differently stop the sync until
+  `--prefer PROFILE` picks one.
 
 ## A window's project
 
