@@ -41,6 +41,7 @@ T3_LOCAL_HOST="local"
 T3_PAIRING_TOKEN_MAX_AGE_MIN=660
 T3_PAIRING_TOKEN_WAIT=0
 T3_SERVER_WAIT=0
+T3_LOCAL_SERVER_WAIT=0
 t3_unreachable_hosts=""
 T3_WINDOWS_CACHE="$(mktemp -u)"
 
@@ -123,8 +124,9 @@ check "the server wait passes once the server answers" "0" \
   "$(t3_wait_for_server cco.example.com http://cco-checkout3.t3.localhost:13780/; echo $?)"
 curl() { return 7; }
 t3_waited_hosts=""
+failures=0
 check "and fails, warning, when it does not" "1 1" \
-  "$({ t3_wait_for_server ftw.example.com http://ftw-checkout1.t3.localhost:23780/; } 2>&1 | grep -c 'did not answer' | tr '\n' ' ')$(t3_wait_for_server ftw.example.com http://x:23780/ >/dev/null 2>&1; echo $?)"
+  "$({ t3_wait_for_server ftw.example.com http://ftw-checkout1.t3.localhost:23780/; } 2>&1 | grep -c 'not answering' | tr '\n' ' ')$(t3_wait_for_server ftw.example.com http://x:23780/ >/dev/null 2>&1; echo $?)"
 curl() { return 0; }
 
 echo "== a t3 row's window, on a model of your Chrome =="
@@ -346,9 +348,12 @@ curl() { return 7; }
 reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
 check "a window whose own server does not answer is not opened, and its token is kept" "0 1" \
   "$(wc -l < "$SIM/windows" | tr -d ' ') $(pooled cco.example.com)"
-check "which warns once, saying to rerun" "1 1" "$failures $(grep -c 'rerun' "$SIM/out")"
+check "which warns once and says the window is skipped" "1 1 1" \
+  "$failures $(grep -c 'not answering' "$SIM/out") $(grep -c 'skipped until' "$SIM/out")"
+check "and records the host for the closing rerun hint" " cco.example.com" "$t3_unreachable_hosts"
 reconcile_t3_window 4 "T3: ws4" > "$SIM/out" 2>&1
-check "and the host's other windows do not wait for it again" "0 2" "$(grep -c 'did not answer' "$SIM/out") $failures"
+check "and the host's other windows are skipped without checking or warning again" "0 1 1" \
+  "$(grep -c 'not answering' "$SIM/out") $(grep -c 'skipped until' "$SIM/out") $failures"
 
 echo "== the Mac's own server, workspace 1's =="
 workspaces_without_local() { :; }

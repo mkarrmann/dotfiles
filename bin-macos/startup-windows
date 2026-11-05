@@ -200,8 +200,12 @@ T3_LEGACY_CHROME_DATA_ROOT="$HOME/.t3-workspace-chrome"
 T3_PAIRING_DIR="${T3_PAIRING_DIR:-$HOME/.local/state/t3-pairing}"
 T3_PAIRING_TOKEN_WAIT="${T3_PAIRING_TOKEN_WAIT:-30}"
 T3_PAIRING_TOKEN_MAX_AGE_MIN=660
-# A tunnel this run just rebuilt waits on Duo, one host after the other.
-T3_SERVER_WAIT="${T3_SERVER_WAIT:-180}"
+# A devserver's server answers only once its tunnel is through Duo, which you
+# approve whenever you get to it: this run never waits on it, and skips that
+# host's windows for a rerun to open. The Mac's own server gets a moment to
+# come up at login.
+T3_SERVER_WAIT="${T3_SERVER_WAIT:-0}"
+T3_LOCAL_SERVER_WAIT="${T3_LOCAL_SERVER_WAIT:-15}"
 t3_waited_hosts=""
 t3_unreachable_hosts=""
 T3_TITLE_PATTERN="^T3 Code"
@@ -906,24 +910,24 @@ t3_links() {
     | @tsv'
 }
 
-# t3_wait_for_server DEVSERVER URL — before the first window or link for a
-# devserver, wait (up to T3_SERVER_WAIT seconds, while its tunnel may be
-# reconnecting or waiting on Duo) for its server to answer at URL. A window
-# opened earlier lands on an error page that never retries. Fails, warning
-# once, when it does not answer.
+# t3_wait_for_server HOST URL — before the first window or link for a host,
+# check that its server answers at URL, waiting up to T3_SERVER_WAIT seconds
+# for a devserver's (T3_LOCAL_SERVER_WAIT for the Mac's). A window opened
+# earlier lands on an error page that never retries. Fails when it does not
+# answer, warning (and counting in $failures) once per host.
 t3_wait_for_server() {
-  local host="$1" url="$2" port deadline
+  local host="$1" url="$2" port deadline wait="$T3_SERVER_WAIT"
   [[ " $t3_unreachable_hosts " != *" $host "* ]] || return 1
   [[ " $t3_waited_hosts " != *" $host "* ]] || return 0
+  [[ "$host" != "$T3_LOCAL_HOST" ]] || wait="$T3_LOCAL_SERVER_WAIT"
   port="${url##*:}"
   port="${port%%/*}"
-  deadline=$((SECONDS + T3_SERVER_WAIT))
-  curl -s --noproxy '*' -o /dev/null -m 2 "http://127.0.0.1:$port/" \
-    || echo "[T3] waiting up to ${T3_SERVER_WAIT}s for $host's T3 Code server (approve Duo in its tunnel window)..."
+  deadline=$((SECONDS + wait))
   until curl -s --noproxy '*' -o /dev/null -m 2 "http://127.0.0.1:$port/"; do
     if (( SECONDS >= deadline )); then
-      echo "WARNING: [T3] $host's T3 Code server did not answer within ${T3_SERVER_WAIT}s" >&2
+      echo "WARNING: [T3] $host's T3 Code server is not answering; skipping its windows" >&2
       t3_unreachable_hosts+=" $host"
+      ((failures++)) || true
       return 1
     fi
     sleep 0.5
@@ -1127,10 +1131,7 @@ reconcile_t3_window() {
     # A window opened on a server that does not answer lands on Chrome's error
     # page and cannot be paired or scoped; the next run opens it instead.
     if [[ -z "$own_env" ]]; then
-      echo "WARNING: [$title] not opening a window on $host's T3 Code server; once it answers" >&2
-      echo "         (a devserver's tunnel up, Duo approved, t3@checkouts running there; the Mac's" >&2
-      echo "         com.mkarrmann.t3-local loaded), rerun" >&2
-      ((failures++)) || true
+      echo "[$title] skipped until $host's T3 Code server answers"
       return 0
     fi
     echo "[$title] opening $url on workspace $ws..."
@@ -1836,6 +1837,14 @@ aerospace workspace 1 2>/dev/null || true
 # Trigger SketchBar reconciliation so items are created for any workspaces
 # that appeared after SketchBar's initial sync (T, Z, Orchest workspaces, etc.)
 sketchybar --trigger aerospace_reconcile 2>/dev/null || true
+
+if [[ -n "$t3_unreachable_hosts" ]]; then
+  echo ""
+  echo "T3 Code windows were skipped for:$t3_unreachable_hosts"
+  echo "  Once their servers answer (a devserver's tunnel through Duo on workspace T and"
+  echo "  t3@checkouts running there; the Mac's com.mkarrmann.t3-local loaded), rerun"
+  echo "  ~/bin/startup-windows to open them."
+fi
 
 if [[ "$failures" -gt 0 ]]; then
   echo "Done with ${failures} warning(s)."

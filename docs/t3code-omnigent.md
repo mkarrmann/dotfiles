@@ -98,9 +98,10 @@ running), twice the Mac's devserver windows so reopened windows have some too.
 `nvs-tunnels` pools them, a file each, in `~/.local/state/t3-pairing/HOST/` (not
 shown in the tunnel window), and empties that pool when a session starts, as
 its tokens came from the session before; `startup-windows` drops tokens past
-11 hours. Before a host's first window or link `startup-windows` waits up to
-180 s for its server to answer through the tunnel, and opens no window on a
-server that does not (approve Duo in the tunnel window and rerun). A window it creates opens on
+11 hours. `startup-windows` never waits on Duo: before a host's first window or link it
+checks once that its server answers through the tunnel (giving the Mac's own
+server 15 s at login), skips that host's windows when it does not, and ends by
+listing the skipped hosts (approve Duo in the tunnel windows whenever, then rerun). A window it creates opens on
 `/pair` with a token of its own host's, and links each other host with a token
 of that host's; a new origin waits up to 30 s for each, while an origin that
 paired before (its session cookie lasts about 30 days) takes one only when one
