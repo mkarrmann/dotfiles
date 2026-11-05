@@ -341,7 +341,7 @@ omnigent_deep_link() {
           | select(.host_id == $host)
           | select($ws_dir == "" or .workspace == $ws_dir)
           | select((.title // "") != "")
-        ] | .[0] | "\(.id)\t\(.title)" // empty' | head -1)
+        ] | .[0] // empty | "\(.id)\t\(.title)"' | head -1)
   [[ -n "$session" && "$session" != "null" ]] || return 1
 
   printf 'omnigent://%s:%s/c/%s\t%s\n' \
