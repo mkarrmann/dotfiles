@@ -121,6 +121,34 @@ echo unused-token | python3 "$SCOPE" @chrome "$ORIGIN" --link-only --link "http:
 sed 's/^/    /' "$TMP/again.out"
 check "a window that already has the server is not paired again" "0" "$rc"
 
+echo "== t3-client-settings syncs the window through AppleScript =="
+mkdir -p "$TMP/dotfiles"
+echo '{"mathRenderingEnabled": true}' > "$TMP/dotfiles/client-settings.json"
+client_settings() {
+  T3_CLIENT_SETTINGS_ORIGINS="$ORIGIN" T3_WINDOW_STATE_DIR="$TMP/state" T3_CHROME_PROFILES_DIR="$TMP/no-profiles" \
+    T3_CLIENT_SETTINGS_FILE="$TMP/dotfiles/client-settings.json" T3_DESKTOP_CLIENT_SETTINGS="$TMP/no-desktop-app.json" \
+    python3 "$ROOT/bin/t3-client-settings"
+}
+stored_math() {
+  sleep 2  # the page reloads after a write
+  py '
+page, _ = scope.chrome_page(args[0])
+print(scope.parsed_document(page.evaluate("localStorage.getItem(\"t3code:client-settings:v1\")")).get("mathRenderingEnabled"))
+' "$ORIGIN"
+}
+client_settings | sed 's/^/    /'
+check "the file's setting reaches the window" "True" "$(stored_math)"
+check "and the window's state records what was written" '{"mathRenderingEnabled": true}' \
+  "$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))))' "$TMP/state/e2e$PORT_A/.t3-client-settings.json")"
+py '
+page, _ = scope.chrome_page(args[0])
+doc = scope.parsed_document(page.evaluate("localStorage.getItem(\"t3code:client-settings:v1\")"))
+doc["mathRenderingEnabled"] = False
+page.evaluate("localStorage.setItem(\"t3code:client-settings:v1\", " + json.dumps(json.dumps(doc)) + ")")
+' "$ORIGIN"
+client_settings | sed 's/^/    /'
+check "a setting changed in the window reaches the file" "{}" "$(tr -d ' \n' < "$TMP/dotfiles/client-settings.json")"
+
 if [[ "$failed_checks" -gt 0 ]]; then
   echo "$failed_checks check(s) failed" >&2
   exit 1

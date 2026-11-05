@@ -4,26 +4,30 @@
 Usage: t3-client-settings [--dry-run] [--prefer SOURCE]
 
 T3 Code keeps a client's settings in the client, not on a server: a browser
-window in its page's localStorage (t3code:client-settings:v1,
+window in its origin's localStorage (t3code:client-settings:v1,
 apps/web/src/clientPersistenceStorage.ts), the desktop app in
 ~/.t3/userdata/client-settings.json. Neither is a file a symlink can share
-across the workspace windows (each its own Chrome profile under
+across the workspace windows (each on its own origin: on the Mac app windows
+of your own Chrome, on Linux each in its own Chrome profile under
 ~/.t3-workspace-chrome) and hosts, so this syncs them with
 t3code/client-settings.json, which holds only the settings that differ from
 T3 Code's defaults (t3code/client-settings.defaults.json, from
 t3code/generate-client-defaults):
 
-  1. reads every source: each running window's stored settings, over its
-     Chrome's DevTools port, and the desktop app's file;
+  1. reads every source: each open window's stored settings, through
+     AppleScript (t3-window-scope's) or its Chrome's DevTools port, and the
+     desktop app's file;
   2. takes from each what changed since this tool last wrote it (the copy it
-     left in PROFILE/.t3-client-settings.json, or for the desktop app
+     left in ~/.local/state/t3-windows/NAME/.t3-client-settings.json for a
+     Mac window, NAME its origin's first label, PROFILE/.t3-client-settings.json
+     for a Linux one, or for the desktop app
      ~/.t3/userdata/.t3-client-settings.json). A source it never wrote counts
      every setting it holds that differs from the defaults as changed, and a
      source with no stored settings changed nothing;
   3. applies those changes to client-settings.json, keeping only what differs
      from the defaults. Two sources that changed one setting to different
      values stop it, with nothing written, unless --prefer names the one to
-     take (a profile's directory name, or "desktop");
+     take (NAME, a profile's directory name, or "desktop");
   4. writes the result into every source: each window gets every default
      setting overridden by the file's (its other keys kept) and is reloaded
      if that changed anything, as the page reads its settings only on load.
@@ -33,8 +37,8 @@ t3code/generate-client-defaults):
 So a setting changed in any window's settings reaches the file and every other
 window the next time this runs; bin-macos/startup-windows and
 bin-linux/startup-windows run it after setting up their T3 Code windows.
-onboardingCompletedAt is each client's own and never synced. A window whose
-Chrome is not running is skipped; its profile's database is Chrome's alone.
+onboardingCompletedAt is each client's own and never synced. An origin with no
+window open is skipped; its database is Chrome's alone.
 
 Stdlib only, and no syntax newer than Python 3.9 (t3-window-scope's reasons).
 Exit 0 synced, 1 not (reason on stderr), 2 misuse.
@@ -58,6 +62,10 @@ DOTFILES = Path(os.environ.get("DOTFILES_DIR", HERE.parent))
 SETTINGS_FILE = Path(os.environ.get("T3_CLIENT_SETTINGS_FILE", DOTFILES / "t3code/client-settings.json"))
 DEFAULTS_FILE = Path(os.environ.get("T3_CLIENT_DEFAULTS_FILE", DOTFILES / "t3code/client-settings.defaults.json"))
 PROFILES_ROOT = Path(os.environ.get("T3_CHROME_PROFILES_DIR", Path.home() / ".t3-workspace-chrome"))
+WINDOW_STATE_ROOT = Path(os.environ.get("T3_WINDOW_STATE_DIR", Path.home() / ".local/state/t3-windows"))
+# Space-separated origins to sync windows of, all when unset: the end-to-end
+# tests keep to their own windows with it.
+ONLY_ORIGINS = frozenset(os.environ.get("T3_CLIENT_SETTINGS_ORIGINS", "").split())
 DESKTOP_SETTINGS = Path(os.environ.get("T3_DESKTOP_CLIENT_SETTINGS", Path.home() / ".t3/userdata/client-settings.json"))
 # Electron's single-instance lock in the desktop app's userData
 # (apps/desktop/src/app/DesktopUserData.ts), present while it runs.
@@ -182,10 +190,40 @@ class Source:
     why_not: str = ""
 
 
+def wanted_origin(url: str) -> bool:
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname or ""
+    return host.endswith(T3_ORIGIN_SUFFIX) and (not ONLY_ORIGINS or f"{parts.scheme}://{parts.netloc}" in ONLY_ORIGINS)
+
+
 def window_sources() -> list[Source]:
+    scope = window_scope_module()
+    return chrome_window_sources(scope) + profile_window_sources(scope)
+
+
+def chrome_window_sources(scope: Any) -> list[Source]:
+    """A source per origin with an app window open in your own Chrome (macOS)."""
+    try:
+        pid = scope.own_chrome_pid()
+    except OSError:
+        return []
+    sources, seen = [], set()
+    for window in scope.jxa(pid, "list", T3_ORIGIN_SUFFIX) or []:
+        if not wanted_origin(window["url"]):
+            continue
+        name = (urllib.parse.urlsplit(window["url"]).hostname or "")[: -len(T3_ORIGIN_SUFFIX)]
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        page = scope.ChromeWindowPage(pid, int(window["id"]))
+        sources.append(page_source(scope, name, WINDOW_STATE_ROOT / name / MARKER, page.evaluate))
+    return sources
+
+
+def profile_window_sources(scope: Any) -> list[Source]:
+    """A source per Chrome profile under PROFILES_ROOT running with a DevTools port."""
     if not PROFILES_ROOT.is_dir():
         return []
-    scope = window_scope_module()
     sources = []
     for profile in sorted(p for p in PROFILES_ROOT.iterdir() if p.is_dir()):
         targets = scope.debug_targets(str(profile)) or []
@@ -194,33 +232,35 @@ def window_sources() -> list[Source]:
             for t in targets
             if t.get("type") == "page"
             and t.get("webSocketDebuggerUrl")
-            and (urllib.parse.urlsplit(t.get("url", "")).hostname or "").endswith(T3_ORIGIN_SUFFIX)
+            and wanted_origin(t.get("url", ""))
         ]
         if not pages:
             continue
-        sources.append(window_source(scope, profile, pages[0]["webSocketDebuggerUrl"]))
+        ws_url = pages[0]["webSocketDebuggerUrl"]
+
+        def evaluate(expression: str, ws_url: str = ws_url) -> Any:
+            devtools = scope.DevTools(ws_url)
+            try:
+                return devtools.evaluate(expression)
+            finally:
+                devtools.close()
+
+        sources.append(page_source(scope, profile.name, profile / MARKER, evaluate))
     return sources
 
 
-def window_source(scope: Any, profile: Path, ws_url: str) -> Source:
-    def evaluate(expression: str) -> Any:
-        devtools = scope.DevTools(ws_url)
-        try:
-            return devtools.evaluate(expression)
-        finally:
-            devtools.close()
-
+def page_source(scope: Any, name: str, marker: Path, evaluate: Callable[[str], Any]) -> Source:
     def read() -> Optional[Settings]:
         raw = evaluate(f"localStorage.getItem({json.dumps(STORAGE_KEY)})")
         return scope.parsed_document(raw) if raw is not None else None
 
     def write(settings: Settings) -> None:
         evaluate(
-            f"localStorage.setItem({json.dumps(STORAGE_KEY)}, {json.dumps(json.dumps(settings))});"
-            " setTimeout(() => location.reload(), 0);"
+            f"(localStorage.setItem({json.dumps(STORAGE_KEY)}, {json.dumps(json.dumps(settings))}),"
+            " setTimeout(() => location.reload(), 0), null)"
         )
 
-    return Source(profile.name, profile / MARKER, read, write)
+    return Source(name, marker, read, write)
 
 
 def desktop_running() -> bool:
@@ -285,11 +325,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--dry-run", action="store_true", help="say what would change, change nothing")
     parser.add_argument("--prefer", metavar="SOURCE", help="the source whose value wins a conflict")
     args = parser.parse_args(argv)
-    sources = window_sources()
-    desktop = desktop_source()
-    if desktop is not None:
-        sources.append(desktop)
     try:
+        sources = window_sources()
+        desktop = desktop_source()
+        if desktop is not None:
+            sources.append(desktop)
         sync(sources, args.dry_run, args.prefer)
     except (SyncError, OSError) as error:
         print(f"t3-client-settings: {error}", file=sys.stderr)

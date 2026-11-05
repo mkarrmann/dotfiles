@@ -105,7 +105,8 @@ switch_state() {
 }
 
 sync() {
-  T3_CHROME_PROFILES_DIR="$TMP/profiles" T3_CLIENT_SETTINGS_FILE="$TMP/dotfiles/client-settings.json" \
+  T3_CLIENT_SETTINGS_ORIGINS="http://w1.t3.localhost:$PORT http://w2.t3.localhost:$PORT" \
+    T3_CHROME_PROFILES_DIR="$TMP/profiles" T3_CLIENT_SETTINGS_FILE="$TMP/dotfiles/client-settings.json" \
     T3_DESKTOP_CLIENT_SETTINGS="$TMP/no-desktop-app.json" python3 "$ROOT/bin/t3-client-settings" "$@"
 }
 

@@ -64,7 +64,7 @@ project of its own (the prompt-link route, which without a prompt only says
 so), chat.newLocal (mod+shift+n, its default binding) starts one from
 projectOrder, with the app's own defaults for the draft.
 
-The browser must run with --remote-debugging-port=0, which makes Chrome write
+With PROFILE_DIR, the browser must run with --remote-debugging-port=0, which makes Chrome write
 the port it chose to PROFILE_DIR/DevToolsActivePort; the file outlives the
 browser, so a port is used only once it answers. The page is first taken to a
 same-origin page that runs no app code (the server's descriptor route), so the
@@ -136,7 +136,7 @@ function run(argv) {
     }
     return "null";
   }
-  if (op === "tag" || op === "untag") {
+  if (op === "list" || op === "tag" || op === "untag") {
     const out = [];
     chrome.windows().forEach((w, i) => {
       let tab, u;
@@ -144,7 +144,7 @@ function run(argv) {
       if (!t3(u)) return;
       const tag = argv[3] + "-" + i;
       let tagged = false;
-      try {
+      if (op !== "list") try {
         tab.execute({javascript: op === "tag"
           ? "window.__t3wsTitle = document.title; document.title = " + JSON.stringify(tag) + "; 1"
           : "if (window.__t3wsTitle !== undefined) { document.title = window.__t3wsTitle; delete window.__t3wsTitle; } 1"});
