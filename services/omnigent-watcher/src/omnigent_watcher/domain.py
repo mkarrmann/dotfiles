@@ -23,6 +23,9 @@ class EventKind(StrEnum):
     CI_FAILURE = "ci_failure"
     AI_REVIEW = "ai_review"
     CI_GREEN = "ci_green"
+    CI_STALLED = "ci_stalled"
+    ACCEPTED = "accepted"
+    CHANGES_REQUESTED = "changes_requested"
     CHANGED = "changed"
 
 
@@ -309,6 +312,9 @@ DIFF_EVENT_KINDS = frozenset(
         EventKind.CI_FAILURE,
         EventKind.AI_REVIEW,
         EventKind.CI_GREEN,
+        EventKind.CI_STALLED,
+        EventKind.ACCEPTED,
+        EventKind.CHANGES_REQUESTED,
     }
 )
 COMMAND_EVENT_KINDS = frozenset({EventKind.CHANGED})

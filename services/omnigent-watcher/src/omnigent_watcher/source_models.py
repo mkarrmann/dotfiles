@@ -42,6 +42,14 @@ class CIAggregateState(StrEnum):
     SKIPPED = "skipped"
 
 
+class ReviewStatus(StrEnum):
+    """Where a diff's review stands, as far as its author needs to act on it."""
+
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    CHANGES_REQUESTED = "changes_requested"
+
+
 class SourceErrorCategory(StrEnum):
     AUTH = "auth"
     TIMEOUT = "timeout"
@@ -199,6 +207,10 @@ class CISnapshot(_StrictModel):
 
 class SourceCursor(_StrictModel):
     latest_version_id: str | None = Field(default=None, max_length=128)
+    # When this watcher first saw ``latest_version_id``: Phabricator gives a
+    # version no timestamp, and a version whose CI never starts is measured
+    # from here.
+    version_seen_at: AwareDatetime | None = None
     comments: str | None = Field(default=None, max_length=512)
     ci: str | None = Field(default=None, max_length=512)
     ai_reviews: str | None = Field(default=None, max_length=512)
@@ -215,6 +227,7 @@ class DiffSnapshot(_StrictModel):
     comments: CommentsSnapshot
     ci: CISnapshot
     ai_reviews: AIReviewSnapshot
+    review_status: ReviewStatus = ReviewStatus.PENDING
 
     @model_validator(mode="after")
     def validate_lifecycle(self) -> DiffSnapshot:
@@ -230,8 +243,12 @@ class DiffSnapshot(_StrictModel):
     def cursor(self, previous: SourceCursor | None = None) -> SourceCursor:
         """Advance only source components that succeeded in this snapshot."""
         previous = previous or SourceCursor()
+        same_version = self.latest_version_id in (None, previous.latest_version_id)
         return SourceCursor(
             latest_version_id=self.latest_version_id or previous.latest_version_id,
+            version_seen_at=(
+                (previous.version_seen_at or self.observed_at) if same_version else self.observed_at
+            ),
             comments=(self.comments.cursor if self.comments.status == "ok" else previous.comments),
             ci=self.ci.cursor if self.ci.status == "ok" else previous.ci,
             ai_reviews=(

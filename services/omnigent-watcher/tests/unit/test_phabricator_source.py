@@ -449,3 +449,95 @@ def test_metadata_created_time_does_not_make_old_diff_look_new() -> None:
     observed = datetime(2026, 7, 19, tzinfo=UTC)
     metadata = _parse_metadata("D90000001", properties(), observed)
     assert metadata.last_activity_at < observed - timedelta(days=100)
+
+
+class StatusRunner(RecordingRunner):
+    """A diff in a given review status, at a given latest version."""
+
+    def __init__(self, ci_result: object, *, status: str = "Needs Review", version: str = "version-7") -> None:
+        super().__init__([], ci_result)
+        self.status = status
+        self.version = version
+
+    async def __call__(self, argv: Sequence[str]) -> object:
+        if tuple(argv[:2]) == ("jf", "diff-properties"):
+            self.calls.append(tuple(argv))
+            return {
+                **properties(status=self.status),
+                "latest_phabricator_version": {"id": self.version, "number": 7},
+            }
+        return await super().__call__(argv)
+
+
+def no_signals() -> dict[str, object]:
+    return {
+        "signalview_signals": {
+            "all": {"count": 0},
+            "failed": {"count": 0, "nodes": []},
+            "pending": {"count": 0},
+            "reviews": {"nodes": []},
+        }
+    }
+
+
+def kinds_with_events(result) -> set[str]:
+    return {kind.value for kind, events in result.events.items() if events}
+
+
+def aged(cursor: str, minutes: int) -> str:
+    """The same cursor, as if its version had been first seen MINUTES earlier."""
+    import json
+
+    doc = json.loads(cursor)
+    seen = datetime.fromisoformat(doc["version_seen_at"])
+    doc["version_seen_at"] = (seen - timedelta(minutes=minutes)).isoformat()
+    return json.dumps(doc)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("Accepted", {"accepted"}),
+        ("Needs Revision", {"changes_requested"}),
+        ("Changes Planned", set()),
+        ("Needs Review", set()),
+    ],
+)
+async def test_a_reviewers_verdict_is_an_event_but_the_authors_plan_is_not(status, expected) -> None:
+    result = await PhabricatorReviewSource(runner=StatusRunner(ci(failed=0), status=status)).poll("D90000001", None)
+    assert kinds_with_events(result) & {"accepted", "changes_requested"} == expected
+    # Known on every read, so a quiet status is "nothing new", not "unreadable".
+    assert {"accepted", "changes_requested"} <= {kind.value for kind in result.ok_kinds}
+
+
+@pytest.mark.asyncio
+async def test_ci_that_never_starts_is_reported_once_its_version_is_half_an_hour_old() -> None:
+    source = PhabricatorReviewSource(runner=StatusRunner(no_signals()))
+    first = await source.poll("D90000001", None)
+    assert "ci_stalled" not in kinds_with_events(first)
+    early = await source.poll("D90000001", aged(first.cursor, 29))
+    assert "ci_stalled" not in kinds_with_events(early)
+    # Polls of the same version keep the time it was first seen.
+    import json
+
+    def seen(cursor: str) -> datetime:
+        return datetime.fromisoformat(json.loads(cursor)["version_seen_at"].replace("Z", "+00:00"))
+
+    assert seen(early.cursor) == seen(aged(first.cursor, 29))
+    late = await source.poll("D90000001", aged(first.cursor, 31))
+    assert "ci_stalled" in kinds_with_events(late)
+
+
+@pytest.mark.asyncio
+async def test_a_new_version_restarts_the_stall_clock_and_any_signal_clears_it() -> None:
+    old = await PhabricatorReviewSource(runner=StatusRunner(no_signals())).poll("D90000001", None)
+    stale_cursor = aged(old.cursor, 60)
+    amended = await PhabricatorReviewSource(runner=StatusRunner(no_signals(), version="version-8")).poll(
+        "D90000001", stale_cursor
+    )
+    assert "ci_stalled" not in kinds_with_events(amended)
+    started = await PhabricatorReviewSource(runner=StatusRunner(ci(pending=3, failed=0))).poll(
+        "D90000001", stale_cursor
+    )
+    assert "ci_stalled" not in kinds_with_events(started)

@@ -85,8 +85,8 @@ def test_summary_covers_every_affected_diff_in_one_wake() -> None:
             ("phabricator", "D115903819", {EventKind.REVIEW_COMMENT: 1}),
         ],
     )
-    assert "D115903821 has 2 current-version CI failures" in summary
-    assert "D115903819 has 1 unresolved review comment" in summary
+    assert "D115903821: 2 current-version CI failures" in summary
+    assert "D115903819: 1 unresolved review comment" in summary
     assert "update each diff as needed" in summary
     assert "http" not in summary
 
@@ -106,8 +106,9 @@ def test_summary_reports_a_green_run_without_inventing_a_count() -> None:
     summary = render_batch_summary(
         "dwb_test", [("phabricator", "D115903819", {EventKind.CI_GREEN: 1})]
     )
-    assert "D115903819 has CI green" in summary
+    assert "D115903819: CI green" in summary
     assert "1 CI green" not in summary
+    assert "address actionable findings" not in summary
 
 
 def test_summary_joins_three_kinds_readably() -> None:
@@ -147,3 +148,34 @@ def test_summary_rejects_an_entirely_empty_batch() -> None:
         render_batch_summary("dwb_test", [("phabricator", "D1", {EventKind.CI_FAILURE: 0})])
     with pytest.raises(ValueError):
         render_batch_summary("dwb_test", [])
+
+
+def test_a_verdict_reads_as_a_state_and_acceptance_never_invites_landing() -> None:
+    summary = render_batch_summary(
+        "dwb_test",
+        [
+            ("phabricator", "D115903821", {EventKind.CHANGES_REQUESTED: 1, EventKind.REVIEW_COMMENT: 2}),
+            ("phabricator", "D115903819", {EventKind.ACCEPTED: 1}),
+        ],
+    )
+    assert "D115903821: 2 unresolved review comments and changes requested" in summary
+    assert "D115903819: accepted" in summary
+    assert "address actionable findings" in summary
+    assert "landing stays with the user" in summary
+    assert "http" not in summary
+
+
+def test_good_news_alone_asks_for_no_fixes() -> None:
+    summary = render_batch_summary(
+        "dwb_test", [("phabricator", "D115903819", {EventKind.ACCEPTED: 1, EventKind.CI_GREEN: 1})]
+    )
+    assert "Nothing needs fixing" in summary
+    assert "address actionable findings" not in summary
+
+
+def test_ci_that_never_started_asks_for_a_check_rather_than_fixes() -> None:
+    summary = render_batch_summary("dwb_test", [("phabricator", "D115903819", {EventKind.CI_STALLED: 1})])
+    assert "no CI on the current version after 30 minutes" in summary
+    assert "resubmit" in summary
+    assert "address actionable findings" not in summary
+    assert len(summary) < 300

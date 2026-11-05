@@ -52,8 +52,7 @@ def failure_poll_delay(failure_count: int, subject: str) -> float:
 
 
 # Rendered in this order so a wake leads with what needs action. Each entry is
-# (singular, plural); CI_GREEN is a state report rather than a count, so it
-# renders through a separate branch below.
+# (singular, plural); the states below have no count and render as phrases.
 _KIND_NOUNS: dict[EventKind, tuple[str, str]] = {
     EventKind.REVIEW_COMMENT: ("unresolved review comment", "unresolved review comments"),
     EventKind.CI_FAILURE: ("current-version CI failure", "current-version CI failures"),
@@ -63,6 +62,14 @@ _KIND_NOUNS: dict[EventKind, tuple[str, str]] = {
     ),
     EventKind.CHANGED: ("change", "changes"),
 }
+_STATE_PHRASES: dict[EventKind, str] = {
+    EventKind.CHANGES_REQUESTED: "changes requested",
+    EventKind.CI_STALLED: "no CI on the current version after 30 minutes",
+    EventKind.CI_GREEN: "CI green",
+    EventKind.ACCEPTED: "accepted",
+}
+# What a wake made only of these asks of the agent: nothing to fix.
+_INFORMATIONAL = frozenset({EventKind.CI_GREEN, EventKind.ACCEPTED})
 
 
 def _join(parts: Sequence[str]) -> str:
@@ -77,11 +84,28 @@ def _describe_counts(counts: Mapping[EventKind, int]) -> str:
         for kind, nouns in _KIND_NOUNS.items()
         if (count := counts.get(kind, 0))
     ]
-    if counts.get(EventKind.CI_GREEN, 0):
-        parts.append("CI green")
+    parts += [phrase for kind, phrase in _STATE_PHRASES.items() if counts.get(kind, 0)]
     if not parts:
         raise ValueError("cannot render an empty watcher batch")
     return _join(parts)
+
+
+def _diff_instruction(kinds: frozenset[EventKind], diffs: int) -> str:
+    """What the agent should do about a batch of diff events, by what they are."""
+    tail = "the diff" if diffs == 1 else "each diff"
+    sentences = []
+    if kinds - _INFORMATIONAL - {EventKind.CI_STALLED}:
+        sentences.append(
+            "Load the current diff review and CI "
+            f"state, address actionable findings, and update {tail} as needed."
+        )
+    if EventKind.CI_STALLED in kinds:
+        sentences.append("Check its CI signals; if CI was never scheduled, resubmit the diff.")
+    if not kinds - _INFORMATIONAL:
+        sentences.append("Nothing needs fixing; tell the user if they are waiting on it.")
+    if EventKind.ACCEPTED in kinds:
+        sentences.append("Do not land an accepted diff; landing stays with the user.")
+    return " ".join(sentences)
 
 
 def render_batch_summary(
@@ -96,22 +120,20 @@ def render_batch_summary(
 
     The closing instruction stays diff-specific only while every subject in the
     batch is a diff. A session may watch a diff and a JustKnob at once, and
-    telling it to go read the CI state of a knob would be nonsense.
+    telling it to go read the CI state of a knob would be nonsense. A diff batch
+    that only reports good news (CI green, accepted) asks for no fixes.
     """
     described = [
-        (source, subject, _describe_counts(counts))
+        (source, subject, counts, _describe_counts(counts))
         for source, subject, counts in counts_by_subject
         if any(counts.values())
     ]
     if not described:
         raise ValueError("cannot render an empty watcher batch")
-    body = "; ".join(f"{subject} has {joined}" for _, subject, joined in described)
-    if all(source == PHABRICATOR_SOURCE for source, _, _ in described):
-        tail = "the diff" if len(described) == 1 else "each diff"
-        instruction = (
-            "Load the current diff review and CI "
-            f"state, address actionable findings, and update {tail} as needed."
-        )
+    body = "; ".join(f"{subject}: {joined}" for _, subject, _, joined in described)
+    if all(source == PHABRICATOR_SOURCE for source, _, _, _ in described):
+        kinds = frozenset(kind for _, _, counts, _ in described for kind, n in counts.items() if n)
+        instruction = _diff_instruction(kinds, len(described))
     else:
         instruction = "Load the current state of each subject and act on what changed."
     return f"[Watcher {batch_id}] {body}. {instruction}"

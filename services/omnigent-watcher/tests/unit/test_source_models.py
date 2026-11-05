@@ -64,6 +64,8 @@ def test_partial_failure_advances_only_successful_cursor() -> None:
 
     assert snapshot.cursor(previous) == SourceCursor(
         latest_version_id="version-partial-2",
+        # A version the cursor has not seen is first seen now.
+        version_seen_at=snapshot.observed_at,
         comments="comments-partial-2",
         ci="ci-partial-1",
     )

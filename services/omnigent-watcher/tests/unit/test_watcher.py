@@ -547,8 +547,8 @@ async def test_a_stack_going_red_produces_one_wake_naming_every_diff(
 
     assert len(delivery.calls) == 1
     _, _, content = delivery.calls[0]
-    assert "D90000001 has" in content
-    assert "D90000002 has" in content
+    assert "D90000001: " in content
+    assert "D90000002: " in content
     assert "update each diff as needed" in content
 
 

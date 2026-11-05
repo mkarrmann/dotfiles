@@ -130,7 +130,8 @@ again, even if acknowledgment of an earlier occurrence arrives late. Changes
 between polls can still be missed; this is sampled feedback, not a full history.
 
 Use the default event set unless the user requests a subset of
-`review_comment`, `ci_failure`, `ai_review`, or `ci_green`. `diff_status`
+`review_comment`, `ci_failure`, `ai_review`, `ci_green`, `ci_stalled` (no CI
+30 minutes into a version), `accepted`, or `changes_requested`. `diff_status`
 shows recorded subscription state and pending notifications; it is not a worker
 health check. `diff_unsubscribe` stops one diff or all of them. Both take
 `session_id`. Normal diff completion retires automatically without sending a
@@ -150,7 +151,9 @@ the same usable session to resume delivery.
 ## When a wake arrives
 
 When a `[Watcher ...]` message names Phabricator diffs, treat its counts as a
-hint to read current feedback. Generic job notifications belong to
+hint to read current feedback, and follow its closing instruction: a wake with
+only good news (CI green, accepted) needs no fixes, and an accepted diff is
+never yours to land. Generic job notifications belong to
 [[watch-anything]]. A diff wake can cover the whole stack and names each
 affected diff. Load
 [[diff-comments]] for current review feedback and [[ci-signals]] for current CI

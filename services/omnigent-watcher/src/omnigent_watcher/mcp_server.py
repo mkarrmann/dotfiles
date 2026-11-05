@@ -44,12 +44,17 @@ mcp = FastMCP("watch", log_level="ERROR")
 
 # Spelled out rather than derived from EventKind so the published tool schema
 # stays a literal; tests pin the two together.
-EventName = Literal["review_comment", "ci_failure", "ai_review", "ci_green"]
+EventName = Literal[
+    "review_comment", "ci_failure", "ai_review", "ci_green", "ci_stalled", "accepted", "changes_requested"
+]
 _ALL_EVENTS: tuple[EventName, ...] = (
     "review_comment",
     "ci_failure",
     "ai_review",
     "ci_green",
+    "ci_stalled",
+    "accepted",
+    "changes_requested",
 )
 
 SessionId = Annotated[
@@ -321,7 +326,7 @@ async def diff_status(session_id: SessionId) -> str:
 # -- Generic watches ------------------------------------------------------
 #
 # Deliberately a separate tool set from the diff ones. Those stay opinionated
-# about diffs -- no source, no argv, events fixed to the four diff kinds --
+# about diffs -- no source, no argv, events fixed to the diff kinds --
 # because that is the interface worth having for the common case. These make no
 # assumption about what is being watched, at the cost of the caller having to
 # say how to read it. The route is identical for both.

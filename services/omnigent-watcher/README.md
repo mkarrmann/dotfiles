@@ -191,6 +191,9 @@ Two behaviours differ from a diff watch:
 | `ci_failure`     | A signal reports `FAILED`, as soon as it does.              |
 | `ai_review`      | An actionable automated-review finding is new, changed, or observed reopening. |
 | `ci_green`       | A version's run finishes with nothing failing.              |
+| `ci_stalled`     | No CI signal at all on the latest version 30 minutes after the watcher first saw it (CI never started). |
+| `accepted`       | The diff's review status becomes Accepted.                  |
+| `changes_requested` | A reviewer sets the diff to Needs Revision. The author's own "Changes Planned" does not count. |
 | `changed`        | A generic watch observes a value different from its latest acknowledged value. |
 
 Three things are deliberately true here, each of which was once false:
@@ -208,6 +211,13 @@ arctic`. Arctic findings the author already dismissed or addressed are
   can learn that something broke but never that the work is done, so "is it
   green yet" stays a manual poll. It is scoped to green because a red run
   already reports itself through `ci_failure`.
+
+Wakes stay free of raw comments, logs and URLs, but say what to do: a wake
+carrying only good news (`ci_green`, `accepted`) asks for no fixes, one with
+`ci_stalled` asks for a CI check and a resubmit if nothing was scheduled, and
+any `accepted` diff comes with a reminder that landing stays with the user.
+Subscriptions made before `ci_stalled`, `accepted` and `changes_requested`
+existed keep their recorded kinds until subscribed again.
 
 A successful diff subscription follows the named diffs through amendments and
 repeated feedback without renewal. An observed resolution followed by a

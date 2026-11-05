@@ -8,7 +8,7 @@ import json
 import os
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from .domain import (
     DIFF_EVENT_KINDS,
@@ -33,6 +33,7 @@ from .source_models import (
     DiffSnapshot,
     ReviewComment,
     ReviewSourceError,
+    ReviewStatus,
     SourceCursor,
     SourceErrorCategory,
     SourceFailure,
@@ -99,6 +100,10 @@ _CI_QUERY = """query ($version_id: ID!) {
     }
   }
 }"""
+
+# A version with no CI signal this long after the watcher first saw it has CI
+# that never started, rather than CI that is slow to report.
+CI_STALL_AFTER = timedelta(minutes=30)
 
 _REVIEW_INSIGHTS_GROUP = "REVIEW_INSIGHTS"
 _ARCTIC_ACTIONABLE_INSIGHT = "spotlight"
@@ -254,6 +259,7 @@ class PhabricatorReviewSource:
             comments=comments,
             ci=ci,
             ai_reviews=ai_reviews,
+            review_status=metadata.review_status,
         )
 
     # -- WatchSource ----------------------------------------------------
@@ -308,7 +314,8 @@ def to_poll_result(
     of a section it actually read, so without it a partial failure would drop
     the failed section's position and refetch that section from scratch.
     """
-    events = normalize_snapshot(snapshot)
+    cursor = snapshot.cursor(previous)
+    events = normalize_snapshot(snapshot, cursor.version_seen_at)
     ok_kinds = frozenset(events)
     failed_kinds = DIFF_EVENT_KINDS - ok_kinds
     if snapshot.lifecycle is DiffLifecycle.MISSING:
@@ -330,7 +337,7 @@ def to_poll_result(
         latest_version_id=snapshot.latest_version_id,
         last_activity_at=snapshot.last_activity_at,
         observed_at=snapshot.observed_at,
-        cursor=snapshot.cursor(previous).model_dump_json(),
+        cursor=cursor.model_dump_json(),
         status=snapshot.ci.aggregate.value,
         events=events,
         ok_kinds=ok_kinds,
@@ -345,15 +352,46 @@ def to_poll_result(
         # A run still in flight is the one case where the idle clock is wrong:
         # nothing has "happened" yet, but something is about to.
         poll_hint_seconds=(60.0 if snapshot.ci.aggregate is CIAggregateState.PENDING else None),
-        version_scoped_kinds=frozenset({EventKind.CI_FAILURE, EventKind.CI_GREEN}),
+        version_scoped_kinds=frozenset(
+            {EventKind.CI_FAILURE, EventKind.CI_GREEN, EventKind.CI_STALLED}
+        ),
     )
 
 
 def normalize_snapshot(
     snapshot: DiffSnapshot,
+    version_seen_at: datetime | None = None,
 ) -> dict[EventKind, tuple[NormalizedEvent, ...]]:
-    """Normalize only source components that succeeded in this poll."""
+    """Normalize only source components that succeeded in this poll.
+
+    ``version_seen_at`` is when the watcher first saw the latest version; it
+    dates CI that never started (``ci_stalled``).
+    """
     result: dict[EventKind, tuple[NormalizedEvent, ...]] = {}
+    version_id = snapshot.latest_version_id or ""
+
+    def state_event(kind: EventKind, external_id: str, state: str) -> NormalizedEvent:
+        return NormalizedEvent(
+            subject=snapshot.subject,
+            kind=kind,
+            external_id=external_id,
+            version_id=version_id,
+            fingerprint=_fingerprint(state),
+            changed_at=snapshot.observed_at,
+        )
+
+    # The review status comes with the diff's metadata, which every snapshot
+    # has read, so these kinds are always known. Each holds one event while the
+    # status does; leaving the status and returning to it is a new occurrence.
+    for kind, status in (
+        (EventKind.ACCEPTED, ReviewStatus.ACCEPTED),
+        (EventKind.CHANGES_REQUESTED, ReviewStatus.CHANGES_REQUESTED),
+    ):
+        result[kind] = (
+            (state_event(kind, f"review:{status.value}", status.value),)
+            if snapshot.review_status is status
+            else ()
+        )
     if snapshot.comments.status == "ok":
         result[EventKind.REVIEW_COMMENT] = tuple(
             NormalizedEvent(
@@ -368,7 +406,6 @@ def normalize_snapshot(
             if item.version_id == snapshot.latest_version_id
         )
     if snapshot.ci.status == "ok":
-        version_id = snapshot.latest_version_id or ""
         result[EventKind.CI_FAILURE] = tuple(
             NormalizedEvent(
                 subject=snapshot.subject,
@@ -397,6 +434,17 @@ def normalize_snapshot(
             if snapshot.ci.green
             else ()
         )
+        stalled = (
+            snapshot.lifecycle is DiffLifecycle.ACTIVE
+            and snapshot.ci.aggregate is CIAggregateState.UNKNOWN
+            and version_seen_at is not None
+            and snapshot.observed_at - version_seen_at >= CI_STALL_AFTER
+        )
+        result[EventKind.CI_STALLED] = (
+            (state_event(EventKind.CI_STALLED, f"stalled:{version_id}", f"{version_id}:stalled"),)
+            if stalled
+            else ()
+        )
     if snapshot.ai_reviews.status == "ok":
         result[EventKind.AI_REVIEW] = tuple(
             NormalizedEvent(
@@ -419,11 +467,13 @@ class _Metadata:
         author_id: str | None,
         latest_version_id: str | None,
         last_activity_at: datetime,
+        review_status: ReviewStatus = ReviewStatus.PENDING,
     ) -> None:
         self.lifecycle = lifecycle
         self.author_id = author_id
         self.latest_version_id = latest_version_id
         self.last_activity_at = last_activity_at
+        self.review_status = review_status
 
 
 def bounded_source_environment(
@@ -484,7 +534,19 @@ def _parse_metadata(
     activity = _datetime(activity_value)
     if activity > observed_at:
         activity = observed_at
-    return _Metadata(lifecycle, author_id, version, activity)
+    return _Metadata(lifecycle, author_id, version, activity, _review_status(status))
+
+
+def _review_status(status: str) -> ReviewStatus:
+    """Phabricator's review status ("Needs Review", "Accepted", "Needs Revision", ...).
+
+    "Changes Planned" is the author's own marker, not a reviewer's request.
+    """
+    if "accept" in status:
+        return ReviewStatus.ACCEPTED
+    if "revision" in status or "changes requested" in status or "reject" in status:
+        return ReviewStatus.CHANGES_REQUESTED
+    return ReviewStatus.PENDING
 
 
 def _latest_version(root: dict[str, object]) -> str | None:
