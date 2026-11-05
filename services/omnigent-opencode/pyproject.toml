@@ -1,0 +1,44 @@
+[project]
+name = "omnigent-opencode"
+version = "0.1.0"
+description = "An OpenCode 2 server for T3 Code whose sessions are Omnigent sessions."
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.12,<4",
+    "httpx>=0.28,<1",
+]
+
+[project.scripts]
+omnigent-opencode = "omnigent_opencode.cli:main"
+
+[dependency-groups]
+dev = [
+    "jsonschema>=4.23",
+    "mypy>=1.16.0",
+    "pytest>=8.4.0",
+    "pytest-asyncio>=1.0",
+    "ruff>=0.12.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.0,<0.9.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 130
+target-version = "py312"
+exclude = [".uv-cache", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# omnigent-opencode -- the OpenCode 2 server T3 Code's OpenCode provider runs;
+# its sessions are Omnigent sessions (services/omnigent-opencode).
+set -euo pipefail
+
+binary="${DOTFILES_DIR:-$HOME/dotfiles}/services/omnigent-opencode/.venv/bin/omnigent-opencode"
+if [[ ! -x "$binary" ]]; then
+  echo "omnigent-opencode: runtime is not installed; run ~/dotfiles/init.sh" >&2
+  exit 127
+fi
+exec "$binary" "$@"
