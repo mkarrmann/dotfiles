@@ -9,6 +9,10 @@ by the ids this server gave out, so these live in SQLite:
   input it became; forks, rollbacks and reconnect backfill address prompts by it.
 - `executions`: how each execution ended, after which input, for the `idle`
   markers in a session's history.
+- `watched`: the sessions this server follows between T3 Code's visits, each
+  with the last Omnigent input it handled (its watermark: a turn on an input
+  after it was missed and is replayed), when it was last active, and the home
+  of the T3 Code server that last opened it, whose thread a turn is put to.
 """
 
 from __future__ import annotations
@@ -36,6 +40,13 @@ create table if not exists executions (
     ended integer not null,
     outcome text not null,
     message_id text not null
+);
+create table if not exists watched (
+    session_id text primary key,
+    conversation_id text not null,
+    watermark text,
+    active integer not null,
+    t3_home text
 );
 """
 
@@ -126,3 +137,40 @@ class Store:
             "insert into executions select ?, ended, outcome, message_id from executions where session_id = ?",
             (target, source),
         )
+
+    def watch(self, session_id: str, conversation_id: str, active: int) -> None:
+        """Follow a session; one already followed keeps when it was last active."""
+        self._db.execute(
+            "insert into watched (session_id, conversation_id, active) values (?, ?, ?)"
+            " on conflict (session_id) do update set conversation_id = excluded.conversation_id",
+            (session_id, conversation_id, active),
+        )
+
+    def unwatch(self, session_id: str) -> None:
+        self._db.execute("delete from watched where session_id = ?", (session_id,))
+
+    def watched(self, since: int) -> list[str]:
+        """The sessions active at or after `since`, most recent first."""
+        rows = self._db.execute("select session_id from watched where active >= ? order by active desc", (since,)).fetchall()
+        return [str(r[0]) for r in rows]
+
+    def active(self, session_id: str) -> int | None:
+        row = self._db.execute("select active from watched where session_id = ?", (session_id,)).fetchone()
+        return int(row[0]) if row else None
+
+    def touch(self, session_id: str, active: int) -> None:
+        self._db.execute("update watched set active = max(active, ?) where session_id = ?", (active, session_id))
+
+    def watermark(self, session_id: str) -> str | None:
+        row = self._db.execute("select watermark from watched where session_id = ?", (session_id,)).fetchone()
+        return str(row[0]) if row and row[0] is not None else None
+
+    def set_watermark(self, session_id: str, item_id: str | None) -> None:
+        self._db.execute("update watched set watermark = ? where session_id = ?", (item_id, session_id))
+
+    def t3_home(self, session_id: str) -> str | None:
+        row = self._db.execute("select t3_home from watched where session_id = ?", (session_id,)).fetchone()
+        return str(row[0]) if row and row[0] is not None else None
+
+    def set_t3_home(self, session_id: str, home: str) -> None:
+        self._db.execute("update watched set t3_home = ? where session_id = ?", (home, session_id))

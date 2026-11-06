@@ -51,7 +51,7 @@ The contract is what T3 Code v0.1.6's OpenCode v2 client sends and decodes
 | `form.created` / reply | Omnigent `ask_user_question` |
 | subagent tool, child session | the harness's spawning call (Claude `Agent`/`Task`, Codex `spawn_agent`) and its Omnigent child session (`session.created` on the parent's stream, linked by the child's `tool_use_id` label) |
 | background subagent report (`synthetic` inbox item) | Claude's `<task-notification>` input, which starts the parent's next turn |
-| execution with no T3 turn | an Omnigent turn T3 Code did not start (watcher wakeup, wake notice, input from another client) |
+| execution with no T3 turn | an Omnigent turn T3 Code did not start (watcher wakeup, wake notice, input from another client); under the daemon, the reply to T3 Code's turn on an "Agent" message (see Daemon) |
 | `/compact` | `compact` event |
 | text generation session (`T3 Code <op>`) | a one-shot `claude -p` |
 
@@ -95,6 +95,60 @@ Known gaps: Codex hooks may not report `apply_patch` (file edits) to the
 policy, so Codex edits may not be asked about. A policy denial gives the model
 the policy's reason, not T3 Code's note.
 
+## Daemon
+
+T3 Code unloads a thread 30 minutes after its last turn
+(`ProviderSessionManager.ts`, `DEFAULT_IDLE_TIMEOUT_MS`), drops what an OpenCode
+server emits for it after that, and stops the server 30 s after it releases its
+session; nothing an OpenCode server can see marks the unload. So an Omnigent
+turn T3 Code did not start (a watcher's wakeup, a background task's report, a
+message from the Omnigent app, the TUI or Google Chat) is shown only while the
+thread happens to be loaded, unless the daemon runs:
+
+- `omnigent-opencode daemon` serves the sessions on a Unix socket
+  (`~/.local/state/omnigent-opencode/daemon.sock`, mode 0600) and keeps each
+  session's Omnigent stream open, T3 Code listening or not, until the session has
+  been quiet for `OMNIGENT_OPENCODE_WATCH_DAYS` (default 7) or its Omnigent
+  session is gone. After a restart it follows the same sessions again.
+- `serve`, which T3 Code still runs, forwards to the daemon when it answers on
+  its socket (`proxy.py`), naming T3 Code's server by its home (`T3CODE_HOME`,
+  else `~/.t3`); otherwise it serves on its own as before.
+- Every outside turn is held: its events are kept, and the daemon runs
+  `t3 thread send --base-dir HOME THREAD` with `[Omnigent] <the input>` (for a
+  report, its summary), which T3 Code posts as an "Agent" message, loading the
+  thread if it must and queueing behind a running turn. The prompt of the turn
+  that starts is that text (after any context T3 Code prepends); it is not sent
+  to Omnigent, but answered with the held events, renamed to its message, and
+  then the rest live. A held turn's approvals are not listed until then, since
+  T3 Code rejects what it finds when it resumes a thread.
+- The thread is read from T3 Code's state, read-only: the provider thread whose
+  native ref is the session, if its thread still uses it and is neither archived
+  nor deleted (`wakes.py`). With no thread, the turn is shown as before, as one
+  the agent started. While T3 Code is down the trigger is sent again, every 15 s
+  up to every 5 minutes.
+- A message typed in T3 Code before T3 Code's turn for a held run begins shows
+  the run at once and is steered into it; the trigger's turn then ends empty.
+- Omnigent's stream does not replay what a subscriber missed, so on every
+  (re)connect the session's items after the last input this server handled are
+  read, and each turn on an input from outside T3 Code is replayed (still
+  running if it is the last and the session is busy).
+
+launchd (`launchd/com.mkarrmann.omnigent-opencode.plist`) or systemd
+(`systemd/omnigent-opencode.service`) runs the daemon once
+`~/.config/omnigent-opencode/daemon-enabled` exists. A running daemon keeps the
+code it started with.
+
+Limits:
+
+- `serve` decides once, at start, whether to forward. Started while the daemon
+  is down, it serves on its own until T3 Code stops it; while the daemon is down
+  under a forwarding `serve`, T3 Code's event stream fails and T3 Code starts
+  the provider again at its next turn.
+- Held runs live in memory. A daemon restarted while one waits (T3 Code down,
+  say) does not show it again: T3 Code's queued trigger then runs an empty
+  turn, and the turn is only in the session's history.
+- Only the last 5 turns missed in a gap are replayed.
+
 ## State
 
 T3 Code stores the OpenCode session id as the thread's native id and resumes it
@@ -105,11 +159,15 @@ recovered from Omnigent is kept in a SQLite file under
 
 - a session whose Omnigent session was replaced by a rollback;
 - the T3 Code message id of each prompt, since T3 Code addresses forks,
-  rollbacks and reconnect backfill by the ids it chose.
+  rollbacks and reconnect backfill by the ids it chose;
+- the sessions followed, each with the last Omnigent input handled, when it was
+  last active, and the T3 Code server that last opened it.
 
 ## Layout
 
-- `cli.py`: `--version` and `serve`.
+- `cli.py`: `--version`, `serve` and `daemon`.
+- `proxy.py`: `serve` forwarding to the daemon.
+- `wakes.py`: a session's T3 Code thread, and `t3 thread send`.
 - `wire.py`: OpenCode 2 ids, event envelopes and response shapes.
 - `events.py`: the SSE feed and its keepalives.
 - `omnigent.py`: Omnigent REST and SSE client and host and agent resolution.
@@ -126,7 +184,8 @@ recovered from Omnigent is kept in a SQLite file under
 
 `uv run pytest` runs the offline suite. Tests that decode events and responses
 with T3 Code's schemas need `~/repos/t3code` with its dependencies installed
-(`pnpm install`); they are skipped otherwise.
+(`pnpm install`); they are skipped otherwise. `test_t3_following.py` covers
+replay after a gap and held runs; `test_t3_daemon.py` the forwarding path.
 
 `tests/live/live_harness.py SCENARIO` runs scenarios against the real Omnigent
 on this machine through T3 Code's client: `turn`, `steer`, `stop`, `approve`,

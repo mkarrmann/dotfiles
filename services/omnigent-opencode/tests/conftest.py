@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 import json
 import os
@@ -123,6 +124,13 @@ class T3Client:
 
 @pytest.fixture
 async def t3(shim: Shim, tmp_path: Path) -> AsyncIterator[T3Client]:
+    async with t3_client(shim.url, tmp_path) as client:
+        yield client
+
+
+@contextlib.asynccontextmanager
+async def t3_client(url: str, tmp_path: Path) -> AsyncIterator[T3Client]:
+    """T3 Code's client against the OpenCode server at `url`, password `PASSWORD`."""
     if shutil.which("node") is None or not T3_NODE_MODULES.is_dir():
         pytest.skip("needs node and ~/repos/t3code with its dependencies installed")
     workdir = tmp_path / "harness"
@@ -132,7 +140,7 @@ async def t3(shim: Shim, tmp_path: Path) -> AsyncIterator[T3Client]:
     process = await asyncio.create_subprocess_exec(
         "node",
         str(workdir / "t3-client.mjs"),
-        shim.url,
+        url,
         PASSWORD,
         cwd=workdir,
         stdin=asyncio.subprocess.PIPE,

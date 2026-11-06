@@ -79,6 +79,11 @@ class FakeOmnigent:
         self.sessions[session_id] = FakeSession(session_id, {}, labels=labels)
         return session_id
 
+    def drop(self, session_id: str) -> None:
+        """End every open stream of the session, as a network blip or an Omnigent restart does."""
+        for queue in self.sessions[session_id].streams:
+            queue.put_nowait(None)
+
     async def connected(self, session_id: str) -> None:
         while not self.sessions[session_id].streams:
             await asyncio.sleep(0.01)
@@ -174,7 +179,14 @@ class FakeOmnigent:
         return web.json_response({})
 
     async def items(self, request: web.Request) -> web.Response:
-        return web.json_response({"data": self.sessions[request.match_info["id"]].items, "has_more": False})
+        items = list(self.sessions[request.match_info["id"]].items)
+        after = request.query.get("after")
+        if after:
+            items = items[next(n for n, i in enumerate(items) if i["id"] == after) + 1 :]
+        if request.query.get("order") == "desc":
+            items.reverse()
+        limit = int(request.query.get("limit", "1000"))
+        return web.json_response({"data": items[:limit], "has_more": len(items) > limit})
 
     async def resolve(self, request: web.Request) -> web.Response:
         body = await request.json()

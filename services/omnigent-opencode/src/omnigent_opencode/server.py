@@ -8,6 +8,7 @@ import binascii
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Final, Literal, cast
 from urllib.parse import unquote
 
@@ -18,21 +19,27 @@ from . import history, textgen
 from .catalog import DEFAULT_MODEL, Catalog, load_catalog
 from .events import EventFeed
 from .omnigent import OmnigentClient, OmnigentError
-from .sessions import PROVIDER_LABEL, SESSION_LABEL, Session, conversation_named_by, session_id_for
+from .sessions import PROVIDER_LABEL, SESSION_LABEL, Session, Wake, conversation_named_by, session_id_for
 from .store import Store
 from .wire import ERROR_STATUS, ErrorTag, Json, JsonObject, error_body, event, location, message_id, now_ms, server_info
 
 LOG = logging.getLogger(__name__)
 
 USERNAME: Final = "opencode"
+# The forwarding server T3 Code runs names the T3 Code server it serves (`proxy`).
+T3_HOME_HEADER: Final = "X-Omnigent-OpenCode-T3-Home"
+SWEEP_S: Final = 3600.0
 
 
 @dataclass
 class Config:
-    password: str
+    password: str | None
+    """T3 Code's password for this server; `None` behind the forwarding server, which checks it (`proxy`)."""
     host_spec: str
     agent_specs: list[str]
     default_directory: str
+    watch_ms: int | None = None
+    """Follow each session this long after its last activity, T3 Code listening or not; `None` follows only while asked."""
 
 
 class ApiError(Exception):
@@ -59,10 +66,11 @@ class TextGenSession:
 
 
 class App:
-    def __init__(self, config: Config, client: OmnigentClient, store: Store) -> None:
+    def __init__(self, config: Config, client: OmnigentClient, store: Store, wake: Wake | None = None) -> None:
         self.config = config
         self.client = client
         self.store = store
+        self.wake = wake
         self.feed = EventFeed()
         self.sessions: dict[str, Session] = {}
         self.text_sessions: dict[str, TextGenSession] = {}
@@ -133,11 +141,52 @@ class App:
             store=self.store,
             publish=self.feed.publish,
             adopt=self.adopt,
+            wake=self.wake,
             title=snapshot.get("title") or None,
             created=int(created * 1000) if isinstance(created, (int, float)) else None,
         )
-        self.sessions[session_id] = session
+        return self._register(session)
+
+    def _register(self, session: Session) -> Session:
+        self.sessions[session.id] = session
+        if session.parent is None:
+            self.store.watch(session.id, session.conversation_id, now_ms())
         return session
+
+    async def follow(self) -> None:
+        """Follow every session active within the watch window, picking up those followed before a restart, and
+        stop following each that has been quiet longer. A session no longer followed keeps its row, and with it the
+        last input handled, for when T3 Code opens it again."""
+        assert self.config.watch_ms is not None
+        while True:
+            try:
+                cutoff = now_ms() - self.config.watch_ms
+                await asyncio.gather(*(self._follow(sid) for sid in self.store.watched(cutoff) if sid not in self.sessions))
+                for sid, session in list(self.sessions.items()):
+                    quiet = session.active < cutoff and not session.running and not session.steers and not session.held
+                    if session.parent is None and quiet:
+                        LOG.info("no longer following %s: quiet since %d", sid, session.active)
+                        for followed in [session, *session.children.values()]:
+                            await followed.close()
+                            self.sessions.pop(followed.id, None)
+            except Exception:  # noqa: BLE001 - the next pass tries again
+                LOG.exception("following sessions failed")
+            await asyncio.sleep(SWEEP_S)
+
+    async def _follow(self, session_id: str) -> None:
+        try:
+            await (await self.session(session_id)).connect()
+        except Exception as exc:  # noqa: BLE001 - one session's failure is not the others'
+            LOG.warning("could not follow %s yet: %s", session_id, exc)
+
+    def note_home(self, session_id: str, home: str) -> None:
+        """The T3 Code server whose home is `home` opened the session."""
+        if session_id in self.sessions and self.store.t3_home(session_id) != home:
+            self.store.set_t3_home(session_id, home)
+
+    def home_of(self, session_id: str) -> Path | None:
+        home = self.store.t3_home(session_id)
+        return Path(home) if home else None
 
     def adopt(self, conversation_id: str, parent: Session) -> Session:
         """A subagent's Omnigent session, as a child of the session that spawned it."""
@@ -207,10 +256,11 @@ class App:
             store=self.store,
             publish=self.feed.publish,
             adopt=self.adopt,
+            wake=self.wake,
             title=title if isinstance(title, str) and title else None,
         )
         session.permissions = permissions
-        self.sessions[session_id] = session
+        self._register(session)
         LOG.info("created Omnigent session %s as %s", conversation_id, session_id)
         return session.info()
 
@@ -261,11 +311,12 @@ class App:
             store=self.store,
             publish=self.feed.publish,
             adopt=self.adopt,
+            wake=self.wake,
             title=source.title,
         )
         session.agent = source.agent
         session.permissions = list(source.permissions)
-        self.sessions[session_id] = session
+        self._register(session)
         LOG.info("forked %s before %s as %s (Omnigent session %s)", source.id, before, session_id, forked)
         return session.info()
 
@@ -357,10 +408,19 @@ async def guard(request: web.Request, handler: Any) -> web.StreamResponse:
         user, _, password = base64.b64decode(header.removeprefix("Basic "), validate=True).decode().partition(":")
     except (binascii.Error, UnicodeDecodeError):
         user, password = "", ""
-    if not header.startswith("Basic ") or user != USERNAME or password != expected:
+    if expected is not None and (not header.startswith("Basic ") or user != USERNAME or password != expected):
         return ApiError("UnauthorizedError", "unauthorized").response()
     try:
-        return cast(web.StreamResponse, await handler(request))
+        response = cast(web.StreamResponse, await handler(request))
+        if "session_id" in request.match_info:
+            app = app_of(request)
+            sid = session_id_param(request)
+            if sid in app.sessions:
+                app.sessions[sid].touch()
+            home = request.headers.get(T3_HOME_HEADER)
+            if home:
+                app.note_home(sid, home)
+        return response
     except ApiError as exc:
         return exc.response()
     except ValueError as exc:
@@ -429,13 +489,18 @@ async def skills(request: web.Request) -> web.Response:
 
 @routes.post("/api/session")
 async def create_session(request: web.Request) -> web.Response:
-    return data(await app_of(request).create_session(await body_of(request)))
+    app = app_of(request)
+    created = await app.create_session(await body_of(request))
+    home = request.headers.get(T3_HOME_HEADER)
+    if home:
+        app.note_home(str(created["id"]), home)
+    return data(created)
 
 
 @routes.get("/api/session/active")
 async def active(request: web.Request) -> web.Response:
     app = app_of(request)
-    running: JsonObject = {sid: {"type": "running"} for sid, s in app.sessions.items() if s.running}
+    running: JsonObject = {sid: {"type": "running"} for sid, s in app.sessions.items() if s.shown_running}
     running.update({sid: {"type": "running"} for sid, s in app.text_sessions.items() if s.running})
     return data(running)
 
@@ -648,7 +713,7 @@ async def clear_revert(request: web.Request) -> web.Response:
     session = await app_of(request).session(session_id_param(request))
     session.staged_revert = None
     # T3 Code waits for an execution to end after clearing a revert, as OpenCode 2.0.18's clear runs one.
-    if not session.running:
+    if not session.shown_running:
         app_of(request).feed.publish(event("session.execution.started", {"sessionID": session.id}))
         app_of(request).feed.publish(event("session.execution.succeeded", {"sessionID": session.id}))
     return no_content()
@@ -677,7 +742,7 @@ async def permissions(request: web.Request) -> web.Response:
     if sid in app.text_sessions:
         return data([])
     session = await app.session(sid)
-    return data([p.shown for p in session.approvals.values()])
+    return data([p.shown for p in session.approvals.values() if p.visible])
 
 
 @routes.post("/api/session/{session_id}/permission/{request_id}/reply")
@@ -702,7 +767,7 @@ async def forms(request: web.Request) -> web.Response:
     if sid in app.text_sessions:
         return data([])
     session = await app.session(sid)
-    return data([p.shown for p in session.forms.values()])
+    return data([p.shown for p in session.forms.values() if p.visible])
 
 
 @routes.post("/api/session/{session_id}/form/{form_id}/reply")

@@ -15,6 +15,12 @@ it, so this module is the only place that starts or ends one:
 - An Omnigent turn this server did not start (a watcher wakeup, a wake notice,
   input from another client) starts an execution with no T3 Code turn, which
   T3 Code shows in the thread as a turn the agent started.
+- With a `Wake`, such a turn is held instead: T3 Code drops the events of a
+  thread it unloaded (30 minutes after its last turn) and this server cannot
+  tell when it does, so every outside turn asks T3 Code to run a turn of its
+  own on the thread (`t3 thread send`, see `wakes`), keeps what it emits until
+  that turn's prompt arrives, then hands the prompt the held events and the
+  rest live. The prompt is not sent to Omnigent.
 """
 
 from __future__ import annotations
@@ -25,7 +31,8 @@ import hashlib
 import logging
 import mimetypes
 import os
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 
@@ -37,6 +44,7 @@ from .catalog import DEFAULT_MODEL, AgentTarget
 from .omnigent import STREAM_CONNECT_S, STREAM_OPENED, OmnigentClient, OmnigentError
 from .store import Outcome, Store
 from .turns import (
+    IGNORED_EVENTS,
     Elicitation,
     Quiescent,
     ReplyCommitted,
@@ -69,6 +77,7 @@ IMAGE_LIMIT: Final = 7 * 1024 * 1024
 COMPACTION_TIMEOUT_S: Final = 600.0
 RECONNECT_MIN_S: Final = 0.5
 RECONNECT_MAX_S: Final = 15.0
+TOUCH_INTERVAL_MS: Final = 60_000
 RULE_DENIED: Final = "This thread's permission rules in T3 Code do not allow it."
 PLAN_EXIT_DENIED: Final = (
     "The user is in T3 Code's plan mode, which has no ExitPlanMode step. Do not call ExitPlanMode again: "
@@ -83,9 +92,23 @@ REPORTED_CHILD_END_S: Final = 30.0
 # It also does so for a reply that surfaced after its turn's Stop hook (forwarder.py, the settle latch).
 SCHEDULED_WAKE_MARKER: Final = "[System: scheduled prompt fired]"
 FORM_DISMISSED: Final = "The user dismissed the question without answering."
+WAKE_RETRY_MIN_S: Final = 15.0
+WAKE_RETRY_MAX_S: Final = 300.0
+# A trigger T3 Code took but whose turn has not begun this long after, with no T3 Code turn running, is given up on.
+TURN_DEADLINE_S: Final = 600.0
+# At most this many turns are replayed after a gap; earlier ones stay in the history.
+REPLAY_LIMIT: Final = 5
+TRIGGER_PREFIX: Final = "[Omnigent] "
+TRIGGER_LIMIT: Final = 100_000
+# T3 Code puts context before a message it hands a fresh provider session (ContextHandoffDelivery.ts).
+HANDOFF_SEPARATOR: Final = "\n\nUser message:\n"
+APPROVAL_TRIGGER: Final = "The agent is waiting for an approval."
 
 Publish = Callable[[JsonObject], None]
 Adopt = Callable[[str, "Session"], "Session"]
+WakeOutcome = Literal["sent", "later", "never"]
+"""Whether T3 Code took the trigger, may take it later (it is not running), or cannot be asked for this session."""
+Wake = Callable[["Session", str], Awaitable[WakeOutcome]]
 BlockKind = Literal["text", "reasoning"]
 
 
@@ -142,6 +165,27 @@ class Execution:
     grace: asyncio.TimerHandle | None = None
     announced: bool = True
     """Whether T3 Code was told it started; a turn Omnigent may have made up is announced at its first output."""
+    held: HeldRun | None = None
+    """The run that keeps this execution's events until T3 Code's turn for it begins."""
+
+
+@dataclass
+class HeldRun:
+    """An outside turn T3 Code has not been shown yet, waiting for the prompt of the turn its trigger starts."""
+
+    trigger: str
+    input_text: str
+    item_id: str | None
+    assistant_id: str
+    execution: Execution | None
+    events: list[JsonObject] = field(default_factory=list)
+    requested: bool = False
+    """Announced: T3 Code is asked for a turn for it, in order."""
+    sent: bool = False
+    attached: bool = False
+    """Shown to T3 Code (or dropped); nothing more is held for it."""
+    ended: tuple[int, Outcome] | None = None
+    created: int = field(default_factory=now_ms)
 
 
 @dataclass
@@ -170,6 +214,12 @@ class Pending:
 
     ask: Ask
     shown: JsonObject
+    run: HeldRun | None = None
+
+    @property
+    def visible(self) -> bool:
+        """T3 Code rejects the requests it finds when it resumes a thread, so a held run's are not listed."""
+        return self.run is None or self.run.attached
 
 
 class Session:
@@ -188,6 +238,7 @@ class Session:
         created: int | None = None,
         parent: Session | None = None,
         adopt: Adopt | None = None,
+        wake: Wake | None = None,
     ) -> None:
         self.id = session_id
         self.conversation_id = conversation_id
@@ -217,6 +268,8 @@ class Session:
         self._posting: str | None = None
         self._draining = False
         self._connected = asyncio.Event()
+        self._synced = asyncio.Event()
+        """Connected, and caught up with what happened before; T3 Code's requests wait for it."""
         self._stream: asyncio.Task[None] | None = None
         self._background: set[asyncio.Task[Any]] = set()
         self.gone: str | None = None
@@ -225,6 +278,18 @@ class Session:
         self._late_reply: str | None = None
         self.calls: dict[str, SubagentCall] = {}
         self.children: dict[str, Session] = {}
+        self._watermark = store.watermark(session_id)
+        self._wake = wake
+        self.held: deque[HeldRun] = deque()
+        self.held_by: HeldRun | None = None
+        """A subagent's: the parent's held run that started it, which keeps its events until it is shown."""
+        self._waking: asyncio.Task[None] | None = None
+        self._route: HeldRun | None = None
+        """Where events go while a subagent is announced: the held run it was created in."""
+        self._replayed: set[str] = set()
+        self.active = store.active(session_id) or now_ms()
+        """When the session last did anything, as far as this server saw."""
+        self._stored_active = 0
 
     # -- OpenCode shapes ------------------------------------------------
 
@@ -252,8 +317,30 @@ class Session:
     def running(self) -> bool:
         return self.execution is not None
 
+    @property
+    def shown_running(self) -> bool:
+        """Running as far as T3 Code knows: a held execution is not shown yet."""
+        return self.execution is not None and self.execution.held is None
+
     def _emit(self, event_type: str, data: JsonObject) -> None:
-        self._publish(event(event_type, {"sessionID": self.id, **data}))
+        self._out(event(event_type, {"sessionID": self.id, **data}))
+
+    def _holding(self) -> HeldRun | None:
+        if self._route is not None and not self._route.attached:
+            return self._route
+        execution = self.execution
+        if execution is not None and execution.held is not None:
+            return execution.held
+        if self.held_by is not None and not self.held_by.attached:
+            return self.held_by
+        return None
+
+    def _out(self, frame: JsonObject) -> None:
+        run = self._holding()
+        if run is not None:
+            run.events.append(frame)
+        else:
+            self._publish(frame)
 
     # -- Omnigent stream ------------------------------------------------
 
@@ -261,12 +348,12 @@ class Session:
         if self._stream is None or self._stream.done():
             self.gone = None
             self._stream = asyncio.create_task(self._pump())
-        connected = asyncio.ensure_future(self._connected.wait())
+        synced = asyncio.ensure_future(self._synced.wait())
         try:
-            await asyncio.wait((connected, self._stream), timeout=STREAM_CONNECT_S, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait((synced, self._stream), timeout=STREAM_CONNECT_S, return_when=asyncio.FIRST_COMPLETED)
         finally:
-            connected.cancel()
-        if self._connected.is_set():
+            synced.cancel()
+        if self._synced.is_set():
             return
         raise OmnigentError(self.gone or f"Omnigent stream for {self.conversation_id} did not connect in {STREAM_CONNECT_S:.0f}s")
 
@@ -283,6 +370,7 @@ class Session:
                     if event_type == STREAM_OPENED:
                         backoff = RECONNECT_MIN_S
                         await self._resync()
+                        self._synced.set()
                         continue
                     self.on_event(event_type, payload)
             except asyncio.CancelledError:
@@ -291,11 +379,13 @@ class Session:
                 if isinstance(exc, OmnigentError) and exc.gone:
                     self.gone = f"Omnigent session {self.conversation_id} no longer exists (HTTP {exc.status})"
                     LOG.warning("%s; not reconnecting", self.gone)
+                    self._store.unwatch(self.id)
                     if self.execution is not None:
                         self._end(self.execution, TurnEnded("failed", self.gone))
                     return
                 LOG.warning("stream %s dropped: %s", self.conversation_id, exc)
             self._connected.clear()
+            self._synced.clear()
             if self.execution is not None:
                 self.execution.tracker.on_reconnect()
             await asyncio.sleep(backoff)
@@ -310,11 +400,83 @@ class Session:
             return
         if execution is not None and self.execution is execution:
             self._apply(execution, execution.tracker.on_snapshot(snapshot))
+        await self._catch_up()
         for pending in snapshot.get("pending_elicitations") or []:
             if isinstance(pending, dict):
                 if self.execution is None:
-                    self._start("wake", self.user_id(f"approval:{pending.get('elicitation_id')}"), native_consumed=True)
+                    self._unprompted(self.user_id(f"approval:{pending.get('elicitation_id')}"), None, APPROVAL_TRIGGER, None)
                 self._ask(elicitation_from(pending).ask)
+
+    def _mark(self, item_id: str) -> None:
+        """This server handled the Omnigent input `item_id`, so a turn on it is never replayed."""
+        self._watermark = item_id
+        self._store.set_watermark(self.id, item_id)
+
+    async def _catch_up(self) -> None:
+        """Replay the turns on inputs that reached the harness while this server was not following the session.
+
+        Omnigent's stream does not replay what a subscriber missed, so a turn
+        that started, and perhaps ended, while the stream was down or this
+        server was not running is found in the items after the watermark. Each
+        input from outside T3 Code starts a turn that runs to the next input;
+        the last one is still running unless the session is idle. Only a
+        server that can ask T3 Code for a turn replays (`Wake`): shown on their
+        own, replayed turns would reach T3 Code while it waits for its prompt's.
+        """
+        if self.parent is not None or not self.target.native:
+            return
+        try:
+            if self._watermark is None:
+                # A session this server has just started following: what came before is history.
+                self._mark(await self._client.latest_input(self.conversation_id) or "")
+                return
+            items = [item async for item in self._client.session_items(self.conversation_id, after=self._watermark or None)]
+            inputs = [n for n, item in enumerate(items) if _is_input(item)]
+            if not inputs:
+                return
+            if self.execution is not None or self._wake is None:
+                # Inputs taken up while an execution ran are part of it.
+                self._mark(str(items[inputs[-1]]["id"]))
+                return
+            # Read after the items, so an input that came in between is not taken for a finished turn.
+            status = (await self._client.session_snapshot(self.conversation_id, items=False)).get("status")
+        except (OmnigentError, httpx.HTTPError) as exc:
+            LOG.warning("could not read the items of %s to catch up: %s", self.conversation_id, exc)
+            if isinstance(exc, OmnigentError) and exc.status is not None and 400 <= exc.status < 500:
+                # Omnigent no longer knows the watermark (a rollback's fork, say): start again from now.
+                self._watermark = None
+                self._store.set_watermark(self.id, None)
+            return
+        if self.running:
+            self._mark(str(items[inputs[-1]]["id"]))
+            return
+        prompts = self._store.prompts(self.id)
+        ours = {item_id for _, _, _, item_id in prompts if item_id}
+        unbound = [text for _, text, _, item_id in prompts if not item_id]
+        turns: list[tuple[int, int]] = []
+        for position, start in enumerate(inputs):
+            item_id = str(items[start]["id"])
+            text = history._text(items[start])
+            if item_id in ours:
+                continue
+            if text in unbound:
+                unbound.remove(text)
+                continue
+            turns.append((start, inputs[position + 1] if position + 1 < len(inputs) else len(items)))
+        self._mark(str(items[inputs[-1]]["id"]))
+        if len(turns) > REPLAY_LIMIT:
+            LOG.info("not replaying %d earlier turns on %s", len(turns) - REPLAY_LIMIT, self.conversation_id)
+            turns = turns[-REPLAY_LIMIT:]
+        for start, end in turns:
+            item_id = str(items[start]["id"])
+            running = end == len(items) and status not in ("idle", "failed")
+            LOG.info("replaying a turn %s while this server was away on %s", "begun" if running else "run", self.conversation_id)
+            self._replayed.add(item_id)
+            execution = self._outside(item_id, history._text(items[start]))
+            for later in items[start + 1 : end]:
+                self._apply(execution, execution.tracker.feed("response.output_item.done", {"item": later}))
+            if not running:
+                self._end(execution, TurnEnded("completed"))
 
     def _in_background(self, work: Any) -> None:
         task = asyncio.ensure_future(work)
@@ -327,14 +489,22 @@ class Session:
 
         task.add_done_callback(settled)
 
+    def touch(self) -> None:
+        self.active = now_ms()
+        if self.active - self._stored_active >= TOUCH_INTERVAL_MS:
+            self._stored_active = self.active
+            self._store.touch(self.id, self.active)
+
     def on_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        if event_type not in IGNORED_EVENTS:
+            self.touch()
         if event_type == "session.input.consumed":
             if self._consumed(payload):
                 return
         if event_type == "session.status" and payload.get("status") == "idle":
             self._draining = False
         if event_type == "session.created" and payload.get("child_session_id"):
-            self._in_background(self._adopt_child(str(payload["child_session_id"])))
+            self._in_background(self._adopt_child(str(payload["child_session_id"]), self._holding()))
             return
         if self.parent is not None and event_type == "session.status":
             self._child_status(payload)
@@ -343,7 +513,7 @@ class Session:
             return
         if event_type == "response.elicitation_request" and self.execution is None:
             # An approval blocks a turn T3 Code did not start; T3 Code shows approvals only inside an execution.
-            self._start("wake", self.user_id(f"approval:{payload.get('elicitation_id')}"), native_consumed=True)
+            self._unprompted(self.user_id(f"approval:{payload.get('elicitation_id')}"), None, APPROVAL_TRIGGER, None)
         execution = self.execution
         if event_type.startswith("response.compaction."):
             self._compaction(execution, event_type, payload)
@@ -401,14 +571,20 @@ class Session:
         await self.close()
         self._stream = None
         self._connected.clear()
+        self._synced.clear()
         self._posted.clear()
         self.conversation_id = conversation_id
         self._store.set_conversation(self.id, conversation_id)
+        self._store.watch(self.id, conversation_id, now_ms())
+        self._watermark = None
+        self._store.set_watermark(self.id, None)
 
     def _consumed(self, payload: dict[str, Any]) -> bool:
         """Settle a steer or start a turn T3 Code did not; whether the input is handled."""
         consumed = payload.get("data") or {}
         pending_id = consumed.get("cleared_pending_id")
+        if consumed.get("type") == "message" and consumed.get("item_id"):
+            self._mark(str(consumed["item_id"]))
         steer = next((s for s in self.steers.values() if pending_id is not None and s.pending_id == pending_id), None)
         if steer is not None:
             if consumed.get("item_id"):
@@ -424,16 +600,53 @@ class Session:
         text = _message_text(consumed.get("data") or {})
         if self._posting is not None and text == self._posting:
             return False
+        if str(consumed["item_id"]) in self._replayed:
+            # Replayed from the items already; the stream delivered it after this server read them.
+            return True
         report = subagents.notification(text)
-        if report is not None:
-            self._report(report)
         if self.execution is None and not self._draining and self.target.native:
             LOG.info("turn started outside T3 Code on %s", self.conversation_id)
-            # A wake marker may stand for a late reply of the previous turn; such a turn is announced only if it says more.
-            announce = text.strip() != SCHEDULED_WAKE_MARKER
-            self._start("wake", self.user_id(str(consumed["item_id"])), native_consumed=True, announce=announce)
+            self._outside(str(consumed["item_id"]), text)
             return True
+        if report is not None:
+            self._report(report)
         return False
+
+    def _outside(self, item_id: str, text: str) -> Execution:
+        """An execution for a turn on an input from outside T3 Code (a wakeup, a notice, another client)."""
+        report = subagents.notification(text)
+        trigger = f"Background task finished: {report.summary}" if report is not None else text
+        return self._unprompted(
+            self.user_id(item_id),
+            item_id,
+            trigger,
+            text,
+            prelude=(lambda: self._report(report)) if report is not None else None,
+            # A wake marker may stand for a late reply of the previous turn; such a turn is announced only if it says more.
+            announce=text.strip() != SCHEDULED_WAKE_MARKER,
+        )
+
+    def _unprompted(
+        self,
+        message_id: str,
+        item_id: str | None,
+        trigger: str,
+        input_text: str | None,
+        *,
+        prelude: Callable[[], None] | None = None,
+        announce: bool = True,
+    ) -> Execution:
+        """An execution T3 Code did not start; held for T3 Code's turn on the thread when this server can ask for one."""
+        execution = self._start("wake", message_id, native_consumed=True, announce=False)
+        if self._wake is not None and self.parent is None:
+            text = (TRIGGER_PREFIX + " ".join(trigger.split()))[:TRIGGER_LIMIT].strip()
+            execution.held = HeldRun(text, input_text or trigger, item_id, execution.assistant_id, execution)
+            self.held.append(execution.held)
+        if prelude is not None:
+            prelude()
+        if announce:
+            self._announce(execution)
+        return execution
 
     # -- executions -----------------------------------------------------
 
@@ -468,6 +681,84 @@ class Session:
         if not execution.announced:
             execution.announced = True
             self._emit("session.execution.started", {})
+            run = execution.held
+            if run is not None and not run.requested:
+                run.requested = True
+                if self._waking is None or self._waking.done():
+                    self._waking = asyncio.ensure_future(self._wake_runs())
+                    self._background.add(self._waking)
+                    self._waking.add_done_callback(self._background.discard)
+
+    # -- held runs ----------------------------------------------------------
+
+    async def _wake_runs(self) -> None:
+        """Ask T3 Code for a turn for each held run, one after another, so T3 Code queues them in order."""
+        while (run := next((r for r in self.held if r.requested and not r.sent), None)) is not None:
+            await self._request_wake(run)
+
+    async def _request_wake(self, run: HeldRun) -> None:
+        """Ask T3 Code for a turn on this thread until it takes the trigger; one it can never take is shown at once."""
+        assert self._wake is not None
+        delay = WAKE_RETRY_MIN_S
+        while not run.attached:
+            try:
+                outcome = await self._wake(self, run.trigger)
+            except Exception as exc:  # noqa: BLE001 - a failed attempt is tried again
+                LOG.warning("asking T3 Code for a turn on %s failed: %s", self.id, exc)
+                outcome = "later"
+            if outcome == "sent":
+                LOG.info("asked T3 Code for a turn on %s", self.id)
+                run.sent = True
+                self._in_background(self._await_turn(run))
+                return
+            if outcome == "never":
+                LOG.info("T3 Code cannot be asked for a turn on %s; showing the outside turn as it runs", self.id)
+                run.sent = True
+                self._attach(run, None)
+                return
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, WAKE_RETRY_MAX_S)
+
+    async def _await_turn(self, run: HeldRun) -> None:
+        """Show a run whose turn never began (T3 Code dropped the message, or the thread went away), so its approvals are
+        not hidden for good. T3 Code queues the message behind a running turn, so the wait restarts while one runs."""
+        while not run.attached:
+            await asyncio.sleep(TURN_DEADLINE_S)
+            if not run.attached and not self.shown_running:
+                LOG.warning("T3 Code's turn for a held run on %s never began; showing the run", self.id)
+                self._attach(run, None)
+
+    def _held_for(self, text: str) -> HeldRun | None:
+        return next((r for r in self.held if _is_trigger(text, r.trigger)), None)
+
+    def _attach(self, run: HeldRun, message_id: str | None) -> None:
+        """Show a held run: as the reply to T3 Code's prompt `message_id`, or, without one, as a turn the agent started."""
+        if run.attached:
+            return
+        run.attached = True
+        self.held.remove(run)
+        execution = run.execution
+        if message_id is not None:
+            new = self.assistant_id(message_id)
+            _rename(run.events, run.assistant_id, new)
+            if execution is not None:
+                execution.message_id = message_id
+                execution.assistant_id = new
+                for call_id, owner in execution.tool_messages.items():
+                    if owner == run.assistant_id:
+                        execution.tool_messages[call_id] = new
+            for call in self.calls.values():
+                if call.assistant_id == run.assistant_id:
+                    call.assistant_id = new
+            self._store.add_prompt(self.id, message_id, run.input_text, run.created)
+            self._store.bind_prompt(self.id, message_id, None, run.item_id)
+            if run.ended is not None:
+                self._store.add_execution(self.id, run.ended[0], run.ended[1], message_id)
+        if execution is not None:
+            execution.held = None
+        events, run.events = run.events, []
+        for frame in events:
+            self._publish(frame)
 
     def _step(self, execution: Execution) -> None:
         if execution.stepped:
@@ -601,7 +892,16 @@ class Session:
                 if timer is not None:
                     timer.cancel()
             LOG.info("dropping a turn on %s that produced nothing new", self.conversation_id)
+            run = execution.held
             self.execution = None
+            if run is not None:
+                run.attached = True
+                self.held.remove(run)
+                # Its subagents' events are theirs to show.
+                for frame in run.events:
+                    data = frame.get("data")
+                    if not isinstance(data, dict) or data.get("sessionID") != self.id:
+                        self._publish(frame)
             return
         tracker = execution.tracker
         self._late_reply = tracker.emitted_text if tracker.message_streamed and tracker.emitted_text else None
@@ -634,7 +934,6 @@ class Session:
                 self._emit("session.step.failed", {**step, "error": _session_error(ended.error), "tokens": tokens})
             else:
                 self._emit("session.step.ended", {**step, "finish": "stop", "cost": 0, "tokens": tokens})
-        self.execution = None
         self.approvals.clear()
         self.forms.clear()
         self.outcome = outcome
@@ -646,6 +945,10 @@ class Session:
             self._emit("session.execution.interrupted", {"reason": "user"})
         else:
             self._emit("session.execution.failed", {"error": _session_error(ended.error)})
+        if execution.held is not None:
+            execution.held.ended = (self.updated, outcome)
+            execution.held.execution = None
+        self.execution = None
         for steer in self.steers.values():
             if steer.timer is None:
                 self._await_delivery(steer)
@@ -675,8 +978,10 @@ class Session:
             },
         )
 
-    async def _adopt_child(self, conversation_id: str) -> None:
-        """A subagent's Omnigent session: announce it as a child session and link it to its spawning call."""
+    async def _adopt_child(self, conversation_id: str, run: HeldRun | None) -> None:
+        """A subagent's Omnigent session: announce it as a child session and link it to its spawning call.
+
+        `run` is the held run the child was created in, which keeps what is said of it until it is shown."""
         if conversation_id in self.children or self._adopt is None:
             return
         try:
@@ -690,7 +995,23 @@ class Session:
         if call is not None and call.child is not None:
             call = None
         child = self._adopt(conversation_id, self)
-        self.children[conversation_id] = child
+        child.held_by = run
+        self._route = run
+        try:
+            self._announce_child(child, labels, snapshot, call)
+        finally:
+            self._route = None
+        child.permissions = list(self.permissions)
+        child.begin(call.prompt if call is not None else None)
+        try:
+            await child.connect()
+        except OmnigentError as exc:
+            LOG.warning("could not follow subagent session %s: %s", conversation_id, exc)
+
+    def _announce_child(
+        self, child: Session, labels: dict[str, Any], snapshot: dict[str, Any], call: SubagentCall | None
+    ) -> None:
+        self.children[child.conversation_id] = child
         child.title = subagents.description_of(labels) or snapshot.get("title") or None
         announced: JsonObject = {
             "sessionID": child.id,
@@ -705,7 +1026,7 @@ class Session:
         }
         if child.title:
             announced["title"] = child.title
-        self._publish(event("session.created", announced))
+        self._out(event("session.created", announced))
         if call is not None:
             call.child = child
             self._emit(
@@ -714,12 +1035,6 @@ class Session:
             )
             if call.output is not None:
                 self._finish_call(call)
-        child.permissions = list(self.permissions)
-        child.begin(call.prompt if call is not None else None)
-        try:
-            await child.connect()
-        except OmnigentError as exc:
-            LOG.warning("could not follow subagent session %s: %s", conversation_id, exc)
 
     def begin(self, prompt: str | None) -> None:
         """A subagent session's first run, which its parent started."""
@@ -786,15 +1101,37 @@ class Session:
     ) -> None:
         """Post a prompt; a prompt on a busy session is a steer."""
         await self.connect()
-        self._store.add_prompt(self.id, message_id, text, now_ms())
-        content = [*_attachments(files or []), {"type": "input_text", "text": text}]
+        self.touch()
+        await self.sync_policy()
+        # Nothing below awaits before the execution is started or steered into.
         if self.execution is not None and not self.execution.announced:
             # T3 Code saw no turn, so this is a prompt, not a steer.
             self._end(self.execution, TurnEnded("completed"))
+        trigger = delivery == "queue" and _is_trigger(text, TRIGGER_PREFIX, prefix=True)
+        run = self._held_for(text) if delivery == "queue" else None
+        if run is None and trigger:
+            # T3 Code changed the text, or the run's own turn is gone: the oldest run waiting takes it.
+            run = next((r for r in self.held if r.requested), None)
+        if run is not None:
+            LOG.info("T3 Code's turn for a held run on %s began", self.id)
+            self._attach(run, message_id)
+            return
+        if trigger:
+            # A trigger whose run was shown before its turn began, or one this server forgot in a restart.
+            # It is never sent to Omnigent.
+            LOG.info("T3 Code's turn on %s has no held run to show; ending it", self.id)
+            if self.execution is None:
+                self._emit("session.execution.started", {})
+                self._emit("session.execution.succeeded", {})
+            return
+        self._store.add_prompt(self.id, message_id, text, now_ms())
+        content = [*_attachments(files or []), {"type": "input_text", "text": text}]
+        if self.execution is not None and self.execution.held is not None:
+            # The user wrote before T3 Code's turn for the held run began: show it now and steer the message into it.
+            self._attach(self.execution.held, None)
         if self.execution is not None:
             await self._steer(message_id, text, content)
             return
-        await self.sync_policy()
         execution = self._start("prompt", message_id)
         try:
             posted = await self._post(text, content)
@@ -851,6 +1188,9 @@ class Session:
         self.steers.pop(steer.inbox_id, None)
         if steer.timer is not None:
             steer.timer.cancel()
+        if self.execution is not None and self.execution.held is not None:
+            # T3 Code's turn is still open for its steer, so it hears the run that took the steer up.
+            self._attach(self.execution.held, None)
         if self.execution is None:
             # The harness took the steer up after its turn ended: that is a turn of its own.
             self._start("steer", steer.inbox_id, native_consumed=True)
@@ -949,7 +1289,7 @@ class Session:
             continuing=continuing,
             agent=self.agent,
             model=self.model,
-            running=self.running,
+            running=self.shown_running,
             directory=self.directory,
         )
 
@@ -987,10 +1327,11 @@ class Session:
         shown = [p.ask.elicitation_id for p in (*self.approvals.values(), *self.forms.values())]
         if ask.elicitation_id in shown or ask.elicitation_id in self._settled:
             return
+        run = self._holding()
         if ask.questions:
             form = approvals.form(ask, form_id(), self.id)
-            self.forms[str(form["id"])] = Pending(ask, form)
-            self._publish(event("form.created", {"form": form}))
+            self.forms[str(form["id"])] = Pending(ask, form, run)
+            self._out(event("form.created", {"form": form}))
             return
         if ask.plan_exit and self.agent == "plan":
             self._settle(ask, approvals.resolution(ask, "deny", PLAN_EXIT_DENIED), "plan mode has no ExitPlanMode")
@@ -1011,8 +1352,8 @@ class Session:
         execution = self.execution
         if ask.call_id and execution is not None and ask.call_id in execution.tools:
             request["source"] = {"type": "tool", "messageID": execution.assistant_id, "id": execution.tools[ask.call_id]}
-        self.approvals[str(request["id"])] = Pending(ask, request)
-        self._publish(event("permission.asked", request))
+        self.approvals[str(request["id"])] = Pending(ask, request, run)
+        self._out(event("permission.asked", request))
 
     def _settle(self, ask: Ask, resolution: approvals.Resolution, why: str) -> None:
         """Answer an elicitation without asking the user."""
@@ -1040,11 +1381,11 @@ class Session:
             if pending.ask.elicitation_id == elicitation_id:
                 del self.approvals[request_id]
                 reply = "once" if accepted else "reject"
-                self._publish(event("permission.replied", {"sessionID": self.id, "requestID": request_id, "reply": reply}))
+                self._out(event("permission.replied", {"sessionID": self.id, "requestID": request_id, "reply": reply}))
         for form_key, pending in list(self.forms.items()):
             if pending.ask.elicitation_id == elicitation_id:
                 del self.forms[form_key]
-                self._publish(event("form.cancelled", {"id": form_key, "sessionID": self.id}))
+                self._out(event("form.cancelled", {"id": form_key, "sessionID": self.id}))
 
     def note_decline(self, text: str) -> None:
         """T3 Code's explanation of the decline that follows, which it sends as a synthetic message."""
@@ -1060,7 +1401,7 @@ class Session:
             grants: list[Json] = [{"action": pending.ask.action, "resource": p, "effect": "allow"} for p in pending.ask.save]
             self.permissions = [*self.permissions, *grants]
         answer: approvals.Answer = "allow" if decision in ("once", "always") else "stop" if message is None else "deny"
-        self._publish(event("permission.replied", {"sessionID": self.id, "requestID": request_id, "reply": decision}))
+        self._out(event("permission.replied", {"sessionID": self.id, "requestID": request_id, "reply": decision}))
         await self._resolve(pending.ask, approvals.resolution(pending.ask, answer, note or message))
         return True
 
@@ -1070,7 +1411,7 @@ class Session:
             return False
         resolution = approvals.Resolution({"action": "accept", "content": approvals.form_answer(pending.ask, answer)}, False)
         await self._resolve(pending.ask, resolution)
-        self._publish(event("form.replied", {"id": form_key, "sessionID": self.id, "answer": answer}))
+        self._out(event("form.replied", {"id": form_key, "sessionID": self.id, "answer": answer}))
         return True
 
     async def cancel_form(self, form_key: str) -> bool:
@@ -1084,7 +1425,7 @@ class Session:
             else {"action": "decline", "content": {"feedback": FORM_DISMISSED}}
         )
         await self._resolve(pending.ask, approvals.Resolution(body, False))
-        self._publish(event("form.cancelled", {"id": form_key, "sessionID": self.id}))
+        self._out(event("form.cancelled", {"id": form_key, "sessionID": self.id}))
         return True
 
     def _verdict(self, ask: Ask) -> approvals.Effect:
@@ -1159,6 +1500,30 @@ class Session:
                 self.conversation_id, {"collaboration_mode": "plan" if agent == "plan" else "default"}
             )
         self.agent = agent
+
+
+def _is_trigger(text: str, trigger: str, *, prefix: bool = False) -> bool:
+    """Whether T3 Code's prompt `text` is `trigger`, or with `prefix` starts with it, after any context T3 Code prepends."""
+    sent = text.strip()
+    message = sent.rsplit(HANDOFF_SEPARATOR, 1)[-1] if HANDOFF_SEPARATOR in sent else sent
+    return message.startswith(trigger) if prefix else sent == trigger or message == trigger
+
+
+def _rename(frames: list[JsonObject], old: str, new: str) -> None:
+    """Point held events at the assistant message of the prompt they turned out to answer."""
+    for frame in frames:
+        data = frame.get("data")
+        if not isinstance(data, dict):
+            continue
+        if data.get("assistantMessageID") == old:
+            data["assistantMessageID"] = new
+        source = data.get("source")
+        if isinstance(source, dict) and source.get("messageID") == old:
+            source["messageID"] = new
+
+
+def _is_input(item: dict[str, Any]) -> bool:
+    return item.get("type") == "message" and item.get("role") == "user" and bool(item.get("id"))
 
 
 def _within(path: str, directory: str) -> bool:

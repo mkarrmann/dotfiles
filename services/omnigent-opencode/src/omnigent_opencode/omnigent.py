@@ -18,6 +18,7 @@ import httpx
 FORK_SOURCE_LABEL = "omnigent.fork.source_id"
 LABEL_SCAN_PAGE = 500
 LABEL_SCAN_LIMIT = 2000
+LATEST_INPUT_SCAN = 200
 # A cold codex-native launch can hold the first stream connection for over 30s.
 STREAM_CONNECT_S = 120.0
 STREAM_OPENED = "omnigent-opencode.stream_opened"
@@ -54,9 +55,8 @@ class OmnigentClient:
         return body
 
     async def _paginate(
-        self, path: str, params: dict[str, Any] | None = None, *, page_size: int = 100
+        self, path: str, params: dict[str, Any] | None = None, *, page_size: int = 100, after: str | None = None
     ) -> AsyncIterator[dict[str, Any]]:
-        after: str | None = None
         while True:
             page = await self._json(
                 "GET", path, params={**(params or {}), "limit": page_size, **({"after": after} if after else {})}
@@ -108,9 +108,19 @@ class OmnigentClient:
     async def create_session(self, body: dict[str, Any]) -> dict[str, Any]:
         return await self._object("POST", "/v1/sessions", json=body)
 
-    async def session_items(self, session_id: str) -> AsyncIterator[dict[str, Any]]:
-        async for item in self._paginate(f"/v1/sessions/{session_id}/items", {"order": "asc"}, page_size=1000):
+    async def session_items(self, session_id: str, after: str | None = None) -> AsyncIterator[dict[str, Any]]:
+        """The session's items oldest first; with `after`, only those after that item."""
+        async for item in self._paginate(f"/v1/sessions/{session_id}/items", {"order": "asc"}, page_size=1000, after=after):
             yield item
+
+    async def latest_input(self, session_id: str) -> str | None:
+        """The id of the session's latest user message item, among its last `LATEST_INPUT_SCAN` items."""
+        body = await self._json("GET", f"/v1/sessions/{session_id}/items", params={"order": "desc", "limit": LATEST_INPUT_SCAN})
+        items = [i for i in body.get("data") or [] if isinstance(i, dict)]
+        newest = next((i for i in items if i.get("type") == "message" and i.get("role") == "user"), None) or (
+            items[0] if items else None
+        )
+        return str(newest["id"]) if newest is not None and newest.get("id") else None
 
     async def fork_session(self, session_id: str, body: dict[str, Any]) -> dict[str, Any]:
         return await self._object("POST", f"/v1/sessions/{session_id}/fork", json=body)
