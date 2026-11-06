@@ -115,7 +115,7 @@ class T3EnsureTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             self.settings("checkouts")["providerInstances"]["omnigent"],
-            {"driver": "opencode", "displayName": "Omnigent", "config": {"binaryPath": "omnigent-opencode"}},
+            {"driver": "opencode", "enabled": True, "displayName": "Omnigent", "config": {"binaryPath": "omnigent-opencode"}},
         )
         self.assertEqual(self.settings("checkouts")["providerInstances"]["claudeAgent"], {"driver": "claudeAgent", "enabled": False})
         self.assertEqual(self.units_in("enabled"), ["t3@checkouts.service"])

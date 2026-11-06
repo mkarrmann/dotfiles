@@ -249,7 +249,8 @@ def on_linux_desktop() -> bool:
 
 
 def provider_instances(command: str) -> dict[str, dict]:
-    return {PROVIDER: {"driver": "opencode", "displayName": "Omnigent", "config": {"binaryPath": command}}}
+    # T3 Code turns the opencode driver off unless an instance says otherwise (DEFAULT_DISABLED_PROVIDER_DRIVERS).
+    return {PROVIDER: {"driver": "opencode", "enabled": True, "displayName": "Omnigent", "config": {"binaryPath": command}}}
 
 
 def read_settings(path: Path) -> dict:
