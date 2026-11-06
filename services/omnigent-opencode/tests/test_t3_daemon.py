@@ -80,3 +80,17 @@ async def test_the_forwarding_server_checks_t3_codes_password(daemon: tuple[App,
         async with client.get(server.make_url("/api/info"), headers={"Authorization": authorization}) as response:
             assert response.status == 200
     await server.close()
+
+
+async def test_a_daemon_is_stale_when_its_recorded_code_is_not_on_disk(daemon: tuple[App, Path]) -> None:
+    import argparse
+
+    from omnigent_opencode.cli import CODE_FILE, code_hash, daemon_stale
+
+    socket = daemon[1]
+    args = argparse.Namespace(socket=socket)
+    (socket.parent / CODE_FILE).write_text("0123456789abcdef\n")
+    assert await daemon_stale(args) == 0
+    (socket.parent / CODE_FILE).write_text(code_hash() + "\n")
+    assert await daemon_stale(args) == 1
+    assert await daemon_stale(argparse.Namespace(socket=socket.with_name("missing.sock"))) == 1, "no daemon, nothing to restart"

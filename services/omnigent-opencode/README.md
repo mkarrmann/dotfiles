@@ -133,10 +133,12 @@ thread happens to be loaded, unless the daemon runs:
   read, and each turn on an input from outside T3 Code is replayed (still
   running if it is the last and the session is busy).
 
-launchd (`launchd/com.mkarrmann.omnigent-opencode.plist`) or systemd
-(`systemd/omnigent-opencode.service`) runs the daemon once
-`~/.config/omnigent-opencode/daemon-enabled` exists. A running daemon keeps the
-code it started with.
+launchd (`launchd/com.mkarrmann.omnigent-opencode.plist`, loaded by sync.sh)
+or systemd (`systemd/omnigent-opencode.service`) runs the daemon wherever a T3
+Code server runs; bin/t3-ensure enables it there. A running daemon keeps the
+code it started with: it records a hash of that code beside its socket, and
+`omnigent-opencode daemon-stale` exits 0 when the code on disk differs, which
+bin/t3-ensure (init.sh) takes as its cue to restart it.
 
 Limits:
 

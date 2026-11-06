@@ -857,8 +857,8 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-tunnel.plist"
     # The Mac's own T3 Code server, t3@local (bin/t3-ensure, docs/t3code-omnigent.md).
     sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.t3-local.plist"
-    # T3 Code's Omnigent provider sessions between T3 Code's visits; runs only
-    # once ~/.config/omnigent-opencode/daemon-enabled exists.
+    # T3 Code's Omnigent provider sessions between T3 Code's visits
+    # (services/omnigent-opencode); bin/t3-ensure restarts it on code changes.
     sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-opencode.plist"
     # The Omnigent server moved to the HUB devserver (systemd omnigent-server).
     # Retire the old Mac-local server job so it can't bind :6767 and collide with
@@ -987,6 +987,9 @@ if [[ "$DOTFILES_PROFILE" == desktop && "$(uname -s)" == Linux ]]; then
   # daemon-reload: t3-ensure's `systemctl --user enable` reads the unit from
   # disk and reloads the manager itself before --now starts the instance.
   link_one "$DOTFILES_DIR/systemd/t3@.service" "$HOME/.config/systemd/user/t3@.service"
+  # Its Omnigent provider's daemon, which t3-ensure enables the same way.
+  link_one "$DOTFILES_DIR/systemd/omnigent-opencode.service" "$HOME/.config/systemd/user/omnigent-opencode.service"
+  mkdir -p "$HOME/.local/state/omnigent-opencode"
 
   # Launcher override for the packaged GUI; see the comment in the file.
   mkdir -p "$HOME/.local/share/applications"

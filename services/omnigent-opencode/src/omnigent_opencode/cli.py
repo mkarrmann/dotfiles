@@ -9,7 +9,9 @@ Code has it running.
 `daemon` serves the sessions on a Unix socket and follows each, T3 Code
 running or not, until it has been quiet for `OMNIGENT_OPENCODE_WATCH_DAYS`
 (default 7). It puts every Omnigent turn T3 Code did not start to T3 Code with
-the `t3` CLI (`wakes`). launchd or systemd runs it.
+the `t3` CLI (`wakes`). launchd or systemd runs it, and it records the code it
+started with beside its socket: `daemon-stale` exits 0 when a running daemon's
+code is not what is on disk, so bin/t3-ensure restarts it.
 
 The environment configures the rest (T3 Code's provider instance for `serve`
 alone, the service for the daemon):
@@ -30,6 +32,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import hashlib
 import logging
 import os
 import shutil
@@ -51,6 +54,7 @@ LOG = logging.getLogger(__name__)
 DEFAULT_AGENTS = "claude-native-ui,codex-native-ui"
 DEFAULT_WATCH_DAYS = 7.0
 DAY_MS = 24 * 3600 * 1000
+CODE_FILE = "daemon.code"
 
 
 def parse(argv: list[str]) -> argparse.Namespace:
@@ -61,6 +65,8 @@ def parse(argv: list[str]) -> argparse.Namespace:
     serve.add_argument("--hostname", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=0)
     daemon = commands.add_parser("daemon")
+    stale = commands.add_parser("daemon-stale")
+    stale.add_argument("--socket", type=Path, default=None, help="the daemon's Unix socket")
     for command in (serve, daemon):
         command.add_argument("--state", type=Path, default=None, help="SQLite state file")
         command.add_argument("--socket", type=Path, default=None, help="the daemon's Unix socket")
@@ -119,11 +125,40 @@ async def serve(args: argparse.Namespace) -> None:
     await runner.cleanup()
 
 
+def code_hash() -> str:
+    """The provider's code as it is on disk: its modules, project file and lock file."""
+    package = Path(__file__).resolve().parent
+    project = package.parent.parent
+    digest = hashlib.sha256()
+    for path in sorted([*package.glob("*.py"), project / "pyproject.toml", project / "uv.lock"]):
+        if path.is_file():
+            digest.update(path.name.encode() + b"\0" + path.read_bytes())
+    return digest.hexdigest()
+
+
+async def daemon_stale(args: argparse.Namespace) -> int:
+    socket = socket_path(args)
+    if not await daemon_up(socket):
+        print(f"no daemon answers on {socket}")
+        return 1
+    try:
+        running = (socket.parent / CODE_FILE).read_text().strip()
+    except OSError:
+        running = ""
+    current = code_hash()
+    if running == current:
+        print(f"the daemon runs the code on disk ({current[:12]})")
+        return 1
+    print(f"the daemon runs {running[:12] or 'unrecorded code'}; the code on disk is {current[:12]}")
+    return 0
+
+
 def t3_command() -> str:
     return os.environ.get("OMNIGENT_OPENCODE_T3") or shutil.which("t3") or str(Path.home() / ".local/bin/t3")
 
 
 async def daemon(args: argparse.Namespace) -> None:
+    code = code_hash()
     socket = socket_path(args)
     if await daemon_up(socket):
         raise SystemExit(f"omnigent-opencode: a daemon already answers on {socket}")
@@ -140,6 +175,7 @@ async def daemon(args: argparse.Namespace) -> None:
         await web.UnixSite(runner, str(socket)).start()
     finally:
         os.umask(old_umask)
+    (socket.parent / CODE_FILE).write_text(code + "\n")
     LOG.info(
         "daemon %s listening on %s, following sessions for %g days, waking threads with %s", VERSION, socket, days, t3_command()
     )
@@ -152,6 +188,7 @@ async def daemon(args: argparse.Namespace) -> None:
             await follow
         await runner.cleanup()
         socket.unlink(missing_ok=True)
+        (socket.parent / CODE_FILE).unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -159,8 +196,10 @@ def main(argv: list[str] | None = None) -> None:
     if args.version:
         print(VERSION)
         return
+    if args.command == "daemon-stale":
+        raise SystemExit(asyncio.run(daemon_stale(args)))
     if args.command not in ("serve", "daemon"):
-        raise SystemExit("usage: omnigent-opencode --version | serve --hostname=H --port=P | daemon")
+        raise SystemExit("usage: omnigent-opencode --version | serve --hostname=H --port=P | daemon | daemon-stale")
     handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
     log = args.log or (Path(os.environ["OMNIGENT_OPENCODE_LOG"]) if os.environ.get("OMNIGENT_OPENCODE_LOG") else None)
     if log is not None:

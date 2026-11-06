@@ -4,20 +4,17 @@
 # OpenCode server; that process forwards to this daemon's socket when it
 # answers, and serves on its own when it does not.
 #
-# Opt-in: sync.sh enables every unit here, and this one starts only once
-# ~/.config/omnigent-opencode/daemon-enabled exists. A running daemon keeps the
-# code it started with; restart it after the service's code changes.
+# bin/t3-ensure, run by init.sh wherever a T3 Code server runs, enables it
+# and restarts it when the service's code on disk is not the code it runs
+# (`omnigent-opencode daemon-stale`).
 #
 # Manual ops:
-#   mkdir -p ~/.config/omnigent-opencode && touch ~/.config/omnigent-opencode/daemon-enabled
-#   systemctl --user start omnigent-opencode
 #   systemctl --user restart omnigent-opencode
 #   tail -f ~/.local/state/omnigent-opencode/daemon.log
 
 [Unit]
 Description=omnigent-opencode daemon (T3 Code's Omnigent provider)
 After=network-online.target omnigent-server.service omnigent-client-proxy.service
-ConditionPathExists=%h/.config/omnigent-opencode/daemon-enabled
 ConditionPathExists=%h/dotfiles/services/omnigent-opencode/.venv/bin/omnigent-opencode
 
 [Service]

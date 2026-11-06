@@ -66,7 +66,13 @@ class T3EnsureTest(unittest.TestCase):
         for d in (self.home / "checkout1", self.home / "checkout2", self.home / "checkoutx", self.dotfiles / "bin", self.bin):
             d.mkdir(parents=True)
         shutil.copy2(ROOT / "bin/dotfiles-profile", self.dotfiles / "bin/dotfiles-profile")
-        write_exe(self.dotfiles / "bin/omnigent-opencode", f'echo "shim $*" >> {self.calls}\n')
+        # `daemon-stale` says the daemon runs old code while STALE exists.
+        self.stale = self.root / "stale"
+        write_exe(
+            self.dotfiles / "bin/omnigent-opencode",
+            f'echo "shim $*" >> {self.calls}\n[ "$1" != daemon-stale ] || [ -e {self.stale} ]\n',
+        )
+        write_exe(self.bin / "launchctl", f'echo "launchctl $*" >> {self.calls}\n')
         write_exe(self.bin / "uv", f'echo "uv $*" >> {self.calls}\n')
         write_exe(self.dotfiles / "bin-linux/startup-windows", f'echo "startup-windows $*" >> {self.calls}\ncat {self.layout}\n')
         write_exe(self.bin / "t3", f'echo "t3 $* home=$T3CODE_HOME" >> {self.calls}\n')
@@ -118,8 +124,8 @@ class T3EnsureTest(unittest.TestCase):
             {"driver": "opencode", "enabled": True, "displayName": "Omnigent", "config": {"binaryPath": "omnigent-opencode"}},
         )
         self.assertEqual(self.settings("checkouts")["providerInstances"]["claudeAgent"], {"driver": "claudeAgent", "enabled": False})
-        self.assertEqual(self.units_in("enabled"), ["t3@checkouts.service"])
-        self.assertEqual(self.units_in("active"), ["t3@checkouts.service"])
+        self.assertEqual(self.units_in("enabled"), ["omnigent-opencode.service", "t3@checkouts.service"])
+        self.assertEqual(self.units_in("active"), ["omnigent-opencode.service", "t3@checkouts.service"])
         # Added through the CLI, not bootstrapped, so new windows skip T3 Code's first-run wizard.
         home = self.home / ".t3-workspaces/checkouts"
         self.assertEqual(
@@ -160,8 +166,8 @@ class T3EnsureTest(unittest.TestCase):
         self.run_unit("t3@checkout7.service")
         result = self.run_ensure()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.units_in("enabled"), ["t3@checkouts.service"])
-        self.assertEqual(self.units_in("active"), ["t3@checkouts.service"])
+        self.assertEqual(self.units_in("enabled"), ["omnigent-opencode.service", "t3@checkouts.service"])
+        self.assertEqual(self.units_in("active"), ["omnigent-opencode.service", "t3@checkouts.service"])
         self.assertIn("retired t3@checkout1.service", result.stdout)
         self.assertIn("retired t3@checkout7.service", result.stdout)
         # Their state stays.
@@ -176,7 +182,7 @@ class T3EnsureTest(unittest.TestCase):
         result = self.run_ensure()
         self.assertEqual(result.returncode, 1)
         self.assertIn("WARNING: could not disable t3@checkout2.service", result.stdout)
-        self.assertEqual(self.units_in("active"), ["t3@checkout2.service", "t3@checkouts.service"])
+        self.assertEqual(self.units_in("active"), ["omnigent-opencode.service", "t3@checkout2.service", "t3@checkouts.service"])
 
     def test_existing_settings_are_kept(self):
         path = self.home / ".t3-workspaces/checkouts/userdata/settings.json"
@@ -247,6 +253,17 @@ class T3EnsureTest(unittest.TestCase):
         self.assertEqual(result.stdout, "")
         self.assertFalse([c for c in self.calls_made() if " enable " in c])
 
+    def test_the_daemon_is_restarted_only_when_it_runs_old_code(self):
+        self.assertEqual(self.run_ensure().returncode, 0)
+        self.calls.unlink()
+        self.assertEqual(self.run_ensure().stdout, "")
+        self.assertFalse([c for c in self.calls_made() if "restart" in c])
+        self.stale.touch()
+        result = self.run_ensure()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("systemctl --user restart omnigent-opencode.service", self.calls_made())
+        self.assertIn("restarted omnigent-opencode's daemon on the code on disk", result.stdout)
+
     def test_existing_project_counts_as_added(self):
         write_exe(
             self.bin / "t3",
@@ -277,7 +294,10 @@ class T3EnsureTest(unittest.TestCase):
         providers = self.settings("desktop")["providerInstances"]
         self.assertEqual(providers["omnigent"]["config"]["binaryPath"], "omnigent-opencode")
         self.assertEqual(providers["codex"], {"driver": "codex", "enabled": False})
-        self.assertEqual([c for c in self.calls_made() if " enable " in c], ["systemctl --user enable --now t3@desktop.service"])
+        self.assertEqual(
+            [c for c in self.calls_made() if " enable " in c],
+            ["systemctl --user enable --now omnigent-opencode.service", "systemctl --user enable --now t3@desktop.service"],
+        )
         home = self.home / ".t3-workspaces/desktop"
         self.assertEqual(
             [c for c in self.calls_made() if c.startswith("t3 project add")],
@@ -288,7 +308,7 @@ class T3EnsureTest(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in (self.home / ".t3-workspaces").iterdir()), ["desktop"])
         # The desktop's server is the layout's alone; a ~/checkoutN there is no project of it.
         self.assertFalse([c for c in self.calls_made() if "checkout1" in c])
-        self.assertEqual(self.units_in("active"), ["t3@desktop.service"])
+        self.assertEqual(self.units_in("active"), ["omnigent-opencode.service", "t3@desktop.service"])
 
     def test_desktop_retires_every_other_server(self):
         (self.home / "dotfiles").mkdir()
@@ -308,8 +328,8 @@ class T3EnsureTest(unittest.TestCase):
         (self.home / ".t3-workspaces/presto").mkdir()
         result = self.run_ensure()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.units_in("enabled"), ["t3@desktop.service"])
-        self.assertEqual(self.units_in("active"), ["t3@desktop.service"])
+        self.assertEqual(self.units_in("enabled"), ["omnigent-opencode.service", "t3@desktop.service"])
+        self.assertEqual(self.units_in("active"), ["omnigent-opencode.service", "t3@desktop.service"])
         self.assertIn("retired t3@dotfiles.service", result.stdout)
         self.assertIn("retired t3@orchest.service", result.stdout)
         self.assertEqual(old_state.read_text(), '{"theme": "dark"}')
@@ -327,7 +347,7 @@ class T3EnsureTest(unittest.TestCase):
         result = self.run_ensure()
         self.assertEqual(result.returncode, 1)
         self.assertIn("WARNING: could not disable t3@gatech.service", result.stdout)
-        self.assertEqual(self.units_in("active"), ["t3@desktop.service", "t3@gatech.service"])
+        self.assertEqual(self.units_in("active"), ["omnigent-opencode.service", "t3@desktop.service", "t3@gatech.service"])
 
     def test_desktop_gives_the_app_its_own_omnigent_providers(self):
         app_settings = self.home / ".t3/userdata/settings.json"
@@ -343,8 +363,9 @@ class T3EnsureTest(unittest.TestCase):
         # A built-in the user configured, and every other setting, are kept.
         self.assertEqual(providers["codex"], {"driver": "codex", "enabled": True})
         self.assertEqual(settings["theme"], "dark")
-        # The app runs its own server: no unit and no project for it.
-        self.assertFalse([c for c in self.calls_made() if c.startswith(("systemctl", "t3 project"))])
+        # The app runs its own server: no unit and no project for it. Its provider uses the daemon all the same.
+        self.assertFalse([c for c in self.calls_made() if c.startswith(("t3 project",)) or "t3@" in c])
+        self.assertIn("omnigent-opencode.service", self.units_in("active"))
         before = app_settings.read_text()
         self.assertEqual(self.run_ensure().returncode, 0)
         self.assertEqual(app_settings.read_text(), before)
@@ -488,6 +509,14 @@ class T3EnsureMacTest(unittest.TestCase):
         # No systemd here: nothing enabled, started or retired, and no work server.
         self.assertFalse([c for c in self.calls_made() if c.startswith("systemctl")])
         self.assertFalse((self.home / ".t3-workspaces/checkouts").exists())
+
+    def test_mac_restarts_its_daemon_through_launchd_when_it_runs_old_code(self):
+        self.assertEqual(self.run_ensure().returncode, 0)
+        self.assertFalse([c for c in self.calls_made() if c.startswith("launchctl")])
+        self.stale.touch()
+        result = self.run_ensure()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"launchctl kickstart -k gui/{os.getuid()}/com.mkarrmann.omnigent-opencode", self.calls_made())
 
     def test_mac_without_dotfiles_has_no_server_to_configure(self):
         (self.home / "dotfiles").rmdir()

@@ -38,7 +38,11 @@ Either way each window's new threads start in its own workspace's project
      ~/bin, and that file is not shared; no server or project for it below;
   4. installs omnigent-opencode's runtime (`uv sync` of
      services/omnigent-opencode), since the services have no proxy to fetch
-     its dependencies with, and checks that it starts;
+     its dependencies with, and checks that it starts. Then it keeps the
+     provider's daemon running that code: it enables and starts
+     omnigent-opencode.service on Linux (on the Mac launchd runs it, as
+     sync.sh loads it), and restarts the daemon when the code on disk is not
+     the code it runs (`omnigent-opencode daemon-stale`), as after a pull;
   5. retires the servers it ran before this one: `disable --now` every
      enabled t3@checkoutN on a candidate, and every enabled t3@X other than
      t3@NAME on the desktop (one per t3 row, t3@dotfiles and the like, before
@@ -83,6 +87,8 @@ DESKTOP_APP_SETTINGS = Path.home() / ".t3/userdata/settings.json"
 SHIM = DOTFILES / "bin/omnigent-opencode"
 SHIM_COMMAND = SHIM.name
 SHIM_RUNTIME = DOTFILES / "services/omnigent-opencode"
+DAEMON_UNIT = "omnigent-opencode.service"
+DAEMON_LABEL = "com.mkarrmann.omnigent-opencode"
 SHARED_SETTINGS = DOTFILES / "t3code/settings.json"
 CHECKOUT = re.compile(r"checkout[0-9]+")
 WORK_SERVER = "checkouts"  # bin/t3-workspace-serve, bin/t3-pairing-tokens
@@ -328,6 +334,29 @@ def systemctl(*args: str) -> int:
     return subprocess.run(["systemctl", "--user", *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
 
 
+def ensure_daemon(mac: bool) -> bool:
+    """Step 4: the provider's daemon running the code on disk; False when it is not."""
+    if not mac and systemctl("is-active", "--quiet", DAEMON_UNIT) != 0:
+        if systemctl("enable", "--now", DAEMON_UNIT) != 0:
+            log(f"WARNING: could not enable {DAEMON_UNIT} (is systemd/{DAEMON_UNIT} linked? run sync.sh)")
+            return False
+        log(f"started {DAEMON_UNIT}")
+        return True
+    stale = subprocess.run([str(SHIM), "daemon-stale"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if stale.returncode != 0:
+        return True
+    if mac:
+        command = ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{DAEMON_LABEL}"]
+        restarted = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+    else:
+        restarted = systemctl("restart", DAEMON_UNIT) == 0
+    if restarted:
+        log("restarted omnigent-opencode's daemon on the code on disk")
+    else:
+        log(f"WARNING: could not restart omnigent-opencode's daemon ({'run sync.sh' if mac else DAEMON_UNIT})")
+    return restarted
+
+
 def retire_servers(names: list[str], current: str) -> bool:
     """Step 5: `disable --now` each enabled t3@NAME in NAMES but t3@CURRENT;
     False when one would not stop."""
@@ -384,6 +413,9 @@ def main() -> int:
         log("WARNING: could not install omnigent-opencode's runtime; the Omnigent provider will fail until it is")
     elif subprocess.run([str(SHIM), "--version"], stdout=subprocess.DEVNULL).returncode != 0:
         log("WARNING: omnigent-opencode did not start; the Omnigent provider will fail until it does")
+    # Without its daemon the provider still works, only without following sessions between T3 Code's visits.
+    elif not ensure_daemon(mac):
+        log("WARNING: omnigent-opencode's daemon is not running the current code")
     if mac:
         failed = False
     elif layout_server is not None:

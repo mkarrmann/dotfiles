@@ -305,13 +305,13 @@ What T3 Code gets:
   T3 Code's note.
 - T3 Code lets go of a thread 30 minutes after its last turn
   (`ProviderSessionManager.ts`, `DEFAULT_IDLE_TIMEOUT_MS`) and stops the
-  provider 30 seconds after its last thread. Without the provider's daemon, a
-  turn started outside T3 Code after that (a watcher's wakeup, say) is not shown
-  live; it is in the thread's history when the thread is next opened. With the
-  daemon (`touch ~/.config/omnigent-opencode/daemon-enabled`, see the service
-  README's "Daemon"), every such turn is put to T3 Code as an "Agent" message
-  (`[Omnigent] ...`) whose turn shows the agent's work, for a week after the
-  session's last activity.
+  provider 30 seconds after its last thread. The provider's daemon
+  (`omnigent-opencode daemon`, run by launchd or systemd wherever a T3 Code
+  server runs; see the service README's "Daemon") follows each session anyway,
+  for a week after its last activity, and puts every turn started outside T3
+  Code to T3 Code as an "Agent" message (`[Omnigent] ...`) whose turn shows the
+  agent's work. Without the daemon (it is not running, or T3 Code started the
+  provider before it was), such a turn is not shown live.
 - Opening a thread whose Omnigent session is gone fails instead of quietly
   starting a fresh session.
 - Each edit's diff shows in its tool call; T3 Code's checkpoint diffs and git

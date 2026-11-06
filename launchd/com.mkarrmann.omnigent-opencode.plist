@@ -7,13 +7,11 @@
   OpenCode server; that process forwards to this daemon's socket when it
   answers, and serves on its own when it does not.
 
-  Opt-in: sync.sh loads this job, and launchd runs it only while
-  ~/.config/omnigent-opencode/daemon-enabled exists (KeepAlive PathState). A
-  running daemon keeps the code it started with; restart it after the
-  service's code changes.
+  sync.sh loads it; bin/t3-ensure, run by init.sh, restarts it when the
+  service's code on disk is not the code it runs (`omnigent-opencode
+  daemon-stale`).
 
   Manual ops:
-    mkdir -p ~/.config/omnigent-opencode && touch ~/.config/omnigent-opencode/daemon-enabled
     launchctl kickstart -k gui/$UID/com.mkarrmann.omnigent-opencode
     tail -f ~/.local/state/omnigent-opencode/daemon.log
 -->
@@ -28,14 +26,10 @@
       <string>daemon</string>
     </array>
 
+    <key>RunAtLoad</key>
+    <true/>
     <key>KeepAlive</key>
-    <dict>
-      <key>PathState</key>
-      <dict>
-        <key>/Users/mkarrmann/.config/omnigent-opencode/daemon-enabled</key>
-        <true/>
-      </dict>
-    </dict>
+    <true/>
     <key>ThrottleInterval</key>
     <integer>10</integer>
 
