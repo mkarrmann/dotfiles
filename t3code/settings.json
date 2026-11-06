@@ -1,29 +1,5 @@
 {
   "providerInstances": {
-    "omnigent-claude": {
-      "driver": "acpRegistry",
-      "displayName": "Omnigent \u00b7 Claude",
-      "config": {
-        "source": "local",
-        "commandPath": "omnigent-acp",
-        "commandArgs": [
-          "--agent",
-          "claude-native-ui"
-        ]
-      }
-    },
-    "omnigent-codex": {
-      "driver": "acpRegistry",
-      "displayName": "Omnigent \u00b7 Codex",
-      "config": {
-        "source": "local",
-        "commandPath": "omnigent-acp",
-        "commandArgs": [
-          "--agent",
-          "codex-native-ui"
-        ]
-      }
-    },
     "codex": {
       "driver": "codex",
       "enabled": false
@@ -31,6 +7,13 @@
     "claudeAgent": {
       "driver": "claudeAgent",
       "enabled": false
+    },
+    "omnigent": {
+      "driver": "opencode",
+      "displayName": "Omnigent",
+      "config": {
+        "binaryPath": "omnigent-opencode"
+      }
     }
   }
 }
