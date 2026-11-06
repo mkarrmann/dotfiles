@@ -21,11 +21,13 @@ ConditionPathExists=%h/dotfiles/services/omnigent-opencode/.venv/bin/omnigent-op
 Type=simple
 # t3 (~/.local/bin) wakes threads; OMNIGENT_URL comes from environment.d.
 Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+# The daemon rotates its own log; stderr gets only what escapes logging (a crash).
+Environment=OMNIGENT_OPENCODE_LOG=%S/omnigent-opencode/daemon.log
 ExecStart=%h/dotfiles/bin/omnigent-opencode daemon
 Restart=on-failure
 RestartSec=5
-StandardOutput=append:%S/omnigent-opencode/daemon.log
-StandardError=append:%S/omnigent-opencode/daemon.log
+StandardOutput=append:%S/omnigent-opencode/daemon.stderr
+StandardError=append:%S/omnigent-opencode/daemon.stderr
 UMask=0077
 
 [Install]

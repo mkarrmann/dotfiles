@@ -29,6 +29,7 @@ USERNAME: Final = "opencode"
 # The forwarding server T3 Code runs names the T3 Code server it serves (`proxy`).
 T3_HOME_HEADER: Final = "X-Omnigent-OpenCode-T3-Home"
 SWEEP_S: Final = 3600.0
+STATUS_PATH: Final = "/api/omnigent-opencode/status"
 
 
 @dataclass
@@ -71,6 +72,8 @@ class App:
         self.client = client
         self.store = store
         self.wake = wake
+        self.code: str | None = None
+        """The code this process started with, which the daemon reports (`cli.daemon_stale`)."""
         self.feed = EventFeed()
         self.sessions: dict[str, Session] = {}
         self.text_sessions: dict[str, TextGenSession] = {}
@@ -178,6 +181,13 @@ class App:
             await (await self.session(session_id)).connect()
         except Exception as exc:  # noqa: BLE001 - one session's failure is not the others'
             LOG.warning("could not follow %s yet: %s", session_id, exc)
+
+    @property
+    def busy(self) -> bool:
+        """Whether a restart now would lose something: a running execution, a steer, or a held run."""
+        return any(s.running or s.steers or s.held for s in self.sessions.values()) or any(
+            t.running for t in self.text_sessions.values()
+        )
 
     def note_home(self, session_id: str, home: str) -> None:
         """The T3 Code server whose home is `home` opened the session."""
@@ -433,6 +443,12 @@ async def guard(request: web.Request, handler: Any) -> web.StreamResponse:
 @routes.get("/api/info")
 async def info(request: web.Request) -> web.Response:
     return web.json_response(server_info([f"{request.scheme}://{request.host}"]))
+
+
+@routes.get(STATUS_PATH)
+async def status(request: web.Request) -> web.Response:
+    app = app_of(request)
+    return web.json_response({"code": app.code, "busy": app.busy})
 
 
 @routes.get("/api/event")

@@ -9,9 +9,10 @@ Code has it running.
 `daemon` serves the sessions on a Unix socket and follows each, T3 Code
 running or not, until it has been quiet for `OMNIGENT_OPENCODE_WATCH_DAYS`
 (default 7). It puts every Omnigent turn T3 Code did not start to T3 Code with
-the `t3` CLI (`wakes`). launchd or systemd runs it, and it records the code it
-started with beside its socket: `daemon-stale` exits 0 when a running daemon's
-code is not what is on disk, so bin/t3-ensure restarts it.
+the `t3` CLI (`wakes`). launchd or systemd runs it. `daemon-stale` tells
+bin/t3-ensure whether to restart it: exit 0 when the daemon's code is not what
+is on disk and nothing would be lost, 2 when it is stale but busy (a turn
+running, a steer pending, a turn held for T3 Code), 1 otherwise.
 
 The environment configures the rest (T3 Code's provider instance for `serve`
 alone, the service for the daemon):
@@ -24,7 +25,8 @@ alone, the service for the daemon):
 - `OMNIGENT_OPENCODE_STATE`: the SQLite state file (default under `$XDG_STATE_HOME`).
 - `OMNIGENT_OPENCODE_SOCKET`: the daemon's socket (default under `$XDG_STATE_HOME`).
 - `OMNIGENT_OPENCODE_T3`: the `t3` CLI the daemon runs (default `t3` on PATH, else `~/.local/bin/t3`).
-- `OMNIGENT_OPENCODE_LOG`: a file to append logs to; T3 Code discards the server's output.
+- `OMNIGENT_OPENCODE_LOG`: a file to log to, rotated at `LOG_BYTES` (T3 Code
+  discards the server's output); stderr then gets only what escapes logging.
 """
 
 from __future__ import annotations
@@ -34,17 +36,19 @@ import asyncio
 import contextlib
 import hashlib
 import logging
+import logging.handlers
 import os
 import shutil
 import signal
 import sys
 from pathlib import Path
 
+import aiohttp
 from aiohttp import web
 
 from .omnigent import OmnigentClient
 from .proxy import daemon_up, default_socket, make_proxy, t3_home
-from .server import App, Config, make_app
+from .server import STATUS_PATH, App, Config, make_app
 from .store import Store, default_path
 from .wakes import Waker
 from .wire import VERSION
@@ -54,7 +58,9 @@ LOG = logging.getLogger(__name__)
 DEFAULT_AGENTS = "claude-native-ui,codex-native-ui"
 DEFAULT_WATCH_DAYS = 7.0
 DAY_MS = 24 * 3600 * 1000
-CODE_FILE = "daemon.code"
+STALE, CURRENT, BUSY = 0, 1, 2
+LOG_BYTES = 16 * 1024 * 1024
+LOG_BACKUPS = 3
 
 
 def parse(argv: list[str]) -> argparse.Namespace:
@@ -138,19 +144,23 @@ def code_hash() -> str:
 
 async def daemon_stale(args: argparse.Namespace) -> int:
     socket = socket_path(args)
-    if not await daemon_up(socket):
-        print(f"no daemon answers on {socket}")
-        return 1
     try:
-        running = (socket.parent / CODE_FILE).read_text().strip()
-    except OSError:
-        running = ""
+        async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(path=str(socket))) as client:
+            async with client.get(f"http://daemon{STATUS_PATH}", timeout=aiohttp.ClientTimeout(total=5)) as response:
+                status = await response.json() if response.status == 200 else {}
+    except (aiohttp.ClientError, OSError, TimeoutError):
+        print(f"no daemon answers on {socket}")
+        return CURRENT
     current = code_hash()
+    running = str(status.get("code") or "")
     if running == current:
         print(f"the daemon runs the code on disk ({current[:12]})")
-        return 1
+        return CURRENT
     print(f"the daemon runs {running[:12] or 'unrecorded code'}; the code on disk is {current[:12]}")
-    return 0
+    if status.get("busy"):
+        print("it is busy; restart it once its turns are done")
+        return BUSY
+    return STALE
 
 
 def t3_command() -> str:
@@ -165,6 +175,7 @@ async def daemon(args: argparse.Namespace) -> None:
     days = float(os.environ.get("OMNIGENT_OPENCODE_WATCH_DAYS") or DEFAULT_WATCH_DAYS)
     config, client, store = make_sessions(None, args, int(days * DAY_MS))
     app = App(config, client, store)
+    app.code = code
     app.wake = Waker(t3_command(), app.home_of)
     runner = web.AppRunner(make_app(app), handle_signals=False)
     await runner.setup()
@@ -175,7 +186,6 @@ async def daemon(args: argparse.Namespace) -> None:
         await web.UnixSite(runner, str(socket)).start()
     finally:
         os.umask(old_umask)
-    (socket.parent / CODE_FILE).write_text(code + "\n")
     LOG.info(
         "daemon %s listening on %s, following sessions for %g days, waking threads with %s", VERSION, socket, days, t3_command()
     )
@@ -188,7 +198,6 @@ async def daemon(args: argparse.Namespace) -> None:
             await follow
         await runner.cleanup()
         socket.unlink(missing_ok=True)
-        (socket.parent / CODE_FILE).unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -200,10 +209,12 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(asyncio.run(daemon_stale(args)))
     if args.command not in ("serve", "daemon"):
         raise SystemExit("usage: omnigent-opencode --version | serve --hostname=H --port=P | daemon | daemon-stale")
-    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
     log = args.log or (Path(os.environ["OMNIGENT_OPENCODE_LOG"]) if os.environ.get("OMNIGENT_OPENCODE_LOG") else None)
-    if log is not None:
-        handlers.append(logging.FileHandler(log))
+    handlers: list[logging.Handler] = (
+        [logging.StreamHandler(sys.stderr)]
+        if log is None
+        else [logging.handlers.RotatingFileHandler(log, maxBytes=LOG_BYTES, backupCount=LOG_BACKUPS)]
+    )
     level = logging.DEBUG if os.environ.get("OMNIGENT_OPENCODE_DEBUG") else logging.INFO
     logging.basicConfig(level=level, handlers=handlers, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     for noisy in ("httpx", "httpcore", "aiohttp.access"):

@@ -82,15 +82,35 @@ async def test_the_forwarding_server_checks_t3_codes_password(daemon: tuple[App,
     await server.close()
 
 
-async def test_a_daemon_is_stale_when_its_recorded_code_is_not_on_disk(daemon: tuple[App, Path]) -> None:
+async def test_a_daemon_is_restarted_only_when_stale_and_idle(daemon: tuple[App, Path], fake: FakeOmnigent) -> None:
     import argparse
 
-    from omnigent_opencode.cli import CODE_FILE, code_hash, daemon_stale
+    from omnigent_opencode.cli import BUSY, CURRENT, STALE, code_hash, daemon_stale
 
-    socket = daemon[1]
+    app, socket = daemon
     args = argparse.Namespace(socket=socket)
-    (socket.parent / CODE_FILE).write_text("0123456789abcdef\n")
-    assert await daemon_stale(args) == 0
-    (socket.parent / CODE_FILE).write_text(code_hash() + "\n")
-    assert await daemon_stale(args) == 1
-    assert await daemon_stale(argparse.Namespace(socket=socket.with_name("missing.sock"))) == 1, "no daemon, nothing to restart"
+    app.code = "0123456789abcdef"
+    assert await daemon_stale(args) == STALE
+    app.code = code_hash()
+    assert await daemon_stale(args) == CURRENT
+    app.code = "0123456789abcdef"
+    session = await app.create_session({"location": {"directory": app.config.default_directory}, "model": CLAUDE})
+    await app.sessions[session["id"]].prompt("msg_1", "hi", "queue")
+    assert await daemon_stale(args) == BUSY, "a running turn would be lost"
+    assert await daemon_stale(argparse.Namespace(socket=socket.with_name("missing.sock"))) == CURRENT
+
+
+async def test_the_forwarding_server_waits_out_a_daemon_restart(daemon: tuple[App, Path], tmp_path: Path) -> None:
+    import asyncio
+
+    app, socket = daemon
+    moved = socket.with_name("later.sock")
+    socket.rename(moved)
+    server = TestServer(make_proxy(PASSWORD, socket, HOME))
+    await server.start_server()
+    authorization = "Basic " + base64.b64encode(f"opencode:{PASSWORD}".encode()).decode()
+    asyncio.get_running_loop().call_later(1.0, moved.rename, socket)
+    async with aiohttp.ClientSession() as client:
+        async with client.get(server.make_url("/api/info"), headers={"Authorization": authorization}) as response:
+            assert response.status == 200
+    await server.close()

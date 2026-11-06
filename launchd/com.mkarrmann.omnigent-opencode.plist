@@ -37,11 +37,14 @@
     <dict>
       <key>PATH</key>
       <string>/Users/mkarrmann/.local/bin:/Users/mkarrmann/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+      <!-- The daemon rotates its own log; stderr gets only what escapes logging (a crash). -->
+      <key>OMNIGENT_OPENCODE_LOG</key>
+      <string>/Users/mkarrmann/.local/state/omnigent-opencode/daemon.log</string>
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/Users/mkarrmann/.local/state/omnigent-opencode/daemon.log</string>
+    <string>/Users/mkarrmann/.local/state/omnigent-opencode/daemon.stderr</string>
     <key>StandardErrorPath</key>
-    <string>/Users/mkarrmann/.local/state/omnigent-opencode/daemon.log</string>
+    <string>/Users/mkarrmann/.local/state/omnigent-opencode/daemon.stderr</string>
   </dict>
 </plist>

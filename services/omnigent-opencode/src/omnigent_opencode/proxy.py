@@ -11,6 +11,7 @@ and passes requests and responses through, the event stream included.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import logging
@@ -29,6 +30,10 @@ HOP_HEADERS: Final = frozenset(
     {"connection", "keep-alive", "transfer-encoding", "content-length", "authorization", "upgrade", "te", "trailer"}
 )
 PROBE_TIMEOUT_S: Final = 2.0
+# T3 Code gives up on its provider after five failed event-stream connects 2 s apart; a daemon restart takes
+# a second or two, so a request the daemon cannot take yet waits for it this long.
+DAEMON_WAIT_S: Final = 8.0
+RECONNECT_S: Final = 0.25
 
 
 def default_socket() -> Path:
@@ -70,13 +75,23 @@ def make_proxy(password: str, socket: Path, home: str) -> web.Application:
         headers[T3_HOME_HEADER] = home
         body = await request.read() if request.can_read_body else None
         client = request.app[client_key]
-        try:
-            upstream = await client.request(
-                request.method, f"http://daemon{request.rel_url}", headers=headers, data=body, allow_redirects=False
-            )
-        except (aiohttp.ClientError, OSError) as exc:
-            LOG.warning("the daemon did not answer %s %s: %s", request.method, request.rel_url, exc)
-            return web.json_response({"message": f"omnigent-opencode daemon unreachable: {exc}"}, status=502)
+        deadline = asyncio.get_running_loop().time() + DAEMON_WAIT_S
+        while True:
+            try:
+                upstream = await client.request(
+                    request.method, f"http://daemon{request.rel_url}", headers=headers, data=body, allow_redirects=False
+                )
+                break
+            except aiohttp.ClientConnectorError as exc:
+                # Nothing was sent, so any request can be tried again: the daemon is restarting.
+                if asyncio.get_running_loop().time() < deadline:
+                    await asyncio.sleep(RECONNECT_S)
+                    continue
+                LOG.warning("the daemon did not answer %s %s: %s", request.method, request.rel_url, exc)
+                return web.json_response({"message": f"omnigent-opencode daemon unreachable: {exc}"}, status=502)
+            except (aiohttp.ClientError, OSError) as exc:
+                LOG.warning("the daemon did not answer %s %s: %s", request.method, request.rel_url, exc)
+                return web.json_response({"message": f"omnigent-opencode daemon unreachable: {exc}"}, status=502)
         async with upstream:
             response = web.StreamResponse(
                 status=upstream.status,

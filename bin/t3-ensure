@@ -42,7 +42,9 @@ Either way each window's new threads start in its own workspace's project
      provider's daemon running that code: it enables and starts
      omnigent-opencode.service on Linux (on the Mac launchd runs it, as
      sync.sh loads it), and restarts the daemon when the code on disk is not
-     the code it runs (`omnigent-opencode daemon-stale`), as after a pull;
+     the code it runs (`omnigent-opencode daemon-stale`), as after a pull,
+     unless a turn is in flight there, which a restart would lose: then it
+     says so, and the next run restarts it;
   5. retires the servers it ran before this one: `disable --now` every
      enabled t3@checkoutN on a candidate, and every enabled t3@X other than
      t3@NAME on the desktop (one per t3 row, t3@dotfiles and the like, before
@@ -89,6 +91,7 @@ SHIM_COMMAND = SHIM.name
 SHIM_RUNTIME = DOTFILES / "services/omnigent-opencode"
 DAEMON_UNIT = "omnigent-opencode.service"
 DAEMON_LABEL = "com.mkarrmann.omnigent-opencode"
+DAEMON_BUSY = 2  # `omnigent-opencode daemon-stale`: stale, but a restart would lose a turn
 SHARED_SETTINGS = DOTFILES / "t3code/settings.json"
 CHECKOUT = re.compile(r"checkout[0-9]+")
 WORK_SERVER = "checkouts"  # bin/t3-workspace-serve, bin/t3-pairing-tokens
@@ -343,6 +346,9 @@ def ensure_daemon(mac: bool) -> bool:
         log(f"started {DAEMON_UNIT}")
         return True
     stale = subprocess.run([str(SHIM), "daemon-stale"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if stale.returncode == DAEMON_BUSY:
+        log("omnigent-opencode's daemon runs old code but a turn is in flight; run init.sh again later to restart it")
+        return True
     if stale.returncode != 0:
         return True
     if mac:

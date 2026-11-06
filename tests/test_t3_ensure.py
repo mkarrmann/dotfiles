@@ -66,11 +66,13 @@ class T3EnsureTest(unittest.TestCase):
         for d in (self.home / "checkout1", self.home / "checkout2", self.home / "checkoutx", self.dotfiles / "bin", self.bin):
             d.mkdir(parents=True)
         shutil.copy2(ROOT / "bin/dotfiles-profile", self.dotfiles / "bin/dotfiles-profile")
-        # `daemon-stale` says the daemon runs old code while STALE exists.
+        # `daemon-stale` says the daemon runs old code while STALE exists, and that it is busy while BUSY does.
         self.stale = self.root / "stale"
+        self.busy = self.root / "busy"
         write_exe(
             self.dotfiles / "bin/omnigent-opencode",
-            f'echo "shim $*" >> {self.calls}\n[ "$1" != daemon-stale ] || [ -e {self.stale} ]\n',
+            f'echo "shim $*" >> {self.calls}\n'
+            f'[ "$1" != daemon-stale ] || {{ [ -e {self.busy} ] && exit 2; [ -e {self.stale} ]; }}\n',
         )
         write_exe(self.bin / "launchctl", f'echo "launchctl $*" >> {self.calls}\n')
         write_exe(self.bin / "uv", f'echo "uv $*" >> {self.calls}\n')
@@ -263,6 +265,14 @@ class T3EnsureTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("systemctl --user restart omnigent-opencode.service", self.calls_made())
         self.assertIn("restarted omnigent-opencode's daemon on the code on disk", result.stdout)
+
+    def test_a_busy_daemon_on_old_code_is_left_running(self):
+        self.assertEqual(self.run_ensure().returncode, 0)
+        self.busy.touch()
+        result = self.run_ensure()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse([c for c in self.calls_made() if "restart" in c])
+        self.assertIn("a turn is in flight; run init.sh again later", result.stdout)
 
     def test_existing_project_counts_as_added(self):
         write_exe(

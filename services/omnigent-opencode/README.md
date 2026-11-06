@@ -136,9 +136,12 @@ thread happens to be loaded, unless the daemon runs:
 launchd (`launchd/com.mkarrmann.omnigent-opencode.plist`, loaded by sync.sh)
 or systemd (`systemd/omnigent-opencode.service`) runs the daemon wherever a T3
 Code server runs; bin/t3-ensure enables it there. A running daemon keeps the
-code it started with: it records a hash of that code beside its socket, and
-`omnigent-opencode daemon-stale` exits 0 when the code on disk differs, which
-bin/t3-ensure (init.sh) takes as its cue to restart it.
+code it started with and reports a hash of it (`GET
+/api/omnigent-opencode/status`); `omnigent-opencode daemon-stale` exits 0 when
+the code on disk differs and nothing is in flight, which bin/t3-ensure
+(init.sh) takes as its cue to restart it, and 2 when a turn would be lost. While
+the daemon restarts, `serve` holds T3 Code's requests for up to 8 s. It logs to
+`~/.local/state/omnigent-opencode/daemon.log`, rotated at 16 MiB.
 
 Limits:
 
