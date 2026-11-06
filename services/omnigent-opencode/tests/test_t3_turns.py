@@ -588,3 +588,28 @@ async def test_a_codex_patch_is_a_file_change_with_its_diff(t3: T3Client, shim: 
     assert called["filePath"] == "/repo/new.txt"
     diff = next(e for e in t3.of(sid) if e["type"] == "session.tool.success")["data"]["metadata"]["diff"]
     assert "+hello\n" in diff and "--- a/repo/a.py" in diff and "+x = 2\n" in diff
+
+
+async def test_a_move_to_the_same_directory_by_another_path_is_no_move(
+    t3: T3Client, shim: Shim, fake: FakeOmnigent, tmp_path: Any
+) -> None:
+    import base64
+    import os
+
+    import aiohttp
+    from conftest import PASSWORD
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "link").symlink_to(real)
+    session = await t3.call("session.create", {"location": {"directory": str(tmp_path / "link")}, "model": CLAUDE})
+    sid = session["id"]
+    # As after a restart: Omnigent recorded the workspace by its real path.
+    shim.app.sessions[sid].directory = os.path.realpath(real)
+    headers = {"Authorization": "Basic " + base64.b64encode(f"opencode:{PASSWORD}".encode()).decode()}
+    async with aiohttp.ClientSession(headers=headers) as client:
+        url = f"{shim.url}/api/session/{sid}/move"
+        async with client.post(url, json={"directory": str(tmp_path / "link")}) as response:
+            assert response.status == 204
+        async with client.post(url, json={"directory": str(tmp_path)}) as response:
+            assert response.status == 400

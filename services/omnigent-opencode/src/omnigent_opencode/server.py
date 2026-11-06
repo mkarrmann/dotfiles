@@ -6,6 +6,7 @@ import asyncio
 import base64
 import binascii
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Final, Literal, cast
 from urllib.parse import unquote
@@ -612,10 +613,14 @@ async def move(request: web.Request) -> web.Response:
     session = await app_of(request).session(session_id_param(request))
     directory = (await body_of(request)).get("directory")
     if isinstance(directory, str) and directory and directory != session.directory:
-        raise ApiError(
-            "InvalidRequestError",
-            f"this thread's Omnigent session runs in {session.directory}; start a new thread to work in {directory}",
-        )
+        # Omnigent records a workspace by its real path, so after a restart the session may name T3 Code's
+        # directory differently (/private/tmp for /tmp); a refusal here makes T3 Code abandon the session.
+        if os.path.realpath(directory) != os.path.realpath(session.directory):
+            raise ApiError(
+                "InvalidRequestError",
+                f"this thread's Omnigent session runs in {session.directory}; start a new thread to work in {directory}",
+            )
+        session.directory = directory
     return no_content()
 
 
