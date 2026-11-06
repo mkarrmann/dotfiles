@@ -77,6 +77,7 @@ async def test_a_background_subagent_is_a_child_session_whose_report_wakes_the_p
     )
     await t3.wait_for(lambda: t3.types(sid).count("session.execution.started") == 2)
     fake.push(child, "session.status", {"status": "idle", "response_id": None})
+    await t3.wait_for(lambda: "session.execution.succeeded" in t3.types(child_sid))
 
     started = next(e for e in t3.of(sid) if e["type"] == "session.tool.input.started")
     assert started["data"]["name"] == "subagent"
@@ -142,3 +143,31 @@ async def test_a_childs_approval_shows_in_the_childs_session(t3: T3Client, shim:
     assert asked["sessionID"] == f"ses_{child}"
     await t3.call("permission.reply", {"sessionID": f"ses_{child}", "requestID": asked["id"], "decision": "once"})
     assert fake.resolved == [(child, "el_child", {"action": "accept"})]
+
+
+async def test_a_childs_output_after_its_report_is_kept(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> None:
+    sid, conv = await start_turn(t3, shim, fake)
+    child = spawn(fake, conv)
+    child_sid = f"ses_{child}"
+    item(fake, conv, {"type": "function_call_output", "call_id": "toolu_agent", "output": LAUNCHED})
+    confirmed_idle(fake, conv)
+    await t3.wait_for(lambda: "session.execution.succeeded" in t3.types(sid))
+    await fake.connected(child)
+    # The parent hears of the result before the child's stream delivers its last message.
+    fake.push(
+        conv,
+        "session.input.consumed",
+        {
+            "data": {
+                "item_id": "item_note",
+                "type": "message",
+                "data": {"role": "user", "content": [{"type": "input_text", "text": NOTIFICATION}]},
+                "cleared_pending_id": None,
+            }
+        },
+    )
+    await t3.wait_for(lambda: t3.types(sid).count("session.execution.started") == 2)
+    item(fake, child, {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "SUBAGENT_OK"}]})
+    fake.push(child, "session.status", {"status": "idle", "response_id": None})
+    await t3.wait_for(lambda: "session.execution.succeeded" in t3.types(child_sid))
+    assert [e["data"]["text"] for e in t3.of(child_sid) if e["type"] == "session.text.ended"] == ["SUBAGENT_OK"]

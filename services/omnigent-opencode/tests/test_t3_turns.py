@@ -502,6 +502,46 @@ async def test_each_committed_reply_is_its_own_text(t3: T3Client, shim: Shim, fa
     assert [e["data"]["text"] for e in t3.of(sid) if e["type"] == "session.text.ended"] == ["Working", "Second"]
 
 
+async def stream_without_commit(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> tuple[str, str]:
+    """A turn whose reply streamed but whose Stop hook came before the reply's item."""
+    session = await open_session(t3, shim)
+    sid = session["id"]
+    conv = fake.only().id
+    await t3.call("session.prompt", {"sessionID": sid, "id": f"msg_t3_turn_{sid}:a1", "text": "hi"})
+    await fake.connected(conv)
+    fake.push(conv, "session.input.consumed", consumed("pending_2", "item_2"))
+    fake.push(conv, "response.output_text.delta", {"delta": "Working"})
+    confirmed_idle(fake, conv)
+    await t3.wait_for(lambda: "session.execution.succeeded" in t3.types(sid))
+    return sid, conv
+
+
+def message(text: str) -> dict[str, Any]:
+    return {"item": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}}
+
+
+async def test_a_wake_marker_over_a_late_reply_is_no_turn(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> None:
+    sid, conv = await stream_without_commit(t3, shim, fake)
+    # claude-native's forwarder took the late reply for a wake and put its marker before it.
+    fake.push(conv, "session.input.consumed", consumed(None, "item_9", "[System: scheduled prompt fired]"))  # type: ignore[arg-type]
+    fake.push(conv, "response.output_item.done", message("Working"))
+    confirmed_idle(fake, conv)
+    await t3.call("session.get", {"sessionID": sid})
+    assert shim.app.sessions[sid].execution is None
+    assert t3.types(sid).count("session.execution.started") == 1
+
+
+async def test_a_real_scheduled_wake_is_a_turn(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> None:
+    sid, conv = await stream_without_commit(t3, shim, fake)
+    fake.push(conv, "session.input.consumed", consumed(None, "item_9", "[System: scheduled prompt fired]"))  # type: ignore[arg-type]
+    fake.push(conv, "response.output_item.done", message("Working"))
+    fake.push(conv, "response.output_item.done", message("Checked again: done"))
+    confirmed_idle(fake, conv)
+    await t3.wait_for(lambda: t3.types(sid).count("session.execution.succeeded") == 2)
+    wake = t3.of(sid)[[e["type"] for e in t3.of(sid)].index("session.execution.succeeded") + 1 :]
+    assert [e["data"]["text"] for e in wake if e["type"] == "session.text.ended"] == ["Checked again: done"]
+
+
 async def test_an_edit_is_a_file_change_with_its_diff(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> None:
     sid, conv = await start_turn(t3, shim, fake)
     arguments = {"file_path": "src/a.py", "old_string": "x = 1\n", "new_string": "x = 2\n"}

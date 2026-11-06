@@ -76,6 +76,12 @@ PLAN_EXIT_DENIED: Final = (
 )
 # How long a subagent call's result waits for its child session to be named before it is reported unlinked.
 CHILD_LINK_WAIT_S: Final = 3.0
+# A reported subagent's run ends at its session's idle, which follows its last output by a transcript lull;
+# this ends it if the idle never comes.
+REPORTED_CHILD_END_S: Final = 30.0
+# claude-native's forwarder puts this before assistant output it takes for a turn Claude started on its own.
+# It also does so for a reply that surfaced after its turn's Stop hook (forwarder.py, the settle latch).
+SCHEDULED_WAKE_MARKER: Final = "[System: scheduled prompt fired]"
 FORM_DISMISSED: Final = "The user dismissed the question without answering."
 
 Publish = Callable[[JsonObject], None]
@@ -134,6 +140,8 @@ class Execution:
     ended: bool = False
     quiet: asyncio.TimerHandle | None = None
     grace: asyncio.TimerHandle | None = None
+    announced: bool = True
+    """Whether T3 Code was told it started; a turn Omnigent may have made up is announced at its first output."""
 
 
 @dataclass
@@ -421,7 +429,9 @@ class Session:
             self._report(report)
         if self.execution is None and not self._draining and self.target.native:
             LOG.info("turn started outside T3 Code on %s", self.conversation_id)
-            self._start("wake", self.user_id(str(consumed["item_id"])), native_consumed=True)
+            # A wake marker may stand for a late reply of the previous turn; such a turn is announced only if it says more.
+            announce = text.strip() != SCHEDULED_WAKE_MARKER
+            self._start("wake", self.user_id(str(consumed["item_id"])), native_consumed=True, announce=announce)
             return True
         return False
 
@@ -436,15 +446,28 @@ class Session:
         return native_id("msg_", self.conversation_id, f"user:{item_id}")
 
     def _start(
-        self, kind: Literal["prompt", "steer", "wake", "compact"], message_id: str, *, native_consumed: bool = False
+        self,
+        kind: Literal["prompt", "steer", "wake", "compact"],
+        message_id: str,
+        *,
+        native_consumed: bool = False,
+        announce: bool = True,
     ) -> Execution:
         assert self.execution is None, "executions are serial"
         tracker = TurnTracker(native=self.target.native, native_consumed=native_consumed and self.target.native)
         tracker.late_reply, self._late_reply = self._late_reply, None
-        execution = Execution(kind=kind, tracker=tracker, assistant_id=self.assistant_id(message_id), message_id=message_id)
+        execution = Execution(
+            kind=kind, tracker=tracker, assistant_id=self.assistant_id(message_id), message_id=message_id, announced=announce
+        )
         self.execution = execution
-        self._emit("session.execution.started", {})
+        if announce:
+            self._emit("session.execution.started", {})
         return execution
+
+    def _announce(self, execution: Execution) -> None:
+        if not execution.announced:
+            execution.announced = True
+            self._emit("session.execution.started", {})
 
     def _step(self, execution: Execution) -> None:
         if execution.stepped:
@@ -487,6 +510,8 @@ class Session:
         for output in outputs:
             if execution.ended:
                 return
+            if not isinstance(output, (Usage, Quiescent, ReplyCommitted, TurnEnded)):
+                self._announce(execution)
             match output:
                 case TextDelta(text):
                     self._delta(execution, "text", text)
@@ -570,6 +595,14 @@ class Session:
             return
         execution.ended = True
         execution.tracker.ended = True
+        if not execution.announced:
+            # A turn that produced nothing new: a stray tail of the previous one, which T3 Code never hears of.
+            for timer in (execution.quiet, execution.grace):
+                if timer is not None:
+                    timer.cancel()
+            LOG.info("dropping a turn on %s that produced nothing new", self.conversation_id)
+            self.execution = None
+            return
         tracker = execution.tracker
         self._late_reply = tracker.emitted_text if tracker.message_streamed and tracker.emitted_text else None
         for timer in (execution.quiet, execution.grace):
@@ -699,6 +732,22 @@ class Session:
             )
         self._start("wake", self.user_id("subagent"), native_consumed=True)
 
+    def reported(self, outcome: TurnEnded) -> None:
+        """Its parent heard this subagent finish. Output may still be on its way on this session's own stream, so
+        the run ends at this session's idle, or after a while without it."""
+        execution = self.execution
+        if execution is None:
+            return
+
+        def end() -> None:
+            if self.execution is execution:
+                LOG.info("subagent session %s did not go idle after its report; ending its run", self.conversation_id)
+                self._end(execution, outcome)
+
+        if execution.grace is not None:
+            execution.grace.cancel()
+        execution.grace = asyncio.get_running_loop().call_later(REPORTED_CHILD_END_S, end)
+
     def _child_status(self, payload: dict[str, Any]) -> None:
         """A subagent session's status. Its idle is a transcript lull, not a confirmed turn end, but nothing better comes."""
         status = payload.get("status")
@@ -716,9 +765,7 @@ class Session:
         child = call.child if call is not None else None
         if child is None:
             return
-        if child.execution is not None:
-            outcome = TurnEnded("completed") if report.state == "completed" else TurnEnded("failed", report.summary)
-            child._end(child.execution, outcome)
+        child.reported(TurnEnded("completed") if report.state == "completed" else TurnEnded("failed", report.summary))
         metadata: JsonObject = {"source": "subagent", "childID": child.id, "state": report.state, "description": report.summary}
         self._emit(
             "session.inbox.enqueued",
@@ -741,6 +788,9 @@ class Session:
         await self.connect()
         self._store.add_prompt(self.id, message_id, text, now_ms())
         content = [*_attachments(files or []), {"type": "input_text", "text": text}]
+        if self.execution is not None and not self.execution.announced:
+            # T3 Code saw no turn, so this is a prompt, not a steer.
+            self._end(self.execution, TurnEnded("completed"))
         if self.execution is not None:
             await self._steer(message_id, text, content)
             return
@@ -927,6 +977,8 @@ class Session:
     # -- approvals -------------------------------------------------------
 
     def _ask(self, ask: Ask) -> None:
+        if self.execution is not None:
+            self._announce(self.execution)
         child = self.children.get(ask.target_session_id or "")
         if child is not None:
             # A child's request, mirrored to its parent: T3 Code shows it in the child's thread.

@@ -251,6 +251,24 @@ async def run(scenario: str, agent: str, model: str, directory: str) -> None:
         ok.append(f"text generation: {title_text!r}")
         for line in ok:
             print(f"{stamp()} SMOKE {line}", flush=True)
+    elif scenario == "edit":
+        target = Path(directory) / "greeting.py"
+        target.write_text('GREETING = "hello"\n')
+        await t3.call(
+            "session.prompt",
+            {
+                "sessionID": sid,
+                "id": f"msg_t3_turn_{sid}:1",
+                "text": f'Use your Edit tool to change "hello" to "goodbye" in {target}. Do nothing else.',
+            },
+        )
+        await wait(lambda: executions() >= 1, 180)
+        for e in t3.of(sid):
+            if e["type"] == "session.tool.called":
+                print(f"{stamp()} EDIT input keys: {sorted(e['data']['input'])}", flush=True)
+            if e["type"] == "session.tool.success":
+                print(f"{stamp()} EDIT metadata: {json.dumps(e['data'].get('metadata'))}", flush=True)
+        print(f"{stamp()} EDIT file now: {target.read_text()!r}", flush=True)
     elif scenario == "stop":
         await t3.call(
             "session.prompt",
@@ -290,7 +308,7 @@ def main() -> None:
     for noisy in ("httpx", "httpcore", "aiohttp.access"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     parser = argparse.ArgumentParser()
-    parser.add_argument("scenario", choices=["turn", "steer", "stop", "approve", "decline", "question", "plan", "smoke"])
+    parser.add_argument("scenario", choices=["turn", "steer", "stop", "approve", "decline", "question", "plan", "smoke", "edit"])
     parser.add_argument("--agent", default="claude-native-ui")
     parser.add_argument("--model", default="sonnet")
     parser.add_argument("--directory", default=tempfile.mkdtemp(prefix="oc-live-cwd-"))
