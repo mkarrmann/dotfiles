@@ -12,6 +12,7 @@
     },
     "omnigent": {
       "driver": "opencode",
+      "enabled": true,
       "displayName": "Omnigent",
       "config": {
         "binaryPath": "omnigent-opencode"
