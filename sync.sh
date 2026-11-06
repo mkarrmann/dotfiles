@@ -848,7 +848,8 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
              "$HOME/.local/state/omnigent-host" \
              "$HOME/.local/state/omnigent-tls" \
              "$HOME/.local/state/omnigent-tunnel" \
-             "$HOME/.local/state/t3-local"
+             "$HOME/.local/state/t3-local" \
+             "$HOME/.local/state/omnigent-opencode"
     sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-host.plist"
     sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-tls.plist"
     # Owns OMNIGENT_PORT. Supervised rather than run from a Ghostty window
@@ -856,6 +857,9 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-tunnel.plist"
     # The Mac's own T3 Code server, t3@local (bin/t3-ensure, docs/t3code-omnigent.md).
     sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.t3-local.plist"
+    # T3 Code's Omnigent provider sessions between T3 Code's visits; runs only
+    # once ~/.config/omnigent-opencode/daemon-enabled exists.
+    sync_launchd_plist "$DOTFILES_DIR/launchd/com.mkarrmann.omnigent-opencode.plist"
     # The Omnigent server moved to the HUB devserver (systemd omnigent-server).
     # Retire the old Mac-local server job so it can't bind :6767 and collide with
     # the local failover proxy that exposes the HUB server on Mac localhost.

@@ -1,0 +1,35 @@
+# The omnigent-opencode daemon: the sessions of T3 Code's Omnigent provider,
+# followed while T3 Code is not listening (services/omnigent-opencode, its
+# README's "Daemon" section). T3 Code still runs bin/omnigent-opencode as its
+# OpenCode server; that process forwards to this daemon's socket when it
+# answers, and serves on its own when it does not.
+#
+# Opt-in: sync.sh enables every unit here, and this one starts only once
+# ~/.config/omnigent-opencode/daemon-enabled exists. A running daemon keeps the
+# code it started with; restart it after the service's code changes.
+#
+# Manual ops:
+#   mkdir -p ~/.config/omnigent-opencode && touch ~/.config/omnigent-opencode/daemon-enabled
+#   systemctl --user start omnigent-opencode
+#   systemctl --user restart omnigent-opencode
+#   tail -f ~/.local/state/omnigent-opencode/daemon.log
+
+[Unit]
+Description=omnigent-opencode daemon (T3 Code's Omnigent provider)
+After=network-online.target omnigent-server.service omnigent-client-proxy.service
+ConditionPathExists=%h/.config/omnigent-opencode/daemon-enabled
+ConditionPathExists=%h/dotfiles/services/omnigent-opencode/.venv/bin/omnigent-opencode
+
+[Service]
+Type=simple
+# t3 (~/.local/bin) wakes threads; OMNIGENT_URL comes from environment.d.
+Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+ExecStart=%h/dotfiles/bin/omnigent-opencode daemon
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:%S/omnigent-opencode/daemon.log
+StandardError=append:%S/omnigent-opencode/daemon.log
+UMask=0077
+
+[Install]
+WantedBy=default.target

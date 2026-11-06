@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The omnigent-opencode daemon: the sessions of T3 Code's Omnigent provider,
+  followed while T3 Code is not listening (services/omnigent-opencode, its
+  README's "Daemon" section). T3 Code still runs bin/omnigent-opencode as its
+  OpenCode server; that process forwards to this daemon's socket when it
+  answers, and serves on its own when it does not.
+
+  Opt-in: sync.sh loads this job, and launchd runs it only while
+  ~/.config/omnigent-opencode/daemon-enabled exists (KeepAlive PathState). A
+  running daemon keeps the code it started with; restart it after the
+  service's code changes.
+
+  Manual ops:
+    mkdir -p ~/.config/omnigent-opencode && touch ~/.config/omnigent-opencode/daemon-enabled
+    launchctl kickstart -k gui/$UID/com.mkarrmann.omnigent-opencode
+    tail -f ~/.local/state/omnigent-opencode/daemon.log
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.mkarrmann.omnigent-opencode</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/mkarrmann/dotfiles/bin/omnigent-opencode</string>
+      <string>daemon</string>
+    </array>
+
+    <key>KeepAlive</key>
+    <dict>
+      <key>PathState</key>
+      <dict>
+        <key>/Users/mkarrmann/.config/omnigent-opencode/daemon-enabled</key>
+        <true/>
+      </dict>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/Users/mkarrmann/.local/bin:/Users/mkarrmann/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/mkarrmann/.local/state/omnigent-opencode/daemon.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mkarrmann/.local/state/omnigent-opencode/daemon.log</string>
+  </dict>
+</plist>

@@ -267,7 +267,8 @@ What T3 Code gets:
 - **Stop** interrupts the turn (Escape on Claude, which the agent can survive).
 - **Turns started outside T3 Code** (a watcher's wakeup, a background task's
   notification, a message from the Omnigent app or the TUI) show in the thread
-  as turns the agent started.
+  as turns the agent started; with the daemon, as the reply to an "Agent"
+  message `[Omnigent] <the input>`, also after T3 Code has let go of the thread.
 - **Subagents.** Claude's Agent tool and Codex's spawn_agent show as T3 Code
   subagent calls, each with a child thread following the child Omnigent
   session; a background subagent's result wakes the parent with its report.
@@ -304,11 +305,13 @@ What T3 Code gets:
   T3 Code's note.
 - T3 Code lets go of a thread 30 minutes after its last turn
   (`ProviderSessionManager.ts`, `DEFAULT_IDLE_TIMEOUT_MS`) and stops the
-  provider 30 seconds after its last thread. A turn started outside T3 Code
-  after that (a watcher's wakeup, say) is not shown live; it is in the
-  thread's history when the thread is next opened. `omnigent-acp` kept its
-  threads for a week with an empty update every 20 minutes; the OpenCode
-  driver has no harmless event that counts as activity.
+  provider 30 seconds after its last thread. Without the provider's daemon, a
+  turn started outside T3 Code after that (a watcher's wakeup, say) is not shown
+  live; it is in the thread's history when the thread is next opened. With the
+  daemon (`touch ~/.config/omnigent-opencode/daemon-enabled`, see the service
+  README's "Daemon"), every such turn is put to T3 Code as an "Agent" message
+  (`[Omnigent] ...`) whose turn shows the agent's work, for a week after the
+  session's last activity.
 - Opening a thread whose Omnigent session is gone fails instead of quietly
   starting a fresh session.
 - Each edit's diff shows in its tool call; T3 Code's checkpoint diffs and git
