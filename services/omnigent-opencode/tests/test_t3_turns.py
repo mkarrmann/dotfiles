@@ -500,3 +500,51 @@ async def test_each_committed_reply_is_its_own_text(t3: T3Client, shim: Shim, fa
     confirmed_idle(fake, conv)
     await t3.wait_for(lambda: "session.execution.succeeded" in t3.types(sid))
     assert [e["data"]["text"] for e in t3.of(sid) if e["type"] == "session.text.ended"] == ["Working", "Second"]
+
+
+async def test_an_edit_is_a_file_change_with_its_diff(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> None:
+    sid, conv = await start_turn(t3, shim, fake)
+    arguments = {"file_path": "src/a.py", "old_string": "x = 1\n", "new_string": "x = 2\n"}
+    fake.push(
+        conv,
+        "response.output_item.done",
+        {"item": {"type": "function_call", "call_id": "toolu_e", "name": "Edit", "arguments": json.dumps(arguments)}},
+    )
+    fake.push(conv, "response.output_item.done", {"item": {"type": "function_call_output", "call_id": "toolu_e", "output": "ok"}})
+    await t3.wait_for(lambda: "session.tool.success" in t3.types(sid))
+    path = f"{shim.app.config.default_directory}/src/a.py"
+    called = next(e for e in t3.of(sid) if e["type"] == "session.tool.called")["data"]["input"]
+    assert (called["filePath"], called["oldString"], called["newString"]) == (path, "x = 1\n", "x = 2\n")
+    diff = next(e for e in t3.of(sid) if e["type"] == "session.tool.success")["data"]["metadata"]["diff"]
+    assert f"--- a/{path.lstrip('/')}" in diff and "-x = 1\n" in diff and "+x = 2\n" in diff
+    assert_all_decoded(shim, t3, sid)
+
+
+async def test_a_codex_patch_is_a_file_change_with_its_diff(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> None:
+    sid, conv = await start_turn(t3, shim, fake)
+    changes = [
+        {"path": "/repo/new.txt", "kind": {"type": "add"}, "diff": "hello\n"},
+        {"path": "/repo/a.py", "kind": {"type": "update"}, "diff": "@@ -1 +1 @@\n-x = 1\n+x = 2\n"},
+    ]
+    fake.push(
+        conv,
+        "response.output_item.done",
+        {
+            "item": {
+                "type": "function_call",
+                "call_id": "call_p",
+                "name": "apply_patch",
+                "arguments": json.dumps({"changes": changes}),
+            }
+        },
+    )
+    fake.push(
+        conv, "response.output_item.done", {"item": {"type": "function_call_output", "call_id": "call_p", "output": "Done"}}
+    )
+    await t3.wait_for(lambda: "session.tool.success" in t3.types(sid))
+    started = next(e for e in t3.of(sid) if e["type"] == "session.tool.input.started")["data"]
+    assert started["name"] == "patch"
+    called = next(e for e in t3.of(sid) if e["type"] == "session.tool.called")["data"]["input"]
+    assert called["filePath"] == "/repo/new.txt"
+    diff = next(e for e in t3.of(sid) if e["type"] == "session.tool.success")["data"]["metadata"]["diff"]
+    assert "+hello\n" in diff and "--- a/repo/a.py" in diff and "+x = 2\n" in diff

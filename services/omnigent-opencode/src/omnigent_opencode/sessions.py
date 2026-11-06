@@ -31,7 +31,7 @@ from typing import Any, Final, Literal
 
 import httpx
 
-from . import approvals, history, subagents
+from . import approvals, edits, history, subagents
 from .approvals import Ask
 from .catalog import DEFAULT_MODEL, AgentTarget
 from .omnigent import STREAM_CONNECT_S, STREAM_OPENED, OmnigentClient, OmnigentError
@@ -125,6 +125,8 @@ class Execution:
     ordinals: dict[BlockKind, int] = field(default_factory=lambda: {"text": 0, "reasoning": 0})
     tools: dict[str, str] = field(default_factory=dict)
     tool_messages: dict[str, str] = field(default_factory=dict)
+    diffs: dict[str, str] = field(default_factory=dict)
+    """The unified diff of each open editing call, reported when it succeeds."""
     """The assistant message each open tool call belongs to; a steer starts a new one mid-execution."""
     usage: Usage | None = None
     interrupted: bool = False
@@ -521,6 +523,11 @@ class Session:
             return
         self._emit("session.tool.input.started", {**base, "name": tool_name(name)})
         tool_input: Json = arguments if isinstance(arguments, dict) else {"input": arguments}
+        edit = edits.edit_of(name, arguments, self.directory)
+        if edit is not None:
+            tool_input = edit.input
+            if edit.diff:
+                execution.diffs[call_id] = edit.diff
         self._emit("session.tool.called", {**base, "input": tool_input, "executed": True})
 
     def _tool_finished(self, execution: Execution, call_id: str, text: str) -> None:
@@ -535,15 +542,16 @@ class Session:
         tool_id = execution.tools.pop(call_id, None)
         if tool_id is None:
             return
-        self._emit(
-            "session.tool.success",
-            {
-                "assistantMessageID": execution.tool_messages.pop(call_id, execution.assistant_id),
-                "id": tool_id,
-                "content": [{"type": "text", "text": text or "(no output)"}],
-                "executed": True,
-            },
-        )
+        success: JsonObject = {
+            "assistantMessageID": execution.tool_messages.pop(call_id, execution.assistant_id),
+            "id": tool_id,
+            "content": [{"type": "text", "text": text or "(no output)"}],
+            "executed": True,
+        }
+        diff = execution.diffs.pop(call_id, None)
+        if diff:
+            success["metadata"] = {"diff": diff}
+        self._emit("session.tool.success", success)
 
     def _schedule_quiet_end(self, execution: Execution, generation: int) -> None:
         if execution.quiet is not None:
@@ -892,6 +900,7 @@ class Session:
             agent=self.agent,
             model=self.model,
             running=self.running,
+            directory=self.directory,
         )
 
     async def fork_point(self, before: str | None) -> str | None:

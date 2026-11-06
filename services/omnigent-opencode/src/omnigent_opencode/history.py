@@ -13,6 +13,7 @@ import json
 from collections.abc import Iterable
 from typing import Any
 
+from .edits import edit_of
 from .store import Outcome
 from .wire import Json, JsonObject
 
@@ -59,6 +60,7 @@ def build(
     agent: str,
     model: JsonObject,
     running: bool,
+    directory: str,
 ) -> list[JsonObject]:
     """OpenCode messages, oldest first.
 
@@ -70,6 +72,7 @@ def build(
     messages: list[JsonObject] = []
     assistant: JsonObject | None = None
     tools: dict[str, JsonObject] = {}
+    diffs: dict[str, str] = {}
     last_user: str | None = None
     owner: str | None = None
     """The user message that started the running execution; steers into it do not."""
@@ -133,13 +136,18 @@ def build(
         elif kind == "function_call" and isinstance(item.get("call_id"), str):
             content = reply(created)["content"]
             assert isinstance(content, list)
+            name = str(item.get("name") or "tool")
+            tool_input = _arguments(item)
+            edit = edit_of(name, tool_input, directory)
             part: JsonObject = {
                 "type": "tool",
                 "id": tool_id_for(item["call_id"]),
-                "name": tool_name_for(str(item.get("name") or "tool")),
-                "state": {"status": "running", "input": _arguments(item), "metadata": {}},
+                "name": tool_name_for(name),
+                "state": {"status": "running", "input": edit.input if edit else tool_input, "metadata": {}},
                 "time": {"created": created},
             }
+            if edit is not None and edit.diff:
+                diffs[item["call_id"]] = edit.diff
             tools[item["call_id"]] = part
             content.append(part)
         elif kind == "function_call_output" and isinstance(item.get("call_id"), str):
@@ -149,11 +157,15 @@ def build(
                 text = output if isinstance(output, str) else json.dumps(output)
                 state = part_or_none["state"]
                 assert isinstance(state, dict)
-                part_or_none["state"] = {
+                completed: JsonObject = {
                     "status": "completed",
                     "input": state["input"],
                     "content": [{"type": "text", "text": text or TERMINAL_OUTPUT}],
                 }
+                diff = diffs.pop(item["call_id"], None)
+                if diff:
+                    completed["metadata"] = {"diff": diff}
+                part_or_none["state"] = completed
                 time = part_or_none["time"]
                 assert isinstance(time, dict)
                 time["completed"] = created
