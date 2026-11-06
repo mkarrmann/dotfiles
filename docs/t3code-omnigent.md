@@ -302,6 +302,13 @@ What T3 Code gets:
   approval policy are untested, and a declined Codex request ends the turn.
 - A denial by the approval policy reaches the model as the policy's reason, not
   T3 Code's note.
+- T3 Code lets go of a thread 30 minutes after its last turn
+  (`ProviderSessionManager.ts`, `DEFAULT_IDLE_TIMEOUT_MS`) and stops the
+  provider 30 seconds after its last thread. A turn started outside T3 Code
+  after that (a watcher's wakeup, say) is not shown live; it is in the
+  thread's history when the thread is next opened. `omnigent-acp` kept its
+  threads for a week with an empty update every 20 minutes; the OpenCode
+  driver has no harmless event that counts as activity.
 - Opening a thread whose Omnigent session is gone fails instead of quietly
   starting a fresh session.
 - Each edit's diff shows in its tool call; T3 Code's checkpoint diffs and git
