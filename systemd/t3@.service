@@ -6,9 +6,9 @@
 # bin-linux/startup-windows) starts its new threads in its own project and
 # lists every project. bin/t3-workspace-serve resolves the port from it. Its
 # provider drives Omnigent sessions through bin/omnigent-opencode.
-# bin/t3-ensure, run by init.sh, `enable --now`s the instance and never
-# restarts a running one; after `t3 update`, restart it to pick up the new
-# version.
+# bin/t3-ensure, run by init.sh, `enable --now`s the instance, upgrades the t3
+# CLI to its pin (T3_CLI_VERSION) and restarts the instance only when it runs a
+# t3 other than the installed one.
 #
 # Provider processes are not in this unit's cgroup: T3 Code runs each in a
 # transient scope under app-t3code-agents-<hash>.slice

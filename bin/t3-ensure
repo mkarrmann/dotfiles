@@ -13,10 +13,14 @@ below do not apply there. On the desktop NAME is the layout's t3Server
 the table's t3 rows (one whose workdir is missing is skipped with a warning).
 Either way each window's new threads start in its own workspace's project
 (bin/t3-window-scope) while its sidebar lists every project. It:
-  1. installs the pinned `t3` CLI (T3_CLI_VERSION) when it is missing, laid
-     out as T3 Code's install.sh lays it out but checked against the pinned
-     T3_CLI_SHA256 rather than whatever the release serves. Later upgrades
-     belong to `t3 update`;
+  1. installs the pinned `t3` CLI (T3_CLI_VERSION) when it is missing or
+     older, laid out as T3 Code's install.sh lays it out but checked against
+     the pinned T3_CLI_SHA256 rather than whatever the release serves. A newer
+     one is left alone. Bumping the pin is how a host upgrades: `t3 update`
+     cannot reach GitHub on a devserver, as its own fetch neither goes through
+     the proxy nor carries the client certificate that ~/.curlrc gives curl.
+     Only hosts with a pinned checksum (Linux) install; the Mac keeps what
+     it has;
   2. links the server's settings, ~/.t3-workspaces/NAME/userdata/
      settings.json, to t3code/settings.json in the dotfiles, which every
      server shares: T3 Code saves through the link and reloads the file when
@@ -52,7 +56,9 @@ Either way each window's new threads start in its own workspace's project
      a thread started in another, and bin/t3-workspace-serve no longer serves
      them. Their state (~/.t3-workspaces/X) is left where it is;
   6. enables and starts t3@NAME (systemd/t3@.service, bin/t3-workspace-serve)
-     when it is not enabled yet. A running server is never restarted;
+     when it is not enabled yet, and restarts it when it runs a t3 other than
+     the installed one, as after step 1 upgrades it (or a `t3 update`).
+     Otherwise a running server is never restarted;
   7. adds each of its directories as a project of the server unless it
      already is one. A project the server bootstrapped itself would count as a
      fresh install and open T3 Code's first-run wizard in every new window.
@@ -103,7 +109,7 @@ MAC_PROJECTS = (Path.home() / "dotfiles",)
 # the release omnigent_config/t3-desktop-app.env pins the desktop app to. Each
 # checksum is the archive's line in that release's SHA256SUMS (GitHub's asset
 # digests agree), keyed by install.sh's <os>-<arch>. Bump the version and every
-# checksum together; the pin only decides where a fresh host starts.
+# checksum together; init.sh then upgrades each host to it (step 1).
 T3_CLI_VERSION = "0.1.7"
 T3_CLI_SHA256 = {
     "linux-x64": "c089892bf7922e2e73c6f44a5d1ea125c99f70e378c18361cbbed2fba1920e6c",
@@ -113,6 +119,7 @@ T3_RELEASES = "https://github.com/pingdotgg/t3code/releases/download"
 T3_HOME = Path(os.environ.get("T3CODE_HOME") or Path.home() / ".t3").absolute()
 T3_BIN_DIR = Path.home() / ".local/bin"
 PROJECT_ADD_ATTEMPTS = 30
+VERSION = re.compile(r"\d+(?:\.\d+)+")
 PROVIDER = "omnigent"
 RETIRED_PROVIDERS = ("omnigent-claude", "omnigent-codex")  # bin/omnigent-acp's
 BUILTIN_PROVIDERS = ("codex", "claudeAgent")
@@ -134,6 +141,28 @@ def find_t3() -> Path | None:
         return Path(found)
     default = Path.home() / ".local/bin/t3"
     return default if default.exists() else None
+
+
+def parse_version(text: str) -> tuple[int, ...] | None:
+    found = VERSION.search(text)
+    return tuple(int(n) for n in found.group().split(".")) if found else None
+
+
+def t3_version(t3: Path) -> tuple[int, ...] | None:
+    """What `t3 --version` reports ("t3 v0.1.6"); None when it reports none."""
+    try:
+        result = subprocess.run([str(t3), "--version"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return parse_version(result.stdout) if result.returncode == 0 else None
+
+
+def needs_install(installed: tuple[int, ...] | None, pinned: str, checksums: dict[str, str]) -> bool:
+    """Step 1 for a t3 that is there: install the pin over one older than it, or
+    over one that reports no version, where this host has a pinned checksum."""
+    if cli_platform() not in checksums:
+        return False
+    return installed is None or installed < parse_version(pinned)
 
 
 def cli_platform() -> str:
@@ -337,6 +366,25 @@ def systemctl(*args: str) -> int:
     return subprocess.run(["systemctl", "--user", *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
 
 
+def runs_other_binary(pid: int, binary: Path) -> bool:
+    """Whether process PID executes a file other than BINARY's target. False when
+    that cannot be told, so a doubt never restarts anything."""
+    try:
+        running = os.readlink(f"/proc/{pid}/exe")
+    except OSError:
+        return False
+    return running != str(binary.resolve())
+
+
+def server_runs_other_t3(unit: str, t3: Path) -> bool:
+    """Step 6: UNIT's main process, the t3 that t3-workspace-serve execs, is not T3."""
+    result = subprocess.run(
+        ["systemctl", "--user", "show", "--property=MainPID", "--value", unit], stdout=subprocess.PIPE, text=True
+    )
+    pid = result.stdout.strip()
+    return result.returncode == 0 and pid.isdigit() and int(pid) > 0 and runs_other_binary(int(pid), t3)
+
+
 def ensure_daemon(mac: bool) -> bool:
     """Step 4: the provider's daemon running the code on disk; False when it is not."""
     if not mac and systemctl("is-active", "--quiet", DAEMON_UNIT) != 0:
@@ -396,10 +444,22 @@ def old_desktop_servers() -> list[str]:
 
 
 def main() -> int:
+    failed = False
     t3 = find_t3()
     if t3 is None:
         log(f"installing the t3 CLI {T3_CLI_VERSION}")
         t3 = install_t3(T3_CLI_VERSION, T3_CLI_SHA256, T3_HOME, T3_BIN_DIR)
+    else:
+        installed = t3_version(t3)
+        if needs_install(installed, T3_CLI_VERSION, T3_CLI_SHA256):
+            was = ".".join(map(str, installed)) if installed else "a t3 that reports no version"
+            log(f"upgrading the t3 CLI from {was} to {T3_CLI_VERSION}")
+            try:
+                t3 = install_t3(T3_CLI_VERSION, T3_CLI_SHA256, T3_HOME, T3_BIN_DIR)
+            except SystemExit as error:
+                # The t3 that is there still serves; the rest of the run goes on with it.
+                log(f"WARNING: could not upgrade the t3 CLI, keeping {was}: {error}")
+                failed = True
     mac = host_os() == "Darwin"
     desktop = not mac and on_linux_desktop()
     if desktop and merge_settings(DESKTOP_APP_SETTINGS, str(SHIM)):
@@ -422,12 +482,12 @@ def main() -> int:
     # Without its daemon the provider still works, only without following sessions between T3 Code's visits.
     elif not ensure_daemon(mac):
         log("WARNING: omnigent-opencode's daemon is not running the current code")
-    if mac:
-        failed = False
-    elif layout_server is not None:
-        failed = not retire_servers(old_desktop_servers(), layout_server.name)
-    else:
-        failed = not retire_servers(old_checkout_servers(), WORK_SERVER)
+    if layout_server is not None:
+        failed = not retire_servers(old_desktop_servers(), layout_server.name) or failed
+    elif not mac:
+        failed = not retire_servers(old_checkout_servers(), WORK_SERVER) or failed
+    # The t3 that bin/t3-workspace-serve execs.
+    served = T3_BIN_DIR / "t3" if os.access(T3_BIN_DIR / "t3", os.X_OK) else t3
     for server in servers:
         unit = f"t3@{server.name}.service"
         if not mac and systemctl("is-enabled", "--quiet", unit) != 0:
@@ -437,6 +497,12 @@ def main() -> int:
                 log(f"WARNING: could not enable {unit} (is systemd/t3@.service linked? run sync.sh)")
                 failed = True
                 continue
+        elif not mac and server_runs_other_t3(unit, served):
+            if systemctl("restart", unit) == 0:
+                log(f"restarted {unit} on {served.resolve()}")
+            else:
+                log(f"WARNING: could not restart {unit} onto {served.resolve()}")
+                failed = True
         for directory in server.projects:
             if not add_project(t3, server, directory):
                 log(f"WARNING: could not add {directory} as {unit}'s project")

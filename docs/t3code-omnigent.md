@@ -38,8 +38,17 @@ session behind a thread likewise runs on that host.
   provider's runtime (`uv sync` of `services/omnigent-opencode`), and enables `t3@checkouts` (`systemd/t3@.service`,
   `bin/t3-workspace-serve`) once. It also retires the server per checkout this
   replaced: every enabled `t3@checkoutN` is disabled and stopped, and its state
-  in `~/.t3-workspaces/checkoutN` left. It never restarts a running server;
-  after `t3 update`, restart `t3@checkouts` to pick up the new version.
+  in `~/.t3-workspaces/checkoutN` left. It restarts a running server only
+  when it runs a `t3` other than the installed one.
+- Upgrading: bump `T3_CLI_VERSION` and every `T3_CLI_SHA256` in
+  `bin/t3-ensure` (from the release's `SHA256SUMS`), then run `init.sh` on
+  each devserver. `t3-ensure` downloads the pinned archive with curl, checks
+  it, links `~/.local/bin/t3` to it and restarts `t3@checkouts` onto it. An
+  older `t3` is replaced, a newer one left alone. `t3 update` does not work
+  on a devserver: its own fetch goes neither through the proxy nor with the
+  client certificate `~/.curlrc` gives curl, so it fails on `getaddrinfo
+  ENOTFOUND github.com`, `with-proxy` or not. The previous version stays in
+  `~/.t3/runtime/versions/` for a rollback.
 - `t3@checkouts` listens on `127.0.0.1:T3_PORT`. `bin-macos/nvs-tunnels`
   forwards it to the Mac once per candidate, on `T3_PRIMARY_TUNNEL_PORT`
   or `T3_STANDBY_TUNNEL_PORT` (`omnigent_config/topology.env`); every
@@ -227,7 +236,7 @@ Gotchas:
 
 - The links and the scoping depend on T3 Code's client internals (its pairing
   link, the IndexedDB where it saves connections, the localStorage keys above),
-  which differ between 0.1.6 and later releases. After `t3 update`, rerun
+  which differ between 0.1.6 and later releases. After an upgrade, rerun
   `tests/test-t3-window-scope-e2e.sh`, which checks them against the installed
   `t3` and Chrome.
 

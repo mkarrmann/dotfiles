@@ -149,8 +149,9 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
   # T3 Code as a UI over this host's Omnigent sessions, on the hub candidates
   # only (the Mac tunnels to those): one server, t3@checkouts, whose projects
   # are every ~/checkoutN, with bin/omnigent-opencode as its provider; it retires
-  # the per-checkout t3@checkoutN servers it replaced. Never restarts a running
-  # server. See bin/t3-ensure. Ahead of omnigent-agents-ensure, which exits
+  # the per-checkout t3@checkoutN servers it replaced. Upgrades the t3 CLI to
+  # its pin and restarts the server only onto a new t3. See bin/t3-ensure.
+  # Ahead of omnigent-agents-ensure, which exits
   # init.sh when the active hub's server activation is deferred.
   if [[ "$(uname -s)" == Linux ]] && "$DOTFILES_DIR/bin/omnigent-server-url" --is-candidate; then
     "$DOTFILES_DIR/bin/t3-ensure" ||
@@ -317,7 +318,7 @@ else
 
   # One T3 Code server, t3@desktop, whose projects are the workdirs of
   # bin-linux/startup-windows' t3 rows, a UI over this host's Omnigent sessions.
-  # Never restarts a running server. See bin/t3-ensure.
+  # Restarts it only onto a new t3. See bin/t3-ensure.
   if [[ "$(uname -s)" == Linux ]]; then
     "$DOTFILES_DIR/bin/t3-ensure" ||
       warn "t3-ensure failed (T3 Code over Omnigent unavailable on this desktop)"

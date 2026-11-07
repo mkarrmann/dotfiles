@@ -31,10 +31,52 @@ def write_exe(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
+def fake_t3(calls: Path, version: str, body: str = "") -> str:
+    """A t3 that reports VERSION, logs every other call to CALLS, then runs BODY."""
+    return (
+        f'[ "$1" = --version ] && {{ echo "t3 v{version}"; exit 0; }}\n'
+        f'echo "t3 $* home=$T3CODE_HOME" >> {calls}\n' + body
+    )
+
+
+def build_release(directory: Path, version: str, platform: str, script: str) -> Path:
+    """A t3 release archive as T3 Code publishes it, its t3 being SCRIPT."""
+    archive = directory / f"t3-{version}-{platform}.tar.gz"
+    directory.mkdir(parents=True, exist_ok=True)
+    data = ("#!/bin/sh\n" + script).encode()
+    with tarfile.open(archive, "w:gz") as tar:
+        info = tarfile.TarInfo(f"t3-{version}-{platform}/t3")
+        info.size, info.mode = len(data), 0o755
+        tar.addfile(info, io.BytesIO(data))
+    return archive
+
+
+def write_fake_curl(path: Path, fetched: Path) -> None:
+    """A curl that logs each URL to FETCHED and serves $FAKE_RELEASE_ARCHIVE, failing while it is empty."""
+    write_exe(
+        path,
+        f'out=""; url=""; while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; -*) ;; *) url="$1" ;; esac; shift; done\n'
+        f'echo "$url" >> {fetched}\n'
+        f'[ -n "$FAKE_RELEASE_ARCHIVE" ] || exit 22\n'
+        f'cp "$FAKE_RELEASE_ARCHIVE" "$out"\n',
+    )
+
+
+def start_binary(path: Path, addCleanup) -> subprocess.Popen:
+    """A process whose executable is PATH (a copy of sleep), as a server runs its t3."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(shutil.which("sleep"), path)
+    process = subprocess.Popen([str(path), "300"])
+    addCleanup(process.wait)
+    addCleanup(process.kill)
+    return process
+
+
 def write_fake_systemctl(path: Path, calls: Path, state: Path) -> None:
     """A user manager whose units are enabled or active while STATE/enabled/UNIT
-    or STATE/active/UNIT exists; `disable` fails while STATE/disable-fails does."""
-    for d in ("enabled", "active"):
+    or STATE/active/UNIT exists, and whose main process is the PID in STATE/pid/UNIT;
+    `disable` fails while STATE/disable-fails does."""
+    for d in ("enabled", "active", "pid"):
         (state / d).mkdir(parents=True, exist_ok=True)
     write_exe(
         path,
@@ -45,6 +87,7 @@ def write_fake_systemctl(path: Path, calls: Path, state: Path) -> None:
         f'  is-enabled) [ -f "{state}/enabled/$unit" ]; exit ;;\n'
         f'  is-active) [ -f "{state}/active/$unit" ]; exit ;;\n'
         f'  enable) touch "{state}/enabled/$unit"; if $now; then touch "{state}/active/$unit"; fi ;;\n'
+        f'  show) cat "{state}/pid/$unit" 2>/dev/null || echo 0 ;;\n'
         f'  disable) [ ! -e "{state}/disable-fails" ] || exit 1\n'
         f'    rm -f "{state}/enabled/$unit"; if $now; then rm -f "{state}/active/$unit"; fi ;;\n'
         f'esac\n',
@@ -77,9 +120,10 @@ class T3EnsureTest(unittest.TestCase):
         write_exe(self.bin / "launchctl", f'echo "launchctl $*" >> {self.calls}\n')
         write_exe(self.bin / "uv", f'echo "uv $*" >> {self.calls}\n')
         write_exe(self.dotfiles / "bin-linux/startup-windows", f'echo "startup-windows $*" >> {self.calls}\ncat {self.layout}\n')
-        write_exe(self.bin / "t3", f'echo "t3 $* home=$T3CODE_HOME" >> {self.calls}\n')
+        self.pinned = load_t3_ensure().T3_CLI_VERSION
+        write_exe(self.bin / "t3", fake_t3(self.calls, self.pinned))
         write_fake_systemctl(self.bin / "systemctl", self.calls, self.units)
-        write_exe(self.bin / "curl", "exit 22\n")
+        write_fake_curl(self.bin / "curl", self.calls)
         write_exe(self.bin / "uname", 'echo "$FAKE_UNAME"\n')
         write_exe(self.bin / "hostname", 'echo "${FAKE_FQDN:-devvm1.cco0.facebook.com}"\n')
         self.os = "Linux"
@@ -149,12 +193,7 @@ class T3EnsureTest(unittest.TestCase):
         )
 
     def test_a_project_that_cannot_be_named_is_reported(self):
-        write_exe(
-            self.bin / "t3",
-            f'echo "t3 $* home=$T3CODE_HOME" >> {self.calls}\n'
-            '[ "$2" = rename ] && exit 1\n'
-            "exit 0\n",
-        )
+        write_exe(self.bin / "t3", fake_t3(self.calls, self.pinned, '[ "$2" = rename ] && exit 1\nexit 0\n'))
         result = self.run_ensure()
         self.assertEqual(result.returncode, 1)
         self.assertIn(f"WARNING: could not name t3@checkouts.service's project {self.home / 'checkout1'}", result.stdout)
@@ -277,9 +316,12 @@ class T3EnsureTest(unittest.TestCase):
     def test_existing_project_counts_as_added(self):
         write_exe(
             self.bin / "t3",
-            f'echo "t3 $* home=$T3CODE_HOME" >> {self.calls}\n'
-            '[ "$2" = add ] || exit 0\n'
-            "echo \"ProjectAlreadyExistsError: An active project already exists for '$3'.\" >&2; exit 1\n",
+            fake_t3(
+                self.calls,
+                self.pinned,
+                '[ "$2" = add ] || exit 0\n'
+                "echo \"ProjectAlreadyExistsError: An active project already exists for '$3'.\" >&2; exit 1\n",
+            ),
         )
         result = self.run_ensure()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -416,22 +458,10 @@ class T3CliInstallTest(unittest.TestCase):
         self.fetched = self.root / "fetched.log"
         self.module = load_t3_ensure()
         self.platform = self.module.cli_platform()
-        self.archive = self.root / "release" / f"t3-{self.VERSION}-{self.platform}.tar.gz"
-        self.archive.parent.mkdir()
-        script = f'#!/bin/sh\n[ "$1" = --version ] && echo {self.VERSION}\n'.encode()
-        with tarfile.open(self.archive, "w:gz") as tar:
-            info = tarfile.TarInfo(f"t3-{self.VERSION}-{self.platform}/t3")
-            info.size, info.mode = len(script), 0o755
-            tar.addfile(info, io.BytesIO(script))
+        self.archive = build_release(self.root / "release", self.VERSION, self.platform, f'[ "$1" = --version ] && echo {self.VERSION}\n')
         self.checksums = {self.platform: hashlib.sha256(self.archive.read_bytes()).hexdigest()}
         fake_bin = self.root / "bin"
-        write_exe(
-            fake_bin / "curl",
-            f'out=""; url=""; while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; -*) ;; *) url="$1" ;; esac; shift; done\n'
-            f'echo "$url" >> {self.fetched}\n'
-            f'[ -n "$FAKE_RELEASE_ARCHIVE" ] || exit 22\n'
-            f'cp "$FAKE_RELEASE_ARCHIVE" "$out"\n',
-        )
+        write_fake_curl(fake_bin / "curl", self.fetched)
         patcher = mock.patch.dict(os.environ, {"PATH": f"{fake_bin}:/usr/bin:/bin", "FAKE_RELEASE_ARCHIVE": str(self.archive)})
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -493,6 +523,128 @@ class T3CliInstallTest(unittest.TestCase):
         link = self.install()
         self.assertEqual(link.resolve(), (version_dir / "t3").resolve())
         self.assertEqual(self.fetches(), [])
+
+
+class T3UpgradeTest(unittest.TestCase):
+    """Step 1 upgrading the t3 that is there to the pin and step 6 restarting the
+    server onto it: main() in-process, the pin pointed at a release built here."""
+
+    OLD, NEW = "0.1.6", "9.9.9"
+
+    calls_made = T3EnsureTest.calls_made
+    run_unit = T3EnsureTest.run_unit
+
+    def setUp(self):
+        T3EnsureTest.setUp(self)
+        (self.bin / "t3").unlink()
+        self.versions = self.home / ".t3/runtime/versions"
+        self.link = self.home / ".local/bin/t3"
+        old = self.versions / self.OLD / "t3"
+        write_exe(old, fake_t3(self.calls, self.OLD))
+        (old.parent / ".install-complete").write_text(self.OLD + "\n")
+        self.link.parent.mkdir(parents=True)
+        self.link.symlink_to(old)
+        platform = load_t3_ensure().cli_platform()
+        archive = build_release(self.root / "release", self.NEW, platform, fake_t3(self.calls, self.NEW))
+        self.run_unit("t3@checkouts.service")
+        patcher = mock.patch.dict(
+            os.environ,
+            {
+                "HOME": str(self.home),
+                "DOTFILES_DIR": str(self.dotfiles),
+                "DOTFILES_PROFILE": "work",
+                "PATH": f"{self.bin}:/usr/bin:/bin",
+                "FAKE_UNAME": "Linux",
+                "FAKE_RELEASE_ARCHIVE": str(archive),
+            },
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop("T3CODE_HOME", None)
+        self.module = load_t3_ensure()
+        self.module.T3_CLI_VERSION = self.NEW
+        self.module.T3_CLI_SHA256 = {platform: hashlib.sha256(archive.read_bytes()).hexdigest()}
+
+    def run_main(self):
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            code = self.module.main()
+        return code, out.getvalue()
+
+    def serve_from(self, binary: Path) -> None:
+        """t3@checkouts' main process executes BINARY."""
+        process = start_binary(binary, self.addCleanup)
+        (self.units / "pid/t3@checkouts.service").write_text(str(process.pid))
+
+    def test_an_older_t3_is_upgraded_and_the_server_restarted_onto_it(self):
+        self.serve_from(self.root / "old-server/t3")
+        code, out = self.run_main()
+        self.assertEqual(code, 0, out)
+        new = self.versions / self.NEW / "t3"
+        self.assertEqual(self.link.resolve(), new.resolve())
+        self.assertEqual(subprocess.run([str(self.link), "--version"], capture_output=True, text=True).stdout, f"t3 v{self.NEW}\n")
+        self.assertIn(f"upgrading the t3 CLI from {self.OLD} to {self.NEW}", out)
+        self.assertIn("systemctl --user restart t3@checkouts.service", self.calls_made())
+        self.assertIn(f"restarted t3@checkouts.service on {new.resolve()}", out)
+        # The old version stays for a rollback.
+        self.assertTrue((self.versions / self.OLD / "t3").exists())
+
+    def test_a_t3_as_new_as_the_pin_or_newer_is_left_alone(self):
+        for version in (self.NEW, "10.0.0"):
+            with self.subTest(version=version):
+                current = self.versions / version / "t3"
+                write_exe(current, fake_t3(self.calls, version))
+                self.link.unlink()
+                self.link.symlink_to(current)
+                code, out = self.run_main()
+                self.assertEqual(code, 0, out)
+                self.assertNotIn("upgrading", out)
+                self.assertEqual(self.link.resolve(), current.resolve())
+                self.assertFalse([c for c in self.calls_made() if "github.com" in c or "restart" in c])
+
+    def test_a_failed_upgrade_keeps_the_old_t3_and_finishes_the_run(self):
+        os.environ["FAKE_RELEASE_ARCHIVE"] = ""
+        code, out = self.run_main()
+        self.assertEqual(code, 1)
+        self.assertIn(f"WARNING: could not upgrade the t3 CLI, keeping {self.OLD}", out)
+        self.assertEqual(self.link.resolve(), (self.versions / self.OLD / "t3").resolve())
+        self.assertFalse((self.versions / self.NEW).exists())
+        home = self.home / ".t3-workspaces/checkouts"
+        self.assertIn(f"t3 project add {self.home / 'checkout1'} home={home}", self.calls_made())
+
+
+class T3VersionTest(unittest.TestCase):
+    def setUp(self):
+        self.module = load_t3_ensure()
+        self.pinned = {self.module.cli_platform(): "0" * 64}
+
+    def test_the_pin_is_installed_over_an_older_t3_or_one_without_a_version(self):
+        needs = self.module.needs_install
+        self.assertTrue(needs((0, 1, 6), "0.1.7", self.pinned))
+        self.assertTrue(needs((0, 1), "0.1.7", self.pinned))
+        self.assertTrue(needs(None, "0.1.7", self.pinned))
+        self.assertFalse(needs((0, 1, 7), "0.1.7", self.pinned))
+        self.assertFalse(needs((0, 2, 0), "0.1.7", self.pinned))
+        self.assertFalse(needs((0, 1, 10), "0.1.9", self.pinned))
+
+    def test_a_host_without_a_pinned_checksum_keeps_its_t3(self):
+        self.assertFalse(self.module.needs_install((0, 0, 1), "0.1.7", {}))
+
+    def test_the_version_t3_reports(self):
+        self.assertEqual(self.module.parse_version("t3 v0.1.6\n"), (0, 1, 6))
+        self.assertIsNone(self.module.parse_version(""))
+
+    def test_a_process_running_another_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            process = start_binary(root / "versions/0.1.6/t3", self.addCleanup)
+            link = root / "bin/t3"
+            link.parent.mkdir()
+            link.symlink_to(root / "versions/0.1.6/t3")
+            self.assertFalse(self.module.runs_other_binary(process.pid, link))
+            self.assertTrue(self.module.runs_other_binary(process.pid, root / "versions/0.1.7/t3"))
+            # A process that cannot be read is no reason to restart.
+            self.assertFalse(self.module.runs_other_binary(2**22 + 1, link))
 
 
 class T3EnsureMacTest(unittest.TestCase):
