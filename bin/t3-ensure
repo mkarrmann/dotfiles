@@ -99,15 +99,15 @@ WORK_SERVER = "checkouts"  # bin/t3-workspace-serve, bin/t3-pairing-tokens
 # project, workspace 1's (bin-macos/workspaces).
 MAC_SERVER = "local"
 MAC_PROJECTS = (Path.home() / "dotfiles",)
-# Step 1's t3 CLI, from https://github.com/pingdotgg/t3code/releases/tag/v0.1.6,
+# Step 1's t3 CLI, from https://github.com/pingdotgg/t3code/releases/tag/v0.1.7,
 # the release omnigent_config/t3-desktop-app.env pins the desktop app to. Each
 # checksum is the archive's line in that release's SHA256SUMS (GitHub's asset
 # digests agree), keyed by install.sh's <os>-<arch>. Bump the version and every
 # checksum together; the pin only decides where a fresh host starts.
-T3_CLI_VERSION = "0.1.6"
+T3_CLI_VERSION = "0.1.7"
 T3_CLI_SHA256 = {
-    "linux-x64": "7cf31da90dee41f524dd5b679ebb6d404637ca5d9dc6fd8bc019511d57bb77e6",
-    "linux-arm64": "b708f059200776f50623a766854841e40eda0bb67614211cf8b6909295ce20da",
+    "linux-x64": "c089892bf7922e2e73c6f44a5d1ea125c99f70e378c18361cbbed2fba1920e6c",
+    "linux-arm64": "5a528e23af394cc6f359036d3cb8441fda14129d477630fc6c53e4f4a1025bc8",
 }
 T3_RELEASES = "https://github.com/pingdotgg/t3code/releases/download"
 T3_HOME = Path(os.environ.get("T3CODE_HOME") or Path.home() / ".t3").absolute()
