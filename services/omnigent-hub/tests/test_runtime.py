@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import time
+import urllib.parse
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -864,11 +865,19 @@ def test_stop_ingress_stops_timer_before_active_snapshot(
 def test_quiesce_check_accepts_terminal_sessions(
     hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    install_session_payload(monkeypatch, [("idle-session", "idle"), ("failed-session", "failed")])
+    install_session_payload(
+        monkeypatch,
+        [{"id": "idle-session", "status": "idle"}, {"id": "failed-session", "status": "failed"}],
+    )
 
     result = assert_sessions_quiescent(hub_config)
 
-    assert result == {"quiescent": True, "session_count": 2, "busy_sessions": []}
+    assert result == {
+        "quiescent": True,
+        "session_count": 2,
+        "busy_sessions": [],
+        "orphaned_sessions": [],
+    }
 
 
 def test_quiesce_check_rejects_running_and_waiting_sessions(
@@ -876,17 +885,76 @@ def test_quiesce_check_rejects_running_and_waiting_sessions(
 ) -> None:
     install_session_payload(
         monkeypatch,
-        [("idle-session", "idle"), ("run-session", "running"), ("wait-session", "waiting")],
+        [
+            {"id": "idle-session", "status": "idle"},
+            {"id": "run-session", "status": "running"},
+            {"id": "wait-session", "status": "waiting"},
+        ],
     )
 
-    with pytest.raises(HubRuntimeError, match="run-session=running, wait-session=waiting"):
+    with pytest.raises(HubRuntimeError, match="run-session=running .*; wait-session=waiting"):
+        assert_sessions_quiescent(hub_config)
+
+
+def test_quiesce_check_names_the_agent_and_title_of_a_busy_session(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_session_payload(
+        monkeypatch,
+        [{"id": "run-session", "status": "running", "agent_name": "codex", "title": "Fix it"}],
+    )
+
+    with pytest.raises(HubRuntimeError, match=r"run-session=running \(codex: 'Fix it'\)"):
+        assert_sessions_quiescent(hub_config)
+
+
+def test_quiesce_check_accepts_a_long_stuck_turn_whose_runner_is_gone(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_session_payload(
+        monkeypatch,
+        [
+            {"id": "idle-session", "status": "idle"},
+            {"id": "zombie", "status": "running", "updated_at": int(time.time()) - 5 * 86400},
+        ],
+        offline_runners={"zombie"},
+    )
+
+    result = assert_sessions_quiescent(hub_config)
+
+    assert result["quiescent"] is True
+    assert result["orphaned_sessions"] == ["zombie"]
+
+
+def test_quiesce_check_rejects_a_recent_turn_whose_runner_is_reconnecting(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_session_payload(
+        monkeypatch,
+        [{"id": "blip", "status": "running", "updated_at": int(time.time()) - 60}],
+        offline_runners={"blip"},
+    )
+
+    with pytest.raises(HubRuntimeError, match="blip=running"):
+        assert_sessions_quiescent(hub_config)
+
+
+def test_quiesce_check_rejects_a_quiet_turn_whose_runner_is_online(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_session_payload(
+        monkeypatch,
+        [{"id": "long-build", "status": "running", "updated_at": int(time.time()) - 3600}],
+    )
+
+    with pytest.raises(HubRuntimeError, match="long-build=running"):
         assert_sessions_quiescent(hub_config)
 
 
 def test_quiesce_check_fails_closed_when_session_list_is_truncated(
     hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    install_session_payload(monkeypatch, [("idle-session", "idle")], has_more=True)
+    install_session_payload(monkeypatch, [{"id": "idle-session", "status": "idle"}], has_more=True)
 
     with pytest.raises(HubRuntimeError, match="more than 1000 sessions"):
         assert_sessions_quiescent(hub_config)
@@ -894,20 +962,30 @@ def test_quiesce_check_fails_closed_when_session_list_is_truncated(
 
 def install_session_payload(
     monkeypatch: pytest.MonkeyPatch,
-    sessions: list[tuple[str, str]],
+    sessions: list[dict[str, Any]],
     *,
     has_more: bool = False,
+    offline_runners: frozenset[str] | set[str] = frozenset(),
 ) -> None:
-    payload = {
-        "data": [{"id": session_id, "status": status} for session_id, status in sessions],
-        "has_more": has_more,
-    }
+    """Fake the session list and the batch liveness endpoint.
+
+    Liveness mirrors the server: any id not explicitly offline reads online.
+    """
+    payload = {"data": sessions, "has_more": has_more}
 
     class FakeOpener:
         def open(self, url: str, timeout: int) -> io.BytesIO:
-            assert url.endswith("/v1/sessions?limit=1000&kind=any")
             assert timeout == 10
-            return io.BytesIO(json.dumps(payload).encode())
+            if url.endswith("/v1/sessions?limit=1000&kind=any"):
+                return io.BytesIO(json.dumps(payload).encode())
+            _, separator, query = url.partition("/health?session_ids=")
+            assert separator, url
+            ids = [urllib.parse.unquote(session_id) for session_id in query.split(",")]
+            liveness = {
+                session_id: {"runner_online": session_id not in offline_runners}
+                for session_id in ids
+            }
+            return io.BytesIO(json.dumps({"status": "ok", "sessions": liveness}).encode())
 
     monkeypatch.setattr(
         "omnigent_hub.runtime.urllib.request.build_opener", lambda *handlers: FakeOpener()

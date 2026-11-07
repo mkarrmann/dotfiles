@@ -5,6 +5,7 @@ import os
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
@@ -105,6 +106,13 @@ SERVER_STARTUP_GRACE_SECONDS = 180.0
 
 # A server-health streak older than this is over, as for the host streak.
 SERVER_HEALTH_FAILURE_WINDOW_SECONDS = 300.0
+
+# A non-idle session whose runner tunnel is down and that has not changed for
+# this long is an orphaned turn, not active work: nothing can advance it, so a
+# restart cannot interrupt it. One stuck since its runner died blocked every
+# quiescence check for days. The grace leaves a runner that is only
+# reconnecting alone.
+ORPHANED_TURN_GRACE_SECONDS = 600.0
 
 
 def _now() -> float:
@@ -1100,19 +1108,15 @@ def reconcile_server(config: HubConfig) -> tuple[dict[str, str], dict[str, Any]]
 
 
 def assert_sessions_quiescent(config: HubConfig) -> dict[str, Any]:
-    url = f"http://127.0.0.1:{config.topology.port}/v1/sessions?limit=1000&kind=any"
+    base_url = f"http://127.0.0.1:{config.topology.port}"
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    try:
-        with opener.open(url, timeout=10) as response:
-            payload = json.load(response)
-    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-        raise HubRuntimeError(f"cannot inspect Omnigent sessions before handoff: {exc}") from exc
+    payload = _fetch_server_json(opener, f"{base_url}/v1/sessions?limit=1000&kind=any")
     sessions = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(sessions, list):
         raise HubRuntimeError("Omnigent session list returned an invalid payload")
     if payload.get("has_more") is True:
         raise HubRuntimeError("cannot prove quiescence with more than 1000 sessions")
-    busy: list[dict[str, str]] = []
+    active: list[dict[str, Any]] = []
     for session in sessions:
         if not isinstance(session, dict):
             raise HubRuntimeError("Omnigent session list contains a non-object item")
@@ -1121,13 +1125,63 @@ def assert_sessions_quiescent(config: HubConfig) -> dict[str, Any]:
         if not isinstance(session_id, str) or not isinstance(status, str):
             raise HubRuntimeError("Omnigent session list contains an item without id/status")
         if status not in {"idle", "failed"}:
-            busy.append({"id": session_id, "status": status})
+            active.append(session)
+    orphaned = _orphaned_session_ids(opener, base_url, active) if active else set()
+    busy = [session for session in active if session["id"] not in orphaned]
     if busy:
-        detail = ", ".join(f"{item['id']}={item['status']}" for item in busy)
+        detail = "; ".join(_describe_busy_session(session) for session in busy)
         raise HubRuntimeError(
             f"handoff requires idle sessions; wait for or interrupt active turns: {detail}"
         )
-    return {"quiescent": True, "session_count": len(sessions), "busy_sessions": []}
+    return {
+        "quiescent": True,
+        "session_count": len(sessions),
+        "busy_sessions": [],
+        "orphaned_sessions": sorted(orphaned),
+    }
+
+
+def _fetch_server_json(opener: urllib.request.OpenerDirector, url: str) -> Any:
+    try:
+        with opener.open(url, timeout=10) as response:
+            return json.load(response)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        raise HubRuntimeError(f"cannot inspect Omnigent sessions before handoff: {exc}") from exc
+
+
+def _orphaned_session_ids(
+    opener: urllib.request.OpenerDirector, base_url: str, active: list[dict[str, Any]]
+) -> set[str]:
+    """Active sessions whose turn cannot advance; see ORPHANED_TURN_GRACE_SECONDS.
+
+    The server reports ``runner_online`` strictly (true only while a runner
+    tunnel is registered) and reports sessions without a runner, or unknown
+    ids, as online, so anything not explicitly offline stays busy.
+    """
+    ids = ",".join(urllib.parse.quote(session["id"], safe="") for session in active)
+    payload = _fetch_server_json(opener, f"{base_url}/health?session_ids={ids}")
+    liveness = payload.get("sessions") if isinstance(payload, dict) else None
+    if not isinstance(liveness, dict):
+        raise HubRuntimeError("Omnigent session liveness returned an invalid payload")
+    cutoff = time.time() - ORPHANED_TURN_GRACE_SECONDS
+    orphaned: set[str] = set()
+    for session in active:
+        state = liveness.get(session["id"])
+        updated_at = session.get("updated_at")
+        if (
+            isinstance(state, dict)
+            and state.get("runner_online") is False
+            and isinstance(updated_at, int | float)
+            and updated_at < cutoff
+        ):
+            orphaned.add(session["id"])
+    return orphaned
+
+
+def _describe_busy_session(session: dict[str, Any]) -> str:
+    agent = session.get("agent_name") or "?"
+    title = session.get("title") or "untitled"
+    return f"{session['id']}={session['status']} ({agent}: {title!r})"
 
 
 def reconcile_local_route(config: HubConfig, *, restart_host: bool) -> dict[str, Any]:
