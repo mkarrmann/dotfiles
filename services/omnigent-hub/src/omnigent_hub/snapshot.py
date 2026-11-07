@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -176,6 +177,41 @@ def _copy_artifacts(source: Path, destination: Path) -> tuple[int, int]:
     return (count, total_bytes)
 
 
+#: Cores pigz may use. Enough to compress a 6 GB chat.db in ~20 s without
+#: taking every core from the live server every five minutes.
+PIGZ_THREADS = 8
+
+
+def _write_archive(state: Path, archive: Path) -> None:
+    """Write ``state`` as a gzip tarball, on several cores when pigz is installed.
+
+    Python's single-threaded gzip at its default level 9 took ~150 s of the
+    270 s a snapshot run gets, so most runs were killed mid-publish. pigz
+    writes the same format, so restore and existing archives are unaffected.
+    """
+    pigz = shutil.which("pigz")
+    if pigz is None:
+        with tarfile.open(archive, "w:gz", compresslevel=6) as tar:
+            tar.add(state, arcname="omnigent-state", recursive=True)
+        return
+    with archive.open("wb") as output:
+        process = subprocess.Popen(
+            [pigz, "-6", "-p", str(PIGZ_THREADS)], stdin=subprocess.PIPE, stdout=output
+        )
+        assert process.stdin is not None
+        try:
+            with tarfile.open(fileobj=process.stdin, mode="w|") as tar:
+                tar.add(state, arcname="omnigent-state", recursive=True)
+        except BrokenPipeError:
+            pass
+        finally:
+            with contextlib.suppress(BrokenPipeError):
+                process.stdin.close()
+            returncode = process.wait()
+    if returncode != 0:
+        raise SnapshotError(f"pigz exited {returncode} while writing {archive.name}")
+
+
 STAGING_PREFIX = "snapshot-"
 
 
@@ -277,8 +313,7 @@ def create_snapshot(
         )
 
         archive = temp / f"{generation}.tar.gz"
-        with tarfile.open(archive, "w:gz") as tar:
-            tar.add(state, arcname="omnigent-state", recursive=True)
+        _write_archive(state, archive)
         archive_digest = sha256_file(archive)
         manifest["archive_sha256"] = archive_digest
         manifest["archive_bytes"] = archive.stat().st_size
@@ -337,6 +372,7 @@ def _prune_local_snapshots(config: HubConfig) -> None:
 def publish_snapshot(config: HubConfig, archive: Path, digest: str) -> Path:
     ensure_storage(config)
     config.snapshots_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _sweep_stale_publish_temps(config)
     destination = config.snapshots_dir / archive.name
     temp = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
     sidecar = destination.with_suffix(destination.suffix + ".sha256")
@@ -345,13 +381,16 @@ def publish_snapshot(config: HubConfig, archive: Path, digest: str) -> Path:
         shutil.copyfile(archive, temp)
         if sha256_file(temp) != digest:
             raise SnapshotError("published archive checksum differs before rename")
-        os.replace(temp, destination)
-        if sha256_file(destination) != digest:
-            raise SnapshotError("published archive checksum differs after rename")
+        # The sidecar lands first so a run killed between the renames leaves a
+        # sidecar without an archive, which nothing reads as a snapshot, rather
+        # than a 1.7 GB archive that restore can never verify.
         sidecar_temp.write_text(f"{digest}  {destination.name}\n", encoding="ascii")
         os.replace(sidecar_temp, sidecar)
         if read_sidecar(sidecar) != digest:
             raise SnapshotError("published checksum sidecar did not round-trip")
+        os.replace(temp, destination)
+        if sha256_file(destination) != digest:
+            raise SnapshotError("published archive checksum differs after rename")
     finally:
         temp.unlink(missing_ok=True)
         sidecar_temp.unlink(missing_ok=True)
@@ -430,16 +469,20 @@ def prune_snapshots(
     checked where it matters -- twice at publish, and again at restore via
     :func:`newest_valid_snapshot`.
 
-    An archive outside the retention set is deleted whether or not it
-    verifies, so corrupt or sidecar-less archives cannot accumulate either.
+    Only archives whose sidecar exists count toward retention -- a stat, not a
+    checksum. One without was left by a killed publish and is never restored,
+    so letting it hold a recent slot pushed out snapshots that were usable.
+    Everything outside the retention set is deleted whether or not it
+    verifies, so corrupt archives and orphaned sidecars cannot accumulate.
     """
     ensure_storage(config)
     if not config.snapshots_dir.exists():
         return
     snapshots = sorted(config.snapshots_dir.glob("*.tar.gz"), reverse=True)
-    keep = set(snapshots[:recent_count])
+    complete = [archive for archive in snapshots if _sidecar_path(archive).is_file()]
+    keep = set(complete[:recent_count])
     daily_dates: set[str] = set()
-    for archive in snapshots:
+    for archive in complete:
         date = archive.name[:8]
         if len(date) == 8 and date.isdigit() and date not in daily_dates:
             if len(daily_dates) < daily_count:
@@ -448,7 +491,24 @@ def prune_snapshots(
     for archive in snapshots:
         if archive not in keep:
             archive.unlink(missing_ok=True)
-            archive.with_suffix(archive.suffix + ".sha256").unlink(missing_ok=True)
+            _sidecar_path(archive).unlink(missing_ok=True)
+    for sidecar in config.snapshots_dir.glob("*.tar.gz.sha256"):
+        if not sidecar.with_suffix("").exists():
+            sidecar.unlink(missing_ok=True)
+    _sweep_stale_publish_temps(config, now=now)
+
+
+def _sidecar_path(archive: Path) -> Path:
+    return archive.with_suffix(archive.suffix + ".sha256")
+
+
+def _sweep_stale_publish_temps(config: HubConfig, *, now: float | None = None) -> None:
+    """Remove staging files of killed publishes.
+
+    Runs before each publish as well as after it: a killed run never reaches
+    the cleanup that follows a successful publish, and while runs kept getting
+    killed, a 1.7 GB staging file piled up every five minutes.
+    """
     cutoff = (time.time() if now is None else now) - STALE_PUBLISH_TEMP_SECONDS
     for temp in config.snapshots_dir.glob(".*.tmp"):
         try:

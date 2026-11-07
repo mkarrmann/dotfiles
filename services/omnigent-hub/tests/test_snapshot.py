@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import sqlite3
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -187,11 +188,15 @@ def test_shared_store_prune_uses_names_not_checksums(
     names = [
         f"202609{day:02d}T{hour:02d}0000Z-gen.tar.gz" for day in range(1, 11) for hour in (6, 18)
     ]
+    completed = set()
     for index, name in enumerate(names):
         (store / name).write_bytes(b"not a real archive")
-        # Some sidecars mismatch and some are missing: retention must not care.
-        if index % 3 == 0:
+        # Sidecars that do not match still count: retention must not hash.
+        if index % 3 != 1:
             (store / f"{name}.sha256").write_text(f"{'0' * 64}  {name}\n", encoding="ascii")
+            completed.add(name)
+    orphaned_sidecar = store / "20260905T120000Z-gen.tar.gz.sha256"
+    orphaned_sidecar.write_text(f"{'0' * 64}  {orphaned_sidecar.stem}\n", encoding="ascii")
     stale_temp = store / ".20260901T060000Z-gen.tar.gz.dead.tmp"
     fresh_temp = store / ".20260910T180000Z-gen.tar.gz.live.tmp"
     stale_temp.write_bytes(b"partial")
@@ -206,13 +211,109 @@ def test_shared_store_prune_uses_names_not_checksums(
     monkeypatch.setattr("omnigent_hub.snapshot.sha256_file", refuse_to_hash)
     prune_snapshots(hub_config, recent_count=4, daily_count=7, now=now)
 
-    newest_first = sorted(names, reverse=True)
-    daily = {name for name in newest_first if name.endswith("T180000Z-gen.tar.gz")}
-    expected = set(newest_first[:4]) | {name for name in daily if name[:8] >= "20260904"}
+    newest_first = sorted(completed, reverse=True)
+    daily: dict[str, str] = {}
+    for name in newest_first:
+        daily.setdefault(name[:8], name)
+    expected = set(newest_first[:4]) | set(sorted(daily.values(), reverse=True)[:7])
     assert {path.name for path in store.glob("*.tar.gz")} == expected
-    assert {path.name for path in store.glob("*.sha256")} <= {f"{name}.sha256" for name in expected}
+    assert {path.name for path in store.glob("*.sha256")} == {f"{name}.sha256" for name in expected}
     assert not stale_temp.exists()
     assert fresh_temp.exists()
+
+
+def test_archives_from_killed_publishes_do_not_crowd_out_usable_ones(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    usable = create_snapshot(
+        hub_config, record(), quiesced=False, now=datetime(2026, 9, 1, 12, tzinfo=UTC)
+    )
+    for minute in range(0, 60, 5):
+        (hub_config.snapshots_dir / f"20260901T13{minute:02d}00Z-killed.tar.gz").write_bytes(b"x")
+
+    prune_snapshots(hub_config, recent_count=2, daily_count=1)
+
+    assert list_valid_snapshots(hub_config) == [Path(str(usable["archive_path"]))]
+    assert list(hub_config.snapshots_dir.glob("*-killed.tar.gz")) == []
+
+
+def test_a_publish_killed_between_renames_leaves_no_unverifiable_archive(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    real_replace = os.replace
+    renames: list[Path] = []
+
+    def killed_at_the_second_rename(source: Path, destination: Path) -> None:
+        renames.append(destination)
+        if len(renames) == 2:
+            raise KeyboardInterrupt
+        real_replace(source, destination)
+
+    monkeypatch.setattr("omnigent_hub.snapshot.os.replace", killed_at_the_second_rename)
+    with pytest.raises(KeyboardInterrupt):
+        create_snapshot(hub_config, record(), quiesced=False)
+    monkeypatch.setattr("omnigent_hub.snapshot.os.replace", real_replace)
+
+    assert list(hub_config.snapshots_dir.glob("*.tar.gz")) == []
+    assert list_valid_snapshots(hub_config) == []
+    create_snapshot(hub_config, record(), quiesced=False)
+    assert len(list(hub_config.snapshots_dir.glob("*.sha256"))) == 1
+
+
+def test_a_publish_sweeps_staging_files_of_killed_runs_before_copying(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    hub_config.snapshots_dir.mkdir(parents=True)
+    stale_temp = hub_config.snapshots_dir / ".20260901T060000Z-gen.tar.gz.dead.tmp"
+    stale_temp.write_bytes(b"partial")
+    old = time.time() - 7200
+    os.utime(stale_temp, (old, old))
+
+    real_copyfile = shutil.copyfile
+
+    def storage_full(source: Path, destination: Path, **kwargs: bool) -> Path:
+        if Path(destination).parent == hub_config.snapshots_dir:
+            raise OSError("No space left on device")
+        return real_copyfile(source, destination, **kwargs)
+
+    monkeypatch.setattr("omnigent_hub.snapshot.shutil.copyfile", storage_full)
+    with pytest.raises(OSError, match="No space left"):
+        create_snapshot(hub_config, record(), quiesced=False)
+
+    assert not stale_temp.exists()
+
+
+def test_a_snapshot_compressed_without_pigz_still_restores(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    monkeypatch.setattr("omnigent_hub.snapshot.shutil.which", lambda name: None)
+    manifest = create_snapshot(hub_config, record(), quiesced=False)
+
+    validated, temporary = validate_snapshot(hub_config, Path(str(manifest["archive_path"])))
+
+    assert validated["generation_id"] == manifest["generation_id"]
+    shutil.rmtree(temporary)
+
+
+def test_a_failing_compressor_fails_the_snapshot(
+    hub_config: HubConfig, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(os.path, "ismount", lambda path: path == hub_config.storage_mount)
+    broken = tmp_path / "pigz"
+    broken.write_text("#!/bin/sh\nexit 3\n", encoding="ascii")
+    broken.chmod(0o755)
+    monkeypatch.setattr("omnigent_hub.snapshot.shutil.which", lambda name: str(broken))
+
+    with pytest.raises(SnapshotError, match="pigz exited 3"):
+        create_snapshot(hub_config, record(), quiesced=False)
+    assert (
+        not hub_config.snapshots_dir.exists()
+        or list(hub_config.snapshots_dir.glob("*.tar.gz")) == []
+    )
 
 
 def test_bridge_source_change_blocks_restore(
