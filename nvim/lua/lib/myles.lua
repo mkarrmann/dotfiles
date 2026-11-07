@@ -159,8 +159,10 @@ function M.setup()
 			if opts.cwd then
 				pick(opts.cwd)
 			else
+				-- Myles only returns files under its cwd, so the buffer-local workdir
+				-- would silently scope the search to the current file's directory.
 				repo_context.with_context(function(context)
-					pick(context.workdir)
+					pick(context.repo_root)
 				end)
 			end
 		end
