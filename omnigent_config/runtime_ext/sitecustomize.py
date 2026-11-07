@@ -1,11 +1,14 @@
 """Install dotfiles-owned patches into Omnigent runner processes.
 
-Two patches are installed, each into the module named:
+Three patches are installed, each into the module named:
 
 - ``omnigent.runtime.filesystem_registry``: the Sapling changed-files backend
   (``omnigent_sapling_registry``).
 - ``omnigent.runner.native.orchestration``: the claude-native ``tmux.json``
   self-heal (``omnigent_tmux_self_heal``).
+- ``omnigent.harnesses.claude_native.bridge``: hook commands moved into script
+  files so Claude Code cannot rewrite their ``${...}``
+  (``omnigent_claude_hook_braces``).
 
 Python imports ``sitecustomize`` automatically at interpreter start when it is
 importable, which is the only injection point available here: the runner is
@@ -27,8 +30,8 @@ here reaches runners only after the host, and with it the zygote, restarts.
 
 Fails open in every direction: any error leaves stock Omnigent behavior in
 place, because a missing patch is a far better outcome than a runner that will
-not boot. Set ``OMNIGENT_SAPLING_REGISTRY=0`` or ``OMNIGENT_TMUX_SELF_HEAL=0``
-to disable one patch, or ``OMNIGENT_SAPLING_REGISTRY_DEBUG=1`` to report on
+not boot. Set ``OMNIGENT_SAPLING_REGISTRY=0``, ``OMNIGENT_TMUX_SELF_HEAL=0`` or
+``OMNIGENT_CLAUDE_HOOK_BRACES=0`` to disable one patch, or ``OMNIGENT_SAPLING_REGISTRY_DEBUG=1`` to report on
 stderr what each patch did and any failure.
 """
 
@@ -65,6 +68,16 @@ def _apply_tmux_self_heal(module: ModuleType) -> None:
         _debug(f"{module.__name__} lacks a patched name; tmux self-heal not installed")
 
 
+def _apply_claude_hook_braces(module: ModuleType) -> None:
+    """Wrap build_hook_settings so Claude Code never sees ``${`` in a hook."""
+    from omnigent_claude_hook_braces import install
+
+    if install(module):
+        _debug(f"patched {module.__name__}.build_hook_settings")
+    else:
+        _debug(f"{module.__name__} lacks a patched name; hook braces fix not installed")
+
+
 # target module -> (env var that disables it when "0", patch function)
 _PATCHES: dict[str, tuple[str, Callable[[ModuleType], None]]] = {
     "omnigent.runtime.filesystem_registry": (
@@ -74,6 +87,10 @@ _PATCHES: dict[str, tuple[str, Callable[[ModuleType], None]]] = {
     "omnigent.runner.native.orchestration": (
         "OMNIGENT_TMUX_SELF_HEAL",
         _apply_tmux_self_heal,
+    ),
+    "omnigent.harnesses.claude_native.bridge": (
+        "OMNIGENT_CLAUDE_HOOK_BRACES",
+        _apply_claude_hook_braces,
     ),
 }
 
