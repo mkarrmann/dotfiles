@@ -1,4 +1,5 @@
 {
   "contextWindowMeterEnabled": true,
+  "inAppNotificationsEnabled": true,
   "mathRenderingEnabled": true
 }
