@@ -113,8 +113,13 @@ shown in the tunnel window), and empties that pool when a session starts, as
 its tokens came from the session before; `startup-windows` drops tokens past
 11 hours. `startup-windows` never waits on Duo: before a host's first window or link it
 checks once that its server answers through the tunnel (giving the Mac's own
-server 15 s at login), skips that host's windows when it does not, and ends by
-listing the skipped hosts (approve Duo in the tunnel windows whenever, then rerun). A window it creates opens on
+server 15 s at login), and when it does not, leaves that host's windows (and any
+window linking it) for later, listing them in
+`~/.local/state/startup-windows-pending`. Each tunnel runs
+`startup-windows --deferred` on connecting, whenever you approve Duo; that run
+opens or links only those windows, arranges only their workspaces and sweeps
+nothing (logged to `~/.local/state/startup-windows-logs/deferred.log`). The
+Omnigent windows wait the same way while the hub does not answer. A window it creates opens on
 `/pair` with a token of its own host's, and links each other host with a token
 of that host's; a new origin waits up to 30 s for each, while an origin that
 paired before (its session cookie lasts about 30 days) takes one only when one

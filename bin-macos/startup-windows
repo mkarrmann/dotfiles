@@ -43,14 +43,18 @@ aerospace() {
 
 # ── Args ─────────────────────────────────────────────────────────────
 ORCHEST_MODE_FLAG="--prod"
+DEFERRED=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --orchest-prod) ORCHEST_MODE_FLAG="--prod"; shift ;;
     --orchest-dev)  ORCHEST_MODE_FLAG="--dev";  shift ;;
+    --deferred)     DEFERRED=true;              shift ;;
     -h|--help)
-      echo "Usage: startup-windows [--orchest-prod|--orchest-dev]"
+      echo "Usage: startup-windows [--orchest-prod|--orchest-dev|--deferred]"
       echo "  --orchest-prod  (default) launch built Orchest from apps/desktop/out/ (lower memory)"
       echo "  --orchest-dev   launch Orchest via 'pnpm dev' with HMR"
+      echo "  --deferred      open only the windows the last run left for a tunnel"
+      echo "                  (bin-macos/nvs-tunnels runs it once it is through Duo)"
       exit 0
       ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
@@ -72,26 +76,95 @@ if [[ "${STARTUP_WINDOWS_TIMESTAMPS:-1}" == 1 && -z "${STARTUP_WINDOWS_STAMPED:-
   exit "${PIPESTATUS[0]}"
 fi
 
+# Rows whose window needs a tunnel that was not through Duo yet ("WS|TYPE", one
+# a line): an Omnigent window needs the hub, a T3 Code window its devservers'
+# servers. A run never waits on Duo; it records these as it exits, and the
+# --deferred run each nvs-tunnels starts on connecting opens them. A full run
+# starts the list over; --deferred keeps whatever still waits on a tunnel.
+STARTUP_PENDING_FILE="${STARTUP_PENDING_FILE:-$HOME/.local/state/startup-windows-pending}"
+pending_rows=""
+# Set once this run owns the list, so an early exit leaves it as it was.
+pending_ready=false
+row_pending() {
+  [[ $'\n'"$pending_rows"$'\n' == *$'\n'"$1"$'\n'* ]]
+}
+defer_row() {
+  row_pending "$1" || pending_rows="${pending_rows}${pending_rows:+$'\n'}$1"
+}
+# A list older than this is from a day whose tunnels never came up for it, and
+# opening its windows hours later would move windows in use since; it is dropped.
+STARTUP_PENDING_MAX_AGE_MIN=720
+read_pending_file() {
+  [[ -s "$STARTUP_PENDING_FILE" ]] || return 0
+  [[ -z "$(find "$STARTUP_PENDING_FILE" -mmin "+$STARTUP_PENDING_MAX_AGE_MIN" 2>/dev/null)" ]] || return 0
+  cat "$STARTUP_PENDING_FILE"
+}
+save_pending_rows() {
+  [[ "$pending_ready" == true ]] || return 0
+  if [[ -z "$pending_rows" ]]; then
+    rm -f "$STARTUP_PENDING_FILE"
+    return 0
+  fi
+  mkdir -p "$(dirname "$STARTUP_PENDING_FILE")"
+  printf '%s\n' "$pending_rows" > "$STARTUP_PENDING_FILE.tmp"
+  mv "$STARTUP_PENDING_FILE.tmp" "$STARTUP_PENDING_FILE"
+}
+
 # AeroSpace can invoke after-startup-command more than once across a config
 # reload/restart. Only one reconciler may mutate the workspace tree at a time.
-STARTUP_LOCK_DIR="/tmp/startup-windows.lock"
-if ! mkdir "$STARTUP_LOCK_DIR" 2>/dev/null; then
+# A --deferred run queues behind whichever run holds the lock, since a tunnel
+# can connect while the run that deferred its windows is still going; a full
+# run queues behind a --deferred one, and otherwise leaves the work to the
+# running one.
+STARTUP_LOCK_DIR="${STARTUP_LOCK_DIR:-/tmp/startup-windows.lock}"
+STARTUP_MODE=full
+[[ "$DEFERRED" != true ]] || STARTUP_MODE=deferred
+# A tunnel reconnecting with nothing deferred costs no lock and no window. The
+# lock is checked first: a run that holds it may yet defer rows, and saves them
+# before letting it go.
+if [[ "$DEFERRED" == true && ! -d "$STARTUP_LOCK_DIR" && -z "$(read_pending_file)" ]]; then
+  echo "No deferred windows."
+  exit 0
+fi
+lock_waiting=false
+missing_pid_checks=0
+until mkdir "$STARTUP_LOCK_DIR" 2>/dev/null; do
   lock_pid=$(cat "$STARTUP_LOCK_DIR/pid" 2>/dev/null || true)
   if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
-    echo "startup-windows is already running as PID $lock_pid; exiting."
-    exit 0
+    lock_mode=$(cat "$STARTUP_LOCK_DIR/mode" 2>/dev/null || echo full)
+    if [[ "$DEFERRED" != true && "$lock_mode" != deferred ]]; then
+      echo "startup-windows is already running as PID $lock_pid; exiting."
+      exit 0
+    fi
+    [[ "$lock_waiting" == true ]] || echo "Waiting for startup-windows (PID $lock_pid) to finish..."
+    lock_waiting=true
+    missing_pid_checks=0
+    sleep 1
+    continue
   fi
-
-  rm -f "$STARTUP_LOCK_DIR/pid"
-  if ! rmdir "$STARTUP_LOCK_DIR" 2>/dev/null || ! mkdir "$STARTUP_LOCK_DIR" 2>/dev/null; then
-    echo "ERROR: could not acquire $STARTUP_LOCK_DIR" >&2
-    exit 1
+  # The owner writes its pid just after taking the lock; give it a moment
+  # before treating a lock without one as abandoned.
+  if [[ -z "$lock_pid" ]] && (( ++missing_pid_checks < 3 )); then
+    sleep 1
+    continue
   fi
-fi
+  # Abandoned. Moved aside in one step, so of several runs that saw it only
+  # one takes it over; the others go round again.
+  stale_lock="$STARTUP_LOCK_DIR.stale.$$"
+  if mv "$STARTUP_LOCK_DIR" "$stale_lock" 2>/dev/null; then
+    rm -rf "$stale_lock"
+  fi
+  missing_pid_checks=0
+done
+# Mode first: a run that finds the pid reads the mode next.
+echo "$STARTUP_MODE" > "$STARTUP_LOCK_DIR/mode"
 echo "$$" > "$STARTUP_LOCK_DIR/pid"
 T3_WINDOWS_CACHE="$STARTUP_LOCK_DIR/t3-windows"
+# The pending list is saved before the lock goes, so a --deferred run queued on
+# the lock reads all of it.
 cleanup_startup_lock() {
-  rm -f "$STARTUP_LOCK_DIR/pid" "$T3_WINDOWS_CACHE"
+  save_pending_rows || true
+  rm -f "$STARTUP_LOCK_DIR/pid" "$STARTUP_LOCK_DIR/mode" "$T3_WINDOWS_CACHE"
   rmdir "$STARTUP_LOCK_DIR" 2>/dev/null || true
 }
 trap cleanup_startup_lock EXIT
@@ -216,9 +289,9 @@ T3_PAIRING_DIR="${T3_PAIRING_DIR:-$HOME/.local/state/t3-pairing}"
 T3_PAIRING_TOKEN_WAIT="${T3_PAIRING_TOKEN_WAIT:-30}"
 T3_PAIRING_TOKEN_MAX_AGE_MIN=660
 # A devserver's server answers only once its tunnel is through Duo, which you
-# approve whenever you get to it: this run never waits on it, and skips that
-# host's windows for a rerun to open. The Mac's own server gets a moment to
-# come up at login.
+# approve whenever you get to it: this run never waits on it, and defers that
+# host's windows to the --deferred run its nvs-tunnels starts on connecting.
+# The Mac's own server gets a moment to come up at login.
 T3_SERVER_WAIT="${T3_SERVER_WAIT:-0}"
 T3_LOCAL_SERVER_WAIT="${T3_LOCAL_SERVER_WAIT:-15}"
 t3_waited_hosts=""
@@ -495,6 +568,34 @@ ensure_omnigent_running() {
     omnigent_restore_settled=true
     SNAPSHOT=$(snapshot_windows)
   fi
+}
+
+# Whether the hub answers through the Mac's proxy, trying for up to
+# OMNIGENT_HUB_WAIT seconds (none in a full run; a --deferred run starts as a
+# tunnel connects, a moment before its forwards serve). A miss is kept for the
+# rest of the run: while a tunnel waits on Duo the proxy holds each probe for
+# its full timeout, and the rows it would have served are deferred anyway.
+OMNIGENT_HUB_WAIT=0
+omnigent_hub_down=false
+omnigent_hub_answers() {
+  local deadline=$((SECONDS + OMNIGENT_HUB_WAIT))
+  [[ "$omnigent_hub_down" != true ]] || return 1
+  until curl -sf -m 5 "http://127.0.0.1:${OMNIGENT_PORT}/health" >/dev/null 2>&1; do
+    if (( SECONDS >= deadline )); then
+      omnigent_hub_down=true
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+# omnigent_hold_slot WS -- claim the Omnigent window already on WS, if any, for
+# a row that waits on the hub: it keeps the slot rather than being swept, until
+# the row's own window replaces it.
+omnigent_hold_slot() {
+  local wid
+  wid=$(find_unclaimed_omnigent_window "$1") || return 0
+  claim_omnigent_window "$wid"
 }
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -941,7 +1042,8 @@ t3_links() {
 # check that its server answers at URL, waiting up to T3_SERVER_WAIT seconds
 # for a devserver's (T3_LOCAL_SERVER_WAIT for the Mac's). A window opened
 # earlier lands on an error page that never retries. Fails when it does not
-# answer, warning (and counting in $failures) once per host.
+# answer, saying so once per host: for the Mac's server as a warning (counted in
+# $failures), for a devserver's as the wait on its tunnel it is.
 t3_wait_for_server() {
   local host="$1" url="$2" port deadline wait="$T3_SERVER_WAIT"
   [[ " $t3_unreachable_hosts " != *" $host "* ]] || return 1
@@ -952,9 +1054,13 @@ t3_wait_for_server() {
   deadline=$((SECONDS + wait))
   until curl -s --noproxy '*' -o /dev/null -m 2 "http://127.0.0.1:$port/"; do
     if (( SECONDS >= deadline )); then
-      echo "WARNING: [T3] $host's T3 Code server is not answering; skipping its windows" >&2
+      if [[ "$host" == "$T3_LOCAL_HOST" ]]; then
+        echo "WARNING: [T3] $host's T3 Code server is not answering; skipping its windows" >&2
+        ((failures++)) || true
+      else
+        echo "[T3] $host's T3 Code server is not answering yet; its windows wait for its tunnel"
+      fi
       t3_unreachable_hosts+=" $host"
-      ((failures++)) || true
       return 1
     fi
     sleep 0.5
@@ -1158,7 +1264,7 @@ reconcile_t3_window() {
     # A window opened on a server that does not answer lands on Chrome's error
     # page and cannot be paired or scoped; the next run opens it instead.
     if [[ -z "$own_env" ]]; then
-      echo "[$title] skipped until $host's T3 Code server answers"
+      echo "[$title] not opened until $host's T3 Code server answers"
       return 0
     fi
     echo "[$title] opening $url on workspace $ws..."
@@ -1208,6 +1314,19 @@ reconcile_t3_window() {
     fi
   fi
   SNAPSHOT=$(snapshot_windows)
+}
+
+# t3_row_waits_on_tunnel WS -- whether workspace WS's T3 Code window is missing,
+# or missing a link, only because a devserver it uses (its own, or one it links)
+# did not answer this run: what a tunnel coming up finishes.
+t3_row_waits_on_tunnel() {
+  local row host
+  row=$(t3_workspace_window "$1") || return 1
+  IFS=$'\t' read -r _ _ host _ <<< "$row"
+  for host in "$host" $(t3_links "$1" | cut -f1); do
+    [[ "$host" != "$T3_LOCAL_HOST" && " $t3_unreachable_hosts " == *" $host "* ]] && return 0
+  done
+  return 1
 }
 
 close_invalid_chrome_windows_on_workspace() {
@@ -1404,73 +1523,11 @@ reconcile_expected_managed_windows() {
   done
 }
 
-# ── Main ─────────────────────────────────────────────────────────────
-
-if [[ -z "$AEROSPACE_BIN" ]]; then
-  echo "ERROR: aerospace CLI not found." >&2
-  echo "Install AeroSpace: brew install --cask nikitabobko/tap/aerospace" >&2
-  exit 1
-fi
-
-if ! aerospace list-windows --all &>/dev/null; then
-  echo "ERROR: AeroSpace is not running." >&2
-  echo "Start AeroSpace.app first." >&2
-  exit 1
-fi
-
-# Ensure Ghostty is running (but don't close its default window).
-# Ghostty creates a default window on launch. We leave it open so the
-# SNAPSHOT captures it — this prevents wait_for_new_window from
-# misidentifying it as a newly created window. The reconciliation pass
-# at the end sweeps it to workspace Z.
-if ! osascript -e 'application "Ghostty" is running' 2>/dev/null | grep -q 'true'; then
-  open -a Ghostty
-  sleep 2
-fi
-
-# Before anything opens Chrome, so the launch reaches your own.
-retire_t3_profile_chromes
-
-# Snapshot all windows
-SNAPSHOT=$(snapshot_windows)
-
-failures=0
-
-# The local Omnigent proxy exposes the hub on Mac loopback. The CCO and FTW
-# nvs-tunnels supply its candidate-specific upstream forwards. Retire any
-# unsupervised copy first, so the probe below reports on the launchd-owned one
-# rather than on whichever copy happened to win the port.
-retire_unsupervised_mac_proxy
-close_retired_omnigent_tunnel_windows
-# Bounded: while a tunnel waits on Duo the proxy accepts and then holds the
-# connection, which hung a run before it printed anything.
-if ! curl -sf -m 5 "http://127.0.0.1:${OMNIGENT_PORT}/health" >/dev/null 2>&1; then
-  echo "Omnigent proxy is not healthy at http://127.0.0.1:${OMNIGENT_PORT} (check: launchctl print gui/\$UID/com.mkarrmann.omnigent-tunnel, and ~/.local/state/omnigent-tunnel/stderr.log); the nvs-tunnels windows below supply its upstream forwards" >&2
-fi
-
-# The desktop app connects through the TLS front door, not OMNIGENT_PORT, so it
-# needs its own probe: the plain-HTTP check above passes even when this is down.
-# Deliberately not `-k` — an untrusted CA fails the app exactly like an outage,
-# so the probe has to exercise the same trust path Chromium will.
-if ! curl -sf -m 5 "https://localhost:${OMNIGENT_TLS_PORT}/health" >/dev/null 2>&1; then
-  echo "Omnigent TLS front door is not healthy at https://localhost:${OMNIGENT_TLS_PORT}; the app will fail to connect (check: launchctl print gui/\$UID/com.mkarrmann.omnigent-tls, and 'caddy trust' for the local CA)" >&2
-fi
-
-# The app updates itself every six hours, so this should never fire. That is
-# the point: the last time it went stale nothing said so for two months. Only
-# exit 1 means "definitely behind" -- an unreachable feed exits 2 and stays
-# quiet, so an offline login does not cry wolf.
-omnigent_app_check_rc=0
-OMNIGENT_APP_CURL_TIMEOUT=5 omnigent-app-ensure --check >/dev/null 2>&1 || omnigent_app_check_rc=$?
-if [[ "$omnigent_app_check_rc" == 1 ]]; then
-  echo "Omnigent desktop app is out of date and its own updater has not taken it; run 'omnigent-app-ensure --install'" >&2
-fi
-
-# Reserve the ws-11 dashboard Chrome windows before generic Chrome distribution.
-reserve_ws11_chrome
-
-for i in "${!WORKSPACES[@]}"; do
-  IFS='|' read -r ws type title rest <<< "${WORKSPACES[$i]}"
+# reconcile_row WS TYPE TITLE REST -- find or open one WORKSPACES row's window
+# and move it to WS. A row whose window needs a tunnel that is not through Duo
+# yet is left for --deferred (defer_row). Problems count in $failures.
+reconcile_row() {
+  local ws="$1" type="$2" title="$3" rest="$4"
 
   case "$type" in
     ghostty)
@@ -1495,7 +1552,7 @@ for i in "${!WORKSPACES[@]}"; do
         create_ghostty_window "$title" "$workdir" "$cmd" || {
           echo "WARNING: [$title] creation failed, skipping" >&2
           ((failures++)) || true
-          continue
+          return 0
         }
         window_id=$(wait_for_new_window "$app_name" "$before_snapshot") || {
           # Fallback: try the focused window
@@ -1528,7 +1585,7 @@ for i in "${!WORKSPACES[@]}"; do
         create_cmux_window || {
           echo "WARNING: [$title] creation failed, skipping" >&2
           ((failures++)) || true
-          continue
+          return 0
         }
         window_id=$(wait_for_new_window "$app_name" "$before_snapshot") || {
           window_id=$(get_focused_window_id)
@@ -1574,7 +1631,7 @@ for i in "${!WORKSPACES[@]}"; do
         open -na "$CHROME_APP" --args --profile-directory=Default --new-window 2>/dev/null || {
           echo "WARNING: [$title] creation failed, skipping" >&2
           ((failures++)) || true
-          continue
+          return 0
         }
         window_id=$(wait_for_new_window "$app_name" "$before_snapshot" "$T3_TITLE_PATTERN") || {
           window_id=$(get_focused_window_id)
@@ -1599,7 +1656,7 @@ for i in "${!WORKSPACES[@]}"; do
       if ! ensure_omnigent_running; then
         echo "WARNING: [$title] Omnigent app did not start, skipping" >&2
         ((failures++)) || true
-        continue
+        return 0
       fi
 
       # Omnigent windows are no longer interchangeable: each is pinned to the
@@ -1608,7 +1665,23 @@ for i in "${!WORKSPACES[@]}"; do
       # host-prefixed title in main.js applies to OAuth popups only). So adopting
       # an arbitrary unclaimed window would pin the wrong location here. Fire
       # this workspace's deep link instead and let the app raise the right one.
-      deep_link_row=$(omnigent_deep_link "$ws") || deep_link_row=""
+      # In a --deferred run, the windows on WS that held its slot (unclaimed:
+      # see the deferred run) give way to the row's own window once it lands.
+      placeholders=""
+      [[ "$DEFERRED" != true ]] || placeholders=$(omnigent_window_ids "$ws")
+      deep_link_row=""
+      if [[ "$omnigent_hub_down" != true ]]; then
+        deep_link_row=$(omnigent_deep_link "$ws") || deep_link_row=""
+      fi
+      # The link comes from the hub, which answers only once its tunnel is
+      # through Duo. An unscoped window opened meanwhile would sit on the wrong
+      # origin, so the row waits for the tunnel instead.
+      if [[ -z "$deep_link_row" ]] && ! omnigent_hub_answers; then
+        echo "[$title] deferred until the hub answers (its tunnel, through Duo)"
+        defer_row "$ws|omnigent"
+        omnigent_hold_slot "$ws"
+        return 0
+      fi
       deep_link="${deep_link_row%%$'\t'*}"
       deep_link_title="${deep_link_row#*$'\t'}"
       if [[ -n "$deep_link_row" ]]; then
@@ -1620,19 +1693,26 @@ for i in "${!WORKSPACES[@]}"; do
         if window_id=$(wait_for_omnigent_deep_link_window "$deep_link_title"); then
           aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || true
           claim_omnigent_window "$window_id"
+          for wid in $placeholders; do
+            [[ "$wid" != "$window_id" ]] || continue
+            echo "[$title] moving window $wid, which held the slot, to $SWEEP_WORKSPACE"
+            aerospace move-node-to-workspace --window-id "$wid" "$SWEEP_WORKSPACE" 2>/dev/null || true
+          done
         else
           echo "WARNING: [$title] deep link landed no window; the first link to an" >&2
           echo "         origin needs its consent dialog accepted once" >&2
           ((failures++)) || true
+          omnigent_hold_slot "$ws"
         fi
         SNAPSHOT=$(snapshot_windows)
       else
-        # Degraded: no workspace table, no hub, or no session on that host and
-        # checkout yet. An unscoped window is better than no window at login.
+        # Degraded: no workspace table, or no session on that host and checkout
+        # yet. An unscoped window is better than no window at login.
         echo "WARNING: [$title] could not resolve an origin for workspace $ws;" >&2
         echo "         falling back to an unscoped window" >&2
         existing=$(find_unclaimed_omnigent_window "$ws") || true
-        if [[ -z "$existing" ]]; then
+        # A --deferred run leaves windows elsewhere alone: they may be in use.
+        if [[ -z "$existing" && "$DEFERRED" != true ]]; then
           existing=$(find_unclaimed_omnigent_window) || true
         fi
         if [[ -n "$existing" ]]; then
@@ -1645,7 +1725,7 @@ for i in "${!WORKSPACES[@]}"; do
           create_omnigent_window || {
             echo "WARNING: [$title] creation failed, skipping" >&2
             ((failures++)) || true
-            continue
+            return 0
           }
           # No focused-window fallback here: a menu-click window is claimed by
           # ID, so misidentifying one pins the wrong window to this workspace
@@ -1665,8 +1745,147 @@ for i in "${!WORKSPACES[@]}"; do
       ;;
     t3)
       reconcile_t3_window "$ws" "$title"
+      ! t3_row_waits_on_tunnel "$ws" || defer_row "$ws|t3"
       ;;
   esac
+}
+
+# ── Main ─────────────────────────────────────────────────────────────
+
+if [[ -z "$AEROSPACE_BIN" ]]; then
+  echo "ERROR: aerospace CLI not found." >&2
+  echo "Install AeroSpace: brew install --cask nikitabobko/tap/aerospace" >&2
+  exit 1
+fi
+
+if ! aerospace list-windows --all &>/dev/null; then
+  echo "ERROR: AeroSpace is not running." >&2
+  echo "Start AeroSpace.app first." >&2
+  exit 1
+fi
+
+# ── Deferred rows (--deferred) ───────────────────────────────────────
+# Only the rows the last run left for a tunnel. Nothing is swept, so windows
+# opened since login stay where they are, and only the workspaces those rows
+# are on are arranged again (without --force, so one whose windows did not
+# change keeps its sizes).
+if [[ "$DEFERRED" == true ]]; then
+  # The list starts over: a row this run cannot finish is deferred again, and
+  # one no longer in WORKSPACES drops out.
+  deferred_rows=$(read_pending_file)
+  pending_rows=""
+  pending_ready=true
+  if [[ -z "$deferred_rows" ]]; then
+    echo "No deferred windows."
+    exit 0
+  fi
+  echo "Deferred windows: $(printf '%s\n' "$deferred_rows" | paste -sd ' ' -)"
+  # This run starts as a tunnel connects, a moment before its forwards serve
+  # and its pairing tokens are pooled: give the servers that long.
+  T3_SERVER_WAIT="${T3_DEFERRED_SERVER_WAIT:-30}"
+  OMNIGENT_HUB_WAIT="${OMNIGENT_DEFERRED_HUB_WAIT:-30}"
+  SNAPSHOT=$(snapshot_windows)
+  failures=0
+  # Every Omnigent window on a managed workspace is that workspace's, claimed
+  # so nothing here takes it -- except on a workspace whose Omnigent row is
+  # deferred, where it only held the slot for the row's own window.
+  for ws in $(managed_workspaces); do
+    [[ $'\n'"$deferred_rows"$'\n' != *$'\n'"$ws|omnigent"$'\n'* ]] || continue
+    for wid in $(omnigent_window_ids "$ws"); do
+      claim_omnigent_window "$wid"
+    done
+  done
+  deferred_workspaces=""
+  deferred_t3=false
+  for entry in "${WORKSPACES[@]}"; do
+    IFS='|' read -r ws type title rest <<< "$entry"
+    [[ $'\n'"$deferred_rows"$'\n' == *$'\n'"$ws|$type"$'\n'* ]] || continue
+    reconcile_row "$ws" "$type" "$title" "$rest"
+    [[ " $deferred_workspaces " == *" $ws "* ]] || deferred_workspaces+=" $ws"
+    [[ "$type" != t3 ]] || deferred_t3=true
+  done
+  if [[ "$deferred_t3" == true ]]; then
+    t3-client-settings || {
+      echo "WARNING: T3 Code's client settings were not synced (above); rerun ~/bin/t3-client-settings" >&2
+      ((failures++)) || true
+    }
+  fi
+  # With no arguments arrange-workspaces would take every workspace.
+  if [[ -n "$deferred_workspaces" ]]; then
+    # shellcheck disable=SC2086  # one argument per workspace
+    ARRANGE_ATTEMPTS=8 ARRANGE_RETRY_SLEEP=1 arrange-workspaces $deferred_workspaces || {
+      echo "WARNING: arrange-workspaces did not converge" >&2
+      ((failures++)) || true
+    }
+  fi
+  sketchybar --trigger aerospace_reconcile 2>/dev/null || true
+  if [[ -n "$pending_rows" ]]; then
+    echo "Still waiting on a tunnel: $(printf '%s\n' "$pending_rows" | paste -sd ' ' -)"
+  fi
+  if [[ "$failures" -gt 0 ]]; then
+    echo "Done with ${failures} warning(s)."
+  else
+    echo "Done."
+  fi
+  exit 0
+fi
+
+# Ensure Ghostty is running (but don't close its default window).
+# Ghostty creates a default window on launch. We leave it open so the
+# SNAPSHOT captures it — this prevents wait_for_new_window from
+# misidentifying it as a newly created window. The reconciliation pass
+# at the end sweeps it to workspace Z.
+if ! osascript -e 'application "Ghostty" is running' 2>/dev/null | grep -q 'true'; then
+  open -a Ghostty
+  sleep 2
+fi
+
+# Before anything opens Chrome, so the launch reaches your own.
+retire_t3_profile_chromes
+
+# Snapshot all windows
+SNAPSHOT=$(snapshot_windows)
+
+failures=0
+
+# The local Omnigent proxy exposes the hub on Mac loopback. The CCO and FTW
+# nvs-tunnels supply its candidate-specific upstream forwards. Retire any
+# unsupervised copy first, so the probe below reports on the launchd-owned one
+# rather than on whichever copy happened to win the port.
+retire_unsupervised_mac_proxy
+close_retired_omnigent_tunnel_windows
+# Bounded: while a tunnel waits on Duo the proxy accepts and then holds the
+# connection, which hung a run before it printed anything.
+if ! omnigent_hub_answers; then
+  echo "Omnigent proxy is not healthy at http://127.0.0.1:${OMNIGENT_PORT} (check: launchctl print gui/\$UID/com.mkarrmann.omnigent-tunnel, and ~/.local/state/omnigent-tunnel/stderr.log); the nvs-tunnels windows below supply its upstream forwards, and the Omnigent windows wait for them" >&2
+fi
+
+# The desktop app connects through the TLS front door, not OMNIGENT_PORT, so it
+# needs its own probe: the plain-HTTP check above passes even when this is down.
+# Deliberately not `-k` — an untrusted CA fails the app exactly like an outage,
+# so the probe has to exercise the same trust path Chromium will.
+if ! curl -sf -m 5 "https://localhost:${OMNIGENT_TLS_PORT}/health" >/dev/null 2>&1; then
+  echo "Omnigent TLS front door is not healthy at https://localhost:${OMNIGENT_TLS_PORT}; the app will fail to connect (check: launchctl print gui/\$UID/com.mkarrmann.omnigent-tls, and 'caddy trust' for the local CA)" >&2
+fi
+
+# The app updates itself every six hours, so this should never fire. That is
+# the point: the last time it went stale nothing said so for two months. Only
+# exit 1 means "definitely behind" -- an unreachable feed exits 2 and stays
+# quiet, so an offline login does not cry wolf.
+omnigent_app_check_rc=0
+OMNIGENT_APP_CURL_TIMEOUT=5 omnigent-app-ensure --check >/dev/null 2>&1 || omnigent_app_check_rc=$?
+if [[ "$omnigent_app_check_rc" == 1 ]]; then
+  echo "Omnigent desktop app is out of date and its own updater has not taken it; run 'omnigent-app-ensure --install'" >&2
+fi
+
+# Reserve the ws-11 dashboard Chrome windows before generic Chrome distribution.
+reserve_ws11_chrome
+
+pending_rows=""
+pending_ready=true
+for entry in "${WORKSPACES[@]}"; do
+  IFS='|' read -r ws type title rest <<< "$entry"
+  reconcile_row "$ws" "$type" "$title" "$rest"
 done
 
 # Once the T3 Code windows are up, sync their client settings (appearance and
@@ -1718,6 +1937,7 @@ done
 for entry in "${WORKSPACES[@]}"; do
   IFS='|' read -r ws type _title _rest <<< "$entry"
   [[ "$type" == "omnigent" ]] || continue
+  row_pending "$ws|omnigent" && continue
   workspace_has_claimed_omnigent_window "$ws" && continue
 
   existing=$(find_unclaimed_omnigent_window "$ws") || true
@@ -1869,12 +2089,16 @@ aerospace workspace 1 2>/dev/null || true
 # that appeared after SketchBar's initial sync (T, Z, Orchest workspaces, etc.)
 sketchybar --trigger aerospace_reconcile 2>/dev/null || true
 
-if [[ -n "$t3_unreachable_hosts" ]]; then
+if [[ -n "$pending_rows" ]]; then
   echo ""
-  echo "T3 Code windows were skipped for:$t3_unreachable_hosts"
-  echo "  Once their servers answer (a devserver's tunnel through Duo on workspace T and"
-  echo "  t3@checkouts running there; the Mac's com.mkarrmann.t3-local loaded), rerun"
-  echo "  ~/bin/startup-windows to open them."
+  echo "Waiting on a tunnel: $(printf '%s\n' "$pending_rows" | paste -sd ' ' -)"
+  echo "  Each tunnel on workspace T opens these once it is through Duo"
+  echo "  (startup-windows --deferred, logged to ~/.local/state/startup-windows-logs/deferred.log)."
+fi
+if [[ " $t3_unreachable_hosts " == *" $T3_LOCAL_HOST "* ]]; then
+  echo ""
+  echo "The Mac's T3 Code server did not answer: is com.mkarrmann.t3-local loaded?"
+  echo "  Rerun ~/bin/startup-windows once it is."
 fi
 
 if [[ "$failures" -gt 0 ]]; then

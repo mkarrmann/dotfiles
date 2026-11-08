@@ -41,6 +41,7 @@ case "$FAKE_MODE" in
       while true; do sleep 1; done
     fi
     echo "NVS_TUNNEL_READY"
+    sleep 0.3
     ;;
   t3pair)
     echo "NVS_TUNNEL_READY"
@@ -50,6 +51,10 @@ case "$FAKE_MODE" in
     ;;
   ready)
     echo "NVS_TUNNEL_READY"
+    ;;
+  connected)
+    echo "NVS_TUNNEL_READY"
+    sleep 0.3
     ;;
   serialize)
     echo "$host" >> "$FAKE_ENTRIES"
@@ -61,7 +66,9 @@ case "$FAKE_MODE" in
   *) exit 2 ;;
 esac
 EOF
-chmod +x "$TMP/bin/omnigent-server-url" "$TMP/bin/nvs-clip-listen" "$TMP/bin/x2ssh"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$FAKE_STARTUP"\n' > "$TMP/bin/startup-windows"
+export FAKE_STARTUP="$TMP/startup-calls"
+chmod +x "$TMP/bin/omnigent-server-url" "$TMP/bin/nvs-clip-listen" "$TMP/bin/x2ssh" "$TMP/bin/startup-windows"
 # T3 Code's ports, off the shipped values so the test sees they come from here.
 printf '%s\n' T3_PORT=4780 T3_PRIMARY_TUNNEL_PORT=41780 T3_STANDBY_TUNNEL_PORT=42780 > "$TMP/topology.env"
 
@@ -73,6 +80,7 @@ run_tunnels() {
     NVS_TUNNEL_MONITOR_INTERVAL=0.05 \
     NVS_TUNNEL_RETRY_DELAY=0 \
     NVS_TUNNEL_MAX_ATTEMPTS="$1" \
+    STARTUP_DEFERRED_LOG="$TMP/deferred.log" \
     "$TUNNELS" "${@:2}"
 }
 
@@ -94,6 +102,27 @@ grep -Fq "ET bootstrap failed; terminating this attempt so it can retry." "$TMP/
   || fail "bootstrap lock survived after nvs-tunnels exited"
 grep -Fq -- "-c zsh -lc 'echo NVS_TUNNEL_READY;" "$FAKE_ARGS" \
   || fail "remote readiness command is not safely nested inside zsh -lc"
+
+# startup_calls -> the startup-windows invocations so far, once the detached
+# ones have had a moment to land.
+startup_calls() {
+  sleep 0.3
+  cat "$FAKE_STARTUP" 2>/dev/null || true
+}
+
+echo "1b. connecting starts the deferred windows once, and a failed attempt does not"
+[[ "$(startup_calls)" == "--deferred" ]] \
+  || fail "expected exactly one 'startup-windows --deferred' for one connection, got: $(startup_calls)"
+grep -Fq "== primary.example.com connected" "$TMP/deferred.log" \
+  || fail "the deferred run's log does not say which tunnel started it"
+
+echo "1c. every reconnect starts it again (it returns at once when nothing waits)"
+: > "$FAKE_STARTUP"
+export FAKE_MODE=connected
+run_tunnels 2 primary.example.com TEST-checkout1 > "$TMP/ready.out" 2>&1 \
+  || fail "two clean connections failed"
+[[ "$(startup_calls)" == $'--deferred\n--deferred' ]] \
+  || fail "expected one 'startup-windows --deferred' per connection, got: $(startup_calls)"
 
 echo "2. concurrent tunnel processes serialize interactive bootstrap"
 export FAKE_MODE=serialize

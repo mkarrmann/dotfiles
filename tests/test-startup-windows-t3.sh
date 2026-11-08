@@ -26,7 +26,7 @@ extract_fn() {
 }
 for fn in t3_workspace_window t3_windows t3_window_ids_json t3_window_id_for_origin retire_t3_profile_chromes \
           t3_take_pairing_token t3_wait_for_server t3_environment_id t3_links t3_collect_links t3_set_up t3_mark_set_up t3_url_port t3_window_title reconcile_t3_window close_window_id window_exists \
-          snapshot_windows chrome_id_is_claimed find_valid_unclaimed_chrome_window; do
+          snapshot_windows chrome_id_is_claimed find_valid_unclaimed_chrome_window t3_row_waits_on_tunnel; do
   body=$(extract_fn "$fn")
   [[ -n "$body" ]] || { echo "could not extract $fn" >&2; exit 1; }
   eval "$body"
@@ -373,12 +373,17 @@ curl() { return 7; }
 reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
 check "a window whose own server does not answer is not opened, and its token is kept" "0 1" \
   "$(wc -l < "$SIM/windows" | tr -d ' ') $(pooled cco.example.com)"
-check "which warns once and says the window is skipped" "1 1 1" \
-  "$failures $(grep -c 'not answering' "$SIM/out") $(grep -c 'skipped until' "$SIM/out")"
-check "and records the host for the closing rerun hint" " cco.example.com" "$t3_unreachable_hosts"
+check "which says so once, as a wait on its tunnel rather than a warning" "0 1 1" \
+  "$failures $(grep -c 'its windows wait for its tunnel' "$SIM/out") $(grep -c 'not opened until' "$SIM/out")"
+check "and records the host, which the row then waits on" " cco.example.com yes" \
+  "$t3_unreachable_hosts $(t3_row_waits_on_tunnel 6 && echo yes)"
 reconcile_t3_window 4 "T3: ws4" > "$SIM/out" 2>&1
-check "and the host's other windows are skipped without checking or warning again" "0 1 1" \
-  "$(grep -c 'not answering' "$SIM/out") $(grep -c 'skipped until' "$SIM/out") $failures"
+check "and the host's other windows are skipped without checking again" "0 1 0" \
+  "$(grep -c 'not answering' "$SIM/out") $(grep -c 'not opened until' "$SIM/out") $failures"
+check "a row that uses only servers that answered does not wait on a tunnel" "no" \
+  "$(t3_unreachable_hosts=" local"; t3_row_waits_on_tunnel 6 && echo yes || echo no)"
+check "a row whose window was opened but missed a link waits on that link's tunnel" "yes" \
+  "$(t3_unreachable_hosts=" ftw.example.com"; t3_row_waits_on_tunnel 6 && echo yes)"
 
 echo "== the Mac's own server, workspace 1's =="
 workspaces_without_local() { :; }

@@ -10,6 +10,7 @@ set -euo pipefail
 #   - Reverse tunnels (-r) for clipboard relay, ACP persistence, and Orchest integration
 #   - Remote headless nvim servers via nvs --server-only
 #   - Local clipboard listener (nvs-clip-listen) for receiving yanked text
+#   - On connecting, startup-windows --deferred for the windows that waited on it
 #
 # Auto-reconnects if the ET session terminates (devvm restart, network
 # outage beyond ET's tolerance, Duo expiry). Duo re-auth may be required.
@@ -148,6 +149,25 @@ save_t3_pairing_tokens() {
   done < <(grep -aoE 'T3_PAIR [A-Za-z0-9_-]+' "$attempt_log" 2>/dev/null || true)
 }
 
+# startup-windows never waits on Duo: the windows that need this tunnel (the
+# hub's Omnigent windows, this host's T3 Code windows) it leaves for
+# `startup-windows --deferred`, started here each time the tunnel connects. That
+# run queues behind a startup-windows still going and returns at once when
+# nothing waits, so a reconnect costs nothing. Detached: this loop must not
+# wait on it, and it must outlive this window.
+STARTUP_WINDOWS_BIN="${STARTUP_WINDOWS_BIN:-startup-windows}"
+STARTUP_DEFERRED_LOG="${STARTUP_DEFERRED_LOG:-$HOME/.local/state/startup-windows-logs/deferred.log}"
+start_deferred_windows() {
+  if ! command -v "$STARTUP_WINDOWS_BIN" >/dev/null 2>&1; then
+    echo "WARNING: $STARTUP_WINDOWS_BIN is not on PATH; windows waiting on this tunnel stay closed" >&2
+    return 0
+  fi
+  mkdir -p "$(dirname "$STARTUP_DEFERRED_LOG")"
+  { echo "== $host connected"; nohup "$STARTUP_WINDOWS_BIN" --deferred; } \
+    >> "$STARTUP_DEFERRED_LOG" 2>&1 < /dev/null &
+  disown
+}
+
 # A new session's server mints new tokens; the pool's old ones may come from a
 # server that has since restarted, or be past their 12 hours.
 clear_t3_pairing_tokens() {
@@ -275,6 +295,7 @@ while true; do
     if [[ "$attempt_ready" == false ]] && grep -Fq "$ready_marker" "$attempt_log"; then
       attempt_ready=true
       release_bootstrap_lock
+      start_deferred_windows
     fi
     save_t3_pairing_tokens
 
