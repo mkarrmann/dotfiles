@@ -294,15 +294,20 @@ create_cmux_window() {
 }
 
 # `open -n` is a no-op for Omnigent: its Electron single-instance lock hands the
-# launch to the running app, which does not open a window for it. The Server ▸
-# New Window menu item is the only window-creation entry point that does not
+# launch to the running app, which does not open a window for it. The New
+# Window menu item is the only window-creation entry point that does not
 # name an origin, so it is now the FALLBACK -- a window it makes lands on
 # whatever origin the app last used, which is the bug this file works around.
+# It is under File since 0.21.0 and was under Server before.
 create_omnigent_window() {
-  osascript \
-    -e 'tell application "System Events" to tell process "Omnigent"' \
-    -e '  click menu item "New Window" of menu 1 of menu bar item "Server" of menu bar 1' \
-    -e 'end tell' >/dev/null 2>&1
+  local menu
+  for menu in File Server; do
+    osascript \
+      -e 'tell application "System Events" to tell process "Omnigent"' \
+      -e "  click menu item \"New Window\" of menu 1 of menu bar item \"$menu\" of menu bar 1" \
+      -e 'end tell' >/dev/null 2>&1 && return 0
+  done
+  return 1
 }
 
 # Deep link that pins this workspace's Omnigent window to its own origin.
