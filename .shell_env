@@ -55,6 +55,11 @@ fi
 # per process before it falls back. This pins it to the bundled map up front.
 export LITELLM_LOCAL_MODEL_COST_MAP=True
 
+# T3 Code sends product analytics (PostHog through ingest.t3.codes, token counts
+# included) and relay traces unless this is false. Its desktop app copies this
+# variable from the login shell; bin/t3-workspace-serve sets it for the servers.
+export T3CODE_TELEMETRY_ENABLED=false
+
 # Local env (not source-controlled)
 if [[ -f ~/.shell_env.local ]]; then
   source ~/.shell_env.local

@@ -45,5 +45,9 @@ t3="$HOME/.local/bin/t3"
 }
 
 export T3CODE_HOME="$HOME/.t3-workspaces/$name"
+# T3 Code's product analytics (PostHog through ingest.t3.codes, token counts
+# included) and relay tracing are on unless this is false (.shell_env sets it
+# too, for the desktop app); the services do not read the shell's env.
+export T3CODE_TELEMETRY_ENABLED=false
 cd "$HOME"
 exec "$t3" serve --host 127.0.0.1 --port "$port" --no-browser
