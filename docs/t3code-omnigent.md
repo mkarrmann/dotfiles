@@ -125,8 +125,9 @@ threads, needs fresh tokens: reconnect the tunnel, close the window, and rerun
 
 ## Enabling at work
 
-The work side is off (`STARTUP_T3_WINDOWS=0` in `bin-macos/startup-windows`).
-To turn it on:
+The work side is on (`STARTUP_T3_WINDOWS=1`, the default in
+`bin-macos/startup-windows`; `STARTUP_T3_WINDOWS=0` turns it off). Turning it on
+took:
 
 1. On each candidate, the next `init.sh` starts `t3@checkouts` with every
    `~/checkoutN` as a project and retires the old `t3@checkoutN` servers (their
@@ -136,12 +137,11 @@ To turn it on:
    The first `--profile-directory=T3` launch creates the T3 profile (Chrome
    calls it "Your Chrome" until renamed in its profile menu); in a window of
    it, turn on View > Developer > Allow JavaScript from Apple Events.
-3. Run `STARTUP_T3_WINDOWS=1 ~/bin/startup-windows`. It finds both tunnels
+3. Run `~/bin/startup-windows`. It finds both tunnels
    without their new forward or token pool and restarts them (expect Duo), then
    opens each window, paired with both servers and scoped as it is created; that
-   first run takes a few seconds more per window. Without
-   `STARTUP_T3_WINDOWS=1` the tunnels mint no tokens. To keep the windows, set the default of
-   `STARTUP_T3_WINDOWS` in `bin-macos/startup-windows` to 1.
+   first run takes a few seconds more per window. With
+   `STARTUP_T3_WINDOWS=0` the tunnels mint no tokens.
 
 ## Linux desktop
 

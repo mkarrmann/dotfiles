@@ -149,10 +149,10 @@ WORKSPACES=(
   "8|t3|T3: ws8"
 )
 
-# TODO: T3 Code windows are on hold; STARTUP_T3_WINDOWS=1 brings back their rows
-# and the tunnel checks they need (the T3 Code forward, pairing-token minting).
-# With the windows on, each tunnel also mints their pairing tokens.
-STARTUP_T3_WINDOWS="${STARTUP_T3_WINDOWS:-0}"
+# STARTUP_T3_WINDOWS=0 drops the T3 Code rows and the tunnel checks they need
+# (the T3 Code forward, pairing-token minting). With the windows on, each
+# tunnel also mints their pairing tokens.
+STARTUP_T3_WINDOWS="${STARTUP_T3_WINDOWS:-1}"
 enabled_workspaces=()
 for entry in "${WORKSPACES[@]}"; do
   if [[ "$STARTUP_T3_WINDOWS" != 1 ]]; then
