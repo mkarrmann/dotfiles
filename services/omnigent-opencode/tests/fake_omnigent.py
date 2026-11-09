@@ -118,7 +118,15 @@ class FakeOmnigent:
                     ]
                 }
             )
-        return web.json_response({"models": [{"id": "opus", "displayName": "Opus", "isDefault": True}]})
+        return web.json_response(
+            {
+                "models": [
+                    {"id": "opus", "displayName": "Opus", "isDefault": True},
+                    {"id": "opus-1m", "model": "claude-opus-5-5[1m]", "displayName": "Opus (1M context)"},
+                    {"id": "sonnet[1m]", "model": "sonnet[1m]", "displayName": "Sonnet (1M context)"},
+                ]
+            }
+        )
 
     async def create(self, request: web.Request) -> web.Response:
         session_id = f"conv_{next(self._ids):04d}"

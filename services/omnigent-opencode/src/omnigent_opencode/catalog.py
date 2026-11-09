@@ -33,6 +33,10 @@ CATALOG_HARNESS: Final = {
     "codex-sdk": "codex-native",
 }
 DEFAULT_CONTEXT: Final = 200_000
+# Claude Code's `[1m]` suffix selects the 1M-token window; Omnigent's claude-native
+# catalog reports no contextWindow, and older probes put the suffix only on `model`.
+LONG_CONTEXT: Final = 1_000_000
+LONG_CONTEXT_SUFFIX: Final = "[1m]"
 DEFAULT_OUTPUT: Final = 32_000
 
 
@@ -77,8 +81,15 @@ class AgentTarget:
         return [_model_info(self.name, str(m["id"]), str(m.get("displayName") or m["id"]), variants, m) for m in self.models]
 
 
+def _context_window(model: str, option: dict[str, Any] | None) -> int:
+    reported = option.get("contextWindow") if option else None
+    if isinstance(reported, int) and reported > 0:
+        return reported
+    names = (model, str(option.get("model") or "")) if option else (model,)
+    return LONG_CONTEXT if any(n.endswith(LONG_CONTEXT_SUFFIX) for n in names) else DEFAULT_CONTEXT
+
+
 def _model_info(provider: str, model: str, name: str, variants: list[Json], option: dict[str, Any] | None) -> JsonObject:
-    context = option.get("contextWindow") if option else None
     return {
         "id": model,
         "modelID": model,
@@ -90,7 +101,7 @@ def _model_info(provider: str, model: str, name: str, variants: list[Json], opti
         "cost": [],
         "status": "active",
         "enabled": True,
-        "limit": {"context": context if isinstance(context, int) and context > 0 else DEFAULT_CONTEXT, "output": DEFAULT_OUTPUT},
+        "limit": {"context": _context_window(model, option), "output": DEFAULT_OUTPUT},
     }
 
 
