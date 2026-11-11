@@ -16,7 +16,7 @@ description: Use when adding, exposing, or updating a Java dependency in presto-
 - `fbcode/github/presto-facebook-trunk/pom.xml` (~line 1601) — parent dependencyManagement, declares the version consumed
 - Module poms (e.g. `presto-gateway/pom.xml`) reference the artifact but **inherit version from the parent** — never add `<version>` to a module pom
 
-**Related skills:** `presto-build` (compile the consuming Maven modules), `presto-deploy` (fbpkg packaging of the running server)
+**Related skills:** `presto-build` (compile the consuming Maven modules), `presto-deploy` (fbpkg packaging of the running server), `presto-maven-library-release` (releasing standalone GitHub libraries such as presto-configerator-client to the same Maven Proxy)
 
 ## When to Use
 
