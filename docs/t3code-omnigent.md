@@ -70,7 +70,12 @@ session behind a thread likewise runs on that host.
   their origin, which `bin/t3-window-scope --list-windows` reads through
   AppleScript; the hostname keeps each window's cookies and localStorage its
   own. AppleScript runs page JavaScript only with View > Developer > Allow
-  JavaScript from Apple Events on in that browser.
+  JavaScript from Apple Events on in that browser. A browser can open a link
+  only in itself, so `t3code/link-forwarder`, an extension loaded in Chrome
+  Beta, hands every http(s) tab a window opens (other than a `*.t3.localhost`
+  one) to `bin-macos/t3-open-in-chrome`, its native messaging host, which opens
+  it in your Chrome's work profile (`--profile-directory=Default`) and closes
+  the tab; `sync.sh` registers the host (`t3-open-in-chrome --install`).
 - A window `startup-windows` opens starts its new threads in its workspace's
   checkout and links every other devserver's server
   (`bin/t3-window-scope @chrome ORIGIN ~/checkoutN --link http://127.0.0.1:PORT LABEL`,
@@ -143,8 +148,11 @@ took:
 2. On the Mac, `brew install --cask google-chrome@beta`, open it once to get
    through its first run, and turn on View > Developer > Allow JavaScript from
    Apple Events. Then run `~/dotfiles/sync.sh`, so `~/bin/t3-window-scope`
-   exists and `t3-browser-shortcuts` frees Cmd+N and the like, and quit and
-   reopen Chrome Beta to pick those up.
+   exists, `t3-browser-shortcuts` frees Cmd+N and the like and the link
+   forwarder's host is registered, and quit and reopen Chrome Beta to pick
+   those up. In Chrome Beta's `chrome://extensions`, turn on Developer mode,
+   Load unpacked `~/dotfiles/t3code/link-forwarder` (its id is
+   `pdcoehmlpmfjiimeabommdgknpnjadca`, fixed by its key), and leave it on.
 3. Run `~/bin/startup-windows`. It finds both tunnels
    without their new forward or token pool and restarts them (expect Duo), then
    opens each window, paired with both servers and scoped as it is created; that

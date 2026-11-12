@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "T3 Code link forwarder",
+  "description": "Opens links from T3 Code windows in Google Chrome's work profile instead of here.",
+  "version": "1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtbUivKUydjZOjlCZveVxtOlKUetvfEFtZARyt9HwHdSucRiot0r5y7pMLXU2TuANxoEpOa2LWfA0D7m3jcOwfGabgaOJuRx7eRqgMQf3y/hIzicGDijQm7epHZjNTDR/VeXTvSl+qD2cA+tMbqaya+wI0+pP38/qBmUsTBpyIaxBW0R7aq84YVBrQIb6sg+PR07Y7WiWn9tpBZhBr0qs66hY4GYooKAuEM/nHjXDiX452JLmDsIwCYfevsH6NjDUomrqlIfdZsc5tEESG4UJRmLD38BgJ4lKJetTPxYUxSHwZvMnWxfCiUCDQQVxC6c8rDQBcT5VoGGGd/oMR0hYWwIDAQAB",
+  "permissions": [
+    "tabs",
+    "nativeMessaging"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

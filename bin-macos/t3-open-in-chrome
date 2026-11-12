@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""Opens links from the T3 Code windows' browser in Google Chrome's work profile.
+
+Chrome Beta (T3_BROWSER_APP, see bin-macos/startup-windows) can only open a link
+in itself, away from your logins. t3code/link-forwarder, an extension loaded in
+it, sends each link a T3 Code window opens here as a native message; this opens
+it in Google Chrome, profile directory T3_LINK_CHROME_PROFILE (Default, the
+profile startup-windows opens work windows in), and replies {"ok": true}.
+
+  t3-open-in-chrome --install [DIR]   register this as the extension's native
+                                      host in DIR, the browser's
+                                      NativeMessagingHosts unless given
+  t3-open-in-chrome chrome-extension://ID/   (how the browser runs it)
+
+Runs under the macOS system python3 when the browser starts it: keep it 3.9.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import struct
+import subprocess
+import sys
+from pathlib import Path
+from typing import BinaryIO
+from urllib.parse import urlsplit
+
+HOST_NAME = "com.mkarrmann.t3_open_in_chrome"
+BROWSER_APP = os.environ.get("T3_BROWSER_APP", "Google Chrome Beta")
+CHROME_APP = "Google Chrome"
+CHROME_PROFILE = os.environ.get("T3_LINK_CHROME_PROFILE", "Default")
+OPEN = os.environ.get("T3_OPEN_IN_CHROME_OPEN", "/usr/bin/open")
+EXTENSION_DIR = Path(__file__).resolve().parents[1] / "t3code" / "link-forwarder"
+
+
+def extension_id(extension_dir: Path = EXTENSION_DIR) -> str:
+    key = json.loads((extension_dir / "manifest.json").read_text())["key"]
+    digest = hashlib.sha256(base64.b64decode(key)).hexdigest()[:32]
+    return "".join(chr(ord("a") + int(c, 16)) for c in digest)
+
+
+def default_hosts_dir() -> Path:
+    data_dir = BROWSER_APP[len("Google "):] if BROWSER_APP.startswith("Google ") else BROWSER_APP
+    return Path.home() / "Library" / "Application Support" / "Google" / data_dir / "NativeMessagingHosts"
+
+
+def install(hosts_dir: Path) -> bool:
+    """Writes the host manifest; True if it changed."""
+    manifest = {
+        "name": HOST_NAME,
+        "description": "Open T3 Code links in Google Chrome",
+        "path": str(Path(__file__).resolve()),
+        "type": "stdio",
+        "allowed_origins": [f"chrome-extension://{extension_id()}/"],
+    }
+    text = json.dumps(manifest, indent=2) + "\n"
+    target = hosts_dir / f"{HOST_NAME}.json"
+    if target.exists() and target.read_text() == text:
+        return False
+    hosts_dir.mkdir(parents=True, exist_ok=True)
+    target.write_text(text)
+    return True
+
+
+def read_message(stream: BinaryIO) -> dict | None:
+    header = stream.read(4)
+    if len(header) < 4:
+        return None
+    (length,) = struct.unpack("=I", header)
+    return json.loads(stream.read(length))
+
+
+def write_message(stream: BinaryIO, message: dict) -> None:
+    body = json.dumps(message).encode()
+    stream.write(struct.pack("=I", len(body)) + body)
+    stream.flush()
+
+
+def open_link(message: dict | None) -> dict:
+    url = message.get("url") if isinstance(message, dict) else None
+    if not isinstance(url, str):
+        return {"ok": False, "error": "no url"}
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return {"ok": False, "error": f"not an http(s) link: {url}"}
+    result = subprocess.run(
+        [OPEN, "-na", CHROME_APP, "--args", f"--profile-directory={CHROME_PROFILE}", url],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return {"ok": False, "error": result.stderr.strip() or f"open exited {result.returncode}"}
+    return {"ok": True}
+
+
+def main(argv: list[str]) -> int:
+    if argv[:1] == ["--install"] and len(argv) <= 2:
+        if len(argv) == 1 and not Path(f"/Applications/{BROWSER_APP}.app").is_dir():
+            print(f"[t3-open-in-chrome] {BROWSER_APP} is not installed; rerun once it is")
+            return 0
+        hosts_dir = Path(argv[1]) if len(argv) == 2 else default_hosts_dir()
+        if install(hosts_dir):
+            print(f"[t3-open-in-chrome] registered with {BROWSER_APP} ({hosts_dir})")
+        return 0
+    if len(argv) >= 1 and argv[0].startswith("chrome-extension://"):
+        write_message(sys.stdout.buffer, open_link(read_message(sys.stdin.buffer)))
+        return 0
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

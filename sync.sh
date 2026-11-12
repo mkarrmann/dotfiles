@@ -825,6 +825,9 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   # T3 Code windows' browser: Chrome's reserved shortcuts off T3 Code's.
   "$DOTFILES_DIR/bin-macos/t3-browser-shortcuts" ||
     echo "WARNING: t3-browser-shortcuts failed (T3 Code's Cmd+N and the like stay the browser's)" >&2
+  # ... and its links into your Chrome, through t3code/link-forwarder.
+  "$DOTFILES_DIR/bin-macos/t3-open-in-chrome" --install ||
+    echo "WARNING: t3-open-in-chrome --install failed (links from T3 Code stay in its browser)" >&2
 
   # SketchyBar
   mkdir -p "$HOME/.config/sketchybar/plugins"
