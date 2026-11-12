@@ -822,6 +822,10 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   # AeroSpace
   link_one "$DOTFILES_DIR/aerospace.toml" "$HOME/.aerospace.toml"
 
+  # T3 Code windows' browser: Chrome's reserved shortcuts off T3 Code's.
+  "$DOTFILES_DIR/bin-macos/t3-browser-shortcuts" ||
+    echo "WARNING: t3-browser-shortcuts failed (T3 Code's Cmd+N and the like stay the browser's)" >&2
+
   # SketchyBar
   mkdir -p "$HOME/.config/sketchybar/plugins"
   link_one "$DOTFILES_DIR/sketchybar/sketchybarrc" "$HOME/.config/sketchybar/sketchybarrc"

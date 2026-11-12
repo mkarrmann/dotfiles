@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Usage: t3-browser-shortcuts [DOMAIN]
+#
+# Frees the shortcuts T3 Code binds that Chrome reserves for itself, which a
+# page can never override (Cmd+N new window, Cmd+Shift+N incognito, Cmd+T new
+# tab, Cmd+Shift+T reopen, Cmd+W close tab), in the browser bin-macos/startup-windows
+# opens T3 Code windows in (T3_BROWSER_APP, Google Chrome Beta unless set). A
+# macOS per-app menu shortcut (NSUserKeyEquivalents) moves each of those menu
+# items onto a Cmd+Opt+Ctrl chord, so the key reaches the page instead. Keyed by
+# English menu titles; the browser picks changes up when it next starts.
+#
+# DOMAIN is the `defaults` domain to write, the browser's bundle id unless given.
+# Never run it on your own Chrome's: those shortcuts would leave your browsing too.
+set -euo pipefail
+
+APP="${T3_BROWSER_APP:-Google Chrome Beta}"
+[[ $# -le 1 ]] || { echo "Usage: t3-browser-shortcuts [DOMAIN]" >&2; exit 2; }
+
+domain="${1:-}"
+if [[ -z "$domain" ]]; then
+  info="/Applications/$APP.app/Contents/Info.plist"
+  if [[ ! -e "$info" ]]; then
+    echo "[t3-browser-shortcuts] $APP is not installed; rerun once it is"
+    exit 0
+  fi
+  domain=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info")
+fi
+if [[ "$domain" == com.google.Chrome ]]; then
+  echo "t3-browser-shortcuts: refusing to change your own Chrome's shortcuts" >&2
+  exit 2
+fi
+
+# Menu title -> its new chord (@ Cmd, ~ Opt, ^ Ctrl, $ Shift). Chrome titles the
+# reopen item after what was closed last, so both titles move.
+MOVES=(
+  "New Window=@~^n"
+  "New Incognito Window=@~^\$n"
+  "New Tab=@~^t"
+  "Reopen Closed Tab=@~^\$t"
+  "Reopen Closed Window=@~^\$t"
+  "Close Tab=@~^w"
+)
+
+before=$(defaults read "$domain" NSUserKeyEquivalents 2>/dev/null || true)
+for move in "${MOVES[@]}"; do
+  defaults write "$domain" NSUserKeyEquivalents -dict-add "${move%%=*}" "${move#*=}"
+done
+after=$(defaults read "$domain" NSUserKeyEquivalents 2>/dev/null || true)
+if [[ "$before" != "$after" ]]; then
+  echo "[t3-browser-shortcuts] moved $APP's reserved shortcuts off T3 Code's; restart $APP to pick them up"
+fi
