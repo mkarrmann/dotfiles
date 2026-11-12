@@ -38,6 +38,8 @@ DEFAULT_CONTEXT: Final = 200_000
 LONG_CONTEXT: Final = 1_000_000
 LONG_CONTEXT_SUFFIX: Final = "[1m]"
 DEFAULT_OUTPUT: Final = 32_000
+# Claude Code lists Fable, which this account has no access to.
+UNAVAILABLE_MODELS: Final = ("fable",)
 
 
 @dataclass(frozen=True)
@@ -81,12 +83,34 @@ class AgentTarget:
         return [_model_info(self.name, str(m["id"]), str(m.get("displayName") or m["id"]), variants, m) for m in self.models]
 
 
+def _names(option: dict[str, Any]) -> tuple[str, str]:
+    return str(option["id"]), str(option.get("model") or "")
+
+
+def _long_context(option: dict[str, Any]) -> bool:
+    return any(n.endswith(LONG_CONTEXT_SUFFIX) for n in _names(option))
+
+
+def _offered(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The harness's models less those this account cannot run and the `[1m]` twin
+    of a model also offered plainly: the picker shows one entry per model, under the
+    plain id, which Claude Code's catalog keeps when it drops its 1M entries."""
+    usable = [o for o in options if not any(u in n.lower() for n in _names(o) for u in UNAVAILABLE_MODELS)]
+
+    def base(option: dict[str, Any]) -> str:
+        model, underlying = _names(option)
+        return (underlying or model).removesuffix(LONG_CONTEXT_SUFFIX)
+
+    plain = {base(o) for o in usable if not _long_context(o)}
+    return [o for o in usable if not (_long_context(o) and base(o) in plain)]
+
+
 def _context_window(model: str, option: dict[str, Any] | None) -> int:
     reported = option.get("contextWindow") if option else None
     if isinstance(reported, int) and reported > 0:
         return reported
-    names = (model, str(option.get("model") or "")) if option else (model,)
-    return LONG_CONTEXT if any(n.endswith(LONG_CONTEXT_SUFFIX) for n in names) else DEFAULT_CONTEXT
+    long = _long_context(option) if option else model.endswith(LONG_CONTEXT_SUFFIX)
+    return LONG_CONTEXT if long else DEFAULT_CONTEXT
 
 
 def _model_info(provider: str, model: str, name: str, variants: list[Json], option: dict[str, Any] | None) -> JsonObject:
@@ -133,7 +157,7 @@ async def load_catalog(client: OmnigentClient, host_spec: str, agent_specs: list
         models: list[dict[str, Any]] = []
         if catalog_harness:
             try:
-                models = await client.model_options(host["host_id"], catalog_harness)
+                models = _offered(await client.model_options(host["host_id"], catalog_harness))
             except (OmnigentError, httpx.HTTPError) as exc:
                 # One harness's failed probe must not hide every agent; this one offers its default model.
                 LOG.warning("model options for %s on %s failed: %s", name, host.get("name"), exc)

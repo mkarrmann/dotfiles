@@ -121,9 +121,11 @@ class FakeOmnigent:
         return web.json_response(
             {
                 "models": [
-                    {"id": "opus", "displayName": "Opus", "isDefault": True},
-                    {"id": "opus-1m", "model": "claude-opus-5-5[1m]", "displayName": "Opus (1M context)"},
-                    {"id": "sonnet[1m]", "model": "sonnet[1m]", "displayName": "Sonnet (1M context)"},
+                    {"id": "opus", "model": "claude-opus-5-5", "displayName": "Opus 5.5", "isDefault": True},
+                    {"id": "claude-opus-5-5[1m]", "model": "claude-opus-5-5[1m]", "displayName": "Opus 5.5 (1M context)"},
+                    {"id": "sonnet-1m", "model": "claude-sonnet-5-5[1m]", "displayName": "Sonnet 5.5 (1M context)"},
+                    {"id": "haiku[1m]", "displayName": "Haiku (1M context)"},
+                    {"id": "claude-fable-5-1", "model": "claude-fable-5-1", "displayName": "Fable"},
                 ]
             }
         )

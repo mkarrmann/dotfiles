@@ -46,10 +46,11 @@ async def open_session(t3: T3Client, shim: Shim) -> dict[str, Any]:
 
 async def test_catalog_lists_each_agent_as_a_provider(t3: T3Client) -> None:
     models = await t3.call("model.list", {"location": {"directory": "/tmp"}})
+    # Fable and the 1M twin of a model also offered plainly are left out.
     assert {(m["providerID"], m["id"]) for m in models["data"]} == {
         ("claude-native-ui", "opus"),
-        ("claude-native-ui", "opus-1m"),
-        ("claude-native-ui", "sonnet[1m]"),
+        ("claude-native-ui", "sonnet-1m"),
+        ("claude-native-ui", "haiku[1m]"),
         ("codex-native-ui", "gpt-5"),
     }
     codex = next(m for m in models["data"] if m["providerID"] == "codex-native-ui")
@@ -63,8 +64,8 @@ async def test_catalog_reports_the_1m_window_only_for_1m_models(t3: T3Client) ->
     windows = {(m["providerID"], m["id"]): m["limit"]["context"] for m in models["data"]}
     assert windows == {
         ("claude-native-ui", "opus"): 200_000,
-        ("claude-native-ui", "opus-1m"): 1_000_000,
-        ("claude-native-ui", "sonnet[1m]"): 1_000_000,
+        ("claude-native-ui", "sonnet-1m"): 1_000_000,
+        ("claude-native-ui", "haiku[1m]"): 1_000_000,
         ("codex-native-ui", "gpt-5"): 200_000,
     }
 
