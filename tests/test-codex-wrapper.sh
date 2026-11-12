@@ -46,6 +46,13 @@ grep -Fx 'arg=-c' "$TMP/out" >/dev/null
 grep -Fx 'arg=model="test"' "$TMP/out" >/dev/null
 grep -Fx 'arg=app-server' "$TMP/out" >/dev/null
 grep -Fx 'arg=--flag' "$TMP/out" >/dev/null
+# Omnigent's model-catalog probe passes no config overrides, and an app-server
+# with no arguments at all must still start.
+OMNIGENT_CODEX_REAL_PATH="$TMP/fake-codex" "$WRAPPER" app-server --listen ws://127.0.0.1:1 >"$TMP/out"
+grep -Fx 'arg=app-server' "$TMP/out" >/dev/null
+grep -Fx 'arg=--listen' "$TMP/out" >/dev/null
+OMNIGENT_CODEX_REAL_PATH="$TMP/fake-codex" "$WRAPPER" app-server >"$TMP/out"
+[[ "$(grep '^arg=' "$TMP/out")" == "arg=app-server" ]]
 
 # `codex exec` never inherits a socket stdin (Claude Code's never-closing one);
 # pipes, files and other subcommands keep theirs.

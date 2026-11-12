@@ -65,7 +65,8 @@ if [[ "${1:-}" == "app-server" ]]; then
 
   # Meta's launcher injects the provider as global config. Keep Omnigent's
   # app-server overrides in that same scope so thread/start sees both sets.
-  args=("${config_args[@]}" app-server "${app_server_args[@]}")
+  # bash 3.2 (macOS) treats an empty "${array[@]}" as unset under `set -u`.
+  args=(${config_args[@]+"${config_args[@]}"} app-server ${app_server_args[@]+"${app_server_args[@]}"})
 fi
 
 # The subcommand is the first argument that is neither a flag nor a flag's value.
