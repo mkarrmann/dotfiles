@@ -1,23 +1,26 @@
 #!/usr/bin/env bash
-# End-to-end check of bin/t3-window-scope's @chrome mode on macOS: the user's own
-# running Chrome, an app window in its T3 profile, reached through AppleScript.
+# End-to-end check of bin/t3-window-scope's @chrome mode on macOS: T3 Code's
+# running browser (T3_BROWSER_APP, Google Chrome Beta unless set), an app window
+# in it, reached through AppleScript.
 # Two throwaway `t3 serve` instances stand in for two devservers' servers, both
 # with a project at the same path. The window pairs with the first, the helper
 # links the second and scopes the window to the first's project, and
 # --list-windows finds the window in AeroSpace. Everything this opens (servers,
-# the window) is closed on exit; the T3 profile itself is the user's and stays.
-# Needs macOS, the user's Chrome running with "Allow JavaScript from Apple
-# Events" on in its T3 profile, AeroSpace and the t3 CLI; skips without them.
+# the window) is closed on exit; the browser's profile itself is the user's and stays.
+# Needs macOS, that browser running with "Allow JavaScript from Apple Events"
+# on, AeroSpace and the t3 CLI; skips without them.
 # Run with: bash tests/test-t3-window-scope-chrome-e2e.sh
 set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 T3="${T3_BIN:-$(command -v t3 || echo "$HOME/.local/bin/t3")}"
 SCOPE="$ROOT/bin/t3-window-scope"
-CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-if [[ "$(uname -s)" != Darwin || ! -x "$T3" || ! -x "$CHROME" ]] || ! command -v aerospace >/dev/null \
-    || ! ps -axo command= | awk -v c="$CHROME" 'index($0, c) == 1 && !/--user-data-dir|--type=/ { f = 1 } END { exit !f }'; then
-  echo "skip: needs macOS, your Chrome running, AeroSpace and the t3 CLI"
+BROWSER="${T3_BROWSER_APP:-Google Chrome Beta}"
+if [[ "$(uname -s)" != Darwin || ! -x "$T3" ]] || ! command -v aerospace >/dev/null \
+    || ! python3 -c 'import importlib.machinery as m, importlib.util as u, sys
+l = m.SourceFileLoader("s", sys.argv[1]); s = u.module_from_spec(u.spec_from_loader("s", l)); l.exec_module(s)
+s.own_chrome_pid()' "$SCOPE" 2>/dev/null; then
+  echo "skip: needs macOS, $BROWSER running, AeroSpace and the t3 CLI"
   exit 0
 fi
 
@@ -86,9 +89,9 @@ PORT_B=$(free_port)
 serve a "$PORT_A" "$TMP/home/checkout1" "$TMP/home/alpha"
 serve b "$PORT_B" "$TMP/home/checkout1" "$TMP/home/bravo"
 ORIGIN="http://e2e$PORT_A.t3.localhost:$PORT_A"
-open -na "Google Chrome" --args --profile-directory=T3 --app="$ORIGIN/pair#token=$(token a)"
+open -na "$BROWSER" --args --profile-directory=Default --app="$ORIGIN/pair#token=$(token a)"
 
-echo "== an app window in your Chrome, linked to a second server and scoped =="
+echo "== an app window in $BROWSER, linked to a second server and scoped =="
 rc=0
 token b | python3 "$SCOPE" @chrome "$ORIGIN" "~/checkout1" --link "http://127.0.0.1:$PORT_B" second >"$TMP/scope.out" 2>&1 || rc=$?
 sed 's/^/    /' "$TMP/scope.out"
@@ -110,7 +113,7 @@ check "its draft is in the first server's checkout1, though both servers have on
 echo "== --list-windows ties the window to AeroSpace =="
 listed=$(python3 "$SCOPE" --list-windows | awk -v o="$ORIGIN" '$2 == o { print $1 }')
 check "the window is listed once, by its origin" "1" "$(printf '%s\n' "$listed" | grep -c '^[0-9]')"
-check "under a Chrome window AeroSpace knows" "Google Chrome" \
+check "under a window of the browser AeroSpace knows" "$BROWSER" \
   "$(aerospace list-windows --all --json | python3 -c 'import json,sys; w=[x for x in json.load(sys.stdin) if str(x["window-id"])==sys.argv[1]]; print(w[0]["app-name"] if w else "")' "$listed")"
 check "and its title is back to the page's own" "no" \
   "$(aerospace list-windows --all --json | grep -q 't3ws' && echo yes || echo no)"

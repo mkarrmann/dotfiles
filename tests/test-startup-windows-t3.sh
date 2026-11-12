@@ -3,7 +3,7 @@
 # Checks bin-macos/startup-windows' T3 Code windows with stub aerospace,
 # t3-window-scope and workspaces: the lookup by origin, retiring the old
 # per-profile Chrome instances, and a row's whole reconcile against a model of
-# app windows in your own Chrome.
+# app windows in T3 Code's own browser, next to your Chrome's.
 # Run with: bash tests/test-startup-windows-t3.sh
 set -euo pipefail
 
@@ -26,14 +26,18 @@ extract_fn() {
 }
 for fn in t3_workspace_window t3_windows t3_window_ids_json t3_window_id_for_origin retire_t3_profile_chromes \
           t3_take_pairing_token t3_wait_for_server t3_environment_id t3_links t3_collect_links t3_set_up t3_mark_set_up t3_url_port t3_window_title reconcile_t3_window close_window_id window_exists \
-          snapshot_windows chrome_id_is_claimed find_valid_unclaimed_chrome_window t3_row_waits_on_tunnel; do
+          snapshot_windows chrome_id_is_claimed find_valid_unclaimed_chrome_window t3_row_waits_on_tunnel stray_window_ids; do
   body=$(extract_fn "$fn")
   [[ -n "$body" ]] || { echo "could not extract $fn" >&2; exit 1; }
   eval "$body"
 done
 
 CHROME_APP="Google Chrome"
-T3_CHROME_PROFILE="T3"
+OMNIGENT_APP="Omnigent"
+T3_BROWSER_APP="Google Chrome Beta"
+T3_BROWSER_PROFILE="Default"
+t3_browser_missing_warned=false
+t3_browser_installed() { :; }
 T3_STATE_DIR="/Users/me/.local/state/t3-windows"
 T3_LEGACY_CHROME_DATA_ROOT="/Users/me/.t3-workspace-chrome"
 T3_SERVERS_DIR=".t3-servers"
@@ -55,13 +59,15 @@ check "a devserver workspace resolves to its state, URL, devserver and project u
   "$(t3_workspace_window 6)"
 check "a workspace without a T3 Code server resolves to nothing" "" "$(t3_workspace_window 1 || true)"
 
-# Windows 10 and 11 are regular Chrome, 20 is on checkout3's origin, 30 on
-# checkout30's (a prefix of the same name), 40 is another app.
-CHROME_WINDOWS="10 11 20 30"
+# Windows 10 and 11 are your Chrome's, 20 (on checkout3's origin) and 30 (on
+# checkout30's, a prefix of the same name) T3 Code's browser's, 40 is another app.
+CHROME_WINDOWS="10 11"
+BROWSER_WINDOWS="20 30"
 aerospace() {
   local wid
   printf '['
   for wid in $CHROME_WINDOWS; do printf '{"window-id": %s, "app-name": "Google Chrome"},' "$wid"; done
+  for wid in $BROWSER_WINDOWS; do printf '{"window-id": %s, "app-name": "Google Chrome Beta"},' "$wid"; done
   printf '{"window-id": 40, "app-name": "Omnigent"}]'
 }
 LISTINGS="$(mktemp)"
@@ -75,13 +81,16 @@ check "an origin with no window matches nothing" "" "$(t3_window_id_for_origin h
 check "every T3 Code window is kept out of the Chrome slots" "[20,30]" "$(t3_window_ids_json)"
 : > "$LISTINGS"
 : "$(t3_windows)" "$(t3_windows)"
-check "windows are listed again only once Chrome's windows change" "0" "$(wc -l < "$LISTINGS" | tr -d ' ')"
-CHROME_WINDOWS="10 11 20 30 50"
+check "windows are listed again only once the browser's windows change" "0" "$(wc -l < "$LISTINGS" | tr -d ' ')"
+CHROME_WINDOWS="10 11 12"
+: "$(t3_windows)"
+check "which a new window of your own Chrome is not" "0" "$(wc -l < "$LISTINGS" | tr -d ' ')"
+BROWSER_WINDOWS="20 30 50"
 : "$(t3_windows)" "$(t3_windows)"
 check "and then once" "1" "$(wc -l < "$LISTINGS" | tr -d ' ')"
 t3-window-scope() { return 1; }
 rm -f "$T3_WINDOWS_CACHE"
-check "when Chrome cannot be asked (not running, Apple Events off) there are none" "[]" "$(t3_window_ids_json)"
+check "when the browser cannot be asked (not running, Apple Events off) there are none" "[]" "$(t3_window_ids_json)"
 window_id=$(t3_window_id_for_origin http://cco-checkout1.t3.localhost:13780)
 check "and a lookup that finds nothing does not fail under errexit" "" "$window_id"
 rm -f "$LISTINGS" "$T3_WINDOWS_CACHE"
@@ -129,12 +138,11 @@ check "and fails, warning, when it does not" "1 1" \
   "$({ t3_wait_for_server ftw.example.com http://ftw-checkout1.t3.localhost:23780/; } 2>&1 | grep -c 'not answering' | tr '\n' ' ')$(t3_wait_for_server ftw.example.com http://x:23780/ >/dev/null 2>&1; echo $?)"
 curl() { return 0; }
 
-echo "== a t3 row's window, on a model of your Chrome =="
-# Each launch for the T3 profile with --app adds a window on that URL, titled as
-# T3 Code titles it (as Chrome's error page when $SIM/down names its port).
-# Windows are "WID<TAB>TITLE<TAB>WORKSPACE<TAB>URL" in $SIM/windows; the stand-in
-# t3-window-scope lists those on a .t3.localhost origin, and records each
-# window it scoped.
+echo "== a t3 row's window, on a model of T3 Code's browser and your Chrome =="
+# Each launch of T3 Code's browser with --app adds a window on that URL, titled as
+# T3 Code titles it. Windows are "WID<TAB>TITLE<TAB>WORKSPACE<TAB>URL<TAB>APP"
+# in $SIM/windows; the stand-in t3-window-scope lists those of T3 Code's browser
+# on a .t3.localhost origin, and records each window it scoped.
 SIM="$T3_PAIRING_DIR/sim"
 T3_STATE_DIR="$SIM/state"
 T3_TITLE_PATTERN="^T3 Code"
@@ -171,11 +179,11 @@ pool() { # HOST TOKEN -- pool a token as nvs-tunnels does
   printf '%s\n' "$2" > "$(mktemp "$T3_PAIRING_DIR/$1/token.XXXXXX")"
 }
 sim_id() { local n; n=$(($(cat "$SIM/next") + 1)); echo "$n" > "$SIM/next"; echo "$n"; }
-sim_window() { # TITLE URL -> a new window on workspace Z
-  printf '%s\t%s\tZ\t%s\n' "$(sim_id)" "$1" "$2" >> "$SIM/windows"
+sim_window() { # TITLE URL [APP] -> a new window on workspace Z, of T3 Code's browser unless APP
+  printf '%s\t%s\tZ\t%s\t%s\n' "$(sim_id)" "$1" "$2" "${3:-$T3_BROWSER_APP}" >> "$SIM/windows"
 }
 open() {
-  [[ "$1" == -na && "$2" == "$CHROME_APP" && "$3" == --args ]] || return 1
+  [[ "$1" == -na && "$2" == "$T3_BROWSER_APP" && "$3" == --args ]] || return 1
   shift 3
   printf '%s\n' "$*" >> "$SIM/opened"
   local arg profile="" app=""
@@ -185,15 +193,16 @@ open() {
       --app=*) app="${arg#--app=}" ;;
     esac
   done
-  [[ "$profile" == T3 && -n "$app" ]] || return 0
+  [[ "$profile" == Default && -n "$app" ]] || return 0
   sim_window "T3 Code (Beta)" "$app"
   [[ -z "${SIM_LOADING:-}" ]] || tail -n 1 "$SIM/windows" | cut -f1 >> "$SIM/loading"
 }
 aerospace() {
   case "$1" in
     list-windows)
-      jq -Rn '[inputs | split("\t") | {"window-id": (.[0] | tonumber), "app-name": "Google Chrome",
-        "window-title": .[1], workspace: .[2]}]' "$SIM/windows" ;;
+      jq -Rn '[inputs | split("\t") | {"window-id": (.[0] | tonumber), "app-name": .[4],
+        "window-title": .[1], workspace: .[2]}] | if $scope == "--workspace"
+        then map(select(.workspace == $ws)) else . end' --arg scope "$2" --arg ws "${3:-}" "$SIM/windows" ;;
     move-node-to-workspace)
       awk -F'\t' -v OFS='\t' -v wid="$3" -v ws="$4" '$1 == wid { $3 = ws } 1' "$SIM/windows" > "$SIM/w" && mv "$SIM/w" "$SIM/windows" ;;
     close)
@@ -206,8 +215,8 @@ aerospace() {
 # window on the origin, as the real one does.
 t3-window-scope() {
   if [[ "$1" == --list-windows ]]; then
-    awk -F'\t' -v loading=" $(tr '\n' ' ' < "$SIM/loading") " \
-      '$4 ~ /\.t3\.localhost/ && index(loading, " " $1 " ") == 0 { split($4, u, "/"); print $1, u[1] "//" u[3] }' "$SIM/windows"
+    awk -F'\t' -v loading=" $(tr '\n' ' ' < "$SIM/loading") " -v app="$T3_BROWSER_APP" \
+      '$5 == app && $4 ~ /\.t3\.localhost/ && index(loading, " " $1 " ") == 0 { split($4, u, "/"); print $1, u[1] "//" u[3] }' "$SIM/windows"
     : > "$SIM/loading"
     return 0
   fi
@@ -232,7 +241,8 @@ pool ftw.example.com FTWTOKEN
 reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
 check "a new origin gets one window, on its workspace and its own server's pairing link" \
   "101 6 $O3/pair#token=TOKEN3" "$(windows_of "$O3")"
-check "an app window of your Chrome's T3 profile" "--profile-directory=T3 --app=$O3/pair#token=TOKEN3" "$(cat "$SIM/opened")"
+check "an app window of T3 Code's browser, with no first-run windows" \
+  "--profile-directory=Default --no-first-run --no-default-browser-check --app=$O3/pair#token=TOKEN3" "$(cat "$SIM/opened")"
 check "the window starts its new threads in its checkout and links FTW's server with an FTW token" \
   "$LINKED3" "$(cat "$SIM/scoped")"
 check "with no warning" "0" "$failures"
@@ -253,9 +263,16 @@ T3_ANY_TITLE_PATTERN='^T3 Code|\.t3\.localhost'
 claimed_chrome_ids=""
 sim_window "T3 Code (Beta)" "about:blank"
 sim_window "cco-checkout3.t3.localhost" "chrome-error://chromewebdata/"
-sim_window "New Tab - Google Chrome - Me" "chrome://newtab/"
-check "a T3 Code window the origin listing misses is never handed to a Chrome slot" "103" \
+sim_window "T3 Code" "http://cco-checkout1.t3.localhost:13780/" "Google Chrome"
+sim_window "New Tab - Google Chrome - Me" "chrome://newtab/" "Google Chrome"
+check "neither T3 Code's browser's windows nor one left in your Chrome is handed to a Chrome slot" "104" \
   "$(find_valid_unclaimed_chrome_window)"
+aerospace move-node-to-workspace --window-id 101 6
+aerospace move-node-to-workspace --window-id 104 6
+sim_window "Finder" "" "Finder"
+aerospace move-node-to-workspace --window-id 105 6
+check "on a managed workspace, T3 Code's browser's and Chrome's windows stay; another app's is stray" "105" \
+  "$(stray_window_ids 6)"
 
 sim_reset
 pool cco.example.com TOKEN3
@@ -416,6 +433,16 @@ eval "$(declare -f workspaces_without_local | sed '1s/workspaces_without_local/w
 sim_reset
 reconcile_t3_window 1 "T3: ws1" > "$SIM/out" 2>&1
 check "a workspace without a T3 Code server warns and opens nothing" "1 0" "$failures $(wc -l < "$SIM/windows" | tr -d ' ')"
+
+sim_reset
+pool cco.example.com TOKEN3
+t3_browser_installed() { return 1; }
+{ reconcile_t3_window 6 "T3: ws6"; reconcile_t3_window 4 "T3: ws4"; } > "$SIM/out" 2>&1
+check "without T3 Code's browser installed nothing opens, its token is kept, and the run warns once how to install it" \
+  "0 1 1 1" \
+  "$(wc -l < "$SIM/windows" | tr -d ' ') $(pooled cco.example.com) $failures $(grep -c 'brew install --cask google-chrome@beta' "$SIM/out")"
+t3_browser_installed() { :; }
+t3_browser_missing_warned=false
 
 if [[ "$failed_checks" -gt 0 ]]; then
   echo "$failed_checks check(s) failed" >&2

@@ -8,7 +8,7 @@ window in its origin's localStorage (t3code:client-settings:v1,
 apps/web/src/clientPersistenceStorage.ts), the desktop app in
 ~/.t3/userdata/client-settings.json. Neither is a file a symlink can share
 across the workspace windows (each on its own origin: on the Mac app windows
-of your own Chrome, on Linux each in its own Chrome profile under
+of T3 Code's own browser, bin/t3-window-scope's BROWSER_APP, on Linux each in its own Chrome profile under
 ~/.t3-workspace-chrome) and hosts, so this syncs them with
 t3code/client-settings.json, which holds only the settings that differ from
 T3 Code's defaults (t3code/client-settings.defaults.json, from
@@ -18,8 +18,9 @@ t3code/generate-client-defaults):
      AppleScript (t3-window-scope's) or its Chrome's DevTools port, and the
      desktop app's file;
   2. takes from each what changed since this tool last wrote it (the copy it
-     left in ~/.local/state/t3-windows/NAME/.t3-client-settings.json for a
-     Mac window, NAME its origin's first label, PROFILE/.t3-client-settings.json
+     left in ~/.local/state/t3-windows/BROWSER/NAME/.t3-client-settings.json
+     for a Mac window, BROWSER its browser's name with dashes for spaces and
+     NAME its origin's first label, PROFILE/.t3-client-settings.json
      for a Linux one, or for the desktop app
      ~/.t3/userdata/.t3-client-settings.json). A source it never wrote counts
      every setting it holds that differs from the defaults as changed, and a
@@ -62,7 +63,8 @@ DOTFILES = Path(os.environ.get("DOTFILES_DIR", HERE.parent))
 SETTINGS_FILE = Path(os.environ.get("T3_CLIENT_SETTINGS_FILE", DOTFILES / "t3code/client-settings.json"))
 DEFAULTS_FILE = Path(os.environ.get("T3_CLIENT_DEFAULTS_FILE", DOTFILES / "t3code/client-settings.defaults.json"))
 PROFILES_ROOT = Path(os.environ.get("T3_CHROME_PROFILES_DIR", Path.home() / ".t3-workspace-chrome"))
-WINDOW_STATE_ROOT = Path(os.environ.get("T3_WINDOW_STATE_DIR", Path.home() / ".local/state/t3-windows"))
+# A Mac window's state is under its browser's directory here (window_state_root).
+WINDOW_STATE_ROOT = os.environ.get("T3_WINDOW_STATE_DIR")
 # Space-separated origins to sync windows of, all when unset: the end-to-end
 # tests keep to their own windows with it.
 ONLY_ORIGINS = frozenset(os.environ.get("T3_CLIENT_SETTINGS_ORIGINS", "").split())
@@ -201,8 +203,16 @@ def window_sources() -> list[Source]:
     return chrome_window_sources(scope) + profile_window_sources(scope)
 
 
+def window_state_root(scope: Any) -> Path:
+    """Where a Mac window's state is: per browser, as bin-macos/startup-windows keeps it, so the
+    copy last written to a window in one browser is never compared with another's."""
+    if WINDOW_STATE_ROOT:
+        return Path(WINDOW_STATE_ROOT)
+    return Path.home() / ".local/state/t3-windows" / scope.BROWSER_STATE_NAME
+
+
 def chrome_window_sources(scope: Any) -> list[Source]:
-    """A source per origin with an app window open in your own Chrome (macOS)."""
+    """A source per origin with an app window open in T3 Code's browser on the Mac."""
     try:
         pid = scope.own_chrome_pid()
     except OSError:
@@ -216,7 +226,7 @@ def chrome_window_sources(scope: Any) -> list[Source]:
             continue
         seen.add(name)
         page = scope.ChromeWindowPage(pid, int(window["id"]))
-        sources.append(page_source(scope, name, WINDOW_STATE_ROOT / name / MARKER, page.evaluate))
+        sources.append(page_source(scope, name, window_state_root(scope) / name / MARKER, page.evaluate))
     return sources
 
 

@@ -7,14 +7,15 @@ Usage: t3-window-scope PROFILE_DIR|@chrome ORIGIN WORKDIR [--link URL LABEL]...
 
 PROFILE_DIR is the window's Chrome --user-data-dir, reached over the DevTools
 port that Chrome was started with (bin-linux/startup-windows). @chrome is the
-user's own Chrome on macOS, whose app window on ORIGIN is reached through
-AppleScript instead (bin-macos/startup-windows): one Chrome instance holds every
-workspace window, in its T3 profile, because macOS hands a launch of "Google
-Chrome", a Dock click or a link from another app to whichever instance of it
-runs, and a second instance there takes the user's own browsing. Chrome refuses
+Chromium browser T3_BROWSER_APP names on macOS (Google Chrome Beta unless set),
+whose app window on ORIGIN is reached through AppleScript instead
+(bin-macos/startup-windows): one instance of it, on its default data directory,
+holds every workspace window. A browser of its own keeps T3 Code's shortcuts
+from colliding with the ones Chrome reserves without taking those from the
+user's own Chrome, which shares no bundle id with it. Chrome refuses
 remote debugging of its default data directory, and AppleScript's `execute
 javascript` needs "Allow JavaScript from Apple Events" (View > Developer) on in
-that profile. --list-windows prints "AEROSPACE_WINDOW_ID ORIGIN" for each of
+that browser. --list-windows prints "AEROSPACE_WINDOW_ID ORIGIN" for each of
 those windows: the page titles are set to unique tags for a moment and found in
 AeroSpace's window list, as nothing else ties a Chrome window to AeroSpace's (a
 window on Chrome's error page cannot run script, and is matched by its title,
@@ -117,7 +118,10 @@ SOCKET_TIMEOUT = 10.0
 POLL = 0.25
 
 T = TypeVar("T")
-CHROME_BINARY = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+BROWSER_APP = os.environ.get("T3_BROWSER_APP", "Google Chrome Beta")
+# The directory bin-macos/startup-windows and bin/t3-client-settings keep this
+# browser's windows' state in, under ~/.local/state/t3-windows.
+BROWSER_STATE_NAME = BROWSER_APP.replace(" ", "-")
 OWN_CHROME = "@chrome"
 T3_HOST_SUFFIX = ".t3.localhost"
 APPLE_EVENTS_OFF = "Allow JavaScript from Apple Events"
@@ -406,16 +410,30 @@ class DevToolsPage(DevTools):
         self.call("Emulation.setFocusEmulationEnabled", {"enabled": True})
 
 
+def browser_binary() -> str:
+    """BROWSER_APP's executable, as its bundle names it (Chrome Beta's is "Google Chrome Beta")."""
+    import plistlib
+
+    bundle = f"/Applications/{BROWSER_APP}.app"
+    try:
+        with open(f"{bundle}/Contents/Info.plist", "rb") as info:
+            executable = plistlib.load(info)["CFBundleExecutable"]
+    except (OSError, KeyError, ValueError) as exc:
+        raise OSError(f"{BROWSER_APP} is not installed ({bundle})") from exc
+    return f"{bundle}/Contents/MacOS/{executable}"
+
+
 def own_chrome_pid() -> int:
-    """The user's own Chrome: the instance on its default data directory."""
+    """BROWSER_APP's instance on its default data directory."""
     import subprocess
 
+    binary = browser_binary()
     listing = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True).stdout
     for line in listing.splitlines():
         pid, _, command = line.strip().partition(" ")
-        if command.startswith(CHROME_BINARY) and "--user-data-dir" not in command and "--type=" not in command:
+        if command.startswith(binary) and "--user-data-dir" not in command and "--type=" not in command:
             return int(pid)
-    raise OSError("your Chrome is not running")
+    raise OSError(f"{BROWSER_APP} is not running")
 
 
 def jxa(pid: int, *args: str) -> Any:
@@ -427,20 +445,20 @@ def jxa(pid: int, *args: str) -> Any:
             capture_output=True, text=True, timeout=OSASCRIPT_TIMEOUT,
         )
     except subprocess.TimeoutExpired as exc:
-        raise OSError("AppleScript to Chrome timed out") from exc
+        raise OSError(f"AppleScript to {BROWSER_APP} timed out") from exc
     if result.returncode != 0:
         message = result.stderr.strip()
         if APPLE_EVENTS_OFF in message:
             raise OSError(
-                "Chrome runs no JavaScript from AppleScript: turn on View > Developer > "
-                "Allow JavaScript from Apple Events in a window of its T3 profile"
+                f"{BROWSER_APP} runs no JavaScript from AppleScript: turn on View > Developer > "
+                "Allow JavaScript from Apple Events in one of its windows"
             )
-        raise OSError(f"AppleScript to Chrome failed: {message[-300:]}")
+        raise OSError(f"AppleScript to {BROWSER_APP} failed: {message[-300:]}")
     return json.loads(result.stdout or "null")
 
 
 class ChromeWindowPage:
-    """A page in an app window of the user's own Chrome, through AppleScript.
+    """A page in an app window of BROWSER_APP, through AppleScript.
 
     Runs only expressions, as `execute javascript` returns the value of the
     last one; a promise is settled into a window property and polled."""
@@ -496,7 +514,7 @@ class ChromeWindowPage:
 
 
 def chrome_page(origin: str) -> tuple[ChromeWindowPage, str] | None:
-    """The user's Chrome's app window on ORIGIN, once past pairing, and its URL."""
+    """BROWSER_APP's app window on ORIGIN, once past pairing, and its URL."""
     pid = own_chrome_pid()
     found = jxa(pid, "find", origin)
     if not found or urllib.parse.urlsplit(found["url"]).path.startswith(PAIR_PATH):
@@ -507,7 +525,7 @@ def chrome_page(origin: str) -> tuple[ChromeWindowPage, str] | None:
 def open_page(profile_dir: str, origin: str, deadline: float) -> tuple[Any, str]:
     """ORIGIN's page in the window PROFILE_DIR names, and the URL it is on."""
     if profile_dir == OWN_CHROME:
-        return until(deadline, f"a paired T3 Code window on {origin} in your Chrome", lambda: chrome_page(origin))
+        return until(deadline, f"a paired T3 Code window on {origin} in {BROWSER_APP}", lambda: chrome_page(origin))
     page = until(
         deadline,
         f"a paired T3 Code page on {origin} in {profile_dir}'s DevTools (Chrome needs --remote-debugging-port)",
@@ -520,7 +538,7 @@ def open_page(profile_dir: str, origin: str, deadline: float) -> tuple[Any, str]
 
 
 def list_windows() -> list[tuple[int, str]]:
-    """(AeroSpace window id, origin) of each T3 Code window in the user's Chrome."""
+    """(AeroSpace window id, origin) of each T3 Code window in BROWSER_APP."""
     import subprocess
 
     pid = own_chrome_pid()
@@ -539,7 +557,7 @@ def list_windows() -> list[tuple[int, str]]:
                 host = urllib.parse.urlsplit(window["url"]).hostname or ""
                 for entry in listing:
                     title = entry.get("window-title") or ""
-                    if entry.get("app-name") != "Google Chrome" or entry["window-id"] in found.values():
+                    if entry.get("app-name") != BROWSER_APP or entry["window-id"] in found.values():
                         continue
                     if (window["tag"] and window["tag"] in title) or (not window["tag"] and host and host in title):
                         found[n] = entry["window-id"]
