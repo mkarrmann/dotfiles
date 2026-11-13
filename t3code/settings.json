@@ -18,5 +18,9 @@
         "binaryPath": "omnigent-opencode"
       }
     }
+  },
+  "defaultModelSelection": {
+    "instanceId": "omnigent",
+    "model": "claude-native-ui/opus"
   }
 }
