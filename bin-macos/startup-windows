@@ -1291,8 +1291,13 @@ reconcile_t3_window() {
     # -n: a launch the browser's own singleton hands to its running instance, or
     # that starts it, rather than one LaunchServices may route elsewhere. The
     # first-run flags keep a first launch from adding welcome windows.
+    # --no-default-browser-check does not cover Chrome's default-browser prompt
+    # experiments, which open macOS's "change your default web browser" dialog
+    # moments after a launch that starts the browser.
     open -na "$T3_BROWSER_APP" --args --profile-directory="$T3_BROWSER_PROFILE" \
-      --no-first-run --no-default-browser-check --app="$open_url" 2>/dev/null || {
+      --no-first-run --no-default-browser-check \
+      --disable-features=DefaultBrowserPromptSurfaces,DefaultBrowserFramework,DefaultBrowserModal,DefaultBrowserStickyModal,DefaultBrowserSetterSelection,DefaultBrowserChangedOsNotification \
+      --app="$open_url" 2>/dev/null || {
       echo "WARNING: [$title] creation failed, skipping" >&2
       ((failures++)) || true
       return 0
