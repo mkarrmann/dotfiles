@@ -21,6 +21,7 @@
   },
   "defaultModelSelection": {
     "instanceId": "omnigent",
-    "model": "claude-native-ui/opus"
+    "model": "claude-native-ui/opus",
+    "options": [{ "id": "variant", "value": "high" }]
   }
 }
