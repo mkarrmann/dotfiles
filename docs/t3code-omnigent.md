@@ -242,10 +242,10 @@ the shortcut `t3code/keybindings.json` gives it, Cmd for mod where the page's
 - Shortcuts: `bin/t3-ensure` gives every server the ones in
   `t3code/keybindings.json`, replacing those commands' own (T3 Code reloads
   `keybindings.json` when it changes). Todoist claims Cmd+N and Cmd+Shift+N
-  system-wide on the Mac, so `chat.new` keeps only Cmd+Shift+O, `chat.newLocal`
-  moves to Cmd+Opt+N, and `chat.newWithoutProject` to Cmd+Opt+Shift+N.
+  system-wide on the Mac, so `chat.newLocal` moves to Cmd+O (its
+  `editor.openFavorite` to Cmd+Opt+O) and `chat.new` keeps only Cmd+Shift+O.
 - What starts in the window's project: the composer the window opens on,
-  `chat.newLocal` (Ctrl+Alt+N, Cmd+Opt+N on the Mac), and a Shift-click on
+  `chat.newLocal` (Ctrl+O, Cmd+O on the Mac), and a Shift-click on
   the sidebar's New thread button, all of which start in the project of the
   thread or draft on screen.
 - What does not: the New thread button and `chat.new` (Ctrl+Shift+O, Cmd+Shift+O) open a

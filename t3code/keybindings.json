@@ -1,5 +1,6 @@
 [
+  { "key": "mod+o", "command": "chat.newLocal", "when": "!terminalFocus" },
   { "key": "mod+shift+o", "command": "chat.new", "when": "!terminalFocus" },
-  { "key": "mod+alt+n", "command": "chat.newLocal", "when": "!terminalFocus" },
-  { "key": "mod+alt+shift+n", "command": "chat.newWithoutProject", "when": "!terminalFocus" }
+  { "key": "mod+alt+n", "command": "chat.newWithoutProject", "when": "!terminalFocus" },
+  { "key": "mod+alt+o", "command": "editor.openFavorite" }
 ]
