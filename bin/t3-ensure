@@ -140,6 +140,7 @@ T3_RELEASES = "https://github.com/pingdotgg/t3code/releases/download"
 T3_FORK_RELEASES = "https://github.com/mkarrmann/t3code/releases/download"
 T3_FORK_CLIENT: dict[str, tuple[str, str]] = {
     "0.1.7": ("mk-0.1.7-e5ea1eb", "606524120580032e3fb3320790d7808e4ad16cfc61aec9541b5c4445e279a469"),
+    "0.1.9": ("mk-0.1.9-fff7e1f", "b8e2dde3dffeddc4c4d149311e0fd0f55f0c6c0b1cd4fde5fd29f08d0207f098"),
 }
 T3_HOME = Path(os.environ.get("T3CODE_HOME") or Path.home() / ".t3").absolute()
 T3_BIN_DIR = Path.home() / ".local/bin"
