@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "T3 Code window project",
+  "description": "Starts a T3 Code window's new threads (Cmd+O) in the project the window was opened on.",
+  "version": "1.0",
+  "content_scripts": [
+    {
+      "matches": ["http://*.t3.localhost/*"],
+      "js": ["new-thread-here.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ]
+}

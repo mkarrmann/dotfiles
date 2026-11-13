@@ -152,7 +152,8 @@ took:
    forwarder's host is registered, and quit and reopen Chrome Beta to pick
    those up. In Chrome Beta's `chrome://extensions`, turn on Developer mode,
    Load unpacked `~/dotfiles/t3code/link-forwarder` (its id is
-   `pdcoehmlpmfjiimeabommdgknpnjadca`, fixed by its key), and leave it on.
+   `pdcoehmlpmfjiimeabommdgknpnjadca`, fixed by its key) and
+   `~/dotfiles/t3code/window-project`, and leave them on.
 3. Run `~/bin/startup-windows`. It finds both tunnels
    without their new forward or token pool and restarts them (expect Duo), then
    opens each window, paired with both servers and scoped as it is created; that
@@ -244,10 +245,15 @@ the shortcut `t3code/keybindings.json` gives it, Cmd for mod where the page's
   `keybindings.json` when it changes). Todoist claims Cmd+N and Cmd+Shift+N
   system-wide on the Mac, so `chat.newLocal` moves to Cmd+O (its
   `editor.openFavorite` to Cmd+Opt+O) and `chat.new` keeps only Cmd+Shift+O.
-- What starts in the window's project: the composer the window opens on,
-  `chat.newLocal` (Ctrl+O, Cmd+O on the Mac), and a Shift-click on
-  the sidebar's New thread button, all of which start in the project of the
-  thread or draft on screen.
+- What starts in the window's project: the composer the window opens on, and
+  on the Mac `chat.newLocal` (Cmd+O) wherever the window is. T3 Code starts
+  `chat.newLocal` in the project of the thread or draft on screen, and in the
+  window's project only on a page without one; so `t3code/window-project`, an
+  extension loaded in Chrome Beta, holds Cmd+O on a thread or draft, swaps the
+  page for `/new` (no project) and lets the press through there, or puts the
+  page back if T3 Code does not take it. Elsewhere (Ctrl+O on Linux, where the
+  extension is not loaded) and a Shift-click on the sidebar's New thread button
+  follow the thread or draft on screen.
 - What does not: the New thread button and `chat.new` (Ctrl+Shift+O, Cmd+Shift+O) open a
   project picker while the server has more than one project; `/` opens a draft
   in the most recently active project (`routes/_chat.index.tsx`); and after
