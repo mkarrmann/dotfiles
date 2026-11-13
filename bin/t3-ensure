@@ -7,8 +7,8 @@ Idempotent; init.sh runs it on the Omnigent hub candidates, the work Mac and
 the Linux desktop. Each runs one server, NAME. On a candidate NAME is
 "checkouts" and its projects are every ~/checkoutN. On the Mac NAME is "local",
 its project ~/dotfiles (workspace 1's), and launchd runs it
-(launchd/com.mkarrmann.t3-local.plist, loaded by sync.sh), so steps 5 and 6
-below do not apply there. On the desktop NAME is the layout's t3Server
+(launchd/com.mkarrmann.t3-local.plist, loaded by sync.sh), so step 5 does not
+apply there and step 6 only restarts it. On the desktop NAME is the layout's t3Server
 (bin-linux/startup-windows --print-layout) and its projects are the workdirs of
 the table's t3 rows (one whose workdir is missing is skipped with a warning).
 Either way each window's new threads start in its own workspace's project
@@ -21,6 +21,13 @@ Either way each window's new threads start in its own workspace's project
      the proxy nor carries the client certificate that ~/.curlrc gives curl.
      Only hosts with a pinned checksum (Linux) install; the Mac keeps what
      it has;
+ 1b. serves mkarrmann/t3code's web client (T3_FORK_CLIENT; the fork's
+     README) when one is pinned for the installed version: upstream's install
+     of it copied to ~/.t3/runtime/fork/TAG with that client, checked against
+     the pin, in place of its client/ (the t3 program serves the client/
+     beside it), and ~/.local/bin/t3 linked to the copy. Without a pin, or
+     without upstream's install under ~/.t3/runtime/versions, the client is
+     upstream's;
   2. links the server's settings, ~/.t3-workspaces/NAME/userdata/
      settings.json, to t3code/settings.json in the dotfiles, which every
      server shares: T3 Code saves through the link and reloads the file when
@@ -61,8 +68,10 @@ Either way each window's new threads start in its own workspace's project
      them. Their state (~/.t3-workspaces/X) is left where it is;
   6. enables and starts t3@NAME (systemd/t3@.service, bin/t3-workspace-serve)
      when it is not enabled yet, and restarts it when it runs a t3 other than
-     the installed one, as after step 1 upgrades it (or a `t3 update`).
-     Otherwise a running server is never restarted;
+     the installed one, as after step 1 upgrades it or step 1b links the
+     fork's client (or a `t3 update`); on the Mac it restarts launchd's
+     t3-local on the same condition. Otherwise a running server is never
+     restarted;
   7. adds each of its directories as a project of the server unless it
      already is one. A project the server bootstrapped itself would count as a
      fresh install and open T3 Code's first-run wizard in every new window.
@@ -101,6 +110,7 @@ SHIM_COMMAND = SHIM.name
 SHIM_RUNTIME = DOTFILES / "services/omnigent-opencode"
 DAEMON_UNIT = "omnigent-opencode.service"
 DAEMON_LABEL = "com.mkarrmann.omnigent-opencode"
+MAC_SERVER_LABEL = "com.mkarrmann.t3-local"  # launchd/com.mkarrmann.t3-local.plist
 DAEMON_BUSY = 2  # `omnigent-opencode daemon-stale`: stale, but a restart would lose a turn
 SHARED_SETTINGS = DOTFILES / "t3code/settings.json"
 SHARED_KEYBINDINGS = DOTFILES / "t3code/keybindings.json"
@@ -121,6 +131,16 @@ T3_CLI_SHA256 = {
     "linux-arm64": "5a528e23af394cc6f359036d3cb8441fda14129d477630fc6c53e4f4a1025bc8",
 }
 T3_RELEASES = "https://github.com/pingdotgg/t3code/releases/download"
+# Step 1b's web client from https://github.com/mkarrmann/t3code, a fork carrying
+# a few web-only patches (its README lists them), by the t3 version it is built
+# for: the release tag and the sha256 of its t3-client-<version>.tar.gz (the
+# release notes and its .sha256 asset agree). A version without one serves
+# upstream's own client; bump it with T3_CLI_VERSION once the fork's workflow
+# has built the new version.
+T3_FORK_RELEASES = "https://github.com/mkarrmann/t3code/releases/download"
+T3_FORK_CLIENT: dict[str, tuple[str, str]] = {
+    "0.1.7": ("mk-0.1.7-e5ea1eb", "606524120580032e3fb3320790d7808e4ad16cfc61aec9541b5c4445e279a469"),
+}
 T3_HOME = Path(os.environ.get("T3CODE_HOME") or Path.home() / ".t3").absolute()
 T3_BIN_DIR = Path.home() / ".local/bin"
 PROJECT_ADD_ATTEMPTS = 30
@@ -219,11 +239,56 @@ def install_t3(version: str, checksums: dict[str, str], t3_home: Path, bin_dir: 
             staging.rename(version_dir)
         finally:
             shutil.rmtree(staging, ignore_errors=True)
+    return link_t3(version_dir / "t3", t3_home, bin_dir)
+
+
+def install_fork_client(version: str, pins: dict[str, tuple[str, str]], t3_home: Path, bin_dir: Path) -> Path | None:
+    """Step 1b: upstream's install of VERSION (step 1's) copied to
+    T3_HOME/runtime/fork/TAG with the fork's web client, checked against PINS, in
+    place of its client/ -- the t3 program serves the client/ beside it -- and
+    BIN_DIR/t3 linked to that copy. Returns the link; None, changing nothing, when
+    PINS has no client for VERSION or upstream's install of it is not there."""
+    pin = pins.get(version)
+    official = t3_home / "runtime/versions" / version
+    if pin is None or not (official / ".install-complete").is_file():
+        return None
+    tag, expected = pin
+    archive = f"t3-client-{version}.tar.gz"
+    fork_dir = t3_home / "runtime/fork" / tag
+    marker = fork_dir / ".install-complete"
+    if not (marker.is_file() and marker.read_text().strip() == tag):
+        fork_dir.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=fork_dir.parent))
+        try:
+            download = staging / archive
+            if subprocess.run(["curl", "-fsSL", "-o", str(download), f"{T3_FORK_RELEASES}/{tag}/{archive}"]).returncode != 0:
+                raise SystemExit(f"[t3-ensure] ERROR: could not download {tag}'s {archive}")
+            if sha256(download) != expected:
+                raise SystemExit(f"[t3-ensure] ERROR: checksum mismatch for {tag}'s {archive}; not installing it")
+            runtime = staging / "runtime"
+            shutil.copytree(official, runtime, symlinks=True)
+            shutil.rmtree(runtime / "client", ignore_errors=True)
+            (runtime / "client").mkdir()
+            if subprocess.run(["tar", "-xzf", str(download), "-C", str(runtime / "client")]).returncode != 0:
+                raise SystemExit(f"[t3-ensure] ERROR: could not unpack {tag}'s {archive}")
+            if not (runtime / "client/index.html").is_file():
+                raise SystemExit(f"[t3-ensure] ERROR: {tag}'s {archive} has no index.html")
+            (runtime / ".install-complete").write_text(tag + "\n")
+            shutil.rmtree(fork_dir, ignore_errors=True)
+            runtime.rename(fork_dir)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+    return link_t3(fork_dir / "t3", t3_home, bin_dir)
+
+
+def link_t3(binary: Path, t3_home: Path, bin_dir: Path) -> Path:
+    """BIN_DIR/t3 linked to BINARY, the link recorded in T3_HOME/runtime/launchers
+    as install.sh records it. Returns the link."""
     bin_dir.mkdir(parents=True, exist_ok=True)
     link = bin_dir / "t3"
     new_link = bin_dir / ".t3.t3-ensure"
     new_link.unlink(missing_ok=True)
-    new_link.symlink_to(version_dir / "t3")
+    new_link.symlink_to(binary)
     new_link.replace(link)
     launcher = str(bin_dir.resolve() / "t3")
     launchers = t3_home / "runtime/launchers"
@@ -395,14 +460,30 @@ def systemctl(*args: str) -> int:
     return subprocess.run(["systemctl", "--user", *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
 
 
+def executable_of(pid: int) -> str | None:
+    """The file process PID executes: /proc's link on Linux, lsof's first program
+    text on the Mac. None when neither tells."""
+    try:
+        return os.readlink(f"/proc/{pid}/exe")
+    except OSError:
+        pass
+    try:
+        result = subprocess.run(
+            [shutil.which("lsof") or "/usr/sbin/lsof", "-a", "-p", str(pid), "-d", "txt", "-Fn"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except OSError:
+        return None
+    return next((line[1:] for line in result.stdout.splitlines() if line.startswith("n")), None)
+
+
 def runs_other_binary(pid: int, binary: Path) -> bool:
     """Whether process PID executes a file other than BINARY's target. False when
     that cannot be told, so a doubt never restarts anything."""
-    try:
-        running = os.readlink(f"/proc/{pid}/exe")
-    except OSError:
-        return False
-    return running != str(binary.resolve())
+    running = executable_of(pid)
+    return running is not None and running != str(binary.resolve())
 
 
 def server_runs_other_t3(unit: str, t3: Path) -> bool:
@@ -412,6 +493,18 @@ def server_runs_other_t3(unit: str, t3: Path) -> bool:
     )
     pid = result.stdout.strip()
     return result.returncode == 0 and pid.isdigit() and int(pid) > 0 and runs_other_binary(int(pid), t3)
+
+
+def mac_server_runs_other_t3(t3: Path) -> bool:
+    """Step 6 on the Mac: launchd's t3-local runs a t3 other than T3."""
+    result = subprocess.run(
+        ["launchctl", "print", f"gui/{os.getuid()}/{MAC_SERVER_LABEL}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    pid = re.search(r"^\s*pid = (\d+)$", result.stdout, re.MULTILINE)
+    return result.returncode == 0 and pid is not None and runs_other_binary(int(pid.group(1)), t3)
 
 
 def ensure_daemon(mac: bool) -> bool:
@@ -489,6 +582,19 @@ def main() -> int:
                 # The t3 that is there still serves; the rest of the run goes on with it.
                 log(f"WARNING: could not upgrade the t3 CLI, keeping {was}: {error}")
                 failed = True
+    installed = t3_version(t3)
+    if installed is not None:
+        version = ".".join(map(str, installed))
+        link = T3_BIN_DIR / "t3"
+        before = link.resolve() if link.exists() else None
+        try:
+            if install_fork_client(version, T3_FORK_CLIENT, T3_HOME, T3_BIN_DIR) is not None:
+                t3 = link
+                if link.resolve() != before:
+                    log(f"linked {link} to {link.resolve()}, t3 {version} with {T3_FORK_CLIENT[version][0]}'s web client")
+        except SystemExit as error:
+            log(f"WARNING: could not install the fork's web client, keeping upstream's: {error}")
+            failed = True
     mac = host_os() == "Darwin"
     desktop = not mac and on_linux_desktop()
     if desktop and merge_settings(DESKTOP_APP_SETTINGS, str(SHIM)):
@@ -533,6 +639,13 @@ def main() -> int:
                 log(f"restarted {unit} on {served.resolve()}")
             else:
                 log(f"WARNING: could not restart {unit} onto {served.resolve()}")
+                failed = True
+        elif mac and mac_server_runs_other_t3(served):
+            command = ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{MAC_SERVER_LABEL}"]
+            if subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                log(f"restarted {MAC_SERVER_LABEL} on {served.resolve()}")
+            else:
+                log(f"WARNING: could not restart {MAC_SERVER_LABEL} onto {served.resolve()}")
                 failed = True
         for directory in server.projects:
             if not add_project(t3, server, directory):

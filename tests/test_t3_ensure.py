@@ -52,18 +52,47 @@ def build_release(directory: Path, version: str, platform: str, script: str) -> 
 
 
 def write_fake_curl(path: Path, fetched: Path) -> None:
-    """A curl that logs each URL to FETCHED and serves $FAKE_RELEASE_ARCHIVE, failing while it is empty."""
+    """A curl that logs each URL to FETCHED and serves $FAKE_RELEASE_ARCHIVE, or
+    $FAKE_CLIENT_ARCHIVE for a fork client's URL, failing while that is empty."""
     write_exe(
         path,
         f'out=""; url=""; while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; -*) ;; *) url="$1" ;; esac; shift; done\n'
         f'echo "$url" >> {fetched}\n'
-        f'[ -n "$FAKE_RELEASE_ARCHIVE" ] || exit 22\n'
-        f'cp "$FAKE_RELEASE_ARCHIVE" "$out"\n',
+        f'archive="$FAKE_RELEASE_ARCHIVE"; case "$url" in */t3-client-*) archive="$FAKE_CLIENT_ARCHIVE" ;; esac\n'
+        f'[ -n "$archive" ] || exit 22\n'
+        f'cp "$archive" "$out"\n',
     )
+
+
+def build_client(path: Path, index: str) -> Path:
+    """A fork client archive as mkarrmann/t3code publishes it: dist/'s contents, its index.html being INDEX."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(path, "w:gz") as tar:
+        for name, text in (("./index.html", index), ("./assets/main.js", "fork();")):
+            data = text.encode()
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return path
+
+
+def upstream_install(versions: Path, version: str, t3_script: str) -> Path:
+    """VERSION as install.sh unpacks it, with upstream's client/ and a node_modules/ beside its t3."""
+    directory = versions / version
+    write_exe(directory / "t3", t3_script)
+    (directory / "client/assets").mkdir(parents=True)
+    (directory / "client/index.html").write_text("upstream")
+    (directory / "client/assets/upstream-only.js").write_text("upstream();")
+    (directory / "node_modules").mkdir()
+    (directory / "node_modules/dep.js").write_text("dep();")
+    (directory / ".install-complete").write_text(version + "\n")
+    return directory
 
 
 def start_binary(path: Path, addCleanup) -> subprocess.Popen:
     """A process whose executable is PATH (a copy of sleep), as a server runs its t3."""
+    if sys.platform == "darwin":
+        raise unittest.SkipTest("macOS kills a copy of /bin/sleep, so no process here runs another binary")
     path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(shutil.which("sleep"), path)
     process = subprocess.Popen([str(path), "300"])
@@ -571,6 +600,67 @@ class T3CliInstallTest(unittest.TestCase):
         self.assertEqual(self.fetches(), [])
 
 
+class T3ForkClientTest(unittest.TestCase):
+    """Step 1b against an upstream install and a fork client archive built here."""
+
+    VERSION, TAG = "0.1.7", "mk-0.1.7-abc1234"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.t3_home = self.root / "home/.t3"
+        self.bin_dir = self.root / "home/.local/bin"
+        self.fetched = self.root / "fetched.log"
+        self.module = load_t3_ensure()
+        self.official = upstream_install(self.t3_home / "runtime/versions", self.VERSION, f"echo t3 v{self.VERSION}\n")
+        archive = build_client(self.root / "release/t3-client.tar.gz", "fork")
+        self.pins = {self.VERSION: (self.TAG, hashlib.sha256(archive.read_bytes()).hexdigest())}
+        fake_bin = self.root / "bin"
+        write_fake_curl(fake_bin / "curl", self.fetched)
+        patcher = mock.patch.dict(os.environ, {"PATH": f"{fake_bin}:/usr/bin:/bin", "FAKE_CLIENT_ARCHIVE": str(archive)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def install(self, pins=None):
+        return self.module.install_fork_client(self.VERSION, self.pins if pins is None else pins, self.t3_home, self.bin_dir)
+
+    def fetches(self):
+        return self.fetched.read_text().splitlines() if self.fetched.exists() else []
+
+    def test_lays_the_fork_client_over_a_copy_of_upstreams_install(self):
+        link = self.install()
+        fork = self.t3_home / "runtime/fork" / self.TAG
+        self.assertEqual(link, self.bin_dir / "t3")
+        self.assertEqual(link.resolve(), (fork / "t3").resolve())
+        self.assertEqual(subprocess.run([str(link)], capture_output=True, text=True).stdout, f"t3 v{self.VERSION}\n")
+        self.assertEqual((fork / "client/index.html").read_text(), "fork")
+        self.assertTrue((fork / "client/assets/main.js").is_file())
+        self.assertFalse((fork / "client/assets/upstream-only.js").exists())
+        self.assertEqual((fork / "node_modules/dep.js").read_text(), "dep();")
+        self.assertEqual((self.official / "client/index.html").read_text(), "upstream")
+        self.assertEqual(
+            self.fetches(),
+            [f"https://github.com/mkarrmann/t3code/releases/download/{self.TAG}/t3-client-{self.VERSION}.tar.gz"],
+        )
+        self.install()
+        self.assertEqual(len(self.fetches()), 1)
+
+    def test_an_archive_that_does_not_match_the_pin_changes_nothing(self):
+        with self.assertRaises(SystemExit) as raised:
+            self.install({self.VERSION: (self.TAG, "0" * 64)})
+        self.assertIn("checksum mismatch", str(raised.exception))
+        self.assertFalse((self.bin_dir / "t3").exists())
+        self.assertEqual(list((self.t3_home / "runtime/fork").iterdir()), [])
+
+    def test_no_pin_or_no_upstream_install_changes_nothing(self):
+        self.assertIsNone(self.install({}))
+        (self.official / ".install-complete").unlink()
+        self.assertIsNone(self.install())
+        self.assertEqual(self.fetches(), [])
+        self.assertFalse((self.bin_dir / "t3").exists())
+
+
 class T3UpgradeTest(unittest.TestCase):
     """Step 1 upgrading the t3 that is there to the pin and step 6 restarting the
     server onto it: main() in-process, the pin pointed at a release built here."""
@@ -648,6 +738,22 @@ class T3UpgradeTest(unittest.TestCase):
                 self.assertEqual(self.link.resolve(), current.resolve())
                 self.assertFalse([c for c in self.calls_made() if "github.com" in c or "restart" in c])
 
+    def test_an_upgrade_with_a_pinned_fork_client_serves_it(self):
+        archive = build_client(self.root / "client/t3-client.tar.gz", "fork")
+        os.environ["FAKE_CLIENT_ARCHIVE"] = str(archive)
+        tag = f"mk-{self.NEW}-abc1234"
+        self.module.T3_FORK_CLIENT = {self.NEW: (tag, hashlib.sha256(archive.read_bytes()).hexdigest())}
+        # This test's own process stands in for the server, running another t3.
+        (self.units / "pid/t3@checkouts.service").write_text(str(os.getpid()))
+        code, out = self.run_main()
+        self.assertEqual(code, 0, out)
+        fork = self.home / ".t3/runtime/fork" / tag
+        self.assertEqual(self.link.resolve(), (fork / "t3").resolve())
+        self.assertEqual((fork / "client/index.html").read_text(), "fork")
+        self.assertIn(f"restarted t3@checkouts.service on {(fork / 't3').resolve()}", out)
+        # Upstream's install stays as it was, for a rollback.
+        self.assertTrue((self.versions / self.NEW / "t3").exists())
+
     def test_a_failed_upgrade_keeps_the_old_t3_and_finishes_the_run(self):
         os.environ["FAKE_RELEASE_ARCHIVE"] = ""
         code, out = self.run_main()
@@ -720,11 +826,23 @@ class T3EnsureMacTest(unittest.TestCase):
 
     def test_mac_restarts_its_daemon_through_launchd_when_it_runs_old_code(self):
         self.assertEqual(self.run_ensure().returncode, 0)
-        self.assertFalse([c for c in self.calls_made() if c.startswith("launchctl")])
+        self.assertFalse([c for c in self.calls_made() if c.startswith("launchctl kickstart")])
         self.stale.touch()
         result = self.run_ensure()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f"launchctl kickstart -k gui/{os.getuid()}/com.mkarrmann.omnigent-opencode", self.calls_made())
+
+    def test_mac_restarts_its_server_through_launchd_when_it_runs_another_t3(self):
+        # This test's own process stands in for a server running another t3.
+        write_exe(
+            self.bin / "launchctl",
+            f'echo "launchctl $*" >> {self.calls}\n'
+            f'case "$1 $2" in "print gui/"*/com.mkarrmann.t3-local) printf "\\tpid = {os.getpid()}\\n" ;; esac\n',
+        )
+        result = self.run_ensure()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"launchctl kickstart -k gui/{os.getuid()}/com.mkarrmann.t3-local", self.calls_made())
+        self.assertIn("restarted com.mkarrmann.t3-local on", result.stdout)
 
     def test_mac_without_dotfiles_has_no_server_to_configure(self):
         (self.home / "dotfiles").rmdir()
