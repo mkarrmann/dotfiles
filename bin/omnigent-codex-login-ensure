@@ -43,7 +43,7 @@
 # missing seam. Deleting auth.json and the dismissed_detections key reverts it.
 #
 # Env overrides: DOTFILES_DIR, OMNIGENT_DATA_DIR / OMNIGENT_CONFIG_HOME,
-# CODEX_HOME, OMNIGENT_PY.
+# CODEX_HOME, CODEX_SYSTEM_DIR (/etc/codex), OMNIGENT_PY.
 set -euo pipefail
 
 if [[ $# -ne 0 ]]; then
@@ -62,8 +62,11 @@ CONFIG="$DATA_DIR/config.yaml"
 
 # Only managed installs need the shim: a plain Codex really does keep its
 # credential in auth.json, where Omnigent's probe would find it unaided.
+# Meta moved the pin from managed_config*.toml to config.toml on 2026-11-12.
+CODEX_SYSTEM_DIR="${CODEX_SYSTEM_DIR:-/etc/codex}"
 managed_config=""
-for candidate in /etc/codex/managed_config.toml /etc/codex/managed_config_corp.toml; do
+for candidate in "$CODEX_SYSTEM_DIR"/config.toml "$CODEX_SYSTEM_DIR"/managed_config.toml \
+  "$CODEX_SYSTEM_DIR"/managed_config_corp.toml; do
   if [[ -r "$candidate" ]] && grep -Eq '^[[:space:]]*model_provider[[:space:]]*=' "$candidate"; then
     managed_config="$candidate"
     break
