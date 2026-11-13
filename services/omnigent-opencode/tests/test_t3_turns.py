@@ -63,7 +63,7 @@ async def test_catalog_reports_the_1m_window_only_for_1m_models(t3: T3Client) ->
     models = await t3.call("model.list", {"location": {"directory": "/tmp"}})
     windows = {(m["providerID"], m["id"]): m["limit"]["context"] for m in models["data"]}
     assert windows == {
-        ("claude-native-ui", "opus"): 200_000,
+        ("claude-native-ui", "opus"): 1_000_000,
         ("claude-native-ui", "sonnet-1m"): 1_000_000,
         ("claude-native-ui", "haiku[1m]"): 1_000_000,
         ("codex-native-ui", "gpt-5"): 200_000,

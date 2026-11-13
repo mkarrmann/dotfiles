@@ -37,6 +37,17 @@ DEFAULT_CONTEXT: Final = 200_000
 # catalog reports no contextWindow, and older probes put the suffix only on `model`.
 LONG_CONTEXT: Final = 1_000_000
 LONG_CONTEXT_SUFFIX: Final = "[1m]"
+# Claude models whose standard window is already 1M tokens, with or without the suffix.
+LONG_CONTEXT_MODELS: Final = (
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-haiku-5",
+    "claude-fable-5",
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-sonnet-4-6",
+)
 DEFAULT_OUTPUT: Final = 32_000
 # Claude Code lists Fable, which this account has no access to.
 UNAVAILABLE_MODELS: Final = ("fable",)
@@ -91,6 +102,10 @@ def _long_context(option: dict[str, Any]) -> bool:
     return any(n.endswith(LONG_CONTEXT_SUFFIX) for n in _names(option))
 
 
+def _natively_long_context(option: dict[str, Any]) -> bool:
+    return any(n.startswith(LONG_CONTEXT_MODELS) for n in _names(option))
+
+
 def _offered(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The harness's models less those this account cannot run and the `[1m]` twin
     of a model also offered plainly: the picker shows one entry per model, under the
@@ -109,7 +124,10 @@ def _context_window(model: str, option: dict[str, Any] | None) -> int:
     reported = option.get("contextWindow") if option else None
     if isinstance(reported, int) and reported > 0:
         return reported
-    long = _long_context(option) if option else model.endswith(LONG_CONTEXT_SUFFIX)
+    if option:
+        long = _long_context(option) or _natively_long_context(option)
+    else:
+        long = model.endswith(LONG_CONTEXT_SUFFIX) or model.startswith(LONG_CONTEXT_MODELS)
     return LONG_CONTEXT if long else DEFAULT_CONTEXT
 
 
