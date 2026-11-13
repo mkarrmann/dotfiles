@@ -152,8 +152,7 @@ took:
    forwarder's host is registered, and quit and reopen Chrome Beta to pick
    those up. In Chrome Beta's `chrome://extensions`, turn on Developer mode,
    Load unpacked `~/dotfiles/t3code/link-forwarder` (its id is
-   `pdcoehmlpmfjiimeabommdgknpnjadca`, fixed by its key) and
-   `~/dotfiles/t3code/window-project`, and leave them on.
+   `pdcoehmlpmfjiimeabommdgknpnjadca`, fixed by its key), and leave it on.
 3. Run `~/bin/startup-windows`. It finds both tunnels
    without their new forward or token pool and restarts them (expect Duo), then
    opens each window, paired with both servers and scoped as it is created; that
@@ -246,18 +245,52 @@ the shortcut `t3code/keybindings.json` gives it, Cmd for mod where the page's
   system-wide on the Mac, so `chat.newLocal` moves to Cmd+O (its
   `editor.openFavorite` to Cmd+Opt+O) and `chat.new` keeps only Cmd+Shift+O.
 - What starts in the window's project: the composer the window opens on, and
-  on the Mac `chat.newLocal` (Cmd+O) wherever the window is. T3 Code starts
-  `chat.newLocal` in the project of the thread or draft on screen, and in the
-  window's project only on a page without one; so `t3code/window-project`, an
-  extension loaded in Chrome Beta, holds Cmd+O on a thread or draft, swaps the
-  page for `/new` (no project) and lets the press through there, or puts the
-  page back if T3 Code does not take it. Elsewhere (Ctrl+O on Linux, where the
-  extension is not loaded) and a Shift-click on the sidebar's New thread button
-  follow the thread or draft on screen.
+  `chat.newLocal` (Ctrl+O, Cmd+O on the Mac) wherever the window is, with the
+  fork's web client (below); upstream's starts it in the project of the thread
+  or draft on screen.
 - What does not: the New thread button and `chat.new` (Ctrl+Shift+O, Cmd+Shift+O) open a
   project picker while the server has more than one project; `/` opens a draft
-  in the most recently active project (`routes/_chat.index.tsx`); and after
-  opening another project's thread, those follow that thread's project.
+  in the most recently active project (`routes/_chat.index.tsx`); and a
+  Shift-click on the New thread button follows the thread or draft on screen.
+- The sidebar: with the fork's client, the window's project's threads come
+  first in Active (while Working is on, as it orders Active by time) and in
+  Working, each part in its usual order.
+
+### The fork's web client
+
+Both behaviors above come from patches T3 Code would not take upstream, in a
+fork, [mkarrmann/t3code](https://github.com/mkarrmann/t3code), whose README
+has the details. "The window's project" there is the first project in the
+window's `projectOrder`, the one `t3-window-scope` puts first; a window without
+an order behaves as upstream's. The patches change only the web client
+(`apps/web/src/fork/` plus call sites), and the official `t3` serves the client
+from the `client/` directory beside it, so nothing else is rebuilt:
+
+- Branches: `mk/v<version>` is upstream's release tag plus the patch commits
+  (`~/repos/t3code` has the fork as remote `fork`).
+- Builds: the fork's workflow (`build-client.yml` on its default branch,
+  `fork`) runs daily, takes upstream's latest stable release, cherry-picks the
+  newest `mk/v*` branch's patches onto it, runs the web typecheck and the tests
+  beside each patched file, builds `apps/web` as upstream's release does, and
+  publishes `t3-client-<version>.tar.gz` with its sha256 as release
+  `mk-<version>-<patch sha>`. When the patches stop applying the run fails
+  (GitHub emails), and the fix is a local `mk/vNEW` branch; the README has the
+  steps.
+- Install: `bin/t3-ensure` (step 1b) copies upstream's install of the running
+  version to `~/.t3/runtime/fork/<tag>` with that client, checked against
+  `T3_FORK_CLIENT`, links `~/.local/bin/t3` to the copy, and restarts the
+  server onto it (launchd's `t3-local` on the Mac). A version without a pin
+  serves upstream's client, so upgrading is: bump `T3_CLI_VERSION` and its
+  checksums as before, and add the fork's tag and sha256 for the version once
+  its workflow has built it (`gh workflow run build-client.yml -R
+  mkarrmann/t3code -f version=X` builds one now).
+- Rollback: drop the version from `T3_FORK_CLIENT` and run `t3-ensure`, which
+  links `~/.local/bin/t3` back to upstream's install and restarts the server.
+- Check: `python3 ~/dotfiles/tests/test-t3-fork-client-e2e.py` runs the
+  installed `t3` with two projects in a throwaway server and headless Chrome
+  Beta and checks Cmd+O; upstream's client fails it.
+- Not covered: the T3 Code desktop app on the Linux desktop has its own copy
+  of the client built in.
 
 Gotchas:
 
