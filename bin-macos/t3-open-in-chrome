@@ -5,7 +5,8 @@ Chrome Beta (T3_BROWSER_APP, see bin-macos/startup-windows) can only open a link
 in itself, away from your logins. t3code/link-forwarder, an extension loaded in
 it, sends each link a T3 Code window opens here as a native message; this opens
 it in Google Chrome, profile directory T3_LINK_CHROME_PROFILE (Default, the
-profile startup-windows opens work windows in), and replies {"ok": true}.
+profile startup-windows opens work windows in), brings Chrome forward, and
+replies {"ok": true}.
 
   t3-open-in-chrome --install [DIR]   register this as the extension's native
                                       host in DIR, the browser's
@@ -93,6 +94,9 @@ def open_link(message: dict | None) -> dict:
     )
     if result.returncode != 0:
         return {"ok": False, "error": result.stderr.strip() or f"open exited {result.returncode}"}
+    # The handoff above opens the tab without bringing Chrome forward. The link
+    # is open either way, so a failure here does not fail it.
+    subprocess.run([OPEN, "-a", CHROME_APP], capture_output=True)
     return {"ok": True}
 
 

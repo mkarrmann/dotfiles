@@ -42,9 +42,17 @@ class Host(unittest.TestCase):
     def opened(self):
         return self.calls.read_text().splitlines() if self.calls.exists() else []
 
-    def test_opens_a_link_in_chromes_work_profile(self):
+    def test_opens_a_link_in_chromes_work_profile_and_brings_chrome_forward(self):
         self.assertEqual(self.send({"url": "https://example.com/a?b=c#d"}), {"ok": True})
-        self.assertEqual(self.opened(), ["-na Google Chrome --args --profile-directory=Default https://example.com/a?b=c#d"])
+        self.assertEqual(self.opened(), [
+            "-na Google Chrome --args --profile-directory=Default https://example.com/a?b=c#d",
+            "-a Google Chrome",
+        ])
+
+    def test_a_link_that_opened_is_not_failed_by_chrome_staying_behind(self):
+        self.stub.write_text(f'#!/bin/sh\necho "$@" >> "{self.calls}"\n[ "$1" = -na ]\n')
+        self.assertEqual(self.send({"url": "https://example.com/"}), {"ok": True})
+        self.assertEqual(len(self.opened()), 2)
 
     def test_refuses_anything_but_an_http_link(self):
         for url in ("javascript:alert(1)", "file:///etc/passwd", "--load-extension=/tmp/x", "https://", 42):
@@ -56,6 +64,7 @@ class Host(unittest.TestCase):
     def test_reports_a_failed_open(self):
         self.set_stub(1)
         self.assertEqual(self.send({"url": "http://localhost:3000/"}), {"ok": False, "error": "stub failed"})
+        self.assertEqual(self.opened(), ["-na Google Chrome --args --profile-directory=Default http://localhost:3000/"])
 
     def test_install_registers_the_host_once(self):
         hosts = self.tmp / "NativeMessagingHosts"
