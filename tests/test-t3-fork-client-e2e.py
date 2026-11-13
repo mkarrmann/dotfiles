@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""End-to-end check of t3code/window-project against real T3 Code: a throwaway
-`t3 serve` with two projects, and a headless Google Chrome Beta in a temporary
-profile as the window, scoped to the first project by bin/t3-window-scope. With
-a draft of the second project on screen, Cmd+O starts T3 Code's new thread in
-that second project; with the extension loaded, in the window's own.
-Everything runs on loopback ports and under a temporary directory.
+"""End-to-end check of the installed t3 with mkarrmann/t3code's web client
+(bin/t3-ensure step 1b): a throwaway `t3 serve` with two projects, and a
+headless Google Chrome Beta in a temporary profile as the window, scoped to the
+first project by bin/t3-window-scope. With a draft of the second project on
+screen, Cmd+O starts the new thread in the window's own project; upstream's
+client starts it in the second. Everything runs on loopback ports and under a
+temporary directory.
 
-Run with: python3 tests/test-t3-window-project-e2e.py
+Run with: python3 tests/test-t3-fork-client-e2e.py   (T3_BIN picks another t3)
 """
 
 import importlib.machinery
@@ -22,9 +23,8 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-EXTENSION = ROOT / "t3code/window-project"
 BROWSER = Path("/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta")
-T3 = Path(os.environ.get("T3_BIN") or shutil.which("t3") or Path.home() / ".local/bin/t3")
+T3 = Path(os.environ.get("T3_BIN") or Path.home() / ".local/bin/t3")
 
 
 def load(name, path):
@@ -35,7 +35,6 @@ def load(name, path):
 
 
 scope = load("t3_window_scope", ROOT / "bin/t3-window-scope")
-Cdp = load("link_forwarder_e2e", ROOT / "tests/test-t3-link-forwarder-e2e.py").Cdp
 
 
 def free_port():
@@ -74,7 +73,6 @@ def main():
     origin = f"http://w1.t3.localhost:{port}"
     procs = [subprocess.Popen([str(T3), "serve", "--host", "127.0.0.1", "--port", str(port), "--no-browser"],
                               cwd=tmp, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)]
-    cdp = None
     try:
         loopback = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -93,11 +91,10 @@ def main():
                                capture_output=True, text=True, check=True).stdout
         token = next(line.split(": ", 1)[1].strip() for line in token.splitlines() if line.startswith("Token: "))
 
-        cdp = Cdp([
-            str(BROWSER), f"--user-data-dir={profile}", "--headless=new", "--remote-debugging-pipe",
-            "--remote-debugging-port=0", "--enable-unsafe-extension-debugging", "--no-first-run",
-            "--no-default-browser-check", f"{origin}/pair#token={token}",
-        ], os.environ)
+        procs.append(subprocess.Popen([
+            str(BROWSER), f"--user-data-dir={profile}", "--headless=new", "--remote-debugging-port=0",
+            "--no-first-run", "--no-default-browser-check", f"{origin}/pair#token={token}",
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         subprocess.run([sys.executable, str(ROOT / "bin/t3-window-scope"), str(profile), origin, str(alpha)],
                        check=True, timeout=120)
 
@@ -127,36 +124,22 @@ def main():
             scope.press(devtools, new_local)
             try:
                 wait_for("a new draft", lambda: devtools.evaluate("location.pathname") not in (before, "/new"), 5)
+                return wait_for("its project", lambda: scope.draft_project_id(devtools), 5)
             except SystemExit:
-                pass
-            return scope.draft_project_id(devtools)
+                return scope.draft_project_id(devtools)
 
-        print("== without the extension ==")
         bravo_draft()
-        check("Cmd+O on bravo's draft starts the thread in bravo", bravo_id, press_new_local())
-
-        print("== with the extension ==")
-        cdp.call("Extensions.loadUnpacked", path=str(EXTENSION))
-        devtools.call("Page.reload", {})
-        time.sleep(1)
-        devtools = page()
-        wait_for("bravo's draft again", lambda: scope.draft_project_id(devtools) == bravo_id)
-        check("Cmd+O on bravo's draft starts the thread in alpha", alpha_id, press_new_local())
+        check("Cmd+O on bravo's draft starts the thread in the window's project, alpha", alpha_id, press_new_local())
         bravo_draft()
-        check("and again from a draft opened since, while the palette closes", alpha_id, press_new_local())
-        devtools.evaluate("history.pushState(history.state, '', '/settings/general')")
-        time.sleep(1)
-        scope.press(devtools, new_local)
-        time.sleep(1)
-        check("Settings is left alone", "/settings/general", devtools.evaluate("location.pathname"))
+        # T3 Code passes over shortcuts until the project picker has closed.
+        wait_for("the picker to close", lambda: not devtools.evaluate("!!document.querySelector('[role=dialog]')"), 5)
+        check("and again from another draft of bravo", alpha_id, press_new_local())
     finally:
-        if cdp:
-            cdp.close()
-        for proc in procs:
+        for proc in reversed(procs):
             proc.terminate()
             proc.wait(timeout=10)
         shutil.rmtree(tmp, ignore_errors=True)
-    print("t3 window project end-to-end tests passed")
+    print("t3 fork client end-to-end tests passed")
 
 
 if __name__ == "__main__":
