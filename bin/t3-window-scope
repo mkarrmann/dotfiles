@@ -62,7 +62,7 @@ and every new-thread command follows the project of the draft or thread on
 screen (lib/chatThreadActions.ts). So the window is finally left on a draft
 of WORKDIR's project that the app makes itself: from /new, a page with no
 project of its own (the prompt-link route, which without a prompt only says
-so), chat.newLocal (mod+shift+n, its default binding) starts one from
+so), chat.newLocal (t3code/keybindings.json's shortcut) starts one from
 projectOrder, with the app's own defaults for the draft.
 
 With PROFILE_DIR, the browser must run with --remote-debugging-port=0, which makes Chrome write
@@ -92,6 +92,7 @@ import time
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, TypeVar
 
 UI_STATE_KEY = "t3code:ui-state:v1"
@@ -108,7 +109,10 @@ NAVIGATE_RETRY = 5.0
 LEGACY_PROJECT_CWD_PREFIX = "legacy-project-cwd:"
 HOME_RELATIVE = "~/"
 # Input.dispatchKeyEvent's modifier bits.
-CTRL, META, SHIFT = 2, 4, 8
+ALT, CTRL, META, SHIFT = 1, 2, 4, 8
+# The shortcuts bin/t3-ensure gives every server; T3 Code's defaults for the rest.
+KEYBINDINGS = Path(__file__).resolve().parents[1] / "t3code/keybindings.json"
+DEFAULT_SHORTCUTS = {"chat.new": "mod+n", "chat.newLocal": "mod+shift+n"}
 # The Escape that closes the project picker chat.newLocal opens when no project
 # is loaded yet.
 ESCAPE_KEY = {"key": "Escape", "code": "Escape", "modifiers": 0, "windowsVirtualKeyCode": 27}
@@ -246,14 +250,38 @@ def link_refused(text: str) -> bool:
     return any(refused in text for refused in LINK_REFUSED)
 
 
+def shortcut(command: str, keybindings: Path = KEYBINDINGS) -> str:
+    """COMMAND's last shortcut in KEYBINDINGS (t3code/keybindings.json), else T3
+    Code's default (packages/shared/src/keybindings.ts)."""
+    try:
+        rules = json.loads(keybindings.read_text())
+    except (OSError, ValueError):
+        rules = []
+    keys = [r["key"] for r in rules if isinstance(r, dict) and r.get("command") == command and "key" in r]
+    return keys[-1] if keys else DEFAULT_SHORTCUTS[command]
+
+
+def key_event(chord: str, platform: str) -> dict[str, Any]:
+    """CHORD, a letter shortcut such as mod+alt+n, as a key press for a page whose
+    navigator.platform is PLATFORM. T3 Code's shortcut handler reads mod as Meta
+    where navigator.platform names an Apple OS (/mac|iphone|ipad|ipod/i) and as
+    Ctrl elsewhere, and requires the other one up; it matches a letter by its
+    physical key, so Option's dead keys on the Mac do not matter."""
+    *names, letter = chord.lower().split("+")
+    if not re.fullmatch("[a-z]", letter):
+        raise ValueError(f"{chord}: only a letter shortcut can be pressed")
+    apple = re.search("mac|iphone|ipad|ipod", platform, re.IGNORECASE)
+    bits = {"mod": META if apple else CTRL, "meta": META, "cmd": META, "ctrl": CTRL, "alt": ALT, "shift": SHIFT}
+    modifiers = 0
+    for name in names:
+        modifiers |= bits[name]
+    key = letter.upper() if modifiers & SHIFT else letter
+    return {"key": key, "code": f"Key{letter.upper()}", "modifiers": modifiers, "windowsVirtualKeyCode": ord(letter.upper())}
+
+
 def new_local_key(platform: str) -> dict[str, Any]:
-    """chat.newLocal's default binding, mod+shift+n (packages/shared/src/keybindings.ts),
-    for a page whose navigator.platform is PLATFORM. T3 Code's shortcut handler
-    reads mod as Meta where navigator.platform names an Apple OS
-    (/mac|iphone|ipad|ipod/i) and as Ctrl elsewhere, and requires the other
-    one up: Cmd+Shift+N on the Mac, Ctrl+Shift+N on Linux."""
-    mod = META if re.search("mac|iphone|ipad|ipod", platform, re.IGNORECASE) else CTRL
-    return {"key": "N", "code": "KeyN", "modifiers": mod | SHIFT, "windowsVirtualKeyCode": 78}
+    """chat.newLocal's shortcut, as the window's server has it once bin/t3-ensure ran there."""
+    return key_event(shortcut("chat.newLocal"), platform)
 
 
 # --- the window's page --------------------------------------------------------
@@ -500,6 +528,7 @@ class ChromeWindowPage:
         init = {
             "key": key["key"], "code": key["code"], "bubbles": True, "cancelable": True,
             "ctrlKey": bool(modifiers & CTRL), "metaKey": bool(modifiers & META), "shiftKey": bool(modifiers & SHIFT),
+            "altKey": bool(modifiers & ALT),
         }
         self.evaluate(
             "(document.hasFocus = () => true,"
@@ -691,7 +720,7 @@ def open_draft(devtools: DevTools, origin: str, project_id: str, deadline: float
         return None
 
     try:
-        return until(deadline, "a new-thread draft (chat.newLocal, mod+shift+n)", attempt)
+        return until(deadline, f"a new-thread draft (chat.newLocal, {shortcut('chat.newLocal')})", attempt)
     except ScopeError:
         if opened:
             return opened[-1]

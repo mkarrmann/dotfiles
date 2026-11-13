@@ -235,15 +235,20 @@ server's environment. It then writes `projectOrder` with the project first,
 keyed `ENVIRONMENT_ID:ROOT` as the same root (`~/checkout1`) is a project on
 both devservers (`getProjectOrderKey`, `packages/client-runtime/src/state/projectGrouping.ts`),
 clears any sidebar scope (`t3code:ui-state:v1`, `apps/web/src/uiStateStore.ts`),
-and leaves the window on a draft in the project, which the app opens itself (`chat.newLocal`, mod+shift+n, from `/new`;
-the helper presses Cmd where the page's `navigator.platform` is a Mac's, as T3
-Code reads mod, and Ctrl elsewhere).
+and leaves the window on a draft in the project, which the app opens itself (`chat.newLocal`, from `/new`; the helper presses
+the shortcut `t3code/keybindings.json` gives it, Cmd for mod where the page's
+`navigator.platform` is a Mac's, as T3 Code reads mod, and Ctrl elsewhere).
 
+- Shortcuts: `bin/t3-ensure` gives every server the ones in
+  `t3code/keybindings.json`, replacing those commands' own (T3 Code reloads
+  `keybindings.json` when it changes). Todoist claims Cmd+N and Cmd+Shift+N
+  system-wide on the Mac, so `chat.new` keeps only Cmd+Shift+O, `chat.newLocal`
+  moves to Cmd+Opt+N, and `chat.newWithoutProject` to Cmd+Opt+Shift+N.
 - What starts in the window's project: the composer the window opens on,
-  `chat.newLocal` (Ctrl+Shift+N, Cmd+Shift+N on the Mac), and a Shift-click on
+  `chat.newLocal` (Ctrl+Alt+N, Cmd+Opt+N on the Mac), and a Shift-click on
   the sidebar's New thread button, all of which start in the project of the
   thread or draft on screen.
-- What does not: the New thread button and `chat.new` (Ctrl+N, Cmd+N) open a
+- What does not: the New thread button and `chat.new` (Ctrl+Shift+O, Cmd+Shift+O) open a
   project picker while the server has more than one project; `/` opens a draft
   in the most recently active project (`routes/_chat.index.tsx`); and after
   opening another project's thread, those follow that thread's project.

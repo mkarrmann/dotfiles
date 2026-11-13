@@ -62,7 +62,9 @@ free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",
 serve() {
   local name="$1" port="$2" project
   shift 2
-  mkdir -p "$TMP/$name"
+  # The dotfiles' shortcuts, as bin/t3-ensure gives every server; T3 Code adds its defaults for the rest.
+  mkdir -p "$TMP/$name/userdata"
+  cp "$ROOT/t3code/keybindings.json" "$TMP/$name/userdata/keybindings.json"
   (cd "$TMP" && T3CODE_HOME="$TMP/$name" exec "$T3" serve --host 127.0.0.1 --port "$port" --no-browser) \
     >"$TMP/$name.log" 2>&1 &
   pids+=("$!")

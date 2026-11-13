@@ -294,6 +294,52 @@ class T3EnsureTest(unittest.TestCase):
         self.assertEqual(result.stdout, "")
         self.assertFalse([c for c in self.calls_made() if " enable " in c])
 
+    def write_keybindings(self, name: str, text: str) -> Path:
+        path = self.home / ".t3-workspaces" / name / "userdata/keybindings.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return path
+
+    def share_keybindings(self, rules: list[dict]) -> None:
+        shared = self.dotfiles / "t3code/keybindings.json"
+        shared.parent.mkdir(parents=True, exist_ok=True)
+        shared.write_text(json.dumps(rules))
+
+    def test_dotfiles_keybindings_replace_only_their_commands(self):
+        new_local = {"key": "mod+alt+n", "command": "chat.newLocal", "when": "!terminalFocus"}
+        picker = {"key": "mod+shift+o", "command": "chat.new", "when": "!terminalFocus"}
+        self.share_keybindings([picker, new_local])
+        sidebar = {"key": "mod+b", "command": "sidebar.toggle"}
+        terminal = {"key": "mod+n", "command": "terminal.new", "when": "terminalFocus"}
+        path = self.write_keybindings("checkouts", json.dumps([
+            sidebar,
+            {"key": "mod+n", "command": "chat.new", "when": "!terminalFocus"},
+            picker,
+            {"key": "mod+shift+n", "command": "chat.newLocal", "when": "!terminalFocus"},
+            terminal,
+        ]))
+        result = self.run_ensure()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(path.read_text()), [sidebar, terminal, picker, new_local])
+        before = path.stat().st_mtime_ns
+        self.assertNotIn("keybindings", self.run_ensure().stdout)
+        self.assertEqual(path.stat().st_mtime_ns, before)
+
+    def test_a_server_without_keybindings_starts_with_the_dotfiles_ones(self):
+        rules = [{"key": "mod+alt+n", "command": "chat.newLocal", "when": "!terminalFocus"}]
+        self.share_keybindings(rules)
+        self.assertEqual(self.run_ensure().returncode, 0)
+        path = self.home / ".t3-workspaces/checkouts/userdata/keybindings.json"
+        self.assertEqual(json.loads(path.read_text()), rules)
+
+    def test_keybindings_json_with_comments_is_left_alone(self):
+        self.share_keybindings([{"key": "mod+alt+n", "command": "chat.newLocal"}])
+        text = '[\n  // mine\n  { "key": "mod+shift+n", "command": "chat.newLocal" },\n]\n'
+        path = self.write_keybindings("checkouts", text)
+        result = self.run_ensure()
+        self.assertEqual(path.read_text(), text)
+        self.assertIn("is not a plain JSON list; set chat.newLocal by hand", result.stdout)
+
     def test_the_daemon_is_restarted_only_when_it_runs_old_code(self):
         self.assertEqual(self.run_ensure().returncode, 0)
         self.calls.unlink()

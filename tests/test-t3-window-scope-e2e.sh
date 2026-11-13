@@ -42,7 +42,9 @@ free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",
 serve() {
   local name="$1" port="$2" project
   shift 2
-  mkdir -p "$TMP/$name"
+  # The dotfiles' shortcuts, as bin/t3-ensure gives every server; T3 Code adds its defaults for the rest.
+  mkdir -p "$TMP/$name/userdata"
+  cp "$ROOT/t3code/keybindings.json" "$TMP/$name/userdata/keybindings.json"
   (cd "$TMP" && T3CODE_HOME="$TMP/$name" exec "$T3" serve --host 127.0.0.1 --port "$port" --no-browser) \
     >"$TMP/$name.log" 2>&1 &
   pids+=("$!")
@@ -84,7 +86,7 @@ check "the helper links the second server and scopes the window" "0" "$rc"
 
 # What the window shows afterwards, over the same DevTools port: the servers its
 # saved connections name, the project of the draft it was left on, and the
-# project picker that chat.new (mod+n) opens, which lists every server's.
+# project picker that chat.new opens, which lists every server's.
 result=$(python3 - "$ROOT/bin/t3-window-scope" "$PROFILE" "$ORIGIN" "$PORT_A" "$PORT_B" <<'PY'
 import importlib.machinery, importlib.util, json, sys, time
 loader = importlib.machinery.SourceFileLoader("t3_window_scope", sys.argv[1])
@@ -98,9 +100,7 @@ checkout1_a = scope.project_for(projects_a, "~/checkout1")["id"]
 saved = scope.saved_environment_ids(devtools)
 draft = scope.draft_project_id(devtools)
 devtools.call("Emulation.setFocusEmulationEnabled", {"enabled": True})
-key = dict(scope.new_local_key(devtools.evaluate("navigator.platform") or ""))
-key["modifiers"] &= ~scope.SHIFT
-key["key"] = "n"
+key = scope.key_event(scope.shortcut("chat.new"), devtools.evaluate("navigator.platform") or "")
 text = ""
 for _ in range(20):
     scope.press(devtools, key)

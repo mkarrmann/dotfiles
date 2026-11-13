@@ -27,7 +27,11 @@ Either way each window's new threads start in its own workspace's project
      it changes (00eb8f6183, in 0.1.6), so a setting changed in any window's
      server settings lands in the dotfiles, and T3 Code writes only what
      differs from its defaults. A server's own settings from before are merged
-     in, the dotfiles' winning, and kept as settings.json.pre-dotfiles;
+     in, the dotfiles' winning, and kept as settings.json.pre-dotfiles.
+     It also gives each command in t3code/keybindings.json exactly those
+     shortcuts in the server's keybindings.json, which T3 Code reloads when it
+     changes, and leaves every other command's: Todoist's global Cmd+N and
+     Cmd+Shift+N never reach a T3 Code window;
   3. registers bin/omnigent-opencode as the "Omnigent" provider in those
      settings (T3 Code's OpenCode driver; each Omnigent agent is a model
      group in it), keeping every other setting, by its bare name, which T3
@@ -99,6 +103,7 @@ DAEMON_UNIT = "omnigent-opencode.service"
 DAEMON_LABEL = "com.mkarrmann.omnigent-opencode"
 DAEMON_BUSY = 2  # `omnigent-opencode daemon-stale`: stale, but a restart would lose a turn
 SHARED_SETTINGS = DOTFILES / "t3code/settings.json"
+SHARED_KEYBINDINGS = DOTFILES / "t3code/keybindings.json"
 CHECKOUT = re.compile(r"checkout[0-9]+")
 WORK_SERVER = "checkouts"  # bin/t3-workspace-serve, bin/t3-pairing-tokens
 # The Mac's server (launchd/com.mkarrmann.t3-local.plist, not systemd) and its
@@ -319,6 +324,30 @@ def link_settings(path: Path, shared: Path) -> bool:
     return True
 
 
+def apply_keybindings(path: Path, shared: Path) -> bool:
+    """Step 2's keybindings: every command SHARED has rules for gets exactly those
+    rules in PATH, a server's keybindings.json, after the rest; every other rule
+    stays as T3 Code keeps it. False when nothing changed."""
+    if not shared.exists():
+        return False
+    managed = json.loads(shared.read_text())
+    commands = {rule["command"] for rule in managed}
+    try:
+        current = json.loads(path.read_text()) if path.exists() and path.read_text().strip() else []
+    except json.JSONDecodeError:
+        current = None
+    if not isinstance(current, list):
+        # T3 Code reads comments and trailing commas too; rewriting would drop them.
+        log(f"WARNING: {path} is not a plain JSON list; set {', '.join(sorted(commands))} by hand")
+        return False
+    wanted = [rule for rule in current if not (isinstance(rule, dict) and rule.get("command") in commands)]
+    wanted += managed
+    if wanted == current:
+        return False
+    write_settings(path, wanted)
+    return True
+
+
 def merge_settings(path: Path, command: str) -> bool:
     settings = read_settings(path)
     instances = settings.setdefault("providerInstances", {})
@@ -475,6 +504,8 @@ def main() -> int:
             log(f"linked t3@{server.name}'s settings to {SHARED_SETTINGS}")
         if merge_settings(settings, SHIM_COMMAND):
             log(f"registered the Omnigent providers for t3@{server.name}")
+        if apply_keybindings(settings.with_name("keybindings.json"), SHARED_KEYBINDINGS):
+            log(f"applied {SHARED_KEYBINDINGS} to t3@{server.name}")
     if not install_shim_runtime():
         log("WARNING: could not install omnigent-opencode's runtime; the Omnigent provider will fail until it is")
     elif subprocess.run([str(SHIM), "--version"], stdout=subprocess.DEVNULL).returncode != 0:

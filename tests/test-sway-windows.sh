@@ -637,7 +637,8 @@ if command -v python3 >/dev/null 2>&1; then
   while IFS=$'\t' read -r desc expected actual; do
     check "$desc" "$expected" "$actual"
   done < <(python3 - "$ROOT/bin/t3-window-scope" "$TMP" "$devtools_port" <<'PY'
-import importlib.machinery, importlib.util, json, os, socket, sys
+import importlib.machinery, importlib.util, json, os, socket, sys, tempfile
+from pathlib import Path
 loader = importlib.machinery.SourceFileLoader("t3_window_scope", sys.argv[1])
 scope = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
 loader.exec_module(scope)
@@ -692,9 +693,19 @@ case("~/REL that several live projects end in is an error naming them", [True, T
      [ambiguous.startswith("error: "), "/home/u/checkout3" in ambiguous, "/data/users/u/checkout3" in ambiguous])
 case("a workdir is absolute or ~/REL", [True, True, False, False, False],
      [scope.valid_workdir(w) for w in ("/home/me/dotfiles", "~/checkout1", "~/", "~", "checkout1")])
-# Input.dispatchKeyEvent modifier bits: Ctrl 2, Meta 4, Shift 8.
-case("chat.newLocal is pressed as the page reads mod: Cmd+Shift+N on the Mac, Ctrl+Shift+N on Linux",
-     [12, 10, 12], [scope.new_local_key(p)["modifiers"] for p in ("MacIntel", "Linux x86_64", "iPad")])
+# Input.dispatchKeyEvent modifier bits: Alt 1, Ctrl 2, Meta 4, Shift 8.
+case("a shortcut is pressed as the page reads mod: Cmd+Shift+N on the Mac, Ctrl+Shift+N on Linux",
+     [12, 10, 12], [scope.key_event("mod+shift+n", p)["modifiers"] for p in ("MacIntel", "Linux x86_64", "iPad")])
+case("mod+alt+n is Cmd+Opt+N on the Mac and Ctrl+Alt+N on Linux, by the physical key",
+     [(5, "n", "KeyN"), (3, "n", "KeyN")],
+     [(k["modifiers"], k["key"], k["code"]) for k in (scope.key_event("mod+alt+n", p) for p in ("MacIntel", "Linux x86_64"))])
+keymap = Path(tempfile.mkdtemp()) / "keybindings.json"
+keymap.write_text(json.dumps([{"key": "mod+shift+n", "command": "chat.newLocal"},
+                              {"key": "mod+alt+n", "command": "chat.newLocal"}]))
+case("a command's shortcut is its last in the dotfiles' keybindings, else T3 Code's default",
+     ["mod+alt+n", "mod+n", "mod+shift+n"],
+     [scope.shortcut("chat.newLocal", keymap), scope.shortcut("chat.new", keymap),
+      scope.shortcut("chat.newLocal", keymap.with_name("missing.json"))])
 origin = "http://dotfiles.t3.localhost:3780"
 page = lambda url, kind="page": {"type": kind, "url": url, "webSocketDebuggerUrl": "ws://x/" + url}
 case("the window's page is the one on its own origin past pairing",
