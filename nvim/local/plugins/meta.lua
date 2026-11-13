@@ -19,6 +19,7 @@ return {
 			end
 		end,
 		config = function()
+			require("lib.meta-root").setup()
 			local meta = require("meta")
 			meta.setup()
 
