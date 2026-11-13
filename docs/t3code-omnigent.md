@@ -72,10 +72,15 @@ session behind a thread likewise runs on that host.
   own. AppleScript runs page JavaScript only with View > Developer > Allow
   JavaScript from Apple Events on in that browser. A browser can open a link
   only in itself, so `t3code/link-forwarder`, an extension loaded in Chrome
-  Beta, hands every http(s) tab a window opens (other than a `*.t3.localhost`
-  one) to `bin-macos/t3-open-in-chrome`, its native messaging host, which opens
-  it in your Chrome's work profile (`--profile-directory=Default`) and closes
-  the tab; `sync.sh` registers the host (`t3-open-in-chrome --install`).
+  Beta, sends every outside http(s) link a window opens (anything but a
+  `*.t3.localhost` one) to `bin-macos/t3-open-in-chrome`, its native messaging
+  host, which opens it in your Chrome's work profile
+  (`--profile-directory=Default`) and brings Chrome forward. Its page script
+  catches `window.open` and link clicks before Chrome Beta opens a tab; a tab
+  that opens anyway (from another site's frame) is forwarded and closed.
+  `sync.sh` registers the host (`t3-open-in-chrome --install`). After changing
+  the extension, click its reload arrow in `chrome://extensions` and reload the
+  T3 Code windows.
 - A window `startup-windows` opens starts its new threads in its workspace's
   checkout and links every other devserver's server
   (`bin/t3-window-scope @chrome ORIGIN ~/checkoutN --link http://127.0.0.1:PORT LABEL`,
