@@ -27,7 +27,7 @@ Either way each window's new threads start in its own workspace's project
      the pin, in place of its client/ (the t3 program serves the client/
      beside it), and ~/.local/bin/t3 linked to the copy. Without a pin, or
      without upstream's install under ~/.t3/runtime/versions, the client is
-     upstream's;
+     upstream's: a link to a copy is put back on upstream's install;
   2. links the server's settings, ~/.t3-workspaces/NAME/userdata/
      settings.json, to t3code/settings.json in the dotfiles, which every
      server shares: T3 Code saves through the link and reloads the file when
@@ -247,10 +247,16 @@ def install_fork_client(version: str, pins: dict[str, tuple[str, str]], t3_home:
     T3_HOME/runtime/fork/TAG with the fork's web client, checked against PINS, in
     place of its client/ -- the t3 program serves the client/ beside it -- and
     BIN_DIR/t3 linked to that copy. Returns the link; None, changing nothing, when
-    PINS has no client for VERSION or upstream's install of it is not there."""
+    upstream's install of VERSION is not there, or when PINS has no client for it
+    and BIN_DIR/t3 is not a fork copy, which it is otherwise linked back from."""
     pin = pins.get(version)
     official = t3_home / "runtime/versions" / version
-    if pin is None or not (official / ".install-complete").is_file():
+    if not (official / ".install-complete").is_file():
+        return None
+    if pin is None:
+        link = bin_dir / "t3"
+        if link.exists() and (t3_home / "runtime/fork").resolve() in link.resolve().parents:
+            return link_t3(official / "t3", t3_home, bin_dir)
         return None
     tag, expected = pin
     archive = f"t3-client-{version}.tar.gz"
@@ -591,7 +597,8 @@ def main() -> int:
             if install_fork_client(version, T3_FORK_CLIENT, T3_HOME, T3_BIN_DIR) is not None:
                 t3 = link
                 if link.resolve() != before:
-                    log(f"linked {link} to {link.resolve()}, t3 {version} with {T3_FORK_CLIENT[version][0]}'s web client")
+                    client = f"{T3_FORK_CLIENT[version][0]}'s" if version in T3_FORK_CLIENT else "upstream's"
+                    log(f"linked {link} to {link.resolve()}, t3 {version} with {client} web client")
         except SystemExit as error:
             log(f"WARNING: could not install the fork's web client, keeping upstream's: {error}")
             failed = True

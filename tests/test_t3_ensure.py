@@ -653,6 +653,12 @@ class T3ForkClientTest(unittest.TestCase):
         self.assertFalse((self.bin_dir / "t3").exists())
         self.assertEqual(list((self.t3_home / "runtime/fork").iterdir()), [])
 
+    def test_a_dropped_pin_links_back_to_upstreams_install(self):
+        self.install()
+        link = self.module.install_fork_client(self.VERSION, {}, self.t3_home, self.bin_dir)
+        self.assertEqual(link.resolve(), (self.official / "t3").resolve())
+        self.assertEqual(len(self.fetches()), 1)
+
     def test_no_pin_or_no_upstream_install_changes_nothing(self):
         self.assertIsNone(self.install({}))
         (self.official / ".install-complete").unlink()
