@@ -16,6 +16,7 @@ omnigent-subagents
 omnigent-visual-output
 personal-development-setup-and-env
 prune-stale-builds
+reviewing-changes
 screenshot-workflow
 show-in-nvim
 waiting-without-polling
