@@ -10,6 +10,7 @@ machines that actually have a checkout and absent everywhere else.
 - Treat `~/checkoutN` as a workspace container, not a source-control or build root. For repository-specific commands such as `sl`, `jf`, `arc`, `buck`, and unscoped file discovery, explicitly use the repository implied by the task or current file by changing that command's working directory or passing a repository path. Do not change the session's global working directory merely to run a command.
 - Confirm the process working directory before accessing checkout-specific files. If it identifies a workspace but not an active repository, use the task and current file to select `fbsource` or `configerator`; ask if the choice is materially ambiguous. If it does not identify a checkout, recover the editor/session workspace or ask rather than guessing.
 - Before repository-specific work, apply that repository's own `AGENTS.md` instructions.
+- File paths you write for me (links, `path:line` references) must resolve from the workspace root: `fbsource/fbcode/...` and `configerator/source/...`, or absolute. Never a bare `fbcode/...` or `source/...`; whatever renders your answer resolves relative paths against the session's working directory, the workspace root, and finds nothing there.
 - `meta-rg` content searches may use explicit paths such as `fbsource/fbcode/...` or `configerator/source/...` from the workspace root. Run unscoped filename discovery (`meta-rg --files ...`) from the selected repository root so its search scope is unambiguous and efficient.
 
 ## Where work happens
