@@ -257,9 +257,10 @@ the shortcut `t3code/keybindings.json` gives it, Cmd for mod where the page's
   project picker while the server has more than one project; `/` opens a draft
   in the most recently active project (`routes/_chat.index.tsx`); and a
   Shift-click on the New thread button follows the thread or draft on screen.
-- The sidebar: with the fork's client, the window's project's threads come
-  first in Active (while Working is on, as it orders Active by time) and in
-  Working, each part in its usual order.
+- The sidebar: with the fork's client, Active (while Working is on, as it
+  orders Active by time) and Working are grouped by project: the window's
+  project first, then each other project where its most recent thread falls,
+  each project's threads in their usual order.
 
 ### The fork's web client
 
