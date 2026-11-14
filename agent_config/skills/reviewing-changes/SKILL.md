@@ -16,44 +16,30 @@ This skill has two sides. Read both: the requester should know what the
 reviewer needs, and the reviewer should know what the requester will do with
 the report.
 
-## Requesting a review
-
-### When to ask
-
-<!-- TODO: when a review is worth asking for, and when it isn't. -->
-
-### Choosing the reviewer
-
-<!-- TODO: which agent, harness, and model; how many reviewers. -->
-
-### The brief
-
-<!-- TODO: what every review request must contain. -->
-
-- The change under review:
-- What the change is meant to do:
-- What to focus on:
-- What is out of scope:
-- What you want back:
-
-### Handling the findings
-
-<!-- TODO: verifying findings, pushing back, what to fix, what to tell the user. -->
-
 ## Doing a review
 
-### Before reading the change
+Your priorities in order are:
 
-<!-- TODO: what to establish first. -->
+1.
 
-### What to look for
+a) Identify real, problematic bugs / issues which can directly impact users in practice in production.
+b) Ensuring changes are well-scoped and accomplish the goal they actually intend to accomplish.
+2.
+a) Checking code is "good". This includes checking code follows relevant convention, and checking for the existence of "code smells". That is, you should be checking if anything in the design is "off". Note that this is separate from identifying a specific case in which the code behaves problematically-this instead comes from having taste, assessing how clear and consistent the semantics are, etc.
+3.
+a) Style issues, including nits
+b) Potential bugs which don't fall under 1 a). This includes things like error-handling for marginal and/or theoretical edge cases which may or may not necessarily matter much in practice.
 
-<!-- TODO: the review checklist. -->
+The distinctions here are important. In fact, you must make sure to mark which category each of your review comments fall under in your response.
 
-### What not to do
+This is critical because AI reviewers tend to focus too much on 3 a) and 3 b). These are fine to mention, but reviewers are entitled to filter them out.
 
-<!-- TODO: e.g. editing the code under review, nitpicks, restating the diff. -->
+Code review is a very broad and general task, and you are responsible for exercising your best judgement. If anything doesn't fall under the above but is still worth mentioning, please mention it.
 
-### The report
+## Requesting a review
 
-<!-- TODO: format, severity, required evidence per finding. -->
+Firstly, you must ensure the reviewer has sufficient context about the problem and scope in order to fully do their job.
+
+By far the biggest risk of agents asking other agents for review is gradual scope creep which comes from reviewers asking to improve behavior in marginal / unimportant cases. Remember, it is your responsibility to keep everything well scoped and focused on the actual problem at hand, without wasting space in your diffs handling cases that really don't need to be handled. Above all, we need to prioritize easy review of the code, and that sometimes can entail leaving aside theoretical edge cases, which add undue burden to the reviewers to fully internalize.
+
+Of course, this isn't an excuse to just leave bugs or anything like that. Again, it comes down to exercise and judgment. Often, the most important thing to do is to raise this with me, the human, and discuss whether or not different bugs actually are in scope.
