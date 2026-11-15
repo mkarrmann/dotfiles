@@ -531,7 +531,7 @@ def prune_installs(t3_home: Path, current: Path, version: str, in_use: set[Path]
     runtimes = [(t3_home / "runtime" / group).resolve() for group in ("versions", "fork")]
     if in_use is None or not any(runtime in current.resolve().parents for runtime in runtimes):
         return []
-    keep ={current.resolve().parent, (t3_home / "runtime/versions" / version).resolve()}
+    keep = {current.resolve().parent, (t3_home / "runtime/versions" / version).resolve()}
     keep |= {path.resolve() for path in in_use}
     deleted = []
     for group in (t3_home / "runtime/versions", t3_home / "runtime/fork"):
