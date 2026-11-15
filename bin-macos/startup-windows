@@ -272,7 +272,11 @@ chrome_restore_settled=false
 # not the default ask macOS for it at each start, past any flag.
 # T3_BROWSER_APP="Google Chrome" puts them back in your own Chrome.
 T3_BROWSER_APP="${T3_BROWSER_APP:-Brave Browser}"
-export T3_BROWSER_APP
+# Not exported: the terminals this script opens would hand it to every shell
+# they start, where it outlives a change of this default. The helpers that read
+# it get it here.
+t3-window-scope() { T3_BROWSER_APP="$T3_BROWSER_APP" command t3-window-scope "$@"; }
+t3-client-settings() { T3_BROWSER_APP="$T3_BROWSER_APP" command t3-client-settings "$@"; }
 T3_BROWSER_PROFILE="Default"
 T3_STATE_DIR="$HOME/.local/state/t3-windows/${T3_BROWSER_APP// /-}"
 t3_browser_missing_warned=false
