@@ -1883,6 +1883,17 @@ SNAPSHOT=$(snapshot_windows)
 
 failures=0
 
+# The tunnels first: each waits on Duo, and every window that needs one opens
+# only once it is through, so the sooner they ask the better.
+is_tunnel_row() {
+  [[ "$1" =~ ^[^|]*\|ghostty\|[^|]*\|[^|]*\|[^|]*\|nvs-tunnels\  ]]
+}
+for entry in "${WORKSPACES[@]}"; do
+  is_tunnel_row "$entry" || continue
+  IFS='|' read -r ws type title rest <<< "$entry"
+  reconcile_row "$ws" "$type" "$title" "$rest"
+done
+
 # The local Omnigent proxy exposes the hub on Mac loopback. The CCO and FTW
 # nvs-tunnels supply its candidate-specific upstream forwards. Retire any
 # unsupervised copy first, so the probe below reports on the launchd-owned one
@@ -1919,6 +1930,7 @@ reserve_ws11_chrome
 pending_rows=""
 pending_ready=true
 for entry in "${WORKSPACES[@]}"; do
+  ! is_tunnel_row "$entry" || continue
   IFS='|' read -r ws type title rest <<< "$entry"
   reconcile_row "$ws" "$type" "$title" "$rest"
 done
