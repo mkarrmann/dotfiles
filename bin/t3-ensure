@@ -79,6 +79,9 @@ Either way each window's new threads start in its own workspace's project
      cco": every window lists both candidates' projects, and a name is all a
      project row shows (T3 Code marks only the other server's copy, with an
      icon). A name changed in the UI is put back on the next run.
+  8. deletes the t3 installs under ~/.t3/runtime that the installed t3 no longer
+     needs: every version and fork copy but its own and upstream's install of its
+     version. One a running t3 still uses waits for a later run.
 
 The Mac's workspace windows pair on their own: bin-macos/nvs-tunnels has
 bin/t3-pairing-tokens mint tokens in its session, and startup-windows opens a
@@ -486,6 +489,63 @@ def executable_of(pid: int) -> str | None:
     return next((line[1:] for line in result.stdout.splitlines() if line.startswith("n")), None)
 
 
+def installs_in_use(t3_home: Path) -> set[Path] | None:
+    """Step 8: the installs under T3_HOME/runtime (versions/VERSION, fork/TAG)
+    that a running process executes or maps a file from. None when that cannot be
+    told: Linux reads /proc, the Mac asks lsof about processes named t3."""
+    if Path("/proc/self/exe").exists():
+        files = []
+        for entry in Path("/proc").iterdir():
+            if entry.name.isdigit():
+                try:
+                    files.append(os.readlink(entry / "exe"))
+                except OSError:
+                    pass
+    else:
+        lsof = shutil.which("lsof") or "/usr/sbin/lsof"
+        try:
+            result = subprocess.run(
+                [lsof, "-a", "-c", "t3", "-d", "txt", "-Fn"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+            )
+        except OSError:
+            return None
+        # lsof exits 1 when no process matches, which is an answer.
+        if result.returncode not in (0, 1):
+            return None
+        files = [line[1:] for line in result.stdout.splitlines() if line.startswith("n")]
+    in_use = set()
+    for group in (t3_home / "runtime/versions", t3_home / "runtime/fork"):
+        root = group.resolve()
+        for file in map(Path, files):
+            if root in file.parents:
+                in_use.add(group / file.relative_to(root).parts[0])
+    return in_use
+
+
+def prune_installs(t3_home: Path, current: Path, version: str, in_use: set[Path] | None) -> list[Path]:
+    """Step 8: delete the installs under T3_HOME/runtime other than CURRENT's (the
+    t3 BIN_DIR/t3 runs) and upstream's install of VERSION, which a fork copy is
+    made from and a dropped pin links back to. One a running t3 still uses (IN_USE)
+    stays until a later run; nothing is deleted when IN_USE is None. Returns what
+    was deleted."""
+    runtimes = [(t3_home / "runtime" / group).resolve() for group in ("versions", "fork")]
+    if in_use is None or not any(runtime in current.resolve().parents for runtime in runtimes):
+        return []
+    keep ={current.resolve().parent, (t3_home / "runtime/versions" / version).resolve()}
+    keep |= {path.resolve() for path in in_use}
+    deleted = []
+    for group in (t3_home / "runtime/versions", t3_home / "runtime/fork"):
+        if not group.is_dir():
+            continue
+        for install in sorted(group.iterdir()):
+            # Dot-named entries are staging directories of an install in progress.
+            if install.name.startswith(".") or not install.is_dir() or install.resolve() in keep:
+                continue
+            shutil.rmtree(install)
+            deleted.append(install)
+    return deleted
+
+
 def runs_other_binary(pid: int, binary: Path) -> bool:
     """Whether process PID executes a file other than BINARY's target. False when
     that cannot be told, so a doubt never restarts anything."""
@@ -662,6 +722,10 @@ def main() -> int:
             elif server.label and not name_project(t3, server, directory, f"{directory.name} \u00b7 {server.label}"):
                 log(f"WARNING: could not name {unit}'s project {directory}")
                 failed = True
+    current = t3_version(served)
+    if current is not None:
+        for install in prune_installs(T3_HOME, served, ".".join(map(str, current)), installs_in_use(T3_HOME)):
+            log(f"deleted {install}, a t3 install nothing runs")
     return 1 if failed else 0
 
 

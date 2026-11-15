@@ -667,6 +667,46 @@ class T3ForkClientTest(unittest.TestCase):
         self.assertFalse((self.bin_dir / "t3").exists())
 
 
+class T3PruneTest(unittest.TestCase):
+    """Step 8 over a runtime holding the current fork copy, its upstream install and older ones."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.t3_home = Path(tmp.name) / ".t3"
+        self.module = load_t3_ensure()
+        runtime = self.t3_home / "runtime"
+        for install in ("versions/0.1.6", "versions/0.1.7", "fork/mk-0.1.7-old", "fork/mk-0.1.7-new", "fork/.staging-x"):
+            write_exe(runtime / install / "t3", "echo t3\n")
+        self.current = runtime / "fork/mk-0.1.7-new/t3"
+
+    def remaining(self):
+        runtime = self.t3_home / "runtime"
+        return sorted(str(p.relative_to(runtime)) for group in ("versions", "fork") for p in (runtime / group).iterdir())
+
+    def test_keeps_only_the_current_install_its_upstream_install_and_staging(self):
+        deleted = self.module.prune_installs(self.t3_home, self.current, "0.1.7", set())
+        self.assertEqual(sorted(p.name for p in deleted), ["0.1.6", "mk-0.1.7-old"])
+        self.assertEqual(self.remaining(), ["fork/.staging-x", "fork/mk-0.1.7-new", "versions/0.1.7"])
+
+    def test_an_install_a_running_t3_uses_is_kept(self):
+        in_use = {self.t3_home / "runtime/fork/mk-0.1.7-old"}
+        self.module.prune_installs(self.t3_home, self.current, "0.1.7", in_use)
+        self.assertIn("fork/mk-0.1.7-old", self.remaining())
+        self.assertNotIn("versions/0.1.6", self.remaining())
+
+    def test_nothing_is_deleted_when_use_cannot_be_told_or_t3_is_not_from_the_runtime(self):
+        self.assertEqual(self.module.prune_installs(self.t3_home, self.current, "0.1.7", None), [])
+        elsewhere = self.t3_home.parent / "bin/t3"
+        write_exe(elsewhere, "echo t3\n")
+        self.assertEqual(self.module.prune_installs(self.t3_home, elsewhere, "0.1.7", set()), [])
+        self.assertEqual(len(self.remaining()), 5)
+
+    def test_a_running_process_marks_its_install_in_use(self):
+        start_binary(self.t3_home / "runtime/versions/0.1.6/t3-server", self.addCleanup)
+        self.assertIn(self.t3_home / "runtime/versions/0.1.6", self.module.installs_in_use(self.t3_home))
+
+
 class T3UpgradeTest(unittest.TestCase):
     """Step 1 upgrading the t3 that is there to the pin and step 6 restarting the
     server onto it: main() in-process, the pin pointed at a release built here."""
