@@ -567,7 +567,7 @@ class Session:
             self._end(execution, TurnEnded("failed", f"Omnigent did not compact: {exc}"))
 
     async def rebind(self, conversation_id: str) -> None:
-        """Point this session at another Omnigent session (a rollback's fork); nothing may be running."""
+        """Point this session at another Omnigent session (a rollback's or agent switch's fork); nothing may be running."""
         await self.close()
         self._stream = None
         self._connected.clear()
@@ -1478,10 +1478,7 @@ class Session:
         self._in_background(self.sync_policy())
 
     async def set_model(self, model: JsonObject) -> None:
-        if model.get("providerID") != self.target.name:
-            raise ValueError(
-                f"this thread runs on Omnigent agent {self.target.name}; start a new thread for {model.get('providerID')}"
-            )
+        """Another model or effort of this session's own agent; another agent's is a `retarget`."""
         update: dict[str, Any] = {}
         if model.get("id") != self.model.get("id"):
             update["model_override"] = None if model.get("id") == DEFAULT_MODEL else model.get("id")
@@ -1489,6 +1486,17 @@ class Session:
             update["reasoning_effort"] = model.get("variant") or None
         if update:
             await self._client.update_session(self.conversation_id, update)
+        self._select(model)
+
+    async def retarget(self, conversation_id: str, target: AgentTarget, model: JsonObject) -> None:
+        """Continue on `target`'s Omnigent session `conversation_id`, a fork of this one; nothing may be running."""
+        await self.rebind(conversation_id)
+        self.target = target
+        if target.native_plan and self.agent == "plan":
+            await self._client.update_session(conversation_id, {"collaboration_mode": "plan"})
+        self._select(model)
+
+    def _select(self, model: JsonObject) -> None:
         previous = self.model
         self.model = {k: v for k, v in model.items() if v is not None}
         self._emit("session.model.selected", {"model": self.model, "previous": previous})

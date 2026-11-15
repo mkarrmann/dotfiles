@@ -12,6 +12,8 @@ from typing import Any
 from aiohttp import web
 
 HOST_ID = "host_local"
+# What a fork's model_override or reasoning_effort takes to reset to the agent's default.
+RESET_ALIASES = frozenset({"default", "off", "reset"})
 
 
 @dataclass
@@ -146,6 +148,7 @@ class FakeOmnigent:
                 "agent_id": body.get("agent_id"),
                 "workspace": body.get("workspace"),
                 "model_override": body.get("model_override"),
+                "reasoning_effort": body.get("reasoning_effort"),
                 "status": session.status,
                 "items": [],
                 "pending_inputs": [],
@@ -181,7 +184,11 @@ class FakeOmnigent:
             last = max(n for n, i in enumerate(items) if i.get("response_id") == up_to)
             items = items[: last + 1]
         fork_id = f"conv_{next(self._ids):04d}"
-        self.sessions[fork_id] = FakeSession(fork_id, dict(source.body), items=[{**i, "id": f"copy_{i['id']}"} for i in items])
+        fork_body = dict(source.body)
+        for key in ("agent_id", "model_override", "reasoning_effort"):
+            if key in body:
+                fork_body[key] = None if body[key] in RESET_ALIASES else body[key]
+        self.sessions[fork_id] = FakeSession(fork_id, fork_body, items=[{**i, "id": f"copy_{i['id']}"} for i in items])
         return web.json_response({"id": fork_id}, status=201)
 
     async def launch(self, request: web.Request) -> web.Response:

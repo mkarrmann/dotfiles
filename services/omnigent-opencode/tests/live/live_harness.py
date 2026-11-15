@@ -49,8 +49,9 @@ def describe(event: dict[str, Any]) -> str:
     return f"{stamp()} {event['type']} {detail}"
 
 
-async def run(scenario: str, agent: str, model: str, directory: str) -> None:
-    config = Config(password=PASSWORD, host_spec="auto", agent_specs=[agent], default_directory=directory)
+async def run(scenario: str, agent: str, model: str, directory: str, to_agent: str, to_model: str) -> None:
+    agents = [agent, to_agent] if scenario == "switch" else [agent]
+    config = Config(password=PASSWORD, host_spec="auto", agent_specs=agents, default_directory=directory)
     store_dir = Path(tempfile.mkdtemp(prefix="oc-live-"))
     app = App(config, OmnigentClient(os.environ.get("OMNIGENT_URL", "http://127.0.0.1:6767")), Store(store_dir / "state.db"))
     server = TestServer(make_app(app))
@@ -282,6 +283,31 @@ async def run(scenario: str, agent: str, model: str, directory: str) -> None:
             "session.prompt", {"sessionID": sid, "id": f"msg_t3_turn_{sid}:2", "text": "Reply with exactly the word: still-here"}
         )
         await wait(lambda: executions() >= 2, 120)
+    elif scenario == "switch":
+        await t3.call(
+            "session.prompt",
+            {
+                "sessionID": sid,
+                "id": f"msg_t3_turn_{sid}:1",
+                "text": "Remember the codeword PAPAYA-42, then run the shell command `echo switch-test` and tell me its output.",
+            },
+        )
+        await wait(lambda: executions() >= 1, 180)
+        before = app.sessions[sid].conversation_id
+        print(f"{stamp()} >>> switching to {to_agent} {to_model}", flush=True)
+        await t3.call("session.switchModel", {"sessionID": sid, "model": {"providerID": to_agent, "id": to_model}})
+        print(f"{stamp()} Omnigent session {before} -> {app.sessions[sid].conversation_id}", flush=True)
+        await t3.call(
+            "session.prompt",
+            {
+                "sessionID": sid,
+                "id": f"msg_t3_turn_{sid}:2",
+                "text": "Without running any tools: what codeword did I give you, and what did the shell command print? One line.",
+            },
+        )
+        await wait(lambda: executions() >= 2, 180)
+        answer = [e for e in t3.of(sid) if e["type"] == "session.text.ended"][-1]["data"]["text"]
+        print(f"{stamp()} ANSWER AFTER SWITCH: {answer!r}", flush=True)
     else:
         raise SystemExit(f"unknown scenario {scenario}")
     print(f"{stamp()} done; Omnigent session {app.sessions[sid].conversation_id}", flush=True)
@@ -308,12 +334,16 @@ def main() -> None:
     for noisy in ("httpx", "httpcore", "aiohttp.access"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     parser = argparse.ArgumentParser()
-    parser.add_argument("scenario", choices=["turn", "steer", "stop", "approve", "decline", "question", "plan", "smoke", "edit"])
+    parser.add_argument(
+        "scenario", choices=["turn", "steer", "stop", "approve", "decline", "question", "plan", "smoke", "edit", "switch"]
+    )
     parser.add_argument("--agent", default="claude-native-ui")
     parser.add_argument("--model", default="sonnet")
     parser.add_argument("--directory", default=tempfile.mkdtemp(prefix="oc-live-cwd-"))
+    parser.add_argument("--to-agent", default="codex-native-ui", help="the agent `switch` moves the session to")
+    parser.add_argument("--to-model", default="gpt-5.6-luna", help="its model")
     args = parser.parse_args()
-    asyncio.run(run(args.scenario, args.agent, args.model, args.directory))
+    asyncio.run(run(args.scenario, args.agent, args.model, args.directory, args.to_agent, args.to_model))
 
 
 if __name__ == "__main__":

@@ -30,6 +30,8 @@ USERNAME: Final = "opencode"
 T3_HOME_HEADER: Final = "X-Omnigent-OpenCode-T3-Home"
 SWEEP_S: Final = 3600.0
 STATUS_PATH: Final = "/api/omnigent-opencode/status"
+# What a fork's model_override or reasoning_effort takes to reset to the agent's default.
+OMNIGENT_RESET: Final = "default"
 
 
 @dataclass
@@ -330,6 +332,32 @@ class App:
         LOG.info("forked %s before %s as %s (Omnigent session %s)", source.id, before, session_id, forked)
         return session.info()
 
+    async def switch_agent(self, session: Session, model: JsonObject) -> None:
+        """Move the session to another agent: Omnigent forks its session onto that agent, rebuilding the history
+        in the agent's own transcript, and the session continues there."""
+        if session.running or session.steers:
+            raise ApiError("ConflictError", "the session is busy; wait for its turn to end")
+        catalog = await self.catalog()
+        target = catalog.target(str(model.get("providerID")))
+        if target is None:
+            raise ApiError("InvalidRequestError", f"no Omnigent agent named {model.get('providerID')}")
+        body: dict[str, Any] = {
+            "agent_id": target.agent_id,
+            # Omitted, the fork would keep the source agent's model and effort.
+            "model_override": OMNIGENT_RESET if model.get("id") in (None, DEFAULT_MODEL) else str(model["id"]),
+            "reasoning_effort": str(model.get("variant") or OMNIGENT_RESET),
+        }
+        if session.title:
+            body["title"] = session.title
+        replaced = session.conversation_id
+        forked = str((await self.client.fork_session(replaced, body))["id"])
+        await self.client.launch_runner(catalog.host_id, forked, session.directory)
+        await self.client.update_session(
+            forked, {"labels": {"t3.client": "t3code", SESSION_LABEL: session.id, PROVIDER_LABEL: target.name}}
+        )
+        await session.retarget(forked, target, model)
+        LOG.info("switched %s to %s: Omnigent session %s replaces %s", session.id, target.name, forked, replaced)
+
     async def commit_revert(self, session: Session) -> None:
         """Roll the session back to before its staged message: its Omnigent session becomes a fork cut there."""
         boundary = session.staged_revert
@@ -573,7 +601,10 @@ async def switch_model(request: web.Request) -> web.Response:
     model = (await body_of(request)).get("model")
     if not isinstance(model, dict):
         raise ApiError("InvalidRequestError", "model is required")
-    await session.set_model(cast(JsonObject, model))
+    if model.get("providerID") == session.target.name:
+        await session.set_model(cast(JsonObject, model))
+    else:
+        await app_of(request).switch_agent(session, cast(JsonObject, model))
     return no_content()
 
 

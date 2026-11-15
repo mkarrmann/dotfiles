@@ -9,6 +9,7 @@ from conftest import Shim, T3Client
 from fake_omnigent import FakeOmnigent
 
 CLAUDE = {"providerID": "claude-native-ui", "id": "opus"}
+CODEX = {"providerID": "codex-native-ui", "id": "gpt-5", "variant": "high"}
 
 
 def assert_all_decoded(shim: Shim, t3: T3Client, session_id: str) -> None:
@@ -434,6 +435,67 @@ async def test_rollback_points_the_session_at_a_fork_cut_at_the_boundary(t3: T3C
     new_conv = shim.app.sessions[sid].conversation_id
     await t3.call("session.prompt", {"sessionID": sid, "id": f"msg_t3_turn_{sid}:a3", "text": "again"})
     assert fake.sessions[new_conv].posted[-1]["data"]["content"][-1]["text"] == "again"
+
+
+async def switch_to_codex(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> tuple[str, str, str]:
+    """Two Claude turns, then the thread switched to Codex: its id, the Claude Omnigent session, and the Codex one."""
+    sid, conv = await two_turns(t3, shim, fake)
+    await t3.call("session.switchModel", {"sessionID": sid, "model": CODEX})
+    return sid, conv, shim.app.sessions[sid].conversation_id
+
+
+async def test_switching_agent_continues_the_session_on_a_fork_of_that_agent(
+    t3: T3Client, shim: Shim, fake: FakeOmnigent
+) -> None:
+    sid, conv, fork = await switch_to_codex(t3, shim, fake)
+    assert fork != conv
+    switched = fake.sessions[fork].body
+    assert (switched["agent_id"], switched["model_override"], switched["reasoning_effort"]) == ("agent_codex", "gpt-5", "high")
+    assert fake.launched[-1] == {"session_id": fork, "workspace": shim.app.config.default_directory}
+    history = (await t3.call("message.list", {"sessionID": sid, "limit": 100}))["data"]
+    assert [m["type"] for m in history] == ["user", "assistant", "idle", "user", "assistant", "idle"]
+    await t3.call("session.prompt", {"sessionID": sid, "id": f"msg_t3_turn_{sid}:a3", "text": "again"})
+    assert fake.sessions[fork].posted[-1]["data"]["content"][-1]["text"] == "again"
+    assert fake.sessions[conv].posted[-1]["data"]["content"][-1]["text"] == "more"
+
+
+async def test_switching_back_forks_onto_the_first_agent_at_its_default_effort(
+    t3: T3Client, shim: Shim, fake: FakeOmnigent
+) -> None:
+    sid, _, codex = await switch_to_codex(t3, shim, fake)
+    await t3.call("session.switchModel", {"sessionID": sid, "model": CLAUDE})
+    claude = shim.app.sessions[sid].conversation_id
+    assert claude != codex
+    switched = fake.sessions[claude].body
+    assert (switched["agent_id"], switched["model_override"], switched["reasoning_effort"]) == ("agent_claude", "opus", None)
+
+
+async def test_a_switched_session_reloads_on_its_new_agent(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> None:
+    sid, _, fork = await switch_to_codex(t3, shim, fake)
+    del shim.app.sessions[sid]
+    await t3.call("session.prompt", {"sessionID": sid, "id": f"msg_t3_turn_{sid}:a3", "text": "again"})
+    assert shim.app.sessions[sid].target.name == "codex-native-ui"
+    assert fake.sessions[fork].posted[-1]["data"]["content"][-1]["text"] == "again"
+
+
+async def test_switching_agent_in_plan_mode_plans_on_codex(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> None:
+    sid, _ = await two_turns(t3, shim, fake)
+    await t3.call("session.switchAgent", {"sessionID": sid, "agent": "plan"})
+    await t3.call("session.switchModel", {"sessionID": sid, "model": CODEX})
+    fork = shim.app.sessions[sid].conversation_id
+    assert {"collaboration_mode": "plan"} in fake.sessions[fork].patches
+
+
+async def test_switching_agent_mid_turn_is_refused(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> None:
+    sid, conv = await start_turn(t3, shim, fake)
+    try:
+        await t3.call("session.switchModel", {"sessionID": sid, "model": CODEX})
+    except Exception:  # noqa: BLE001 - T3 Code's client raises whatever the 409 decodes to
+        pass
+    else:
+        raise AssertionError("the switch was accepted mid-turn")
+    assert shim.app.sessions[sid].conversation_id == conv
+    assert fake.forks == []
 
 
 async def test_clearing_a_revert_runs_an_empty_execution(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> None:

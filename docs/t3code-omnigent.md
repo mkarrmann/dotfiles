@@ -358,7 +358,11 @@ What T3 Code gets:
 - **Fork** from any turn keeps the history before it (an Omnigent fork, on the
   same host); **rollback** is a fork at the boundary that the thread then
   continues in.
-- **Model and effort** switch live; **plan mode** is codex-native's plan
+- **Model and effort** switch live. Switching a thread to the **other agent**
+  (Claude to Codex or back) continues it on an Omnigent fork bound to that
+  agent, which rebuilds the history in the agent's own transcript, tool calls
+  included; the thread's earlier Omnigent session is left as it was.
+- **Plan mode** is codex-native's plan
   collaboration mode and, on Claude, the approval policy with edits denied;
   **/compact** compacts the Omnigent session; **images** are sent inline.
 - **Titles** and other text T3 Code generates come from a one-shot `claude -p`

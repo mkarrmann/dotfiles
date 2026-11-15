@@ -162,7 +162,7 @@ by its Omnigent session id, so the common case needs no lookup. What cannot be
 recovered from Omnigent is kept in a SQLite file under
 `$XDG_STATE_HOME/omnigent-opencode/` (default `~/.local/state/`):
 
-- a session whose Omnigent session was replaced by a rollback;
+- a session whose Omnigent session was replaced by a rollback or an agent switch;
 - the T3 Code message id of each prompt, since T3 Code addresses forks,
   rollbacks and reconnect backfill by the ids it chose;
 - the sessions followed, each with the last Omnigent input handled, when it was
@@ -194,7 +194,8 @@ replay after a gap and held runs; `test_t3_daemon.py` the forwarding path.
 
 `tests/live/live_harness.py SCENARIO` runs scenarios against the real Omnigent
 on this machine through T3 Code's client: `turn`, `steer`, `stop`, `approve`,
-`decline`, `question`, `plan`, and `smoke` (model switch, image, compaction,
+`decline`, `question`, `plan`, `switch` (to `--to-agent`/`--to-model`, then
+asks what came before), and `smoke` (model switch, image, compaction,
 fork, rollback, text generation). They create real Omnigent sessions. Note
 that `smoke`'s model switch makes Claude Code save the model as the default in
 `~/.claude/settings.json` (see docs/t3code-omnigent.md, Limits).
