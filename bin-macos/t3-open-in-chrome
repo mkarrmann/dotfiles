@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Opens links from the T3 Code windows' browser in Google Chrome's work profile.
 
-Chrome Beta (T3_BROWSER_APP, see bin-macos/startup-windows) can only open a link
+Brave (T3_BROWSER_APP, see bin-macos/startup-windows) can only open a link
 in itself, away from your logins. t3code/link-forwarder, an extension loaded in
 it, sends each link a T3 Code window opens here as a native message; this opens
 it in Google Chrome, profile directory T3_LINK_CHROME_PROFILE (Default, the
@@ -30,7 +30,7 @@ from typing import BinaryIO
 from urllib.parse import urlsplit
 
 HOST_NAME = "com.mkarrmann.t3_open_in_chrome"
-BROWSER_APP = os.environ.get("T3_BROWSER_APP", "Google Chrome Beta")
+BROWSER_APP = os.environ.get("T3_BROWSER_APP", "Brave Browser")
 CHROME_APP = "Google Chrome"
 CHROME_PROFILE = os.environ.get("T3_LINK_CHROME_PROFILE", "Default")
 OPEN = os.environ.get("T3_OPEN_IN_CHROME_OPEN", "/usr/bin/open")
@@ -43,9 +43,18 @@ def extension_id(extension_dir: Path = EXTENSION_DIR) -> str:
     return "".join(chr(ord("a") + int(c, 16)) for c in digest)
 
 
+# Where a browser that is not a Google Chrome keeps its data, under Application Support.
+DATA_DIRS = {"Brave Browser": "BraveSoftware/Brave-Browser"}
+
+
 def default_hosts_dir() -> Path:
-    data_dir = BROWSER_APP[len("Google "):] if BROWSER_APP.startswith("Google ") else BROWSER_APP
-    return Path.home() / "Library" / "Application Support" / "Google" / data_dir / "NativeMessagingHosts"
+    if BROWSER_APP in DATA_DIRS:
+        data_dir = DATA_DIRS[BROWSER_APP]
+    elif BROWSER_APP.startswith("Google "):
+        data_dir = "Google/" + BROWSER_APP[len("Google "):]
+    else:
+        raise SystemExit(f"t3-open-in-chrome: where {BROWSER_APP} keeps its data is not known; pass DIR")
+    return Path.home() / "Library" / "Application Support" / data_dir / "NativeMessagingHosts"
 
 
 def install(hosts_dir: Path) -> bool:

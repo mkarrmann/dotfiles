@@ -34,7 +34,7 @@ done
 
 CHROME_APP="Google Chrome"
 OMNIGENT_APP="Omnigent"
-T3_BROWSER_APP="Google Chrome Beta"
+T3_BROWSER_APP="Brave Browser"
 T3_BROWSER_PROFILE="Default"
 t3_browser_missing_warned=false
 t3_browser_installed() { :; }
@@ -67,7 +67,7 @@ aerospace() {
   local wid
   printf '['
   for wid in $CHROME_WINDOWS; do printf '{"window-id": %s, "app-name": "Google Chrome"},' "$wid"; done
-  for wid in $BROWSER_WINDOWS; do printf '{"window-id": %s, "app-name": "Google Chrome Beta"},' "$wid"; done
+  for wid in $BROWSER_WINDOWS; do printf '{"window-id": %s, "app-name": "Brave Browser"},' "$wid"; done
   printf '{"window-id": 40, "app-name": "Omnigent"}]'
 }
 LISTINGS="$(mktemp)"
@@ -440,7 +440,7 @@ t3_browser_installed() { return 1; }
 { reconcile_t3_window 6 "T3: ws6"; reconcile_t3_window 4 "T3: ws4"; } > "$SIM/out" 2>&1
 check "without T3 Code's browser installed nothing opens, its token is kept, and the run warns once how to install it" \
   "0 1 1 1" \
-  "$(wc -l < "$SIM/windows" | tr -d ' ') $(pooled cco.example.com) $failures $(grep -c 'brew install --cask google-chrome@beta' "$SIM/out")"
+  "$(wc -l < "$SIM/windows" | tr -d ' ') $(pooled cco.example.com) $failures $(grep -c 'brew install --cask brave-browser' "$SIM/out")"
 t3_browser_installed() { :; }
 t3_browser_missing_warned=false
 

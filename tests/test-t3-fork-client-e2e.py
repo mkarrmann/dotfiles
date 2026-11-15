@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end check of the installed t3 with mkarrmann/t3code's web client
 (bin/t3-ensure step 1b): a throwaway `t3 serve` with two projects, and a
-headless Google Chrome Beta in a temporary profile as the window, scoped to the
+headless Brave (T3 Code's browser) in a temporary profile as the window, scoped to the
 first project by bin/t3-window-scope. With a draft of the second project on
 screen, Cmd+O starts the new thread in the window's own project; upstream's
 client starts it in the second. Everything runs on loopback ports and under a
@@ -23,7 +23,9 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BROWSER = Path("/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta")
+# T3 Code's browser on the Mac (bin-macos/startup-windows); its executable is named after it.
+BROWSER_APP = os.environ.get("T3_BROWSER_APP", "Brave Browser")
+BROWSER = Path(f"/Applications/{BROWSER_APP}.app/Contents/MacOS/{BROWSER_APP}")
 T3 = Path(os.environ.get("T3_BIN") or Path.home() / ".local/bin/t3")
 
 
@@ -61,7 +63,7 @@ def check(label, expected, actual):
 
 def main():
     if not BROWSER.exists() or not T3.exists():
-        print("skipped: needs Google Chrome Beta and the t3 CLI")
+        print(f"skipped: needs {BROWSER_APP} and the t3 CLI")
         return
     tmp = Path(tempfile.mkdtemp(prefix="t3-window-project-e2e."))
     home, profile = tmp / "t3home", tmp / "chrome"

@@ -266,8 +266,11 @@ chrome_restore_settled=false
 # Apple Events on in T3_BROWSER_APP. What this script knows of each window's
 # servers is kept in T3_STATE_DIR/<origin's first label>, per browser: another
 # browser's windows have none of its cookies or saved connections.
+# It is Brave rather than another Chrome channel: Meta's cloud policy for every
+# Chrome channel sets DefaultBrowserSettingEnabled, which makes a Chrome that is
+# not the default ask macOS for it at each start, past any flag.
 # T3_BROWSER_APP="Google Chrome" puts them back in your own Chrome.
-T3_BROWSER_APP="${T3_BROWSER_APP:-Google Chrome Beta}"
+T3_BROWSER_APP="${T3_BROWSER_APP:-Brave Browser}"
 export T3_BROWSER_APP
 T3_BROWSER_PROFILE="Default"
 T3_STATE_DIR="$HOME/.local/state/t3-windows/${T3_BROWSER_APP// /-}"
@@ -1225,7 +1228,7 @@ reconcile_t3_window() {
   if ! t3_browser_installed; then
     if [[ "$t3_browser_missing_warned" != true ]]; then
       echo "WARNING: T3 Code windows need $T3_BROWSER_APP, which is not installed:" >&2
-      echo "         brew install --cask google-chrome@beta (or set T3_BROWSER_APP)" >&2
+      echo "         brew install --cask brave-browser (or set T3_BROWSER_APP)" >&2
       ((failures++)) || true
       t3_browser_missing_warned=true
     fi
@@ -1290,13 +1293,10 @@ reconcile_t3_window() {
     open_url="$url${token:+pair#token=$token}"
     # -n: a launch the browser's own singleton hands to its running instance, or
     # that starts it, rather than one LaunchServices may route elsewhere. The
-    # first-run flags keep a first launch from adding welcome windows.
-    # --no-default-browser-check does not cover Chrome's default-browser prompt
-    # experiments, which open macOS's "change your default web browser" dialog
-    # moments after a launch that starts the browser.
+    # first-run flags keep a first launch from adding welcome windows or asking
+    # to be the default browser.
     open -na "$T3_BROWSER_APP" --args --profile-directory="$T3_BROWSER_PROFILE" \
       --no-first-run --no-default-browser-check \
-      --disable-features=DefaultBrowserPromptSurfaces,DefaultBrowserFramework,DefaultBrowserModal,DefaultBrowserStickyModal,DefaultBrowserSetterSelection,DefaultBrowserChangedOsNotification \
       --app="$open_url" 2>/dev/null || {
       echo "WARNING: [$title] creation failed, skipping" >&2
       ((failures++)) || true

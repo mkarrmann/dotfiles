@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """End-to-end check of t3code/link-forwarder with bin-macos/t3-open-in-chrome:
-a throwaway headless Google Chrome Beta (its own temp profile, so it never
+a throwaway headless T3 Code browser, Brave (its own temp profile, so it never
 touches a running one) loads the extension, a page on a *.t3.localhost origin
 opens links, and the native host's `open` is a stub that records what would
 have gone to Google Chrome.
@@ -22,7 +22,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HOST = ROOT / "bin-macos/t3-open-in-chrome"
 EXTENSION = ROOT / "t3code/link-forwarder"
-BROWSER = Path("/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta")
+# T3 Code's browser on the Mac (bin-macos/startup-windows); its executable is named after it.
+BROWSER_APP = os.environ.get("T3_BROWSER_APP", "Brave Browser")
+BROWSER = Path(f"/Applications/{BROWSER_APP}.app/Contents/MacOS/{BROWSER_APP}")
 
 
 class Cdp:
@@ -114,7 +116,7 @@ def serve_page():
 
 def main():
     if not BROWSER.exists():
-        print("skipped: Google Chrome Beta is not installed")
+        print(f"skipped: {BROWSER_APP} is not installed")
         return
     tmp = Path(tempfile.mkdtemp(prefix="t3-link-forwarder-e2e."))
     profile, calls, stub = tmp / "profile", tmp / "calls", tmp / "open"

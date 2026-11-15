@@ -7,7 +7,7 @@ Usage: t3-window-scope PROFILE_DIR|@chrome ORIGIN WORKDIR [--link URL LABEL]...
 
 PROFILE_DIR is the window's Chrome --user-data-dir, reached over the DevTools
 port that Chrome was started with (bin-linux/startup-windows). @chrome is the
-Chromium browser T3_BROWSER_APP names on macOS (Google Chrome Beta unless set),
+Chromium browser T3_BROWSER_APP names on macOS (Brave Browser unless set),
 whose app window on ORIGIN is reached through AppleScript instead
 (bin-macos/startup-windows): one instance of it, on its default data directory,
 holds every workspace window. A browser of its own keeps T3 Code's shortcuts
@@ -122,7 +122,7 @@ SOCKET_TIMEOUT = 10.0
 POLL = 0.25
 
 T = TypeVar("T")
-BROWSER_APP = os.environ.get("T3_BROWSER_APP", "Google Chrome Beta")
+BROWSER_APP = os.environ.get("T3_BROWSER_APP", "Brave Browser")
 # The directory bin-macos/startup-windows and bin/t3-client-settings keep this
 # browser's windows' state in, under ~/.local/state/t3-windows.
 BROWSER_STATE_NAME = BROWSER_APP.replace(" ", "-")
@@ -439,7 +439,7 @@ class DevToolsPage(DevTools):
 
 
 def browser_binary() -> str:
-    """BROWSER_APP's executable, as its bundle names it (Chrome Beta's is "Google Chrome Beta")."""
+    """BROWSER_APP's executable, as its bundle names it (Brave's is "Brave Browser")."""
     import plistlib
 
     bundle = f"/Applications/{BROWSER_APP}.app"

@@ -15,7 +15,7 @@ directories: T3 Code's own model, in which a server owns its machine's projects,
 threads, files and terminals, and a client connects to every server and shows
 them as one (`~/repos/t3code/docs/internals/remote.md`). Each workspace gets a
 browser window: a Chrome `--app` window on a hostname of its own (on the Mac in
-Google Chrome Beta, a browser of their own, on Linux in a Chrome profile of its own), served by its host's server and, at work, linked to every other
+Brave, a browser of their own, on Linux in a Chrome profile of its own), served by its host's server and, at work, linked to every other
 devserver's, so every window lists, searches (Cmd+K) and starts threads on every
 host. Only where its new threads start is per window (see "A window's
 project"). T3 Code's desktop app is one instance with one window (`t3 app PATH`
@@ -58,28 +58,31 @@ session behind a thread likewise runs on that host.
   tunnel that lacks it, as it does one that lacks its Omnigent forward.
 - `bin-macos/workspaces` gives each devserver workspace a `t3Url` on its host's
   port at a hostname of its own, `<origin>.t3.localhost`, and
-  `bin-macos/startup-windows` opens it as an `--app` window of Google Chrome
-  Beta (`T3_BROWSER_APP`; `open -na "Google Chrome Beta" --args
+  `bin-macos/startup-windows` opens it as an `--app` window of Brave
+  (`T3_BROWSER_APP`; `open -na "Brave Browser" --args
   --profile-directory=Default --app=URL`). A browser of their own, rather than
   your Chrome, is what lets `bin-macos/t3-browser-shortcuts` (run by `sync.sh`)
   move the shortcuts Chrome reserves and a page cannot override (Cmd+N, Cmd+T,
   Cmd+W, ...) off T3 Code's without taking them from your browsing; its own
   bundle id keeps macOS from handing it your links and Dock clicks, which
   sank the instance per window before it (`~/.t3-workspace-chrome/<name>`, which
-  `startup-windows` now quits). The script tells the windows apart (they share a title) by
+  `startup-windows` now quits). It is Brave and not another Chrome channel because
+  Meta's cloud policy for every Chrome channel turns on `DefaultBrowserSettingEnabled`,
+  which has a Chrome that is not the default ask macOS for it at each start, past
+  any flag. The script tells the windows apart (they share a title) by
   their origin, which `bin/t3-window-scope --list-windows` reads through
   AppleScript; the hostname keeps each window's cookies and localStorage its
   own. AppleScript runs page JavaScript only with View > Developer > Allow
   JavaScript from Apple Events on in that browser. A browser can open a link
-  only in itself, so `t3code/link-forwarder`, an extension loaded in Chrome
-  Beta, sends every outside http(s) link a window opens (anything but a
+  only in itself, so `t3code/link-forwarder`, an extension loaded in Brave,
+  sends every outside http(s) link a window opens (anything but a
   `*.t3.localhost` one) to `bin-macos/t3-open-in-chrome`, its native messaging
   host, which opens it in your Chrome's work profile
   (`--profile-directory=Default`) and brings Chrome forward. Its page script
-  catches `window.open` and link clicks before Chrome Beta opens a tab; a tab
+  catches `window.open` and link clicks before Brave opens a tab; a tab
   that opens anyway (from another site's frame) is forwarded and closed.
   `sync.sh` registers the host (`t3-open-in-chrome --install`). After changing
-  the extension, click its reload arrow in `chrome://extensions` and reload the
+  the extension, click its reload arrow in `brave://extensions` and reload the
   T3 Code windows.
 - A window `startup-windows` opens starts its new threads in its workspace's
   checkout and links every other devserver's server
@@ -87,7 +90,7 @@ session behind a thread likewise runs on that host.
   the label the prefix of that host's nvs sessions, CCO or FTW): the Mac knows a
   checkout only by its place under the devserver's home, and `~/checkoutN` is
   the one live project whose root ends in `/checkoutN` on the window's own
-  server. `~/.local/state/t3-windows/<browser>/<name>` (`Google-Chrome-Beta`)
+  server. `~/.local/state/t3-windows/<browser>/<name>` (`Brave-Browser`)
   records the servers a window's
   origin is set up with by environment id (`.t3-servers/ENVIRONMENT_ID`): its
   own once a window was paired and scoped, the other once linked. A run reopens,
@@ -150,12 +153,12 @@ took:
    `~/checkoutN` as a project and retires the old `t3@checkoutN` servers (their
    `~/.t3-workspaces/checkoutN` stays; delete it by hand once unneeded). Check
    with `systemctl --user list-units 't3@*'`.
-2. On the Mac, `brew install --cask google-chrome@beta`, open it once to get
+2. On the Mac, `brew install --cask brave-browser`, open it once to get
    through its first run, and turn on View > Developer > Allow JavaScript from
    Apple Events. Then run `~/dotfiles/sync.sh`, so `~/bin/t3-window-scope`
    exists, `t3-browser-shortcuts` frees Cmd+N and the like and the link
-   forwarder's host is registered, and quit and reopen Chrome Beta to pick
-   those up. In Chrome Beta's `chrome://extensions`, turn on Developer mode,
+   forwarder's host is registered, and quit and reopen Brave to pick
+   those up. In Brave's `brave://extensions`, turn on Developer mode,
    Load unpacked `~/dotfiles/t3code/link-forwarder` (its id is
    `pdcoehmlpmfjiimeabommdgknpnjadca`, fixed by its key), and leave it on.
 3. Run `~/bin/startup-windows`. It finds both tunnels
@@ -293,8 +296,8 @@ from the `client/` directory beside it, so nothing else is rebuilt:
 - Rollback: drop the version from `T3_FORK_CLIENT` and run `t3-ensure`, which
   links `~/.local/bin/t3` back to upstream's install and restarts the server.
 - Check: `python3 ~/dotfiles/tests/test-t3-fork-client-e2e.py` runs the
-  installed `t3` with two projects in a throwaway server and headless Chrome
-  Beta and checks Cmd+O; upstream's client fails it.
+  installed `t3` with two projects in a throwaway server and headless Brave
+  and checks Cmd+O; upstream's client fails it.
 - Not covered: the T3 Code desktop app on the Linux desktop has its own copy
   of the client built in.
 
