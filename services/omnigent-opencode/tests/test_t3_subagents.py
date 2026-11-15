@@ -7,7 +7,7 @@ from typing import Any
 
 from conftest import Shim, T3Client
 from fake_omnigent import FakeOmnigent
-from test_t3_turns import assert_all_decoded, confirmed_idle, start_turn
+from test_t3_turns import assert_all_decoded, confirmed_idle, consumed, create_for_thread, start_turn, thread_rules
 
 LAUNCHED = json.dumps([{"type": "text", "text": "Async agent launched successfully.\nagentId: a4e0 (internal ID)"}])
 NOTIFICATION = """<task-notification>
@@ -171,3 +171,17 @@ async def test_a_childs_output_after_its_report_is_kept(t3: T3Client, shim: Shim
     fake.push(child, "session.status", {"status": "idle", "response_id": None})
     await t3.wait_for(lambda: "session.execution.succeeded" in t3.types(child_sid))
     assert [e["data"]["text"] for e in t3.of(child_sid) if e["type"] == "session.text.ended"] == ["SUBAGENT_OK"]
+
+
+async def test_a_childs_rules_do_not_tie_the_parents_thread_to_the_child(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> None:
+    session = await create_for_thread(t3, shim, "th_parent")
+    sid, conv = session["id"], fake.only().id
+    await t3.call("session.prompt", {"sessionID": sid, "id": f"msg_t3_turn_{sid}:a1", "text": "hi"})
+    await fake.connected(conv)
+    fake.push(conv, "session.input.consumed", consumed("pending_2", "item_2"))
+    child = spawn(fake, conv)
+    await t3.wait_for(lambda: f"ses_{child}" in shim.app.sessions)
+    # T3 Code writes a child's rules, here for a switch out of full access, with its root thread's MCP scoping.
+    asking = [{"action": a, "resource": "*", "effect": "ask"} for a in ("shell", "edit", "external_directory")]
+    await t3.call("session.update", {"sessionID": f"ses_{child}", "permissions": [*asking, *thread_rules("th_parent")[1:]]})
+    assert (await create_for_thread(t3, shim, "th_parent"))["id"] == sid

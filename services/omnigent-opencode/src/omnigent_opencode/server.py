@@ -15,7 +15,7 @@ from urllib.parse import unquote
 import httpx
 from aiohttp import web
 
-from . import history, textgen
+from . import approvals, history, textgen
 from .catalog import DEFAULT_MODEL, Catalog, load_catalog
 from .events import EventFeed
 from .omnigent import OmnigentClient, OmnigentError
@@ -230,6 +230,19 @@ class App:
             text_session = TextGenSession(f"ses_textgen_{message_id()[4:]}", str(title), directory, model, now_ms())
             self.text_sessions[text_session.id] = text_session
             return text_session.info()
+        permissions = list(body["permissions"]) if isinstance(body.get("permissions"), list) else []
+        thread = approvals.thread_key(permissions)
+        kept = None if thread is None else await self._thread_session(thread)
+        if kept is not None:
+            LOG.warning(
+                "T3 Code asked for a new session for %s, whose Omnigent session %s still exists: keeping it",
+                thread,
+                kept.conversation_id,
+            )
+            kept.permissions = permissions
+            kept.rules_changed()
+            kept.recap_due = True
+            return kept.info()
         catalog = await self.catalog()
         provider = str(model.get("providerID") or next(iter(catalog.targets)))
         target = catalog.target(provider)
@@ -247,7 +260,6 @@ class App:
             request["reasoning_effort"] = model["variant"]
         if isinstance(title, str) and title:
             request["title"] = title
-        permissions = list(body["permissions"]) if isinstance(body.get("permissions"), list) else []
         created = await self.client.create_session(request)
         conversation_id = str(created["id"])
         session_id = session_id_for(conversation_id)
@@ -273,8 +285,28 @@ class App:
         )
         session.permissions = permissions
         self._register(session)
+        if thread is not None:
+            self.store.set_thread_session(thread, session_id)
         LOG.info("created Omnigent session %s as %s", conversation_id, session_id)
         return session.info()
+
+    async def _thread_session(self, thread: str) -> Session | None:
+        """The session T3 Code thread `thread` runs on, while its Omnigent session exists."""
+        session_id = self.store.thread_session(thread)
+        if session_id is None:
+            return None
+        try:
+            return await self.session(session_id)
+        except ApiError as exc:
+            if exc.tag == "SessionNotFoundError":
+                return None
+            raise
+
+    def note_rules(self, session: Session) -> None:
+        """Tie a root session to the thread its rules were written for (a child gets its root thread's rules)."""
+        thread = approvals.thread_key(session.permissions)
+        if thread is not None and session.parent is None:
+            self.store.set_thread_session(thread, session.id)
 
     async def _fork_conversation(self, source: Session, before: str | None) -> str:
         """An Omnigent session holding `source`'s history strictly before user message `before`, bound to this host."""
@@ -573,6 +605,7 @@ async def update_session(request: web.Request) -> web.Response:
     if isinstance(body.get("permissions"), list) and body["permissions"] != session.permissions:
         session.permissions = list(body["permissions"])
         session.rules_changed()
+        app.note_rules(session)
     if isinstance(body.get("title"), str) and body["title"] != session.title:
         session.title = body["title"]
         await app.client.update_session(session.conversation_id, {"title": session.title})

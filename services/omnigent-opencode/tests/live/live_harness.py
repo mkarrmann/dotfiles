@@ -91,6 +91,12 @@ async def run(scenario: str, agent: str, model: str, directory: str, to_agent: s
 
     asks = [{"action": a, "resource": "*", "effect": "ask"} for a in ("shell", "edit", "external_directory")]
     permissions = asks if scenario in ("approve", "decline") else [{"action": "*", "resource": "*", "effect": "allow"}]
+    if scenario == "recover":
+        # The MCP scoping T3 Code writes into every thread's rules, which names the thread.
+        permissions += [
+            {"action": "t3-code-*", "resource": "*", "effect": "deny"},
+            {"action": f"t3-code-live_{int(time.time())}_*", "resource": "*", "effect": "allow"},
+        ]
     session = await t3.call(
         "session.create",
         {"location": {"directory": directory}, "model": {"providerID": agent, "id": model}, "permissions": permissions},
@@ -308,6 +314,30 @@ async def run(scenario: str, agent: str, model: str, directory: str, to_agent: s
         await wait(lambda: executions() >= 2, 180)
         answer = [e for e in t3.of(sid) if e["type"] == "session.text.ended"][-1]["data"]["text"]
         print(f"{stamp()} ANSWER AFTER SWITCH: {answer!r}", flush=True)
+    elif scenario == "recover":
+        await t3.call(
+            "session.prompt",
+            {"sessionID": sid, "id": f"msg_t3_turn_{sid}:1", "text": "Remember the codeword PAPAYA-42. Reply 'ok'."},
+        )
+        await wait(lambda: executions() >= 1, 180)
+        print(f"{stamp()} >>> asking for a new session for the same thread, as T3 Code does when a resume fails", flush=True)
+        again = await t3.call(
+            "session.create",
+            {"location": {"directory": directory}, "model": {"providerID": agent, "id": model}, "permissions": permissions},
+        )
+        print(f"{stamp()} got {again['id']} (the thread's session is {sid})", flush=True)
+        recap = "Context handoff (full_thread_summary):\nThe user asked you to remember the codeword MANGO-7.\n\nUser message:\n"
+        await t3.call(
+            "session.prompt",
+            {
+                "sessionID": sid,
+                "id": f"msg_t3_turn_{sid}:2",
+                "text": recap + "What codeword did I give you? Reply with just the codeword.",
+            },
+        )
+        await wait(lambda: executions() >= 2, 180)
+        answer = [e for e in t3.of(sid) if e["type"] == "session.text.ended"][-1]["data"]["text"]
+        print(f"{stamp()} ANSWER: {answer!r} (PAPAYA-42 means the recap, which says MANGO-7, was dropped)", flush=True)
     else:
         raise SystemExit(f"unknown scenario {scenario}")
     print(f"{stamp()} done; Omnigent session {app.sessions[sid].conversation_id}", flush=True)
@@ -335,7 +365,8 @@ def main() -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "scenario", choices=["turn", "steer", "stop", "approve", "decline", "question", "plan", "smoke", "edit", "switch"]
+        "scenario",
+        choices=["turn", "steer", "stop", "approve", "decline", "question", "plan", "smoke", "edit", "switch", "recover"],
     )
     parser.add_argument("--agent", default="claude-native-ui")
     parser.add_argument("--model", default="sonnet")

@@ -9,6 +9,8 @@ by the ids this server gave out, so these live in SQLite:
   input it became; forks, rollbacks and reconnect backfill address prompts by it.
 - `executions`: how each execution ended, after which input, for the `idle`
   markers in a session's history.
+- `threads`: the session each T3 Code thread runs on, so a request for a new
+  one, which T3 Code makes whenever resuming fails, keeps the thread on it.
 - `watched`: the sessions this server follows between T3 Code's visits, each
   with the last Omnigent input it handled (its watermark: a turn on an input
   after it was missed and is replayed), when it was last active, and the home
@@ -26,6 +28,7 @@ Outcome = Literal["succeeded", "failed", "interrupted"]
 
 SCHEMA = """
 create table if not exists sessions (session_id text primary key, conversation_id text not null);
+create table if not exists threads (thread_key text primary key, session_id text not null);
 create table if not exists prompts (
     session_id text not null,
     message_id text not null,
@@ -71,6 +74,16 @@ class Store:
         self._db.execute(
             "insert into sessions values (?, ?) on conflict (session_id) do update set conversation_id = excluded.conversation_id",
             (session_id, conversation_id),
+        )
+
+    def thread_session(self, thread_key: str) -> str | None:
+        row = self._db.execute("select session_id from threads where thread_key = ?", (thread_key,)).fetchone()
+        return str(row[0]) if row else None
+
+    def set_thread_session(self, thread_key: str, session_id: str) -> None:
+        self._db.execute(
+            "insert into threads values (?, ?) on conflict (thread_key) do update set session_id = excluded.session_id",
+            (thread_key, session_id),
         )
 
     def add_prompt(self, session_id: str, message_id: str, text: str, created: int) -> None:

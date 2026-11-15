@@ -391,8 +391,12 @@ What T3 Code gets:
   Code to T3 Code as an "Agent" message (`[Omnigent] ...`) whose turn shows the
   agent's work. Without the daemon (it is not running, or T3 Code started the
   provider before it was), such a turn is not shown live.
-- Opening a thread whose Omnigent session is gone fails instead of quietly
-  starting a fresh session.
+- When resuming a thread fails, even on a brief Omnigent outage, T3 Code asks
+  for a fresh session and pastes a recap of the thread into its first prompt.
+  While the thread's Omnigent session still exists, the provider hands back
+  that session instead and drops the recap. A thread is known by the MCP rule
+  T3 Code writes into its rules, from its creation or its next rules update.
+  Only a thread whose Omnigent session is gone gets a fresh one, with the recap.
 - Each edit's diff shows in its tool call; T3 Code's checkpoint diffs and git
   panes need a git or jj repository, which the Sapling checkouts are not.
 - Threads from the ACP providers (`omnigent-claude`, `omnigent-codex`) keep

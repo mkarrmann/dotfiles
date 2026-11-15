@@ -268,6 +268,21 @@ def runtime_mode(rules: list[Json]) -> RuntimeMode | None:
     return "approval-required"
 
 
+# T3 Code's driver allows each thread's session only that thread's own MCP server, `t3-code-<thread>`
+# (adapter.ts mcpRules), so the rule names the thread. Its child sessions get their root thread's rule.
+_THREAD_RULE = re.compile(r"(t3-code-[A-Za-z0-9_-]+)_\*")
+
+
+def thread_key(rules: list[Json]) -> str | None:
+    """The T3 Code thread whose session `rules` were written for, if they say."""
+    for r in rules:
+        if isinstance(r, dict) and r.get("effect") == "allow":
+            matched = _THREAD_RULE.fullmatch(str(r.get("action")))
+            if matched:
+                return matched.group(1)
+    return None
+
+
 def wants_policy(rules: list[Json], plan: bool) -> bool:
     """Whether the thread needs the harness to ask before file and shell tools: not in full access, or planning."""
     mode = runtime_mode(rules)

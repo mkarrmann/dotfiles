@@ -498,6 +498,74 @@ async def test_switching_agent_mid_turn_is_refused(t3: T3Client, shim: Shim, fak
     assert fake.forks == []
 
 
+def thread_rules(thread: str) -> list[dict[str, str]]:
+    """The rules T3 Code's OpenCode driver gives a thread's session: full access, then its MCP server scoping (adapter.ts mcpRules)."""
+    return [
+        {"action": "*", "resource": "*", "effect": "allow"},
+        {"action": "t3-code-*", "resource": "*", "effect": "deny"},
+        {"action": f"t3-code-{thread}_*", "resource": "*", "effect": "allow"},
+    ]
+
+
+async def create_for_thread(t3: T3Client, shim: Shim, thread: str) -> dict[str, Any]:
+    return await t3.call(
+        "session.create",
+        {"location": {"directory": shim.app.config.default_directory}, "model": CLAUDE, "permissions": thread_rules(thread)},
+    )
+
+
+HANDOFF = "Context handoff (full_thread_summary):\nFrom thread th_1, runs 1-2.\n\nUser message:\n"
+
+
+async def test_a_thread_whose_omnigent_session_exists_keeps_it_when_t3_code_asks_for_a_new_one(
+    t3: T3Client, shim: Shim, fake: FakeOmnigent
+) -> None:
+    sid = (await create_for_thread(t3, shim, "th_1"))["id"]
+    conv = fake.only().id
+    shim.app.sessions.clear()  # as after a restart of this server
+    again = await create_for_thread(t3, shim, "th_1")
+    assert again["id"] == sid
+    assert list(fake.sessions) == [conv]
+    # The session already holds the history T3 Code recaps for its "new" session.
+    await t3.call("session.prompt", {"sessionID": sid, "id": f"msg_t3_turn_{sid}:a1", "text": HANDOFF + "hello"})
+    assert fake.sessions[conv].posted[-1]["data"]["content"][-1]["text"] == "hello"
+
+
+async def test_only_the_first_prompt_after_keeping_a_session_drops_a_handoff(
+    t3: T3Client, shim: Shim, fake: FakeOmnigent
+) -> None:
+    sid = (await create_for_thread(t3, shim, "th_1"))["id"]
+    conv = fake.only().id
+    await create_for_thread(t3, shim, "th_1")
+    await t3.call("session.prompt", {"sessionID": sid, "id": f"msg_t3_turn_{sid}:a1", "text": "hello"})
+    assert fake.sessions[conv].posted[-1]["data"]["content"][-1]["text"] == "hello"
+    await fake.connected(conv)
+    fake.push(conv, "session.input.consumed", consumed("pending_2", "item_2", "hello"))
+    reply(fake, conv, "Hi")
+    confirmed_idle(fake, conv)
+    await t3.wait_for(lambda: "session.execution.succeeded" in t3.types(sid))
+    await t3.call("session.prompt", {"sessionID": sid, "id": f"msg_t3_turn_{sid}:a2", "text": HANDOFF + "more"})
+    assert fake.sessions[conv].posted[-1]["data"]["content"][-1]["text"] == HANDOFF + "more"
+
+
+async def test_a_thread_whose_omnigent_session_is_gone_gets_a_new_one(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> None:
+    sid = (await create_for_thread(t3, shim, "th_1"))["id"]
+    del fake.sessions[fake.only().id]
+    shim.app.sessions.clear()
+    again = await create_for_thread(t3, shim, "th_1")
+    assert again["id"] != sid
+    conv = fake.only().id
+    await t3.call("session.prompt", {"sessionID": again["id"], "id": "msg_t3_turn_x:a1", "text": HANDOFF + "hello"})
+    assert fake.sessions[conv].posted[-1]["data"]["content"][-1]["text"] == HANDOFF + "hello"
+
+
+async def test_a_session_is_tied_to_its_thread_by_a_rules_update(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> None:
+    sid = (await open_session(t3, shim))["id"]
+    await t3.call("session.update", {"sessionID": sid, "permissions": thread_rules("th_1")})
+    assert (await create_for_thread(t3, shim, "th_1"))["id"] == sid
+    assert len(fake.sessions) == 1
+
+
 async def test_clearing_a_revert_runs_an_empty_execution(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> None:
     session = await open_session(t3, shim)
     await t3.call("session.revert.clear", {"sessionID": session["id"]})

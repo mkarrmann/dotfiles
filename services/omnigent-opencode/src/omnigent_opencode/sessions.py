@@ -102,6 +102,7 @@ TRIGGER_PREFIX: Final = "[Omnigent] "
 TRIGGER_LIMIT: Final = 100_000
 # T3 Code puts context before a message it hands a fresh provider session (ContextHandoffDelivery.ts).
 HANDOFF_SEPARATOR: Final = "\n\nUser message:\n"
+RECAP_HEADING: Final = "Context handoff"
 APPROVAL_TRIGGER: Final = "The agent is waiting for an approval."
 
 Publish = Callable[[JsonObject], None]
@@ -249,6 +250,9 @@ class Session:
         self.title = title
         self.permissions: list[Json] = []
         self.instructions: Json = None
+        # T3 Code asked for a new session for this one's thread and got this one back; its first prompt
+        # carries a recap of history the Omnigent session already holds.
+        self.recap_due = False
         self.created = created if created is not None else now_ms()
         self.updated = self.created
         self.outcome: Outcome | None = None
@@ -1101,6 +1105,9 @@ class Session:
         self, message_id: str, text: str, delivery: Literal["queue", "steer"], files: list[str] | None = None
     ) -> None:
         """Post a prompt; a prompt on a busy session is a steer."""
+        if self.recap_due and delivery == "queue":
+            self.recap_due = False
+            text = _without_recap(text)
         await self.connect()
         self.touch()
         await self.sync_policy()
@@ -1509,6 +1516,13 @@ class Session:
                 self.conversation_id, {"collaboration_mode": "plan" if agent == "plan" else "default"}
             )
         self.agent = agent
+
+
+def _without_recap(text: str) -> str:
+    """`text` without the history recap T3 Code puts before the user's message (ContextHandoffDelivery.ts)."""
+    if not text.startswith(RECAP_HEADING) or HANDOFF_SEPARATOR not in text:
+        return text
+    return text.split(HANDOFF_SEPARATOR, 1)[1]
 
 
 def _is_trigger(text: str, trigger: str, *, prefix: bool = False) -> bool:
