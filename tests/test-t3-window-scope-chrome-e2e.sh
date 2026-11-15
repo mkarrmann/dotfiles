@@ -5,8 +5,10 @@
 # Two throwaway `t3 serve` instances stand in for two devservers' servers, both
 # with a project at the same path. The window pairs with the first, the helper
 # links the second and scopes the window to the first's project, and
-# --list-windows finds the window in AeroSpace. Everything this opens (servers,
-# the window) is closed on exit; the browser's profile itself is the user's and stays.
+# --list-windows finds the window in AeroSpace. A third server's window opens
+# before the server does, on the error page, and --reload loads and pairs it in
+# place once it answers, without taking focus. Everything this opens (servers,
+# the windows) is closed on exit; the browser's profile itself is the user's and stays.
 # Needs macOS, that browser running with "Allow JavaScript from Apple Events"
 # on, AeroSpace and the t3 CLI; skips without them.
 # Run with: bash tests/test-t3-window-scope-chrome-e2e.sh
@@ -32,6 +34,7 @@ check() {
 TMP="$(cd "$(mktemp -d)" && pwd -P)"
 pids=()
 ORIGIN=""
+ORIGIN_C=""
 # py SNIPPET ARGS... -- run SNIPPET with t3-window-scope loaded as `scope`.
 py() {
   local snippet="$1"
@@ -46,18 +49,22 @@ $snippet
 PY
 }
 cleanup() {
-  [[ -z "$ORIGIN" ]] || py '
+  local origin
+  for origin in "$ORIGIN" "$ORIGIN_C"; do
+    [[ -z "$origin" ]] || py '
 pid = scope.own_chrome_pid()
 found = scope.jxa(pid, "find", args[0])
 if found:
     scope.jxa(pid, "close", str(found["id"]))
-' "$ORIGIN" 2>/dev/null || true
+' "$origin" 2>/dev/null || true
+  done
   for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
   for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
   rm -rf "$TMP"
 }
 trap cleanup EXIT
 
+DESCRIPTOR_PATH="/.well-known/t3/environment"
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
 serve() {
   local name="$1" port="$2" project
@@ -153,6 +160,41 @@ page.evaluate("localStorage.setItem(\"t3code:client-settings:v1\", " + json.dump
 ' "$ORIGIN"
 client_settings | sed 's/^/    /'
 check "a setting changed in the window reaches the file" "{}" "$(tr -d ' \n' < "$TMP/dotfiles/client-settings.json")"
+
+echo "== a window opened before its server answers loads in place, without taking focus =="
+focused() { aerospace list-windows --focused --format '%{window-id}' 2>/dev/null || true; }
+before=$(focused)
+PORT_C=$(free_port)
+ORIGIN_C="http://e2e$PORT_C.t3.localhost:$PORT_C"
+open -na "$BROWSER" --args --profile-directory=Default --app="$ORIGIN_C/"
+waiting=""
+for _ in $(seq 1 40); do
+  waiting=$(python3 "$SCOPE" --list-windows | awk -v o="$ORIGIN_C" '$2 == o { print $1 }')
+  [[ -z "$waiting" ]] || break
+  sleep 0.5
+done
+check "the window on the error page is listed by its origin" "yes" "$([[ -n "$waiting" ]] && echo yes)"
+[[ -z "$before" ]] || aerospace focus --window-id "$before"
+serve c "$PORT_C" "$TMP/home/checkout2"
+for _ in $(seq 1 60); do
+  curl -sf --noproxy '*' -m 2 "http://127.0.0.1:$PORT_C$DESCRIPTOR_PATH" >/dev/null 2>&1 && break
+  sleep 1
+done
+rc=0
+token c | python3 "$SCOPE" @chrome "$ORIGIN_C" --reload >"$TMP/reload.out" 2>&1 || rc=$?
+sed 's/^/    /' "$TMP/reload.out"
+check "--reload loads and pairs it" "0" "$rc"
+check "it is past pairing, on its own origin" "yes" \
+  "$(py 'print("yes" if scope.chrome_page(args[0]) else "no")' "$ORIGIN_C")"
+check "in the same window" "$waiting" \
+  "$(python3 "$SCOPE" --list-windows | awk -v o="$ORIGIN_C" '$2 == o { print $1 }')"
+rc=0
+python3 "$SCOPE" @chrome "$ORIGIN_C" "~/checkout2" >"$TMP/scope-c.out" 2>&1 || rc=$?
+sed 's/^/    /' "$TMP/scope-c.out"
+check "and scopes there" "0" "$rc"
+if [[ -n "$before" ]]; then
+  check "focus stayed where it was through the reload, the pairing and the scoping" "$before" "$(focused)"
+fi
 
 if [[ "$failed_checks" -gt 0 ]]; then
   echo "$failed_checks check(s) failed" >&2

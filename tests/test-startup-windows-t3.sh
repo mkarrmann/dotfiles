@@ -161,10 +161,10 @@ check "a window links every other devserver's server once, through its forward h
 check "and an FTW window links CCO's" $'cco.example.com\thttp://127.0.0.1:13780\tCCO' "$(t3_links 3)"
 sim_reset() {
   rm -rf "$SIM"; mkdir -p "$SIM"
-  : > "$SIM/windows"; : > "$SIM/scoped"; : > "$SIM/opened"; : > "$SIM/loading"; echo 100 > "$SIM/next"
+  : > "$SIM/windows"; : > "$SIM/scoped"; : > "$SIM/reloaded"; : > "$SIM/opened"; : > "$SIM/loading"; echo 100 > "$SIM/next"
   rm -rf "$T3_PAIRING_DIR/cco.example.com" "$T3_PAIRING_DIR/ftw.example.com"
   mkdir -p "$T3_PAIRING_DIR/cco.example.com" "$T3_PAIRING_DIR/ftw.example.com"
-  t3_waited_hosts=""; t3_unreachable_hosts=""; rm -f "$T3_WINDOWS_CACHE"; failures=0; SCOPE_FAILS=""
+  t3_waited_hosts=""; t3_unreachable_hosts=""; rm -f "$T3_WINDOWS_CACHE"; failures=0; SCOPE_FAILS=""; RELOAD_FAILS=""; SIM_ERROR_PAGE=""
   FTW_ENV=env-ftw-1
   curl() { sim_curl "$@"; }
 }
@@ -194,7 +194,11 @@ open() {
     esac
   done
   [[ "$profile" == Default && -n "$app" ]] || return 0
-  sim_window "T3 Code (Beta)" "$app"
+  if [[ -n "${SIM_ERROR_PAGE:-}" ]]; then
+    sim_window "$(echo "$app" | sed -E 's#^[a-z]+://([^:/]+).*#\1#') - Network error" "$app"
+  else
+    sim_window "T3 Code (Beta)" "$app"
+  fi
   [[ -z "${SIM_LOADING:-}" ]] || tail -n 1 "$SIM/windows" | cut -f1 >> "$SIM/loading"
 }
 aerospace() {
@@ -210,14 +214,24 @@ aerospace() {
   esac
 }
 # --list-windows lists the windows on T3 Code origins, missing a window still
-# loading (SIM_LOADING) the first time. Otherwise it records its
-# arguments and the tokens it read for its links, "ARGS | TOKENS", and needs a
-# window on the origin, as the real one does.
+# loading (SIM_LOADING) the first time. --reload records "ORIGIN | TOKEN" and
+# loads the window on ORIGIN where it is, on its pairing link with a token.
+# Otherwise it records its arguments and the tokens it read for its links,
+# "ARGS | TOKENS". Both need a window on the origin, as the real one does.
 t3-window-scope() {
   if [[ "$1" == --list-windows ]]; then
     awk -F'\t' -v loading=" $(tr '\n' ' ' < "$SIM/loading") " -v app="$T3_BROWSER_APP" \
       '$5 == app && $4 ~ /\.t3\.localhost/ && index(loading, " " $1 " ") == 0 { split($4, u, "/"); print $1, u[1] "//" u[3] }' "$SIM/windows"
     : > "$SIM/loading"
+    return 0
+  fi
+  if [[ "$1" == @chrome && "$3" == --reload ]]; then
+    local token
+    IFS= read -r token || true
+    printf '%s | %s\n' "$2" "$token" >> "$SIM/reloaded"
+    [[ -z "$RELOAD_FAILS" ]] && awk -F'\t' -v o="$2" 'index($4, o "/") == 1 { f = 1 } END { exit !f }' "$SIM/windows" || return 1
+    awk -F'\t' -v OFS='\t' -v o="$2" -v t="$token" \
+      'index($4, o "/") == 1 { $2 = "T3 Code"; if (t != "") $4 = o "/pair#token=" t } 1' "$SIM/windows" > "$SIM/w" && mv "$SIM/w" "$SIM/windows"
     return 0
   fi
   local tokens
@@ -324,8 +338,9 @@ pool cco.example.com TOKEN3
 pool ftw.example.com FTWTOKEN
 sim_window "T3 Code" "$O3/pair"
 reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
-check "a found window of an origin never set up is opened again, paired, linked and scoped" \
-  "102 6 $O3/pair#token=TOKEN3|$LINKED3" "$(windows_of "$O3")|$(cat "$SIM/scoped")"
+check "a found window of an origin never set up loads again where it is, paired, then is linked and scoped" \
+  "101 6 $O3/pair#token=TOKEN3|$O3 | TOKEN3|$LINKED3|" \
+  "$(windows_of "$O3")|$(cat "$SIM/reloaded")|$(cat "$SIM/scoped")|$(cat "$SIM/opened")"
 
 sim_reset
 pool cco.example.com TOKEN3
@@ -333,8 +348,8 @@ pool ftw.example.com FTWTOKEN
 sim_window "T3 Code" "$O3/pair"
 mkdir -p "$P3/.t3-servers"; : > "$P3/.t3-servers/env-of-an-old-server"
 reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
-check "a window whose origin was set up only with another server (an old one) is opened again, paired" \
-  "102 6 $O3/pair#token=TOKEN3" "$(windows_of "$O3")"
+check "a window whose origin was set up only with another server (an old one) loads again where it is, paired" \
+  "101 6 $O3/pair#token=TOKEN3" "$(windows_of "$O3")"
 
 sim_reset
 sim_window "T3 Code" "$O3/draft/1"
@@ -355,9 +370,19 @@ pool ftw.example.com FTWTOKEN
 sim_window "cco-checkout3.t3.localhost - Network error" "$O3/"
 mkdir -p "$P3/.t3-servers"; : > "$P3/.t3-servers/env-cco-1"
 reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
-check "a window left on an error page is replaced, and the new one scoped and linked" \
-  "102 6 $O3/|$SCOPE3 --link http://127.0.0.1:23780 FTW | FTWTOKEN" "$(windows_of "$O3")|$(cat "$SIM/scoped")"
+check "a set-up window left on an error page loads again where it is, with no token, and is linked in place" \
+  "101 6 $O3/|$O3 | |@chrome $O3 --link-only --link http://127.0.0.1:23780 FTW | FTWTOKEN|" \
+  "$(windows_of "$O3")|$(cat "$SIM/reloaded")|$(cat "$SIM/scoped")|$(cat "$SIM/opened")"
 check "with no warning" "0" "$failures"
+
+sim_reset
+pool ftw.example.com FTWTOKEN
+sim_window "cco-checkout3.t3.localhost - Network error" "$O3/"
+mkdir -p "$P3/.t3-servers"; : > "$P3/.t3-servers/env-cco-1"
+RELOAD_FAILS=1
+reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
+check "a window that does not load again stays, is not linked, and the run counts a warning" \
+  "101 6 $O3/||1" "$(windows_of "$O3")|$(cat "$SIM/scoped")|$failures"
 
 sim_reset
 pool ftw.example.com FTWTOKEN
@@ -387,16 +412,32 @@ T3_PAIRING_TOKEN_WAIT=0
 sim_reset
 pool cco.example.com TOKEN3
 curl() { return 7; }
+SIM_ERROR_PAGE=1
 reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
-check "a window whose own server does not answer is not opened, and its token is kept" "0 1" \
-  "$(wc -l < "$SIM/windows" | tr -d ' ') $(pooled cco.example.com)"
+check "a window whose own server does not answer opens on its workspace anyway, on its URL with no token" \
+  "101 6 $O3/|--profile-directory=Default --no-first-run --no-default-browser-check --app=$O3/" \
+  "$(windows_of "$O3")|$(cat "$SIM/opened")"
+check "its token is kept, and it is neither loaded again nor scoped" "1||" \
+  "$(pooled cco.example.com)|$(cat "$SIM/reloaded")|$(cat "$SIM/scoped")"
 check "which says so once, as a wait on its tunnel rather than a warning" "0 1 1" \
-  "$failures $(grep -c 'its windows wait for its tunnel' "$SIM/out") $(grep -c 'not opened until' "$SIM/out")"
+  "$failures $(grep -c 'its windows wait for its tunnel' "$SIM/out") $(grep -c 'to load once' "$SIM/out")"
 check "and records the host, which the row then waits on" " cco.example.com yes" \
   "$t3_unreachable_hosts $(t3_row_waits_on_tunnel 6 && echo yes)"
 reconcile_t3_window 4 "T3: ws4" > "$SIM/out" 2>&1
-check "and the host's other windows are skipped without checking again" "0 1 0" \
-  "$(grep -c 'not answering' "$SIM/out") $(grep -c 'not opened until' "$SIM/out") $failures"
+check "and the host's other windows open the same way, without checking again" "0 1 0 101 6 $O3/|102 4 $O2/" \
+  "$(grep -c 'not answering' "$SIM/out") $(grep -c 'to load once' "$SIM/out") $failures $(windows_of "$O3")|$(windows_of "$O2")"
+pool ftw.example.com FTWTOKEN
+pool cco.example.com TOKEN3
+: > "$SIM/opened"
+t3_waited_hosts=""; t3_unreachable_hosts=""; SIM_ERROR_PAGE=""
+curl() { sim_curl "$@"; }
+reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
+check "once its server answers (the --deferred run), the window loads where it is, paired, and is linked and scoped" \
+  "101 6 $O3/pair#token=TOKEN3|$O3 | TOKEN3|$LINKED3|0" \
+  "$(windows_of "$O3")|$(cat "$SIM/reloaded")|$(cat "$SIM/scoped")|$failures"
+check "with no new window" "" "$(cat "$SIM/opened")"
+SIM_ERROR_PAGE=1
+curl() { return 7; }
 check "a row that uses only servers that answered does not wait on a tunnel" "no" \
   "$(t3_unreachable_hosts=" local"; t3_row_waits_on_tunnel 6 && echo yes || echo no)"
 check "a row whose window was opened but missed a link waits on that link's tunnel" "yes" \
@@ -428,6 +469,12 @@ reconcile_t3_window 1 "T3: ws1" > "$SIM/out" 2>&1
 check "workspace 1 gets a window on the Mac's server, paired with a local token, linked to both devservers, in ~/dotfiles" \
   "101 1 $O1/pair#token=LOCALTOKEN|@chrome $O1 /Users/me/dotfiles --link http://127.0.0.1:13780 CCO --link http://127.0.0.1:23780 FTW | CCOTOKEN FTWTOKEN" \
   "$(windows_of "$O1")|$(cat "$SIM/scoped")"
+sim_reset
+curl() { [[ "$*" != *":3780"* ]] || return 7; sim_curl "$@"; }
+SIM_ERROR_PAGE=1
+reconcile_t3_window 1 "T3: ws1" > "$SIM/out" 2>&1
+check "the Mac's own server not answering opens no window, as no tunnel will load it, and warns" "0 1" \
+  "$(wc -l < "$SIM/windows" | tr -d ' ') $failures"
 eval "$(declare -f workspaces_without_local | sed '1s/workspaces_without_local/workspaces/')"
 
 sim_reset

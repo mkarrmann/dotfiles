@@ -128,20 +128,25 @@ shown in the tunnel window), and empties that pool when a session starts, as
 its tokens came from the session before; `startup-windows` drops tokens past
 11 hours. `startup-windows` never waits on Duo: before a host's first window or link it
 checks once that its server answers through the tunnel (giving the Mac's own
-server 15 s at login), and when it does not, leaves that host's windows (and any
-window linking it) for later, listing them in
-`~/.local/state/startup-windows-pending`. Each tunnel runs
-`startup-windows --deferred` on connecting, whenever you approve Duo; that run
-opens or links only those windows, arranges only their workspaces and sweeps
-nothing (logged to `~/.local/state/startup-windows-logs/deferred.log`). The
+server 15 s at login), and when it does not, opens that host's windows anyway,
+on Chrome's error page, so every workspace is laid out before you get to Duo,
+and leaves finishing them (and any window linking that host) for later, listing
+them in `~/.local/state/startup-windows-pending`. The tunnel windows open first,
+so the Duo prompt comes early. Each tunnel runs `startup-windows --deferred` on
+connecting, whenever you approve Duo; that run loads those windows again where
+they are (the tab's AppleScript `reload`, then the pairing link from the page's
+own script: setting a tab's URL from AppleScript would focus the window), pairs,
+scopes and links them, and sweeps nothing (logged to
+`~/.local/state/startup-windows-logs/deferred.log`). As their windows do not
+change, `arrange-workspaces` leaves those workspaces alone. The
 Omnigent windows wait the same way while the hub does not answer. A window it creates opens on
 `/pair` with a token of its own host's, and links each other host with a token
 of that host's; a new origin waits up to 30 s for each, while an origin that
 paired before (its session cookie lasts about 30 days) takes one only when one
-is there. A window it finds on an error page (opened before its tunnel was up)
-is replaced. A window that still asks to pair, or does not list another host's
-threads, needs fresh tokens: reconnect the tunnel, close the window, and rerun
-`startup-windows`.
+is there. A window it finds on an error page, or not set up with its server,
+loads again in place once the server answers. A window that still asks to pair,
+or does not list another host's threads, needs fresh tokens: reconnect the
+tunnel and rerun `startup-windows`.
 
 ## Enabling at work
 

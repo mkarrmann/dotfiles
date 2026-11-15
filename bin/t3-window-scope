@@ -3,6 +3,7 @@
 
 Usage: t3-window-scope PROFILE_DIR|@chrome ORIGIN WORKDIR [--link URL LABEL]...
        t3-window-scope PROFILE_DIR|@chrome ORIGIN --link-only --link URL LABEL...
+       t3-window-scope @chrome ORIGIN --reload
        t3-window-scope --list-windows
 
 PROFILE_DIR is the window's Chrome --user-data-dir, reached over the DevTools
@@ -39,6 +40,14 @@ helper reads its environment id itself.
 
 --link-only links into a window that is already in use and leaves its project
 alone: the window goes back to the page it was on once the links are saved.
+
+--reload loads the window on ORIGIN again where it is, for a window opened on
+Chrome's error page before its server answered, or not paired with it. A line
+of stdin holds a pairing token for ORIGIN's own server, or is empty: with one
+the window then opens ORIGIN/pair#token=TOKEN and holds once it is past
+pairing. It never sets a tab's URL from AppleScript: that brings the browser
+forward and focuses the window, which `reload` and `execute javascript` do not,
+so every navigation runs in the page itself once it can run script.
 
 T3 Code has no URL or setting that opens a window on a project. What it has,
 verified against 0.1.6, is client state in the page's localStorage, which is
@@ -165,6 +174,7 @@ function run(argv) {
   const w = chrome.windows.byId(Number(argv[2]));
   if (op === "url") return JSON.stringify(w.activeTab().url());
   if (op === "go") { w.activeTab().url = argv[3]; return "null"; }
+  if (op === "reload") { w.activeTab().reload(); return "null"; }
   if (op === "js") return JSON.stringify(w.activeTab().execute({javascript: argv[3]}));
   if (op === "close") { w.close(); return "null"; }
   throw new Error("unknown op " + op);
@@ -521,7 +531,15 @@ class ChromeWindowPage:
         raise OSError("the page did not settle its promise")
 
     def navigate(self, url: str) -> None:
-        jxa(self.pid, "go", str(self.window_id), url)
+        # Setting the tab's URL focuses the window; only a page that cannot run
+        # script (Chrome's error page) is sent there that way.
+        try:
+            self._js(f"location.assign({json.dumps(url)}); null")
+        except OSError:
+            jxa(self.pid, "go", str(self.window_id), url)
+
+    def reload(self) -> None:
+        jxa(self.pid, "reload", str(self.window_id))
 
     def press(self, key: dict[str, Any]) -> None:
         modifiers = key.get("modifiers", 0)
@@ -798,6 +816,37 @@ def scope(
         devtools.close()
 
 
+def reload_window(origin: str, token: str) -> None:
+    """Reload BROWSER_APP's app window on ORIGIN where it is, then pair it with
+    TOKEN when there is one; ScopeError when it does not come up."""
+    deadline = time.monotonic() + WAIT
+    try:
+        pid = own_chrome_pid()
+        found = jxa(pid, "find", origin)
+        if not found:
+            raise ScopeError(f"no window on {origin} in {BROWSER_APP}")
+        page = ChromeWindowPage(pid, int(found["id"]))
+
+        def loaded() -> bool | None:
+            page.reload()
+            settle = min(deadline, time.monotonic() + NAVIGATE_RETRY)
+            while time.monotonic() < settle:
+                try:
+                    if page.evaluate("[location.origin, document.readyState]") == [origin, "complete"]:
+                        return True
+                except OSError:
+                    pass  # still on the error page, which runs no script
+                time.sleep(POLL)
+            return None
+
+        until(deadline, f"{origin} to load", loaded)
+        if token:
+            page.navigate(f"{origin}{PAIR_PATH}#token={token}")
+            until(deadline, f"{origin} to pair", lambda: chrome_page(origin))
+    except OSError as exc:
+        raise ScopeError(f"{origin}: {exc}") from exc
+
+
 def parsed_args(argv: list[str]) -> tuple[str, str, str | None, list[tuple[str, str]]] | None:
     """PROFILE, ORIGIN, WORKDIR (None for --link-only) and the links."""
     if len(argv) < 3:
@@ -825,6 +874,13 @@ def main(argv: list[str]) -> int:
             for window_id, origin in list_windows():
                 print(f"{window_id} {origin}")
         except (OSError, ValueError) as exc:
+            print(f"t3-window-scope: {exc}", file=sys.stderr)
+            return 1
+        return 0
+    if len(argv) == 3 and argv[0] == OWN_CHROME and argv[2] == "--reload":
+        try:
+            reload_window(argv[1].rstrip("/"), sys.stdin.readline().strip())
+        except ScopeError as exc:
             print(f"t3-window-scope: {exc}", file=sys.stderr)
             return 1
         return 0
