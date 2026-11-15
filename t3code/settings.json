@@ -1,6 +1,7 @@
 {
   "projectSettingsFolded": true,
   "idleCompaction": "onReturn",
+  "continueThreadsAfterServerUpdate": false,
   "providerInstances": {
     "codex": {
       "driver": "codex",
