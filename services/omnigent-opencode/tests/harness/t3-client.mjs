@@ -43,7 +43,7 @@ const events = api.events.pipe(
     onFailure: (cause) => write({ kind: "stream", state: "closed", error: String(cause) }),
   }),
 )
-run(events)
+run(Effect.scoped(events))
 
 for await (const line of readline.createInterface({ input: process.stdin })) {
   if (!line.trim()) continue
