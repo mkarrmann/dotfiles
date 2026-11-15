@@ -578,6 +578,7 @@ class Session:
         self._store.watch(self.id, conversation_id, now_ms())
         self._watermark = None
         self._store.set_watermark(self.id, None)
+        self._policy = None
 
     def _consumed(self, payload: dict[str, Any]) -> bool:
         """Settle a steer or start a turn T3 Code did not; whether the input is handled."""

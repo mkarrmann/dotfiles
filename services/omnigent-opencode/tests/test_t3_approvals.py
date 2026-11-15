@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from conftest import Shim, T3Client
 from fake_omnigent import FakeOmnigent
-from test_t3_turns import assert_all_decoded, consumed, reply
+from test_t3_turns import assert_all_decoded, consumed, reply, two_turns
 
 from omnigent_opencode.approvals import T3_POLICY, T3_POLICY_HANDLER, matches
 
@@ -301,6 +301,22 @@ async def test_a_thread_not_in_full_access_gets_the_asking_policy(t3: T3Client, 
             break
         await asyncio.sleep(0.02)
     assert policy["enabled"] is False
+
+
+async def test_a_rolled_back_thread_gets_the_asking_policy_on_its_new_session(
+    t3: T3Client, shim: Shim, fake: FakeOmnigent
+) -> None:
+    sid, conv = await two_turns(t3, shim, fake)
+    await t3.call("session.update", {"sessionID": sid, "permissions": APPROVAL_REQUIRED})
+    for _ in range(50):
+        if fake.sessions[conv].policies:
+            break
+        await asyncio.sleep(0.02)
+    await t3.call("session.revert.stage", {"sessionID": sid, "messageID": f"msg_t3_turn_{sid}:a2", "files": False})
+    await t3.call("session.revert.commit", {"sessionID": sid})
+    replacement = shim.app.sessions[sid].conversation_id
+    await t3.call("session.prompt", {"sessionID": sid, "id": f"msg_t3_turn_{sid}:a3", "text": "again"})
+    assert [(p["name"], p["enabled"]) for p in fake.sessions[replacement].policies] == [(T3_POLICY, True)]
 
 
 async def test_full_access_adds_no_policy_until_plan_mode(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> None:
