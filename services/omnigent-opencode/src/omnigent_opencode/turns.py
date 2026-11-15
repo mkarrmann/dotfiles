@@ -148,6 +148,9 @@ class TurnTracker:
     native_consumed: bool = False
     cancelling: bool = False
     message_streamed: bool = False
+    streaming_message_id: str | None = None
+    committed_message_id: str | None = None
+    """claude-native can post a reply's item before its last chunk; chunks of a committed reply are dropped."""
     emitted_text: str = ""
     replay_text: str | None = None
     late_reply: str | None = None
@@ -269,6 +272,11 @@ class TurnTracker:
             return []
 
         if event_type == "response.output_text.delta":
+            message_id = data.get("message_id")
+            if isinstance(message_id, str):
+                if message_id == self.committed_message_id:
+                    return []
+                self.streaming_message_id = message_id
             self.reply_committed = False
             self._activity()
             return self._text_delta(data.get("delta") or "")
@@ -346,16 +354,21 @@ class TurnTracker:
         item_type = item.get("type")
         if _is_reply(item):
             streamed = self.message_streamed
+            text = _message_text(item)
+            # The item is authoritative: stream whatever of it the chunks have not delivered yet.
+            unstreamed = text[len(self.emitted_text) :] if streamed and text.startswith(self.emitted_text) else ""
             self.message_streamed = False
             self.emitted_text = ""
             self.replay_text = None
             self.reply_committed = True
-            text = _message_text(item)
+            self.committed_message_id, self.streaming_message_id = self.streaming_message_id, None
             if not streamed and self.late_reply is not None and text.strip() == self.late_reply.strip():
                 self.late_reply = None
                 self.reply_committed = False
                 return []
-            return [ReplyCommitted()] if streamed or not text else [TextDelta(text), ReplyCommitted()]
+            if streamed:
+                return [TextDelta(unstreamed), ReplyCommitted()] if unstreamed else [ReplyCommitted()]
+            return [TextDelta(text), ReplyCommitted()] if text else [ReplyCommitted()]
         if item_type == "function_call" and isinstance(item.get("call_id"), str):
             if item["call_id"] in self.seen_calls:
                 return []
