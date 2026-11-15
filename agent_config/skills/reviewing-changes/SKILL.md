@@ -39,7 +39,7 @@ Code review is a very broad and general task, and you are responsible for exerci
 
 Firstly, you must ensure the reviewer has sufficient context about the problem and scope in order to fully do their job.
 
-The reviewer may not load this skill on its own (a Codex reviewer, a `claude -p` process, or a review bot won't). Your brief must tell it to load `reviewing-changes`, or paste in the "Doing a review" section, so its comments come back tagged.
+Name the `reviewing-changes` skill in your brief. A reviewer that has it usually loads it on its own, but a narrowly worded brief can steer it past the skill; naming it makes sure its comments come back tagged. If the reviewer runs where this skill isn't installed (a sandbox, or a machine without these dotfiles), paste in the "Doing a review" section instead.
 
 By far the biggest risk of agents asking other agents for review is gradual scope creep which comes from reviewers asking to improve behavior in marginal / unimportant cases. Remember, it is your responsibility to keep everything well scoped and focused on the actual problem at hand, without wasting space in your diffs handling cases that really don't need to be handled. Above all, we need to prioritize easy review of the code, and that sometimes can entail leaving aside theoretical edge cases, which add undue burden to the reviewers to fully internalize.
 
