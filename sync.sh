@@ -74,6 +74,8 @@ sync_link_dir() {
 
   shopt -s nullglob
   for src in "$src_dir"/$pattern; do
+    # Python's bytecode cache for scripts loaded as modules (tests do), gitignored.
+    [[ "$(basename "$src")" != __pycache__ ]] || continue
     if [[ -n "$priority_dir" && -e "$priority_dir/$(basename "$src")" ]]; then
       continue
     fi
