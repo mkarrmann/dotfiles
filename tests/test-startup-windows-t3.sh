@@ -48,6 +48,7 @@ T3_SERVER_WAIT=0
 T3_LOCAL_SERVER_WAIT=0
 t3_unreachable_hosts=""
 T3_WINDOWS_CACHE="$(mktemp -u)"
+T3_TOKENLESS_HOSTS="$(mktemp -u)"
 
 workspaces() {
   printf '%s' '{"workspaces":[
@@ -126,6 +127,19 @@ check "a pooled pairing token is handed out, and one past its 12 hours is not" "
   "$(t3_take_pairing_token cco.example.com)"
 check "each only once" "" "$(t3_take_pairing_token cco.example.com)"
 check "a host with no pool has no token" "" "$(t3_take_pairing_token ftw.example.com)"
+started=$SECONDS
+check "a wait for a devserver with no token waits its time and comes up empty" "|yes" \
+  "$(t3_take_pairing_token ftw.example.com 1)|$( (( SECONDS - started >= 1 )) && echo yes)"
+started=$SECONDS
+check "after which this run does not wait for that devserver's again" "|yes" \
+  "$(t3_take_pairing_token ftw.example.com 30)|$( (( SECONDS - started < 2 )) && echo yes)"
+mkdir -p "$T3_PAIRING_DIR/ftw.example.com"
+echo FTWLATE > "$T3_PAIRING_DIR/ftw.example.com/token.a"
+check "but still takes one that is there" "FTWLATE" "$(t3_take_pairing_token ftw.example.com 30)"
+started=$SECONDS
+check "and still waits for another devserver's" "|yes" \
+  "$(t3_take_pairing_token cco.example.com 1)|$( (( SECONDS - started >= 1 )) && echo yes)"
+rm -f "$T3_TOKENLESS_HOSTS"
 
 curl() { return 0; }
 t3_waited_hosts=""
@@ -164,7 +178,7 @@ sim_reset() {
   : > "$SIM/windows"; : > "$SIM/scoped"; : > "$SIM/reloaded"; : > "$SIM/opened"; : > "$SIM/loading"; echo 100 > "$SIM/next"
   rm -rf "$T3_PAIRING_DIR/cco.example.com" "$T3_PAIRING_DIR/ftw.example.com"
   mkdir -p "$T3_PAIRING_DIR/cco.example.com" "$T3_PAIRING_DIR/ftw.example.com"
-  t3_waited_hosts=""; t3_unreachable_hosts=""; rm -f "$T3_WINDOWS_CACHE"; failures=0; SCOPE_FAILS=""; RELOAD_FAILS=""; SIM_ERROR_PAGE=""
+  t3_waited_hosts=""; t3_unreachable_hosts=""; rm -f "$T3_WINDOWS_CACHE" "$T3_TOKENLESS_HOSTS"; failures=0; SCOPE_FAILS=""; RELOAD_FAILS=""; SIM_ERROR_PAGE=""
   FTW_ENV=env-ftw-1
   curl() { sim_curl "$@"; }
 }

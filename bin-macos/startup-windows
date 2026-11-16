@@ -166,11 +166,12 @@ done
 echo "$STARTUP_MODE" > "$STARTUP_LOCK_DIR/mode"
 echo "$$" > "$STARTUP_LOCK_DIR/pid"
 T3_WINDOWS_CACHE="$STARTUP_LOCK_DIR/t3-windows"
+T3_TOKENLESS_HOSTS="$STARTUP_LOCK_DIR/t3-tokenless-hosts"
 # The pending list is saved before the lock goes, so a --deferred run queued on
 # the lock reads all of it.
 cleanup_startup_lock() {
   save_pending_rows || true
-  rm -f "$STARTUP_LOCK_DIR/pid" "$STARTUP_LOCK_DIR/mode" "$T3_WINDOWS_CACHE"
+  rm -f "$STARTUP_LOCK_DIR/pid" "$STARTUP_LOCK_DIR/mode" "$T3_WINDOWS_CACHE" "$T3_TOKENLESS_HOSTS"
   rmdir "$STARTUP_LOCK_DIR" 2>/dev/null || true
 }
 trap cleanup_startup_lock EXIT
@@ -1094,9 +1095,14 @@ t3_environment_id() {
 
 # t3_take_pairing_token DEVSERVER [WAIT] -> a token from that devserver's pool,
 # removed so it is used once, waiting up to WAIT seconds for nvs-tunnels to pool
-# one; nothing when none comes.
+# one; nothing when none comes. A pool fills only when its tunnel connects, which
+# starts a run of its own, so once a wait for a devserver's comes up empty
+# (T3_TOKENLESS_HOSTS, a file: callers run in command substitutions) this run
+# takes only what is already there.
 t3_take_pairing_token() {
-  local dir="$T3_PAIRING_DIR/$1" deadline=$((SECONDS + ${2:-0})) file token
+  local dir="$T3_PAIRING_DIR/$1" wait="${2:-0}" deadline file token
+  ! grep -qxF "$1" "$T3_TOKENLESS_HOSTS" 2>/dev/null || wait=0
+  deadline=$((SECONDS + wait))
   if [[ "$1" == "$T3_LOCAL_HOST" ]]; then
     # The Mac's own server mints one on the spot.
     T3CODE_HOME="$HOME/.t3-workspaces/local" "${T3_BIN:-$HOME/.local/bin/t3}" pair --ttl 5m --label startup-windows 2>/dev/null \
@@ -1115,7 +1121,10 @@ t3_take_pairing_token() {
       fi
       continue
     fi
-    (( SECONDS < deadline )) || return 0
+    if (( SECONDS >= deadline )); then
+      (( wait == 0 )) || echo "$1" >> "$T3_TOKENLESS_HOSTS"
+      return 0
+    fi
     sleep 0.5
   done
 }
