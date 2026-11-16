@@ -316,6 +316,7 @@ T3_LEGACY_CHROME_DATA_ROOT="$HOME/.t3-workspace-chrome"
 T3_PAIRING_DIR="${T3_PAIRING_DIR:-$HOME/.local/state/t3-pairing}"
 T3_PAIRING_TOKEN_WAIT="${T3_PAIRING_TOKEN_WAIT:-30}"
 T3_PAIRING_TOKEN_MAX_AGE_MIN=660
+T3_PAIRING_FILL_SECONDS=20
 # A devserver's server answers only once its tunnel is through Duo, which you
 # approve whenever you get to it: this run never waits on it, opens that host's
 # windows on Chrome's error page, and leaves loading them to the --deferred run
@@ -1146,10 +1147,12 @@ t3_environment_id() {
 
 # t3_take_pairing_token DEVSERVER [WAIT] -> a token from that devserver's pool,
 # removed so it is used once, waiting up to WAIT seconds for nvs-tunnels to pool
-# one; nothing when none comes. A pool fills only when its tunnel connects, which
-# starts a run of its own, so once a wait for a devserver's comes up empty
-# (T3_TOKENLESS_HOSTS, a file: callers run in command substitutions) this run
-# takes only what is already there.
+# one; nothing when none comes. A pool fills only while its tunnel's session
+# mints, a token every second or two after it connects: a used token moves to
+# .used/, keeping its arrival time, so a pool whose last token came more than
+# T3_PAIRING_FILL_SECONDS ago is done filling and is not waited on. Nor is a
+# devserver whose wait already came up empty this run (T3_TOKENLESS_HOSTS, a
+# file: callers run in command substitutions); its next connect starts a run.
 t3_take_pairing_token() {
   local dir="$T3_PAIRING_DIR/$1" wait="${2:-0}" deadline file token
   ! grep -qxF "$1" "$T3_TOKENLESS_HOSTS" 2>/dev/null || wait=0
@@ -1161,16 +1164,19 @@ t3_take_pairing_token() {
     return 0
   fi
   while true; do
-    find "$dir" -type f -mmin "+$T3_PAIRING_TOKEN_MAX_AGE_MIN" -delete 2>/dev/null || true
-    file=$(find "$dir" -type f 2>/dev/null | head -n 1 || true)
+    find "$dir" -maxdepth 1 -type f -mmin "+$T3_PAIRING_TOKEN_MAX_AGE_MIN" -delete 2>/dev/null || true
+    file=$(find "$dir" -maxdepth 1 -type f 2>/dev/null | head -n 1 || true)
     if [[ -n "$file" ]]; then
       token=$(head -n 1 "$file")
-      rm -f "$file"
+      { mkdir -p "$dir/.used" && mv "$file" "$dir/.used/"; } 2>/dev/null || rm -f "$file"
       if [[ -n "$token" ]]; then
         printf '%s\n' "$token"
         return 0
       fi
       continue
+    fi
+    if [[ -d "$dir" && -z "$(find "$dir" -type f -mtime "-${T3_PAIRING_FILL_SECONDS}s" 2>/dev/null | head -n 1)" ]]; then
+      return 0
     fi
     if (( SECONDS >= deadline )); then
       (( wait == 0 )) || echo "$1" >> "$T3_TOKENLESS_HOSTS"

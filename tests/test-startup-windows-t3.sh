@@ -43,6 +43,7 @@ T3_LEGACY_CHROME_DATA_ROOT="/Users/me/.t3-workspace-chrome"
 T3_SERVERS_DIR=".t3-servers"
 T3_LOCAL_HOST="local"
 T3_PAIRING_TOKEN_MAX_AGE_MIN=660
+T3_PAIRING_FILL_SECONDS=20
 T3_PAIRING_TOKEN_WAIT=0
 T3_SERVER_WAIT=0
 T3_LOCAL_SERVER_WAIT=0
@@ -141,6 +142,18 @@ started=$SECONDS
 check "and still waits for another devserver's" "|yes" \
   "$(t3_take_pairing_token cco.example.com 1)|$( (( SECONDS - started >= 1 )) && echo yes)"
 rm -f "$T3_TOKENLESS_HOSTS"
+rm -rf "$T3_PAIRING_DIR/cco.example.com"; mkdir -p "$T3_PAIRING_DIR/cco.example.com"
+echo JUSTCAME > "$T3_PAIRING_DIR/cco.example.com/token.c"
+: "$(t3_take_pairing_token cco.example.com)"
+started=$SECONDS
+check "a pool whose last token came a moment ago may still be filling: it is waited on" "|yes" \
+  "$(t3_take_pairing_token cco.example.com 1)|$( (( SECONDS - started >= 1 )) && echo yes)"
+rm -f "$T3_TOKENLESS_HOSTS"
+touch -t "$(date -v-1M +%Y%m%d%H%M.%S)" "$T3_PAIRING_DIR/cco.example.com/.used/"*
+started=$SECONDS
+check "one whose last token came a minute ago is done filling: it is not" "|yes" \
+  "$(t3_take_pairing_token cco.example.com 30)|$( (( SECONDS - started < 2 )) && echo yes)"
+rm -rf "$T3_PAIRING_DIR/cco.example.com" "$T3_TOKENLESS_HOSTS"
 
 curl() { return 0; }
 t3_waited_hosts=""
@@ -262,7 +275,7 @@ O2="http://cco-checkout2.t3.localhost:13780"
 P3="$T3_STATE_DIR/cco-checkout3"
 SCOPE3="@chrome $O3 ~/checkout3"
 LINKED3="$SCOPE3 --link http://127.0.0.1:23780 FTW | FTWTOKEN"
-pooled() { find "$T3_PAIRING_DIR/$1" -type f | wc -l | tr -d ' '; }
+pooled() { find "$T3_PAIRING_DIR/$1" -maxdepth 1 -type f | wc -l | tr -d ' '; }
 
 sim_reset
 pool cco.example.com TOKEN3
@@ -418,11 +431,20 @@ eval "$(declare -f sim_open | sed '1s/sim_open/open/')"
 sim_reset
 mkdir -p "$P3"
 pool ftw.example.com FTWTOKEN
+rm -rf "$T3_PAIRING_DIR/cco.example.com"
 T3_PAIRING_TOKEN_WAIT=2
 started=$SECONDS
 reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
-check "an origin left by a run that never paired it still waits for its token" "yes" \
+check "an origin left by a run that never paired it waits for its token while its tunnel has pooled none yet" "yes" \
   "$( (( SECONDS - started >= 2 )) && echo yes)"
+sim_reset
+mkdir -p "$P3"
+pool ftw.example.com FTWTOKEN
+T3_PAIRING_TOKEN_WAIT=30
+started=$SECONDS
+reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
+check "but not once its tunnel's pool is done filling and used up" "yes" \
+  "$( (( SECONDS - started < 5 )) && echo yes)"
 T3_PAIRING_TOKEN_WAIT=0
 
 sim_reset
