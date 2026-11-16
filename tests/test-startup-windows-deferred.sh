@@ -113,7 +113,18 @@ echo 999999 > "$LOCK/pid"
 out=$(run_startup 2>&1) || true
 grep -Fq "aerospace CLI not found" <<< "$out" || fail "a dead owner's lock was not taken over: $out"
 
-echo "7. the pending list's bookkeeping"
+echo "7. the timestamped rerun keeps its arguments, and a leaked STARTUP_WINDOWS_STAMPED does not turn it off"
+# Apps a run starts (Ghostty, the shells and nvs-tunnels in it) inherit the
+# variable; a --deferred run that lost its argument would be a full run.
+stamped='^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]\.[0-9]{3} \+ *[0-9.]+s No deferred windows\.$'
+rm -f "$PENDING"
+for leaked in "" 1; do
+  out=$(PATH="$TMP/bin:/usr/bin:/bin" STARTUP_LOCK_DIR="$LOCK" STARTUP_PENDING_FILE="$PENDING" \
+    STARTUP_WINDOWS_STAMPED="$leaked" "$STARTUP" --deferred 2>&1) || fail "stamped --deferred (leaked '$leaked') exited non-zero"
+  [[ "$out" =~ $stamped ]] || fail "stamped --deferred (leaked '$leaked') said: $out"
+done
+
+echo "8. the pending list's bookkeeping"
 extract_fn() {
   awk -v name="$1" '
     $0 ~ "^" name "\\(\\) \\{" { p = 1 }
