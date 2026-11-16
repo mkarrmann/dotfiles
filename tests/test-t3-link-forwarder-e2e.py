@@ -122,7 +122,16 @@ def main():
     profile, calls, stub = tmp / "profile", tmp / "calls", tmp / "open"
     stub.write_text(f'#!/bin/sh\necho "$@" >> "{calls}"\n')
     stub.chmod(0o755)
-    subprocess.run([str(HOST), "--install", str(profile / "NativeMessagingHosts")], check=True, capture_output=True)
+    if BROWSER_APP.startswith("Google "):
+        hosts = profile / "NativeMessagingHosts"
+        subprocess.run([str(HOST), "--install", str(hosts)], check=True, capture_output=True)
+    else:
+        # Brave reads only Google Chrome's hosts, whatever its --user-data-dir, so the
+        # registration `t3-open-in-chrome --install` made there is the one tested.
+        hosts = Path.home() / "Library/Application Support/Google/Chrome/NativeMessagingHosts"
+        if not (hosts / "com.mkarrmann.t3_open_in_chrome.json").exists():
+            print(f"skipped: run `T3_BROWSER_APP='{BROWSER_APP}' {HOST} --install` first")
+            return
     server = serve_page()
     page_url = f"http://e2e.t3.localhost:{server.server_address[1]}/"
 
@@ -134,7 +143,7 @@ def main():
     try:
         loaded = cdp.call("Extensions.loadUnpacked", path=str(EXTENSION))["id"]
         check("the extension loads with the id the host allows", f"chrome-extension://{loaded}/" in
-              (profile / "NativeMessagingHosts/com.mkarrmann.t3_open_in_chrome.json").read_text())
+              (hosts / "com.mkarrmann.t3_open_in_chrome.json").read_text())
         wait_for(lambda: any(t["type"] == "service_worker" and loaded in t["url"]
                              for t in cdp.call("Target.getTargets")["targetInfos"]))
 

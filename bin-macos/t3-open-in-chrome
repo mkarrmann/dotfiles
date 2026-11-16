@@ -43,8 +43,10 @@ def extension_id(extension_dir: Path = EXTENSION_DIR) -> str:
     return "".join(chr(ord("a") + int(c, 16)) for c in digest)
 
 
-# Where a browser that is not a Google Chrome keeps its data, under Application Support.
-DATA_DIRS = {"Brave Browser": "BraveSoftware/Brave-Browser"}
+# Where a browser that is not a Google Chrome looks for a user's native hosts,
+# under Application Support. Brave on the Mac reads Google Chrome's, whatever its
+# --user-data-dir (brave-core app/brave_main_delegate.cc, PreSandboxStartup).
+DATA_DIRS = {"Brave Browser": "Google/Chrome"}
 
 
 def default_hosts_dir() -> Path:
