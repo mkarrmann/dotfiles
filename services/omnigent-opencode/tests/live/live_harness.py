@@ -338,6 +338,46 @@ async def run(scenario: str, agent: str, model: str, directory: str, to_agent: s
         await wait(lambda: executions() >= 2, 180)
         answer = [e for e in t3.of(sid) if e["type"] == "session.text.ended"][-1]["data"]["text"]
         print(f"{stamp()} ANSWER: {answer!r} (PAPAYA-42 means the recap, which says MANGO-7, was dropped)", flush=True)
+    elif scenario == "subagents":
+        # Background subagents launched in one message: claude-native may name a child before the parent's
+        # transcript gives its call. Each call must still settle on its own child's report.
+        names = "ABCD"
+        await t3.call(
+            "session.prompt",
+            {
+                "sessionID": sid,
+                "id": f"msg_t3_turn_{sid}:1",
+                "text": f"In ONE message, make {len(names)} Agent tool calls at once, each with run_in_background true "
+                "and subagent_type general-purpose: descriptions "
+                + ", ".join(f"'Live {n}'" for n in names)
+                + ", prompts 'Reply with exactly: X_OK' with X the description's letter (no tools). Then reply "
+                "'launched' without waiting for them. When each reports back, reply with just its result.",
+            },
+        )
+
+        def reports() -> dict[str, str]:
+            return {
+                e["data"]["item"]["payload"]["metadata"]["childID"]: e["data"]["item"]["payload"]["text"]
+                for e in t3.of(sid)
+                if e["type"] == "session.inbox.enqueued" and e["data"]["item"]["type"] == "synthetic"
+            }
+
+        await wait(lambda: len(reports()) >= len(names), 300)
+        position = {id(e): n for n, e in enumerate(t3.events)}
+        called = {
+            e["data"]["id"]: e for e in t3.of(sid) if e["type"] == "session.tool.called" and e["data"]["input"].get("background")
+        }
+        linked = {e["data"]["id"]: e["data"]["metadata"]["sessionID"] for e in t3.of(sid) if e["type"] == "session.tool.progress"}
+        created = {e["data"]["sessionID"]: e for e in t3.events if e["type"] == "session.created"}
+        for tool_id, call in called.items():
+            child = linked.get(tool_id)
+            early = child in created and position[id(created[child])] < position[id(call)]
+            print(
+                f"{stamp()} {call['data']['input']['description']}: child {child} {'BEFORE' if early else 'after'} its call;"
+                f" report {reports().get(child or '', 'MISSING')!r}",
+                flush=True,
+            )
+        assert len(called) == len(names) and all(linked.get(t) in reports() for t in called), "a subagent call did not settle"
     else:
         raise SystemExit(f"unknown scenario {scenario}")
     print(f"{stamp()} done; Omnigent session {app.sessions[sid].conversation_id}", flush=True)
@@ -366,7 +406,20 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "scenario",
-        choices=["turn", "steer", "stop", "approve", "decline", "question", "plan", "smoke", "edit", "switch", "recover"],
+        choices=[
+            "turn",
+            "steer",
+            "stop",
+            "approve",
+            "decline",
+            "question",
+            "plan",
+            "smoke",
+            "edit",
+            "switch",
+            "recover",
+            "subagents",
+        ],
     )
     parser.add_argument("--agent", default="claude-native-ui")
     parser.add_argument("--model", default="sonnet")
