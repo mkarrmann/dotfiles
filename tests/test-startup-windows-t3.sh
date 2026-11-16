@@ -49,6 +49,7 @@ T3_LOCAL_SERVER_WAIT=0
 t3_unreachable_hosts=""
 T3_WINDOWS_CACHE="$(mktemp -u)"
 T3_TOKENLESS_HOSTS="$(mktemp -u)"
+T3_ENV_IDS="$(mktemp -u)"
 
 workspaces() {
   printf '%s' '{"workspaces":[
@@ -178,7 +179,7 @@ sim_reset() {
   : > "$SIM/windows"; : > "$SIM/scoped"; : > "$SIM/reloaded"; : > "$SIM/opened"; : > "$SIM/loading"; echo 100 > "$SIM/next"
   rm -rf "$T3_PAIRING_DIR/cco.example.com" "$T3_PAIRING_DIR/ftw.example.com"
   mkdir -p "$T3_PAIRING_DIR/cco.example.com" "$T3_PAIRING_DIR/ftw.example.com"
-  t3_waited_hosts=""; t3_unreachable_hosts=""; rm -f "$T3_WINDOWS_CACHE" "$T3_TOKENLESS_HOSTS"; failures=0; SCOPE_FAILS=""; RELOAD_FAILS=""; SIM_ERROR_PAGE=""
+  t3_waited_hosts=""; t3_unreachable_hosts=""; rm -f "$T3_WINDOWS_CACHE" "$T3_TOKENLESS_HOSTS" "$T3_ENV_IDS"; failures=0; SCOPE_FAILS=""; RELOAD_FAILS=""; SIM_ERROR_PAGE=""
   FTW_ENV=env-ftw-1
   curl() { sim_curl "$@"; }
 }
@@ -328,6 +329,7 @@ aerospace close --window-id 102
 pool cco.example.com TOKEN3B
 pool ftw.example.com FTWTOKEN2
 FTW_ENV=env-ftw-2
+rm -f "$T3_ENV_IDS"  # a server reset between runs
 reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
 check "an FTW server whose state was reset, a new environment, is linked again" \
   "$SCOPE3 --link http://127.0.0.1:23780 FTW | FTWTOKEN2" "$(cat "$SIM/scoped")"

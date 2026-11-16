@@ -167,11 +167,24 @@ echo "$STARTUP_MODE" > "$STARTUP_LOCK_DIR/mode"
 echo "$$" > "$STARTUP_LOCK_DIR/pid"
 T3_WINDOWS_CACHE="$STARTUP_LOCK_DIR/t3-windows"
 T3_TOKENLESS_HOSTS="$STARTUP_LOCK_DIR/t3-tokenless-hosts"
+# The workspace table (bin-macos/workspaces) is the same all run, takes a fraction
+# of a second to compute, and is read for nearly every row: computed once, kept
+# in a file because its readers run in command substitutions.
+T3_ENV_IDS="$STARTUP_LOCK_DIR/t3-environment-ids"
+WORKSPACES_JSON_CACHE="$STARTUP_LOCK_DIR/workspaces.json"
+workspaces() {
+  [[ "$*" == --json ]] || { command workspaces "$@"; return; }
+  if [[ ! -s "$WORKSPACES_JSON_CACHE" ]]; then
+    command workspaces --json > "$WORKSPACES_JSON_CACHE.tmp" || { rm -f "$WORKSPACES_JSON_CACHE.tmp"; return 1; }
+    mv "$WORKSPACES_JSON_CACHE.tmp" "$WORKSPACES_JSON_CACHE"
+  fi
+  cat "$WORKSPACES_JSON_CACHE"
+}
 # The pending list is saved before the lock goes, so a --deferred run queued on
 # the lock reads all of it.
 cleanup_startup_lock() {
   save_pending_rows || true
-  rm -f "$STARTUP_LOCK_DIR/pid" "$STARTUP_LOCK_DIR/mode" "$T3_WINDOWS_CACHE" "$T3_TOKENLESS_HOSTS"
+  rm -f "$STARTUP_LOCK_DIR/pid" "$STARTUP_LOCK_DIR/mode" "$T3_WINDOWS_CACHE" "$T3_TOKENLESS_HOSTS" "$T3_ENV_IDS" "$WORKSPACES_JSON_CACHE"
   rmdir "$STARTUP_LOCK_DIR" 2>/dev/null || true
 }
 trap cleanup_startup_lock EXIT
@@ -1090,9 +1103,17 @@ t3_url_port() {
   printf '%s' "${port%%/*}"
 }
 
-# t3_environment_id URL -> the environment id of the T3 Code server at URL.
+# t3_environment_id URL -> the environment id of the T3 Code server at URL. Each
+# window asks about each server, so the answers are kept for the run in
+# T3_ENV_IDS, a file: callers run in command substitutions.
 t3_environment_id() {
-  curl -s --noproxy '*' -m 5 "$1/.well-known/t3/environment" 2>/dev/null | jq -r '.environmentId // empty' 2>/dev/null || true
+  local id
+  id=$(awk -v url="$1" '$1 == url { print $2; exit }' "$T3_ENV_IDS" 2>/dev/null || true)
+  if [[ -z "$id" ]]; then
+    id=$(curl -s --noproxy '*' -m 5 "$1/.well-known/t3/environment" 2>/dev/null | jq -r '.environmentId // empty' 2>/dev/null || true)
+    [[ -z "$id" ]] || printf '%s %s\n' "$1" "$id" >> "$T3_ENV_IDS"
+  fi
+  [[ -z "$id" ]] || printf '%s\n' "$id"
 }
 
 # t3_take_pairing_token DEVSERVER [WAIT] -> a token from that devserver's pool,
