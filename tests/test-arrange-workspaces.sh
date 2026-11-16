@@ -40,4 +40,73 @@ if error=$(AEROSPACE_FAIL_DISCOVERY=true \
 fi
 grep -Fx 'ERROR: failed to discover AeroSpace workspaces' <<< "$error" >/dev/null
 
+# ── An unchanged workspace is skipped by reading alone ───────────────
+# Workspace 3: an Orchest sidebar (30) and two windows (31, 32) the stub's tree
+# holds as tiles | accordion, or, with TREE=flat, all in one h_tiles root.
+FAKE="$TMP/fake"
+mkdir -p "$FAKE/bin"
+cat > "$FAKE/bin/aerospace" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_STATE/calls"
+case "$*" in
+  "list-windows --workspace 3 --json")
+    printf '%s' '[{"window-id":30,"app-name":"Orchest","window-title":"ws — Orchest [abc]"},
+      {"window-id":31,"app-name":"Google Chrome","window-title":"New Tab"},
+      {"window-id":32,"app-name":"Brave Browser","window-title":"T3 Code"}]' ;;
+  "list-windows --workspace 3 --format %{window-id}|%{window-parent-container-layout}")
+    if [[ "$TREE" == flat ]]; then printf '30|h_tiles\n31|h_tiles\n32|h_tiles\n'
+    else printf '30|h_tiles\n31|v_accordion\n32|v_accordion\n'; fi ;;
+  "list-windows --workspace 3 --format %{workspace-root-container-layout}") echo h_tiles ;;
+  "list-windows --focused --format %{window-id}|%{workspace}") echo "$(cat "$FAKE_STATE/focused")|1" ;;
+  "list-windows --focused --format %{window-id}") cat "$FAKE_STATE/focused" ;;
+  "list-windows --focused --format %{window-parent-container-layout}") echo h_tiles ;;
+  "focus --window-id "*) echo "$3" > "$FAKE_STATE/focused" ;;
+esac
+exit 0
+EOF
+cat > "$FAKE/bin/osascript" <<'EOF'
+#!/usr/bin/env bash
+echo "osascript $*" >> "$FAKE_STATE/calls"
+echo 3000
+EOF
+chmod +x "$FAKE/bin/aerospace" "$FAKE/bin/osascript"
+
+# What moves focus, windows or the tree.
+MUTATING='^(focus|move|move-node-to-workspace|join-with|layout|resize|flatten-workspace-tree|workspace) |^flatten-workspace-tree$|^osascript'
+arrange() { # STATE_NAME TREE [ARGS...] -> output; its aerospace calls in $FAKE/STATE_NAME/calls
+  local state="$FAKE/$1" tree="$2"
+  shift 2
+  mkdir -p "$state"
+  : > "$state/calls"
+  echo 99 > "$state/focused"
+  FAKE_STATE="$state" TREE="$tree" ARRANGE_MARKER_DIR="$FAKE/markers" ARRANGE_ATTEMPTS=1 \
+    ARRANGEMENT_LOCK_DIR="$FAKE/lock" PATH="$FAKE/bin:$PATH" \
+    /bin/bash "$ROOT/bin-macos/arrange-workspaces" "$@" 3 2>&1 || true
+}
+mkdir -p "$FAKE/markers"
+printf '30:Orchest\n31:Google Chrome\n32:Brave Browser\n' | sort | md5 -q > "$FAKE/markers/ws-3"
+cp "$FAKE/markers/ws-3" "$FAKE/marker"
+
+out=$(arrange skip tiled)
+grep -Fq '[3] already arranged, skipping' <<< "$out" \
+  || { echo "an unchanged, arranged workspace was not skipped: $out" >&2; exit 1; }
+if grep -Eq "$MUTATING" "$FAKE/skip/calls"; then
+  echo "skipping an unchanged workspace moved focus, windows or the tree:" >&2
+  grep -E "$MUTATING" "$FAKE/skip/calls" >&2
+  exit 1
+fi
+
+out=$(arrange flattened flat)
+grep -Fq '[3] same windows, but the layout changed; rearranging' <<< "$out" \
+  || { echo "a workspace with the same windows but a flattened tree was skipped: $out" >&2; exit 1; }
+grep -Fxq 'flatten-workspace-tree' "$FAKE/flattened/calls" \
+  || { echo "a flattened workspace was not rearranged" >&2; exit 1; }
+grep -Fxq 'focus --window-id 99' "$FAKE/flattened/calls" \
+  || { echo "focus was not given back after rearranging" >&2; exit 1; }
+
+cp "$FAKE/marker" "$FAKE/markers/ws-3"
+arrange forced tiled --force >/dev/null
+grep -Eq '^resize ' "$FAKE/forced/calls" \
+  || { echo "--force did not re-enforce the layout of an unchanged workspace" >&2; exit 1; }
+
 echo "arrange-workspaces tests passed"

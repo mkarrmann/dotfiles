@@ -45,8 +45,10 @@ aerospace() {
 #   - Workspace 11: delegated to arrange-ws11.
 #   - Workspace Z: overflow/scaffolding, intentionally left unchanged.
 # Standard workspaces without Orchest windows stay as a flat accordion.
-# Skips workspaces whose window set hasn't changed since last arrangement
-# to preserve manual size adjustments. Use --force to override.
+# Skips a workspace whose window set hasn't changed since its last arrangement
+# and whose tree still has the right shape, to preserve manual size adjustments:
+# that check only reads, so an unchanged run moves no focus. Use --force to
+# rebuild anyway.
 # Can be run standalone or called from startup-windows.
 #
 # Requires enable-normalization-flatten-containers = false so that
@@ -73,7 +75,7 @@ SIDEBAR_TITLE_PATTERN="Orchest \\["
 # they pile up on whichever workspace was focused when they were created.
 NON_LAYOUT_TITLE_PATTERN="^Omnigent Update$"
 SIDEBAR_PERCENT=12
-MARKER_DIR="/tmp/aerospace-arrange-markers"
+MARKER_DIR="${ARRANGE_MARKER_DIR:-/tmp/aerospace-arrange-markers}"
 ARRANGEMENT_LOCK_DIR="${ARRANGEMENT_LOCK_DIR:-/tmp/aerospace-arrangement.lock}"
 ARRANGE_ATTEMPTS="${ARRANGE_ATTEMPTS:-5}"
 ARRANGE_RETRY_SLEEP="${ARRANGE_RETRY_SLEEP:-1}"
@@ -135,8 +137,11 @@ release_arrangement_lock() {
 acquire_arrangement_lock || exit 1
 
 ORIGINAL_FOCUS=$(aerospace list-windows --focused --format '%{window-id}|%{workspace}' 2>/dev/null || true)
+# Whether anything here may have moved focus; a run that only skipped leaves it be.
+FOCUS_TOUCHED=false
 restore_original_focus() {
   local original_wid original_ws actual_wid
+  [[ "$FOCUS_TOUCHED" == true ]] || return 0
   IFS='|' read -r original_wid original_ws <<< "$ORIGINAL_FOCUS"
   if [[ -n "$original_wid" ]]; then
     aerospace focus --window-id "$original_wid" >/dev/null 2>&1 || true
@@ -248,6 +253,7 @@ evict_non_layout_windows() {
   for wid in $(echo "$windows_json" | jq -r --arg pat "$NON_LAYOUT_TITLE_PATTERN" \
       '[.[] | select((.["window-title"] // "") | test($pat))] | .[]["window-id"]'); do
     echo "  [$ws] evicting non-layout window $wid → Z"
+    FOCUS_TOUCHED=true
     aerospace move-node-to-workspace --window-id "$wid" Z 2>/dev/null || true
     moved=0
   done
@@ -290,6 +296,17 @@ untileable_ids() {
     fi
   done
   return 0
+}
+
+# classify_windows WINDOWS_JSON -- the ids of its Orchest sidebar windows and of
+# the rest, newline-separated, in sidebar_ids and accordion_ids.
+classify_windows() {
+  sidebar_ids=$(echo "$1" | jq -r \
+    --arg pat "$SIDEBAR_TITLE_PATTERN" \
+    '[.[] | select(.["window-title"] | test($pat))] | .[]["window-id"]') || true
+  accordion_ids=$(echo "$1" | jq -r \
+    --arg pat "$SIDEBAR_TITLE_PATTERN" \
+    '[.[] | select(.["window-title"] | test($pat) | not)] | .[]["window-id"]') || true
 }
 
 # Check whether $ws is already in the desired tree shape. Returns 0 if
@@ -436,16 +453,24 @@ arrange_standard_workspace_once() {
 
   [[ "$total" -lt 2 ]] && return 0
 
-  # Skip if the window set hasn't changed since last arrangement.
-  # The fingerprint covers window IDs + app names; if nothing changed
-  # there can't be a new phantom either, so we can skip the sweep too.
-  local fingerprint marker_file
+  # Skip if the window set hasn't changed since last arrangement and the tree
+  # still has its shape (something else may have flattened it). The fingerprint
+  # covers window IDs + app names; if nothing changed there can't be a new
+  # phantom either, so we can skip the sweep too. A floating window fails the
+  # tree check, so a workspace that kept an untileable one is rebuilt.
+  # Order within the tree is not checked: reading it takes focus.
+  local fingerprint marker_file sidebar_ids accordion_ids
   fingerprint=$(workspace_fingerprint "$windows")
   marker_file="$MARKER_DIR/ws-$ws"
   if [[ "$FORCE" != true ]] && [[ -f "$marker_file" ]] && [[ "$(cat "$marker_file")" == "$fingerprint" ]]; then
-    echo "  [$ws] already arranged, skipping"
-    return 0
+    classify_windows "$windows"
+    if layout_tree_correct "$ws" "$sidebar_ids" "$accordion_ids"; then
+      echo "  [$ws] already arranged, skipping"
+      return 0
+    fi
+    echo "  [$ws] same windows, but the layout changed; rearranging"
   fi
+  FOCUS_TOUCHED=true
 
   # Sweep phantom/unfocusable windows to Z before computing the layout.
   # These break spatial navigation, join-with, and move commands. If any
@@ -477,13 +502,7 @@ arrange_standard_workspace_once() {
     [[ "$total" -lt 2 ]] && return 0
   fi
 
-  local sidebar_ids accordion_ids
-  sidebar_ids=$(echo "$windows" | jq -r \
-    --arg pat "$SIDEBAR_TITLE_PATTERN" \
-    '[.[] | select(.["window-title"] | test($pat))] | .[]["window-id"]') || true
-  accordion_ids=$(echo "$windows" | jq -r \
-    --arg pat "$SIDEBAR_TITLE_PATTERN" \
-    '[.[] | select(.["window-title"] | test($pat) | not)] | .[]["window-id"]') || true
+  classify_windows "$windows"
 
   local accordion_count=0 sidebar_count=0
   [[ -n "$accordion_ids" ]] && accordion_count=$(echo "$accordion_ids" | wc -l | tr -d ' ')
@@ -742,6 +761,7 @@ arrange_workspace_by_policy() {
   local ws="$1"
   case "$ws" in
     11)
+      FOCUS_TOUCHED=true
       if [[ "$ENSURE_WINDOWS" == true ]]; then
         "$ARRANGE_WS11" --ensure-windows
       else

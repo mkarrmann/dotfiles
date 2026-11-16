@@ -2168,10 +2168,11 @@ if [[ "$swept" -gt 0 ]]; then
   echo "Swept ${swept} stray window(s) to workspace ${SWEEP_WORKSPACE}."
 fi
 
-# Arrange layouts (tiles | accordion) on managed workspaces
+# Arrange layouts (tiles | accordion) on managed workspaces: each whose windows
+# changed or whose tree lost its shape (arrange-workspaces --force rebuilds all).
 # managed_workspaces intentionally expands to separate workspace arguments.
 # shellcheck disable=SC2046
-ARRANGE_ATTEMPTS=8 ARRANGE_RETRY_SLEEP=1 arrange-workspaces --force $(managed_workspaces) || {
+ARRANGE_ATTEMPTS=8 ARRANGE_RETRY_SLEEP=1 arrange-workspaces $(managed_workspaces) || {
   echo "WARNING: arrange-workspaces did not converge" >&2
   ((failures++)) || true
 }
