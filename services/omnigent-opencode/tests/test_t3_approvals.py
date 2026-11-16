@@ -193,6 +193,26 @@ async def test_exit_plan_mode_is_refused_while_t3_is_in_plan_mode(t3: T3Client, 
     assert body["action"] == "decline" and "ExitPlanMode" in body["content"]["feedback"]
 
 
+async def test_a_thread_keeps_its_rules_and_mode_across_a_restart(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> None:
+    session = await t3.call(
+        "session.create",
+        {"location": {"directory": shim.app.config.default_directory}, "model": CLAUDE, "permissions": APPROVAL_REQUIRED},
+    )
+    sid = session["id"]
+    await t3.call("session.switchAgent", {"sessionID": sid, "agent": "plan"})
+    shim.app.sessions.clear()  # as after a restart of this server
+    # T3 Code writes rules and mode only when they differ from what it last wrote, so it sends neither again.
+    await t3.call("session.prompt", {"sessionID": sid, "id": f"msg_t3_turn_{sid}:a1", "text": "plan it"})
+    conv = fake.only().id
+    await fake.connected(conv)
+    claude_asks(fake, conv, "el_1", "Bash", {"command": "make"})
+    await t3.wait_for(lambda: len(asked(t3)) == 1)
+    assert fake.resolved == []
+    claude_asks(fake, conv, "el_2", "ExitPlanMode", {"plan": "1. do it"}, exit_plan_mode={"plan": "1. do it"})
+    ((_, _, body),) = await fake.resolutions(1)
+    assert body["action"] == "decline" and "ExitPlanMode" in body["content"]["feedback"]
+
+
 async def test_claude_questions_are_forms_answered_by_question_text(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> None:
     sid, conv = await start(t3, shim, fake, FULL_ACCESS)
     questions = {

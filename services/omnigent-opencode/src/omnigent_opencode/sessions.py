@@ -246,9 +246,9 @@ class Session:
         self.target = target
         self.directory = directory
         self.model = model
-        self.agent = "build"
         self.title = title
-        self.permissions: list[Json] = []
+        self._store = store
+        self._agent, self._permissions = store.mode(session_id) or ("build", [])
         self.instructions: Json = None
         # T3 Code asked for a new session for this one's thread and got this one back; its first prompt
         # carries a recap of history the Omnigent session already holds.
@@ -258,7 +258,6 @@ class Session:
         self.outcome: Outcome | None = None
         self.staged_revert: str | None = None
         self._client = client
-        self._store = store
         self._publish = publish
         self.execution: Execution | None = None
         self.steers: dict[str, Steer] = {}
@@ -294,6 +293,24 @@ class Session:
         self.active = store.active(session_id) or now_ms()
         """When the session last did anything, as far as this server saw."""
         self._stored_active = 0
+
+    @property
+    def agent(self) -> str:
+        return self._agent
+
+    @agent.setter
+    def agent(self, agent: str) -> None:
+        self._agent = agent
+        self._store.set_mode(self.id, agent, self._permissions)
+
+    @property
+    def permissions(self) -> list[Json]:
+        return self._permissions
+
+    @permissions.setter
+    def permissions(self, permissions: list[Json]) -> None:
+        self._permissions = permissions
+        self._store.set_mode(self.id, self._agent, permissions)
 
     # -- OpenCode shapes ------------------------------------------------
 

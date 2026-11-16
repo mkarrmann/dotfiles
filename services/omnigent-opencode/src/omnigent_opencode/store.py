@@ -11,6 +11,9 @@ by the ids this server gave out, so these live in SQLite:
   markers in a session's history.
 - `threads`: the session each T3 Code thread runs on, so a request for a new
   one, which T3 Code makes whenever resuming fails, keeps the thread on it.
+- `modes`: each session's permission rules and agent (`build` or `plan`).
+  T3 Code writes them only when they differ from what it last wrote, so it
+  never repeats them to a restarted server.
 - `watched`: the sessions this server follows between T3 Code's visits, each
   with the last Omnigent input it handled (its watermark: a turn on an input
   after it was missed and is replayed), when it was last active, and the home
@@ -19,16 +22,20 @@ by the ids this server gave out, so these live in SQLite:
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from pathlib import Path
 from typing import Literal
+
+from .wire import Json
 
 Outcome = Literal["succeeded", "failed", "interrupted"]
 
 SCHEMA = """
 create table if not exists sessions (session_id text primary key, conversation_id text not null);
 create table if not exists threads (thread_key text primary key, session_id text not null);
+create table if not exists modes (session_id text primary key, agent text not null, permissions text not null);
 create table if not exists prompts (
     session_id text not null,
     message_id text not null,
@@ -84,6 +91,18 @@ class Store:
         self._db.execute(
             "insert into threads values (?, ?) on conflict (thread_key) do update set session_id = excluded.session_id",
             (thread_key, session_id),
+        )
+
+    def mode(self, session_id: str) -> tuple[str, list[Json]] | None:
+        """(agent, permissions) of a session."""
+        row = self._db.execute("select agent, permissions from modes where session_id = ?", (session_id,)).fetchone()
+        return (str(row[0]), list(json.loads(row[1]))) if row else None
+
+    def set_mode(self, session_id: str, agent: str, permissions: list[Json]) -> None:
+        self._db.execute(
+            "insert into modes values (?, ?, ?) on conflict (session_id)"
+            " do update set agent = excluded.agent, permissions = excluded.permissions",
+            (session_id, agent, json.dumps(permissions)),
         )
 
     def add_prompt(self, session_id: str, message_id: str, text: str, created: int) -> None:
