@@ -347,7 +347,8 @@ fi
 
 # ── Place ws 11 on the external secondary monitor ────────────────────
 TARGET_MON=$(select_target_monitor)
-if [[ -n "$TARGET_MON" ]]; then
+if [[ -n "$TARGET_MON" ]] &&
+   ! aerospace list-workspaces --monitor "$TARGET_MON" 2>/dev/null | grep -qx "$WS"; then
   echo "arrange-ws11: pinning workspace $WS to monitor $TARGET_MON"
   aerospace move-workspace-to-monitor --workspace "$WS" "$TARGET_MON" 2>/dev/null || true
 fi
@@ -486,6 +487,63 @@ verify_cells() {
   [[ "$(cell_of "$f_cal")" == "TL" && "$(cell_of "$f_obs")" == "TR" \
      && "$(cell_of "$f_slack")" == "BL" && "$(cell_of "$f_orch")" == "BR" ]]
 }
+
+# cg_frames ID... -> "ID X Y W H" for each window that exists, in the same
+# top-left-origin global coordinates as monitor_rect. CoreGraphics reads bounds
+# by window id (AeroSpace's ids are CGWindowIDs): no Accessibility permission
+# and no title matching, so unlike refresh_geom it cannot pick the wrong window.
+cg_frames() {
+  osascript -l JavaScript - "$@" <<'JXA' 2>/dev/null
+  function run(argv) {
+    ObjC.import("CoreGraphics");
+    var want = argv.map(Number), out = [];
+    var list = ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionAll, 0));
+    for (var i = 0; i < list.count; i++) {
+      var d = list.objectAtIndex(i), n = d.objectForKey("kCGWindowNumber").js;
+      if (want.indexOf(n) < 0) continue;
+      var b = d.objectForKey("kCGWindowBounds");
+      out.push([n, b.objectForKey("X").js, b.objectForKey("Y").js,
+                b.objectForKey("Width").js, b.objectForKey("Height").js].map(Math.round).join(" "));
+    }
+    return out.join("\n");
+  }
+JXA
+}
+
+# grid_already_correct -- whether ws 11 already is the finished dashboard: exactly
+# the four windows, in h_tiles rows under a v_tiles root, each in its cell on the
+# dashboard monitor, the left cells at the widths resize_left sets. Rebuilding a
+# correct grid costs seconds of focus changes, and the relative resizes below
+# are only right on a freshly built 50/50 grid.
+grid_already_correct() {
+  local rows ids expected frames
+  [[ "$MON_W" -gt 0 ]] || return 1
+  rows=$(aerospace list-windows --workspace "$WS" \
+    --format '%{window-id}|%{window-parent-container-layout}|%{workspace-root-container-layout}' 2>/dev/null) || return 1
+  ids=$(awk -F'|' 'NF{print $1}' <<< "$rows" | sort -n | tr '\n' ' ')
+  expected=$(printf '%s\n' "$CAL" "$OBS" "$SLACK" "$ORCH" | sort -n | tr '\n' ' ')
+  [[ "$ids" == "$expected" ]] || return 1
+  awk -F'|' 'NF && ($2 != "h_tiles" || $3 != "v_tiles") { bad = 1 } END { exit bad }' <<< "$rows" || return 1
+  frames=$(cg_frames "$CAL" "$OBS" "$SLACK" "$ORCH") || return 1
+  awk -v cal="$CAL" -v obs="$OBS" -v slack="$SLACK" -v orch="$ORCH" \
+      -v mx="$MON_X" -v my="$MON_Y" -v mw="$MON_W" -v mh="$MON_H" \
+      -v tl="$TOP_LEFT_PCT" -v bl="$BOT_LEFT_PCT" -v tol="$TOL" '
+    NF == 5 { x[$1] = $2; y[$1] = $3; w[$1] = $4; h[$1] = $5; n++ }
+    function on(i) { return x[i] >= mx-1 && y[i] >= my-1 && x[i]+w[i] <= mx+mw+1 && y[i]+h[i] <= my+mh+1 }
+    function near(a, b) { return a-b <= tol && b-a <= tol }
+    END {
+      if (n != 4 || !(on(cal) && on(obs) && on(slack) && on(orch))) exit 1
+      if (!near(y[cal], y[obs]) || !near(y[slack], y[orch]) || y[slack] <= y[cal] + tol) exit 1
+      if (!near(x[cal], mx) || !near(x[slack], mx) || x[obs] <= x[cal] + tol || x[orch] <= x[slack] + tol) exit 1
+      if (!near(w[cal], mw * tl / 100) || !near(w[slack], mw * bl / 100)) exit 1
+    }' <<< "$frames"
+}
+
+if grid_already_correct; then
+  echo "arrange-ws11: grid already correct; leaving it as it is"
+  echo "arrange-ws11: done."
+  exit 0
+fi
 
 built=0
 for attempt in $(seq 1 "$ATTEMPTS"); do
