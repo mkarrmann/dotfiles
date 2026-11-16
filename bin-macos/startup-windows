@@ -189,7 +189,7 @@ workspaces() {
 # the lock reads all of it.
 cleanup_startup_lock() {
   save_pending_rows || true
-  rm -f "$STARTUP_LOCK_DIR/pid" "$STARTUP_LOCK_DIR/mode" "$T3_WINDOWS_LISTED" "$T3_TOKENLESS_HOSTS" "$T3_ENV_IDS" "$WORKSPACES_JSON_CACHE"
+  rm -f "$STARTUP_LOCK_DIR/pid" "$STARTUP_LOCK_DIR/mode" "$STARTUP_LOCK_DIR/t3-client-settings.log" "$T3_WINDOWS_LISTED" "$T3_TOKENLESS_HOSTS" "$T3_ENV_IDS" "$WORKSPACES_JSON_CACHE"
   rmdir "$STARTUP_LOCK_DIR" 2>/dev/null || true
 }
 trap cleanup_startup_lock EXIT
@@ -2049,12 +2049,14 @@ done
 
 # Once the T3 Code windows are up, sync their client settings (appearance and
 # the like) with ~/dotfiles/t3code/client-settings.json: a setting changed in
-# any window reaches the file and every other window.
+# any window reaches the file and every other window. It only reads and writes
+# pages, so it runs while the rest of the run lays windows out, and reports at
+# the end.
+t3_settings_pid=""
+t3_settings_log="$STARTUP_LOCK_DIR/t3-client-settings.log"
 if [[ "$STARTUP_T3_WINDOWS" == 1 ]]; then
-  t3-client-settings || {
-    echo "WARNING: T3 Code's client settings were not synced (above); rerun ~/bin/t3-client-settings" >&2
-    ((failures++)) || true
-  }
+  t3-client-settings > "$t3_settings_log" 2>&1 &
+  t3_settings_pid=$!
 fi
 
 # Chrome session restore can continue after an individual wait_for_new_window
@@ -2233,6 +2235,17 @@ WS11_SLACK_WINDOW_ID="$WS11_SLACK_WINDOW_ID" \
   echo "WARNING: workspace 11 arrangement did not converge" >&2
   ((failures++)) || true
 }
+
+if [[ -n "$t3_settings_pid" ]]; then
+  t3_settings_rc=0
+  wait "$t3_settings_pid" || t3_settings_rc=$?
+  cat "$t3_settings_log" 2>/dev/null || true
+  rm -f "$t3_settings_log"
+  if [[ "$t3_settings_rc" -ne 0 ]]; then
+    echo "WARNING: T3 Code's client settings were not synced (above); rerun ~/bin/t3-client-settings" >&2
+    ((failures++)) || true
+  fi
+fi
 
 # Focus workspace 1
 aerospace workspace 1 2>/dev/null || true
