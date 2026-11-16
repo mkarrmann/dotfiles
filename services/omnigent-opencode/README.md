@@ -196,7 +196,7 @@ replay after a gap and held runs; `test_t3_daemon.py` the forwarding path.
 
 `tests/live/live_harness.py SCENARIO` runs scenarios against the real Omnigent
 on this machine through T3 Code's client: `turn`, `steer`, `stop`, `approve`,
-`decline`, `question`, `plan`, `switch` (to `--to-agent`/`--to-model`, then
+`decline`, `question`, `plan`, `subagents` (four background subagents launched at once, each settled on its own report), `switch` (to `--to-agent`/`--to-model`, then
 asks what came before), `recover` (T3 Code's request for a new session for a
 thread that has one, then a prompt with a recap), and `smoke` (model switch, image, compaction,
 fork, rollback, text generation). They create real Omnigent sessions. Note
