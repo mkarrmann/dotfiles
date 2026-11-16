@@ -62,19 +62,24 @@ fi
 unset STARTUP_WINDOWS_STAMPED
 
 # ── Args ─────────────────────────────────────────────────────────────
+STARTUP_ARGS=("$@")
 ORCHEST_MODE_FLAG="--prod"
 DEFERRED=false
+STARTUP_FULL=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --orchest-prod) ORCHEST_MODE_FLAG="--prod"; shift ;;
     --orchest-dev)  ORCHEST_MODE_FLAG="--dev";  shift ;;
     --deferred)     DEFERRED=true;              shift ;;
+    --full)         STARTUP_FULL=true;          shift ;;
     -h|--help)
-      echo "Usage: startup-windows [--orchest-prod|--orchest-dev|--deferred]"
+      echo "Usage: startup-windows [--orchest-prod|--orchest-dev|--deferred|--full]"
       echo "  --orchest-prod  (default) launch built Orchest from apps/desktop/out/ (lower memory)"
       echo "  --orchest-dev   launch Orchest via 'pnpm dev' with HMR"
       echo "  --deferred      finish only the windows the last run left for a tunnel"
       echo "                  (bin-macos/nvs-tunnels runs it once it is through Duo)"
+      echo "  --full          check and fix every window, even when nothing changed since"
+      echo "                  the last full run (which a run otherwise skips)"
       exit 0
       ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
@@ -134,7 +139,16 @@ if [[ "$DEFERRED" == true && ! -d "$STARTUP_LOCK_DIR" && -z "$(read_pending_file
 fi
 lock_waiting=false
 missing_pid_checks=0
-until mkdir "$STARTUP_LOCK_DIR" 2>/dev/null; do
+# A fast run that turns out to need a full one execs it (same pid) still holding
+# the lock, so no other run gets in between.
+if [[ "${STARTUP_WINDOWS_LOCK_HELD:-}" == "$$" && "$(cat "$STARTUP_LOCK_DIR/pid" 2>/dev/null)" == "$$" ]]; then
+  lock_held=true
+  STARTUP_FULL=true
+else
+  lock_held=false
+fi
+unset STARTUP_WINDOWS_LOCK_HELD
+until [[ "$lock_held" == true ]] || mkdir "$STARTUP_LOCK_DIR" 2>/dev/null; do
   lock_pid=$(cat "$STARTUP_LOCK_DIR/pid" 2>/dev/null || true)
   if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
     lock_mode=$(cat "$STARTUP_LOCK_DIR/mode" 2>/dev/null || echo full)
@@ -1296,6 +1310,7 @@ t3_collect_links() {
     link_token=$(t3_take_pairing_token "$link_host" "$T3_PAIRING_TOKEN_WAIT")
     if [[ -z "$link_token" ]]; then
       echo "WARNING: [$title] no pairing token from $link_host; its threads are not listed here" >&2
+      t3_token_warnings+=("WARNING: [$title] no pairing token from $link_host; its threads are not listed here")
       ((failures++)) || true
       continue
     fi
@@ -1897,6 +1912,247 @@ reconcile_row() {
   esac
 }
 
+# ── Fast path ────────────────────────────────────────────────────────
+# A full run that leaves nothing a rerun could fix records steady_state: a
+# digest of everything its rows, sweeps and layout pass read. A later run that
+# finds the same digest skips them, as they would all find nothing to do. It
+# still does what a full run redoes every time: the tunnel checks and cleanups
+# before this point, pinning Omnigent's window to its conversation, Orchest's
+# placement, the workspace-11 dashboard and T3 Code's client settings. A row
+# deferred, or a window changed by any of those, makes it a full run after all.
+# The digest has the boot and the apps' processes, so a login never matches, and
+# this script's code and the workspace table, so neither can change under it.
+STEADY_STATE_FILE="${STARTUP_STEADY_STATE_FILE:-$HOME/.local/state/startup-windows-steady}"
+STEADY_WARNINGS_FILE="$STEADY_STATE_FILE.warnings"
+STEADY_SNAPSHOT_FORMAT='%{window-id}%{workspace}%{app-name}%{window-title}%{window-parent-container-layout}%{workspace-root-container-layout}'
+fast_path=false
+# Warnings a full run may end with and still record its digest: a link that
+# waits on a token only its tunnel's next connect brings, which changes the
+# digest's pools. A fast run repeats them.
+t3_token_warnings=()
+
+steady_snapshot() {
+  aerospace list-windows --all --json --format "$STEADY_SNAPSHOT_FORMAT" 2>/dev/null
+}
+
+# steady_windows SNAPSHOT -> "win ID WS APP PARENT ROOT" for each window not on
+# the sweep workspace: the windows the rows and sweeps look at (a surplus Chrome
+# window is swept from any workspace) and the tree a layout pass reads.
+steady_windows() {
+  jq -r --arg sweep "$SWEEP_WORKSPACE" '
+    .[] | select(.workspace != $sweep)
+    | "win \(.["window-id"]) \(.workspace) \(."app-name" | gsub(" "; "_")) \(.["window-parent-container-layout"]) \(.["workspace-root-container-layout"])"' \
+    <<< "$1" | sort
+}
+
+# steady_titles SNAPSHOT -> what the rows read from those windows' titles: each
+# window's kind as the rows tell it ("cls"), the window each terminal row
+# matches as find_window_id_for_workspace does ("row"), the dashboard's windows
+# as reserve_ws11_chrome picks them ("ws11"), and the Chrome profile pickers on
+# the sweep workspace, which a full run closes ("zinvalid").
+steady_titles() {
+  local entry ws type rest title_match app rows=""
+  for entry in "${WORKSPACES[@]}"; do
+    IFS='|' read -r ws type _ rest <<< "$entry"
+    case "$type" in
+      ghostty) app="Ghostty" ;;
+      cmux) app="cmux" ;;
+      *) continue ;;
+    esac
+    IFS='|' read -r title_match _ <<< "$rest"
+    rows+="$ws"$'\t'"$app"$'\t'"$title_match"$'\n'
+  done
+  jq -r --arg rows "$rows" --arg sweep "$SWEEP_WORKSPACE" \
+      --arg chrome "$CHROME_APP" --arg invalid "$CHROME_INVALID_TITLE_PATTERN" --arg t3any "$T3_ANY_TITLE_PATTERN" \
+      --arg t3app "$T3_BROWSER" --arg t3title "$T3_TITLE_PATTERN" \
+      --arg omnigent "$OMNIGENT_APP" --arg omnigent_invalid "$OMNIGENT_INVALID_TITLE_PATTERN" \
+      --arg cal "$WS11_CAL_TITLE_RE" --arg slack "$WS11_SLACK_TITLE_RE" --arg ws11 "$WS11_WORKSPACE" '
+    def title: (.["window-title"] // "");
+    def pick($all; $re):
+      [ $all[] | select(."app-name" == $chrome and (title | test($re)) and (title | test($invalid) | not)) ]
+      | sort_by(.["window-id"]) | ((map(select(.workspace == $ws11)) | first) // first) | .["window-id"] // "-";
+    . as $all
+    | "zinvalid \([ $all[] | select(.workspace == $sweep and ."app-name" == $chrome and (title | test($invalid))) ] | length)",
+      ( $all[] | select(.workspace != $sweep)
+        | "cls \(.["window-id"]) " + (
+            if ."app-name" == $chrome then
+              (if (title | test($invalid)) then "invalid"
+               elif (title | test($t3any)) then "t3"
+               elif (title | test($cal)) then "cal"
+               elif (title | test($slack)) then "slack"
+               else "page" end)
+            elif ."app-name" == $t3app then (if (title | test($t3title)) then "t3" else "loading" end)
+            elif ."app-name" == $omnigent then (if (title | test($omnigent_invalid)) then "invalid" else "chat" end)
+            elif ."app-name" == "Orchest" then ([title | capture("\\[(?<id>[^]]+)\\]$")][0].id // "main")
+            else "-" end) ),
+      ( $rows | split("\n")[] | select(. != "") | split("\t") as [$ws, $app, $re]
+        | ([ $all[] | select(."app-name" == $app and (title | test($re; "i"))) ] | sort_by(.["window-id"])) as $m
+        | "row \($ws) \($app) " + ((($m | map(select(.workspace == $ws)) | first) // $m[0] | .["window-id"] // "-") | tostring) ),
+      "ws11 cal \(pick($all; $cal)) slack \(pick($all; $slack))"' <<< "$1" | sort
+}
+
+# steady_cheap -> the part of the digest one AeroSpace query and no network gives.
+steady_cheap() {
+  local snapshot
+  snapshot=$(steady_snapshot) || return 1
+  [[ -n "$snapshot" ]] || return 1
+  local boot code table
+  boot=$(PATH="$PATH:/usr/sbin:/sbin" sysctl -n kern.boottime 2>/dev/null | awk '{ print $4 }' | tr -d ,)
+  code=$(cat "${BASH_SOURCE[0]}" "$(command -v arrange-workspaces)" 2>/dev/null | PATH="$PATH:/sbin" md5 -q)
+  table=$({ printf '%s\n' "${WORKSPACES[@]}"; workspaces --json; } | PATH="$PATH:/sbin" md5 -q)
+  [[ -n "$boot" && -n "$code" && -n "$table" ]] || return 1
+  echo "boot $boot"
+  aerospace list-apps 2>/dev/null | awk -F'|' -v want="|Ghostty|cmux|$CHROME_APP|$T3_BROWSER|$OMNIGENT_APP|Orchest|Obsidian|" '
+    { for (i = 1; i <= 3; i++) gsub(/^ +| +$/, "", $i)
+      if (index(want, "|" $3 "|")) print "app", $1, $3 }' | sort
+  echo "code $code"
+  echo "table $table"
+  steady_windows "$snapshot"
+  steady_titles "$snapshot"
+}
+
+# t3_pool_state DEVSERVER -> its token pool as t3_take_pairing_token sees it:
+# how many tokens wait, and whether its tunnel has pooled none yet ("absent"),
+# is still pooling ("filling") or is done ("done").
+t3_pool_state() {
+  local dir="$T3_PAIRING_DIR/$1" fill=done
+  if [[ ! -d "$dir" ]]; then
+    fill=absent
+  elif [[ -n "$(find "$dir" -type f -mtime "-${T3_PAIRING_FILL_SECONDS}s" 2>/dev/null | head -n 1)" ]]; then
+    fill=filling
+  fi
+  echo "$(find "$dir" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ') $fill"
+}
+
+# steady_t3 -> the rest: which window is on which T3 Code origin, the servers
+# each origin is set up with, the servers' environment ids, and the tokens
+# pooled for links.
+steady_t3() {
+  local row ws host port state
+  [[ "$STARTUP_T3_WINDOWS" == 1 ]] || return 0
+  t3_windows | sort | sed 's/^/t3win /'
+  while IFS=$'\t' read -r ws host port; do
+    [[ -n "$ws" ]] || continue
+    row=$(t3_workspace_window "$ws") || row=""
+    state="${row%%$'\t'*}"
+    echo "t3state $ws $(ls "$state/$T3_SERVERS_DIR" 2>/dev/null | tr '\n' ' ')"
+    echo "env $port $(t3_environment_id "http://127.0.0.1:$port")"
+    [[ "$host" == "$T3_LOCAL_HOST" ]] || echo "pool $host $(t3_pool_state "$host")"
+  done < <(workspaces --json 2>/dev/null | jq -r --arg local "$T3_LOCAL_HOST" '
+    .workspaces[] | select((.t3Url // "") != "")
+    | [.workspace, (.host // $local), (.t3Url | capture(":(?<p>[0-9]+)/").p)] | @tsv') | sort -u
+}
+
+# steady_state -> the digest, cheap part first.
+steady_state() {
+  local cheap t3
+  cheap=$(steady_cheap) || return 1
+  t3=$(steady_t3)
+  printf '%s\n--t3\n%s\n' "$cheap" "$t3"
+}
+
+# fast_path_applies -- whether this run finds the digest the last full run left
+# (and nothing waits on a tunnel): the cheap part first, so a changed window
+# costs no T3 Code listing or server round trips.
+fast_path_applies() {
+  local recorded cheap t3
+  [[ "$STARTUP_FULL" != true && -s "$STEADY_STATE_FILE" && -z "$(read_pending_file)" ]] || return 1
+  recorded=$(cat "$STEADY_STATE_FILE")
+  cheap=$(steady_cheap) || return 1
+  [[ "$cheap" == "${recorded%%$'\n'--t3*}" ]] || return 1
+  t3=$(steady_t3)
+  [[ "$(printf '%s\n--t3\n%s\n' "$cheap" "$t3")" == "$recorded" ]]
+}
+
+# record_steady_state -- after a full run that left nothing a rerun could fix,
+# record its digest (and the token warnings it ended with); after any other,
+# forget the last one.
+record_steady_state() {
+  local state
+  if [[ "$fast_path" == true ]]; then
+    return 0
+  fi
+  if [[ "$failures" -eq "${#t3_token_warnings[@]}" && -z "$pending_rows" && -z "$t3_unreachable_hosts" ]] \
+      && state=$(steady_state); then
+    mkdir -p "$(dirname "$STEADY_STATE_FILE")"
+    { [[ ${#t3_token_warnings[@]} -eq 0 ]] || printf '%s\n' "${t3_token_warnings[@]}"; } > "$STEADY_WARNINGS_FILE.tmp"
+    printf '%s\n' "$state" > "$STEADY_STATE_FILE.tmp"
+    mv "$STEADY_WARNINGS_FILE.tmp" "$STEADY_WARNINGS_FILE"
+    mv "$STEADY_STATE_FILE.tmp" "$STEADY_STATE_FILE"
+  else
+    rm -f "$STEADY_STATE_FILE" "$STEADY_WARNINGS_FILE"
+  fi
+}
+
+# Once the T3 Code windows are up, sync their client settings (appearance and
+# the like) with ~/dotfiles/t3code/client-settings.json: a setting changed in
+# any window reaches the file and every other window. It only reads and writes
+# pages, so it runs while the rest of the run lays windows out, and reports at
+# the end (finish_t3_settings).
+t3_settings_pid=""
+t3_settings_log="$STARTUP_LOCK_DIR/t3-client-settings.log"
+start_t3_settings() {
+  [[ "$STARTUP_T3_WINDOWS" == 1 ]] || return 0
+  t3-client-settings > "$t3_settings_log" 2>&1 &
+  t3_settings_pid=$!
+}
+finish_t3_settings() {
+  local rc=0
+  [[ -n "$t3_settings_pid" ]] || return 0
+  wait "$t3_settings_pid" || rc=$?
+  t3_settings_pid=""
+  cat "$t3_settings_log" 2>/dev/null || true
+  rm -f "$t3_settings_log"
+  if [[ "$rc" -ne 0 ]]; then
+    echo "WARNING: T3 Code's client settings were not synced (above); rerun ~/bin/t3-client-settings" >&2
+    ((failures++)) || true
+  fi
+}
+
+# finish_run -- what every full run ends with, a fast one included: the
+# workspace-11 dashboard, T3 Code's client settings, focus, SketchyBar, and the
+# summary.
+finish_run() {
+  # Provision and arrange the workspace-11 dashboard after the standard workspace
+  # and Orchest placement passes have converged. The reserved ids travel with the
+  # call: arrange-ws11 would otherwise re-resolve '^Calendar\b' / ' - Slack - ' from
+  # scratch, and any other Chrome window showing a calendar matches just as well.
+  WS11_CAL_WINDOW_ID="$WS11_CAL_WINDOW_ID" \
+  WS11_SLACK_WINDOW_ID="$WS11_SLACK_WINDOW_ID" \
+    arrange-workspaces --ensure-windows 11 || {
+    echo "WARNING: workspace 11 arrangement did not converge" >&2
+    ((failures++)) || true
+  }
+
+  finish_t3_settings
+
+  # Focus workspace 1
+  aerospace workspace 1 2>/dev/null || true
+
+  # Trigger SketchBar reconciliation so items are created for any workspaces
+  # that appeared after SketchBar's initial sync (T, Z, Orchest workspaces, etc.)
+  sketchybar --trigger aerospace_reconcile 2>/dev/null || true
+
+  if [[ -n "$pending_rows" ]]; then
+    echo ""
+    echo "Waiting on a tunnel: $(printf '%s\n' "$pending_rows" | paste -sd ' ' -)"
+    echo "  Each tunnel on workspace T opens these once it is through Duo"
+    echo "  (startup-windows --deferred, logged to ~/.local/state/startup-windows-logs/deferred.log)."
+  fi
+  if [[ " $t3_unreachable_hosts " == *" $T3_LOCAL_HOST "* ]]; then
+    echo ""
+    echo "The Mac's T3 Code server did not answer: is com.mkarrmann.t3-local loaded?"
+    echo "  Rerun ~/bin/startup-windows once it is."
+  fi
+
+  record_steady_state
+  if [[ "$failures" -gt 0 ]]; then
+    echo "Done with ${failures} warning(s)."
+  else
+    echo "Done."
+  fi
+}
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 if [[ -z "$AEROSPACE_BIN" ]]; then
@@ -2036,6 +2292,44 @@ if [[ "$omnigent_app_check_rc" == 1 ]]; then
   echo "Omnigent desktop app is out of date and its own updater has not taken it; run 'omnigent-app-ensure --install'" >&2
 fi
 
+if fast_path_applies; then
+  fast_path=true
+  echo "Nothing a full run fixes changed since the last one: pinning Omnigent, checking Orchest"
+  echo "and workspace 11 (startup-windows --full redoes everything)."
+  pending_rows=""
+  pending_ready=true
+  start_t3_settings
+  for entry in "${WORKSPACES[@]}"; do
+    IFS='|' read -r ws type title rest <<< "$entry"
+    [[ "$type" == omnigent ]] || continue
+    reconcile_row "$ws" "$type" "$title" "$rest"
+  done
+  orchest-open-workspaces ${ORCHEST_MODE_FLAG:+$ORCHEST_MODE_FLAG} || {
+    echo "WARNING: orchest-open-workspaces failed" >&2
+    ((failures++)) || true
+  }
+  # Pinning Omnigent may land another window, and Orchest may open or move one:
+  # then the sweeps and layout pass have work after all. So does a row deferred.
+  if [[ -n "$pending_rows" ]] || \
+     [[ "$(steady_windows "$(steady_snapshot)")" != "$(grep '^win ' "$STEADY_STATE_FILE")" ]]; then
+    echo "Windows changed meanwhile; doing a full run."
+    finish_t3_settings
+    # The full run starts the pending list over, keeps this run's lock and its
+    # caches in it, and prints its own timestamps' way.
+    exec env STARTUP_WINDOWS_STAMPED="$PPID" STARTUP_WINDOWS_LOCK_HELD="$$" \
+      "$0" --full ${STARTUP_ARGS[@]+"${STARTUP_ARGS[@]}"}
+  fi
+  WS11_CAL_WINDOW_ID=$(sed -n 's/^ws11 cal \([0-9]*\) slack [0-9]*$/\1/p' "$STEADY_STATE_FILE")
+  WS11_SLACK_WINDOW_ID=$(sed -n 's/^ws11 cal [0-9]* slack \([0-9]*\)$/\1/p' "$STEADY_STATE_FILE")
+  while IFS= read -r warning; do
+    [[ -n "$warning" ]] || continue
+    echo "$warning (as the last full run found)" >&2
+    ((failures++)) || true
+  done < <(cat "$STEADY_WARNINGS_FILE" 2>/dev/null)
+  finish_run
+  exit 0
+fi
+
 # Reserve the ws-11 dashboard Chrome windows before generic Chrome distribution.
 reserve_ws11_chrome
 
@@ -2047,17 +2341,8 @@ for entry in "${WORKSPACES[@]}"; do
   reconcile_row "$ws" "$type" "$title" "$rest"
 done
 
-# Once the T3 Code windows are up, sync their client settings (appearance and
-# the like) with ~/dotfiles/t3code/client-settings.json: a setting changed in
-# any window reaches the file and every other window. It only reads and writes
-# pages, so it runs while the rest of the run lays windows out, and reports at
-# the end.
-t3_settings_pid=""
-t3_settings_log="$STARTUP_LOCK_DIR/t3-client-settings.log"
-if [[ "$STARTUP_T3_WINDOWS" == 1 ]]; then
-  t3-client-settings > "$t3_settings_log" 2>&1 &
-  t3_settings_pid=$!
-fi
+# T3 Code's client settings sync while the rest of the run lays windows out.
+start_t3_settings
 
 # Chrome session restore can continue after an individual wait_for_new_window
 # returns. Fill any still-missing Chrome slots from the restored pool, then put
@@ -2225,49 +2510,4 @@ fi
 # If auto-accordion is re-enabled, it should do a full rebuild for any window
 # that appears after this point, so no drain sleep is needed here.
 
-# Provision and arrange the workspace-11 dashboard after the standard workspace
-# and Orchest placement passes have converged. The reserved ids travel with the
-# call: arrange-ws11 would otherwise re-resolve '^Calendar\b' / ' - Slack - ' from
-# scratch, and any other Chrome window showing a calendar matches just as well.
-WS11_CAL_WINDOW_ID="$WS11_CAL_WINDOW_ID" \
-WS11_SLACK_WINDOW_ID="$WS11_SLACK_WINDOW_ID" \
-  arrange-workspaces --ensure-windows 11 || {
-  echo "WARNING: workspace 11 arrangement did not converge" >&2
-  ((failures++)) || true
-}
-
-if [[ -n "$t3_settings_pid" ]]; then
-  t3_settings_rc=0
-  wait "$t3_settings_pid" || t3_settings_rc=$?
-  cat "$t3_settings_log" 2>/dev/null || true
-  rm -f "$t3_settings_log"
-  if [[ "$t3_settings_rc" -ne 0 ]]; then
-    echo "WARNING: T3 Code's client settings were not synced (above); rerun ~/bin/t3-client-settings" >&2
-    ((failures++)) || true
-  fi
-fi
-
-# Focus workspace 1
-aerospace workspace 1 2>/dev/null || true
-
-# Trigger SketchBar reconciliation so items are created for any workspaces
-# that appeared after SketchBar's initial sync (T, Z, Orchest workspaces, etc.)
-sketchybar --trigger aerospace_reconcile 2>/dev/null || true
-
-if [[ -n "$pending_rows" ]]; then
-  echo ""
-  echo "Waiting on a tunnel: $(printf '%s\n' "$pending_rows" | paste -sd ' ' -)"
-  echo "  Each tunnel on workspace T opens these once it is through Duo"
-  echo "  (startup-windows --deferred, logged to ~/.local/state/startup-windows-logs/deferred.log)."
-fi
-if [[ " $t3_unreachable_hosts " == *" $T3_LOCAL_HOST "* ]]; then
-  echo ""
-  echo "The Mac's T3 Code server did not answer: is com.mkarrmann.t3-local loaded?"
-  echo "  Rerun ~/bin/startup-windows once it is."
-fi
-
-if [[ "$failures" -gt 0 ]]; then
-  echo "Done with ${failures} warning(s)."
-else
-  echo "Done."
-fi
+finish_run
