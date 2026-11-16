@@ -154,6 +154,9 @@ def main():
             return cdp.call("Runtime.evaluate", session, expression=expression, userGesture=True)["result"].get("value")
 
         wait_for(lambda: evaluate("document.readyState") == "complete")
+        # Brave can inject page.js a moment after the page loads in a profile that
+        # loaded the extension just now.
+        wait_for(lambda: evaluate("window.open.toString().includes('send(')"))
         cdp.call("Target.setDiscoverTargets", discover=True)
         cdp.events.clear()
         for expression in (
