@@ -67,8 +67,14 @@ orchest_health() {
   fi
 }
 
+# The CLI's own bin, run from its package as `pnpm --filter @orchest/cli
+# orchest` runs it, without pnpm's ~0.4s a call.
 orchest_cli() {
-  (cd "$ORCHEST_DIR" && pnpm --silent --filter @orchest/cli orchest "$@")
+  if command -v node >/dev/null 2>&1 && [[ -f "$ORCHEST_DIR/apps/cli/bin/orchest.js" ]]; then
+    (cd "$ORCHEST_DIR/apps/cli" && node bin/orchest.js "$@")
+  else
+    (cd "$ORCHEST_DIR" && pnpm --silent --filter @orchest/cli orchest "$@")
+  fi
 }
 
 launched_pid=
@@ -136,6 +142,30 @@ if [[ "$orchest_state" != ready ]]; then
 fi
 
 workspace_json='[]'
+# slot_table: "SLOT ID DESKTOP_WORKSPACE" for each managed slot's workspace in
+# workspace_json, "-" for what it lacks; read without a process per lookup.
+slot_table=""
+build_slot_table() {
+  slot_table=$(echo "$workspace_json" | jq -r --arg slots "${ORCHEST_MANAGED_WORKSPACES[*]}" '
+    . as $all | ($slots | split(" "))[] as $slot
+    | ([$all[] | select(.label == "Workspace \($slot)")] | first) as $w
+    | "\($slot) \($w.id // "-") \($w.desktopWorkspaceId // "-")"')
+}
+
+# slot_field SLOT FIELD -> FIELD (2: workspace id, 3: its persisted desktop workspace).
+slot_field() {
+  local slot id desktop
+  while read -r slot id desktop; do
+    [[ "$slot" == "$1" ]] || continue
+    case "$2" in
+      2) [[ "$id" == - ]] || printf '%s\n' "$id" ;;
+      3) [[ "$desktop" == - ]] || printf '%s\n' "$desktop" ;;
+    esac
+    return 0
+  done <<< "$slot_table"
+}
+
+workspace_json_fresh=false
 
 refresh_workspace_json() {
   local candidate _attempt
@@ -143,6 +173,8 @@ refresh_workspace_json() {
     if candidate=$(orchest_cli workspace list --json 2>/dev/null) && \
        echo "$candidate" | jq -e 'type == "array"' >/dev/null 2>&1; then
       workspace_json="$candidate"
+      workspace_json_fresh=true
+      build_slot_table
       return 0
     fi
     sleep 0.4
@@ -156,9 +188,41 @@ if ! refresh_workspace_json; then
 fi
 
 workspace_id_for_slot() {
-  local slot="$1"
-  echo "$workspace_json" | jq -r --arg label "Workspace ${slot}" \
-    '[.[] | select(.label == $label)] | first | .id // empty'
+  slot_field "$1" 2
+}
+
+# Orchest windows' titles end in their workspace's short id: "NAME — Orchest [9c47b2fa]".
+orchest_aero_windows=""
+refresh_orchest_aero_windows() {
+  orchest_aero_windows=$(aerospace list-windows --all \
+    --format '%{window-id}|%{workspace}|%{window-title}' 2>/dev/null \
+    | grep 'Orchest \[' || true)
+}
+
+# workspace_window ID -> "WINDOW_ID|WORKSPACE|TITLE" of that workspace's window.
+workspace_window() {
+  local line
+  while IFS= read -r line; do
+    [[ "$line" != *"[${1%%-*}]"* ]] || { printf '%s\n' "$line"; return 0; }
+  done <<< "$orchest_aero_windows"
+}
+
+# Each create, open or move this or a recent run issued may still be in flight:
+# the provider persists a desktop binding on its next poll, and an open focuses
+# its window. Only placements no recent request touched are taken on one look.
+ACTION_STAMP="${ORCHEST_ACTION_STAMP:-${TMPDIR:-/tmp}/orchest-open-workspaces.last-action}"
+ACTION_SETTLE_SECONDS=10
+acted=false
+note_action() {
+  acted=true
+  workspace_json_fresh=false
+  touch "$ACTION_STAMP" 2>/dev/null || true
+}
+recent_action() {
+  local stamped
+  [[ "$acted" != true ]] || return 0
+  stamped=$(stat -f %m "$ACTION_STAMP" 2>/dev/null) || return 1
+  (( $(date +%s) - stamped < ACTION_SETTLE_SECONDS ))
 }
 
 if [[ "$ACTION" == "open" ]]; then
@@ -168,6 +232,7 @@ if [[ "$ACTION" == "open" ]]; then
     label="Workspace ${ws}"
     if [[ -z "$(workspace_id_for_slot "$ws")" ]]; then
       echo "[Orchest] creating workspace \"${label}\" on desktop workspace ${ws}..."
+      note_action
       orchest_cli workspace create --desktop-workspace "$ws" "$label" 2>/dev/null || {
         echo "WARNING: [Orchest] failed to create workspace \"${label}\"" >&2
         ((failures++)) || true
@@ -175,44 +240,48 @@ if [[ "$ACTION" == "open" ]]; then
     fi
   done
 
-  if ! refresh_workspace_json; then
+  if [[ "$workspace_json_fresh" != true ]] && ! refresh_workspace_json; then
     exit 1
   fi
+  # Opening a workspace whose window is already open switches to its desktop
+  # workspace and focuses that window, so only the missing ones are opened.
+  refresh_orchest_aero_windows
   for ws in "${ORCHEST_MANAGED_WORKSPACES[@]}"; do
     label="Workspace ${ws}"
     ws_id=$(workspace_id_for_slot "$ws")
-    if [[ -n "$ws_id" ]]; then
+    if [[ -z "$ws_id" ]]; then
+      echo "WARNING: [Orchest] workspace \"${label}\" is missing" >&2
+      ((failures++)) || true
+    elif [[ -z "$(workspace_window "$ws_id")" ]]; then
       echo "[Orchest] opening workspace \"${label}\"..."
+      note_action
       orchest_cli workspace open "$ws_id" 2>/dev/null || {
         echo "WARNING: [Orchest] failed to open workspace \"${label}\"" >&2
         ((failures++)) || true
       }
-    else
-      echo "WARNING: [Orchest] workspace \"${label}\" is missing" >&2
-      ((failures++)) || true
     fi
   done
 fi
 
 # Verify both sources of truth: AeroSpace's current window location and the
-# desktopWorkspaceId that Orchest learns from its polling provider. Requiring
-# two consecutive good observations prevents an in-flight open/focus request
-# from undoing a placement just after this helper returns.
+# desktopWorkspaceId that Orchest learns from its polling provider. After a
+# request that may still be in flight (recent_action), two consecutive good
+# observations are required, so an open/focus request cannot undo a placement
+# just after this helper returns.
 reconcile_orchest_placements() {
   local allow_moves="$1" timeout="$2"
-  local deadline stable_passes=0 all_good ws label ws_id short_id match
+  local deadline stable_passes=0 all_good ws label ws_id match
   local aero_wid current_ws persisted_ws
   deadline=$(($(date +%s) + timeout))
 
   while [[ $(date +%s) -lt "$deadline" ]]; do
-    if ! refresh_workspace_json; then
+    if [[ "$workspace_json_fresh" != true ]] && ! refresh_workspace_json; then
       stable_passes=0
       sleep 0.75
       continue
     fi
-    orchest_aero_windows=$(aerospace list-windows --all \
-      --format '%{window-id}|%{workspace}|%{window-title}' 2>/dev/null \
-      | grep 'Orchest \[' || true)
+    workspace_json_fresh=false
+    refresh_orchest_aero_windows
     all_good=true
 
     for ws in "${ORCHEST_MANAGED_WORKSPACES[@]}"; do
@@ -224,8 +293,7 @@ reconcile_orchest_placements() {
         continue
       fi
 
-      short_id="${ws_id%%-*}"
-      match=$(echo "$orchest_aero_windows" | grep -F "[${short_id}]" | head -1 || true)
+      match=$(workspace_window "$ws_id")
       if [[ -z "$match" ]]; then
         echo "[Orchest] waiting for \"${label}\" window..."
         all_good=false
@@ -233,13 +301,13 @@ reconcile_orchest_placements() {
       fi
 
       IFS='|' read -r aero_wid current_ws _ <<< "$match"
-      persisted_ws=$(echo "$workspace_json" | jq -r --arg id "$ws_id" \
-        '[.[] | select(.id == $id)] | first | .desktopWorkspaceId // empty')
+      persisted_ws=$(slot_field "$ws" 3)
 
       if [[ "$current_ws" != "$ws" ]]; then
         all_good=false
         if [[ "$allow_moves" == true ]]; then
           echo "[Orchest] moving \"${label}\" from workspace ${current_ws} to ${ws}..."
+          note_action
           if ! aerospace move-node-to-workspace --window-id "$aero_wid" "$ws" 2>/dev/null; then
             echo "WARNING: [Orchest] move of window ${aero_wid} failed" >&2
           fi
@@ -257,7 +325,7 @@ reconcile_orchest_placements() {
 
     if $all_good; then
       stable_passes=$(( stable_passes + 1 ))
-      if [[ "$stable_passes" -ge 2 ]]; then
+      if [[ "$stable_passes" -ge 2 ]] || ! recent_action; then
         return 0
       fi
     else
