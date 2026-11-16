@@ -281,6 +281,9 @@ class Session:
         self._late_reply: str | None = None
         self.calls: dict[str, SubagentCall] = {}
         self.children: dict[str, Session] = {}
+        self.early_children: dict[str, Session] = {}
+        """Subagent sessions by their spawning call's id, announced before that call reached this stream: a
+        harness names the child from the subagent's own transcript and the call from the parent's, in no set order."""
         self._watermark = store.watermark(session_id)
         self._wake = wake
         self.held: deque[HeldRun] = deque()
@@ -855,9 +858,13 @@ class Session:
         base: JsonObject = {"assistantMessageID": execution.assistant_id, "id": tool_id}
         if subagents.is_spawning(name):
             call_input = subagents.call_input(arguments)
-            self.calls[call_id] = SubagentCall(call_id, tool_id, execution.assistant_id, str(call_input["prompt"]))
+            call = SubagentCall(call_id, tool_id, execution.assistant_id, str(call_input["prompt"]))
+            self.calls[call_id] = call
             self._emit("session.tool.input.started", {**base, "name": "subagent"})
             self._emit("session.tool.called", {**base, "input": call_input, "executed": True})
+            child = self.early_children.pop(call_id, None)
+            if child is not None:
+                self._link(call, child)
             return
         self._emit("session.tool.input.started", {**base, "name": tool_name(name)})
         tool_input: Json = arguments if isinstance(arguments, dict) else {"input": arguments}
@@ -1013,7 +1020,11 @@ class Session:
             snapshot = {}
         labels = snapshot.get("labels") or {}
         call_id = subagents.spawning_call_id(labels)
-        call = self.calls.get(call_id or "") or next((c for c in self.calls.values() if c.child is None), None)
+        # A child that names its call waits for that call (early_children) rather than taking another's.
+        if call_id:
+            call = self.calls.get(call_id)
+        else:
+            call = next((c for c in self.calls.values() if c.child is None), None)
         if call is not None and call.child is not None:
             call = None
         child = self._adopt(conversation_id, self)
@@ -1050,13 +1061,21 @@ class Session:
             announced["title"] = child.title
         self._out(event("session.created", announced))
         if call is not None:
-            call.child = child
-            self._emit(
-                "session.tool.progress",
-                {"assistantMessageID": call.assistant_id, "id": call.tool_id, "metadata": {"sessionID": child.id}},
-            )
-            if call.output is not None:
-                self._finish_call(call)
+            self._link(call, child)
+        else:
+            call_id = subagents.spawning_call_id(labels)
+            if call_id:
+                self.early_children[call_id] = child
+
+    def _link(self, call: SubagentCall, child: Session) -> None:
+        """Tie a spawning call to its child session, which settles the call in T3 Code when the child reports."""
+        call.child = child
+        self._emit(
+            "session.tool.progress",
+            {"assistantMessageID": call.assistant_id, "id": call.tool_id, "metadata": {"sessionID": child.id}},
+        )
+        if call.output is not None:
+            self._finish_call(call)
 
     def begin(self, prompt: str | None) -> None:
         """A subagent session's first run, which its parent started."""

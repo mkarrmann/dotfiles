@@ -185,3 +185,83 @@ async def test_a_childs_rules_do_not_tie_the_parents_thread_to_the_child(t3: T3C
     asking = [{"action": a, "resource": "*", "effect": "ask"} for a in ("shell", "edit", "external_directory")]
     await t3.call("session.update", {"sessionID": f"ses_{child}", "permissions": [*asking, *thread_rules("th_parent")[1:]]})
     assert (await create_for_thread(t3, shim, "th_parent"))["id"] == sid
+
+
+def report_of(call_id: str, task_id: str, description: str) -> str:
+    return f"""<task-notification>
+<task-id>{task_id}</task-id>
+<tool-use-id>{call_id}</tool-use-id>
+<status>completed</status>
+<summary>Agent "{description}" finished</summary>
+<result>{description} DONE</result>
+</task-notification>"""
+
+
+async def test_background_subagents_whose_sessions_come_before_their_calls_still_report(
+    t3: T3Client, shim: Shim, fake: FakeOmnigent
+) -> None:
+    """Claude launched three in one message: the harness named two children from their own transcripts before the
+    parent's transcript gave their calls, and the third after (a real run's order). Each call settles on its own child."""
+    sid, conv = await start_turn(t3, shim, fake)
+    calls = {"toolu_a": "Arrange", "toolu_b": "Dashboard", "toolu_c": "Orchest"}
+
+    def child_of(call_id: str) -> str:
+        child = fake.add_child(
+            {"omnigent.claude_native.tool_use_id": call_id, "omnigent.claude_native.description": calls[call_id]}
+        )
+        fake.push(conv, "session.created", {"conversation_id": conv, "child_session_id": child, "parent_session_id": conv})
+        return child
+
+    children = {"toolu_a": child_of("toolu_a"), "toolu_b": child_of("toolu_b")}
+    await t3.wait_for(lambda: all(f"ses_{c}" in shim.app.sessions for c in children.values()))
+    for call_id, description in calls.items():
+        arguments = {
+            "description": description,
+            "subagent_type": "fork",
+            "prompt": f"do {description}",
+            "run_in_background": True,
+        }
+        item(fake, conv, {"type": "function_call", "call_id": call_id, "name": "Agent", "arguments": json.dumps(arguments)})
+    for call_id in calls:
+        item(fake, conv, {"type": "function_call_output", "call_id": call_id, "output": LAUNCHED})
+    children["toolu_c"] = child_of("toolu_c")
+    await t3.wait_for(lambda: t3.types(sid).count("session.tool.progress") == 3)
+    item(fake, conv, {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Waiting."}]})
+    confirmed_idle(fake, conv)
+    await t3.wait_for(lambda: "session.execution.succeeded" in t3.types(sid))
+
+    tool_of = {e["data"]["input"]["description"]: e["data"]["id"] for e in t3.of(sid) if e["type"] == "session.tool.called"}
+    linked = {e["data"]["id"]: e["data"]["metadata"]["sessionID"] for e in t3.of(sid) if e["type"] == "session.tool.progress"}
+    assert {d: linked[tool_of[d]] for d in calls.values()} == {calls[c]: f"ses_{children[c]}" for c in calls}
+    running = {e["data"]["id"]: e["data"]["metadata"] for e in t3.of(sid) if e["type"] == "session.tool.success"}
+    assert {d: running[tool_of[d]] for d in calls.values()} == {
+        calls[c]: {"sessionID": f"ses_{children[c]}", "status": "running"} for c in calls
+    }
+
+    for n, call_id in enumerate(calls):
+        fake.push(
+            conv,
+            "session.input.consumed",
+            {
+                "data": {
+                    "item_id": f"item_note_{n}",
+                    "type": "message",
+                    "data": {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": report_of(call_id, f"task{n}", calls[call_id])}],
+                    },
+                    "cleared_pending_id": None,
+                }
+            },
+        )
+
+    def reports() -> dict[str, str]:
+        return {
+            e["data"]["item"]["payload"]["metadata"]["childID"]: e["data"]["item"]["payload"]["text"]
+            for e in t3.of(sid)
+            if e["type"] == "session.inbox.enqueued" and e["data"]["item"]["type"] == "synthetic"
+        }
+
+    await t3.wait_for(lambda: len(reports()) == 3)
+    assert reports() == {f"ses_{children[c]}": f"{calls[c]} DONE" for c in calls}
+    assert_all_decoded(shim, t3, sid)
