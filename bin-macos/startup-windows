@@ -165,7 +165,12 @@ done
 # Mode first: a run that finds the pid reads the mode next.
 echo "$STARTUP_MODE" > "$STARTUP_LOCK_DIR/mode"
 echo "$$" > "$STARTUP_LOCK_DIR/pid"
-T3_WINDOWS_CACHE="$STARTUP_LOCK_DIR/t3-windows"
+# Kept across runs: a window keeps its id and origin for its life, so the same
+# set of the browser's windows needs no new listing (t3_windows). A run that
+# finds no window for an origin lists again once (T3_WINDOWS_LISTED) before
+# opening one: a listing taken while a page loaded can miss it.
+T3_WINDOWS_CACHE="$HOME/.local/state/startup-windows-t3-windows"
+T3_WINDOWS_LISTED="$STARTUP_LOCK_DIR/t3-windows-listed"
 T3_TOKENLESS_HOSTS="$STARTUP_LOCK_DIR/t3-tokenless-hosts"
 # The workspace table (bin-macos/workspaces) is the same all run, takes a fraction
 # of a second to compute, and is read for nearly every row: computed once, kept
@@ -184,7 +189,7 @@ workspaces() {
 # the lock reads all of it.
 cleanup_startup_lock() {
   save_pending_rows || true
-  rm -f "$STARTUP_LOCK_DIR/pid" "$STARTUP_LOCK_DIR/mode" "$T3_WINDOWS_CACHE" "$T3_TOKENLESS_HOSTS" "$T3_ENV_IDS" "$WORKSPACES_JSON_CACHE"
+  rm -f "$STARTUP_LOCK_DIR/pid" "$STARTUP_LOCK_DIR/mode" "$T3_WINDOWS_LISTED" "$T3_TOKENLESS_HOSTS" "$T3_ENV_IDS" "$WORKSPACES_JSON_CACHE"
   rmdir "$STARTUP_LOCK_DIR" 2>/dev/null || true
 }
 trap cleanup_startup_lock EXIT
@@ -1199,10 +1204,14 @@ t3_window_title() {
 # variables die with them.
 t3_windows() {
   local key list
-  key=$(aerospace list-windows --all --json 2>/dev/null \
-    | jq -c --arg app "$T3_BROWSER" '[.[] | select(."app-name" == $app) | .["window-id"]] | sort') || key=""
+  key="$T3_BROWSER $(aerospace list-windows --all --json 2>/dev/null \
+    | jq -c --arg app "$T3_BROWSER" '[.[] | select(."app-name" == $app) | .["window-id"]] | sort')" || key=""
   if [[ ! -e "$T3_WINDOWS_CACHE" || "$(head -n 1 "$T3_WINDOWS_CACHE")" != "$key" ]]; then
-    list=$(t3-window-scope --list-windows 2>/dev/null) || list=""
+    : > "$T3_WINDOWS_LISTED"
+    if ! list=$(t3-window-scope --list-windows 2>/dev/null); then
+      rm -f "$T3_WINDOWS_CACHE"
+      return 0
+    fi
     printf '%s\n%s' "$key" "${list:+$list$'\n'}" > "$T3_WINDOWS_CACHE"
   fi
   tail -n +2 "$T3_WINDOWS_CACHE"
@@ -1322,6 +1331,10 @@ reconcile_t3_window() {
   IFS=$'\t' read -r state url host workdir <<< "$row"
   origin="${url%/}"
   window_id=$(t3_window_id_for_origin "$origin") || window_id=""
+  if [[ -z "$window_id" && ! -e "$T3_WINDOWS_LISTED" ]]; then
+    rm -f "$T3_WINDOWS_CACHE"
+    window_id=$(t3_window_id_for_origin "$origin") || window_id=""
+  fi
   if t3_wait_for_server "$host" "$url"; then
     own_env=$(t3_environment_id "http://127.0.0.1:$(t3_url_port "$url")")
     if [[ -z "$own_env" ]]; then

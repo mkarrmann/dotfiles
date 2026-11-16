@@ -49,6 +49,7 @@ T3_SERVER_WAIT=0
 T3_LOCAL_SERVER_WAIT=0
 t3_unreachable_hosts=""
 T3_WINDOWS_CACHE="$(mktemp -u)"
+T3_WINDOWS_LISTED="$(mktemp -u)"
 T3_TOKENLESS_HOSTS="$(mktemp -u)"
 T3_ENV_IDS="$(mktemp -u)"
 
@@ -94,6 +95,7 @@ check "and then once" "1" "$(wc -l < "$LISTINGS" | tr -d ' ')"
 t3-window-scope() { return 1; }
 rm -f "$T3_WINDOWS_CACHE"
 check "when the browser cannot be asked (not running, Apple Events off) there are none" "[]" "$(t3_window_ids_json)"
+check "and that failed listing is not kept for a later run" "no" "$([[ -e "$T3_WINDOWS_CACHE" ]] && echo yes || echo no)"
 window_id=$(t3_window_id_for_origin http://cco-checkout1.t3.localhost:13780)
 check "and a lookup that finds nothing does not fail under errexit" "" "$window_id"
 rm -f "$LISTINGS" "$T3_WINDOWS_CACHE"
@@ -192,7 +194,7 @@ sim_reset() {
   : > "$SIM/windows"; : > "$SIM/scoped"; : > "$SIM/reloaded"; : > "$SIM/opened"; : > "$SIM/loading"; echo 100 > "$SIM/next"
   rm -rf "$T3_PAIRING_DIR/cco.example.com" "$T3_PAIRING_DIR/ftw.example.com"
   mkdir -p "$T3_PAIRING_DIR/cco.example.com" "$T3_PAIRING_DIR/ftw.example.com"
-  t3_waited_hosts=""; t3_unreachable_hosts=""; rm -f "$T3_WINDOWS_CACHE" "$T3_TOKENLESS_HOSTS" "$T3_ENV_IDS"; failures=0; SCOPE_FAILS=""; RELOAD_FAILS=""; SIM_ERROR_PAGE=""
+  t3_waited_hosts=""; t3_unreachable_hosts=""; rm -f "$T3_WINDOWS_CACHE" "$T3_WINDOWS_LISTED" "$T3_TOKENLESS_HOSTS" "$T3_ENV_IDS"; failures=0; SCOPE_FAILS=""; RELOAD_FAILS=""; SIM_ERROR_PAGE=""
   FTW_ENV=env-ftw-1
   curl() { sim_curl "$@"; }
 }
@@ -276,6 +278,14 @@ P3="$T3_STATE_DIR/cco-checkout3"
 SCOPE3="@chrome $O3 ~/checkout3"
 LINKED3="$SCOPE3 --link http://127.0.0.1:23780 FTW | FTWTOKEN"
 pooled() { find "$T3_PAIRING_DIR/$1" -maxdepth 1 -type f | wc -l | tr -d ' '; }
+
+sim_reset
+mkdir -p "$P3/.t3-servers"; : > "$P3/.t3-servers/env-cco-1"; : > "$P3/.t3-servers/env-ftw-1"
+sim_window "T3 Code (Beta)" "$O3/"
+printf '%s\n' "$T3_BROWSER $(aerospace list-windows --all --json | jq -c --arg app "$T3_BROWSER" '[.[] | select(."app-name" == $app) | .["window-id"]] | sort')" > "$T3_WINDOWS_CACHE"
+reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
+check "a listing kept from an earlier run that missed a window is redone before another window opens" \
+  "101 6 $O3/|" "$(windows_of "$O3")|$(cat "$SIM/opened")"
 
 sim_reset
 pool cco.example.com TOKEN3
