@@ -641,9 +641,37 @@ snapshot_windows() {
     --format '%{window-id}%{workspace}%{app-name}%{window-title}' 2>/dev/null
 }
 
+# app_uptime APP -> how many seconds APP's main process has been running; fails
+# when it is not.
+app_uptime() {
+  local pid etime days=0 secs=0 part
+  pid=$(pgrep -o -f "/$1.app/Contents/MacOS/") || return 1
+  etime=$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')
+  [[ -n "$etime" ]] || return 1
+  if [[ "$etime" == *-* ]]; then
+    days="${etime%%-*}"
+    etime="${etime#*-}"
+  fi
+  local IFS=:
+  for part in $etime; do
+    secs=$((secs * 60 + 10#$part))
+  done
+  echo $((days * 86400 + secs))
+}
+
+# An app is done restoring its windows this long after it starts: one running
+# longer has no restore to wait for.
+APP_RESTORE_SECONDS=90
+
+# wait_for_window_settle APP [STABLE_SECONDS] [TIMEOUT] -- wait until APP's set of
+# windows has not changed for STABLE_SECONDS, if APP started recently enough to
+# still be restoring them.
 wait_for_window_settle() {
   local app_name="$1" stable_seconds="${2:-2}" timeout="${3:-20}"
-  local deadline last_ids="" stable_since=0 snapshot ids now
+  local deadline last_ids="" stable_since=0 snapshot ids now uptime
+  uptime=$(app_uptime "$app_name") || uptime=0
+  (( uptime < APP_RESTORE_SECONDS )) || return 0
+  echo "[$app_name] waiting for its restored windows to settle..."
   deadline=$(($(date +%s) + timeout))
 
   while [[ $(date +%s) -lt "$deadline" ]]; do
@@ -1483,7 +1511,6 @@ find_chrome_by_title() {
 reserve_ws11_chrome() {
   if [[ "$chrome_restore_settled" != true ]] && \
      osascript -e 'application "Google Chrome" is running' 2>/dev/null | grep -q 'true'; then
-    echo "[ws11] waiting for Chrome session restore to settle..."
     wait_for_window_settle "$CHROME_APP" 2 20 || true
     chrome_restore_settled=true
     SNAPSHOT=$(snapshot_windows)
@@ -1706,7 +1733,6 @@ reconcile_row() {
 
       if [[ "$chrome_restore_settled" != true ]] && \
          osascript -e 'application "Google Chrome" is running' 2>/dev/null | grep -q 'true'; then
-        echo "[Chrome] waiting for session restore to settle..."
         wait_for_window_settle "$CHROME_APP" 2 20 || true
         chrome_restore_settled=true
         SNAPSHOT=$(snapshot_windows)
