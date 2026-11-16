@@ -59,7 +59,7 @@ session behind a thread likewise runs on that host.
 - `bin-macos/workspaces` gives each devserver workspace a `t3Url` on its host's
   port at a hostname of its own, `<origin>.t3.localhost`, and
   `bin-macos/startup-windows` opens it as an `--app` window of Brave
-  (`T3_BROWSER_APP`; `open -na "Brave Browser" --args
+  (`T3_BROWSER`; `open -na "Brave Browser" --args
   --profile-directory=Default --app=URL`). A browser of their own, rather than
   your Chrome, is what lets `bin-macos/t3-browser-shortcuts` (run by `sync.sh`)
   move the shortcuts Chrome reserves and a page cannot override (Cmd+N, Cmd+T,

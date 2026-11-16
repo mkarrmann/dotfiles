@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end check of bin/t3-window-scope's @chrome mode on macOS: T3 Code's
-# running browser (T3_BROWSER_APP, Brave Browser unless set), an app window
+# running browser (T3_BROWSER, Brave Browser unless set), an app window
 # in it, reached through AppleScript.
 # Two throwaway `t3 serve` instances stand in for two devservers' servers, both
 # with a project at the same path. The window pairs with the first, the helper
@@ -17,7 +17,7 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 T3="${T3_BIN:-$(command -v t3 || echo "$HOME/.local/bin/t3")}"
 SCOPE="$ROOT/bin/t3-window-scope"
-BROWSER="${T3_BROWSER_APP:-Brave Browser}"
+BROWSER="${T3_BROWSER:-Brave Browser}"
 if [[ "$(uname -s)" != Darwin || ! -x "$T3" ]] || ! command -v aerospace >/dev/null \
     || ! python3 -c 'import importlib.machinery as m, importlib.util as u, sys
 l = m.SourceFileLoader("s", sys.argv[1]); s = u.module_from_spec(u.spec_from_loader("s", l)); l.exec_module(s)

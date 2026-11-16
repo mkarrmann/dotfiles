@@ -24,7 +24,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 # T3 Code's browser on the Mac (bin-macos/startup-windows); its executable is named after it.
-BROWSER_APP = os.environ.get("T3_BROWSER_APP", "Brave Browser")
+BROWSER_APP = os.environ.get("T3_BROWSER", "Brave Browser")
 BROWSER = Path(f"/Applications/{BROWSER_APP}.app/Contents/MacOS/{BROWSER_APP}")
 T3 = Path(os.environ.get("T3_BIN") or Path.home() / ".local/bin/t3")
 

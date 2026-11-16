@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HOST = ROOT / "bin-macos/t3-open-in-chrome"
 EXTENSION = ROOT / "t3code/link-forwarder"
 # T3 Code's browser on the Mac (bin-macos/startup-windows); its executable is named after it.
-BROWSER_APP = os.environ.get("T3_BROWSER_APP", "Brave Browser")
+BROWSER_APP = os.environ.get("T3_BROWSER", "Brave Browser")
 BROWSER = Path(f"/Applications/{BROWSER_APP}.app/Contents/MacOS/{BROWSER_APP}")
 
 
@@ -130,7 +130,7 @@ def main():
         # registration `t3-open-in-chrome --install` made there is the one tested.
         hosts = Path.home() / "Library/Application Support/Google/Chrome/NativeMessagingHosts"
         if not (hosts / "com.mkarrmann.t3_open_in_chrome.json").exists():
-            print(f"skipped: run `T3_BROWSER_APP='{BROWSER_APP}' {HOST} --install` first")
+            print(f"skipped: run `T3_BROWSER='{BROWSER_APP}' {HOST} --install` first")
             return
     server = serve_page()
     page_url = f"http://e2e.t3.localhost:{server.server_address[1]}/"

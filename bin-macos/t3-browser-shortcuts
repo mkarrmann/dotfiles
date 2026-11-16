@@ -4,7 +4,7 @@
 # Frees the shortcuts T3 Code binds that Chrome reserves for itself, which a
 # page can never override (Cmd+N new window, Cmd+Shift+N incognito, Cmd+T new
 # tab, Cmd+Shift+T reopen, Cmd+W close tab), in the browser bin-macos/startup-windows
-# opens T3 Code windows in (T3_BROWSER_APP, Brave Browser unless set). A
+# opens T3 Code windows in (T3_BROWSER, Brave Browser unless set). A
 # macOS per-app menu shortcut (NSUserKeyEquivalents) moves each of those menu
 # items onto a Cmd+Opt+Ctrl chord, so the key reaches the page instead. Keyed by
 # English menu titles; the browser picks changes up when it next starts.
@@ -13,7 +13,7 @@
 # Never run it on your own Chrome's: those shortcuts would leave your browsing too.
 set -euo pipefail
 
-APP="${T3_BROWSER_APP:-Brave Browser}"
+APP="${T3_BROWSER:-Brave Browser}"
 [[ $# -le 1 ]] || { echo "Usage: t3-browser-shortcuts [DOMAIN]" >&2; exit 2; }
 
 domain="${1:-}"

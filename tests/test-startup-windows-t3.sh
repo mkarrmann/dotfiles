@@ -34,7 +34,7 @@ done
 
 CHROME_APP="Google Chrome"
 OMNIGENT_APP="Omnigent"
-T3_BROWSER_APP="Brave Browser"
+T3_BROWSER="Brave Browser"
 T3_BROWSER_PROFILE="Default"
 t3_browser_missing_warned=false
 t3_browser_installed() { :; }
@@ -194,10 +194,10 @@ pool() { # HOST TOKEN -- pool a token as nvs-tunnels does
 }
 sim_id() { local n; n=$(($(cat "$SIM/next") + 1)); echo "$n" > "$SIM/next"; echo "$n"; }
 sim_window() { # TITLE URL [APP] -> a new window on workspace Z, of T3 Code's browser unless APP
-  printf '%s\t%s\tZ\t%s\t%s\n' "$(sim_id)" "$1" "$2" "${3:-$T3_BROWSER_APP}" >> "$SIM/windows"
+  printf '%s\t%s\tZ\t%s\t%s\n' "$(sim_id)" "$1" "$2" "${3:-$T3_BROWSER}" >> "$SIM/windows"
 }
 open() {
-  [[ "$1" == -na && "$2" == "$T3_BROWSER_APP" && "$3" == --args ]] || return 1
+  [[ "$1" == -na && "$2" == "$T3_BROWSER" && "$3" == --args ]] || return 1
   shift 3
   printf '%s\n' "$*" >> "$SIM/opened"
   local arg profile="" app=""
@@ -234,7 +234,7 @@ aerospace() {
 # "ARGS | TOKENS". Both need a window on the origin, as the real one does.
 t3-window-scope() {
   if [[ "$1" == --list-windows ]]; then
-    awk -F'\t' -v loading=" $(tr '\n' ' ' < "$SIM/loading") " -v app="$T3_BROWSER_APP" \
+    awk -F'\t' -v loading=" $(tr '\n' ' ' < "$SIM/loading") " -v app="$T3_BROWSER" \
       '$5 == app && $4 ~ /\.t3\.localhost/ && index(loading, " " $1 " ") == 0 { split($4, u, "/"); print $1, u[1] "//" u[3] }' "$SIM/windows"
     : > "$SIM/loading"
     return 0

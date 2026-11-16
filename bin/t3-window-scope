@@ -8,7 +8,7 @@ Usage: t3-window-scope PROFILE_DIR|@chrome ORIGIN WORKDIR [--link URL LABEL]...
 
 PROFILE_DIR is the window's Chrome --user-data-dir, reached over the DevTools
 port that Chrome was started with (bin-linux/startup-windows). @chrome is the
-Chromium browser T3_BROWSER_APP names on macOS (Brave Browser unless set),
+Chromium browser T3_BROWSER names on macOS (Brave Browser unless set),
 whose app window on ORIGIN is reached through AppleScript instead
 (bin-macos/startup-windows): one instance of it, on its default data directory,
 holds every workspace window. A browser of its own keeps T3 Code's shortcuts
@@ -131,7 +131,7 @@ SOCKET_TIMEOUT = 10.0
 POLL = 0.25
 
 T = TypeVar("T")
-BROWSER_APP = os.environ.get("T3_BROWSER_APP", "Brave Browser")
+BROWSER_APP = os.environ.get("T3_BROWSER", "Brave Browser")
 # The directory bin-macos/startup-windows and bin/t3-client-settings keep this
 # browser's windows' state in, under ~/.local/state/t3-windows.
 BROWSER_STATE_NAME = BROWSER_APP.replace(" ", "-")

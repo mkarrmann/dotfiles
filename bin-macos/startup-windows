@@ -259,7 +259,7 @@ chrome_restore_settled=false
 # Getting them off the managed workspaces is arrange-workspaces' job
 # (NON_LAYOUT_TITLE_PATTERN); an overlay does not follow its parent across
 # workspaces, so nothing here can keep one next to the window it belongs to.
-# Each workspace's T3 Code window is an app window of T3_BROWSER_APP, a
+# Each workspace's T3 Code window is an app window of T3_BROWSER, a
 # Chromium of its own so that Chrome's reserved shortcuts (Cmd+N, Cmd+T, Cmd+W...)
 # can be moved off T3 Code's (bin-macos/t3-browser-shortcuts) without taking them
 # from your browsing, on the workspace's own origin, served by its host's one T3 Code server (a
@@ -270,21 +270,23 @@ chrome_restore_settled=false
 # or show an error page's host before the tunnel is up), so the origin a window
 # is on, which t3-window-scope --list-windows reads through AppleScript,
 # identifies its workspace. That needs View > Developer > Allow JavaScript from
-# Apple Events on in T3_BROWSER_APP. What this script knows of each window's
+# Apple Events on in T3_BROWSER. What this script knows of each window's
 # servers is kept in T3_STATE_DIR/<origin's first label>, per browser: another
 # browser's windows have none of its cookies or saved connections.
 # It is Brave rather than another Chrome channel: Meta's cloud policy for every
 # Chrome channel sets DefaultBrowserSettingEnabled, which makes a Chrome that is
 # not the default ask macOS for it at each start, past any flag.
-# T3_BROWSER_APP="Google Chrome" puts them back in your own Chrome.
-T3_BROWSER_APP="${T3_BROWSER_APP:-Brave Browser}"
+# T3_BROWSER="Google Chrome" puts them back in your own Chrome.
+T3_BROWSER="${T3_BROWSER:-Brave Browser}"
 # Not exported: the terminals this script opens would hand it to every shell
 # they start, where it outlives a change of this default. The helpers that read
-# it get it here.
-t3-window-scope() { T3_BROWSER_APP="$T3_BROWSER_APP" command t3-window-scope "$@"; }
-t3-client-settings() { T3_BROWSER_APP="$T3_BROWSER_APP" command t3-client-settings "$@"; }
+# it get it here. It was once exported as T3_BROWSER_APP (Google Chrome Beta),
+# which a Ghostty started by such a run still hands its shells, so that name
+# means nothing now.
+t3-window-scope() { T3_BROWSER="$T3_BROWSER" command t3-window-scope "$@"; }
+t3-client-settings() { T3_BROWSER="$T3_BROWSER" command t3-client-settings "$@"; }
 T3_BROWSER_PROFILE="Default"
-T3_STATE_DIR="$HOME/.local/state/t3-windows/${T3_BROWSER_APP// /-}"
+T3_STATE_DIR="$HOME/.local/state/t3-windows/${T3_BROWSER// /-}"
 t3_browser_missing_warned=false
 # Each window used to be its own Chrome instance on a data directory here. They
 # share Chrome's bundle id, so macOS handed Chrome launches, links and the Dock
@@ -1135,7 +1137,7 @@ t3_window_title() {
     | jq -r --argjson wid "$1" '.[] | select(.["window-id"] == $wid) | .["window-title"] // empty'
 }
 
-# t3_windows -> "WINDOW_ID ORIGIN" for each T3 Code window in T3_BROWSER_APP.
+# t3_windows -> "WINDOW_ID ORIGIN" for each T3 Code window in T3_BROWSER.
 # Listing tags window titles for a moment, so it is redone only when the set of
 # the browser's windows changed since the last listing, which T3_WINDOWS_CACHE keeps
 # (first line) with its result: callers run in command substitutions, whose
@@ -1143,7 +1145,7 @@ t3_window_title() {
 t3_windows() {
   local key list
   key=$(aerospace list-windows --all --json 2>/dev/null \
-    | jq -c --arg app "$T3_BROWSER_APP" '[.[] | select(."app-name" == $app) | .["window-id"]] | sort') || key=""
+    | jq -c --arg app "$T3_BROWSER" '[.[] | select(."app-name" == $app) | .["window-id"]] | sort') || key=""
   if [[ ! -e "$T3_WINDOWS_CACHE" || "$(head -n 1 "$T3_WINDOWS_CACHE")" != "$key" ]]; then
     list=$(t3-window-scope --list-windows 2>/dev/null) || list=""
     printf '%s\n%s' "$key" "${list:+$list$'\n'}" > "$T3_WINDOWS_CACHE"
@@ -1191,9 +1193,9 @@ retire_t3_profile_chromes() {
 # not get), so neither counts.
 T3_SERVERS_DIR=".t3-servers"
 
-# t3_browser_installed -- whether T3_BROWSER_APP is where t3-window-scope looks for it.
+# t3_browser_installed -- whether T3_BROWSER is where t3-window-scope looks for it.
 t3_browser_installed() {
-  [[ -d "/Applications/$T3_BROWSER_APP.app" ]]
+  [[ -d "/Applications/$T3_BROWSER.app" ]]
 }
 
 # t3_set_up STATE ENVIRONMENT_ID -> whether STATE's origin is set up with that server.
@@ -1249,8 +1251,8 @@ reconcile_t3_window() {
   local fresh=false wait scope_rc own_env="" loaded
   if ! t3_browser_installed; then
     if [[ "$t3_browser_missing_warned" != true ]]; then
-      echo "WARNING: T3 Code windows need $T3_BROWSER_APP, which is not installed:" >&2
-      echo "         brew install --cask brave-browser (or set T3_BROWSER_APP)" >&2
+      echo "WARNING: T3 Code windows need $T3_BROWSER, which is not installed:" >&2
+      echo "         brew install --cask brave-browser (or set T3_BROWSER)" >&2
       ((failures++)) || true
       t3_browser_missing_warned=true
     fi
@@ -1339,7 +1341,7 @@ reconcile_t3_window() {
     # that starts it, rather than one LaunchServices may route elsewhere. The
     # first-run flags keep a first launch from adding welcome windows or asking
     # to be the default browser.
-    open -na "$T3_BROWSER_APP" --args --profile-directory="$T3_BROWSER_PROFILE" \
+    open -na "$T3_BROWSER" --args --profile-directory="$T3_BROWSER_PROFILE" \
       --no-first-run --no-default-browser-check \
       --app="$open_url" 2>/dev/null || {
       echo "WARNING: [$title] creation failed, skipping" >&2
@@ -1358,7 +1360,7 @@ reconcile_t3_window() {
   fi
   if [[ -z "$window_id" ]]; then
     echo "WARNING: [$title] could not find its T3 Code window (is Allow JavaScript from Apple Events" >&2
-    echo "         on in $T3_BROWSER_APP? see t3-window-scope --list-windows)" >&2
+    echo "         on in $T3_BROWSER? see t3-window-scope --list-windows)" >&2
     ((failures++)) || true
   else
     aerospace move-node-to-workspace --window-id "$window_id" "$ws" 2>/dev/null || true
@@ -1397,7 +1399,7 @@ t3_row_waits_on_tunnel() {
 # terminal, Chrome, Omnigent, T3 Code's browser or an Orchest sidebar.
 stray_window_ids() {
   aerospace list-windows --workspace "$1" --json 2>/dev/null \
-    | jq -r --arg chrome "$CHROME_APP" --arg omnigent "$OMNIGENT_APP" --arg t3 "$T3_BROWSER_APP" \
+    | jq -r --arg chrome "$CHROME_APP" --arg omnigent "$OMNIGENT_APP" --arg t3 "$T3_BROWSER" \
       '[.[] | select(
         ."app-name" != "Ghostty" and
         ."app-name" != "cmux" and

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Opens links from the T3 Code windows' browser in Google Chrome's work profile.
 
-Brave (T3_BROWSER_APP, see bin-macos/startup-windows) can only open a link
+Brave (T3_BROWSER, see bin-macos/startup-windows) can only open a link
 in itself, away from your logins. t3code/link-forwarder, an extension loaded in
 it, sends each link a T3 Code window opens here as a native message; this opens
 it in Google Chrome, profile directory T3_LINK_CHROME_PROFILE (Default, the
@@ -30,7 +30,7 @@ from typing import BinaryIO
 from urllib.parse import urlsplit
 
 HOST_NAME = "com.mkarrmann.t3_open_in_chrome"
-BROWSER_APP = os.environ.get("T3_BROWSER_APP", "Brave Browser")
+BROWSER_APP = os.environ.get("T3_BROWSER", "Brave Browser")
 CHROME_APP = "Google Chrome"
 CHROME_PROFILE = os.environ.get("T3_LINK_CHROME_PROFILE", "Default")
 OPEN = os.environ.get("T3_OPEN_IN_CHROME_OPEN", "/usr/bin/open")
