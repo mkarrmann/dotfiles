@@ -1258,6 +1258,10 @@ reconcile_t3_window() {
   window_id=$(t3_window_id_for_origin "$origin") || window_id=""
   if t3_wait_for_server "$host" "$url"; then
     own_env=$(t3_environment_id "http://127.0.0.1:$(t3_url_port "$url")")
+    if [[ -z "$own_env" ]]; then
+      echo "WARNING: [$title] $host's T3 Code server answers but did not say which it is; its window is not opened, paired or scoped" >&2
+      ((failures++)) || true
+    fi
   fi
   if [[ -n "$window_id" ]]; then
     echo "[$title] assigning T3 Code window $window_id to workspace $ws..."
@@ -1301,11 +1305,12 @@ reconcile_t3_window() {
       fi
     fi
   else
-    # The Mac's own server not answering is a failure t3_wait_for_server has
-    # reported. A devserver's is its tunnel waiting on Duo: its window opens
-    # anyway, on Chrome's error page, so its workspace is laid out once, and
-    # loads where it is once the server answers (above).
-    if [[ -z "$own_env" && "$host" == "$T3_LOCAL_HOST" ]]; then
+    # A devserver's server not answering is its tunnel waiting on Duo: its
+    # window opens anyway, on Chrome's error page, so its workspace is laid out
+    # once, and loads where it is once the server answers (above). The Mac's
+    # own not answering, or a server that answers without saying which it is,
+    # is a failure reported above, which no tunnel connecting would fix.
+    if [[ -z "$own_env" ]] && [[ "$host" == "$T3_LOCAL_HOST" || " $t3_unreachable_hosts " != *" $host "* ]]; then
       return 0
     fi
     token=""

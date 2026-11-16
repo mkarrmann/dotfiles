@@ -411,6 +411,14 @@ T3_PAIRING_TOKEN_WAIT=0
 
 sim_reset
 pool cco.example.com TOKEN3
+curl() { [[ "$*" != *"/.well-known/t3/environment"* ]] || return 0; sim_curl "$@"; }
+reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
+check "a server that answers without saying which it is gets no window, keeps its token, warns, and is not left for a tunnel" \
+  "0 1 1 1 no" \
+  "$(wc -l < "$SIM/windows" | tr -d ' ') $(pooled cco.example.com) $failures $(grep -c 'did not say which it is' "$SIM/out") $(t3_row_waits_on_tunnel 6 && echo yes || echo no)"
+
+sim_reset
+pool cco.example.com TOKEN3
 curl() { return 7; }
 SIM_ERROR_PAGE=1
 reconcile_t3_window 6 "T3: ws6" > "$SIM/out" 2>&1
