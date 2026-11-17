@@ -57,20 +57,30 @@ case "$*" in
     if [[ "$TREE" == flat ]]; then printf '30|h_tiles\n31|h_tiles\n32|h_tiles\n'
     else printf '30|h_tiles\n31|v_accordion\n32|v_accordion\n'; fi ;;
   "list-windows --workspace 3 --format %{workspace-root-container-layout}") echo h_tiles ;;
+  "list-windows --all --json --format "*)
+    if [[ "$TREE" == flat ]]; then side=h_tiles acc=h_tiles; else side=h_tiles acc=v_accordion; fi
+    printf '[{"window-id":30,"workspace":"3","app-name":"Orchest","window-title":"ws — Orchest [abc]","window-parent-container-layout":"%s","workspace-root-container-layout":"h_tiles"},
+      {"window-id":31,"workspace":"3","app-name":"Google Chrome","window-title":"New Tab","window-parent-container-layout":"%s","workspace-root-container-layout":"h_tiles"},
+      {"window-id":32,"workspace":"3","app-name":"Brave Browser","window-title":"T3 Code","window-parent-container-layout":"%s","workspace-root-container-layout":"h_tiles"},
+      {"window-id":40,"workspace":"4","app-name":"Ghostty","window-title":"zsh","window-parent-container-layout":"v_accordion","workspace-root-container-layout":"v_accordion"}]' \
+      "$side" "$acc" "$acc" ;;
   "list-windows --focused --format %{window-id}|%{workspace}") echo "$(cat "$FAKE_STATE/focused")|1" ;;
   "list-windows --focused --format %{window-id}") cat "$FAKE_STATE/focused" ;;
   "list-windows --focused --format %{window-parent-container-layout}") echo h_tiles ;;
   "focus --window-id "*) echo "$3" > "$FAKE_STATE/focused" ;;
   "list-monitors --format %{monitor-id}|%{monitor-appkit-nsscreen-screens-id}") echo "1|1" ;;
-  "list-workspaces --all --format %{workspace}|%{monitor-id}") printf '3|1\nZ|1\n' ;;
+  "list-workspaces --all --format %{workspace}|%{monitor-id}") printf '3|1\n4|1\nZ|1\n' ;;
 esac
 exit 0
 EOF
 cat > "$FAKE/bin/osascript" <<'EOF'
 #!/usr/bin/env bash
+# The screen, and each window's width as CoreGraphics reports it: by default
+# workspace 3 at its split for a 3000px monitor (sidebar 360, accordion 2640).
 echo "osascript $*" >> "$FAKE_STATE/calls"
 [[ -n "${SCREEN_WIDTH-3000}" ]] || exit 1
-echo "1 ${SCREEN_WIDTH-3000}"
+echo "screen 1 ${SCREEN_WIDTH-3000}"
+printf 'win %s %s\n' ${FRAMES:-30 360 31 2640 32 2640 40 3000}
 EOF
 chmod +x "$FAKE/bin/aerospace" "$FAKE/bin/osascript"
 
@@ -91,8 +101,6 @@ arrange() { # STATE_NAME TREE [ARGS...] -> output; its aerospace calls in $FAKE/
 mkdir -p "$FAKE/markers"
 printf '30:Orchest\n31:Google Chrome\n32:Brave Browser\n' | sort | md5 -q > "$FAKE/markers/ws-3"
 cp "$FAKE/markers/ws-3" "$FAKE/marker"
-# The split was last set on a 3000px monitor, the stub's default width.
-echo 3000 > "$FAKE/markers/ws-3.split"
 
 out=$(arrange skip tiled)
 grep -Fq '[3] already arranged, skipping' <<< "$out" \
@@ -111,51 +119,79 @@ grep -Fxq 'flatten-workspace-tree' "$FAKE/flattened/calls" \
 grep -Fxq 'focus --window-id 99' "$FAKE/flattened/calls" \
   || { echo "focus was not given back after rearranging" >&2; exit 1; }
 
-# ── A monitor change resets the split alone ──────────────────────────
-# Same windows and tree, but workspace 3 is now on a 4000px monitor: the split
-# is set for it (88% of 4000) without rebuilding the tree, and a run after that
-# leaves it alone. The workspace is shown first, as AeroSpace lays out (and so
-# rescales the weights of) only a visible workspace, and focus is given back.
-cp "$FAKE/marker" "$FAKE/markers/ws-3"
-echo 3000 > "$FAKE/markers/ws-3.split"
-out=$(SCREEN_WIDTH=4000 arrange monitor tiled)
-grep -Fq '[3] same windows, but its monitor changed; resetting the split' <<< "$out" \
-  || { echo "a workspace whose monitor changed was not re-split: $out" >&2; exit 1; }
-grep -Fxq 'resize --window-id 31 width 3520' "$FAKE/monitor/calls" \
-  || { echo "the split was not set for the new monitor's width:" >&2; cat "$FAKE/monitor/calls" >&2; exit 1; }
-check_order=$(grep -nE '^(workspace 3|resize --window-id 31 )' "$FAKE/monitor/calls" | cut -d: -f2- | cut -d' ' -f1 | paste -sd' ' -)
-[[ "$check_order" == "workspace resize" ]] \
-  || { echo "the workspace was not shown before its split was set: $check_order" >&2; exit 1; }
-grep -Fxq 'focus --window-id 99' "$FAKE/monitor/calls" \
-  || { echo "focus was not given back after re-splitting" >&2; exit 1; }
-if grep -Eq "$REARRANGING" "$FAKE/monitor/calls"; then
-  echo "re-splitting after a monitor change moved windows or rebuilt the tree:" >&2
-  grep -E "$REARRANGING" "$FAKE/monitor/calls" >&2
-  exit 1
-fi
-out=$(SCREEN_WIDTH=4000 arrange monitor-again tiled)
+# ── A split that is off is reset alone ───────────────────────────────
+# split_reset NAME TREE [ARGS...] -- the split of workspace 3 was reset for its
+# 3000px monitor (accordion 2640), by showing the workspace first (AeroSpace
+# lays out, and so rescales the weights of, only a visible workspace), with
+# focus given back and nothing rebuilt.
+split_reset() {
+  local name="$1" calls="$FAKE/$1/calls" order
+  grep -Fxq 'resize --window-id 31 width 2640' "$calls" \
+    || { echo "$name: the split was not set for the monitor:" >&2; cat "$calls" >&2; exit 1; }
+  order=$(grep -E '^(workspace 3|resize --window-id 31 )' "$calls" | cut -d' ' -f1 | paste -sd' ' -)
+  [[ "$order" == "workspace resize" ]] \
+    || { echo "$name: the workspace was not shown before its split was set: $order" >&2; exit 1; }
+  grep -Fxq 'focus --window-id 99' "$calls" \
+    || { echo "$name: focus was not given back" >&2; exit 1; }
+  if grep -Eq "$REARRANGING" "$calls"; then
+    echo "$name: resetting the split moved windows or rebuilt the tree:" >&2
+    grep -E "$REARRANGING" "$calls" >&2
+    exit 1
+  fi
+}
+# left_alone NAME -- the run moved no focus, window or split.
+left_alone() {
+  if grep -Eq "$MUTATING" "$FAKE/$1/calls"; then
+    echo "$1: changed the layout:" >&2
+    grep -E "$MUTATING" "$FAKE/$1/calls" >&2
+    exit 1
+  fi
+}
+
+# Last laid out on a 1728px laptop screen, then the external monitor came back:
+# the same windows and tree, and the same monitor width as before the unplug.
+out=$(FRAMES="30 300 31 1728 32 1728" arrange unplugged tiled)
+grep -Fq '[3] same windows, but the split is off; resetting it' <<< "$out" \
+  || { echo "a workspace last laid out on another monitor was not re-split: $out" >&2; exit 1; }
+split_reset unplugged
+
+# Laid out on this monitor, but not at the split (a manual resize, or the
+# workspace that was on screen when the monitor came back).
+out=$(FRAMES="30 952 31 2048 32 2048" arrange resized tiled)
+grep -Fq '[3] same windows, but the split is off; resetting it' <<< "$out" \
+  || { echo "a workspace off its split was not re-split: $out" >&2; exit 1; }
+split_reset resized
+
+# Within a few points of the split is the split.
+out=$(FRAMES="30 362 31 2638 32 2638" arrange rounding tiled)
 grep -Fq '[3] already arranged, skipping' <<< "$out" \
-  || { echo "a workspace already split for its monitor was not skipped: $out" >&2; exit 1; }
-if grep -Eq "$MUTATING" "$FAKE/monitor-again/calls"; then
-  echo "a run after the re-split changed the layout again:" >&2
-  grep -E "$MUTATING" "$FAKE/monitor-again/calls" >&2
-  exit 1
-fi
+  || { echo "a split a point or two off was reset: $out" >&2; exit 1; }
+left_alone rounding
 
-# A marker from before splits were recorded resets the split once.
-rm -f "$FAKE/markers/ws-3.split"
-arrange unrecorded tiled >/dev/null
-grep -Fxq 'resize --window-id 31 width 2640' "$FAKE/unrecorded/calls" \
-  || { echo "a workspace with no recorded split was not split:" >&2; cat "$FAKE/unrecorded/calls" >&2; exit 1; }
-
-# A width that can't be read is no reason to touch the layout.
-rm -f "$FAKE/markers/ws-3.split"
+# Frames that can't be read are no reason to touch the layout.
 out=$(SCREEN_WIDTH="" arrange unreadable tiled)
 grep -Fq '[3] already arranged, skipping' <<< "$out" \
-  || { echo "an unreadable monitor width did not leave the workspace alone: $out" >&2; exit 1; }
-if grep -Eq "$MUTATING" "$FAKE/unreadable/calls"; then
-  echo "an unreadable monitor width changed the layout:" >&2
-  grep -E "$MUTATING" "$FAKE/unreadable/calls" >&2
+  || { echo "unreadable frames did not leave the workspace alone: $out" >&2; exit 1; }
+left_alone unreadable
+out=$(FRAMES="31 1728 32 1728" arrange no-sidebar-frame tiled)
+grep -Fq '[3] already arranged, skipping' <<< "$out" \
+  || { echo "a sidebar with no frame did not leave the workspace alone: $out" >&2; exit 1; }
+left_alone no-sidebar-frame
+
+# ── --splits: only the splits, from one listing ──────────────────────
+out=$(arrange splits-right tiled --splits 4)
+[[ -z "$out" ]] || { echo "--splits printed something for splits that are right: $out" >&2; exit 1; }
+left_alone splits-right
+out=$(FRAMES="30 300 31 1728 32 1728 40 3000" arrange splits-off tiled --splits 4)
+[[ "$out" == '  [3] the split is off; resetting it' ]] \
+  || { echo "--splits did not reset only workspace 3's split: $out" >&2; exit 1; }
+split_reset splits-off
+out=$(FRAMES="30 300 31 1728 32 1728" arrange splits-flat flat --splits)
+grep -Fq '[3] not in its sidebar | accordion shape; leaving it to a full pass' <<< "$out" \
+  || { echo "--splits did not leave a flattened tree alone: $out" >&2; exit 1; }
+left_alone splits-flat
+if grep -Eq '^list-windows --workspace ' "$FAKE/splits-off/calls"; then
+  echo "--splits listed windows a workspace at a time" >&2
   exit 1
 fi
 

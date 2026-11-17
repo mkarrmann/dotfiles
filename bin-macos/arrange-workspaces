@@ -47,9 +47,10 @@ aerospace() {
 # Standard workspaces without Orchest windows stay as a flat accordion.
 # Skips a workspace whose window set hasn't changed since its last arrangement
 # and whose tree still has the right shape, to preserve manual size adjustments:
-# that check only reads, so an unchanged run moves no focus. If only the width of
-# its monitor changed (a monitor plugged in or out), it resets the split alone.
-# Use --force to rebuild anyway.
+# that check only reads, so an unchanged run moves no focus. If only the split is
+# off (a monitor plugged in or out, or a manual resize), it resets the split
+# alone. --splits does only that, from one listing of every window, for a
+# caller that knows the windows and trees are unchanged. Use --force to rebuild.
 # Can be run standalone or called from startup-windows.
 #
 # Requires enable-normalization-flatten-containers = false so that
@@ -76,12 +77,15 @@ SIDEBAR_TITLE_PATTERN="Orchest \\["
 # they pile up on whichever workspace was focused when they were created.
 NON_LAYOUT_TITLE_PATTERN="^Omnigent Update$"
 SIDEBAR_PERCENT=12
+# How far, in points, a window may be from the split enforce_split sets.
+SPLIT_TOLERANCE=4
 MARKER_DIR="${ARRANGE_MARKER_DIR:-/tmp/aerospace-arrange-markers}"
 ARRANGEMENT_LOCK_DIR="${ARRANGEMENT_LOCK_DIR:-/tmp/aerospace-arrangement.lock}"
 ARRANGE_ATTEMPTS="${ARRANGE_ATTEMPTS:-5}"
 ARRANGE_RETRY_SLEEP="${ARRANGE_RETRY_SLEEP:-1}"
 FORCE=false
 ENSURE_WINDOWS=false
+SPLITS_ONLY=false
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ARRANGE_WS11="$SCRIPT_DIR/arrange-ws11"
 
@@ -89,10 +93,13 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --force|-f) FORCE=true; shift ;;
     --ensure-windows) ENSURE_WINDOWS=true; shift ;;
+    --splits) SPLITS_ONLY=true; shift ;;
     -h|--help)
-      echo "Usage: arrange-workspaces [--force] [--ensure-windows] [workspace ...]"
+      echo "Usage: arrange-workspaces [--force|--splits] [--ensure-windows] [workspace ...]"
       echo "  --force           rebuild standard workspaces even when their marker matches"
       echo "  --ensure-windows  allow specialized arrangers to provision missing windows"
+      echo "  --splits          only reset sidebar | accordion splits that are off (after a"
+      echo "                    monitor change), leaving trees and window sets alone"
       exit 0
       ;;
     -*) echo "Unknown option: $1" >&2; exit 2 ;;
@@ -162,23 +169,35 @@ trap 'exit 143' TERM
 
 mkdir -p "$MARKER_DIR"
 
-# load_monitor_widths -- MONITOR_WIDTHS: "WS WIDTH" for every workspace, the
-# width of the monitor it is on, hidden or not. Read once per run, on first use.
+# load_geometry -- read once per run, on first use:
+#   MONITOR_WIDTHS: "WS WIDTH" for every workspace, the width of the monitor it
+#     is on, hidden or not;
+#   WINDOW_WIDTHS: "ID WIDTH" for every window, from CoreGraphics by window id
+#     (AeroSpace's ids are CGWindowIDs). A hidden workspace's windows keep the
+#     frames of its last layout.
 MONITOR_WIDTHS=""
-MONITOR_WIDTHS_LOADED=false
-load_monitor_widths() {
-  [[ "$MONITOR_WIDTHS_LOADED" == true ]] && return 0
-  MONITOR_WIDTHS_LOADED=true
-  local screens monitors ws_monitors
+WINDOW_WIDTHS=""
+GEOMETRY_LOADED=false
+load_geometry() {
+  [[ "$GEOMETRY_LOADED" == true ]] && return 0
+  GEOMETRY_LOADED=true
+  local geometry monitors ws_monitors
   # NSScreen.screens is what %{monitor-appkit-nsscreen-screens-id} counts, from 1.
-  screens=$(osascript -l JavaScript -e '
-    ObjC.import("AppKit");
+  geometry=$(osascript -l JavaScript -e '
+    ObjC.import("AppKit"); ObjC.import("CoreGraphics");
     var s = $.NSScreen.screens, out = [];
-    for (var i = 0; i < s.count; i++) out.push((i + 1) + " " + Math.round(s.objectAtIndex(i).frame.size.width));
+    for (var i = 0; i < s.count; i++) out.push("screen " + (i + 1) + " " + Math.round(s.objectAtIndex(i).frame.size.width));
+    var list = ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionAll, 0));
+    for (var i = 0; i < list.count; i++) {
+      var d = list.objectAtIndex(i);
+      out.push("win " + d.objectForKey("kCGWindowNumber").js + " " +
+               Math.round(d.objectForKey("kCGWindowBounds").objectForKey("Width").js));
+    }
     out.join("\n")' 2>/dev/null) || return 0
   monitors=$(aerospace list-monitors --format '%{monitor-id}|%{monitor-appkit-nsscreen-screens-id}' 2>/dev/null) || return 0
   ws_monitors=$(aerospace list-workspaces --all --format '%{workspace}|%{monitor-id}' 2>/dev/null) || return 0
-  MONITOR_WIDTHS=$({ sed 's/^/screen /' <<< "$screens"
+  WINDOW_WIDTHS=$(awk '$1 == "win" { print $2, $3 }' <<< "$geometry")
+  MONITOR_WIDTHS=$({ grep '^screen ' <<< "$geometry"
                      tr '|' ' ' <<< "$monitors" | sed 's/^/monitor /'
                      tr '|' ' ' <<< "$ws_monitors" | sed 's/^/ws /'; } | awk '
     $1 == "screen" { width[$2] = $3 }
@@ -191,46 +210,72 @@ workspace_width() {
   awk -v ws="$1" '$1 == ws { print $2; exit }' <<< "$MONITOR_WIDTHS"
 }
 
-# Idempotently set the accordion column to (100 - SIDEBAR_PERCENT)% of the width
-# of the monitor $ws is on, via an ABSOLUTE resize (no +/-). A fixed +delta nudge
-# computed on one monitor does not survive a move to a different-size monitor, so
-# on a monitor change the split silently overflows; an absolute target
-# self-corrects to whatever monitor the workspace currently lives on. Safe to call
-# on an already-correct layout. The workspace must be visible: `resize width N`
-# sets a weight, not a width, and AeroSpace turns weights into widths only when
-# it lays a workspace out, adding (width - sum of weights) / n to each. A hidden
-# workspace keeps the weights of its last layout, which sum to the width of the
-# monitor it was last shown on, so N lands off by half that difference. Records the width it split for in $MARKER_DIR/ws-$ws.split, so a later
-# run can tell the monitor changed under an otherwise unchanged workspace.
-enforce_split() {
-  local ws="$1" first_accordion="$2"
-  [[ -n "$first_accordion" ]] || return 0
-  local accordion_percent=$((100 - SIDEBAR_PERCENT))
+# split_target WIDTH -> the accordion width for a monitor WIDTH wide, or nothing
+# when the split is left to AeroSpace (an even one).
+split_target() {
+  local width="$1" accordion_percent=$((100 - SIDEBAR_PERCENT))
   [[ "$accordion_percent" -ne 50 ]] || return 0
-  load_monitor_widths
-  local screen_width
-  screen_width=$(workspace_width "$ws")
-  [[ "$screen_width" -gt 0 ]] 2>/dev/null || return 0
-  local target=$(( screen_width * accordion_percent / 100 ))
+  local target=$(( width * accordion_percent / 100 ))
   # Orchest windows won't shrink below ~300px. On narrow monitors the sidebar's
   # (100 - accordion_percent)% slice falls below that floor, so the sidebar keeps
   # its minimum while the absolute accordion target overflows and overlaps it.
   # Cap the accordion so the remainder always covers the sidebar minimum.
   local min_sidebar=300
-  local max_accordion=$(( screen_width - min_sidebar ))
+  local max_accordion=$(( width - min_sidebar ))
   [[ "$target" -gt "$max_accordion" ]] && target="$max_accordion"
-  aerospace resize --window-id "$first_accordion" width "$target" 2>/dev/null || true
-  echo "$screen_width" > "$MARKER_DIR/ws-$ws.split"
+  echo "$target"
 }
 
-# split_width_changed WS -- whether WS's monitor is not the width its split was
-# last set for (or it never was). False when the width can't be read.
-split_width_changed() {
-  local ws="$1" width
-  load_monitor_widths
+# Idempotently set the accordion column to its split_target for the monitor $ws
+# is on, via an ABSOLUTE resize (no +/-): a fixed +delta nudge computed on one
+# monitor does not survive a move to a different-size monitor. Safe to call on
+# an already-correct layout. The workspace must be visible: `resize width N`
+# sets a weight, not a width, and AeroSpace turns weights into widths only when
+# it lays a workspace out, adding (width - sum of weights) / n to each. A hidden
+# workspace keeps the weights of its last layout, which sum to the width of the
+# monitor it was last shown on, so N lands off by half that difference.
+enforce_split() {
+  local ws="$1" first_accordion="$2" width target
+  [[ -n "$first_accordion" ]] || return 0
+  load_geometry
   width=$(workspace_width "$ws")
-  [[ -n "$width" ]] || return 1
-  [[ "$(cat "$MARKER_DIR/ws-$ws.split" 2>/dev/null)" != "$width" ]]
+  [[ "$width" -gt 0 ]] 2>/dev/null || return 0
+  target=$(split_target "$width")
+  [[ -n "$target" ]] || return 0
+  aerospace resize --window-id "$first_accordion" width "$target" 2>/dev/null || true
+}
+
+# split_off WS SIDEBAR_IDS ACCORDION_IDS -- whether WS's windows are not at the
+# split enforce_split sets for its monitor: the accordion at its target and,
+# with the sidebar, spanning the monitor. A workspace last laid out on another
+# monitor (one unplugged since, even if plugged back in) fails the span; a manual
+# resize fails the target. Assumes no horizontal gaps (aerospace.toml). False
+# when anything can't be read, so an unreadable frame never moves focus.
+split_off() {
+  local ws="$1" sidebar_ids="$2" accordion_ids="$3" width target
+  load_geometry
+  width=$(workspace_width "$ws")
+  [[ "$width" -gt 0 ]] 2>/dev/null || return 1
+  target=$(split_target "$width")
+  [[ -n "$target" ]] || return 1
+  awk -v sidebars="$(echo $sidebar_ids)" -v accordion="$(head -1 <<< "$accordion_ids")" \
+      -v target="$target" -v width="$width" -v tol="$SPLIT_TOLERANCE" '
+    BEGIN { n = split(sidebars, s, " "); for (i = 1; i <= n; i++) sidebar[s[i]] = 1 }
+    $1 in sidebar { sidebar_width += $2; found_sidebars++ }
+    $1 == accordion { accordion_width = $2; found_accordion = 1 }
+    function off(d) { return d > tol || -d > tol }
+    END {
+      if (!found_accordion || found_sidebars != n) exit 1
+      exit !(off(accordion_width - target) || off(sidebar_width + accordion_width - width))
+    }' <<< "$WINDOW_WIDTHS"
+}
+
+# reset_split WS FIRST_ACCORDION -- show WS, so AeroSpace lays it out for its
+# monitor, then enforce its split. Focus is given back on exit.
+reset_split() {
+  FOCUS_TOUCHED=true
+  aerospace workspace "$1" 2>/dev/null || true
+  enforce_split "$1" "$2"
 }
 
 workspace_fingerprint() {
@@ -507,12 +552,10 @@ arrange_standard_workspace_once() {
   if [[ "$FORCE" != true ]] && [[ -f "$marker_file" ]] && [[ "$(cat "$marker_file")" == "$fingerprint" ]]; then
     classify_windows "$windows"
     if layout_tree_correct "$ws" "$sidebar_ids" "$accordion_ids"; then
-      # A monitor change resizes no window's tree, so it shows only here.
-      if [[ -n "$sidebar_ids" && -n "$accordion_ids" ]] && split_width_changed "$ws"; then
-        echo "  [$ws] same windows, but its monitor changed; resetting the split"
-        FOCUS_TOUCHED=true
-        aerospace workspace "$ws" 2>/dev/null || true
-        enforce_split "$ws" "$(echo "$accordion_ids" | head -1)"
+      # A monitor change, or a manual resize, changes no window's tree.
+      if [[ -n "$sidebar_ids" && -n "$accordion_ids" ]] && split_off "$ws" "$sidebar_ids" "$accordion_ids"; then
+        echo "  [$ws] same windows, but the split is off; resetting it"
+        reset_split "$ws" "$(echo "$accordion_ids" | head -1)"
         return 0
       fi
       echo "  [$ws] already arranged, skipping"
@@ -827,6 +870,44 @@ arrange_workspace_by_policy() {
   esac
 }
 
+# check_splits WS... -- reset the split of each WS whose tree has the sidebar |
+# accordion shape but whose split is off. A tree of any other shape is left to a
+# full pass. One listing of every window serves every workspace, and a workspace
+# whose split is right moves no focus.
+check_splits() {
+  local listing ws shaped sidebar_ids accordion_ids
+  listing=$(aerospace list-windows --all --json --format \
+    '%{window-id}%{workspace}%{app-name}%{window-title}%{window-parent-container-layout}%{workspace-root-container-layout}' \
+    2>/dev/null) || return 1
+  # One line a workspace: WS, whether its tree has the shape, its sidebar ids
+  # and its accordion ids (space-separated, in listing order, as classify_windows).
+  while IFS=$'\t' read -r ws shaped sidebar_ids accordion_ids; do
+    [[ -n "$sidebar_ids" && -n "$accordion_ids" ]] || continue
+    if [[ "$shaped" != true ]]; then
+      echo "  [$ws] not in its sidebar | accordion shape; leaving it to a full pass"
+      continue
+    fi
+    if split_off "$ws" "$(tr ' ' '\n' <<< "$sidebar_ids")" "$(tr ' ' '\n' <<< "$accordion_ids")"; then
+      echo "  [$ws] the split is off; resetting it"
+      reset_split "$ws" "${accordion_ids%% *}"
+    fi
+  done < <(jq -r --args --arg pat "$SIDEBAR_TITLE_PATTERN" --arg skip "$NON_LAYOUT_TITLE_PATTERN" '
+    def title: .["window-title"] // "";
+    . as $all
+    | $ARGS.positional[] | select(. != "11" and . != "Z") as $ws
+    | [ $all[] | select(.workspace == $ws and (title | test($skip) | not)) ] as $w
+    | [ $w[] | select(title | test($pat)) ] as $side
+    | [ $w[] | select(title | test($pat) | not) ] as $acc
+    | [ $ws,
+        ( ($w | length > 0) and
+          all($w[]; .["workspace-root-container-layout"] == "h_tiles") and
+          all($side[]; .["window-parent-container-layout"] == "h_tiles") and
+          all($acc[]; .["window-parent-container-layout"] == "v_accordion") | tostring ),
+        ($side | map(.["window-id"] | tostring) | join(" ")),
+        ($acc | map(.["window-id"] | tostring) | join(" ")) ]
+    | @tsv' "$@" <<< "$listing")
+}
+
 # ── Main ──────────────────────────────────────────────────────────────
 
 # Accept workspace list as args, or default to all non-empty workspaces.
@@ -844,6 +925,14 @@ else
       workspaces+=("$w")
     done <<< "$workspace_names"
   fi
+fi
+
+if [[ "$SPLITS_ONLY" == true ]]; then
+  check_splits ${workspaces[@]+"${workspaces[@]}"} || {
+    echo "ERROR: could not list windows to check the splits" >&2
+    exit 1
+  }
+  exit 0
 fi
 
 echo "Arranging workspace layouts..."
