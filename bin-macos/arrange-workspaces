@@ -47,8 +47,9 @@ aerospace() {
 # Standard workspaces without Orchest windows stay as a flat accordion.
 # Skips a workspace whose window set hasn't changed since its last arrangement
 # and whose tree still has the right shape, to preserve manual size adjustments:
-# that check only reads, so an unchanged run moves no focus. Use --force to
-# rebuild anyway.
+# that check only reads, so an unchanged run moves no focus. If only the width of
+# its monitor changed (a monitor plugged in or out), it resets the split alone.
+# Use --force to rebuild anyway.
 # Can be run standalone or called from startup-windows.
 #
 # Requires enable-normalization-flatten-containers = false so that
@@ -161,25 +162,52 @@ trap 'exit 143' TERM
 
 mkdir -p "$MARKER_DIR"
 
-get_screen_width() {
-  osascript -l JavaScript -e \
-    'ObjC.import("AppKit"); $.NSScreen.mainScreen.frame.size.width' 2>/dev/null || echo 0
+# load_monitor_widths -- MONITOR_WIDTHS: "WS WIDTH" for every workspace, the
+# width of the monitor it is on, hidden or not. Read once per run, on first use.
+MONITOR_WIDTHS=""
+MONITOR_WIDTHS_LOADED=false
+load_monitor_widths() {
+  [[ "$MONITOR_WIDTHS_LOADED" == true ]] && return 0
+  MONITOR_WIDTHS_LOADED=true
+  local screens monitors ws_monitors
+  # NSScreen.screens is what %{monitor-appkit-nsscreen-screens-id} counts, from 1.
+  screens=$(osascript -l JavaScript -e '
+    ObjC.import("AppKit");
+    var s = $.NSScreen.screens, out = [];
+    for (var i = 0; i < s.count; i++) out.push((i + 1) + " " + Math.round(s.objectAtIndex(i).frame.size.width));
+    out.join("\n")' 2>/dev/null) || return 0
+  monitors=$(aerospace list-monitors --format '%{monitor-id}|%{monitor-appkit-nsscreen-screens-id}' 2>/dev/null) || return 0
+  ws_monitors=$(aerospace list-workspaces --all --format '%{workspace}|%{monitor-id}' 2>/dev/null) || return 0
+  MONITOR_WIDTHS=$({ sed 's/^/screen /' <<< "$screens"
+                     tr '|' ' ' <<< "$monitors" | sed 's/^/monitor /'
+                     tr '|' ' ' <<< "$ws_monitors" | sed 's/^/ws /'; } | awk '
+    $1 == "screen" { width[$2] = $3 }
+    $1 == "monitor" { screen[$2] = $3 }
+    $1 == "ws" && ($3 in screen) && (screen[$3] in width) { print $2, width[screen[$3]] }')
 }
 
-# Idempotently set the accordion column to (100 - SIDEBAR_PERCENT)% of the main
-# screen width via an ABSOLUTE resize (no +/-). A fixed +delta nudge computed on
-# one monitor does not survive a move to a different-size monitor, so on a
-# monitor change the split silently overflows; an absolute target self-corrects
-# to whatever monitor the workspace currently lives on. Works on hidden
-# workspaces (no focus needed) and is safe to call on an already-correct layout.
+# workspace_width WS -> the width of the monitor WS is on, or nothing if unknown.
+workspace_width() {
+  awk -v ws="$1" '$1 == ws { print $2; exit }' <<< "$MONITOR_WIDTHS"
+}
+
+# Idempotently set the accordion column to (100 - SIDEBAR_PERCENT)% of the width
+# of the monitor $ws is on, via an ABSOLUTE resize (no +/-). A fixed +delta nudge
+# computed on one monitor does not survive a move to a different-size monitor, so
+# on a monitor change the split silently overflows; an absolute target
+# self-corrects to whatever monitor the workspace currently lives on. Works on
+# hidden workspaces (no focus needed) and is safe to call on an already-correct
+# layout. Records the width it split for in $MARKER_DIR/ws-$ws.split, so a later
+# run can tell the monitor changed under an otherwise unchanged workspace.
 enforce_split() {
-  local first_accordion="$1"
+  local ws="$1" first_accordion="$2"
   [[ -n "$first_accordion" ]] || return 0
   local accordion_percent=$((100 - SIDEBAR_PERCENT))
   [[ "$accordion_percent" -ne 50 ]] || return 0
+  load_monitor_widths
   local screen_width
-  screen_width=$(get_screen_width)
-  [[ "$screen_width" -gt 0 ]] || return 0
+  screen_width=$(workspace_width "$ws")
+  [[ "$screen_width" -gt 0 ]] 2>/dev/null || return 0
   local target=$(( screen_width * accordion_percent / 100 ))
   # Orchest windows won't shrink below ~300px. On narrow monitors the sidebar's
   # (100 - accordion_percent)% slice falls below that floor, so the sidebar keeps
@@ -189,6 +217,17 @@ enforce_split() {
   local max_accordion=$(( screen_width - min_sidebar ))
   [[ "$target" -gt "$max_accordion" ]] && target="$max_accordion"
   aerospace resize --window-id "$first_accordion" width "$target" 2>/dev/null || true
+  echo "$screen_width" > "$MARKER_DIR/ws-$ws.split"
+}
+
+# split_width_changed WS -- whether WS's monitor is not the width its split was
+# last set for (or it never was). False when the width can't be read.
+split_width_changed() {
+  local ws="$1" width
+  load_monitor_widths
+  width=$(workspace_width "$ws")
+  [[ -n "$width" ]] || return 1
+  [[ "$(cat "$MARKER_DIR/ws-$ws.split" 2>/dev/null)" != "$width" ]]
 }
 
 workspace_fingerprint() {
@@ -465,6 +504,12 @@ arrange_standard_workspace_once() {
   if [[ "$FORCE" != true ]] && [[ -f "$marker_file" ]] && [[ "$(cat "$marker_file")" == "$fingerprint" ]]; then
     classify_windows "$windows"
     if layout_tree_correct "$ws" "$sidebar_ids" "$accordion_ids"; then
+      # A monitor change resizes no window's tree, so it shows only here.
+      if [[ -n "$sidebar_ids" && -n "$accordion_ids" ]] && split_width_changed "$ws"; then
+        echo "  [$ws] same windows, but its monitor changed; resetting the split"
+        enforce_split "$ws" "$(echo "$accordion_ids" | head -1)"
+        return 0
+      fi
       echo "  [$ws] already arranged, skipping"
       return 0
     fi
@@ -535,7 +580,7 @@ arrange_standard_workspace_once() {
 
   if layout_already_correct "$ws" "$sidebar_ids" "$accordion_ids"; then
     echo "  [$ws] sidebar+accordion already correct → enforcing split + marker"
-    enforce_split "$(echo "$accordion_ids" | head -1)"
+    enforce_split "$ws" "$(echo "$accordion_ids" | head -1)"
     echo "$fingerprint" > "$marker_file"
     return 0
   fi
@@ -726,7 +771,7 @@ arrange_standard_workspace_once() {
   fi
 
   # Set the sidebar/accordion split for the current monitor.
-  enforce_split "$first_accordion"
+  enforce_split "$ws" "$first_accordion"
 
   if layout_already_correct "$ws" "$sidebar_ids" "$accordion_ids"; then
     echo "$fingerprint" > "$marker_file"
