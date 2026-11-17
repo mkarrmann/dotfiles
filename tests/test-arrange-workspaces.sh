@@ -76,8 +76,8 @@ chmod +x "$FAKE/bin/aerospace" "$FAKE/bin/osascript"
 
 # What moves focus, windows or the tree.
 MUTATING='^(focus|move|move-node-to-workspace|join-with|layout|resize|flatten-workspace-tree|workspace) |^flatten-workspace-tree$'
-# What moves focus, windows or the tree, other than a resize.
-REARRANGING='^(focus|move|move-node-to-workspace|join-with|layout|flatten-workspace-tree|workspace) |^flatten-workspace-tree$'
+# What rebuilds the tree or moves windows.
+REARRANGING='^(move|move-node-to-workspace|join-with|layout|flatten-workspace-tree) |^flatten-workspace-tree$'
 arrange() { # STATE_NAME TREE [ARGS...] -> output; its aerospace calls in $FAKE/STATE_NAME/calls
   local state="$FAKE/$1" tree="$2"
   shift 2
@@ -113,8 +113,9 @@ grep -Fxq 'focus --window-id 99' "$FAKE/flattened/calls" \
 
 # ── A monitor change resets the split alone ──────────────────────────
 # Same windows and tree, but workspace 3 is now on a 4000px monitor: the split
-# is set for it (88% of 4000) without moving focus or rebuilding the tree, and
-# a run after that leaves it alone.
+# is set for it (88% of 4000) without rebuilding the tree, and a run after that
+# leaves it alone. The workspace is shown first, as AeroSpace lays out (and so
+# rescales the weights of) only a visible workspace, and focus is given back.
 cp "$FAKE/marker" "$FAKE/markers/ws-3"
 echo 3000 > "$FAKE/markers/ws-3.split"
 out=$(SCREEN_WIDTH=4000 arrange monitor tiled)
@@ -122,8 +123,13 @@ grep -Fq '[3] same windows, but its monitor changed; resetting the split' <<< "$
   || { echo "a workspace whose monitor changed was not re-split: $out" >&2; exit 1; }
 grep -Fxq 'resize --window-id 31 width 3520' "$FAKE/monitor/calls" \
   || { echo "the split was not set for the new monitor's width:" >&2; cat "$FAKE/monitor/calls" >&2; exit 1; }
+check_order=$(grep -nE '^(workspace 3|resize --window-id 31 )' "$FAKE/monitor/calls" | cut -d: -f2- | cut -d' ' -f1 | paste -sd' ' -)
+[[ "$check_order" == "workspace resize" ]] \
+  || { echo "the workspace was not shown before its split was set: $check_order" >&2; exit 1; }
+grep -Fxq 'focus --window-id 99' "$FAKE/monitor/calls" \
+  || { echo "focus was not given back after re-splitting" >&2; exit 1; }
 if grep -Eq "$REARRANGING" "$FAKE/monitor/calls"; then
-  echo "re-splitting after a monitor change moved focus, windows or the tree:" >&2
+  echo "re-splitting after a monitor change moved windows or rebuilt the tree:" >&2
   grep -E "$REARRANGING" "$FAKE/monitor/calls" >&2
   exit 1
 fi

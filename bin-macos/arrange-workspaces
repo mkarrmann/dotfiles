@@ -195,9 +195,12 @@ workspace_width() {
 # of the monitor $ws is on, via an ABSOLUTE resize (no +/-). A fixed +delta nudge
 # computed on one monitor does not survive a move to a different-size monitor, so
 # on a monitor change the split silently overflows; an absolute target
-# self-corrects to whatever monitor the workspace currently lives on. Works on
-# hidden workspaces (no focus needed) and is safe to call on an already-correct
-# layout. Records the width it split for in $MARKER_DIR/ws-$ws.split, so a later
+# self-corrects to whatever monitor the workspace currently lives on. Safe to call
+# on an already-correct layout. The workspace must be visible: `resize width N`
+# sets a weight, not a width, and AeroSpace turns weights into widths only when
+# it lays a workspace out, adding (width - sum of weights) / n to each. A hidden
+# workspace keeps the weights of its last layout, which sum to the width of the
+# monitor it was last shown on, so N lands off by half that difference. Records the width it split for in $MARKER_DIR/ws-$ws.split, so a later
 # run can tell the monitor changed under an otherwise unchanged workspace.
 enforce_split() {
   local ws="$1" first_accordion="$2"
@@ -507,6 +510,8 @@ arrange_standard_workspace_once() {
       # A monitor change resizes no window's tree, so it shows only here.
       if [[ -n "$sidebar_ids" && -n "$accordion_ids" ]] && split_width_changed "$ws"; then
         echo "  [$ws] same windows, but its monitor changed; resetting the split"
+        FOCUS_TOUCHED=true
+        aerospace workspace "$ws" 2>/dev/null || true
         enforce_split "$ws" "$(echo "$accordion_ids" | head -1)"
         return 0
       fi
