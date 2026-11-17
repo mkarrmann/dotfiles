@@ -62,12 +62,7 @@ case "$cmd" in
       END { if (json == "true") print "[" out "]" }' "$W"
     ;;
   list-apps) cat "$SIM/apps" ;;
-  list-monitors) cat "$SIM/monitors" ;;
-  list-workspaces)
-    case "$*" in
-      *monitor-id*) cat "$SIM/wsmonitors" ;;
-      *) printf '%s\n' 1 2 3 4 5 6 7 8 T 11 Z ;;
-    esac ;;
+  list-workspaces) printf '%s\n' 1 2 3 4 5 6 7 8 T 11 Z ;;
   move-node-to-workspace)
     wid=$(cat "$SIM/focused" 2>/dev/null)
     if [ "${1:-}" = --window-id ]; then wid="$2"; shift 2; fi
@@ -166,10 +161,7 @@ STUB
 
 cat > "$BIN/osascript" <<'STUB'
 #!/bin/bash
-case "$*" in
-  *"is running"*) echo true ;;
-  *NSScreen.screens*) cat "$SIM/screens" ;;
-esac
+case "$*" in *"is running"*) echo true ;; esac
 exit 0
 STUB
 
@@ -241,11 +233,6 @@ new_desktop() {
     printf '85\tZ\tTodoist\tToday\tv_accordion\tv_accordion\n'
   } > "$sim/windows"
   echo 161 > "$sim/focused"
-  # A laptop with one external monitor, the dashboard on the laptop.
-  printf '1|DELL U3219Q|1\n2|Built-in Retina Display|2\n' > "$sim/monitors"
-  printf '1 0 0 3360 1890\n2 899 -1117 1728 1117\n' > "$sim/screens"
-  printf '%s|1\n' 1 2 3 4 5 6 7 8 9 T Z > "$sim/wsmonitors"
-  echo "11|2" >> "$sim/wsmonitors"
   : > "$sim/origins"
   for entry in "${ORIGINS[@]}"; do
     read -r ws origin label <<< "$entry"
@@ -278,7 +265,7 @@ extract_fn() {
     p && $0 == "}" { exit }
   ' "$STARTUP"
 }
-for fn in steady_snapshot steady_windows steady_titles steady_monitors steady_cheap steady_t3 steady_state t3_pool_state \
+for fn in steady_snapshot steady_windows steady_titles steady_cheap steady_t3 steady_state t3_pool_state \
           fast_path_applies record_steady_state read_pending_file managed_workspaces find_window_id \
           find_window_id_for_workspace find_chrome_by_title t3_windows t3_workspace_window t3_environment_id; do
   body=$(extract_fn "$fn")
@@ -294,31 +281,6 @@ new_desktop "$UNIT"
 export SIM="$UNIT/sim"
 aerospace() { "$BIN/aerospace" "$@"; }
 workspaces() { "$BIN/workspaces" "$@"; }
-osascript() { "$BIN/osascript" "$@"; }
-
-echo "-- the monitors"
-monitors_base=$(steady_monitors)
-check "lists every monitor, workspace and screen" "2 12 2" \
-  "$(grep -c '^monitor ' <<< "$monitors_base") $(grep -c '^wsmonitor ' <<< "$monitors_base") $(grep -c '^screen ' <<< "$monitors_base")"
-monitors_changed() { # NAME -- after an edit to the files, the digest differs; then put them back
-  check "changes it: $1" "yes" "$([[ "$(steady_monitors)" != "$monitors_base" ]] && echo yes || echo no)"
-  new_desktop_monitors
-}
-new_desktop_monitors() {
-  printf '1|DELL U3219Q|1\n2|Built-in Retina Display|2\n' > "$SIM/monitors"
-  printf '1 0 0 3360 1890\n2 899 -1117 1728 1117\n' > "$SIM/screens"
-  printf '%s|1\n' 1 2 3 4 5 6 7 8 9 T Z > "$SIM/wsmonitors"
-  echo "11|2" >> "$SIM/wsmonitors"
-}
-echo "1|Built-in Retina Display|1" > "$SIM/monitors"; echo "1 0 0 1728 1117" > "$SIM/screens"
-monitors_changed "the external monitor unplugged"
-echo "3|DELL U3219Q (1)|3" >> "$SIM/monitors"; echo "3 3360 -817 1890 3360" >> "$SIM/screens"
-monitors_changed "another monitor plugged in"
-echo "1 0 0 2560 1440" > "$SIM/screens.1"; sed -n 2p "$SIM/screens" >> "$SIM/screens.1"; mv "$SIM/screens.1" "$SIM/screens"
-monitors_changed "a monitor's resolution changed"
-sed 's/^3|1$/3|2/' "$SIM/wsmonitors" > "$SIM/wsm" && mv "$SIM/wsm" "$SIM/wsmonitors"
-monitors_changed "a workspace moved to another monitor"
-check "and back" "$monitors_base" "$(steady_monitors)"
 
 titles_digest() { local s; s=$(steady_snapshot); steady_windows "$s"; steady_titles "$s"; }
 edit_windows() { awk -F'\t' -v OFS='\t' "$@" "$SIM/windows" > "$SIM/w" && mv "$SIM/w" "$SIM/windows"; }
@@ -467,7 +429,7 @@ check "or found a server not answering" "no" "$([[ -e "$STEADY_STATE_FILE" ]] &&
 echo "RECORDED" > "$STEADY_STATE_FILE"
 record true 3 "" ""
 check "a fast run leaves the digest as it was" "RECORDED" "$(cat "$STEADY_STATE_FILE")"
-unset -f aerospace workspaces t3-window-scope curl osascript
+unset -f aerospace workspaces t3-window-scope curl
 unset SIM
 
 # ── 2. The real script on a simulated desktop ────────────────────────
@@ -528,6 +490,8 @@ group_steady() {
   check "arranging workspace 11" "1" "$(calls 'arrange-workspaces --ensure-windows 11')"
   check "syncing T3 Code's client settings" "1" "$(calls 't3-client-settings')"
   check "but not laying out workspaces 1-8 and T" "0" "$(calls 'arrange-workspaces 1 2')"
+  check "only checking their splits (a monitor unplugged and back changes nothing else)" "1" \
+    "$(calls 'arrange-workspaces --splits 1 2 3 4 5 6 7 8 T')"
   check "moving no window but onto the workspace it is on (the tunnel checks before, Omnigent's pin)" \
     "aerospace move 201 T|aerospace move 204 T|aerospace move 696 1" "$(grep 'aerospace move' "$SIM/calls" | sort | paste -sd '|' -)"
   check "nor listing T3 Code's windows again" "0" "$(calls 't3-window-scope --list-windows')"
@@ -548,18 +512,6 @@ group_steady() {
   fresh_calls
   run_sw > "$DESK/run5.out" 2>&1 || true
   check "after which the fast path again" "fast" "$(fast_taken "$DESK/run5.out")"
-
-  echo "-- a monitor unplugged between runs"
-  echo "2|Built-in Retina Display|1" > "$SIM/monitors"
-  echo "1 0 0 1728 1117" > "$SIM/screens"
-  sed 's/|1$/|2/' "$SIM/wsmonitors" > "$SIM/wsm" && mv "$SIM/wsm" "$SIM/wsmonitors"
-  fresh_calls
-  run_sw > "$DESK/run-monitor.out" 2>&1 || true
-  check "a full run, which lays out workspaces 1-8 and T for it" "full 1" \
-    "$(fast_taken "$DESK/run-monitor.out") $(calls 'arrange-workspaces 1 2 3 4 5 6 7 8 T')"
-  fresh_calls
-  run_sw > "$DESK/run-monitor2.out" 2>&1 || true
-  check "after which the fast path again" "fast" "$(fast_taken "$DESK/run-monitor2.out")"
 }
 
 group_fallback() {

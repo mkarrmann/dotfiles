@@ -1921,8 +1921,9 @@ reconcile_row() {
 # placement, the workspace-11 dashboard and T3 Code's client settings. A row
 # deferred, or a window changed by any of those, makes it a full run after all.
 # The digest has the boot and the apps' processes, so a login never matches, and
-# this script's code and the workspace table, so neither can change under it, and
-# the monitors, so plugging one in or out lays the workspaces out again.
+# this script's code and the workspace table, so neither can change under it. It
+# has no monitors: a monitor unplugged and plugged back in leaves them as they
+# were, but not the splits, so every run checks those (arrange-workspaces --splits).
 STEADY_STATE_FILE="${STARTUP_STEADY_STATE_FILE:-$HOME/.local/state/startup-windows-steady}"
 STEADY_WARNINGS_FILE="$STEADY_STATE_FILE.warnings"
 STEADY_SNAPSHOT_FORMAT='%{window-id}%{workspace}%{app-name}%{window-title}%{window-parent-container-layout}%{workspace-root-container-layout}'
@@ -1992,24 +1993,7 @@ steady_titles() {
       "ws11 cal \(pick($all; $cal)) slack \(pick($all; $slack))"' <<< "$1" | sort
 }
 
-# steady_monitors -> the monitors, their frames and which workspace is on which.
-# arrange-workspaces sets each workspace's split for its monitor's width, and a
-# monitor plugged in or out changes nothing else the digest reads.
-steady_monitors() {
-  aerospace list-monitors --format '%{monitor-id}|%{monitor-name}|%{monitor-appkit-nsscreen-screens-id}' 2>/dev/null \
-    | sed 's/^/monitor /'
-  aerospace list-workspaces --all --format '%{workspace}|%{monitor-id}' 2>/dev/null | sed 's/^/wsmonitor /'
-  osascript -l JavaScript -e '
-    ObjC.import("AppKit");
-    var s = $.NSScreen.screens, out = [];
-    for (var i = 0; i < s.count; i++) {
-      var f = s.objectAtIndex(i).frame;
-      out.push([i + 1, f.origin.x, f.origin.y, f.size.width, f.size.height].map(Math.round).join(" "));
-    }
-    out.join("\n")' 2>/dev/null | sed 's/^/screen /'
-}
-
-# steady_cheap -> the part of the digest a few AeroSpace queries and no network give.
+# steady_cheap -> the part of the digest one AeroSpace query and no network gives.
 steady_cheap() {
   local snapshot
   snapshot=$(steady_snapshot) || return 1
@@ -2025,7 +2009,6 @@ steady_cheap() {
       if (index(want, "|" $3 "|")) print "app", $1, $3 }' | sort
   echo "code $code"
   echo "table $table"
-  steady_monitors
   steady_windows "$snapshot"
   steady_titles "$snapshot"
 }
@@ -2313,8 +2296,8 @@ fi
 
 if fast_path_applies; then
   fast_path=true
-  echo "Nothing a full run fixes changed since the last one: pinning Omnigent, checking Orchest"
-  echo "and workspace 11 (startup-windows --full redoes everything)."
+  echo "Nothing a full run fixes changed since the last one: pinning Omnigent, checking Orchest,"
+  echo "the splits and workspace 11 (startup-windows --full redoes everything)."
   pending_rows=""
   pending_ready=true
   start_t3_settings
@@ -2338,6 +2321,13 @@ if fast_path_applies; then
     exec env STARTUP_WINDOWS_STAMPED="$PPID" STARTUP_WINDOWS_LOCK_HELD="$$" \
       "$0" --full ${STARTUP_ARGS[@]+"${STARTUP_ARGS[@]}"}
   fi
+  # A monitor plugged in or out changes no window or tree, only the splits.
+  # managed_workspaces intentionally expands to separate workspace arguments.
+  # shellcheck disable=SC2046
+  arrange-workspaces --splits $(managed_workspaces) || {
+    echo "WARNING: arrange-workspaces could not check the splits" >&2
+    ((failures++)) || true
+  }
   WS11_CAL_WINDOW_ID=$(sed -n 's/^ws11 cal \([0-9]*\) slack [0-9]*$/\1/p' "$STEADY_STATE_FILE")
   WS11_SLACK_WINDOW_ID=$(sed -n 's/^ws11 cal [0-9]* slack \([0-9]*\)$/\1/p' "$STEADY_STATE_FILE")
   while IFS= read -r warning; do
