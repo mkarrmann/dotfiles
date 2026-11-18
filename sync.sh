@@ -561,6 +561,23 @@ tmp=$(jq '
       ]
     }
   ] |
+  # Resume a turn that a 429 ended instead of waiting for a typed "continue".
+  # StopFailure output is ignored, so the hook runs under asyncRewake: it waits
+  # in the background and wakes Claude by exiting 2. Claude Code enforces
+  # timeout on asyncRewake hooks, so it must outlast the longest backoff (240s).
+  .hooks.StopFailure = [
+    {
+      "matcher": "rate_limit",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 ~/.claude/hooks/resume-after-rate-limit.py",
+          "asyncRewake": true,
+          "timeout": 600
+        }
+      ]
+    }
+  ] |
   .hooks.UserPromptSubmit = [
     {
       "hooks": [
