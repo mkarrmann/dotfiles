@@ -39,6 +39,14 @@ providers:
     kind: subscription
     cli: claude
     default: true
+  # Meta's Pi (/usr/local/bin/pi) carries its own AI Gateway login, the way
+  # the claude CLI does. Omnigent calls the pi harnesses needs-auth until a
+  # provider claims them, and `default: true` claims none for a pi
+  # subscription, so the scope is named. It backs the gemini agent.
+  pi-meta:
+    kind: subscription
+    cli: pi
+    default: pi
 
 runner:
   # Idle window before a host-runner self-terminates when no agent turn is
