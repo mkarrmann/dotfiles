@@ -52,10 +52,16 @@ def rate_limited() -> dict[str, object]:
 
 
 def auto_resume() -> dict[str, object]:
+    # As Claude Code 2.1.319 records an asyncRewake wake.
     return entry(
         "user",
-        isMeta=True,
-        message={"role": "user", "content": f"<system-reminder>\n{hook.WAKE_MESSAGE}\n</system-reminder>"},
+        origin={"kind": "task-notification", "producer": "session-task"},
+        message={
+            "role": "user",
+            "content": "<task-notification>\n<summary>Stop hook feedback</summary>\n</task-notification>\n"
+            "<system-reminder>\nStop hook blocking error from command \"StopFailure:rate_limit\": "
+            f"{hook.WAKE_MESSAGE}\n\n</system-reminder>",
+        },
     )
 
 
@@ -81,16 +87,24 @@ class ResumeAfterRateLimitTest(unittest.TestCase):
         transcript: list[dict[str, object]],
         during_wait: list[dict[str, object]] | None = None,
         error: str = "rate_limit",
+        flushed_after_start: list[dict[str, object]] | None = None,
     ) -> Result:
+        """
+        :param transcript: What is on disk when the hook starts.
+        :param flushed_after_start: Entries Claude Code had not flushed yet when the hook started.
+        :param during_wait: Entries written while the hook waits out the limit.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "session.jsonl"
             path.write_text("".join(json.dumps(e) + "\n" for e in transcript))
             slept: list[float] = []
+            appended_by_sleep = [flushed_after_start or [], during_wait or []]
 
             def sleep(seconds: float) -> None:
+                appended = appended_by_sleep[len(slept)]
                 slept.append(seconds)
                 with path.open("a") as out:
-                    out.writelines(json.dumps(e) + "\n" for e in during_wait or [])
+                    out.writelines(json.dumps(e) + "\n" for e in appended)
 
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
@@ -102,7 +116,7 @@ class ResumeAfterRateLimitTest(unittest.TestCase):
 
     def assert_wakes_after(self, result: Result, seconds: float) -> None:
         self.assertEqual(result.code, 2)
-        self.assertEqual(result.slept, [seconds])
+        self.assertEqual(result.slept, [hook.SETTLE_SECONDS, seconds])
         self.assertIn("[auto-resume]", result.stderr)
 
     def assert_stays_idle(self, result: Result) -> None:
@@ -125,7 +139,7 @@ class ResumeAfterRateLimitTest(unittest.TestCase):
             transcript += [rate_limited(), *turn_metadata(), auto_resume()]
         result = self.run_hook([*transcript, rate_limited()])
         self.assert_stays_idle(result)
-        self.assertEqual(result.slept, [])
+        self.assertEqual(result.slept, [hook.SETTLE_SECONDS])
 
     def test_stays_quiet_when_the_user_types_during_the_wait(self) -> None:
         result = self.run_hook([user("go"), rate_limited()], during_wait=[user("continue")])
@@ -137,6 +151,12 @@ class ResumeAfterRateLimitTest(unittest.TestCase):
             during_wait=[user("<task-notification>done</task-notification>"), assistant("the task finished")],
         )
         self.assert_stays_idle(result)
+
+    def test_reads_the_failed_turn_only_after_claude_code_flushes_it(self) -> None:
+        # The wake and the 429 it ran into were still in Claude Code's write
+        # buffer when the hook started, leaving the previous 429 at the tail.
+        result = self.run_hook([user("go"), rate_limited()], flushed_after_start=[auto_resume(), rate_limited()])
+        self.assert_wakes_after(result, 120)
 
     def test_metadata_written_during_the_wait_is_not_moving_on(self) -> None:
         result = self.run_hook([user("go"), rate_limited()], during_wait=turn_metadata())
@@ -154,7 +174,7 @@ class ResumeAfterRateLimitTest(unittest.TestCase):
     def test_ignores_a_session_whose_last_turn_was_not_rate_limited(self) -> None:
         result = self.run_hook([user("go"), rate_limited(), user("continue"), assistant("done")])
         self.assert_stays_idle(result)
-        self.assertEqual(result.slept, [])
+        self.assertEqual(result.slept, [hook.SETTLE_SECONDS])
 
     def test_ignores_other_api_errors(self) -> None:
         result = self.run_hook([user("go"), rate_limited()], error="server_error")

@@ -31,6 +31,12 @@ WAKE_MESSAGE = (
 # Wait before the first, second and third consecutive resume. A fourth
 # consecutive limit is left for the user.
 BACKOFF_SECONDS = (60, 120, 240)
+# Claude Code batches transcript appends (FLUSH_INTERVAL_MS=100 in 2.1.319), and
+# the hook starts within milliseconds of the failure, so the failed turn -- and,
+# after an earlier wake, the wake itself -- may not be on disk yet. Reading too
+# early anchors on the previous failure and then mistakes the new one for the
+# session having moved on.
+SETTLE_SECONDS = 1.0
 
 WAKE = 2
 STAY_IDLE = 0
@@ -87,6 +93,7 @@ def main(
         return STAY_IDLE
     path = Path(transcript_path)
 
+    sleep(SETTLE_SECONDS)
     turns = conversation(read_transcript(path))
     if not turns or not is_rate_limit_error(turns[-1]):
         return STAY_IDLE
