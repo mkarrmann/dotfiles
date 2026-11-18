@@ -15,7 +15,7 @@ contract is a public, typed one: `@opencode/client`, `@opencode/protocol` and
 
 ## Contract
 
-The contract is what T3 Code v0.1.6's OpenCode v2 client sends and decodes
+The contract is what T3 Code v0.1.10's OpenCode v2 client sends and decodes
 (`packages/provider-opencode/src/server/v2/` in T3 Code), not all of OpenCode.
 
 - Launch: `--version` prints a 2.x version on stdout; `serve --hostname=H --port=P`
@@ -41,6 +41,7 @@ The contract is what T3 Code v0.1.6's OpenCode v2 client sends and decodes
 | model `providerID/id`, variant | agent (e.g. `claude-native-ui`) / model option, reasoning effort |
 | `session.create` | `POST /v1/sessions` for the agent, bound to this host and the thread's cwd |
 | prompt (`delivery: queue`) | user message; the execution ends at the confirmed idle |
+| prompt with no text or files (Resume, since 0.1.10) | the user message "Continue where you left off." |
 | prompt (`delivery: steer`) | user message to the busy session: codex-native `turn/steer`, claude-native paste; `inbox.delivered` at `session.input.consumed` |
 | interrupt | `interrupt` event; the execution ends when the session is idle |
 | `switchModel` / variant | `PATCH model_override` / `reasoning_effort` (a live switch) |
@@ -191,7 +192,8 @@ recovered from Omnigent is kept in a SQLite file under
 
 `uv run pytest` runs the offline suite. Tests that decode events and responses
 with T3 Code's schemas need `~/repos/t3code` with its dependencies installed
-(`pnpm install`); they are skipped otherwise. `test_t3_following.py` covers
+(`pnpm install`); they are skipped otherwise. They use whatever revision is
+checked out there, so check out the tag `bin/t3-ensure` pins. `test_t3_following.py` covers
 replay after a gap and held runs; `test_t3_daemon.py` the forwarding path.
 
 `tests/live/live_harness.py SCENARIO` runs scenarios against the real Omnigent

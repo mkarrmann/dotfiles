@@ -19,8 +19,7 @@ Either way each window's new threads start in its own workspace's project
      one is left alone. Bumping the pin is how a host upgrades: `t3 update`
      cannot reach GitHub on a devserver, as its own fetch neither goes through
      the proxy nor carries the client certificate that ~/.curlrc gives curl.
-     Only hosts with a pinned checksum (Linux) install; the Mac keeps what
-     it has;
+     Only hosts with a pinned checksum install; the rest keep what they have;
  1b. serves mkarrmann/t3code's web client (T3_FORK_CLIENT; the fork's
      README) when one is pinned for the installed version: upstream's install
      of it copied to ~/.t3/runtime/fork/TAG with that client, checked against
@@ -123,15 +122,16 @@ WORK_SERVER = "checkouts"  # bin/t3-workspace-serve, bin/t3-pairing-tokens
 # project, workspace 1's (bin-macos/workspaces).
 MAC_SERVER = "local"
 MAC_PROJECTS = (Path.home() / "dotfiles",)
-# Step 1's t3 CLI, from https://github.com/pingdotgg/t3code/releases/tag/v0.1.7,
+# Step 1's t3 CLI, from https://github.com/pingdotgg/t3code/releases/tag/v0.1.10,
 # the release omnigent_config/t3-desktop-app.env pins the desktop app to. Each
 # checksum is the archive's line in that release's SHA256SUMS (GitHub's asset
 # digests agree), keyed by install.sh's <os>-<arch>. Bump the version and every
 # checksum together; init.sh then upgrades each host to it (step 1).
-T3_CLI_VERSION = "0.1.7"
+T3_CLI_VERSION = "0.1.10"
 T3_CLI_SHA256 = {
-    "linux-x64": "c089892bf7922e2e73c6f44a5d1ea125c99f70e378c18361cbbed2fba1920e6c",
-    "linux-arm64": "5a528e23af394cc6f359036d3cb8441fda14129d477630fc6c53e4f4a1025bc8",
+    "linux-x64": "9bea9d36a217299a0af880e8c347b536ed6a9a2f5bf328a695d174d63628c5e8",
+    "linux-arm64": "5ffbd224f53d0f827279825347a7ebf5a7ac98ad5c1347d47409f30aa2a1e425",
+    "darwin-arm64": "771e5a209ffa881e409ab3b3d39500dbd57e1176aaa49de81ce07bb3e62d5ee8",
 }
 T3_RELEASES = "https://github.com/pingdotgg/t3code/releases/download"
 # Step 1b's web client from https://github.com/mkarrmann/t3code, a fork carrying
@@ -144,6 +144,7 @@ T3_FORK_RELEASES = "https://github.com/mkarrmann/t3code/releases/download"
 T3_FORK_CLIENT: dict[str, tuple[str, str]] = {
     "0.1.7": ("mk-0.1.7-727c97b", "e6dc59a90cd6ed21ec5ef1b10c53a7c9b6706dc1827e3e08960fcd2f1b1833b4"),
     "0.1.9": ("mk-0.1.9-c42be6d", "9355c190498f02c20eed2bb0525e44e90308127caa1d0d44fb4d44b09d49b3cf"),
+    "0.1.10": ("mk-0.1.10-c42be6d", "feae3349f7d0621a9f252fd77eff3028014a295f219a74c2b7993d2f3e24c01e"),
 }
 T3_HOME = Path(os.environ.get("T3CODE_HOME") or Path.home() / ".t3").absolute()
 T3_BIN_DIR = Path.home() / ".local/bin"
