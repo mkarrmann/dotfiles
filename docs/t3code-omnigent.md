@@ -5,7 +5,7 @@ owns every session: harness, TUI, policies, watcher wakeups, the Google Chat
 bridge. T3 Code reaches it through `bin/omnigent-opencode`
 (`services/omnigent-opencode`), an OpenCode 2 server whose sessions are
 Omnigent sessions, registered as T3 Code's OpenCode provider "Omnigent". Each
-Omnigent agent (`claude-native-ui`, `codex-native-ui`, `muse`) is a model group in it.
+Omnigent agent (`claude-native-ui`, `codex-native-ui`, `muse`, `gemini`) is a model group in it.
 See "The provider" below, and the service's README for its design.
 
 ## One server per host, every window on all of them
@@ -339,7 +339,7 @@ seconds after its last thread closes; threads resume by id
 message ids, rollbacks) is kept in `~/.local/state/omnigent-opencode/state.db`.
 Env, set in the provider's environment in T3 Code's settings: `OMNIGENT_URL`
 (default `http://127.0.0.1:6767`), `OMNIGENT_OPENCODE_AGENTS` (default
-`claude-native-ui,codex-native-ui,muse`), `OMNIGENT_OPENCODE_HOST`,
+`claude-native-ui,codex-native-ui,muse,gemini`), `OMNIGENT_OPENCODE_HOST`,
 `OMNIGENT_OPENCODE_LOG` (a log file), `OMNIGENT_OPENCODE_DEBUG`.
 
 What T3 Code gets:

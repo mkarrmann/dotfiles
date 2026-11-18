@@ -19,7 +19,7 @@ alone, the service for the daemon):
 
 - `OMNIGENT_URL`: the Omnigent server (default `http://127.0.0.1:6767`).
 - `OMNIGENT_OPENCODE_AGENTS`: comma-separated Omnigent agents offered as
-  providers (default `claude-native-ui,codex-native-ui,muse`).
+  providers (default `claude-native-ui,codex-native-ui,muse,gemini`).
 - `OMNIGENT_OPENCODE_HOST`: the execution host sessions run on (default `auto`,
   this machine's).
 - `OMNIGENT_OPENCODE_STATE`: the SQLite state file (default under `$XDG_STATE_HOME`).
@@ -55,7 +55,7 @@ from .wire import VERSION
 
 LOG = logging.getLogger(__name__)
 
-DEFAULT_AGENTS = "claude-native-ui,codex-native-ui,muse"
+DEFAULT_AGENTS = "claude-native-ui,codex-native-ui,muse,gemini"
 DEFAULT_WATCH_DAYS = 7.0
 DAY_MS = 24 * 3600 * 1000
 STALE, CURRENT, BUSY = 0, 1, 2
