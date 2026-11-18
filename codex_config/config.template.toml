@@ -9,6 +9,12 @@ approval_policy = "never"
 model = "gpt-6.1-sol"
 model_reasoning_effort = "high"
 service_tier = "fast"
+# Meta's model catalog (~/.codex/meta/model_routes.json) gives the plain Sol ids
+# a 272k window and reserves the full one for `[1m]` twins of the same
+# deployment. Codex clamps this override to each model's max_context_window
+# (922k for gpt-6.1-sol/gpt-6.2-sol, 872k for gpt-6-luna and gpt-5.6-*) and
+# ignores it for models with none, so every model runs at its full window.
+model_context_window = 1000000
 
 # Codex writes runtime state to config.toml. Sync preserves its state tables;
 # explicit template or config.local.toml settings take precedence.
