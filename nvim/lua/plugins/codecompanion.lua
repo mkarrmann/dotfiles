@@ -206,7 +206,7 @@ local CLAUDE_BASE_MODELS = {
 
 local OMNIGENT_MODELS = {
   claude = vim.tbl_map(claude_1m, CLAUDE_BASE_MODELS),
-  codex  = { "gpt-6.1-sol", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna" },
+  codex  = { "gpt-6.1-sol", "gpt-6.2-sol", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna" },
 }
 
 -- Per-family "default" model. Codex's app-server default per-turn model is NOT a
