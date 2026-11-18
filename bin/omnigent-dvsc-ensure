@@ -12,9 +12,8 @@
 #      `muse-core` commands in the `acp:` block of ~/.omnigent/config.yaml
 #      (merged in place with omnigent's own pyyaml, preserving host: and any
 #      other acp agents). `acp:dvsc-core` and `acp:muse-core` are the harness
-#      ids the dvsc and muse agent specs bind to; `muse-core` is the same
-#      wrapper launched with `--default-mode muse`, because Omnigent forwards a
-#      model but no mode. The muse spec's agent-store row is reconciled by
+#      ids the dvsc and muse agent specs bind to; `muse-core` is Muse's own
+#      `muse acp` server. The muse spec's agent-store row is reconciled by
 #      omnigent-agents-ensure.
 #
 #   2. On the active Linux hub only, pre-registers the dotfiles `dvsc` agent
@@ -113,7 +112,8 @@ if not isinstance(agents, list):
 # `dmt` launcher runs `scsc lookup -R fbsource` whenever the session workspace
 # is outside an fbsource checkout, and without the user's TLS identity that
 # fails as the machine identity ("Repo metadata read access ... is not
-# permitted"), so session/new dies before dm-core starts.
+# permitted"), so session/new dies before dm-core starts. Muse reaches its
+# models without it, but the commands it runs in a session act as the user.
 identity = ["THRIFT_TLS_CL_CERT_PATH", "THRIFT_TLS_CL_KEY_PATH"]
 entries = [
     {
@@ -122,10 +122,12 @@ entries = [
         "send_model": True,
         "env_passthrough": list(identity),
     },
+    # Muse's default model is Wonder, which the metacode-modelapi ACL denies
+    # by design, so the session starts on muse-latest. Omnigent's model picks
+    # still apply through the ACP `model` config option muse acp advertises.
     {
         "name": "muse-core",
-        "command": f"{cmd} --default-mode muse",
-        "send_model": True,
+        "command": "/usr/local/bin/muse acp --model muse-latest",
         "env_passthrough": list(identity),
     },
 ]
