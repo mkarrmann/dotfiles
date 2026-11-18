@@ -78,6 +78,9 @@ COMPACTION_TIMEOUT_S: Final = 600.0
 RECONNECT_MIN_S: Final = 0.5
 RECONNECT_MAX_S: Final = 15.0
 TOUCH_INTERVAL_MS: Final = 60_000
+# T3 Code's Resume button prompts with no text (since 0.1.10); Omnigent gets the
+# words T3 Code sent before, as a harness may not answer an empty message.
+RESUME_TEXT: Final = "Continue where you left off."
 RULE_DENIED: Final = "This thread's permission rules in T3 Code do not allow it."
 PLAN_EXIT_DENIED: Final = (
     "The user is in T3 Code's plan mode, which has no ExitPlanMode step. Do not call ExitPlanMode again: "
@@ -1144,6 +1147,8 @@ class Session:
         if self.recap_due and delivery == "queue":
             self.recap_due = False
             text = _without_recap(text)
+        if delivery == "queue" and not text.strip() and not files:
+            text = RESUME_TEXT
         await self.connect()
         self.touch()
         await self.sync_policy()

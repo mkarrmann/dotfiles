@@ -105,6 +105,13 @@ async def test_a_prompt_runs_one_execution(t3: T3Client, shim: Shim, fake: FakeO
     assert await t3.call("session.active") == {}
 
 
+async def test_resume_without_text_asks_to_continue(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> None:
+    session = await open_session(t3, shim)
+    sid = session["id"]
+    await t3.call("session.prompt", {"sessionID": sid, "id": f"msg_t3_turn_{sid}:r1", "text": ""})
+    assert fake.only().posted[0]["data"]["content"] == [{"type": "input_text", "text": "Continue where you left off."}]
+
+
 async def start_turn(t3: T3Client, shim: Shim, fake: FakeOmnigent) -> tuple[str, str]:
     """A session with one execution running: its prompt posted and consumed."""
     session = await open_session(t3, shim)
