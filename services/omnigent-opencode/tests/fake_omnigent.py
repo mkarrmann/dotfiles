@@ -116,7 +116,10 @@ class FakeOmnigent:
                             "displayName": "GPT-5",
                             "isDefault": True,
                             "supportedReasoningEfforts": [{"reasoningEffort": "high"}],
-                        }
+                        },
+                        {"id": "gpt-6.1-sol", "model": "gpt-6.1-sol", "displayName": "GPT-6.1 Sol"},
+                        {"id": "gpt-6.1-sol[1m]", "model": "gpt-6.1-sol[1m]", "displayName": "GPT-6.1 Sol (1M)"},
+                        {"id": "gpt-6.2-sol", "model": "gpt-6.2-sol", "displayName": "GPT-6.2 Sol"},
                     ]
                 }
             )

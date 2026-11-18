@@ -37,8 +37,12 @@ DEFAULT_CONTEXT: Final = 200_000
 # catalog reports no contextWindow, and older probes put the suffix only on `model`.
 LONG_CONTEXT: Final = 1_000_000
 LONG_CONTEXT_SUFFIX: Final = "[1m]"
-# Claude models whose standard window is already 1M tokens, with or without the suffix.
+# Models whose standard window is already 1M tokens, with or without the suffix.
+# Codex's catalog reports no contextWindow; codex_config/config.template.toml's
+# model_context_window gives the plain Sol ids the window of their `[1m]` twins.
 LONG_CONTEXT_MODELS: Final = (
+    "gpt-6.1-sol",
+    "gpt-6.2-sol",
     "claude-opus-5",
     "claude-sonnet-5",
     "claude-haiku-5",
