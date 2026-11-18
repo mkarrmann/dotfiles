@@ -74,6 +74,12 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(a.stored["onboardingCompletedAt"], "2026-11-01")
         self.assertNotIn("onboardingCompletedAt", fresh.stored)
 
+    def test_a_setting_t3_code_removed_leaves_the_file(self):
+        cs.SETTINGS_FILE.write_text(json.dumps({"contextWindowMeterEnabled": True, "wordWrap": False}))
+        stale = Client(self.root, "stale", {**DEFAULTS, "contextWindowMeterEnabled": True, "wordWrap": False})
+        self.sync(stale)
+        self.assertEqual(self.file(), {"wordWrap": False})
+
     def test_a_change_in_one_window_reaches_the_file_and_the_others(self):
         a, b, c = (Client(self.root, n, dict(DEFAULTS)) for n in "abc")
         self.sync(a, b, c)

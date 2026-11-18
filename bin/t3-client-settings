@@ -102,8 +102,10 @@ class SyncError(Exception):
 
 
 def sparse(settings: Settings, defaults: Settings) -> Settings:
-    """SETTINGS without the unsynced keys and those at their default."""
-    return {k: v for k, v in settings.items() if k not in UNSYNCED and defaults.get(k, ABSENT) != v}
+    """SETTINGS without the unsynced keys, those at their default, and those
+    the defaults lack: generated for the version bin/t3-ensure pins, they lack
+    only settings T3 Code has since removed, which windows keep storing."""
+    return {k: v for k, v in settings.items() if k not in UNSYNCED and k in defaults and defaults[k] != v}
 
 
 def changes(stored: Optional[Settings], last_written: Optional[Settings], defaults: Settings) -> dict[str, Any]:
