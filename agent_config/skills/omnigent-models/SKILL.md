@@ -6,9 +6,10 @@ description: >-
   reasoning effort must be chosen, and whenever asked which Codex or Claude
   models are available here. `sys_list_models` answers empty on Matt's
   deployment; the live per-host catalog comes from `~/bin/omnigent-models`.
-  Covers the model ids each harness accepts, the reasoning-effort ladders, and
-  why an omitted model does NOT fall back to the configured default. Trigger
-  keywords: which models, available models, model id, gpt-6-astra, gpt-5.6-sol,
+  Covers the model ids each harness accepts, the reasoning-effort ladders, the
+  `[1m]` Codex twins, and what an omitted model falls back to. Trigger
+  keywords: which models, available models, model id, gpt-6.1-sol, gpt-6.2-sol,
+  gpt-6-astra, gpt-5.6-sol,
   opus, sonnet, fable, reasoning_effort, model_override, spawn a codex agent,
   codex subagent, claude subagent, sys_list_models empty.
 ---
@@ -31,15 +32,23 @@ each installed harness binary. One command prints it:
 ~/bin/omnigent-models codex --json   # raw rows, incl. descriptions and tiers
 ```
 
-Output on a personal machine looks like:
+Output on a work host (2026-11) looks like:
 
 ```
-codex-native models on host fe37… (http://127.0.0.1:6767):
-  gpt-6-astra          default  efforts: low medium high xhigh max ultra (default medium)
-  gpt-5.6-sol                   efforts: low medium high xhigh max ultra (default low)
-  gpt-5.5                       efforts: low medium high xhigh (default medium)
+codex-native models on host db80… (http://127.0.0.1:6767):
+  gpt-6.1-sol      default  efforts: low medium high xhigh max ultra (default medium)
+  gpt-6.1-sol[1m]           efforts: low medium high xhigh max ultra (default high)
+  gpt-6.2-sol               efforts: low medium high xhigh max ultra (default medium)
+  gpt-5.6-sol               efforts: low medium high xhigh max ultra (default low)
+  gpt-5.5                   efforts: low medium high xhigh (default medium)
   ...
 ```
+
+Pass the plain id, never a `[1m]` twin. Meta's Codex catalog gives a plain Sol
+id a 272k window and its `[1m]` twin the full one, on the same deployment;
+`model_context_window` in `codex_config/config.template.toml` gives the plain
+ids their full window (922k for gpt-6.1-sol and gpt-6.2-sol), so the twins are
+redundant.
 
 Run it every time rather than remembering a list. The catalog is probed per
 host from that host's binary and login, so it differs between environments
@@ -68,11 +77,11 @@ the script maps the SDK names for you.
 
 ## Why you must name the model
 
-An omitted model does not mean "the harness's configured default". For Codex,
-Omnigent substitutes its own constant (`gpt-5.6-sol`) unless the agent spec or
-the session names one, ignoring the `model =` line in `~/.codex/config.toml`.
-Prefer the row marked `default`: that is what the binary itself reports as its
-configured default on this host.
+Since Omnigent 0.22 an omitted Codex model reaches Codex unset, and Codex starts
+on the `model =` line of the session's `config.toml`: the row marked `default`.
+(Through 0.21 Omnigent substituted `gpt-5.6-sol`.) Name it anyway: the default
+is per host and follows that file, and for Claude it resolves provider-side,
+where you cannot see it.
 
 ## Effort ladders per harness
 
