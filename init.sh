@@ -16,6 +16,18 @@ DOTFILES_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 DOTFILES_PROFILE="$("$DOTFILES_DIR/bin/dotfiles-profile")" || exit 1
 export DOTFILES_DIR DOTFILES_PROFILE
 
+# --force: restart services that would otherwise wait for active turns to end
+# (the Omnigent server, omnigent-opencode's daemon), interrupting those turns.
+force_args=()
+case "$*" in
+  "") ;;
+  --force) force_args=(--force) ;;
+  *)
+    echo "usage: init.sh [--force]" >&2
+    exit 2
+    ;;
+esac
+
 # Failed steps warn and carry on, so the run's last lines say nothing about
 # them -- a single upgrade prints ~120 lines of uv package list after its
 # warning. Every warning is therefore repeated in a summary on exit, including
@@ -154,7 +166,7 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
   # Ahead of omnigent-agents-ensure, which exits
   # init.sh when the active hub's server activation is deferred.
   if [[ "$(uname -s)" == Linux ]] && "$DOTFILES_DIR/bin/omnigent-server-url" --is-candidate; then
-    "$DOTFILES_DIR/bin/t3-ensure" ||
+    "$DOTFILES_DIR/bin/t3-ensure" ${force_args[@]+"${force_args[@]}"} ||
       warn "t3-ensure failed (T3 Code over Omnigent unavailable on this host)"
   fi
 
@@ -166,7 +178,7 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
   # the quiescence check. See bin/omnigent-agents-ensure and
   # omnigent_config/agents/{claude,codex,dvsc}/.
   if [[ "$routing_ready" == true ]]; then
-    if ! "$DOTFILES_DIR/bin/omnigent-agents-ensure"; then
+    if ! "$DOTFILES_DIR/bin/omnigent-agents-ensure" ${force_args[@]+"${force_args[@]}"}; then
       report ERROR "Omnigent server activation deferred or failed; skipping further worker convergence. Rerun init.sh when the server can be refreshed."
       exit 1
     fi
@@ -175,7 +187,7 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
   # The Mac's own T3 Code server, t3@local (launchd, loaded by sync.sh), whose
   # project is ~/dotfiles: its providers and project. See bin/t3-ensure.
   if [[ "$(uname -s)" == Darwin ]]; then
-    "$DOTFILES_DIR/bin/t3-ensure" ||
+    "$DOTFILES_DIR/bin/t3-ensure" ${force_args[@]+"${force_args[@]}"} ||
       warn "t3-ensure failed (the Mac's T3 Code server unavailable)"
   fi
 
@@ -313,14 +325,14 @@ else
   # already reconnected it prints the restart instead.
   "$DOTFILES_DIR/bin/omnigent-config-ensure" ||
     warn "omnigent-config-ensure failed (shared config not applied)"
-  "$DOTFILES_DIR/bin/omnigent-agents-ensure" ||
+  "$DOTFILES_DIR/bin/omnigent-agents-ensure" ${force_args[@]+"${force_args[@]}"} ||
     warn "omnigent-agents-ensure failed (managed agents may be stale in the picker)"
 
   # One T3 Code server, t3@desktop, whose projects are the workdirs of
   # bin-linux/startup-windows' t3 rows, a UI over this host's Omnigent sessions.
   # Restarts it only onto a new t3. See bin/t3-ensure.
   if [[ "$(uname -s)" == Linux ]]; then
-    "$DOTFILES_DIR/bin/t3-ensure" ||
+    "$DOTFILES_DIR/bin/t3-ensure" ${force_args[@]+"${force_args[@]}"} ||
       warn "t3-ensure failed (T3 Code over Omnigent unavailable on this desktop)"
   fi
 fi
