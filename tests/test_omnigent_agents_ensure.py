@@ -201,6 +201,14 @@ class AgentsEnsureTest(unittest.TestCase):
             self.dotfiles / "bin/omnigent-hub",
             "#!/bin/bash\n" + recorder + 'exit "${TEST_QUIESCE_EXIT:-0}"\n',
         )
+        # Exits TEST_INTERRUPT_EXIT on the first call, TEST_INTERRUPT_EXIT_AFTER on later ones.
+        self.script(
+            self.dotfiles / "bin/omnigent-interrupt-turns",
+            "#!/bin/bash\n" + recorder
+            + 'marker="$TEST_CALLS.interrupted"\n'
+            'if [ -e "$marker" ]; then exit "${TEST_INTERRUPT_EXIT_AFTER:-0}"; fi\n'
+            'touch "$marker"; exit "${TEST_INTERRUPT_EXIT:-0}"\n',
+        )
         self.script(
             self.dotfiles / "bin/omnigent-server-config-stale",
             "#!/bin/bash\n" + recorder + 'exit "${TEST_CONFIG_STALE_EXIT:-1}"\n',
@@ -214,9 +222,9 @@ class AgentsEnsureTest(unittest.TestCase):
         path.write_text(contents)
         path.chmod(0o755)
 
-    def run_script(self):
+    def run_script(self, *args):
         return subprocess.run(
-            [str(self.target)],
+            [str(self.target), *args],
             cwd=self.dotfiles,
             env=self.env,
             capture_output=True,
@@ -400,7 +408,88 @@ class AgentsEnsureTest(unittest.TestCase):
         result = self.run_script()
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("active server is busy", result.stdout)
+        self.assertIn("init.sh --force", result.stdout)
         self.assertEqual(self.restarts(), [])
+        self.assertEqual(self.recorded("omnigent-interrupt-turns"), [])
+
+    def busy_work_hub(self):
+        self.env["TEST_PROFILE"] = "work"
+        self.env["TEST_IS_HUB"] = "0"
+        self.preregister("claude", "codex", "dvsc", "muse", "gemini", "polly", "debby")
+        url = self.start_live_server("claude", "codex", "dvsc", "muse", "gemini", current=False)
+        self.env["TEST_HUB_URL"] = url
+        self.env["TEST_UNIT_ACTIVE"] = "1"
+        self.env["TEST_QUIESCE_EXIT"] = "1"
+        return url
+
+    def test_work_hub_force_interrupts_active_turns_then_restarts(self):
+        url = self.busy_work_hub()
+        result = self.run_script("--force")
+        self.assert_success(result)
+        self.assertEqual(
+            self.recorded("omnigent-interrupt-turns"),
+            [["omnigent-interrupt-turns", url, "--timeout", "30"]],
+        )
+        self.assertEqual(
+            self.restarts(),
+            [
+                ["systemctl", "--user", "restart", "omnigent-server.service"],
+                ["systemctl", "--user", "try-restart", "omnigent-watcher.service"],
+            ],
+        )
+        self.assertIn("agent bundles current", result.stdout)
+
+    def test_work_hub_force_settles_unended_turns_after_the_restart(self):
+        url = self.busy_work_hub()
+        self.env["TEST_INTERRUPT_EXIT"] = "1"
+        result = self.run_script("--force")
+        self.assert_success(result)
+        self.assertEqual(
+            self.recorded("omnigent-interrupt-turns"),
+            [
+                ["omnigent-interrupt-turns", url, "--timeout", "30"],
+                ["omnigent-interrupt-turns", url, "--timeout", "120"],
+            ],
+        )
+        self.assertIn("settling the turns the interrupt did not end", result.stdout)
+        self.assertNotIn("WARNING", result.stdout)
+
+    def test_work_hub_force_warns_about_turns_still_active_after_the_restart(self):
+        self.busy_work_hub()
+        self.env["TEST_INTERRUPT_EXIT"] = "1"
+        self.env["TEST_INTERRUPT_EXIT_AFTER"] = "1"
+        result = self.run_script("--force")
+        self.assert_success(result)
+        self.assertIn("WARNING: the sessions above are still active after the restart", result.stdout)
+
+    def test_work_hub_force_on_a_quiescent_server_interrupts_nothing(self):
+        self.env["TEST_PROFILE"] = "work"
+        self.env["TEST_IS_HUB"] = "0"
+        url = self.start_live_server("claude", "codex", "dvsc", "muse", "gemini", current=False)
+        self.env["TEST_HUB_URL"] = url
+        self.env["TEST_UNIT_ACTIVE"] = "1"
+        result = self.run_script("--force")
+        self.assert_success(result)
+        self.assertEqual(self.recorded("omnigent-interrupt-turns"), [])
+        self.assertIn(["systemctl", "--user", "restart", "omnigent-server.service"], self.restarts())
+
+    def test_desktop_force_interrupts_connected_sessions_then_restarts_host(self):
+        self.preregister("claude", "codex", "polly", "debby")
+        url = self.start_live_server("claude", "codex", current=False)
+        self.env["TEST_STATUS_JSON"] = self.status(url, 3)
+        self.env["TEST_UNIT_ACTIVE"] = "1"
+        result = self.run_script("--force")
+        self.assert_success(result)
+        self.assertEqual(
+            self.recorded("omnigent-interrupt-turns"),
+            [["omnigent-interrupt-turns", url, "--timeout", "30"]],
+        )
+        self.assertEqual(self.restarts(), [["systemctl", "--user", "restart", "omnigent-host.service"]])
+
+    def test_unknown_arguments_are_rejected(self):
+        result = self.run_script("--forse")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("usage: omnigent-agents-ensure [--force]", result.stderr)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""omnigent-interrupt-turns — interrupt every active turn on an Omnigent server
+and wait for each session to settle.
+
+    omnigent-interrupt-turns URL [--timeout SECONDS]
+
+`init.sh --force` (bin/omnigent-agents-ensure) restarts the server under active
+turns. Interrupting them first ends each the way the UI's Stop does, with its
+terminal edge recorded, instead of leaving the restart to cut it off. Running it
+again after the restart settles what the first run could not reach: a runner
+that reconnected takes the interrupt then, and the session list this reads is
+what makes Omnigent settle a session whose runner is gone back to idle (the
+server's lazy stale-running backstop, once the runner has been unseen for
+RUNNER_LIVENESS_TTL_S, 90 s).
+
+Exits 0 once every session is idle or failed, 1 when some are still active at
+the timeout (listed on stderr), 2 when the server cannot be read.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, NamedTuple
+
+QUIESCENT = frozenset({"idle", "failed"})
+POLL_S = 1.0
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+class ServerError(Exception):
+    pass
+
+
+class Session(NamedTuple):
+    id: str
+    status: str
+    agent: str
+    title: str
+
+    def describe(self) -> str:
+        return f"{self.id}={self.status} ({self.agent}: {self.title!r})"
+
+
+def log(message: str) -> None:
+    print(f"[interrupt-turns] {message}", file=sys.stderr)
+
+
+def request_json(url: str, body: dict[str, Any] | None = None) -> Any:
+    data = json.dumps(body).encode() if body is not None else None
+    request = urllib.request.Request(
+        url, data=data, headers={"Content-Type": "application/json"}, method="POST" if data else "GET"
+    )
+    try:
+        with OPENER.open(request, timeout=10) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")[:300]
+        raise ServerError(f"HTTP {exc.code} from {url}: {detail}") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ServerError(f"{url}: {exc}") from exc
+
+
+def sessions(base_url: str) -> list[Session]:
+    payload = request_json(f"{base_url}/v1/sessions?limit=1000&kind=any")
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        raise ServerError("the session list is not a {data: [...]} object")
+    if payload.get("has_more") is True:
+        raise ServerError("more than 1000 sessions; cannot see them all")
+    listed: list[Session] = []
+    for item in data:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not isinstance(item.get("status"), str):
+            raise ServerError(f"a session without id/status: {item!r}")
+        listed.append(
+            Session(item["id"], item["status"], str(item.get("agent_name") or "?"), str(item.get("title") or "untitled"))
+        )
+    return listed
+
+
+def active(listed: list[Session]) -> list[Session]:
+    return [s for s in listed if s.status not in QUIESCENT]
+
+
+def interrupt(base_url: str, session: Session) -> None:
+    path = urllib.parse.quote(session.id, safe="")
+    request_json(f"{base_url}/v1/sessions/{path}/events", {"type": "interrupt", "data": {}})
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("url")
+    parser.add_argument("--timeout", type=float, default=30.0)
+    args = parser.parse_args()
+    base_url = args.url.rstrip("/")
+    try:
+        targets = active(sessions(base_url))
+        if not targets:
+            log("no active turns")
+            return 0
+        for session in targets:
+            log(f"interrupting {session.describe()}")
+            try:
+                interrupt(base_url, session)
+            except ServerError as exc:
+                # A session that refuses (a Codex side chat whose turn is not
+                # identifiable yet) still gets waited on: its parent's
+                # interrupt usually ends it.
+                log(f"  interrupt refused: {exc}")
+        ids = {s.id for s in targets}
+        deadline = time.monotonic() + args.timeout
+        while True:
+            still = [s for s in active(sessions(base_url)) if s.id in ids]
+            if not still:
+                log(f"all {len(ids)} interrupted session(s) settled")
+                return 0
+            if time.monotonic() >= deadline:
+                log(f"still active after {args.timeout:.0f}s:")
+                for session in still:
+                    log(f"  {session.describe()}")
+                return 1
+            time.sleep(POLL_S)
+    except ServerError as exc:
+        log(f"cannot read the server: {exc}")
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

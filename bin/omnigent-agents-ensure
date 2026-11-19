@@ -33,7 +33,10 @@
 #            omnigent-server.service leaves the host and its runners alone.
 #   desktop  only when no session is connected at all. The server lives inside
 #            omnigent-host.service, and restarting that ends every live session.
-# Otherwise it prints the restart to run and exits 1.
+# Otherwise it prints the restart to run and exits 1. With --force (init.sh
+# --force) it restarts anyway: it interrupts every active turn first
+# (bin/omnigent-interrupt-turns), so each ends as the UI's Stop ends it, and
+# after the restart settles any the interrupt did not reach.
 #
 # Idempotent and portable: safe to re-run, and self-skips where omnigent isn't
 # installed or this host owns no server. Wired into init.sh on both profiles.
@@ -42,10 +45,15 @@
 # OMNIGENT_SERVER_URL.
 set -euo pipefail
 
-if [[ $# -ne 0 ]]; then
-  echo "usage: omnigent-agents-ensure" >&2
-  exit 2
-fi
+force=false
+case "$*" in
+  "") ;;
+  --force) force=true ;;
+  *)
+    echo "usage: omnigent-agents-ensure [--force]" >&2
+    exit 2
+    ;;
+esac
 
 log() { printf '[agents-ensure] %s\n' "$*"; }
 
@@ -303,6 +311,7 @@ if [ -n "$live_url" ] \
     && curl -sf --noproxy '*' --max-time 5 "$live_url/health" >/dev/null 2>&1; then
   live_reachable=true
 fi
+unsettled=false
 if [ "$live_reachable" = true ]; then
   live_current=true
   for name in "${verified_names[@]}"; do
@@ -323,21 +332,28 @@ if [ "$live_reachable" = true ]; then
       work)
         if [ ! -x "$DOTFILES/bin/omnigent-hub" ] \
             || ! "$DOTFILES/bin/omnigent-hub" quiesce-check --json >/dev/null; then
-          log "server config/agent bundles updated, but the active server is busy; rerun after current turns finish"
-          exit 1
+          if [ "$force" != true ]; then
+            log "server config/agent bundles updated, but the active server is busy; rerun after current turns finish, or run init.sh --force to interrupt them"
+            exit 1
+          fi
+          log "--force: interrupting active turns before restarting $SERVER_UNIT…"
+          "$DOTFILES/bin/omnigent-interrupt-turns" "$live_url" --timeout 30 || unsettled=true
         fi
-        log "restarting quiescent server to load changed agent bundles and policies…"
+        log "restarting server to load changed agent bundles and policies…"
         systemctl --user restart "$SERVER_UNIT"
         systemctl --user try-restart omnigent-watcher.service 2>/dev/null || true
         ;;
       desktop)
         connected="$(managed_field "$(managed_status)" live_sessions)"
         if [ "$connected" != 0 ]; then
-          log "server config/agent bundles updated, but ${connected:-an unknown number of} session(s) are connected to the local server and restarting $SERVER_UNIT ends every one of them; when they are done, run:"
-          log "  systemctl --user restart $SERVER_UNIT"
-          exit 1
+          if [ "$force" != true ]; then
+            log "server config/agent bundles updated, but ${connected:-an unknown number of} session(s) are connected to the local server and restarting $SERVER_UNIT ends every one of them; when they are done, run init.sh again, or run init.sh --force (or systemctl --user restart $SERVER_UNIT) now"
+            exit 1
+          fi
+          log "--force: interrupting active turns before restarting $SERVER_UNIT, which ends ${connected:-every} connected session(s)…"
+          "$DOTFILES/bin/omnigent-interrupt-turns" "$live_url" --timeout 30 || unsettled=true
         fi
-        log "restarting the idle local host to load changed agent bundles and policies…"
+        log "restarting the local host to load changed agent bundles and policies…"
         systemctl --user restart "$SERVER_UNIT"
         ;;
     esac
@@ -360,6 +376,14 @@ if [ "$live_reachable" = true ]; then
     exit 1
   fi
   log "${managed_names[*]} agent bundles current ✓ ($live_url)"
+  if [ "$unsettled" = true ]; then
+    # A runner that reconnected takes the interrupt now; one that did not is
+    # settled to idle by the server once it has been unseen for 90 s.
+    log "--force: settling the turns the interrupt did not end before the restart…"
+    if ! "$DOTFILES/bin/omnigent-interrupt-turns" "$live_url" --timeout 120; then
+      log "WARNING: the sessions above are still active after the restart; interrupt them from the UI"
+    fi
+  fi
 else
   log "reconciled ${managed_names[*]} ✓ into chat.db (no server currently running; they'll appear when omnigent starts)"
 fi
