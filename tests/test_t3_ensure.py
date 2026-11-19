@@ -157,7 +157,7 @@ class T3EnsureTest(unittest.TestCase):
         write_exe(self.bin / "hostname", 'echo "${FAKE_FQDN:-devvm1.cco0.facebook.com}"\n')
         self.os = "Linux"
 
-    def run_ensure(self):
+    def run_ensure(self, *args):
         env = {
             "HOME": str(self.home),
             "DOTFILES_DIR": str(self.dotfiles),
@@ -165,7 +165,7 @@ class T3EnsureTest(unittest.TestCase):
             "PATH": f"{self.bin}:/usr/bin:/bin",
             "FAKE_UNAME": self.os,
         }
-        return subprocess.run([str(SCRIPT)], env=env, capture_output=True, text=True)
+        return subprocess.run([str(SCRIPT), *args], env=env, capture_output=True, text=True)
 
     def calls_made(self):
         return self.calls.read_text().splitlines() if self.calls.exists() else []
@@ -386,7 +386,26 @@ class T3EnsureTest(unittest.TestCase):
         result = self.run_ensure()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse([c for c in self.calls_made() if "restart" in c])
-        self.assertIn("a turn is in flight; run init.sh again later", result.stdout)
+        self.assertIn("a turn is in flight; run init.sh --force to restart it anyway", result.stdout)
+
+    def test_force_restarts_a_busy_daemon_on_old_code(self):
+        self.assertEqual(self.run_ensure().returncode, 0)
+        self.busy.touch()
+        result = self.run_ensure("--force")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("systemctl --user restart omnigent-opencode.service", self.calls_made())
+        self.assertIn("restarting it anyway (--force)", result.stdout)
+
+    def test_force_leaves_a_daemon_on_current_code_alone(self):
+        self.assertEqual(self.run_ensure().returncode, 0)
+        result = self.run_ensure("--force")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse([c for c in self.calls_made() if "restart" in c])
+
+    def test_unknown_arguments_are_rejected(self):
+        result = self.run_ensure("--forse")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("usage: t3-ensure [--force]", result.stderr)
 
     def test_existing_project_counts_as_added(self):
         write_exe(
@@ -750,7 +769,7 @@ class T3UpgradeTest(unittest.TestCase):
     def run_main(self):
         out = io.StringIO()
         with mock.patch("sys.stdout", out):
-            code = self.module.main()
+            code = self.module.main([])
         return code, out.getvalue()
 
     def serve_from(self, binary: Path) -> None:
