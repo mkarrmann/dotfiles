@@ -1,21 +1,6 @@
 return {
 	{
 		"nvim-telescope/telescope.nvim",
-		keys = {
-			{
-				"<leader>p",
-				function()
-					local meta_util = require("meta.util")
-					if meta_util.arc.get_project_root(vim.uv.cwd()) then
-						require("telescope").load_extension("myles")
-						vim.cmd("Telescope myles")
-					else
-						require("lazyvim.util").pick().telescope("files")()
-					end
-				end,
-				desc = "Find Files (Myles)",
-			},
-		},
 		opts = function(_, opts)
 			local actions = require("telescope.actions")
 			local action_state = require("telescope.actions.state")
