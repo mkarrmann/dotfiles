@@ -134,7 +134,7 @@ Not covered: **dvsc / devmate.** Its spec declares no `prompt:`, and the generic
 
 **Framework:** LazyVim (Neovim distribution on lazy.nvim), nvim-cmp for completion, `midnight.nvim` theme.
 
-**Portable plugins** (in dotfiles): telescope, treesitter, flash, lualine, undotree, tmux-navigator, codecompanion.nvim (personal fork), nvim-dap + nvim-jdtls (Java, with the Maven/Presto build integration in `lib/presto-maven.lua`), obsidian.nvim, scope.nvim, remote-nvim.
+**Portable plugins** (in dotfiles): telescope, treesitter, flash, lualine, undotree, tmux-navigator, codecompanion.nvim (upstream, inline assistant only), nvim-dap + nvim-jdtls (Java, with the Maven/Presto build integration in `lib/presto-maven.lua`), obsidian.nvim, scope.nvim, remote-nvim.
 
 **Meta plugins** (`nvim/local/plugins/meta.lua`, symlinked by `meta_init.sh`): meta.nvim (detected at `/usr/share/fb-editor-support/nvim` on Linux or `/usr/local/share/fb-editor-support/nvim` on Mac), none-ls.
 

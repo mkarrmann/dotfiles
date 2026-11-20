@@ -14,9 +14,9 @@ PATH (the work Mac). Other machines use `desktop`; installing Omnigent alone
 does not change that choice. Check the result with `~/dotfiles/bin/dotfiles-profile`.
 
 Both profiles configure the shell, terminal, editor, and ordinary tools.
-Desktop setup fetches the CodeCompanion fork from GitHub and skips internal
-plugins/MCPs and the Omnigent hub infrastructure. Work setup retains the
-devserver bootstrap sources, work MCPs, Linux services, and Mac client jobs.
+Desktop setup skips internal plugins/MCPs and the Omnigent hub infrastructure.
+Work setup retains the devserver bootstrap sources, work MCPs, Linux services,
+and Mac client jobs.
 On Linux it discovers routing before running dependent Omnigent setup; failure
 skips those dependent steps, while declared Neovim sessions can still start.
 

@@ -62,11 +62,8 @@ trap summarize_problems EXIT
 # ---------------------------------------------------------------------------
 # 2. Installs / dependency bootstrap (network-bound; non-disruptive).
 # ---------------------------------------------------------------------------
-"$DOTFILES_DIR/bin/codecompanion-fork-ensure" \
-  || warn "CodeCompanion fork bootstrap failed; Lazy may be unable to install it"
-
-# After the fork (a local Lazy plugin) and before stage 3 enables the nvs@
-# units, which would otherwise all race to install the plugins at first start.
+# Before stage 3 enables the nvs@ units, which would otherwise all race to
+# install the plugins at first start.
 "$DOTFILES_DIR/bin/nvim-plugins-ensure" \
   || warn "nvim plugin install incomplete; sessions will report missing plugins"
 
@@ -408,12 +405,12 @@ if ! command -v bob &>/dev/null; then
     fi
 fi
 
-# StyLua, pinned to the version the CodeCompanion fork's format CI uses. Unlike
+# StyLua, pinned so Lua formatting is reproducible across machines. Unlike
 # bob above this is version-checked rather than presence-checked, because a
 # formatter that drifts between machines rewrites files depending on where you
 # edited. See bin/stylua-ensure.
 "$DOTFILES_DIR/bin/stylua-ensure" \
-    || warn "stylua install failed (make format will be unavailable)"
+    || warn "stylua install failed (Lua formatting will be unavailable)"
 
 # marksman, the Markdown language server. Non-fatal: GitHub release assets are
 # not reachable from every host here, and nvim leaves marksman disabled when the

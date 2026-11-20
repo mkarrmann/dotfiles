@@ -10,8 +10,6 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ADAPTER = Path("lua/codecompanion/adapters/omnigent/init.lua")
-GITHUB_FORK = "https://github.com/mkarrmann/codecompanion.nvim.git"
 
 
 class ProfileFixture(unittest.TestCase):
@@ -131,72 +129,6 @@ class DotfilesProfileTest(ProfileFixture):
         self.assertNotEqual(result.returncode, 0)
 
 
-class CodeCompanionProfileTest(ProfileFixture):
-    def setUp(self):
-        super().setUp()
-        self.script = self.dotfiles / "bin/codecompanion-fork-ensure"
-        shutil.copy2(ROOT / "bin/codecompanion-fork-ensure", self.script)
-        self.repo = self.home / "repos/codecompanion.nvim"
-        self.env["CODECOMPANION_NVIM_REPO"] = str(self.repo)
-        self.stub(
-            self.bin / "git",
-            'printf "git %s\\n" "$*" >> "$TEST_CALLS"\n'
-            'if [[ "$1" == clone ]]; then\n'
-            '  destination="${!#}"\n'
-            '  mkdir -p "$destination/.git" '
-            '"$destination/lua/codecompanion/adapters/omnigent"\n'
-            '  touch "$destination/lua/codecompanion/adapters/omnigent/init.lua"\n'
-            "fi",
-        )
-        resolver = (
-            'printf "route %s\\n" "$*" >> "$TEST_CALLS"\n'
-            'case "$1" in\n'
-            '  --primary) echo primary.facebook.com ;;\n'
-            '  --standby) echo standby.facebook.com ;;\n'
-            "  *) exit 1 ;;\n"
-            "esac"
-        )
-        self.stub(self.bin / "omnigent-server-url", resolver)
-        self.stub(self.dotfiles / "bin/omnigent-server-url", resolver)
-
-    def test_desktop_bootstraps_from_github_without_hub_queries(self):
-        self.env["DOTFILES_PROFILE"] = "desktop"
-        self.assert_success(self.run_script(self.script))
-        clones = [line for line in self.calls() if line.startswith("git clone ")]
-        self.assertEqual(len(clones), 1, self.calls())
-        self.assertIn(GITHUB_FORK, clones[0])
-        self.assertFalse(any(line.startswith("route ") for line in self.calls()))
-        self.assertTrue((self.repo / ADAPTER).is_file())
-
-    def test_work_linux_keeps_internal_clone_route(self):
-        self.env["DOTFILES_PROFILE"] = "work"
-        self.assert_success(self.run_script(self.script))
-        clones = [line for line in self.calls() if line.startswith("git clone ")]
-        self.assertEqual(len(clones), 1, self.calls())
-        self.assertIn(f"primary.facebook.com:{self.repo}", clones[0])
-        self.assertTrue((self.repo / ADAPTER).is_file())
-
-    def test_existing_fork_is_preserved_without_git_operations(self):
-        (self.repo / ".git").mkdir(parents=True)
-        adapter = self.repo / ADAPTER
-        adapter.parent.mkdir(parents=True)
-        adapter.write_text("local edits\n")
-        self.env["DOTFILES_PROFILE"] = "desktop"
-        self.assert_success(self.run_script(self.script))
-        self.assertEqual(adapter.read_text(), "local edits\n")
-        self.assertEqual(self.calls(), [])
-
-    def test_invalid_existing_checkout_is_not_replaced(self):
-        self.repo.mkdir(parents=True)
-        sentinel = self.repo / "keep.txt"
-        sentinel.write_text("precious\n")
-        self.env["DOTFILES_PROFILE"] = "desktop"
-        result = self.run_script(self.script)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(sentinel.read_text(), "precious\n")
-        self.assertEqual(self.calls(), [])
-
-
 class InitProfileTest(ProfileFixture):
     def setUp(self):
         super().setUp()
@@ -207,7 +139,7 @@ class InitProfileTest(ProfileFixture):
         self.recorder = recorder
         helpers = (
             "sync.sh", "agent_config/bootstrap-plugins",
-            "bin/codecompanion-fork-ensure", "bin/omnigent-version-ensure",
+            "bin/omnigent-version-ensure",
             "bin/omnigent-desktop-ensure",
             "bin/omnigent-desktop-app-ensure",
             "bin/omnigent-dvsc-ensure", "bin/omnigent-config-ensure",
@@ -248,7 +180,7 @@ class InitProfileTest(ProfileFixture):
                 self.assert_success(result)
                 calls = self.calls()
                 for helper in (
-                    "sync.sh", "codecompanion-fork-ensure", "omnigent-desktop-ensure",
+                    "sync.sh", "omnigent-desktop-ensure",
                     "omnigent-config-ensure", "omnigent-agents-ensure",
                     "stylua-ensure", "marksman-ensure", "gh-ensure", "aws-agent-toolkit-ensure",
                 ):
