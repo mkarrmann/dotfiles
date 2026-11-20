@@ -1,5 +1,5 @@
 -- Headless test for lib.meta-root against the installed meta.nvim.
--- nvim --headless -u NONE --cmd "set rtp+=$HOME/dotfiles/nvim,/usr/share/fb-editor-support/nvim" -c "lua require('lib.test.meta-root-spec').run()" -c "qa!"
+-- nvim --headless -u NONE --cmd "set rtp+=$HOME/dotfiles/nvim" -c "lua require('lib.test.meta-root-spec').run()" -c "qa!"
 
 local M = {}
 
@@ -18,6 +18,7 @@ function M.run()
 		vim.fn.writefile({ '{"project_id": "fbsource"}' }, tmp .. "/outer/.arcconfig")
 		local file = tmp .. "/outer/inner/foo.h"
 
+		vim.opt.rtp:append("/usr/share/fb-editor-support/nvim")
 		require("lib.meta-root").setup()
 		local arc = require("meta.util.arc")
 
