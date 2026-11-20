@@ -96,11 +96,11 @@ H.run(function()
 	-- If hg ssl fails, hg sl's output stays up.
 	H.fail(repo2, "ssl", "abort: simulated ssl failure")
 	hg.refresh_ssl()
-	vim.wait(3000, function()
-		return not hg.ssl_state.refreshing
-	end, 20)
-	vim.wait(500)
-	H.check(panel():find(revs2.descendant, 1, true) ~= nil and not panel():find("[ssl]", 1, true), "hg sl output shown although hg ssl failed")
+	-- The failing hg ssl returns at once, so `refreshing` clears before hg sl
+	-- (~0.5 s) is done; wait for hg sl's output itself.
+	H.check(vim.wait(5000, function()
+		return panel():find(revs2.descendant, 1, true) ~= nil and not panel():find("[ssl]", 1, true)
+	end, 20), "hg sl output shown although hg ssl failed")
 	vim.uv.fs_unlink(vim.uv.fs_realpath(repo2) .. "/.hg/fail-ssl")
 	hg.refresh_ssl()
 	vim.wait(5000, function()
