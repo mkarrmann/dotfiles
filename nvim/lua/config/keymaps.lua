@@ -76,8 +76,6 @@ vim.keymap.set("n", "<leader><tab>r", function()
 		if name then
 			vim.api.nvim_tabpage_set_var(tab, "tab_name", name)
 			vim.cmd("redrawtabline")
-			-- For an omnigent chat tab, mirror the name to the durable session title.
-			require("lib.omnigent-tab-state").push_title(tab)
 		end
 	end)
 end, { desc = "Rename tab" })

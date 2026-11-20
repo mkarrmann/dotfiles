@@ -9,8 +9,8 @@ function M.apply(win)
 	vim.wo[win][0].relativenumber = true
 end
 
----Shows two buffers diffed side by side, from the top. Shared by the meta-hg
----diff split (lib.diff-session) and the CodeCompanion diff tab (lib.diff-tab).
+---Shows two buffers diffed side by side, from the top, for the meta-hg diff
+---split (lib.diff-session).
 ---@param left_win integer
 ---@param left_buf integer
 ---@param right_win integer

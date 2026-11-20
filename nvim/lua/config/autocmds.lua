@@ -28,8 +28,8 @@ end
 --
 -- Why: virtcolumn.nvim re-derives its bars from the window-local 'cc' on a
 -- dozen high-frequency events (WinScrolled, TextChanged*, WinEnter, ...). A
--- global 'cc' means every newly-created window (e.g. CodeCompanion's chat,
--- input, and status panes) inherits a non-empty local 'cc', so virtcolumn's
+-- global 'cc' means every newly-created window (e.g. CodeCompanion's chat)
+-- inherits a non-empty local 'cc', so virtcolumn's
 -- reseed clause (`local_cc ~= ''`) re-populates and redraws the bars no matter
 -- how many times we clear them. Clearing once on FileType can't win that race.
 -- Keeping the global empty and applying 'cc' only to wanted buffers removes the
@@ -38,8 +38,6 @@ end
 local COLORCOLUMN = "79,80,88,100,120"
 local NO_COLORCOLUMN = {
 	codecompanion = true,
-	codecompanion_input = true,
-	codecompanion_queue_entry = true,
 	codecompanion_cli = true,
 }
 

@@ -2,8 +2,8 @@ return {
 	{ "christoomey/vim-tmux-navigator", lazy = false },
 	{ "mbbill/undotree" },
 	-- Bufferline's default buffer mode hides when these tabpages contain only
-	-- unlisted terminal/CodeCompanion buffers. The custom renderer keeps true
-	-- tabpages visible and adds Omnigent activity state.
+	-- unlisted terminal buffers. The custom renderer (lib.agent-tabline) keeps
+	-- true tabpages visible.
 	{ "akinsho/bufferline.nvim", enabled = false },
 	{
 		"lewis6991/satellite.nvim",

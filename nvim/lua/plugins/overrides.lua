@@ -125,53 +125,6 @@ return {
 				return esc(name)
 			end
 
-			-- Resolve via the queue's tracked chat bufnr rather than the focused
-			-- buffer. With laststatus=3 the statusline always renders against the
-			-- current window — but the user spends the whole prompt-typing time
-			-- in the codecompanion_input buffer, not the chat buffer, so a
-			-- focus-based lookup hides the pill exactly when it matters.
-			local function cc_session_id()
-				local ok, cc = pcall(require, "codecompanion")
-				if not ok then return nil end
-				local ok_q, queue = pcall(require, "codecompanion.interactions.chat.queue")
-				if not ok_q then return nil end
-				local bufnr = queue.chat_bufnr()
-				if not bufnr then return nil end
-				local chat = cc.buf_get_chat(bufnr)
-				if not chat then return nil end
-				return require("codecompanion.interactions.chat.sessionful").session_id(chat)
-			end
-
-			local function cc_context()
-				local sid = cc_session_id()
-				if not sid then return "" end
-				local pct = require("codecompanion.interactions.chat.usage").context_pct(sid)
-				if not pct then
-					return "CC"
-				end
-				return string.format("CC %d%%%%", pct)
-			end
-
-			local function cc_context_color()
-				local sid = cc_session_id()
-				if not sid then return nil end
-				local pct = require("codecompanion.interactions.chat.usage").context_pct(sid) or 0
-				if pct >= 85 then return { fg = "#ff5555" } end
-				if pct >= 70 then return { fg = "#ff8800" } end
-				if pct >= 50 then return { fg = "#ffcc00" } end
-				return { fg = "#00cc00" }
-			end
-
-			opts.options = opts.options or {}
-			opts.options.disabled_filetypes = opts.options.disabled_filetypes or {}
-			opts.options.disabled_filetypes.winbar = opts.options.disabled_filetypes.winbar or {}
-			opts.options.disabled_filetypes.statusline = opts.options.disabled_filetypes.statusline or {}
-			-- Queue entries paint their own winbar (position + held state); lualine
-			-- would otherwise overwrite it.
-			vim.list_extend(
-				opts.options.disabled_filetypes.winbar,
-				{ "codecompanion_input", "codecompanion_queue_entry" }
-			)
 			-- Lualine may install a tabs fallback when bufferline is disabled. It
 			-- refreshes that tabline on a timer, so a one-time option reset is not
 			-- enough; remove its tabline sections entirely.
@@ -184,8 +137,6 @@ return {
 			opts.inactive_winbar = { lualine_b = { winbar_cwd }, lualine_c = { winbar_file } }
 
 			opts.sections = opts.sections or {}
-			opts.sections.lualine_x = opts.sections.lualine_x or {}
-			table.insert(opts.sections.lualine_x, 1, { cc_context, color = cc_context_color })
 			opts.sections.lualine_y = {
 				{ "progress", separator = " ", padding = { left = 1, right = 0 } },
 				{ "location", padding = { left = 0, right = 1 } },
@@ -226,8 +177,7 @@ return {
 			notifier = {
 				timeout = 10000,
 			},
-			-- Widen the `vim.ui.select` popup so long option labels (e.g. the
-			-- full-sentence choices in CodeCompanion elicitation prompts) aren't
+			-- Widen the `vim.ui.select` popup so long option labels aren't
 			-- clipped. Overrides the built-in `select` layout preset (width 0.5,
 			-- max_width 100) for every vim.ui.select caller.
 			-- Snacks resolves per-source overrides from `picker.sources.<source>`

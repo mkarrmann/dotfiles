@@ -23,8 +23,7 @@ vim.opt.statuscolumn = table.concat({
 vim.opt.conceallevel = 0
 vim.opt.concealcursor = ""
 
--- Tabpage names and Omnigent-backed CodeCompanion activity indicators.
-require("lib.omnigent-tab-state").setup()
+-- Tabpage names (set by <leader><tab>r and show-in-nvim).
 require("lib.agent-tabline").setup()
 vim.o.tabline = "%!v:lua._tabline()"
 vim.o.showtabline = 2
