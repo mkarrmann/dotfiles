@@ -53,8 +53,8 @@ runner:
   # active. Omnigent's default is 3600 (1h); keepalive pings and open
   # observer/SSE streams do NOT count as activity, so the default reaps a
   # runner during a lull and surfaces "background turn failed" warnings in the
-  # CodeCompanion chat (resume is lossless -- the transcript is durable -- but
-  # the warnings are noisy and the first resumed turn pays a cold prompt cache).
+  # client (resume is lossless -- the transcript is durable -- but the warnings
+  # are noisy and the first resumed turn pays a cold prompt cache).
   # 0 disables the watchdog entirely (idle runners then linger, holding their
   # claude subprocess memory until the host/parent dies).
   # This only bounds the whole runner. Each session's own pane/harness has a

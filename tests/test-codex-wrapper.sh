@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Regression coverage for HACK(omnigent-sdk-codex-cwd). Remove the workspace
 # validation/chdir cases when the cleanup checklist in
-# docs/omnigent-codecompanion-adapter.md is completed.
+# docs/omnigent-sdk-codex-workarounds.md is completed.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 WRAPPER="$ROOT/bin/codex"

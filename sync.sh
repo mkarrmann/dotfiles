@@ -397,8 +397,6 @@ link_skills_scoped "$HOME/.claude/skills" global
 # Omnigent currently creates each private Codex home under
 # <session-workspace>/.codex-tmp. Redirect that directory outside Eden so
 # SQLite/WAL and transcript writes do not become repository file-change events.
-# The launch preflight in codecompanion.lua retries active directories after
-# their current session closes.
 if [[ "$DOTFILES_PROFILE" == work ]]; then
   HGIGNORE_LOCAL="$HOME/.hgignore-local"
   touch "$HGIGNORE_LOCAL"
@@ -942,10 +940,9 @@ if [[ "$DOTFILES_PROFILE" == work && "$(uname -s)" == "Linux" ]] && command -v s
       mkdir -p "$HOME/.local/state/$state_dir"
     done
 
-  # Omnigent env for systemd --user units (nvs@ nvim -> CodeCompanion, and
-  # omnigent-host). Every client uses loopback: the owner reaches the
-  # server directly and other Linux hosts use omnigent-client-proxy's SSH
-  # forward. environment.d is read by the user manager at start.
+  # Omnigent env for systemd --user units (nvs@ nvim and omnigent-host). Every
+  # client uses loopback: the owner reaches the server directly and other Linux
+  # hosts use omnigent-client-proxy's SSH forward. environment.d is read by the user manager at start.
   # Takes full effect after the next relogin / `systemctl --user daemon-reexec`.
   #
   # TIKTOKEN_CACHE_DIR points at the vendored BPE blob — tiktoken's download

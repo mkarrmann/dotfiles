@@ -2,17 +2,15 @@ spec_version: 1
 name: claude
 description: >-
   Claude, run directly on the Claude Agent SDK harness through Omnigent — a
-  single coding agent (no orchestration / sub-agents) that streams into the
-  CodeCompanion chat buffer. Registered as a builtin so it shows up in the
-  omnigent picker alongside polly/debby/codex. Model and thinking effort are
-  picked at launch and switchable mid-session (<leader>aA / <leader>ao).
+  single coding agent (no orchestration / sub-agents). Registered as a builtin
+  so it is offered alongside polly/debby/codex. Model and thinking effort are
+  picked at launch and switchable mid-session.
 
 # Direct claude-sdk harness: the Claude Agent SDK drives every turn itself
 # (streaming, interruptible). No model is pinned, so an un-overridden session
 # resolves the configured Claude provider's default (Databricks gateway /
-# Anthropic key / subscription); the CodeCompanion picker supplies
-# model_override + reasoning_effort per session, so <leader>aA's model/effort
-# choices ride session-create and mid-session <leader>ao patches.
+# Anthropic key / subscription); clients supply model_override +
+# reasoning_effort per session, at session-create and in mid-session patches.
 executor:
   type: omnigent
   config:
@@ -27,8 +25,8 @@ executor:
   # the 128K default. This is the documented escape hatch for exactly that
   # ("models not yet in the registry"). Sizes the REPL ring and the compression
   # threshold for sessions that set no model override; an override sizes against
-  # the override id instead, which is why OMNIGENT_MODELS in codecompanion.lua
-  # offers only `[1m]` spellings for opus-5 / opus-5-5.
+  # the override id instead, which is why overrides for opus-5 / opus-5-5
+  # should use the `[1m]` spellings.
   context_window: 1000000
 
 # Full workspace access: os_env registers sys_os_read / sys_os_write /
@@ -45,8 +43,7 @@ os_env:
     # disabled, tools=["Skill"]), and sys_os_edit/write are confined to the
     # session's environment root (the launching cwd, e.g. an fbsource checkout).
     # That forced every out-of-tree edit (~/dotfiles, ~/repos/*) to fall back to
-    # sys_os_shell -- which ALSO defeated the CodeCompanion diff tab's edit
-    # capture. A write_paths grant lifts that confinement: on omnigent >= 0.6.0
+    # sys_os_shell. A write_paths grant lifts that confinement: on omnigent >= 0.6.0
     # the grant is honored even under sandbox.type=none
     # (os_env._assert_within_reach), and a write grant admits reads too, so "/"
     # lets the structured tools reach any path -- deliberately as unconfined as
@@ -85,8 +82,8 @@ tools:
 
 prompt: |
   You are Claude, a software-engineering assistant running on the Claude Agent
-  SDK inside Omnigent and streaming into a CodeCompanion chat in Neovim. You
-  have filesystem and shell access through your sys_os_* tools: read and edit
-  files, run commands, and make real changes in the user's workspace. Prefer
-  doing the work — showing diffs, running the tests / build / typecheck — over
-  describing what you would do. Be concise and direct.
+  SDK inside Omnigent. You have filesystem and shell access through your
+  sys_os_* tools: read and edit files, run commands, and make real changes in
+  the user's workspace. Prefer doing the work — showing diffs, running the
+  tests / build / typecheck — over describing what you would do. Be concise and
+  direct.

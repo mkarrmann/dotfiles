@@ -114,47 +114,16 @@ For a narrower deployment, use `host_scope=configured`, set
 `OMNIGENT_GCHAT_HOST_ID`, and add `omnigent.google_chat.enabled=true` to a
 session through the normal Omnigent session update API or client defaults.
 
-The tracked CodeCompanion config already resolves `host="auto"` to the local
-machine, uses the current workspace, and stamps the discovery label. A generic
-single-host setup can express the equivalent defaults as:
-
-```lua
-require("codecompanion").setup({
-  adapters = {
-    omnigent = {
-      extend = {
-        omnigent = {
-          defaults = {
-            host = "host_REPLACE_ME",
-            workspace = "/absolute/workspace/on/the/devserver",
-            labels = {
-              ["omnigent.google_chat.enabled"] = "true",
-            },
-          },
-          opts = {
-            background_updates = true,
-            stream_reconnect = true,
-          },
-        },
-      },
-    },
-  },
-  interactions = {
-    chat = { adapter = "omnigent" },
-  },
-})
-```
-
-Omnigent labels are string-valued, so use `"true"`, not a Lua boolean.
-CodeCompanion's Omnigent session runtime merges these defaults into
-`POST /v1/sessions`; its existing tests cover static labels, label functions,
-and per-session overrides. In configured scope, `host` must match
-`OMNIGENT_GCHAT_HOST_ID`. In all scope, it must resolve to the actual execution
-host bound to the session. A remote devserver requires an absolute workspace.
+Any Omnigent client can opt a session in by setting that label when it creates
+the session (`POST /v1/sessions`) or later through the session update API.
+Omnigent labels are string-valued, so use `"true"`, not a boolean. In
+configured scope, the session's host must match `OMNIGENT_GCHAT_HOST_ID`. In all
+scope, it must resolve to the actual execution host bound to the session. A
+remote devserver requires an absolute workspace.
 
 The library default remains label-based and single-host. The tracked personal
-policy deliberately chooses all-host `host-active` behavior so CLI and
-CodeCompanion sessions started on any of these machines appear on the phone.
+policy deliberately chooses all-host `host-active` behavior so sessions
+started from any client on any of these machines appear on the phone.
 
 ## Phone commands
 

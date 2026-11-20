@@ -2,9 +2,8 @@
 # omnigent-agents-ensure — reconcile the source-controlled Omnigent agent
 # bundles (claude-sdk, codex, and at work dvsc, muse and gemini) plus the packaged
 # polly/debby overlays into the agent store of the server THIS machine owns, so
-# they show up in the CodeCompanion picker with their current tools and
-# prompts. The existing model/effort pickers key off each agent's harness
-# family.
+# clients offer them with their current tools and prompts. Model/effort
+# choices key off each agent's harness family.
 #
 # Which server that is follows the dotfiles profile:
 #   work     the active hub (omnigent-server.service on ~/.omnigent/chat.db).

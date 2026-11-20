@@ -6,7 +6,7 @@ Muse Wonder models (Wonder, Wonder Full) become available internally.
 ## Path
 
 ```
-CodeCompanion → Omnigent `muse` agent (harness acp:muse-core)
+Omnigent client → Omnigent `muse` agent (harness acp:muse-core)
   → ~/bin/dvsc-core-acp --default-mode muse      (users/mk/mkarrmann/dvsc-core-acp)
   → dm-core server, agentType Muse               (dmt; dm-core/src/extension-host/muse)
   → /usr/local/bin/muse serve --trust-workspace  (managed Meta launcher, fb-muse-code RPM)
@@ -80,11 +80,9 @@ These steps change live state, so run them deliberately.
 1. Check whether you have it:
    `muse exec --model <id> "Reply with exactly: PONG"`, and whether it appears
    in `model/list`.
-2. Add the catalog id to `OMNIGENT_MODELS.muse` in
-   `nvim/lua/plugins/codecompanion.lua`, and add its context window to the
-   wrapper's `models.ts`.
+2. Add its context window to the wrapper's `models.ts`.
 3. If dm-core's Muse catalog lags the CLI, that is dm-core's dependency. File
-   it against codecompanion rather than bypassing dm-core.
+   it against dm-core rather than bypassing it.
 
 What would change this plan:
 

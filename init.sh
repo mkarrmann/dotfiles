@@ -110,12 +110,12 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
   fi
 
   if [[ "$routing_ready" == true ]]; then
-    # Omnigent: register the dvsc-core ACP agent so it shows in the CodeCompanion
-    # omnigent picker (<leader>aM / <leader>aA), alongside polly/debby. Idempotent
-    # and self-skips where omnigent isn't installed; reconciles the per-host server
-    # URL and merges the acp: block of ~/.omnigent/config.yaml. Bundle registration
-    # is centralized in omnigent-agents-ensure below. macOS, the standby, and peer
-    # clients only reconcile config.yaml; they never open a local chat.db. See
+    # Omnigent: register the dvsc-core ACP agent so it is offered alongside
+    # polly/debby. Idempotent and self-skips where omnigent isn't installed;
+    # reconciles the per-host server URL and merges the acp: block of
+    # ~/.omnigent/config.yaml. Bundle registration is centralized in
+    # omnigent-agents-ensure below. macOS, the standby, and peer clients only
+    # reconcile config.yaml; they never open a local chat.db. See
     # bin/omnigent-dvsc-ensure and omnigent_config/agents/dvsc/.
     "$DOTFILES_DIR/bin/omnigent-dvsc-ensure" --config-only ||
       warn "omnigent-dvsc-ensure failed (dvsc ACP config may be stale)"
@@ -168,11 +168,10 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
   fi
 
   # Omnigent: reconcile all managed builtin agent bundles (claude-sdk, codex,
-  # dvsc, and packaged Polly/Debby) so they show in the CodeCompanion omnigent
-  # picker (<leader>aM / <leader>aA). The picker's model/effort steps key off each
-  # agent's harness family, so registering the specs is the whole job. Idempotent
-  # and self-skips off the active Linux hub; restarts the hub server only after
-  # the quiescence check. See bin/omnigent-agents-ensure and
+  # dvsc, and packaged Polly/Debby) so clients offer them. Model/effort choices
+  # key off each agent's harness family, so registering the specs is the whole
+  # job. Idempotent and self-skips off the active Linux hub; restarts the hub
+  # server only after the quiescence check. See bin/omnigent-agents-ensure and
   # omnigent_config/agents/{claude,codex,dvsc}/.
   if [[ "$routing_ready" == true ]]; then
     if ! "$DOTFILES_DIR/bin/omnigent-agents-ensure" ${force_args[@]+"${force_args[@]}"}; then

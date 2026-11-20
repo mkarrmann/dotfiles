@@ -2,17 +2,16 @@ spec_version: 1
 name: codex
 description: >-
   Codex, run directly on the codex harness (codex app-server) through Omnigent —
-  a single coding agent (no orchestration / sub-agents) that streams into the
-  CodeCompanion chat buffer. Registered as a builtin so it shows up in the
-  omnigent picker alongside polly/debby/claude. Model and reasoning effort are
-  picked at launch and switchable mid-session (<leader>aA / <leader>ao).
+  a single coding agent (no orchestration / sub-agents). Registered as a
+  builtin so it is offered alongside polly/debby/claude. Model and reasoning
+  effort are picked at launch and switchable mid-session.
 
 # Direct codex harness: Omnigent runs `codex app-server` and drives each turn
-# over its JSON-RPC (streaming, interruptible). No model is pinned here, so the
-# CodeCompanion picker supplies model_override + reasoning_effort per session —
-# and note codex's per-turn model MUST be a routed slug (e.g. gpt-5.5), which is
-# why the picker's codex "default" resolves to gpt-5.5 rather than "no override"
-# (a bare app-server default answers 421 through the AI gateway).
+# over its JSON-RPC (streaming, interruptible). No model is pinned here, so
+# clients supply model_override + reasoning_effort per session — and note
+# codex's per-turn model MUST be a routed slug (e.g. gpt-5.5), so a client's
+# codex "default" should resolve to one rather than "no override" (a bare
+# app-server default answers 421 through the AI gateway).
 #
 # Why codex rather than openai-agents: the openai-agents harness treats an
 # unpinned model as a Databricks model and silently falls back to ambient
@@ -51,7 +50,7 @@ os_env:
     # HACK(omnigent-sdk-codex-cwd): CodexExecutor scrubs the app-server env, so
     # pass the non-secret runner workspace to ~/bin/codex. Remove this entry
     # when Omnigent natively maps the session runtime cwd to HARNESS_CODEX_CWD.
-    # See docs/omnigent-codecompanion-adapter.md.
+    # See docs/omnigent-sdk-codex-workarounds.md.
     env_passthrough:
       - OMNIGENT_RUNNER_WORKSPACE
 
@@ -82,8 +81,7 @@ tools:
 
 prompt: |
   You are Codex, a software-engineering assistant running on the codex harness
-  inside Omnigent and streaming into a CodeCompanion chat in Neovim. You have
-  filesystem and shell access through your sys_os_* tools: read and edit files,
-  run commands, and make real changes in the user's workspace. Prefer doing the
-  work — showing diffs, running the tests / build / typecheck — over describing
-  what you would do. Be concise and direct.
+  inside Omnigent. You have filesystem and shell access through your sys_os_*
+  tools: read and edit files, run commands, and make real changes in the user's
+  workspace. Prefer doing the work — showing diffs, running the tests / build /
+  typecheck — over describing what you would do. Be concise and direct.

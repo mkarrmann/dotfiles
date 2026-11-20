@@ -2,7 +2,7 @@
 """Prod-network reachability shim for the Omnigent server.
 
 The server binds 127.0.0.1 only (uvicorn makes a `::` bind IPv6-only, which
-would refuse the v4 loopback that Orchest, CodeCompanion and the Mac ET tunnel
+would refuse the v4 loopback that Orchest, local clients and the Mac ET tunnel
 rely on). This forwarder listens on the prod-network v6 interface and relays to
 the loopback server, so peer devservers can dial the hub's v6 FQDN:6767
 directly. Stdlib only (no socat / third-party deps).

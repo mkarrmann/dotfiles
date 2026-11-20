@@ -32,7 +32,7 @@ there depends on the machine:
   runs `omnigent server` on port 6767 against `~/.omnigent/chat.db`, on the
   hub devserver only — `OMNIGENT_PRIMARY_FQDN` in `~/dotfiles/omnigent_config/topology.env`
   (currently `devvm20365.cco0.facebook.com`; standby `devvm36111.ftw0`). Every
-  other work consumer — the Mac, other devservers, Orchest, CodeCompanion —
+  other work consumer — the Mac, other devservers, Orchest, local clients —
   reaches it through an SSH/ET forward, so the REST API works the same
   everywhere the forward is up. The live DB exists only on the hub.
 - **Linux desktop: its own local server.** `systemd/desktop/omnigent-host.service`
@@ -255,7 +255,8 @@ curl -s --noproxy '*' "$BASE/v1/sessions/$CONV" | jq -r '
 
 - **SDK / streaming** (`codex`, `claude`, `dvsc`, `debby`, `polly`, …): run the
   vendor model directly and stream output into the transcript. These render in
-  the CodeCompanion chat surface and are fully reconstructable from `items`.
+  chat clients (web UI, T3, Google Chat) and are fully reconstructable from
+  `items`.
 - **`*-native-ui`** (`claude-native-ui`, `codex-native-ui`, `cursor-native-ui`,
   …): boot a vendor TUI in a tmux terminal on the runner; their output goes to
   the **terminal resource**, not the message stream, so `items` for these are

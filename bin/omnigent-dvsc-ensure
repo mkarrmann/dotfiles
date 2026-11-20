@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # omnigent-dvsc-ensure — make Meta's dvsc-core (devmate) available as an
-# Omnigent agent, so it shows up in the CodeCompanion omnigent picker
-# (<leader>aM / <leader>aA) exactly like polly/debby.
+# Omnigent agent, so it is offered exactly like polly/debby.
 #
 # Idempotent and portable: safe to re-run, and safe to run on any machine after
 # `init.sh` (it self-skips where omnigent isn't installed). Wired into init.sh.

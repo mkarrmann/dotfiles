@@ -79,21 +79,19 @@ source with the same restarts goes back to Omnigent-only.
    Factor the decision logic out of `omnigent_config/policy_modules/` into
    harness-neutral functions with thin Omnigent-policy and hook wrappers, then
    confirm the hooks fire under AH2's Claude and Codex harnesses.
-2. **nvim.** The CodeCompanion adapter targets Omnigent's API. Whether
-   dm-core's local HTTP/SSE API can back an equivalent adapter is unexamined.
-3. **The watcher without the hub.** Registration still goes through the
+2. **The watcher without the hub.** Registration still goes through the
    Omnigent server's mounted API, and commands run on the hub. Retiring the
    hub means running the watcher API standalone on one host.
-4. **Session identity under Codex.** `meta ah.session whoami` reads
+3. **Session identity under Codex.** `meta ah.session whoami` reads
    `AH_SESSION_ID`, `DM_SESSION_ID`, then `AGENT_SESSION_ID`; dm-core sets the
    last for Claude but injects nothing for Codex unless the caller passes
    `extraEnv`. Confirm what an AH2 Codex session's `whoami` prints.
-5. **Messaging a session that is no longer live.** `message` targets live
+4. **Messaging a session that is no longer live.** `message` targets live
    sessions. The watcher treats an off-host session as suspended, not gone;
    whether a message revives it from the stored transcript is untested.
-6. **Placement settings,** per user: "Always use my devserver", the default
+5. **Placement settings,** per user: "Always use my devserver", the default
    harness, and start links with an explicit directory, for example
    `internalfb.com/ah/new?dir=~/checkout2/fbsource/fbcode/github/presto-facebook-trunk`.
-7. **Omnigent-specific skills.** `omnigent-sessions`, `omnigent-models`, and
+6. **Omnigent-specific skills.** `omnigent-sessions`, `omnigent-models`, and
    `omnigent-visual-output` mean nothing outside Omnigent; gate them on the
    environment once AH2 sessions are routine.

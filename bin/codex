@@ -26,7 +26,7 @@ if [[ "${1:-}" == "app-server" ]]; then
   # workspace so Codex's relative thread/start cwd resolves correctly. Remove
   # this block, its env passthrough, and HARNESS_CODEX_PATH after Omnigent sets
   # HARNESS_CODEX_CWD from the per-session runtime cwd. See
-  # docs/omnigent-codecompanion-adapter.md, "Temporary SDK Codex workarounds".
+  # docs/omnigent-sdk-codex-workarounds.md.
   if [[ -n "${OMNIGENT_RUNNER_WORKSPACE:-}" ]]; then
     if [[ "${OMNIGENT_RUNNER_WORKSPACE}" != /* ]]; then
       echo "OMNIGENT_RUNNER_WORKSPACE must be absolute: ${OMNIGENT_RUNNER_WORKSPACE}" >&2
