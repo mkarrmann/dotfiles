@@ -93,6 +93,32 @@ local function run_usual(buf, key)
 	vim.api.nvim_feedkeys(count .. key, "ni", false)
 end
 
+---@type table<integer, table<string, function>> Buffer -> our map callbacks, by key.
+local ours = {}
+
+---Maps the session keys in `buf`, first saving the buffer's own maps for
+---them that aren't ours.
+---@param buf integer
+local function claim(buf)
+	ours[buf] = ours[buf] or {}
+	for _, map in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
+		if ACTIONS[map.lhs] and map.callback ~= ours[buf][map.lhs] then
+			replaced[buf][map.lhs] = map
+		end
+	end
+	for key, action in pairs(ACTIONS) do
+		local function callback()
+			local session_here = current_session()
+			if session_here then
+				return action.run(session_here)
+			end
+			run_usual(buf, key)
+		end
+		ours[buf][key] = callback
+		vim.keymap.set("n", key, callback, { buffer = buf, desc = action.desc })
+	end
+end
+
 ---Maps the session keys in `buf` for `session`. A live file buffer can be in
 ---several sessions (one per tab) and in ordinary windows, so the maps look
 ---the session up from the current window when pressed, and fall back to the
@@ -111,21 +137,23 @@ local function attach(session, buf)
 		return
 	end
 	replaced[buf] = {}
-	for _, map in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
-		if ACTIONS[map.lhs] then
-			replaced[buf][map.lhs] = map
-		end
-	end
-	for key, action in pairs(ACTIONS) do
-		vim.keymap.set("n", key, function()
-			local session_here = current_session()
-			if session_here then
-				return action.run(session_here)
-			end
-			run_usual(buf, key)
-		end, { buffer = buf, desc = action.desc })
-	end
+	claim(buf)
 end
+
+-- FileType handlers map keys in the buffer again, e.g. LazyVim's treesitter
+-- ]f/[f when a live file is reloaded from disk; take the keys back after them.
+vim.api.nvim_create_autocmd("FileType", {
+	group = vim.api.nvim_create_augroup("lib.diff-session", {}),
+	callback = function(ev)
+		if attach_count[ev.buf] then
+			vim.schedule(function()
+				if attach_count[ev.buf] and vim.api.nvim_buf_is_valid(ev.buf) then
+					claim(ev.buf)
+				end
+			end)
+		end
+	end,
+})
 
 ---@param buf integer
 local function detach(buf)
@@ -136,6 +164,7 @@ local function detach(buf)
 	attach_count[buf] = nil
 	local saved = replaced[buf] or {}
 	replaced[buf] = nil
+	ours[buf] = nil
 	if not vim.api.nvim_buf_is_valid(buf) then
 		return
 	end
