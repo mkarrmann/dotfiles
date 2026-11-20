@@ -68,11 +68,7 @@ vim.api.nvim_create_autocmd("User", {
 			})
 		end
 
-		local buck_ok, buck
-		if meta_ok then
-			require("lib.meta-buck").setup()
-			buck_ok, buck = pcall(require, "meta.buck")
-		end
+		local buck_ok, buck = pcall(require, "meta.buck")
 		if buck_ok then
 			buck.setup({
 				keybindings = {
