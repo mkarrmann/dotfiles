@@ -421,6 +421,12 @@ fi
 "$DOTFILES_DIR/bin/marksman-ensure" \
     || warn "marksman install failed (markdown LSP will stay disabled)"
 
+# rumdl, the Markdown linter nvim uses in place of markdownlint-cli2 (which
+# needs a newer Node than devservers ship). Non-fatal: nvim skips Markdown
+# linting when the binary is absent. See bin/rumdl-ensure.
+"$DOTFILES_DIR/bin/rumdl-ensure" \
+    || warn "rumdl install failed (markdown linting will stay disabled)"
+
 # GitHub CLI, latest release into ~/.local/bin. Non-fatal for the same reason
 # as marksman: release assets are not reachable from every host, and nothing
 # else here depends on it. See bin/gh-ensure.

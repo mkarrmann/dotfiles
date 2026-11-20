@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Install the pinned rumdl (Markdown linter) that nvim lints Markdown with.
+#
+# rumdl rather than markdownlint-cli2, which the LazyVim markdown extra wires
+# in: markdownlint-cli2 needs Node >= 22 and devservers ship Node 16 (the only
+# version dnf offers), and Mason cannot reach GitHub to install anything here.
+# rumdl is a Rust reimplementation of markdownlint with the same MD0xx rule
+# ids, and nvim-lint has a built-in linter for it.
+#
+# Installed with cargo for the same reasons as bin/stylua-ensure: crates.io is
+# reachable, while npm installs and GitHub release assets are not.
+#
+# PINNED, not a floor: a linter that drifts between machines reports different
+# warnings depending on which box you happened to edit from. 0.3.4 because 0.3.5
+# requires rustc 1.98 and rustup here is on 1.95; bumping the pin may need a
+# `rustup update` first (cargo names the required version when it refuses).
+#
+# nvim/lua/plugins/overrides.lua enables the linter only when the binary exists
+# and points it at ~/.cargo/bin/rumdl by absolute path, because the nvs units
+# inherit the systemd --user PATH, which does not include ~/.cargo/bin.
+#
+# Override the version for a one-off with RUMDL_VERSION=x.y.z rumdl-ensure.
+set -euo pipefail
+
+VERSION="${RUMDL_VERSION:-0.3.4}"
+BIN="$HOME/.cargo/bin/rumdl"
+
+# init.sh sources ~/.cargo/env before calling this, but support a direct run
+# from a shell that has not.
+if ! command -v cargo >/dev/null 2>&1 && [[ -f "$HOME/.cargo/env" ]]; then
+  # shellcheck disable=SC1091
+  . "$HOME/.cargo/env"
+fi
+
+installed_version() {
+  [[ -x "$BIN" ]] && "$BIN" --version 2>/dev/null | awk '{print $2}'
+}
+
+installed="$(installed_version || true)"
+if [[ "$installed" == "$VERSION" ]]; then
+  echo "[rumdl] $VERSION already installed"
+  exit 0
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "WARNING: cargo not found; cannot install rumdl $VERSION" >&2
+  exit 1
+fi
+
+echo "[rumdl] installing $VERSION (was ${installed:-none})"
+cargo install rumdl --locked --force --version "$VERSION"
+
+actual="$(installed_version || true)"
+if [[ "$actual" != "$VERSION" ]]; then
+  echo "ERROR: expected rumdl $VERSION after install, found ${actual:-nothing}" >&2
+  exit 1
+fi
+echo "[rumdl] rumdl $actual installed"

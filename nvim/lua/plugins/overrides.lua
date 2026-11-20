@@ -56,6 +56,38 @@ return {
 			return opts
 		end,
 	},
+	{
+		-- Markdown is linted with rumdl, installed by bin/rumdl-ensure, in place
+		-- of the markdownlint-cli2 the LazyVim markdown extra wires in: that
+		-- needs Node >= 22 and Mason, neither available here, so nvim-lint failed
+		-- with ENOENT on every read, write and InsertLeave. Like marksman above,
+		-- lint only where the binary exists, and by absolute path because nvs
+		-- servers do not have ~/.cargo/bin on PATH.
+		"mfussenegger/nvim-lint",
+		opts = function(_, opts)
+			local bin = vim.fn.expand("~/.cargo/bin/rumdl")
+			local available = vim.fn.executable(bin) == 1
+			opts.linters_by_ft = opts.linters_by_ft or {}
+			opts.linters_by_ft.markdown = available and { "rumdl" } or {}
+			if available then
+				opts.linters = opts.linters or {}
+				-- nvim-lint's built-in rumdl definition reads stderr, but rumdl
+				-- writes its JSON report (`[]` when clean) to stdout.
+				opts.linters.rumdl = { cmd = bin, stream = "stdout" }
+			end
+			return opts
+		end,
+	},
+	{
+		"nvimtools/none-ls.nvim",
+		optional = true,
+		opts = function(_, opts)
+			opts.sources = vim.tbl_filter(function(source)
+				return source.name ~= "markdownlint-cli2"
+			end, opts.sources or {})
+			return opts
+		end,
+	},
 
 	{
 		"lukas-reineke/indent-blankline.nvim",
