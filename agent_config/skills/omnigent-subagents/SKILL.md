@@ -1,17 +1,20 @@
 ---
 name: omnigent-subagents
 description: >-
-  Use before spawning a subagent, reviewer, second opinion, cross-model check
-  (Codex, Claude, GPT), or parallel worker, and before shelling out to
-  `codex exec` / `claude -p`. Default to an Omnigent child session
-  (sys_session_create): durable, visible in the session tree, any harness and
-  model, follow-ups in the same session, a wake notice on completion when the
-  work is dispatched with sys_session_send. Covers choosing the agent and
-  model, writing the brief, collecting results, the read-only caveat for
-  reviewers, and running a raw `codex exec` / `claude -p` safely. Trigger
-  keywords: subagent, sub-agent, spawn an agent, codex review, have codex
-  review, second opinion, reviewer, delegate, parallel agents,
-  sys_session_create.
+  Use before spawning a subagent, reviewer, second opinion, cross-model check,
+  or parallel worker on any model, and before shelling out to `codex exec` /
+  `claude -p`, and before answering whether some model or agent can be called
+  at all. Default to an Omnigent child session (sys_session_create): durable,
+  visible in the session tree, any registered agent and model, follow-ups in
+  the same session, a wake notice on completion when the work is dispatched
+  with sys_session_send. What can be spawned is whatever `sys_agent_list`
+  returns, which is broader than your native subagent tool and than any list
+  in a skill. Covers choosing the agent and model, writing the brief,
+  collecting results, the read-only caveat for reviewers, and running a raw
+  `codex exec` / `claude -p` safely. Trigger keywords: subagent, sub-agent,
+  spawn an agent, second opinion, reviewer, delegate, parallel agents,
+  sys_session_create, and any model or vendor name, e.g. codex review, have
+  codex review, claude, gemini, gemini neon, muse, GPT.
 ---
 
 # Subagents through Omnigent
@@ -22,8 +25,9 @@ When delegating work to another agent, launch an Omnigent child session with
 `sys_session_create` rather than shelling out to a harness CLI or reaching for a
 bespoke review framework. A child session:
 
-- runs any registered harness (Codex, Claude, Muse, …) with the model and
-  effort you name, so cross-model work needs no special tooling;
+- runs any registered agent (Codex, Claude, Gemini, Muse, … — the live set is
+  `sys_agent_list`) with the model and effort you name, so cross-model work
+  needs no special tooling;
 - is server-owned and durable: its whole transcript is queryable by id and
   visible to the user in the session tree while it runs;
 - wakes you when work you dispatched with `sys_session_send` finishes, so
@@ -69,12 +73,16 @@ the default. When you do:
    session. Without them, say so and use the harness's native subagent tool;
    do not fall back to a backgrounded CLI.
 2. **Pick the agent.** `sys_agent_list` → a `builtins` row's `agent_id`. Skip
-   rows with `available_on_host: false`. Usual picks: `codex` or `claude` for
-   one agent; `debby` when you want two models to debate a question.
+   rows with `available_on_host: false`. That list, not this skill and not
+   your native subagent tool's model enum, is what exists here: read the rows'
+   descriptions before saying an agent or model is unavailable. Common picks,
+   as examples: `codex` or `claude` for one agent, `gemini` for a Gemini model
+   via Pi, `debby` when you want two models to debate a question.
 3. **Pick the model and effort.** Always pass both; an omitted model is not the
-   harness default. Read the live catalog with `~/bin/omnigent-models` (Codex)
-   or `~/bin/omnigent-models claude`; see [[omnigent-models]]. Adversarial or
-   reasoning-heavy review: the top of the accepted effort ladder.
+   harness default. Read the live catalog for the agent you picked with
+   `~/bin/omnigent-models <agent>` (e.g. `codex`, `gemini`); see
+   [[omnigent-models]]. Adversarial or reasoning-heavy review: the top of the
+   accepted effort ladder.
 4. **Write a self-contained brief.** The child knows only what you write:
    - the goal, and the decisions already made (so it does not re-litigate them);
    - what is out of scope and what you have already ruled out;
@@ -122,7 +130,7 @@ the default. When you do:
 
 ## Related
 
-- [[omnigent-models]]: model ids and effort ladders per harness.
+- [[omnigent-models]]: reading the live model catalog; id formats and effort ladders.
 - [[omnigent-sessions]]: reading, listing and debugging child sessions.
 - [[waiting-without-polling]]: why you wait on the wake notice instead of
   checking status.
