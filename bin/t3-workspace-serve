@@ -49,5 +49,7 @@ export T3CODE_HOME="$HOME/.t3-workspaces/$name"
 # included) and relay tracing are on unless this is false (.shell_env sets it
 # too, for the desktop app); the services do not read the shell's env.
 export T3CODE_TELEMETRY_ENABLED=false
+# "Open in VS Code" opens the file in Neovim instead (t3code/editor-bin/code).
+export PATH="$dotfiles/t3code/editor-bin:$PATH"
 cd "$HOME"
 exec "$t3" serve --host 127.0.0.1 --port "$port" --no-browser

@@ -1,0 +1,79 @@
+#!/bin/bash
+# T3 Code's "Open in VS Code", answered by Neovim.
+#
+# A T3 Code server opens a file by running its editor's command on its own host
+# (apps/server/src/process/externalLauncher.ts), and the server's web client
+# offers VS Code wherever `code` is on that server's PATH. bin/t3-workspace-serve
+# puts this directory first on it, so every T3 Code server -- t3@checkouts on a
+# devserver, t3@local on the Mac -- answers "Open in VS Code" by opening the
+# target in a new tab of the Neovim that owns it, through bin/nvim-show, which
+# on a devserver routes a file under ~/checkoutN to that checkout's nvs session.
+# Window focus is left alone.
+#
+# T3 Code calls it as VS Code's CLI:
+#   code --goto FILE:LINE[:COL]   a positioned file
+#   code --new-window DIR         a project folder (the tab :tcd's to it)
+#   code PATH                     a file without a position
+#
+# It runs detached with its output discarded, so each call is logged to
+# ${XDG_STATE_HOME:-~/.local/state}/t3-open-in-nvim.log.
+#
+# HACK: it is named `code` so upstream's unmodified T3 Code server offers and
+# runs it; a login shell PATH with a real `code` on it wins over this one
+# (apps/server/src/os-jank.ts puts that PATH first), which bin/t3-ensure warns of.
+set -uo pipefail
+
+dotfiles="${DOTFILES_DIR:-$HOME/dotfiles}"
+# On the Mac, workspace 1's Neovim (bin-macos/startup-windows), which listens
+# here: the Mac has no nvs sessions to route by, and more than one Neovim.
+mac_editor="$HOME/.local/state/nvim-local-macos.sock"
+target_args=()
+if [ "$(uname -s)" = Darwin ] && [ -S "$mac_editor" ]; then
+  target_args=(--server "$mac_editor")
+fi
+log_file="${XDG_STATE_HOME:-$HOME/.local/state}/t3-open-in-nvim.log"
+
+target=""
+positioned=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --goto|-g) positioned="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --) shift; [ $# -gt 0 ] && { target="$1"; shift; } ;;
+    -*) shift ;;
+    *) target="$1"; shift ;;
+  esac
+done
+
+file="$target"
+line=1
+col=1
+if [ -n "$positioned" ]; then
+  file="$positioned"
+  # An existing path wins over a position: `build:2026` is a legal file name.
+  if [ ! -e "$positioned" ]; then
+    if [[ $positioned =~ ^(.*):([0-9]+):([0-9]+)$ ]]; then
+      file="${BASH_REMATCH[1]}"
+      line="${BASH_REMATCH[2]}"
+      col="${BASH_REMATCH[3]}"
+    elif [[ $positioned =~ ^(.*):([0-9]+)$ ]]; then
+      file="${BASH_REMATCH[1]}"
+      line="${BASH_REMATCH[2]}"
+    fi
+    [ "$line" -ge 1 ] 2>/dev/null || line=1
+    [ "$col" -ge 1 ] 2>/dev/null || col=1
+  fi
+fi
+
+mkdir -p "$(dirname "$log_file")" 2>/dev/null
+log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >> "$log_file" 2>/dev/null; }
+
+if [ -z "$file" ]; then
+  log "no target given"
+  exit 64
+fi
+
+output=$("$dotfiles/bin/nvim-show" ${target_args[@]+"${target_args[@]}"} --agent t3code --new-tab \
+  --title "t3:$(basename "$file")" "$file" "$line" "$col" 2>&1)
+status=$?
+log "$file:$line:$col -> exit $status: ${output//$'\n'/ | }"
+exit "$status"

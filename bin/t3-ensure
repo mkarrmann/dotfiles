@@ -117,6 +117,7 @@ MAC_SERVER_LABEL = "com.mkarrmann.t3-local"  # launchd/com.mkarrmann.t3-local.pl
 DAEMON_BUSY = 2  # `omnigent-opencode daemon-stale`: stale, but a restart would lose a turn
 SHARED_SETTINGS = DOTFILES / "t3code/settings.json"
 SHARED_KEYBINDINGS = DOTFILES / "t3code/keybindings.json"
+EDITOR_SHIM = DOTFILES / "t3code/editor-bin/code"  # bin/t3-workspace-serve puts it on the servers' PATH
 CHECKOUT = re.compile(r"checkout[0-9]+")
 WORK_SERVER = "checkouts"  # bin/t3-workspace-serve, bin/t3-pairing-tokens
 # The Mac's server (launchd/com.mkarrmann.t3-local.plist, not systemd) and its
@@ -637,6 +638,21 @@ def old_desktop_servers() -> list[str]:
     return sorted(names)
 
 
+def login_shell_code() -> str | None:
+    """The `code` a T3 Code server's login-shell PATH finds before
+    t3code/editor-bin/code, which T3 Code would then run for "Open in VS Code"
+    instead of Neovim (apps/server/src/os-jank.ts puts that PATH first)."""
+    shell = os.environ.get("SHELL") or "/bin/zsh"
+    try:
+        result = subprocess.run(
+            [shell, "-ilc", "command -v code"], capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    found = result.stdout.strip().splitlines()
+    return found[-1] if result.returncode == 0 and found and found[-1] != str(EDITOR_SHIM) else None
+
+
 def main(argv: list[str]) -> int:
     if argv not in ([], ["--force"]):
         print("usage: t3-ensure [--force]", file=sys.stderr)
@@ -731,6 +747,8 @@ def main(argv: list[str]) -> int:
             elif server.label and not name_project(t3, server, directory, f"{directory.name} \u00b7 {server.label}"):
                 log(f"WARNING: could not name {unit}'s project {directory}")
                 failed = True
+    if servers and (shadow := login_shell_code()) is not None:
+        log(f"WARNING: the login shell's PATH has {shadow}, which T3 Code runs for \"Open in VS Code\" in place of {EDITOR_SHIM}")
     current = t3_version(served)
     if current is not None:
         for install in prune_installs(T3_HOME, served, ".".join(map(str, current)), installs_in_use(T3_HOME)):

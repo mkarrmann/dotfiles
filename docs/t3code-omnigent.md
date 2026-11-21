@@ -330,6 +330,25 @@ Gotchas:
   asks for `sudo env "PATH=$PATH" t3 browser setup` concerns only T3 Code's
   built-in browser tabs and HTML previews, not these windows.
 
+## Open in: Neovim
+
+"Open in VS Code" opens its target in a new tab of the Neovim that owns it,
+and leaves window focus alone. A T3 Code server opens an editor by running its
+command on its own host (`apps/server/src/process/externalLauncher.ts`), and it
+offers VS Code wherever `code` is on its PATH, so `bin/t3-workspace-serve` puts
+`t3code/editor-bin` first on every server's PATH. Its `code` hands the target to
+`bin/nvim-show --new-tab`: on a devserver a file under `~/checkoutN` opens in
+that checkout's nvs session (the Ghostty window on its workspace); on the Mac
+it opens in workspace 1's Neovim, which `bin-macos/startup-windows` starts on
+`~/.local/state/nvim-local-macos.sock`. A project folder (the header's Open)
+opens as a tab that `:tcd`s to it. Upstream's server takes only the editors it
+knows, and the fork ships only the client, hence the name `code`; a real `code`
+on the login shell's PATH would win (T3 Code puts that PATH first), which
+`bin/t3-ensure` warns of. Each call is logged to
+`~/.local/state/t3-open-in-nvim.log`, as T3 Code discards the command's output.
+A thread on another host's server has no Open (no SSH route), and the Linux
+desktop, whose `nvim-show-resolver` routes by Omnigent session, is not covered.
+
 ## The provider
 
 `bin/omnigent-opencode` runs `services/omnigent-opencode`'s virtualenv (made

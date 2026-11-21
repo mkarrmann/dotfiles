@@ -221,8 +221,10 @@ trap 'exit 143' TERM
 # ws is the AeroSpace workspace to place the window in.
 # Multiple entries can share a workspace (accordion layout toggles between them).
 # Stray windows are swept to workspace "Z".
+# Workspace 1's Neovim listens on a socket of its own, which
+# t3code/editor-bin/code opens T3 Code's "Open in" targets in on this Mac.
 WORKSPACES=(
-  "1|ghostty|Local MacOS|^Local MacOS$|~|while true; do nvim --cmd 'set title titlestring=Local\\ MacOS'; sleep 0.5; done"
+  "1|ghostty|Local MacOS|^Local MacOS$|~|while true; do rm -f ~/.local/state/nvim-local-macos.sock; nvim --listen ~/.local/state/nvim-local-macos.sock --cmd 'set title titlestring=Local\\ MacOS'; sleep 0.5; done"
   "1|chrome|Chrome: ws1"
   "1|omnigent|Omnigent: ws1"
   "1|t3|T3: ws1"
