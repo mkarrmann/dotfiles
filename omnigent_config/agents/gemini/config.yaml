@@ -4,14 +4,15 @@ description: >-
   Gemini, run by Meta's Pi (/usr/local/bin/pi) on Omnigent's headless pi
   harness. Pi reaches Gemini through Meta's AI Gateway with its own login, so
   no API key is involved. Any `pi --list-models` id works as a model override
-  (google/gemini-4-argon, meta/muse-latest, ...).
+  (google/gemini-3.1-pro-preview, meta/muse-latest, ...); T3 Code lists the
+  google/* ones.
 
 # Pi's own default is meta/muse-latest (~/.pi/agent/settings.json), so the spec
 # pins a Gemini model. The `pi-meta` provider in config.shared.yaml is what
 # makes Omnigent treat this harness as ready.
 executor:
   type: omnigent
-  model: google/gemini-4-carbon
+  model: google/gemini-4-neon
   config:
     harness: pi
 
