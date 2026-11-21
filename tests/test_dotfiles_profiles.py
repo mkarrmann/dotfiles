@@ -395,8 +395,8 @@ class SyncProfileTest(ProfileFixture):
             "systemd/omnigent-host.service", "systemd/omnigent-hub-reconcile.timer",
             "systemd/desktop/omnigent-host.service",
             # TODO: add "systemd/desktop/app-terminals.slice" (sync.sh links it on desktop
-            # Linux since 862150e); without it the four desktop SyncProfileTest cases fail
-            # with "source missing".
+            # Linux since 862150e) and "systemd/omnigent-opencode.service"; without them
+            # the four desktop SyncProfileTest cases fail with "source missing".
             "systemd/omnigent-watcher.service", "systemd/desktop/omnigent-watcher.service",
             "systemd/t3@.service",
             "omnigent_config/omnigent-desktop-electron.desktop",
