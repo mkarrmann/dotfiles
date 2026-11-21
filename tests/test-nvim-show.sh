@@ -14,6 +14,10 @@ unset OMNIGENT_RUNNER_PRIMARY_SESSION_ID OMNIGENT_SESSION_ID NVIM_SHOW_ANCESTOR_
 export NVIM_SHOW_RESOLVER=
 tmp_dir=$(mktemp -d)
 tmp_dir=$(cd "$tmp_dir" && pwd -P)
+# Neovim's default sockets live under $TMPDIR on macOS, where discovery would
+# otherwise find the live editors.
+export TMPDIR="$tmp_dir/tmpdir/"
+mkdir -p "$TMPDIR"
 real_nvim=$(command -v nvim)
 live_pid=""
 trap 'if [[ -n $live_pid ]]; then kill "$live_pid" 2>/dev/null || true; wait "$live_pid" 2>/dev/null || true; fi; rm -rf "$tmp_dir"' EXIT
@@ -316,7 +320,7 @@ resolved() { # AGENT extra-env... -- nvim-show args...
   while [[ $# -gt 0 && $1 != -- ]]; do envs+=("$1"); shift; done
   shift
   env HOME="$bare_home" XDG_STATE_HOME="$state" XDG_RUNTIME_DIR="$empty_runtime" \
-    CC_SESSION_ID="$agent" AGENT=claude_code NVIM_SHOW_RESOLVER="$fake_resolver" "${envs[@]}" \
+    CC_SESSION_ID="$agent" AGENT=claude_code NVIM_SHOW_RESOLVER="$fake_resolver" ${envs[@]+"${envs[@]}"} \
     "$repo_root/bin/nvim-show" "$@"
 }
 

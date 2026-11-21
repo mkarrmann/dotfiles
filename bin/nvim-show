@@ -3,19 +3,22 @@ set -euo pipefail
 
 # Reveal source locations in a running Neovim.
 #
-#   nvim-show FILE [LINE [COL]] [--text NOTE]   jump to one location
+#   nvim-show FILE [LINE [COL]] [--text NOTE]   jump to one location (FILE may
+#                                               be a directory: the tab :tcd's to it)
 #   nvim-show --list [PATH|-]                   JSON array -> location list
 #   nvim-show --clear                           drop this agent's annotations
 #
 # Options: --server ADDR  --session NAME  --agent KEY  --title LABEL  --no-jump
-#          --focus
+#          --focus  --new-tab
 #
 # --list input is a JSON array of {"file","line","col","text"}; "text" becomes
 # both the location-list entry and an inline virtual-text annotation.
 #
 # Each calling agent owns one tabpage, keyed by its harness session id
 # ($CC_SESSION_ID for Claude, the Omnigent session id under an Omnigent runner),
-# so concurrent agents never share a view. See nvim/lua/lib/show-in-nvim.lua.
+# so concurrent agents never share a view. --new-tab opens a tab of its own
+# instead, as T3 Code's "Open in" does for every file (t3code/editor-bin/code).
+# See nvim/lua/lib/show-in-nvim.lua.
 #
 # ---------------------------------------------------------------------------
 # Target resolution
@@ -64,7 +67,7 @@ usage: nvim-show FILE [LINE [COL]] [--text NOTE]
        nvim-show --clear
 
 options: --server ADDR  --session NAME  --agent KEY  --title LABEL  --no-jump
-         --focus
+         --focus  --new-tab
 EOF
   exit 64
 }
@@ -78,6 +81,7 @@ title=""
 text=""
 jump="true"
 focus="false"
+new_tab="false"
 positional=()
 
 while [[ $# -gt 0 ]]; do
@@ -98,6 +102,7 @@ while [[ $# -gt 0 ]]; do
     --text)    text="${2:?--text needs a note}"; shift 2 ;;
     --no-jump) jump="false"; shift ;;
     --focus)   focus="true"; shift ;;
+    --new-tab) new_tab="true"; shift ;;
     -h|--help) usage ;;
     --)        shift; positional+=("$@"); break ;;
     -)         positional+=("$1"); shift ;;
@@ -162,6 +167,7 @@ payload = {
     "action": action,
     "title": os.environ["NVIM_SHOW_TITLE"],
     "jump": os.environ["NVIM_SHOW_JUMP"] == "true",
+    "new_tab": os.environ["NVIM_SHOW_NEW_TAB"] == "true",
 }
 
 
@@ -214,6 +220,7 @@ hint=$(
   NVIM_SHOW_AGENT="$agent" \
   NVIM_SHOW_TITLE="$title" \
   NVIM_SHOW_JUMP="$jump" \
+  NVIM_SHOW_NEW_TAB="$new_tab" \
   NVIM_SHOW_FILE="$file" \
   NVIM_SHOW_LINE="$line" \
   NVIM_SHOW_COL="$col" \
@@ -329,7 +336,8 @@ remember_target() {
 }
 
 # Neovim's default server socket. On Linux that is $XDG_RUNTIME_DIR/nvim.PID.0;
-# without XDG_RUNTIME_DIR it lands under $TMPDIR/nvim.$USER instead. nvs servers
+# without XDG_RUNTIME_DIR it lands under $TMPDIR/nvim.$USER instead, on macOS
+# in a random directory of its own there ($TMPDIR/nvim.$USER/XXXXXX/nvim.PID.0). nvs servers
 # listen on TCP and so never appear here.
 discovered=()
 discover_servers() {
@@ -339,7 +347,7 @@ discover_servers() {
   discovered=()
   for dir in "${dirs[@]}"; do
     [[ -n $dir && -d $dir ]] || continue
-    for sock in "$dir"/nvim.*.0 "$dir"/*/0; do
+    for sock in "$dir"/nvim.*.0 "$dir"/*/0 "$dir"/*/nvim.*.0; do
       [[ -S $sock ]] || continue
       case "$seen" in *"|$sock|"*) continue ;; esac
       seen="$seen|$sock|"

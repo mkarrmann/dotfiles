@@ -18,7 +18,9 @@ nvim-show --list [PATH|-]                   # JSON array -> location list
 nvim-show --clear                           # drop this session's annotations
 ```
 
-Options: `--focus`, `--session NAME`, `--title LABEL`, `--no-jump`, `--agent KEY`.
+Options: `--focus`, `--session NAME`, `--title LABEL`, `--no-jump`, `--agent KEY`,
+`--new-tab` (a fresh tab rather than your agent's own; T3 Code's Open uses it).
+FILE may be a directory, which opens as a tab that `:tcd`s to it.
 
 Add `--focus` when he asks to be taken there ("show me", "open it", "pull it
 up"): it brings the editor's window forward where the platform can (on the

@@ -44,8 +44,8 @@ local function content_win(tab)
 	return vim.api.nvim_tabpage_get_win(tab)
 end
 
-local function ensure_tab(agent, title)
-	local tab = find_tab(agent)
+local function ensure_tab(agent, title, fresh)
+	local tab = not fresh and find_tab(agent)
 	if tab then
 		return tab
 	end
@@ -69,11 +69,13 @@ local function normalize_items(items)
 			return fail("item %d has no file", index)
 		end
 		local path = vim.fn.fnamemodify(item.file, ":p")
-		if vim.fn.filereadable(path) ~= 1 then
+		local dir = vim.fn.isdirectory(path) == 1
+		if not dir and vim.fn.filereadable(path) ~= 1 then
 			return fail("file does not exist: %s", path)
 		end
 		out[#out + 1] = {
 			file = path,
+			dir = dir,
 			line = math.max(1, math.floor(tonumber(item.line) or 1)),
 			col = math.max(1, math.floor(tonumber(item.col) or 1)),
 			text = type(item.text) == "string" and item.text ~= "" and item.text or nil,
@@ -94,7 +96,7 @@ local function clear_annotations(ns)
 end
 
 local function annotate(ns, item)
-	if not item.text then
+	if not item.text or item.dir then
 		return
 	end
 	local buf = vim.fn.bufadd(item.file)
@@ -107,8 +109,15 @@ local function annotate(ns, item)
 	})
 end
 
+-- A directory is a project to work in rather than a place in a file, so its
+-- tab also takes it as the working directory.
 local function reveal(win, item)
 	vim.api.nvim_win_call(win, function()
+		if item.dir then
+			vim.cmd.tcd(vim.fn.fnameescape(item.file))
+			vim.cmd.edit(vim.fn.fnameescape(item.file))
+			return
+		end
 		vim.cmd.edit(vim.fn.fnameescape(item.file))
 		local line = math.min(item.line, vim.api.nvim_buf_line_count(0))
 		vim.api.nvim_win_set_cursor(win, { line, item.col - 1 })
@@ -117,7 +126,7 @@ local function reveal(win, item)
 end
 
 ---Apply one nvim-show request.
----@param payload table {agent, action?, title?, jump?, items?}
+---@param payload table {agent, action?, title?, jump?, new_tab?, items?}
 ---@return string result "ok", or "error: <reason>"
 function M.dispatch(payload)
 	if type(payload) ~= "table" then
@@ -162,7 +171,7 @@ function M.dispatch(payload)
 		title = "show:" .. agent:sub(1, 8)
 	end
 
-	local tab = ensure_tab(agent, title)
+	local tab = ensure_tab(agent, title, payload.new_tab == true)
 	local win = content_win(tab)
 
 	-- "list" is a complete result set, so it supersedes this agent's previous
@@ -173,13 +182,15 @@ function M.dispatch(payload)
 
 	local entries = {}
 	for _, item in ipairs(items) do
-		entries[#entries + 1] = {
-			filename = item.file,
-			lnum = item.line,
-			col = item.col,
-			text = item.text or "",
-		}
-		annotate(ns, item)
+		if not item.dir then
+			entries[#entries + 1] = {
+				filename = item.file,
+				lnum = item.line,
+				col = item.col,
+				text = item.text or "",
+			}
+			annotate(ns, item)
+		end
 	end
 
 	reveal(win, items[1])
