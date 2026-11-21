@@ -82,7 +82,7 @@ _TOOL_REASON = (
     "approval first and should normally not happen at all. Work in this "
     "session's own checkout. If Matt has explicitly approved a new environment "
     f"in this conversation, create it in the shell with {OVERRIDE_ASSIGNMENT} in "
-    "front of the command (for example `sl worktree add`) instead of this tool."
+    "front of `wt add <label> --from <this checkout>` instead of this tool."
 )
 
 

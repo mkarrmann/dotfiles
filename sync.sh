@@ -476,7 +476,7 @@ CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 if [[ ! -f "$CLAUDE_SETTINGS" ]]; then
   echo '{}' > "$CLAUDE_SETTINGS"
 fi
-tmp=$(jq '
+tmp=$(jq --arg profile "$DOTFILES_PROFILE" '
   .permissions.defaultMode = "bypassPermissions" |
   .model = "claude-opus-5-5[1m]" |
   # Claude Code budgets the skill listing at
@@ -654,7 +654,36 @@ tmp=$(jq '
         }
       ]
     }
-  ]
+  ] |
+  # Worktrees Claude Code creates (EnterWorktree, isolation: "worktree") go
+  # through wt, so they land in ~/wt/<name> like hand-made ones. Work only: wt
+  # serves ~/checkout1/fbsource. The timeout covers a cold EdenFS checkout.
+  if $profile == "work" then
+    .hooks.WorktreeCreate = [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/worktree-create.sh",
+            "timeout": 600
+          }
+        ]
+      }
+    ] |
+    .hooks.WorktreeRemove = [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/worktree-remove.sh",
+            "timeout": 600
+          }
+        ]
+      }
+    ]
+  else
+    del(.hooks.WorktreeCreate, .hooks.WorktreeRemove)
+  end
 ' "$CLAUDE_SETTINGS") \
   && echo "$tmp" > "$CLAUDE_SETTINGS" \
   && echo "configured statusLine and hooks in $CLAUDE_SETTINGS"

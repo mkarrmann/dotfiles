@@ -427,6 +427,7 @@ class SyncProfileTest(ProfileFixture):
                 "personal@example": True,
             },
             "env": {"PERSONAL_SETTING": "keep"},
+            "hooks": {"WorktreeCreate": [{"hooks": [{"type": "command", "command": "stale"}]}]},
         }))
 
     def test_desktop_sync_skips_work_state_and_preserves_personal_settings(self):
@@ -474,6 +475,9 @@ class SyncProfileTest(ProfileFixture):
                 self.assertTrue(settings["enabledPlugins"]["personal@example"])
                 self.assertEqual(settings["env"]["PERSONAL_SETTING"], "keep")
                 self.assertEqual(settings["statusLine"]["command"], "~/.claude/statusline.sh")
+                # The worktree hooks call wt, which only work machines have.
+                self.assertNotIn("WorktreeCreate", settings["hooks"])
+                self.assertNotIn("WorktreeRemove", settings["hooks"])
 
     def test_work_sync_restores_host_and_watcher_units_after_desktop_profile(self):
         self.env["DOTFILES_PROFILE"] = "desktop"
@@ -505,6 +509,14 @@ class SyncProfileTest(ProfileFixture):
         # replaced it, so re-registering the hook would spawn a subprocess per
         # Bash call for no consumer.
         self.assertNotIn("omnigent-capture-diff", json.dumps(settings["hooks"]))
+        self.assertEqual(
+            [hook["command"] for entry in settings["hooks"]["WorktreeCreate"] for hook in entry["hooks"]],
+            ["bash ~/.claude/hooks/worktree-create.sh"],
+        )
+        self.assertEqual(
+            [hook["command"] for entry in settings["hooks"]["WorktreeRemove"] for hook in entry["hooks"]],
+            ["bash ~/.claude/hooks/worktree-remove.sh"],
+        )
 
     def test_lsp_shims_link_fbsource_launchers_on_work_only(self):
         launchers = {

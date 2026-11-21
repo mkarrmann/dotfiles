@@ -17,11 +17,11 @@ machines that actually have a checkout and absent everywhere else.
 
 - Do all work — edits, builds, tests, commits, package builds — in this workspace's own `fbsource/` and `configerator/`. If the task needs a different base revision, commit or rebase here, or move this checkout (`sl goto`) when that is safe for its working copy and any open editor; use your judgement.
 - Other workspaces (`~/checkout2`, `~/checkout3`, …) belong to other sessions. Don't use them unless I ask.
-- New environments need my approval (see "New working copies and build environments" in the global preferences). Here that means `sl worktree add`, `wt add`, `eden clone`, `fbclone`, or `buck2 --isolation-dir`. They are expensive on a devserver because each one starts cold:
+- New environments need my approval (see "New working copies and build environments" in the global preferences). Here that means `sl worktree add`, `wt add`, Claude Code's `EnterWorktree` or `isolation: "worktree"`, `eden clone`, `fbclone`, or `buck2 --isolation-dir`. They are expensive on a devserver because each one starts cold:
   - Buck: a new daemon and `buck-out`, a full rebuild, and tens of GB of RAM per daemon.
   - Maven: `~/.localrc` derives build roots from the workspace, so a worktree at `~/wt/<label>` gets its own `$BUILD_ROOT/presto-trunk-<label>`, `presto-facebook-trunk-<label>`, and a whole new local repository `$BUILD_ROOT/m2-repo-<label>`: Presto Java rebuilds from scratch and `~/.m2` is duplicated. A worktree anywhere else falls back to checkout1's build roots and `~/.m2`, and overwrites checkout1's build output.
   - Past incidents: extra isolation daemons pushed swap to 128/128 GB, and leftover build directories filled the 1.6 TB root disk.
-- Once I've approved, prefer `wt add <label>` (it puts the worktree under `~/wt/`, where the build roots above are set up) and remove the worktree, its build roots, and any daemon it started when the task is done.
+- Once I've approved, use `wt add <label>` (it puts the worktree under `~/wt/`, where the build roots above are set up; `--from <checkout>` starts it from a checkout other than checkout1). Claude Code's worktree tools go through the same path: a `WorktreeCreate` hook runs `wt add <name> --snapshot --from <this session's checkout>`. When the task is done, remove the worktree, its build roots, and any daemon it started; `wt rm` and the matching `WorktreeRemove` hook remove only the worktree.
 - Omnigent-hosted sessions refuse these commands the first time, as a reminder (policy `no_new_environments` in `omnigent_config/policy_modules/`). Prefix the command with `OMNIGENT_NEW_ENV_APPROVED=1` only after I have explicitly approved that environment.
 
 ## Diff ownership and CI follow-up
