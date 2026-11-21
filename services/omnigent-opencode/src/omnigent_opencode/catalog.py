@@ -4,11 +4,18 @@ A model slug `providerID/id` names an Omnigent agent and one of the models its
 harness offers on this machine's host; a variant is a reasoning effort. An
 agent whose harness offers no model list gets a single `default` model, which
 leaves the choice to the agent spec.
+
+Omnigent lists no models for the pi harnesses here: it reads only Pi's own
+logins and models.json, while Meta's Pi registers its providers at runtime. So
+a pi agent's models come from this machine's `pi --list-models`, behind a
+`default` entry for the spec's model.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import shutil
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -53,6 +60,13 @@ LONG_CONTEXT_MODELS: Final = (
     "claude-sonnet-4-6",
 )
 DEFAULT_OUTPUT: Final = 32_000
+PI_HARNESSES: Final = frozenset({"pi", "pi-native"})
+# The pi agent here is the Gemini one; Pi's login also serves Claude, GPT and Muse.
+PI_PROVIDERS: Final = ("google",)
+# Pi's ladder as Omnigent spells it (`none` is Pi's `off`), up to the highest a
+# Gemini model takes; Omnigent clamps a level to the ones the model offers.
+PI_EFFORTS: Final = ("none", "minimal", "low", "medium", "high")
+PI_LIST_TIMEOUT_S: Final = 30.0
 # Claude Code lists Fable, which this account has no access to.
 UNAVAILABLE_MODELS: Final = ("fable",)
 
@@ -183,7 +197,71 @@ async def load_catalog(client: OmnigentClient, host_spec: str, agent_specs: list
             except (OmnigentError, httpx.HTTPError) as exc:
                 # One harness's failed probe must not hide every agent; this one offers its default model.
                 LOG.warning("model options for %s on %s failed: %s", name, host.get("name"), exc)
+        elif harness in PI_HARNESSES:
+            models = await _pi_models(name)
         targets[name] = AgentTarget(name, str(agent["id"]), harness, tuple(models))
     if not targets:
         raise OmnigentError(f"none of the agents {agent_specs} exist on the Omnigent server")
     return Catalog(str(host["host_id"]), str(host.get("name") or host["host_id"]), targets)
+
+
+async def _pi_models(agent: str) -> list[dict[str, Any]]:
+    """`agent`'s default plus the `PI_PROVIDERS` models `pi --list-models` offers; none when Pi can't say."""
+    pi = shutil.which("pi")
+    if pi is None:
+        return []
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            pi, "--list-models", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), PI_LIST_TIMEOUT_S)
+    except (OSError, TimeoutError) as exc:
+        LOG.warning("pi --list-models failed: %s", exc)
+        return []
+    if proc.returncode != 0:
+        LOG.warning("pi --list-models exited %s", proc.returncode)
+        return []
+    listed = parse_pi_models(stdout.decode(errors="replace"))
+    if not listed:
+        return []
+    default: dict[str, Any] = {
+        "id": DEFAULT_MODEL,
+        "displayName": f"{agent} (agent default)",
+        "supportedReasoningEfforts": [{"reasoningEffort": e} for e in PI_EFFORTS],
+    }
+    # The spec's model is one of these; the smallest window is the one it surely has.
+    windows = [o["contextWindow"] for o in listed if "contextWindow" in o]
+    if windows:
+        default["contextWindow"] = min(windows)
+    return [default, *listed]
+
+
+def parse_pi_models(listing: str) -> list[dict[str, Any]]:
+    """The `PI_PROVIDERS` rows of `pi --list-models`' table, as model options with `provider/model` ids."""
+    lines = listing.splitlines()
+    start = next((i for i, line in enumerate(lines) if line.split()[:2] == ["provider", "model"]), None)
+    if start is None:
+        return []
+    options: list[dict[str, Any]] = []
+    for line in lines[start + 1 :]:
+        cols = line.split()
+        if len(cols) < 5 or cols[0] not in PI_PROVIDERS:
+            continue
+        provider, model, context, _output, thinking = cols[:5]
+        option: dict[str, Any] = {"id": f"{provider}/{model}", "model": f"{provider}/{model}", "displayName": model}
+        window = _pi_tokens(context)
+        if window:
+            option["contextWindow"] = window
+        if thinking == "yes":
+            option["supportedReasoningEfforts"] = [{"reasoningEffort": e} for e in PI_EFFORTS]
+        options.append(option)
+    return options
+
+
+def _pi_tokens(size: str) -> int | None:
+    """Pi's rounded token counts: `1.0M`, `65.5K`, `8192`."""
+    scale = {"K": 1_000, "M": 1_000_000}.get(size[-1:].upper(), 1)
+    try:
+        return int(float(size[:-1] if scale > 1 else size) * scale)
+    except ValueError:
+        return None
