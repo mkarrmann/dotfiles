@@ -1,5 +1,8 @@
 {
   "followUpBehavior": "queue",
   "inAppNotificationsEnabled": true,
-  "mathRenderingEnabled": true
+  "mathRenderingEnabled": true,
+  "threadDetailsItems": {
+    "context": true
+  }
 }
