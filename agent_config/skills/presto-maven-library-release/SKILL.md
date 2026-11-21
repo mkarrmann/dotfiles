@@ -1,6 +1,7 @@
 ---
 name: presto-maven-library-release
-description: Use when releasing a new version of a standalone Presto Maven library that lives on GitHub (facebookexternal/presto-configerator-client, presto-smc-client, presto-capella-client and similar) to Meta's Maven Proxy (maven.thefacebook.com, repository id fb-nexus-releases) with maven-release-plugin, and then bumping it in presto-facebook-trunk. Covers release:prepare / release:perform, which steps the agent can and cannot run, IPv6, the client-certificate + PUBLISH requirement behind 403s, retrying a failed deploy, and verification. Trigger keywords: release presto-configerator-client, new version of presto-smc-client, mvn release:perform, deploy to nexus, 403 Forbidden maven.thefacebook.com, fb-nexus-releases. Not for buck-built jars (see presto-deps-all) or Presto server packages (see presto-deploy).
+description: >-
+  Use when releasing a new version of a standalone Presto Maven library that lives on GitHub (facebookexternal/presto-configerator-client, presto-smc-client, presto-capella-client and similar) to Meta's Maven Proxy (maven.thefacebook.com, repository id fb-nexus-releases) with maven-release-plugin, and then bumping it in presto-facebook-trunk. Covers release:prepare / release:perform, which steps the agent can and cannot run, IPv6, the client-certificate + PUBLISH requirement behind 403s, retrying a failed deploy, and verification. Trigger keywords: release presto-configerator-client, new version of presto-smc-client, mvn release:perform, deploy to nexus, 403 Forbidden maven.thefacebook.com, fb-nexus-releases. Not for buck-built jars (see presto-deps-all) or Presto server packages (see presto-deploy).
 ---
 
 # Releasing a standalone Presto Maven library

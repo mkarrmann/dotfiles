@@ -1,6 +1,7 @@
 ---
 name: sapphire-pipeline-validation
-description: Use when validating a change to a Sapphire (Presto-on-Spark / Sapphire Velox) Dataswarm pipeline against its production run — e.g. lowering hash_partition_count, changing join/optimizer session properties, or mitigating Warm Storage broadcast-file (file_broadcast_*) fan-out. Covers choosing ./tester vs a read-only replay vs asking the owners, what an agent session can and cannot run, tester safety gotchas, where Sapphire metrics actually live, attributing Warm Storage broadcast directories to queries, and how to compare and report results honestly. Trigger keywords: sapphire tester, validate pipeline change, hash_partition_count, broadcast files, FILE_SVC_OPEN_FILE, warm_storage_file_service_activity, replay prod query, shared_acl ERR_DS_ACL_CONFLICT.
+description: >-
+  Use when validating a change to a Sapphire (Presto-on-Spark / Sapphire Velox) Dataswarm pipeline against its production run — e.g. lowering hash_partition_count, changing join/optimizer session properties, or mitigating Warm Storage broadcast-file (file_broadcast_*) fan-out. Covers choosing ./tester vs a read-only replay vs asking the owners, what an agent session can and cannot run, tester safety gotchas, where Sapphire metrics actually live, attributing Warm Storage broadcast directories to queries, and how to compare and report results honestly. Trigger keywords: sapphire tester, validate pipeline change, hash_partition_count, broadcast files, FILE_SVC_OPEN_FILE, warm_storage_file_service_activity, replay prod query, shared_acl ERR_DS_ACL_CONFLICT.
 ---
 
 # Validating Sapphire Pipeline Changes
