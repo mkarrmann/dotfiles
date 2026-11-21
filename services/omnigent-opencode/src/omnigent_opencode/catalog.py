@@ -51,12 +51,14 @@ DEFAULT_CONTEXT: Final = 200_000
 # catalog reports no contextWindow, and older probes put the suffix only on `model`.
 LONG_CONTEXT: Final = 1_000_000
 LONG_CONTEXT_SUFFIX: Final = "[1m]"
+# The window Codex reports (`modelContextWindow`) for models whose catalog entry has
+# none, with or without the suffix: 95% of the input limit Codex clamps
+# codex_config/config.template.toml's model_context_window to. gpt-6.1-sol takes
+# OpenAI's 922k input limit; the Codex build here caps gpt-6.2-sol at 872k (its
+# built-in max_context_window). Both measured from live sessions, 2026-11-21.
+CODEX_WINDOWS: Final = {"gpt-6.1-sol": 875_900, "gpt-6.2-sol": 828_400}
 # Models whose standard window is already 1M tokens, with or without the suffix.
-# Codex's catalog reports no contextWindow; codex_config/config.template.toml's
-# model_context_window gives the plain Sol ids the window of their `[1m]` twins.
 LONG_CONTEXT_MODELS: Final = (
-    "gpt-6.1-sol",
-    "gpt-6.2-sol",
     "claude-opus-5",
     "claude-sonnet-5",
     "claude-haiku-5",
@@ -173,6 +175,10 @@ def _context_window(model: str, option: dict[str, Any] | None) -> int:
     reported = option.get("contextWindow") if option else None
     if isinstance(reported, int) and reported > 0:
         return reported
+    for name in _names(option) if option else (model,):
+        window = CODEX_WINDOWS.get(name.removesuffix(LONG_CONTEXT_SUFFIX))
+        if window is not None:
+            return window
     if option:
         long = _long_context(option) or _natively_long_context(option)
     else:

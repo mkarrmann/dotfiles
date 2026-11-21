@@ -195,6 +195,13 @@ async def test_each_codex_model_offers_its_own_ladder(tmp_path: Path, monkeypatc
     assert {info["id"]: variants(info) for info in codex.model_infos()} == {"gpt-6.1-sol": SOL, "gpt-6.2-sol": SOL}
 
 
+async def test_codex_sol_models_report_the_window_codex_does(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path))
+    codex = (await load_catalog(StubOmnigent(), "auto", ["codex-native-ui"])).targets["codex-native-ui"]  # type: ignore[arg-type]
+    windows: dict[str, Any] = {str(info["id"]): info["limit"] for info in codex.model_infos()}
+    assert {model: limit["context"] for model, limit in windows.items()} == {"gpt-6.1-sol": 875_900, "gpt-6.2-sol": 828_400}
+
+
 async def test_claude_models_offer_claudes_whole_ladder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", str(tmp_path))
     claude = (await load_catalog(StubOmnigent(), "auto", ["claude-native-ui"])).targets["claude-native-ui"]  # type: ignore[arg-type]
