@@ -134,7 +134,7 @@ def main():
         check("Cmd+O on bravo's draft starts the thread in the window's project, alpha", alpha_id, press_new_local())
         bravo_draft()
         # T3 Code passes over shortcuts until the project picker has closed.
-        wait_for("the picker to close", lambda: not devtools.evaluate("!!document.querySelector('[role=dialog]')"), 5)
+        wait_for("the picker to close", lambda: not devtools.evaluate("!!document.querySelector('[role=dialog]:not([hidden])')"), 5)
         check("and again from another draft of bravo", alpha_id, press_new_local())
     finally:
         for proc in reversed(procs):
