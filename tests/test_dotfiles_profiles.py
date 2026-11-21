@@ -394,9 +394,8 @@ class SyncProfileTest(ProfileFixture):
             "sketchybar/sketchybarrc", "orchest_plugins.json",
             "systemd/omnigent-host.service", "systemd/omnigent-hub-reconcile.timer",
             "systemd/desktop/omnigent-host.service",
-            # TODO: add "systemd/desktop/app-terminals.slice" (sync.sh links it on desktop
-            # Linux since 862150e) and "systemd/omnigent-opencode.service"; without them
-            # the four desktop SyncProfileTest cases fail with "source missing".
+            "systemd/desktop/app-terminals.slice",
+            "systemd/omnigent-opencode.service",
             "systemd/omnigent-watcher.service", "systemd/desktop/omnigent-watcher.service",
             "systemd/t3@.service",
             "omnigent_config/omnigent-desktop-electron.desktop",
@@ -537,27 +536,105 @@ class SyncProfileTest(ProfileFixture):
         for name, rel in launchers.items():
             self.assertEqual((self.home / ".local/bin" / name).resolve(), self.home / "fbsource" / rel)
 
-    def test_codex_only_skills_link_into_codex_on_work_linux_only(self):
+    def test_non_lsp_skills_link_into_codex_and_pi_on_work_linux_only(self):
         skill = self.dotfiles / "agent_config/skills-codex/demo"
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text("---\nname: demo\ndescription: demo\n---\n")
         (self.home / "checkout1/fbsource").mkdir(parents=True)
         (self.dotfiles / "agent_config/meta-workspace-preferences.md").touch()
         codex_link = self.home / ".codex/skills/demo"
+        pi_link = self.home / ".pi/agent/skills/demo"
         for profile, platform in (("desktop", "Linux"), ("desktop", "Darwin"), ("work", "Darwin")):
             with self.subTest(profile=profile, platform=platform):
                 self.env["DOTFILES_PROFILE"] = profile
                 self.env["TEST_PLATFORM"] = platform
                 self.assert_success(self.run_script(self.script))
                 self.assertFalse(codex_link.is_symlink())
+                self.assertFalse(pi_link.is_symlink())
         self.env["DOTFILES_PROFILE"] = "work"
         self.env["TEST_PLATFORM"] = "Linux"
         result = self.run_script(self.script)
         self.assert_success(result)
         self.assertEqual(codex_link.resolve(), skill)
+        self.assertEqual(pi_link.resolve(), skill)
         self.assertNotIn("SKILL PROBLEMS", result.stdout)
-        for claude_skills in (self.home / ".claude/skills", self.home / "checkout1/.claude/skills"):
+        for claude_skills in (
+            self.home / ".claude/skills",
+            self.home / "checkout1/.claude/skills",
+            self.home / ".agents/skills",
+        ):
             self.assertFalse((claude_skills / "demo").exists())
+        # Switching back to desktop prunes the work-only non-LSP link.
+        self.env["DOTFILES_PROFILE"] = "desktop"
+        self.assert_success(self.run_script(self.script))
+        self.assertFalse(codex_link.exists())
+        self.assertFalse(pi_link.exists())
+
+    def test_cross_agent_rules_and_scoped_skills_sync(self):
+        global_skill = self.dotfiles / "agent_config/skills/common-skill"
+        meta_skill = self.dotfiles / "agent_config/skills/meta-only-skill"
+        vendored_skill = self.dotfiles / "agent_config/skills/meta-powertools-vendored/vendored-skill"
+        for directory, name in (
+            (global_skill, "common-skill"),
+            (meta_skill, "meta-only-skill"),
+            (vendored_skill, "vendored-skill"),
+        ):
+            directory.mkdir(parents=True)
+            (directory / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {name}\n---\n")
+        (self.dotfiles / "agent_config/skills-global.list").write_text("common-skill\n")
+        (self.home / "checkout1/fbsource").mkdir(parents=True)
+        (self.dotfiles / "agent_config/meta-workspace-preferences.md").touch()
+        rules = self.dotfiles / "agent_config/global-development-preferences.md"
+
+        # Work profile: global skills live in ~/.agents/skills and ~/.claude/skills;
+        # meta skills live in checkout1/.claude/skills, ~/.codex/skills, ~/.pi/agent/skills
+        # without duplicating global skills into codex/pi homes.
+        self.env["DOTFILES_PROFILE"] = "work"
+        self.env["PI_CODING_AGENT_DIR"] = "/tmp/omnigent_pi_ephemeral123"
+        result = self.run_script(self.script)
+        self.assert_success(result)
+        self.assertEqual((self.home / ".claude/rules/global-development-preferences.md").resolve(), rules)
+        self.assertEqual((self.home / ".codex/AGENTS.md").resolve(), rules)
+        self.assertEqual((self.home / ".pi/agent/AGENTS.md").resolve(), rules)
+        self.assertEqual((self.home / ".agents/skills/common-skill").resolve(), global_skill)
+        self.assertEqual((self.home / ".claude/skills/common-skill").resolve(), global_skill)
+        self.assertFalse((self.home / ".agents/skills/meta-only-skill").exists())
+        self.assertFalse((self.home / ".agents/skills/vendored-skill").exists())
+        for meta_dir in (
+            self.home / "checkout1/.claude/skills",
+            self.home / ".codex/skills",
+            self.home / ".pi/agent/skills",
+        ):
+            self.assertEqual((meta_dir / "meta-only-skill").resolve(), meta_skill)
+            self.assertEqual((meta_dir / "vendored-skill").resolve(), vendored_skill)
+            self.assertFalse((meta_dir / "common-skill").exists())
+
+        # Desktop profile: keeps global skills in ~/.agents/skills and ~/.claude/skills,
+        # prunes work meta skills from ~/.codex/skills and ~/.pi/agent/skills.
+        self.env["DOTFILES_PROFILE"] = "desktop"
+        self.assert_success(self.run_script(self.script))
+        self.assertEqual((self.home / ".agents/skills/common-skill").resolve(), global_skill)
+        self.assertEqual((self.home / ".pi/agent/AGENTS.md").resolve(), rules)
+        for work_dir in (self.home / ".codex/skills", self.home / ".pi/agent/skills"):
+            self.assertFalse((work_dir / "meta-only-skill").exists())
+            self.assertFalse((work_dir / "vendored-skill").exists())
+
+    def test_validate_skill_frontmatter_flags_unquoted_colon_in_description(self):
+        bad = self.dotfiles / "agent_config/skills/bad-yaml-skill"
+        bad.mkdir(parents=True)
+        (bad / "SKILL.md").write_text(
+            "---\nname: bad-yaml-skill\ndescription: Breaks strict YAML. Trigger keywords: foo, bar\n---\n"
+        )
+        good = self.dotfiles / "agent_config/skills/good-yaml-skill"
+        good.mkdir(parents=True)
+        (good / "SKILL.md").write_text(
+            "---\nname: good-yaml-skill\ndescription: >-\n  Valid folded scalar. Trigger keywords: foo, bar\n---\n"
+        )
+        self.env["DOTFILES_PROFILE"] = "desktop"
+        result = self.run_script(self.script)
+        self.assert_success(result)
+        self.assertIn("bad-yaml-skill: single-line 'description:' has an unquoted ': '", result.stderr)
+        self.assertNotIn("good-yaml-skill", result.stderr)
 
     def test_work_mac_sync_keeps_launchd_and_internal_helpers(self):
         self.env["DOTFILES_PROFILE"] = "work"

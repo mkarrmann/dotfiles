@@ -221,25 +221,49 @@ link_skills_scoped() {
   mkdir -p "$dst_parent"
 
   # Drop links this script previously created that no longer belong here:
-  # source deleted, or the skill moved between global and meta scope.
+  # source deleted, scope changed, or scope="none" (prune all managed links).
   shopt -s nullglob
   for dst in "$dst_parent"/*; do
     [[ -L "$dst" ]] || continue
     target="$(readlink "$dst")"
     [[ "$target" == "$SKILLS_SRC/"* ]] || continue
     name="$(basename "$dst")"
-    if [[ ! -e "${target%/}/SKILL.md" ]] || [[ "$(skill_scope "$name")" != "$scope" ]]; then
+    if [[ "$scope" == "none" ]] || [[ ! -e "${target%/}/SKILL.md" ]] || [[ "$(skill_scope "$name")" != "$scope" ]]; then
       rm "$dst"
       echo "removed skill link $dst"
     fi
   done
   shopt -u nullglob
 
+  [[ "$scope" == "none" ]] && return 0
+
   while IFS= read -r src; do
     name="$(basename "$src")"
     [[ "$(skill_scope "$name")" == "$scope" ]] || continue
     link_one "$src" "$dst_parent/$name"
   done < <(skill_dirs)
+}
+
+# Skills covering capabilities Claude already has natively (LSP, semantic code
+# navigation) via devserver CLIs. Linked into non-LSP harnesses on work Linux
+# and pruned elsewhere.
+sync_non_lsp_skills() {
+  local dst_parent="${1%/}"
+  local dst target
+  if [[ "$DOTFILES_PROFILE" == work && "$(uname -s)" == Linux ]]; then
+    sync_link_subdirs "$SKILLS_CODEX" "$dst_parent" "SKILL.md"
+  elif [[ -d "$dst_parent" ]]; then
+    shopt -s nullglob
+    for dst in "$dst_parent"/*; do
+      [[ -L "$dst" ]] || continue
+      target="$(readlink "$dst")"
+      if [[ "$target" == "$SKILLS_CODEX/"* ]]; then
+        rm "$dst"
+        echo "removed skill link $dst"
+      fi
+    done
+    shopt -u nullglob
+  fi
 }
 
 # Claude Code derives a missing `name` from the directory name, but Omnigent
@@ -264,6 +288,15 @@ validate_skill_frontmatter() {
       SKILL_ISSUES+=("$name: frontmatter missing 'name:' (Omnigent silently drops it)")
     grep -qE '^description:' <<<"$fm" ||
       SKILL_ISSUES+=("$name: frontmatter missing 'description:' (no trigger text for the model)")
+    # Strict YAML parsers (Pi, PyYAML) reject unquoted ": " inside single-line
+    # plain scalars such as `description: ... Trigger keywords: ...`.
+    if awk '/^description:[[:space:]]+/ {
+      sub(/^description:[[:space:]]+/, "");
+      c = substr($0, 1, 1);
+      if (c != "\"" && c != "\x27" && c != ">" && c != "|" && $0 ~ /:[[:space:]]/) { found = 1; exit }
+    } END { exit(found ? 0 : 1) }' <<<"$fm"; then
+      SKILL_ISSUES+=("$name: single-line 'description:' has an unquoted ': ' (strict YAML parsers like Pi drop it; use '>-' or quotes)")
+    fi
   done
   shopt -u nullglob
 }
@@ -393,6 +426,10 @@ validate_skill_frontmatter
 if [[ "$DOTFILES_PROFILE" == work ]]; then
   warn_claude_templates_skill_overlap
 fi
+# Cross-agent standard skills (agentskills.io): natively discovered by Pi,
+# Codex, OpenCode/Metacode, Devin, and Omnigent without per-agent copies.
+link_skills_scoped "$HOME/.agents/skills" global
+# Standalone Claude Code (and Muse) read ~/.claude/skills rather than ~/.agents/skills.
 link_skills_scoped "$HOME/.claude/skills" global
 # Omnigent currently creates each private Codex home under
 # <session-workspace>/.codex-tmp. Redirect that directory outside Eden so
@@ -707,11 +744,7 @@ mkdir -p "$codex_home/rules" "$codex_home/skills"
 AGENT_CONFIG_DIR="$DOTFILES_DIR/agent_config" CODEX_HOME="$codex_home" \
   "$DOTFILES_DIR/agent_config/sync-mcps" codex --generate-config || exit 1
 
-# Shared development rules. Codex loads global instructions from
-# $codex_home/AGENTS.override.md then $codex_home/AGENTS.md, upstream and at
-# Meta alike (codex-rs/codex-home/src/instructions/mod.rs). AGENTS.override.md
-# is left free as a machine-local escape hatch that wins over this link.
-link_one "$DOTFILES_DIR/agent_config/global-development-preferences.md" "$codex_home/AGENTS.md"
+
 
 # Retired: same foreground-wait hook as on the Claude side, now an Omnigent
 # policy. Codex never saw it under Omnigent anyway — that runs in a private
@@ -773,19 +806,31 @@ if [[ -L "$codex_retired_rule" ]]; then
   rm "$codex_retired_rule"
   echo "removed stale link $codex_retired_rule"
 fi
-# Shared skills
-if [[ "$DOTFILES_PROFILE" == work ]]; then
-  sync_link_subdirs "$DOTFILES_DIR/agent_config/skills" "$codex_home/skills" "SKILL.md"
-  sync_link_subdirs "$DOTFILES_DIR/agent_config/skills/meta-powertools-vendored" "$codex_home/skills" "SKILL.md"
-else
-  link_skills_scoped "$codex_home/skills" global
-fi
-# Codex-only skills cover what Claude already has natively (LSP, code search)
-# and describe devserver CLIs, so they reach neither Claude's .claude/skills nor
-# the Mac. Omnigent's Codex sessions mirror host skills from $codex_home/skills.
-if [[ "$DOTFILES_PROFILE" == work && "$(uname -s)" == Linux ]]; then
-  sync_link_subdirs "$SKILLS_CODEX" "$codex_home/skills" "SKILL.md"
-fi
+# Pi (used directly and by Omnigent's gemini agent)
+# Pi resolves its agent dir as $PI_CODING_AGENT_DIR, falling back to ~/.pi/agent.
+# Map ephemeral Omnigent session dirs back to canonical ~/.pi/agent.
+pi_agent_dir="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+case "$pi_agent_dir" in
+  "$HOME"/.omnigent/pi-native/*|"$HOME"/.pi/omnigent_pi_*|/tmp/omnigent_pi_*|"${TMPDIR:-/tmp}"/omnigent_pi_*)
+    pi_agent_dir="$HOME/.pi/agent"
+    ;;
+esac
+mkdir -p "$pi_agent_dir/skills"
+
+# Shared rules and work-profile Meta skills across Agent-Skills harnesses whose
+# workspace walk stops at the repo root (Codex, Pi). Global skills already live
+# once in ~/.agents/skills; each harness home only gets AGENTS.md (leaving
+# AGENTS.override.md free as a local escape hatch), Meta skills on work hosts,
+# and non-LSP CLI skills on work Linux.
+for agent_root in "$codex_home" "$pi_agent_dir"; do
+  link_one "$DOTFILES_DIR/agent_config/global-development-preferences.md" "$agent_root/AGENTS.md"
+  if [[ "$DOTFILES_PROFILE" == work ]]; then
+    link_skills_scoped "$agent_root/skills" meta
+  else
+    link_skills_scoped "$agent_root/skills" none
+  fi
+  sync_non_lsp_skills "$agent_root/skills"
+done
 
 # default.rules is machine-specific — managed by Codex itself
 

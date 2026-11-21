@@ -27,28 +27,42 @@ documents the generic tool's limits. For Meta feedback, the custom integration
 is the default.
 `phabricator-diff-watch` specifies what evidence is needed before replacing it.
 
-1. **Symlinks** every `skills/*/SKILL.md` and every
-   `skills/meta-powertools-vendored/*/SKILL.md` subdir into
-   `~/.codex/skills/`, and — for Claude — into either
-   `~/.claude/skills/` or `~/checkoutN/.claude/skills/` depending on
-   `skills-global.list` (see "Skills" below).
+1. **Symlinks** global skills (`skills-global.list`) into the cross-agent
+   standard `~/.agents/skills/` (natively read by Pi, Codex, OpenCode,
+   Devin, and Omnigent) plus `~/.claude/skills/` (for standalone Claude Code
+   and Muse). On `work` hosts, Meta-scoped skills link into
+   `~/checkoutN/.claude/skills/` (for Claude and Muse, which walk above repo
+   roots) and into `~/.codex/skills/` and `~/.pi/agent/skills/` (whose
+   `.agents/skills` walk stops at the repo root), plus `skills-codex/`
+   (non-LSP CLI skills like `glass`) on work Linux. Global rules
+   (`global-development-preferences.md`) link into `~/.claude/rules/`,
+   `~/.codex/AGENTS.md`, and `~/.pi/agent/AGENTS.md` (and Metacode's
+   `opencode.json` `instructions`).
 2. **Generates** `~/.codex/config.toml` from
    `codex_config/config.template.toml` + `~/.codex/config.local.toml`.
    Work machines also merge `codex_config/config.work.toml`.
    These are parsed and merged recursively: local scalars and arrays replace
    shared values, and local table entries override matching shared entries.
    The generated file is replaced atomically; invalid TOML leaves it intact.
-3. **MCPs** — calls `agent_config/sync-mcps all`, which writes the enabled
-   MCP definitions from `plugins/custom-mcps/mcps/*.json` into each
-   agent's native config (Claude `~/.claude.json.mcpServers`, Codex
-   `[mcp_servers.X]`, Metacode `opencode.json.mcp`). For Metacode it
-   also adds the vendored-skills dir to `skills.paths` (Metacode loads
-   skills from paths, not symlinks). Definitions default to the work profile;
-   portable servers declare `"profiles": ["desktop", "work"]`. An optional
-   `"agents"` list restricts a definition to named agents; otherwise it reaches
-   Claude, Codex, and Metacode. `watch.json` is the shared watcher definition
-   for all three. Metacode uses `OPENCODE_CONFIG_DIR`, falling back to
-   `$XDG_CONFIG_HOME/opencode` or `~/.config/opencode`.
+3. **MCPs** — calls `agent_config/sync-mcps all` (backed by
+   `agent_config/mcp_registry.py`), which writes the enabled MCP definitions
+   from `plugins/custom-mcps/mcps/*.json` into each agent's native config
+   (Claude `~/.claude.json.mcpServers`, Codex `[mcp_servers.X]`, Metacode
+   `opencode.json.mcp`, Pi `~/.pi/agent/mcp.json`, Muse
+   `~/.config/muse/settings.json`). The same registry feeds
+   `omnigent_config/materialize_agent_overlays.py`, which applies shared
+   defaults (`watch`, `blast_radius` for `os_env` specs, and profile MCPs for
+   headless harnesses like `harness: pi` that disable native CLI MCP tools)
+   when `bin/omnigent-agents-ensure` registers Omnigent bundles. For Metacode
+   it also manages `skills.paths` (`agent_config/skills` +
+   `meta-powertools-vendored` on `work`; retracted on `desktop`). Definitions
+   default to the work profile; portable servers declare
+   `"profiles": ["desktop", "work"]`. An optional `"agents"` list restricts a
+   definition to named agents; otherwise it reaches every adapter.
+   `watch.json` is the shared watcher definition everywhere. Metacode uses
+   `OPENCODE_CONFIG_DIR`, falling back to `$XDG_CONFIG_HOME/opencode` or
+   `~/.config/opencode`; Pi uses `PI_CODING_AGENT_DIR`, falling back to
+   `~/.pi/agent` (mapping ephemeral Omnigent session dirs back to `~/.pi/agent`).
 4. **Plugins** — calls `agent_config/bootstrap-plugins`, which uninstalls
    everything in `drop-plugins.list` from every agent, cleans orphan
    plugin caches under `~/.claude/plugins/cache/agent-market/` and

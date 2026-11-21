@@ -3,9 +3,11 @@
 agent's native config. Idempotent — safe to re-run.
 
 Targets:
-  - Claude:   ~/.claude.json                     .mcpServers.<name>
-  - Codex:    ~/.codex/config.toml              [mcp_servers.<name>]
-  - Metacode: ~/.config/opencode/opencode.json   .mcp.<name>
+  - Claude:   ~/.claude.json                      .mcpServers.<name>
+  - Codex:    ~/.codex/config.toml               [mcp_servers.<name>]
+  - Metacode: ~/.config/opencode/opencode.json    .mcp.<name>
+  - Pi:       ~/.pi/agent/mcp.json                .mcpServers.<name>
+  - Muse:     ~/.config/muse/settings.json        .mcpServers.<name>
 
 Claude's target is ~/.claude.json, NOT ~/.claude/settings.json. settings.json
 accepts an mcpServers key and silently ignores it -- see sync_claude.
@@ -17,137 +19,91 @@ overrides. --generate-config also renders the shared Codex template and
 migrates the retired dotfiles config symlink, preserving local settings.
 Desktop runs retain portable MCPs and retract work MCPs, preserving personal servers.
 
-Usage: sync-mcps [claude|codex|metacode|all]   (default: all)
+Usage: sync-mcps [claude|codex|metacode|pi|muse|all]   (default: all)
        sync-mcps codex --generate-config
 """
 
+from __future__ import annotations
+
+from collections.abc import Callable, Collection, Mapping
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
-from pathlib import Path
+
+from mcp_registry import (
+    McpServerSpec,
+    RETIRED_MCPS as RETIRED,
+    for_agent,
+    for_profile,
+    load_mcps as _load_mcps,
+    resolve_muse_settings_path,
+    resolve_pi_agent_dir,
+)
 
 HOME = Path.home()
 CFG = Path(os.environ.get("AGENT_CONFIG_DIR", HOME / "dotfiles" / "agent_config"))
 MCP_DIR = CFG / "plugins" / "custom-mcps" / "mcps"
-VENDORED_SKILLS = CFG / "skills" / "meta-powertools-vendored"
+SKILLS_DIR = CFG / "skills"
+VENDORED_SKILLS = SKILLS_DIR / "meta-powertools-vendored"
 GLOBAL_RULES = CFG / "global-development-preferences.md"
 
-# Servers this repo used to manage and no longer defines. Deleting the json
-# only stops the sync writing it; nothing revisits a name already installed, so
-# a rename leaves the old server registered against a command that no longer
-# exists and every session start fails to spawn it. Retiring is by name rather
-# than by diffing what is installed because the configs also hold personal
-# servers this script must never touch. Entries can go once no config still
-# carries them; keeping one costs a dict pop per run.
-RETIRED = frozenset({"diff_watch"})
 
-
-def load_mcps() -> dict:
-    """Map server name -> spec, carrying private agent and profile allowlists.
-
-    An MCP file may set a top-level ``"agents": [...]`` to restrict itself to
-    some agents. Definitions default to the work profile; portable servers
-    opt into both profiles with ``"profiles": ["desktop", "work"]``.
-    """
-    out = {}
-    for p in sorted(MCP_DIR.glob("*.json")):
-        data = json.loads(p.read_text())
-        agents = data.get("agents")
-        profiles = data.get("profiles", ["work"])
-        for name, spec in data.get("mcpServers", {}).items():
-            spec = dict(spec)
-            # These files are source; the configs they generate are per
-            # machine, so a `~`-relative command is expanded here rather than
-            # left to an agent that will not expand it.
-            if isinstance(spec.get("command"), str):
-                spec["command"] = os.path.expanduser(spec["command"])
-            # Drop env entries left as unresolved ${VAR} refs. No agent
-            # expands them: Codex passes them through verbatim and Claude
-            # reports "Missing environment variables" on every `mcp list`.
-            # The MCP process inherits the spawning environment regardless.
-            env = {
-                k: v
-                for k, v in (spec.get("env") or {}).items()
-                if not (isinstance(v, str) and v.startswith("${") and v.endswith("}"))
-            }
-            if env:
-                spec["env"] = env
-            else:
-                spec.pop("env", None)
-            if agents is not None:
-                spec["_agents"] = list(agents)
-            spec["_profiles"] = list(profiles)
-            out[name] = spec
-    return out
-
-
-def for_profile(mcps: dict, profile: str) -> dict:
-    """Select the managed servers enabled on this machine."""
-    return {
-        name: {k: v for k, v in spec.items() if k != "_profiles"}
-        for name, spec in mcps.items()
-        if profile in spec["_profiles"]
-    }
-
-
-def for_agent(mcps: dict, agent: str) -> dict:
-    """Drop entries an MCP file restricts to other agents."""
-    return {
-        name: {k: v for k, v in spec.items() if k != "_agents"}
-        for name, spec in mcps.items()
-        if spec.get("_agents") is None or agent in spec["_agents"]
-    }
+def load_mcps() -> dict[str, McpServerSpec]:
+    return _load_mcps(MCP_DIR)
 
 
 def _write_json_atomic(path: Path, data: dict) -> None:
-    """Replace *path* in one step.
-
-    ~/.claude.json is owned by Claude Code and rewritten by every live
-    session, so a partial write would corrupt unrelated project state.
-    """
+    """Replace *path* in one step so live agent processes never read partial JSON."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.sync-mcps.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, path)
 
 
-def sync_claude(mcps: dict, retired=()) -> None:
+def sync_claude(
+    mcps: Mapping[str, McpServerSpec],
+    retired: Collection[str] = (),
+    *,
+    work: bool = True,
+    generate: bool = False,
+) -> None:
     """Register user-scope MCP servers where Claude Code actually reads them.
 
     ``~/.claude/settings.json`` accepts an ``mcpServers`` key and does nothing
     with it: servers written there never appear in `claude mcp list`, their
     tools are never advertised, and nothing reports the absence. The user
     scope Claude Code does read is top-level ``mcpServers`` in
-    ``~/.claude.json`` -- what `claude mcp add --scope user` writes. This
-    script targeted the former, which left the whole bundle inert on every
-    Claude and Devmate session.
+    ``~/.claude.json`` -- what `claude mcp add --scope user` writes.
     """
+    del work, generate
     path = HOME / ".claude.json"
     if not path.exists():
         print(f"skip claude: {path} not found")
         return
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     servers = data.setdefault("mcpServers", {})
+    rendered = {name: spec.to_claude_dict() for name, spec in mcps.items()}
     removed = any(name in servers for name in retired)
     for name in retired:
         servers.pop(name, None)
-    if not removed and all(servers.get(name) == spec for name, spec in mcps.items()):
-        print(f"claude already current ({len(mcps)} MCPs in {path})")
+    if not removed and all(servers.get(name) == spec for name, spec in rendered.items()):
+        print(f"claude already current ({len(rendered)} MCPs in {path})")
     else:
-        servers.update(mcps)
+        servers.update(rendered)
         _write_json_atomic(path, data)
-        print(f"synced {len(mcps)} MCPs into {path}")
+        print(f"synced {len(rendered)} MCPs into {path}")
 
-    # Retract the misdirected copies, so the dead key cannot be mistaken for a
-    # live registration by whoever next greps for one of these names.
+    # Retract misdirected copies so dead keys cannot be mistaken for live entries.
     stale = HOME / ".claude" / "settings.json"
     if not stale.exists():
         return
-    settings = json.loads(stale.read_text())
+    settings = json.loads(stale.read_text(encoding="utf-8"))
     leftover = settings.get("mcpServers")
     if not isinstance(leftover, dict) or not leftover:
         return
-    for name in set(mcps) | set(retired):
+    for name in set(rendered) | set(retired):
         leftover.pop(name, None)
     if not leftover:
         settings.pop("mcpServers", None)
@@ -155,51 +111,52 @@ def sync_claude(mcps: dict, retired=()) -> None:
     print(f"removed ignored mcpServers entries from {stale}")
 
 
-def sync_metacode(mcps: dict, retired=(), *, work: bool = True) -> None:
+def sync_metacode(
+    mcps: Mapping[str, McpServerSpec],
+    retired: Collection[str] = (),
+    *,
+    work: bool = True,
+    generate: bool = False,
+) -> None:
+    del generate
     xdg_config = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
     config_dir = Path(os.environ.get("OPENCODE_CONFIG_DIR") or xdg_config / "opencode")
     path = config_dir / "opencode.json"
     if not path.exists():
         print(f"skip metacode: {path} not found")
         return
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     mcp_block = data.setdefault("mcp", {})
     for name in retired:
         mcp_block.pop(name, None)
     for name, spec in mcps.items():
-        entry = {
-            "type": "local",
-            "command": [spec["command"], *spec.get("args", [])],
-        }
-        env = spec.get("env") or {}
-        if env:
-            entry["environment"] = env
-        mcp_block[name] = entry
+        mcp_block[name] = spec.to_metacode_dict()
 
     skills = data.setdefault("skills", {})
-    paths = skills.setdefault("paths", [])
-    vendored = str(VENDORED_SKILLS)
-    if work and vendored not in paths:
-        paths.append(vendored)
-    elif not work:
-        skills["paths"] = [p for p in paths if p != vendored]
+    existing_paths = skills.setdefault("paths", [])
+    work_paths = [str(SKILLS_DIR), str(VENDORED_SKILLS)]
+    managed_paths = set(work_paths)
+    preserved = [p for p in existing_paths if p not in managed_paths]
+    skills["paths"] = preserved + (work_paths if work else [])
 
-    # Metacode does NOT read ~/.config/opencode/AGENTS.md, despite that being the
-    # documented opencode convention: asked to quote a rule from it, it answered
-    # NONE. The `instructions` list is what actually loads global rules -- adding
-    # this entry took its startup banner from "1 rule loaded" to "2 rules loaded"
-    # and the same question to YES. Absolute path, because this file is generated
-    # per machine and $HOME differs between the Mac and the devservers.
+    # Metacode does NOT read ~/.config/opencode/AGENTS.md despite the upstream
+    # opencode convention; its `instructions` list is what actually loads rules.
     instructions = data.setdefault("instructions", [])
     rules = str(GLOBAL_RULES)
     if rules not in instructions:
         instructions.append(rules)
 
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    _write_json_atomic(path, data)
     print(f"synced {len(mcps)} MCPs + skills.paths + instructions into {path}")
 
 
-def sync_codex(mcps: dict, generate: bool = False, *, work: bool = True, retired=()) -> None:
+def sync_codex(
+    mcps: Mapping[str, McpServerSpec],
+    retired: Collection[str] = (),
+    *,
+    work: bool = True,
+    generate: bool = False,
+) -> None:
     # Keep TOML dependencies scoped to Codex; other agents need only stdlib.
     from codex_config import (
         GENERATED_HEADER,
@@ -211,8 +168,9 @@ def sync_codex(mcps: dict, generate: bool = False, *, work: bool = True, retired
         write_atomic,
     )
 
+    rendered = {name: spec.to_codex_dict() for name, spec in mcps.items()}
     if generate:
-        generate_config(CFG.parent, mcps, work=work, retired=retired)
+        generate_config(CFG.parent, rendered, work=work, retired=retired)
         return
     path = codex_home() / "config.toml"
     if not path.exists():
@@ -221,14 +179,86 @@ def sync_codex(mcps: dict, generate: bool = False, *, work: bool = True, retired
     if path.is_symlink():
         raise ValueError(f"migrate {path} first with sync-mcps codex --generate-config")
     local = read_config(path.with_name("config.local.toml"))
-    data = apply_mcps(read_config(path), mcps, local, retired)
+    data = apply_mcps(read_config(path), rendered, local, retired)
     write_atomic(path, GENERATED_HEADER + dumps(data))
-    print(f"synced {len(mcps)} MCPs into {path}")
+    print(f"synced {len(rendered)} MCPs into {path}")
+
+
+def sync_pi(
+    mcps: Mapping[str, McpServerSpec],
+    retired: Collection[str] = (),
+    *,
+    work: bool = True,
+    generate: bool = False,
+) -> None:
+    """Register managed MCP servers in Pi's ``mcp.json``, preserving user overrides."""
+    del work, generate
+    agent_dir = resolve_pi_agent_dir(HOME)
+    path = agent_dir / "mcp.json"
+    if not agent_dir.exists() and not path.exists():
+        print(f"skip pi: {agent_dir} not found")
+        return
+    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    servers = data.setdefault("mcpServers", {})
+    removed = any(name in servers for name in retired)
+    for name in retired:
+        servers.pop(name, None)
+    rendered = {
+        name: spec.to_pi_dict(existing=servers.get(name))
+        for name, spec in mcps.items()
+    }
+    if path.exists() and not removed and all(servers.get(name) == spec for name, spec in rendered.items()):
+        print(f"pi already current ({len(rendered)} MCPs in {path})")
+        return
+    servers.update(rendered)
+    _write_json_atomic(path, data)
+    print(f"synced {len(rendered)} MCPs into {path}")
+
+
+def sync_muse(
+    mcps: Mapping[str, McpServerSpec],
+    retired: Collection[str] = (),
+    *,
+    work: bool = True,
+    generate: bool = False,
+) -> None:
+    """Register managed MCP servers in Muse's ``settings.json`` ``mcpServers``."""
+    del work, generate
+    path = resolve_muse_settings_path(HOME)
+    if not path.exists():
+        print(f"skip muse: {path} not found")
+        return
+    data = json.loads(path.read_text(encoding="utf-8"))
+    servers = data.setdefault("mcpServers", {})
+    removed = any(name in servers for name in retired)
+    for name in retired:
+        servers.pop(name, None)
+    rendered = {
+        name: spec.to_muse_dict(existing=servers.get(name))
+        for name, spec in mcps.items()
+    }
+    if not removed and all(servers.get(name) == spec for name, spec in rendered.items()):
+        print(f"muse already current ({len(rendered)} MCPs in {path})")
+        return
+    servers.update(rendered)
+    _write_json_atomic(path, data)
+    print(f"synced {len(rendered)} MCPs into {path}")
+
+
+Adapter = Callable[..., None]
+
+ADAPTERS: dict[str, Adapter] = {
+    "claude": sync_claude,
+    "codex": sync_codex,
+    "metacode": sync_metacode,
+    "pi": sync_pi,
+    "muse": sync_muse,
+}
 
 
 def main() -> int:
     target = sys.argv[1] if len(sys.argv) > 1 else "all"
-    if target not in ("all", "claude", "codex", "metacode"):
+    if target != "all" and target not in ADAPTERS:
         print(f"unknown target: {target}", file=sys.stderr)
         return 2
     generate = sys.argv[2:] == ["--generate-config"] and target == "codex"
@@ -244,13 +274,9 @@ def main() -> int:
     work = profile == "work"
     selected = for_profile(mcps, profile)
     retired = RETIRED | (set(mcps) - set(selected))
-    if target in ("all", "claude"):
-        sync_claude(for_agent(selected, "claude"), retired)
-    if target in ("all", "codex"):
-        sync_codex(for_agent(selected, "codex"), generate=generate,
-                   work=work, retired=retired)
-    if target in ("all", "metacode"):
-        sync_metacode(for_agent(selected, "metacode"), retired, work=work)
+    targets = list(ADAPTERS) if target == "all" else [target]
+    for name in targets:
+        ADAPTERS[name](for_agent(selected, name), retired, work=work, generate=generate)
     return 0
 
 
