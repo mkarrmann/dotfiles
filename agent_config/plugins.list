@@ -3,6 +3,7 @@ code_provenance
 deepcode
 fbcode-eng
 gojira-session
+lean-check
 llm-rules
 meta
 meta-cli-core
