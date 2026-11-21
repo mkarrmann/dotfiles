@@ -27,12 +27,15 @@ class FakeSession:
     items: list[dict[str, Any]] = field(default_factory=list)
     labels: dict[str, str] = field(default_factory=dict)
     policies: list[dict[str, Any]] = field(default_factory=list)
+    pending_ids: list[str] = field(default_factory=list)
 
 
 class FakeOmnigent:
     def __init__(self, harness: str = "claude-native") -> None:
         self.harness = harness
         self.refuse_messages = False
+        self.new_session_labels: dict[str, str] = {}
+        """Labels each session this fake creates starts with, as Omnigent's own (e.g. last usage) would be."""
         self.sessions: dict[str, FakeSession] = {}
         self._ids = itertools.count(1)
         self.app = web.Application()
@@ -137,7 +140,7 @@ class FakeOmnigent:
 
     async def create(self, request: web.Request) -> web.Response:
         session_id = f"conv_{next(self._ids):04d}"
-        self.sessions[session_id] = FakeSession(session_id, await request.json())
+        self.sessions[session_id] = FakeSession(session_id, await request.json(), labels=dict(self.new_session_labels))
         return web.json_response({"id": session_id})
 
     async def snapshot(self, request: web.Request) -> web.Response:
@@ -174,6 +177,7 @@ class FakeOmnigent:
         session.posted.append(body)
         if body.get("type") == "message":
             n = next(self._ids)
+            session.pending_ids.append(f"pending_{n}")
             return web.json_response({"queued": True, "pending_id": f"pending_{n}", "item_id": f"item_{n}"})
         return web.json_response({"queued": False})
 

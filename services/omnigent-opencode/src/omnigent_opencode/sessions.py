@@ -57,6 +57,7 @@ from .turns import (
     TurnTracker,
     Usage,
     _message_text,
+    context_tokens,
     elicitation_from,
 )
 from .wire import VERSION, Json, JsonObject, event, form_id, location, now_ms, permission_id, zero_tokens
@@ -67,6 +68,8 @@ LOG = logging.getLogger(__name__)
 SESSION_PREFIX: Final = "ses_"
 SESSION_LABEL: Final = "t3.opencode_session_id"
 PROVIDER_LABEL: Final = "t3.opencode_provider"
+# Omnigent records each usage report's `context_tokens` on the session (`omnigent.last_context_tokens`).
+CONTEXT_TOKENS_LABEL: Final = "omnigent.last_context_tokens"
 CANCEL_GRACE_S: Final = 8.0
 QUIESCENT_END_S: Final = 10.0
 # How long after its execution ends an undelivered steer waits for the harness
@@ -161,7 +164,8 @@ class Execution:
     diffs: dict[str, str] = field(default_factory=dict)
     """The unified diff of each open editing call, reported when it succeeds."""
     """The assistant message each open tool call belongs to; a steer starts a new one mid-execution."""
-    usage: Usage | None = None
+    usage_reports: int = 0
+    """Usage reports that arrived while it ran; with none, its steps report the session's last known usage."""
     interrupted: bool = False
     compacting: bool = False
     ended: bool = False
@@ -298,6 +302,8 @@ class Session:
         self._replayed: set[str] = set()
         self.active = store.active(session_id) or now_ms()
         """When the session last did anything, as far as this server saw."""
+        self.context_tokens: int | None = None
+        """The tokens the session's context last held, from its usage reports or Omnigent's label; None if never reported."""
         self._stored_active = 0
 
     @property
@@ -425,6 +431,7 @@ class Session:
         except (OmnigentError, httpx.HTTPError) as exc:
             LOG.warning("snapshot of %s failed: %s", self.conversation_id, exc)
             return
+        self._note_label(snapshot)
         if execution is not None and self.execution is execution:
             self._apply(execution, execution.tracker.on_snapshot(snapshot))
         await self._catch_up()
@@ -523,6 +530,10 @@ class Session:
             self._store.touch(self.id, self.active)
 
     def on_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        if event_type == "session.usage":
+            # Arrives whether or not an execution runs, and may come after the turn it measures has ended.
+            self._note_usage(context_tokens(payload))
+            return
         if event_type not in IGNORED_EVENTS:
             self.touch()
         if event_type == "session.input.consumed":
@@ -788,6 +799,29 @@ class Session:
         for frame in events:
             self._publish(frame)
 
+    def _note_usage(self, used: int | None) -> None:
+        if used is None:
+            return
+        self.context_tokens = used
+        if self.execution is not None:
+            self.execution.usage_reports += 1
+
+    def _note_label(self, snapshot: dict[str, Any]) -> None:
+        """Omnigent's record of the last usage report, which covers any the stream missed."""
+        label = (snapshot.get("labels") or {}).get(CONTEXT_TOKENS_LABEL)
+        if isinstance(label, str) and label.isdigit():
+            self.context_tokens = int(label)
+
+    def _step_tokens(self) -> JsonObject | None:
+        """A step's tokens: the context the session last reported, or None (no tokens) if it never has.
+
+        T3 Code shows the last step's tokens as the context's size, so a made-up zero would read as an empty context."""
+        if self.context_tokens is None:
+            return None
+        tokens = zero_tokens()
+        tokens["input"] = self.context_tokens
+        return tokens
+
     def _step(self, execution: Execution) -> None:
         if execution.stepped:
             return
@@ -840,8 +874,8 @@ class Session:
                     self._tool_started(execution, call_id, name, arguments)
                 case ToolFinished(call_id, text):
                     self._tool_finished(execution, call_id, text)
-                case Usage():
-                    execution.usage = output
+                case Usage(used):
+                    self._note_usage(used)
                 case ReplyCommitted():
                     if execution.block is not None and execution.block.kind == "text":
                         self._close_block(execution)
@@ -958,13 +992,21 @@ class Session:
         elif ended.outcome == "failed":
             outcome = "failed"
         if execution.stepped:
-            tokens = zero_tokens()
-            if execution.usage is not None:
-                tokens["input"] = execution.usage.used
+            if execution.usage_reports == 0:
+                LOG.info(
+                    "no usage report arrived during the %s turn on %s; its step reports %s",
+                    execution.kind,
+                    self.id,
+                    "none" if self.context_tokens is None else f"the last known {self.context_tokens} tokens",
+                )
+            tokens = self._step_tokens()
             step: JsonObject = {"assistantMessageID": execution.assistant_id}
             if outcome == "failed":
-                self._emit("session.step.failed", {**step, "error": _session_error(ended.error), "tokens": tokens})
-            else:
+                self._emit(
+                    "session.step.failed",
+                    {**step, "error": _session_error(ended.error), **({} if tokens is None else {"tokens": tokens})},
+                )
+            elif tokens is not None:
                 self._emit("session.step.ended", {**step, "finish": "stop", "cost": 0, "tokens": tokens})
         self.approvals.clear()
         self.forms.clear()
@@ -1250,8 +1292,8 @@ class Session:
     def _next_message(self, execution: Execution, user_message_id: str) -> None:
         """What follows a steer is the reply to it, a new assistant message, as `history.build` has it."""
         self._close_block(execution)
-        if execution.stepped:
-            tokens = zero_tokens()
+        tokens = self._step_tokens()
+        if execution.stepped and tokens is not None:
             self._emit(
                 "session.step.ended",
                 {"assistantMessageID": execution.assistant_id, "finish": "stop", "cost": 0, "tokens": tokens},

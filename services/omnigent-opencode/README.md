@@ -42,6 +42,7 @@ The contract is what T3 Code v0.1.10's OpenCode v2 client sends and decodes
 | a model's variants | the efforts the harness reports for that model; Claude's whole ladder (low to max) where claude-native reports none |
 | a pi agent's models (`gemini`) | `PI_MODELS` (gemini-4-neon, gemini-4-carbon) as far as this machine's Pi offers them, each with the thinking levels Pi reports for it (`pi --mode rpc`: `set_model`, `get_available_thinking_levels`); Omnigent lists none for pi |
 | a model list that failed to load | the agent's default model only, until the catalog loads again a minute later |
+| a step's `tokens` (T3 Code's context window fill) | the context the session last reported: its latest `session.usage` with `context_tokens`, whenever it came, else Omnigent's `omnigent.last_context_tokens` label read at each resync. A session that never reported any (Claude's subagents) ends no step, so T3 Code shows no context rather than an empty one; `step.ended` requires `tokens` |
 | hidden models | `HIDDEN_MODELS`: Fable, Haiku, Luna and GPT-5.x are never offered |
 | `session.create` | `POST /v1/sessions` for the agent, bound to this host and the thread's cwd |
 | prompt (`delivery: queue`) | user message; the execution ends at the confirmed idle |

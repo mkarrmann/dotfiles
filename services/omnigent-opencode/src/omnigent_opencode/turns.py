@@ -66,8 +66,9 @@ class ToolFinished:
 
 @dataclass(frozen=True)
 class Usage:
+    """How many tokens the session's context holds, as a response reported it."""
+
     used: int
-    size: int
 
 
 @dataclass(frozen=True)
@@ -94,6 +95,12 @@ class Quiescent:
 
 
 TurnOutput = TextDelta | ThoughtDelta | ToolStarted | ToolFinished | Usage | Elicitation | ReplyCommitted | TurnEnded | Quiescent
+
+
+def context_tokens(usage: Any) -> int | None:
+    """The `context_tokens` of a usage report; one may carry only the window or the cost, which leave it unchanged."""
+    used = usage.get("context_tokens") if isinstance(usage, dict) else None
+    return used if isinstance(used, int) and not isinstance(used, bool) and used >= 0 else None
 
 
 def _is_native_ack(response: dict[str, Any]) -> bool:
@@ -341,9 +348,6 @@ class TurnTracker:
                 self.expected_pending_id = None
             return []
 
-        if event_type == "session.usage":
-            return self._usage(data)
-
         if event_type == "response.elicitation_request":
             return [elicitation_from(data)]
 
@@ -395,10 +399,5 @@ class TurnTracker:
         return []
 
     def _usage(self, usage: Any) -> list[TurnOutput]:
-        if not isinstance(usage, dict):
-            return []
-        used = usage.get("context_tokens")
-        size = usage.get("context_window")
-        if isinstance(used, int) and isinstance(size, int) and size > 0:
-            return [Usage(used, size)]
-        return []
+        used = context_tokens(usage)
+        return [] if used is None else [Usage(used)]
