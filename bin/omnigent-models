@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""omnigent-models — list the models a harness can actually run on THIS host.
+"""omnigent-models — list the models an agent or harness can actually run on THIS host.
 
-    omnigent-models [HARNESS] [--json] [--host HOST_ID] [--url URL]
+    omnigent-models [AGENT_OR_HARNESS] [--json] [--host HOST_ID] [--url URL]
 
 Omnigent probes each installed harness binary for its live model catalog (for
 Codex, ``codex app-server`` ``model/list``) and caches it per host under
@@ -19,12 +19,22 @@ HTTP, and this is the one command that surfaces it. The host route accepts only
 the native harness names, but the ``codex`` and ``claude`` SDK agents launch the
 same binaries, so their names are mapped onto the probed catalogs.
 
+An agent name (``gemini``, ``codex``, ...) resolves through its spec in
+``$DOTFILES_DIR/omnigent_config/agents/<name>/config.yaml``: its executor's
+``harness`` picks the catalog and its ``model`` is marked default when the
+catalog names none.
+
+Omnigent probes no catalog for pi (the route answers an empty list), so for pi
+harnesses the rows come from ``pi --list-models`` instead, each thinking model
+flagged; the footer prints Omnigent's pi effort ladder. The server is asked first, so this fallback
+retires itself once Omnigent starts probing pi.
+
 The host defaults to this machine, read from ``~/.omnigent/config.yaml``. A
 child session created from inside a session inherits its parent's runner, so
 that is the host a subagent will run on.
 
 Exit 0 with rows; 1 when the server refuses or the probe fails (the message is
-the server's own detail); 2 on usage.
+the server's own detail) or pi lists nothing; 2 on usage.
 
 Env: OMNIGENT_URL (server), OMNIGENT_DATA_DIR / OMNIGENT_CONFIG_HOME (config).
 """
@@ -35,6 +45,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -50,6 +61,71 @@ CATALOG_HARNESS = {
     "claude-sdk": "claude-native",
     "claude-native": "claude-native",
 }
+
+PI_HARNESSES = frozenset({"pi", "pi-native"})
+# Mirrors PI_EFFORTS in omnigent/util/reasoning_effort.py: Omnigent's spelling
+# (`none` is pi's `off`; `ultra` clamps to `max`), clamped per model at launch.
+PI_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+PI_LIST_TIMEOUT_S = 60
+
+
+def dotfiles_dir() -> Path:
+    return Path(os.environ.get("DOTFILES_DIR") or Path.home() / "dotfiles")
+
+
+def agent_executor(name: str) -> dict[str, str]:
+    """``harness`` and ``model`` from an agent spec's top-level ``executor:`` block."""
+    path = dotfiles_dir() / "omnigent_config/agents" / name / "config.yaml"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    block = re.search(r"^executor:[ \t]*\n((?:[ \t]+.*\n|[ \t]*\n)*)", text, re.M)
+    if not block:
+        return {}
+    found = {}
+    for key in ("harness", "model"):
+        match = re.search(rf"^[ \t]+{key}:[ \t]*([^\s#]+)", block.group(1), re.M)
+        if match:
+            found[key] = match.group(1).strip("'\"")
+    return found
+
+
+def parse_pi_listing(listing: str) -> list[dict]:
+    """``pi --list-models``' table as model rows, ids in pi's ``provider/model`` form."""
+    lines = listing.splitlines()
+    start = next(
+        (i for i, line in enumerate(lines) if line.split()[:2] == ["provider", "model"]), None
+    )
+    if start is None:
+        return []
+    rows = []
+    for line in lines[start + 1 :]:
+        cols = line.split()
+        if len(cols) < 5:
+            continue
+        rows.append({"id": f"{cols[0]}/{cols[1]}", "contextWindow": cols[2], "thinking": cols[4] == "yes"})
+    return rows
+
+
+def pi_rows() -> tuple[list[dict], str | None]:
+    pi = shutil.which("pi")
+    if pi is None:
+        return [], "pi is not on PATH"
+    try:
+        out = subprocess.run(
+            [pi, "--list-models"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=PI_LIST_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [], f"pi --list-models failed: {exc}"
+    if out.returncode != 0:
+        return [], f"pi --list-models exited {out.returncode}: {out.stderr.strip()[:200]}"
+    rows = parse_pi_listing(out.stdout)
+    return rows, None if rows else "pi --list-models printed no models"
 
 
 def data_dir() -> Path:
@@ -74,8 +150,7 @@ def server_url() -> str:
     """Every client here uses a stable loopback endpoint; see omnigent-server-url."""
     if os.environ.get("OMNIGENT_URL"):
         return os.environ["OMNIGENT_URL"].rstrip("/")
-    dotfiles = Path(os.environ.get("DOTFILES_DIR") or Path.home() / "dotfiles")
-    helper = dotfiles / "bin/omnigent-server-url"
+    helper = dotfiles_dir() / "bin/omnigent-server-url"
     if helper.exists():
         try:
             out = subprocess.run([str(helper)], capture_output=True, text=True, timeout=10)
@@ -112,13 +187,13 @@ def efforts(row: dict) -> list[str]:
     return ladder
 
 
-def render(harness: str, host_id: str, url: str, rows: list[dict]) -> str:
-    lines = [f"{harness} models on host {host_id} ({url}):"]
+def render(harness: str, source: str, rows: list[dict]) -> str:
+    lines = [f"{harness} models {source}:"]
     width = max((len(str(r.get("id"))) for r in rows), default=0)
     for row in rows:
         ladder = efforts(row)
         marker = "default" if row.get("isDefault") else ""
-        detail = ""
+        detail = "thinking" if row.get("thinking") else ""
         if ladder:
             detail = "efforts: " + " ".join(ladder)
             if row.get("defaultReasoningEffort"):
@@ -126,6 +201,12 @@ def render(harness: str, host_id: str, url: str, rows: list[dict]) -> str:
         lines.append(f"  {str(row.get('id')):<{width}}  {marker:<7}  {detail}".rstrip())
     if not rows:
         lines.append("  (empty catalog)")
+    if harness in PI_HARNESSES:
+        lines.append(
+            "reasoning_effort for a thinking model: "
+            + " ".join(PI_EFFORTS)
+            + " (Omnigent clamps to the levels the model offers)."
+        )
     lines.append(
         "Pass an id verbatim as `model`; pick `reasoning_effort` from that model's ladder."
     )
@@ -134,13 +215,17 @@ def render(harness: str, host_id: str, url: str, rows: list[dict]) -> str:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="omnigent-models", add_help=True)
-    parser.add_argument("harness", nargs="?", default="codex")
+    parser.add_argument(
+        "harness", nargs="?", default="codex", help="agent name or harness (default: codex)"
+    )
     parser.add_argument("--json", action="store_true", help="print the raw model rows")
     parser.add_argument("--host", help="host id (default: this machine's, from config.yaml)")
     parser.add_argument("--url", help="server URL (default: $OMNIGENT_URL or the loopback hub)")
     args = parser.parse_args(argv)
 
-    harness = CATALOG_HARNESS.get(args.harness, args.harness)
+    spec = agent_executor(args.harness)
+    harness = spec.get("harness", args.harness)
+    harness = CATALOG_HARNESS.get(harness, harness)
     host_id = args.host or local_host_id()
     if not host_id:
         print(
@@ -152,15 +237,26 @@ def main(argv: list[str]) -> int:
     url = (args.url or server_url()).rstrip("/")
     status, payload = fetch(f"{url}/v1/hosts/{host_id}/harnesses/{harness}/model-options")
     rows = payload.get("models") if isinstance(payload, dict) else None
-    if status != 200 or not isinstance(rows, list):
+    source = f"on host {host_id} ({url})"
+    if harness in PI_HARNESSES and not rows:
+        rows, problem = pi_rows()
+        if problem:
+            print(f"omnigent-models: {harness}: {problem}", file=sys.stderr)
+            return 1
+        source = "from this machine's `pi --list-models` (Omnigent probes no pi catalog)"
+    elif status != 200 or not isinstance(rows, list):
         detail = payload.get("detail") if isinstance(payload, dict) else payload
         print(f"omnigent-models: {harness} on host {host_id}: {detail}", file=sys.stderr)
         return 1
+    if spec.get("model") and not any(row.get("isDefault") for row in rows):
+        for row in rows:
+            if row.get("id") == spec["model"]:
+                row["isDefault"] = True
     if args.json:
         json.dump(rows, sys.stdout, indent=1)
         print()
     else:
-        print(render(harness, host_id, url, rows))
+        print(render(harness, source, rows))
     return 0
 
 

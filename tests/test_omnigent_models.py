@@ -32,6 +32,10 @@ CODEX_ROWS = [
     },
 ]
 CLAUDE_ROWS = [{"id": "opus"}, {"id": "opus[1m]", "isDefault": True}]
+PI_LISTING = """provider   model          context  max-out  thinking  images
+google     gemini-4-neon  1.0M     65.5K    yes       yes
+meta       plain          128K     8192     no        no
+"""
 
 
 class StubHandler(BaseHTTPRequestHandler):
@@ -44,6 +48,8 @@ class StubHandler(BaseHTTPRequestHandler):
             body, status = {"models": CODEX_ROWS, "routable_models": ["gpt-6-astra"]}, 200
         elif self.path == prefix + "claude-native/model-options":
             body, status = {"models": CLAUDE_ROWS}, 200
+        elif self.path in (prefix + "pi/model-options", prefix + "pi-native/model-options"):
+            body, status = {"models": []}, 200
         elif self.path.startswith(prefix):
             harness = self.path[len(prefix):].split("/")[0]
             body, status = {"detail": f"model options are unsupported for harness '{harness}'"}, 502
@@ -126,10 +132,75 @@ class OmnigentModelsTest(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout), CODEX_ROWS)
 
     def test_server_refusal_is_relayed_verbatim_with_exit_1(self):
-        result = self.run_script("pi-native")
+        result = self.run_script("opencode-native")
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout, "")
-        self.assertIn("model options are unsupported for harness 'pi-native'", result.stderr)
+        self.assertIn("model options are unsupported for harness 'opencode-native'", result.stderr)
+
+    def install_pi(self, listing, exit_code=0):
+        bin_dir = self.data / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        (self.data / "listing.txt").write_text(listing)
+        pi = bin_dir / "pi"
+        pi.write_text(
+            "#!/bin/sh\n"
+            '[ "$1" = --list-models ] || exit 9\n'
+            f'cat "{self.data / "listing.txt"}"\n'
+            f"exit {exit_code}\n"
+        )
+        pi.chmod(0o755)
+        self.env["PATH"] = f"{bin_dir}:{self.env['PATH']}"
+
+    def install_agent(self, name, executor):
+        agent = self.data / "dotfiles/omnigent_config/agents" / name
+        agent.mkdir(parents=True)
+        (agent / "config.yaml").write_text(
+            f"spec_version: 1\nname: {name}\nexecutor:\n{executor}"
+            "os_env:\n  type: caller_process\n  cwd: .\n"
+            "tools:\n  t:\n    model: not-the-executor\n"
+        )
+        self.env["DOTFILES_DIR"] = str(self.data / "dotfiles")
+
+    def test_pi_falls_back_to_pi_list_models(self):
+        self.install_pi(PI_LISTING)
+        result = self.run_script("pi-native")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(StubHandler.requests, [f"/v1/hosts/{HOST_ID}/harnesses/pi-native/model-options"])
+        self.assertIn("pi --list-models", result.stdout.splitlines()[0])
+        self.assertRegex(result.stdout, r"(?m)^  google/gemini-4-neon\s+thinking$")
+        self.assertRegex(result.stdout, r"(?m)^  meta/plain\s*$")
+        self.assertIn("none minimal low medium high xhigh max ultra", result.stdout)
+
+    def test_agent_name_resolves_harness_and_default_model(self):
+        self.install_pi(PI_LISTING)
+        self.install_agent("gem", "  type: omnigent\n  model: google/gemini-4-neon\n  config:\n    harness: pi\n")
+        result = self.run_script("gem", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(StubHandler.requests, [f"/v1/hosts/{HOST_ID}/harnesses/pi/model-options"])
+        defaults = [row["id"] for row in json.loads(result.stdout) if row.get("isDefault")]
+        self.assertEqual(defaults, ["google/gemini-4-neon"])
+
+    def test_agent_spec_never_overrides_the_catalogs_own_default(self):
+        self.install_agent("cx", "  type: omnigent\n  model: gpt-5.5\n  config:\n    harness: codex\n")
+        result = self.run_script("cx", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(StubHandler.requests, [f"/v1/hosts/{HOST_ID}/harnesses/codex-native/model-options"])
+        defaults = [row["id"] for row in json.loads(result.stdout) if row.get("isDefault")]
+        self.assertEqual(defaults, ["gpt-6-astra"])
+
+    def test_pi_problems_exit_1(self):
+        for listing, exit_code, message in (
+            (None, 0, "pi is not on PATH"),
+            ("boom", 3, "exited 3"),
+            ("no table here\n", 0, "printed no models"),
+        ):
+            with self.subTest(message=message):
+                self.setUp()
+                if listing is not None:
+                    self.install_pi(listing, exit_code)
+                result = self.run_script("pi")
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(message, result.stderr)
 
     def test_missing_host_id_is_a_clear_error(self):
         (self.data / "config.yaml").write_text("providers: {}\n")
