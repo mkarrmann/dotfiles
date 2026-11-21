@@ -4,7 +4,8 @@
 # ~/checkout1/fbsource (the main), and are intended to be short-lived.
 #
 # Usage:
-#   wt add <label> [--snapshot] [--at REV]   create ~/wt/<label>
+#   wt add <label> [--snapshot] [--at REV] [--from CHECKOUT]
+#                                            create ~/wt/<label>
 #   wt list                                  list all ephemeral worktrees
 #   wt rm  <label> [--force]                 remove one
 #   wt rm  --all [--force]                   remove all ephemeral worktrees
@@ -15,7 +16,9 @@
 # Notes:
 #   - Default 'add' starts at the main's current commit with no uncommitted
 #     changes copied. Pass --snapshot to carry your WIP. Pass --at REV to
-#     start at a specific commit/bookmark.
+#     start at a specific commit/bookmark. Pass --from CHECKOUT to start from
+#     another member of the main's worktree group (e.g. ~/checkout2/fbsource)
+#     instead of the main: its commit, and its WIP with --snapshot.
 #   - 'rm' refuses to destroy a worktree with uncommitted changes unless
 #     --force is passed. Draft commits survive via commit cloud.
 #   - This wrapper does NOT touch ~/checkout1/2/3 — those are managed by
@@ -58,13 +61,24 @@ list_ephemeral() {
     | jq -r --arg root "$WT_ROOT/" '.[] | select(.path | startswith($root)) | .path'
 }
 
+# Echoes the root of CHECKOUT if it is a member of the main's worktree group;
+# dies otherwise.
+resolve_group_member() {
+  local root
+  root=$(sl --cwd "$1" root 2>/dev/null) || die "$1 is not inside a Sapling checkout"
+  sl --cwd "$MAIN" worktree list -Tjson | jq -r '.[].path' | grep -Fxq "$root" \
+    || die "$root is not in $MAIN's worktree group"
+  echo "$root"
+}
+
 cmd_add() {
-  local label="" snapshot="" at=""
+  local label="" snapshot="" at="" origin="$MAIN"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --snapshot) snapshot="--snapshot"; shift ;;
       --at)       at="$2"; shift 2 ;;
-      -h|--help)  sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+      --from)     origin="$2"; shift 2 ;;
+      -h|--help)  sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
       -*)         die "unknown flag: $1" ;;
       *)
         [[ -z "$label" ]] || die "extra positional arg: $1"
@@ -72,25 +86,23 @@ cmd_add() {
         ;;
     esac
   done
-  [[ -n "$label" ]] || die "usage: wt add <label> [--snapshot] [--at REV]"
+  [[ -n "$label" ]] || die "usage: wt add <label> [--snapshot] [--at REV] [--from CHECKOUT]"
   valid_label "$label"
   require_main
   require_worktree_enabled
+  origin=$(resolve_group_member "$origin")
 
   local path="$WT_ROOT/$label"
   [[ -e "$path" ]] && die "$path already exists"
 
   mkdir -p "$WT_ROOT"
 
-  # `sl worktree add` requires running from inside the main worktree.
-  # If --at is given, the new worktree's current commit is set there;
-  # otherwise it inherits the main's current commit. --snapshot copies
-  # uncommitted changes.
+  # `sl worktree add` run from any member registers the new worktree in the
+  # main's group and starts it at that member's commit (and WIP, with
+  # --snapshot). --at then moves it to another commit.
+  ( cd "$origin" && sl worktree add "$path" --label "$label" $snapshot )
   if [[ -n "$at" ]]; then
-    ( cd "$MAIN" && sl worktree add "$path" --label "$label" $snapshot )
     ( cd "$path" && sl goto "$at" )
-  else
-    ( cd "$MAIN" && sl worktree add "$path" --label "$label" $snapshot )
   fi
 
   echo "Created $path"
@@ -193,6 +205,6 @@ case "${1:-}" in
   rm|remove)  shift; cmd_rm    "$@" ;;
   path)       shift; cmd_path  "$@" ;;
   clean)      shift; cmd_clean "$@" ;;
-  ""|-h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' ;;
+  ""|-h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' ;;
   *)          die "unknown command: $1 (try 'wt --help')" ;;
 esac
