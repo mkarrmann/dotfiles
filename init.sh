@@ -392,6 +392,26 @@ if [[ -f "$HOME/.cargo/env" ]]; then
     . "$HOME/.cargo/env"
 fi
 
+# The oldest rustc the pinned cargo tools below (bin/stylua-ensure,
+# bin/rumdl-ensure) build with: a floor, not a pin. Raise it in the same commit
+# as a tool pin that needs more (cargo names the version when it refuses).
+RUST_MIN_VERSION=1.94
+rustc_below_min() {
+    local have
+    have="$(rustc --version 2>/dev/null | awk '{print $2}')"
+    [[ -z "$have" || "$(printf '%s\n%s\n' "$RUST_MIN_VERSION" "$have" | sort -V | head -n1)" != "$RUST_MIN_VERSION" ]]
+}
+if command -v rustc &>/dev/null && rustc_below_min; then
+    if command -v rustup &>/dev/null; then
+        echo "[rust] $(rustc --version) is below $RUST_MIN_VERSION; updating the stable toolchain"
+        "$DOTFILES_DIR/bin/with-internet" rustup update stable --no-self-update \
+            || warn "rustup update failed (pinned cargo tools may not build)"
+    fi
+    if rustc_below_min; then
+        warn "rustc is still below $RUST_MIN_VERSION (no rustup, or the default toolchain is not stable); pinned cargo tools may not build"
+    fi
+fi
+
 if ! command -v bob &>/dev/null; then
     if command -v cargo &>/dev/null; then
         cargo install bob-nvim && echo "installed bob" \

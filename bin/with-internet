@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Run a command that needs the public internet: through `with-proxy` where it
+# exists (Meta devservers, which resolve no external DNS without fwdproxy),
+# directly elsewhere (the Mac, where fwdproxy is unreachable).
+#
+# Usage: with-internet COMMAND [ARGS...]
+set -euo pipefail
+
+if command -v with-proxy >/dev/null 2>&1; then
+  exec with-proxy "$@"
+fi
+exec "$@"

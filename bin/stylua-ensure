@@ -22,6 +22,8 @@
 # such a project dies on the config. The version alone therefore
 # does not tell you the install is usable; see the probe below.
 #
+# A pin that needs a newer rustc raises RUST_MIN_VERSION in init.sh with it.
+#
 # Override the version for a one-off with STYLUA_VERSION=x.y.z stylua-ensure.
 set -euo pipefail
 

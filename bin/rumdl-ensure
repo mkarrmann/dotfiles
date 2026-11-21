@@ -12,8 +12,9 @@
 #
 # PINNED, not a floor: a linter that drifts between machines reports different
 # warnings depending on which box you happened to edit from. 0.3.4 because 0.3.5
-# requires rustc 1.98 and rustup here is on 1.95; bumping the pin may need a
-# `rustup update` first (cargo names the required version when it refuses).
+# requires rustc 1.98 and rustup here is on 1.95. A pin that needs a newer rustc
+# raises RUST_MIN_VERSION in init.sh with it, which updates rustup's stable
+# toolchain on each host below it (cargo names the version when it refuses).
 #
 # nvim/lua/plugins/overrides.lua enables the linter only when the binary exists
 # and points it at ~/.cargo/bin/rumdl by absolute path, because the nvs units
