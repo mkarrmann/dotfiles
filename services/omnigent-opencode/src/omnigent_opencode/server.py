@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import contextlib
 import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Literal, cast
@@ -29,6 +31,8 @@ USERNAME: Final = "opencode"
 # The forwarding server T3 Code runs names the T3 Code server it serves (`proxy`).
 T3_HOME_HEADER: Final = "X-Omnigent-OpenCode-T3-Home"
 SWEEP_S: Final = 3600.0
+# How soon a catalog missing an agent's models (a failed probe) is loaded again.
+CATALOG_RETRY_S: Final = 60.0
 STATUS_PATH: Final = "/api/omnigent-opencode/status"
 # What a fork's model_override or reasoning_effort takes to reset to the agent's default.
 OMNIGENT_RESET: Final = "default"
@@ -81,16 +85,41 @@ class App:
         self.text_sessions: dict[str, TextGenSession] = {}
         self._catalog: Catalog | None = None
         self._catalog_lock = asyncio.Lock()
+        self._catalog_loaded = 0.0
+        self._catalog_reload: asyncio.Task[None] | None = None
         self._listed_directories: set[str] = set()
         self._loading: dict[str, asyncio.Future[Session]] = {}
 
     # -- catalog --------------------------------------------------------
 
     async def catalog(self) -> Catalog:
+        """The catalog, loaded once; one missing an agent's models is reloaded in the background."""
         async with self._catalog_lock:
             if self._catalog is None:
                 self._catalog = await load_catalog(self.client, self.config.host_spec, self.config.agent_specs)
+                self._catalog_loaded = time.monotonic()
+            elif (
+                not self._catalog.complete
+                and self._catalog_reload is None
+                and time.monotonic() - self._catalog_loaded >= CATALOG_RETRY_S
+            ):
+                self._catalog_reload = asyncio.create_task(self._reload_catalog())
             return self._catalog
+
+    async def _reload_catalog(self) -> None:
+        try:
+            self._catalog = await load_catalog(self.client, self.config.host_spec, self.config.agent_specs)
+        except (OmnigentError, httpx.HTTPError) as exc:
+            LOG.warning("reloading the model catalog failed: %s", exc)
+        finally:
+            self._catalog_loaded = time.monotonic()
+            self._catalog_reload = None
+
+    async def close_catalog(self) -> None:
+        if self._catalog_reload is not None:
+            self._catalog_reload.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._catalog_reload
 
     # -- sessions -------------------------------------------------------
 
@@ -882,6 +911,7 @@ def make_app(app: App) -> web.Application:
     async def shutdown(_: web.Application) -> None:
         for session in app.sessions.values():
             await session.close()
+        await app.close_catalog()
         await app.client.aclose()
 
     application.on_cleanup.append(shutdown)

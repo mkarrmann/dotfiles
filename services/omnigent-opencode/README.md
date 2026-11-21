@@ -39,7 +39,9 @@ The contract is what T3 Code v0.1.10's OpenCode v2 client sends and decodes
 | T3 Code (OpenCode 2) | Omnigent |
 |---|---|
 | model `providerID/id`, variant | agent (e.g. `claude-native-ui`) / model option, reasoning effort |
-| a pi agent's models (`gemini`) | `PI_MODELS` (gemini-4-neon, gemini-4-carbon) as far as this machine's `pi --list-models` offers them; Omnigent lists none for pi |
+| a model's variants | the efforts the harness reports for that model; Claude's whole ladder (low to max) where claude-native reports none |
+| a pi agent's models (`gemini`) | `PI_MODELS` (gemini-4-neon, gemini-4-carbon) as far as this machine's Pi offers them, each with the thinking levels Pi reports for it (`pi --mode rpc`: `set_model`, `get_available_thinking_levels`); Omnigent lists none for pi |
+| a model list that failed to load | the agent's default model only, until the catalog loads again a minute later |
 | hidden models | `HIDDEN_MODELS`: Fable, Haiku, Luna and GPT-5.x are never offered |
 | `session.create` | `POST /v1/sessions` for the agent, bound to this host and the thread's cwd |
 | prompt (`delivery: queue`) | user message; the execution ends at the confirmed idle |
