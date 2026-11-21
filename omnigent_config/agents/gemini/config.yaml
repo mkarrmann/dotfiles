@@ -4,8 +4,8 @@ description: >-
   Gemini, run by Meta's Pi (/usr/local/bin/pi) on Omnigent's headless pi
   harness. Pi reaches Gemini through Meta's AI Gateway with its own login, so
   no API key is involved. Any `pi --list-models` id works as a model override
-  (google/gemini-3.1-pro-preview, meta/muse-latest, ...); T3 Code offers
-  google/gemini-4-neon and google/gemini-4-carbon.
+  (google/gemini-4-neon, google/gemini-4-carbon, meta/muse-latest, ...);
+  T3 Code offers google/gemini-4-neon and google/gemini-4-carbon.
 
 # Pi's own default is meta/muse-latest (~/.pi/agent/settings.json), so the spec
 # pins a Gemini model. The `pi-meta` provider in config.shared.yaml is what
@@ -16,14 +16,34 @@ executor:
   config:
     harness: pi
 
-# The headless harness starts pi with --no-tools and gives it only Omnigent's
-# bridged sys_os_* tools, so every command passes the policy layer.
+# The headless harness starts pi with --no-tools and gives it Omnigent's
+# bridged sys_os_* tools plus Pi's native read (for skill loading), so every
+# command passes the policy layer. write_paths: ["/"] matches claude/config.yaml
+# so sys_os_read/write/edit reach out-of-tree paths (~/dotfiles, ~/repos/*)
+# without falling back to sys_os_shell.
 os_env:
   type: caller_process
   cwd: .
   sandbox:
     type: none
+    write_paths:
+      - /
 
+# Same blast-radius guardrail claude/codex/polly/debby use.
+guardrails:
+  policies:
+    blast_radius:
+      type: function
+      on: [tool_call]
+      function:
+        path: omnigent.inner.nessie.policies.blast_radius
+        arguments:
+          gate_pushes: false
+
+# watch is declared here and also reinforced by materialize_agent_overlays.py,
+# which additionally projects profile-appropriate MCPs from
+# agent_config/plugins/custom-mcps/mcps/*.json at registration time (since
+# headless `harness: pi` disables Pi's native mcp.json tools via --no-tools).
 tools:
   watch:
     type: mcp
@@ -35,3 +55,11 @@ tools:
       - subscribe
       - unsubscribe
       - status
+
+prompt: |
+  You are Gemini, a software-engineering assistant running on Pi inside
+  Omnigent. You have filesystem and shell access through your sys_os_* tools
+  (and read for loading skills): read and edit files, run commands, and make
+  real changes in the user's workspace. Prefer doing the work — showing diffs,
+  running the tests / build / typecheck — over describing what you would do.
+  Be concise and direct.

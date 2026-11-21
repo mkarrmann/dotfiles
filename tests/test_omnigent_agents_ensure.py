@@ -177,7 +177,19 @@ class AgentsEnsureTest(unittest.TestCase):
         # Overlay materializer: the real one needs omnigent's packaged bundles.
         self.script(
             self.bin / "omnigent-python",
-            '#!/bin/bash\nset -eu\nshift\nroot="$1"; shift\nfor name; do mkdir -p "$root/$name"; done\n',
+            '#!/usr/bin/env python3\n'
+            'import os, sys\n'
+            'args = sys.argv[2:]\n'
+            'root = args[0]\n'
+            'mode = "pos"\n'
+            'it = iter(args[1:])\n'
+            'for arg in it:\n'
+            '    if arg in ("--profile", "--tracked-dir", "--mcp-dir"):\n'
+            '        next(it)\n'
+            '    elif arg in ("--packaged", "--tracked"):\n'
+            '        mode = arg\n'
+            '    else:\n'
+            '        os.makedirs(os.path.join(root, arg), exist_ok=True)\n',
         )
         (self.dotfiles / "omnigent_config/materialize_agent_overlays.py").parent.mkdir(parents=True)
         (self.dotfiles / "omnigent_config/materialize_agent_overlays.py").touch()

@@ -157,6 +157,7 @@ sys.exit(1)'
 # and updates the existing row in place without disturbing session history.
 managed_dirs=()
 managed_names=()
+tracked_present=()
 # Agents whose MCP registration is asserted. Only the specs we author qualify:
 # a packaged bundle's inline MCP tool is dropped somewhere in omnigent's own
 # spec loading, so polly and debby register with no mcp_servers at all no
@@ -172,8 +173,7 @@ for name in "${TRACKED_AGENT_NAMES[@]}"; do
     log "agent spec missing at $spec_dir; skipping $name"
     continue
   fi
-  managed_dirs+=("$spec_dir")
-  managed_names+=("$name")
+  tracked_present+=("$name")
   verified_names+=("$name")
 done
 
@@ -182,9 +182,17 @@ cleanup_overlays() {
   rm -rf -- "$overlay_root"
 }
 trap cleanup_overlays EXIT
-"$OMNIGENT_PY" "$DOTFILES/omnigent_config/materialize_agent_overlays.py" \
-  "$overlay_root" "${PACKAGED_AGENT_NAMES[@]}"
-for name in "${PACKAGED_AGENT_NAMES[@]}"; do
+overlay_args=(
+  "$DOTFILES/omnigent_config/materialize_agent_overlays.py"
+  "$overlay_root"
+  --profile "$PROFILE"
+  --packaged "${PACKAGED_AGENT_NAMES[@]}"
+)
+if [ "${#tracked_present[@]}" -gt 0 ]; then
+  overlay_args+=(--tracked-dir "$AGENTS_DIR" --tracked "${tracked_present[@]}")
+fi
+"$OMNIGENT_PY" "${overlay_args[@]}"
+for name in "${tracked_present[@]}" "${PACKAGED_AGENT_NAMES[@]}"; do
   managed_dirs+=("$overlay_root/$name")
   managed_names+=("$name")
 done
