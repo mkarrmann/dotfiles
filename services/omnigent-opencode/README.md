@@ -149,6 +149,12 @@ the code on disk differs and nothing is in flight, which bin/t3-ensure
 the daemon restarts, `serve` holds T3 Code's requests for up to 8 s. It logs to
 `~/.local/state/omnigent-opencode/daemon.log`, rotated at 16 MiB.
 
+T3 Code reads the catalog once and keeps it: the model picker until a provider
+refresh (Settings → Providers) or its own restart, and each model's variants
+until its OpenCode session reopens, dropping a selected variant the cached list
+lacks. So a catalog change (models, variants, windows) shows only after the
+daemon and T3 Code (`systemctl --user restart t3@<workspace>`) both restart.
+
 Limits:
 
 - `serve` decides once, at start, whether to forward. Started while the daemon
