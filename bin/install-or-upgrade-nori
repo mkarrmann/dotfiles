@@ -41,6 +41,7 @@ need_cmd() {
   }
 }
 
+# TODO: bin/with-internet covers this (via with-proxy); consider using it.
 ensure_proxy() {
   # Meta devservers can't resolve external DNS directly — route through fwdproxy.
   # Macs connect directly — only apply on Linux.

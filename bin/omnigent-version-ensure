@@ -343,6 +343,7 @@ fi
 ensure_recovery_point
 
 command=(uv tool install --force "$target" --with litellm)
+# TODO: bin/with-internet does this check; use it here.
 if command -v with-proxy >/dev/null 2>&1; then
   command=(with-proxy "${command[@]}")
 fi
