@@ -7,8 +7,7 @@ leaves the choice to the agent spec.
 
 Omnigent lists no models for the pi harnesses here: it reads only Pi's own
 logins and models.json, while Meta's Pi registers its providers at runtime. So
-a pi agent's models come from this machine's `pi --list-models`, behind a
-`default` entry for the spec's model.
+a pi agent's models are the `PI_MODELS` this machine's `pi --list-models` offers.
 """
 
 from __future__ import annotations
@@ -61,14 +60,17 @@ LONG_CONTEXT_MODELS: Final = (
 )
 DEFAULT_OUTPUT: Final = 32_000
 PI_HARNESSES: Final = frozenset({"pi", "pi-native"})
-# The pi agent here is the Gemini one; Pi's login also serves Claude, GPT and Muse.
-PI_PROVIDERS: Final = ("google",)
+# The pi agent's models, in picker order: the gemini spec's default first. Pi's
+# login also serves the rest of Google's catalog, Claude, GPT and Muse.
+PI_MODELS: Final = ("google/gemini-4-neon", "google/gemini-4-carbon")
 # Pi's ladder as Omnigent spells it (`none` is Pi's `off`), up to the highest a
 # Gemini model takes; Omnigent clamps a level to the ones the model offers.
 PI_EFFORTS: Final = ("none", "minimal", "low", "medium", "high")
 PI_LIST_TIMEOUT_S: Final = 30.0
-# Claude Code lists Fable, which this account has no access to.
-UNAVAILABLE_MODELS: Final = ("fable",)
+# Left out of the picker wherever they appear in a model's names: Fable, which
+# this account has no access to, and Haiku, Luna and GPT-5.x, deliberately not
+# offered.
+HIDDEN_MODELS: Final = ("fable", "haiku", "luna", "gpt-5.")
 
 
 @dataclass(frozen=True)
@@ -128,7 +130,7 @@ def _offered(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The harness's models less those this account cannot run and the `[1m]` twin
     of a model also offered plainly: the picker shows one entry per model, under the
     plain id, which Claude Code's catalog keeps when it drops its 1M entries."""
-    usable = [o for o in options if not any(u in n.lower() for n in _names(o) for u in UNAVAILABLE_MODELS)]
+    usable = [o for o in options if not any(u in n.lower() for n in _names(o) for u in HIDDEN_MODELS)]
 
     def base(option: dict[str, Any]) -> str:
         model, underlying = _names(option)
@@ -198,15 +200,15 @@ async def load_catalog(client: OmnigentClient, host_spec: str, agent_specs: list
                 # One harness's failed probe must not hide every agent; this one offers its default model.
                 LOG.warning("model options for %s on %s failed: %s", name, host.get("name"), exc)
         elif harness in PI_HARNESSES:
-            models = await _pi_models(name)
+            models = await _pi_models()
         targets[name] = AgentTarget(name, str(agent["id"]), harness, tuple(models))
     if not targets:
         raise OmnigentError(f"none of the agents {agent_specs} exist on the Omnigent server")
     return Catalog(str(host["host_id"]), str(host.get("name") or host["host_id"]), targets)
 
 
-async def _pi_models(agent: str) -> list[dict[str, Any]]:
-    """`agent`'s default plus the `PI_PROVIDERS` models `pi --list-models` offers; none when Pi can't say."""
+async def _pi_models() -> list[dict[str, Any]]:
+    """The `PI_MODELS` `pi --list-models` offers; none when Pi can't say."""
     pi = shutil.which("pi")
     if pi is None:
         return []
@@ -221,23 +223,11 @@ async def _pi_models(agent: str) -> list[dict[str, Any]]:
     if proc.returncode != 0:
         LOG.warning("pi --list-models exited %s", proc.returncode)
         return []
-    listed = parse_pi_models(stdout.decode(errors="replace"))
-    if not listed:
-        return []
-    default: dict[str, Any] = {
-        "id": DEFAULT_MODEL,
-        "displayName": f"{agent} (agent default)",
-        "supportedReasoningEfforts": [{"reasoningEffort": e} for e in PI_EFFORTS],
-    }
-    # The spec's model is one of these; the smallest window is the one it surely has.
-    windows = [o["contextWindow"] for o in listed if "contextWindow" in o]
-    if windows:
-        default["contextWindow"] = min(windows)
-    return [default, *listed]
+    return parse_pi_models(stdout.decode(errors="replace"))
 
 
 def parse_pi_models(listing: str) -> list[dict[str, Any]]:
-    """The `PI_PROVIDERS` rows of `pi --list-models`' table, as model options with `provider/model` ids."""
+    """The `PI_MODELS` rows of `pi --list-models`' table, in `PI_MODELS` order, as model options."""
     lines = listing.splitlines()
     start = next((i for i, line in enumerate(lines) if line.split()[:2] == ["provider", "model"]), None)
     if start is None:
@@ -245,7 +235,7 @@ def parse_pi_models(listing: str) -> list[dict[str, Any]]:
     options: list[dict[str, Any]] = []
     for line in lines[start + 1 :]:
         cols = line.split()
-        if len(cols) < 5 or cols[0] not in PI_PROVIDERS:
+        if len(cols) < 5 or f"{cols[0]}/{cols[1]}" not in PI_MODELS:
             continue
         provider, model, context, _output, thinking = cols[:5]
         option: dict[str, Any] = {"id": f"{provider}/{model}", "model": f"{provider}/{model}", "displayName": model}
@@ -255,7 +245,7 @@ def parse_pi_models(listing: str) -> list[dict[str, Any]]:
         if thinking == "yes":
             option["supportedReasoningEfforts"] = [{"reasoningEffort": e} for e in PI_EFFORTS]
         options.append(option)
-    return options
+    return sorted(options, key=lambda o: PI_MODELS.index(o["id"]))
 
 
 def _pi_tokens(size: str) -> int | None:
