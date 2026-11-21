@@ -8,9 +8,10 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 # Hermetic against the machine running the test: an agent session exports an
-# Omnigent session id, and a synced desktop has a real nvim-show-resolver on
-# PATH that would route into the live editors.
-unset OMNIGENT_RUNNER_PRIMARY_SESSION_ID OMNIGENT_SESSION_ID NVIM_SHOW_ANCESTOR_SESSION_IDS
+# Omnigent session id, a terminal inside Neovim exports $NVIM, and a synced
+# desktop has a real nvim-show-resolver on PATH, each of which would route into
+# the live editors.
+unset OMNIGENT_RUNNER_PRIMARY_SESSION_ID OMNIGENT_SESSION_ID NVIM_SHOW_ANCESTOR_SESSION_IDS NVIM
 export NVIM_SHOW_RESOLVER=
 tmp_dir=$(mktemp -d)
 tmp_dir=$(cd "$tmp_dir" && pwd -P)
