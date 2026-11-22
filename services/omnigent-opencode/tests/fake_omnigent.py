@@ -28,6 +28,8 @@ class FakeSession:
     labels: dict[str, str] = field(default_factory=dict)
     policies: list[dict[str, Any]] = field(default_factory=list)
     pending_ids: list[str] = field(default_factory=list)
+    started: bool = True
+    """Whether the runner has initialized the session; Omnigent refuses a compact until it has."""
 
 
 class FakeOmnigent:
@@ -174,7 +176,15 @@ class FakeOmnigent:
         body = await request.json()
         if body.get("type") == "message" and self.refuse_messages:
             return web.json_response({"error": "runner unavailable"}, status=503)
+        if body.get("type") == "compact" and not session.started:
+            return web.json_response(
+                {"error": {"code": "invalid_input", "message": "/compact is not available for this session type."}},
+                status=400,
+            )
         session.posted.append(body)
+        if body.get("type") == "retry_session":
+            session.started = True
+            return web.json_response({"queued": False, "recovered": True, "recovery": "native_terminal_ready"})
         if body.get("type") == "message":
             n = next(self._ids)
             session.pending_ids.append(f"pending_{n}")

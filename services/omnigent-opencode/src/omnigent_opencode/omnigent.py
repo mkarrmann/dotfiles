@@ -25,14 +25,26 @@ STREAM_OPENED = "omnigent-opencode.stream_opened"
 
 
 class OmnigentError(Exception):
-    def __init__(self, message: str, status: int | None = None) -> None:
+    def __init__(self, message: str, status: int | None = None, detail: str | None = None) -> None:
         super().__init__(message)
         self.status = status
         """The HTTP status Omnigent answered with, if it answered."""
+        self.detail = detail
+        """The message of Omnigent's error body (`{"error": {"message": ...}}`), if it sent one."""
 
     @property
     def gone(self) -> bool:
         return self.status in (404, 410)
+
+
+def error_detail(response: httpx.Response) -> str | None:
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    error = body.get("error") if isinstance(body, dict) else None
+    message = error.get("message") if isinstance(error, dict) else None
+    return message if isinstance(message, str) else None
 
 
 class OmnigentClient:
@@ -43,7 +55,11 @@ class OmnigentClient:
     async def _json(self, method: str, path: str, **kwargs: Any) -> Any:
         response = await self._http.request(method, path, **kwargs)
         if response.is_error:
-            raise OmnigentError(f"{method} {path} -> {response.status_code}: {response.text[:500]}", response.status_code)
+            raise OmnigentError(
+                f"{method} {path} -> {response.status_code}: {response.text[:500]}",
+                response.status_code,
+                error_detail(response),
+            )
         return response.json() if response.content else None
 
     async def _object(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:

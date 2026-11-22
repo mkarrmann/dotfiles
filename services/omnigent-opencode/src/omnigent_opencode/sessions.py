@@ -78,6 +78,8 @@ STEER_DELIVERY_S: Final = 60.0
 # Omnigent caps a request body at 10 MiB; an image is sent inline as a data URI.
 IMAGE_LIMIT: Final = 7 * 1024 * 1024
 COMPACTION_TIMEOUT_S: Final = 600.0
+# Omnigent's answer to a compact that reaches a runner which has not initialized the session yet (omnigent 0.23).
+COMPACT_BEFORE_START: Final = "/compact is not available for this session type."
 RECONNECT_MIN_S: Final = 0.5
 RECONNECT_MAX_S: Final = 15.0
 TOUCH_INTERVAL_MS: Final = 60_000
@@ -599,10 +601,25 @@ class Session:
 
         execution.grace = asyncio.get_running_loop().call_later(COMPACTION_TIMEOUT_S, give_up)
         try:
-            await self._client.post_event(self.conversation_id, {"type": "compact", "data": {}})
+            await self._post_compact()
         except (OmnigentError, httpx.HTTPError) as exc:
             self._emit("session.compaction.failed", {"reason": "manual", "error": _session_error(str(exc))})
             self._end(execution, TurnEnded("failed", f"Omnigent did not compact: {exc}"))
+
+    async def _post_compact(self) -> None:
+        """Omnigent forwards a compact to the session's runner without starting the session there. A runner that
+        has not initialized it (a fresh fork's, or an idle session's whose initialization waits for its first use)
+        does not know its harness, and Omnigent reports the compact as unsupported. `retry_session` starts the
+        session and returns once it is ready; the compact then reaches the harness."""
+        compact = {"type": "compact", "data": {}}
+        try:
+            await self._client.post_event(self.conversation_id, compact)
+        except OmnigentError as exc:
+            if exc.status != 400 or exc.detail != COMPACT_BEFORE_START:
+                raise
+            LOG.info("starting %s on its runner before compacting it", self.conversation_id)
+            await self._client.post_event(self.conversation_id, {"type": "retry_session", "data": {}})
+            await self._client.post_event(self.conversation_id, compact)
 
     async def rebind(self, conversation_id: str) -> None:
         """Point this session at another Omnigent session (a rollback's or agent switch's fork); nothing may be running."""
