@@ -18,6 +18,12 @@ by the ids this server gave out, so these live in SQLite:
   with the last Omnigent input it handled (its watermark: a turn on an input
   after it was missed and is replayed), when it was last active, and the home
   of the T3 Code server that last opened it, whose thread a turn is put to.
+- `released`: the followed sessions whose T3 Code thread was settled, archived
+  or deleted, and when this server let them go (stopped following them,
+  retired their watches, stopped their runner). Not followed again until T3
+  Code opens them.
+- `paused_tasks`: the Omnigent scheduled tasks paused when a session was
+  released, resumed when T3 Code opens it again.
 """
 
 from __future__ import annotations
@@ -58,6 +64,8 @@ create table if not exists watched (
     active integer not null,
     t3_home text
 );
+create table if not exists released (session_id text primary key, released integer not null);
+create table if not exists paused_tasks (session_id text not null, task_id text not null, primary key (session_id, task_id));
 """
 
 
@@ -182,9 +190,32 @@ class Store:
         self._db.execute("delete from watched where session_id = ?", (session_id,))
 
     def watched(self, since: int) -> list[str]:
-        """The sessions active at or after `since`, most recent first."""
-        rows = self._db.execute("select session_id from watched where active >= ? order by active desc", (since,)).fetchall()
+        """The sessions active at or after `since` and not released, most recent first."""
+        rows = self._db.execute(
+            "select session_id from watched where active >= ?"
+            " and session_id not in (select session_id from released) order by active desc",
+            (since,),
+        ).fetchall()
         return [str(r[0]) for r in rows]
+
+    def release(self, session_id: str, at: int) -> None:
+        self._db.execute("insert or ignore into released values (?, ?)", (session_id, at))
+
+    def released(self, session_id: str) -> bool:
+        return self._db.execute("select 1 from released where session_id = ?", (session_id,)).fetchone() is not None
+
+    def unrelease(self, session_id: str) -> None:
+        self._db.execute("delete from released where session_id = ?", (session_id,))
+
+    def add_paused_task(self, session_id: str, task_id: str) -> None:
+        self._db.execute("insert or ignore into paused_tasks values (?, ?)", (session_id, task_id))
+
+    def paused_tasks(self, session_id: str) -> list[str]:
+        rows = self._db.execute("select task_id from paused_tasks where session_id = ?", (session_id,)).fetchall()
+        return [str(r[0]) for r in rows]
+
+    def drop_paused_task(self, session_id: str, task_id: str) -> None:
+        self._db.execute("delete from paused_tasks where session_id = ? and task_id = ?", (session_id, task_id))
 
     def active(self, session_id: str) -> int | None:
         row = self._db.execute("select active from watched where session_id = ?", (session_id,)).fetchone()

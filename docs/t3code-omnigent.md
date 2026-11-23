@@ -418,6 +418,13 @@ What T3 Code gets:
   Code to T3 Code as an "Agent" message (`[Omnigent] ...`) whose turn shows the
   agent's work. Without the daemon (it is not running, or T3 Code started the
   provider before it was), such a turn is not shown live.
+- Settling (or archiving, or deleting) a thread in T3 Code ends its Omnigent
+  session's wakeups and stops its runner: the daemon retires the session's
+  watcher watches, pauses its scheduled tasks and stops the runner once the
+  session is idle, without archiving it (the service README's "Daemon"). The
+  next message, which un-settles the thread, resumes the session and its
+  scheduled tasks; its watches do not come back. Without the daemon, a settled thread's session runs until
+  Omnigent's idle reaper (`runner.idle_timeout_s`, 3.5 days) stops it.
 - When resuming a thread fails, even on a brief Omnigent outage, T3 Code asks
   for a fresh session and pastes a recap of the thread into its first prompt.
   While the thread's Omnigent session still exists, the provider hands back

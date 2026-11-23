@@ -30,6 +30,11 @@ class FakeSession:
     pending_ids: list[str] = field(default_factory=list)
     started: bool = True
     """Whether the runner has initialized the session; Omnigent refuses a compact until it has."""
+    runner_online: bool = True
+    pending_inputs: list[dict[str, Any]] = field(default_factory=list)
+    pending_elicitations: list[dict[str, Any]] = field(default_factory=list)
+    children: list[dict[str, Any]] = field(default_factory=list)
+    """Rows of `GET /v1/sessions/{id}/child_sessions`, each at its `depth` below the session (default 1)."""
 
 
 class FakeOmnigent:
@@ -59,6 +64,17 @@ class FakeOmnigent:
         r.add_get("/v1/sessions/{id}/policies", self.policies)
         r.add_post("/v1/sessions/{id}/policies", self.add_policy)
         r.add_patch("/v1/sessions/{id}/policies/{pid}", self.patch_policy)
+        r.add_get("/v1/sessions/{id}/child_sessions", self.child_sessions)
+        r.add_post("/v1/watches/cancel", self.cancel_watches)
+        r.add_get("/v1/scheduled-tasks", self.list_scheduled_tasks)
+        r.add_patch("/v1/scheduled-tasks/{tid}", self.patch_scheduled_task)
+        self.watch_cancels: list[dict[str, Any]] = []
+        self.watch_gate: asyncio.Event | None = None
+        """While set to an unset event, a watch cancel waits for it."""
+        self.watch_blocked = asyncio.Event()
+        """Set once a watch cancel waits on `watch_gate`."""
+        self.watch_cancel_status = 200
+        self.scheduled_tasks: list[dict[str, Any]] = []
         self.resolved: list[tuple[str, str, dict[str, Any]]] = []
         self._resolve_seen = asyncio.Event()
 
@@ -159,7 +175,9 @@ class FakeOmnigent:
                 "reasoning_effort": body.get("reasoning_effort"),
                 "status": session.status,
                 "items": [],
-                "pending_inputs": [],
+                "pending_inputs": session.pending_inputs,
+                "pending_elicitations": session.pending_elicitations,
+                "runner_online": None if request.query.get("include_liveness") == "false" else session.runner_online,
                 "labels": session.labels,
                 "created_at": 1730000000,
             }
@@ -182,6 +200,9 @@ class FakeOmnigent:
                 status=400,
             )
         session.posted.append(body)
+        if body.get("type") == "stop_session":
+            session.runner_online = False
+            return web.json_response({"queued": False})
         if body.get("type") == "retry_session":
             session.started = True
             return web.json_response({"queued": False, "recovered": True, "recovery": "native_terminal_ready"})
@@ -245,6 +266,31 @@ class FakeOmnigent:
         policy = next(p for p in self.sessions[request.match_info["id"]].policies if p["id"] == request.match_info["pid"])
         policy.update(await request.json())
         return web.json_response(policy)
+
+    async def child_sessions(self, request: web.Request) -> web.Response:
+        """Direct children only, unless `descendants`; Omnigent's own default `limit` is 20."""
+        depth = int(request.query.get("max_depth", "3")) if request.query.get("descendants") == "true" else 1
+        rows = [c for c in self.sessions[request.match_info["id"]].children if c.get("depth", 1) <= depth]
+        limit = int(request.query.get("limit", "20"))
+        return web.json_response({"object": "list", "data": rows[:limit], "has_more": len(rows) > limit})
+
+    async def cancel_watches(self, request: web.Request) -> web.Response:
+        if self.watch_gate is not None:
+            self.watch_blocked.set()
+            await self.watch_gate.wait()
+        if self.watch_cancel_status != 200:
+            return web.json_response({"error": "watcher down"}, status=self.watch_cancel_status)
+        self.watch_cancels.append(await request.json())
+        return web.json_response({"detail": "Cancelled."})
+
+    async def list_scheduled_tasks(self, request: web.Request) -> web.Response:
+        tasks = self.scheduled_tasks if request.query.get("kind") == "all" else []
+        return web.json_response({"scheduled_tasks": tasks})
+
+    async def patch_scheduled_task(self, request: web.Request) -> web.Response:
+        task = next(t for t in self.scheduled_tasks if t["id"] == request.match_info["tid"])
+        task.update(await request.json())
+        return web.json_response(task)
 
     async def stream(self, request: web.Request) -> web.StreamResponse:
         session = self.sessions.get(request.match_info["id"])

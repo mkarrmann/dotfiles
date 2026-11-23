@@ -167,6 +167,42 @@ class OmnigentClient:
     async def post_event(self, session_id: str, event: dict[str, Any]) -> dict[str, Any]:
         return await self._object("POST", f"/v1/sessions/{session_id}/events", json=event)
 
+    async def liveness(self, session_id: str) -> dict[str, Any]:
+        """The session's state, with whether its runner is up (`runner_online`), which a snapshot omits."""
+        params = {"include_items": "false", "include_usage": "false"}
+        return await self._object("GET", f"/v1/sessions/{session_id}", params=params)
+
+    async def descendants(self, session_id: str) -> list[dict[str, Any]]:
+        """Every subagent session under the session, at any depth (Omnigent goes at most 10 deep)."""
+        params = {"descendants": "true", "max_depth": 10}
+        return [
+            child
+            async for child in self._paginate(f"/v1/sessions/{session_id}/child_sessions", params, page_size=1000)
+            if isinstance(child, dict)
+        ]
+
+    async def stop_session(self, session_id: str) -> None:
+        """End the session's runner, or its share of a runner it rides, without archiving it.
+
+        Not sticky: the next message relaunches the runner and resumes the transcript.
+        It cancels a running turn, so callers check the session is idle first.
+        """
+        await self.post_event(session_id, {"type": "stop_session", "data": {}})
+
+    async def cancel_watches(self, session_id: str, sources: list[str]) -> str:
+        """Retire every watch of the session's in `sources` (omnigent-watcher's API, mounted in Omnigent's server)."""
+        body = await self._object("POST", "/v1/watches/cancel", json={"session_id": session_id, "sources": sources})
+        return str(body.get("detail") or "")
+
+    async def scheduled_tasks(self) -> list[dict[str, Any]]:
+        """Every scheduled task, reminders included."""
+        body = await self._json("GET", "/v1/scheduled-tasks", params={"kind": "all"})
+        return [t for t in body.get("scheduled_tasks") or [] if isinstance(t, dict)]
+
+    async def set_scheduled_task_state(self, task_id: str, state: str) -> None:
+        """`state` is "active" or "paused"."""
+        await self._json("PATCH", f"/v1/scheduled-tasks/{task_id}", json={"state": state})
+
     async def resolve_elicitation(self, session_id: str, elicitation_id: str, body: dict[str, Any]) -> None:
         await self._json("POST", f"/v1/sessions/{session_id}/elicitations/{elicitation_id}/resolve", json=body)
 

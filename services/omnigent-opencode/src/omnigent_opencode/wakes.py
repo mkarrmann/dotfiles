@@ -7,9 +7,9 @@ with `t3 thread send` (cli/thread.ts), which posts it as the agent's ("Agent"
 in the thread), loads the thread if it must, and queues it behind a running
 turn; the prompt of the turn it starts is the message itself.
 
-The thread behind an OpenCode session is read from T3 Code's state, read-only:
-the provider thread whose native ref is the session, if its thread still uses
-it and is neither archived nor deleted (orchestration-v2 ProjectionStore).
+The thread is the one T3 Code's state names (`t3state`), and only a live one:
+a settled thread takes no wakeups (sending one would un-settle it), and an
+archived or deleted one is gone.
 """
 
 from __future__ import annotations
@@ -18,38 +18,17 @@ import asyncio
 import logging
 import sqlite3
 from collections.abc import Callable
-from contextlib import closing
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
+
+from .t3state import thread_for
 
 if TYPE_CHECKING:
     from .sessions import Session, WakeOutcome
 
 LOG = logging.getLogger(__name__)
 
-STATE_DB: Final = "userdata/statev2.sqlite"
 SEND_TIMEOUT_S: Final = 60.0
-THREAD_QUERY: Final = """
-select p.thread_id
-from orchestration_v2_projection_provider_threads p
-join orchestration_v2_projection_threads t on t.thread_id = p.thread_id
-where json_extract(p.payload_json, '$.nativeThreadRef.nativeId') = ?
-  and t.active_provider_thread_id = p.provider_thread_id
-  and t.archived_at is null
-  and t.deleted_at is null
-order by p.updated_at desc
-limit 1
-"""
-
-
-def thread_of(t3_home: Path, session_id: str) -> str | None:
-    """The T3 Code thread that runs OpenCode session `session_id`, in the T3 Code server whose home is `t3_home`."""
-    db = t3_home / STATE_DB
-    if not db.exists():
-        return None
-    with closing(sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)) as connection:
-        row = connection.execute(THREAD_QUERY, (session_id,)).fetchone()
-    return str(row[0]) if row else None
 
 
 class Waker:
@@ -63,13 +42,14 @@ class Waker:
             LOG.info("no T3 Code server has opened %s", session.id)
             return "never"
         try:
-            thread = await asyncio.to_thread(thread_of, home, session.id)
+            found = await asyncio.to_thread(thread_for, home, session.id)
         except sqlite3.Error as exc:
             LOG.warning("could not read T3 Code's threads in %s: %s", home, exc)
             return "later"
-        if thread is None:
-            LOG.info("no live T3 Code thread in %s runs %s", home, session.id)
+        if found is None or found.done:
+            LOG.info("no live T3 Code thread in %s runs %s%s", home, session.id, f" ({found.status})" if found else "")
             return "never"
+        thread = found.id
         try:
             process = await asyncio.create_subprocess_exec(
                 self._t3,

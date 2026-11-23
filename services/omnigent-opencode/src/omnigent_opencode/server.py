@@ -8,7 +8,9 @@ import binascii
 import contextlib
 import logging
 import os
+import sqlite3
 import time
+from collections.abc import Coroutine
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Literal, cast
@@ -23,6 +25,7 @@ from .events import EventFeed
 from .omnigent import OmnigentClient, OmnigentError
 from .sessions import PROVIDER_LABEL, SESSION_LABEL, Session, Wake, conversation_named_by, session_id_for
 from .store import Store
+from .t3state import Thread, thread_for
 from .wire import ERROR_STATUS, ErrorTag, Json, JsonObject, error_body, event, location, message_id, now_ms, server_info
 
 LOG = logging.getLogger(__name__)
@@ -31,6 +34,13 @@ USERNAME: Final = "opencode"
 # The forwarding server T3 Code runs names the T3 Code server it serves (`proxy`).
 T3_HOME_HEADER: Final = "X-Omnigent-OpenCode-T3-Home"
 SWEEP_S: Final = 3600.0
+RELEASE_SWEEP_S: Final = 60.0
+# A session T3 Code used this recently is not released, whatever its thread says.
+RELEASE_GRACE_MS: Final = 120_000
+# omnigent-watcher's watch sources (services/omnigent-watcher); a new one must be added here.
+WATCH_SOURCES: Final = ["phabricator", "command"]
+# Omnigent session states with no turn under way and no human awaited.
+RELEASABLE_STATUSES: Final = frozenset({"idle", "failed"})
 # How soon a catalog missing an agent's models (a failed probe) is loaded again.
 CATALOG_RETRY_S: Final = 60.0
 STATUS_PATH: Final = "/api/omnigent-opencode/status"
@@ -89,6 +99,10 @@ class App:
         self._catalog_reload: asyncio.Task[None] | None = None
         self._listed_directories: set[str] = set()
         self._loading: dict[str, asyncio.Future[Session]] = {}
+        self._opened_at: dict[str, int] = {}
+        self.release_grace_ms = RELEASE_GRACE_MS
+        """When each followed session was last loaded, which a just-opened session's `active` does not say."""
+        self._background: set[asyncio.Future[None]] = set()
 
     # -- catalog --------------------------------------------------------
 
@@ -185,7 +199,24 @@ class App:
         self.sessions[session.id] = session
         if session.parent is None:
             self.store.watch(session.id, session.conversation_id, now_ms())
+            self._opened_at[session.id] = now_ms()
+            if self.store.released(session.id):
+                # Only T3 Code loads a released session (`follow` skips them), so it is in use again.
+                self.store.unrelease(session.id)
+                self._in_background(self._resume_tasks(session.id))
         return session
+
+    async def _unfollow(self, session: Session) -> None:
+        """Does not yield to the event loop: `Session.close` only cancels tasks."""
+        for followed in [session, *session.children.values()]:
+            await followed.close()
+            self.sessions.pop(followed.id, None)
+        self._opened_at.pop(session.id, None)
+
+    def _in_background(self, work: Coroutine[Any, Any, None]) -> None:
+        task = asyncio.ensure_future(work)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
 
     async def follow(self) -> None:
         """Follow every session active within the watch window, picking up those followed before a restart, and
@@ -200,12 +231,140 @@ class App:
                     quiet = session.active < cutoff and not session.running and not session.steers and not session.held
                     if session.parent is None and quiet:
                         LOG.info("no longer following %s: quiet since %d", sid, session.active)
-                        for followed in [session, *session.children.values()]:
-                            await followed.close()
-                            self.sessions.pop(followed.id, None)
+                        await self._unfollow(session)
             except Exception:  # noqa: BLE001 - the next pass tries again
                 LOG.exception("following sessions failed")
             await asyncio.sleep(SWEEP_S)
+
+    async def release_done(self) -> None:
+        """Release, every minute, each followed session whose T3 Code thread is settled, archived or deleted."""
+        while True:
+            await asyncio.sleep(RELEASE_SWEEP_S)
+            await self.release_pass()
+
+    async def release_pass(self) -> None:
+        assert self.config.watch_ms is not None
+        try:
+            for sid in self.store.watched(now_ms() - self.config.watch_ms):
+                try:
+                    await self._release_if_done(sid)
+                except (OmnigentError, httpx.HTTPError) as exc:
+                    LOG.warning("releasing %s failed: %s", sid, exc)
+                except Exception:  # noqa: BLE001 - the next pass tries again
+                    LOG.exception("releasing %s failed", sid)
+        except Exception:  # noqa: BLE001 - the next pass tries again
+            LOG.exception("releasing sessions failed")
+
+    def _unused(self, session: Session) -> bool:
+        """Nothing under way, and T3 Code has neither used nor opened it lately."""
+        last_used = max(session.active, self._opened_at.get(session.id, 0))
+        return not (session.running or session.steers or session.held) and now_ms() - last_used >= self.release_grace_ms
+
+    async def _thread_done(self, home: Path, session_id: str) -> Thread | None:
+        """The session's T3 Code thread if it is settled, archived or deleted."""
+        try:
+            thread = await asyncio.to_thread(thread_for, home, session_id)
+        except sqlite3.Error as exc:
+            LOG.warning("could not read T3 Code's threads in %s: %s", home, exc)
+            return None
+        return thread if thread is not None and thread.done else None
+
+    async def _release_if_done(self, session_id: str) -> None:
+        """Release the session if its T3 Code thread is done with: retire its and its subagents' watches and pause
+        their scheduled tasks, so nothing wakes it, stop following it, and stop its Omnigent runner. Nothing is
+        archived: a message, from T3 Code or anywhere, relaunches the runner and resumes the transcript, and T3 Code
+        opening the session has it followed again and its tasks resumed."""
+        home = self.home_of(session_id)
+        if home is None or session_id in self._loading:
+            return
+        thread = await self._thread_done(home, session_id)
+        if thread is None:
+            return
+        session = self.sessions.get(session_id)
+        if session is not None and not self._unused(session):
+            return
+        conversation_id = (
+            session.conversation_id
+            if session is not None
+            else self.store.conversation(session_id) or conversation_named_by(session_id)
+        )
+        if conversation_id is None:
+            return
+        try:
+            state: dict[str, Any] | None = await self.client.liveness(conversation_id)
+        except OmnigentError as exc:
+            if not exc.gone:
+                raise
+            state = None
+        if state is not None:
+            if state.get("status") not in RELEASABLE_STATUSES or state.get("pending_inputs") or state.get("pending_elicitations"):
+                return
+            descendants = await self.client.descendants(conversation_id)
+            if any(child.get("busy") for child in descendants):
+                return
+            await self._silence(session_id, {conversation_id, *(str(c["id"]) for c in descendants if c.get("id"))})
+        # T3 Code may have opened the session meanwhile; nothing from this check to the release awaits.
+        again = await self._thread_done(home, session_id)
+        if (
+            again is None
+            or session_id in self._loading
+            or self.sessions.get(session_id) is not session
+            or (session is not None and not self._unused(session))
+        ):
+            LOG.info("not releasing %s: T3 Code took it up again", session_id)
+            self._in_background(self._resume_tasks(session_id))
+            return
+        if session is not None:
+            await self._unfollow(session)
+        self.store.release(session_id, now_ms())
+        stopping = state is not None and state.get("runner_online") is True
+        LOG.info(
+            "releasing %s (Omnigent %s): thread %s %s, %s",
+            session_id,
+            conversation_id,
+            thread.id,
+            thread.status,
+            "stopping its runner" if stopping else "its runner is down" if state is not None else "Omnigent session gone",
+        )
+        if stopping:
+            await self.client.stop_session(conversation_id)
+
+    async def _silence(self, session_id: str, conversations: set[str]) -> None:
+        """Retire the conversations' watches and pause their scheduled tasks, recording those for `_resume_tasks`."""
+        for conversation in sorted(conversations):
+            try:
+                detail = await self.client.cancel_watches(conversation, WATCH_SOURCES)
+            except OmnigentError as exc:
+                if exc.status != 404:
+                    raise
+                detail = "omnigent-watcher is not mounted"
+            LOG.info("watches of %s: %s", conversation, detail)
+        for task in await self.client.scheduled_tasks():
+            if task.get("session_id") not in conversations or task.get("state") != "active":
+                continue
+            task_id = str(task["id"])
+            try:
+                await self.client.set_scheduled_task_state(task_id, "paused")
+            except OmnigentError as exc:
+                if exc.status not in (404, 409):
+                    raise
+                continue
+            self.store.add_paused_task(session_id, task_id)
+            LOG.info("paused scheduled task %s of %s", task_id, task["session_id"])
+
+    async def _resume_tasks(self, session_id: str) -> None:
+        for task_id in self.store.paused_tasks(session_id):
+            try:
+                await self.client.set_scheduled_task_state(task_id, "active")
+            except OmnigentError as exc:
+                if not exc.gone:
+                    LOG.warning("could not resume scheduled task %s of %s: %s", task_id, session_id, exc)
+                    continue
+            except httpx.HTTPError as exc:
+                LOG.warning("could not resume scheduled task %s of %s: %s", task_id, session_id, exc)
+                continue
+            self.store.drop_paused_task(session_id, task_id)
+            LOG.info("resumed scheduled task %s of %s", task_id, session_id)
 
     async def _follow(self, session_id: str) -> None:
         try:

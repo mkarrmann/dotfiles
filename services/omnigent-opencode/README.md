@@ -114,8 +114,9 @@ thread happens to be loaded, unless the daemon runs:
 - `omnigent-opencode daemon` serves the sessions on a Unix socket
   (`~/.local/state/omnigent-opencode/daemon.sock`, mode 0600) and keeps each
   session's Omnigent stream open, T3 Code listening or not, until the session has
-  been quiet for `OMNIGENT_OPENCODE_WATCH_DAYS` (default 7) or its Omnigent
-  session is gone. After a restart it follows the same sessions again.
+  been quiet for `OMNIGENT_OPENCODE_WATCH_DAYS` (default 7), its Omnigent
+  session is gone, or its thread is settled (below). After a restart it follows
+  the same sessions again.
 - `serve`, which T3 Code still runs, forwards to the daemon when it answers on
   its socket (`proxy.py`), naming T3 Code's server by its home (`T3CODE_HOME`,
   else `~/.t3`); otherwise it serves on its own as before.
@@ -128,12 +129,28 @@ thread happens to be loaded, unless the daemon runs:
   then the rest live. A held turn's approvals are not listed until then, since
   T3 Code rejects what it finds when it resumes a thread.
 - The thread is read from T3 Code's state, read-only: the provider thread whose
-  native ref is the session, if its thread still uses it and is neither archived
-  nor deleted (`wakes.py`). With no thread, the turn is shown as before, as one
-  the agent started. While T3 Code is down the trigger is sent again, every 15 s
-  up to every 5 minutes.
+  native ref is the session, if its thread still uses it (`t3state.py`), and only
+  a live one: not settled (a T3 Code turn un-settles a thread), archived or
+  deleted. With no live thread, the turn is shown as before, as one the agent
+  started. While T3 Code is down the trigger is sent again, every 15 s up to
+  every 5 minutes.
 - A message typed in T3 Code before T3 Code's turn for a held run begins shows
   the run at once and is steered into it; the trigger's turn then ends empty.
+- Settling, archiving or deleting a thread releases its session, within a
+  minute (and once at start, before following), once Omnigent has it idle (no
+  turn, input or question pending, no subagent at any depth busy) and T3 Code
+  has neither used nor opened it for 2 minutes (`App.release_done`): the daemon
+  retires its and its subagents' omnigent-watcher watches (`phabricator`,
+  `command`) and pauses their scheduled tasks, so nothing wakes it, checks
+  again that T3 Code has not taken the session up meanwhile, stops following
+  it, and stops its Omnigent runner (`stop_session`), freeing its harness and
+  MCP servers; subagents riding that runner stop with it. Nothing is archived.
+  A message from T3 Code (which un-settles the thread) or any other client
+  relaunches the runner and resumes the transcript, and T3 Code opening the
+  session has it followed again and resumes the tasks the release paused; the
+  retired watches stay retired. A turn started from another client on a
+  released session is not put to T3 Code. `state.db` keeps the releases
+  (`released`) and the paused tasks (`paused_tasks`).
 - Omnigent's stream does not replay what a subscriber missed, so on every
   (re)connect the session's items after the last input this server handled are
   read, and each turn on an input from outside T3 Code is replayed (still

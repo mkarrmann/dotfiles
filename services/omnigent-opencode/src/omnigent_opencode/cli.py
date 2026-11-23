@@ -9,7 +9,9 @@ Code has it running.
 `daemon` serves the sessions on a Unix socket and follows each, T3 Code
 running or not, until it has been quiet for `OMNIGENT_OPENCODE_WATCH_DAYS`
 (default 7). It puts every Omnigent turn T3 Code did not start to T3 Code with
-the `t3` CLI (`wakes`). launchd or systemd runs it. `daemon-stale` tells
+the `t3` CLI (`wakes`), and releases each session whose T3 Code thread is
+settled, archived or deleted: no more wakeups, its runner stopped
+(`App.release_done`). launchd or systemd runs it. `daemon-stale` tells
 bin/t3-ensure whether to restart it: exit 0 when the daemon's code is not what
 is on disk and nothing would be lost, 2 when it is stale but busy (a turn
 running, a steer pending, a turn held for T3 Code), 1 otherwise.
@@ -189,13 +191,17 @@ async def daemon(args: argparse.Namespace) -> None:
     LOG.info(
         "daemon %s listening on %s, following sessions for %g days, waking threads with %s", VERSION, socket, days, t3_command()
     )
-    follow = asyncio.create_task(app.follow())
+    # Before following, so a session settled while the daemon was down is not followed first.
+    await app.release_pass()
+    loops = [asyncio.create_task(app.follow()), asyncio.create_task(app.release_done())]
     try:
         await until_stopped()
     finally:
-        follow.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await follow
+        for loop in loops:
+            loop.cancel()
+        for loop in loops:
+            with contextlib.suppress(asyncio.CancelledError):
+                await loop
         await runner.cleanup()
         socket.unlink(missing_ok=True)
 
