@@ -57,3 +57,16 @@ Your links must never link to raw Presto queries/ids (except when you literally 
 
 Ensure all figures and tables are clearly labeled, including providing units. Tables must be easily and immediately interpretable without any surrounding context, meaning column and row headers must be self-contained.
 
+## Footnotes
+
+Use the platform's real footnote feature wherever one exists. Never fake one with a superscript number and a "Notes" section at the end. In local markdown, use `[^name]` footnotes.
+
+**Google Docs.** ghtml and the `create`/`replace`/`insert` commands can't make footnotes, so write the doc first, then add each footnote with `meta google.docs batch-update`:
+
+1. Find the index where the reference goes: `meta google.docs get --id=<DOC> --output=raw-json`, then walk `tabs[0].documentTab.body.content` (table cells nest further content) for the text run's `startIndex`. A placeholder you wrote there (e.g. a superscript `1`) makes it easy to find; delete it in the same batch.
+2. Create the footnote: `{"createFootnote":{"location":{"index":<N>,"tabId":"t.0"}}}`. The CLI doesn't print the reply, so re-read raw-json and take the new id from `tabs[0].documentTab.footnotes`.
+3. Fill it: `{"insertText":{"location":{"segmentId":"<footnoteId>","index":1,"tabId":"t.0"},"text":"..."}}`. The footnote starts as `" \n"`. Insert at index 1, after that space, which is how Docs separates the number from the text.
+4. If the text came out superscript (it inherits the style at the reference), clear it: `{"updateTextStyle":{"range":{"segmentId":"<footnoteId>","startIndex":0,"endIndex":<len+1>,"tabId":"t.0"},"textStyle":{"baselineOffset":"NONE"},"fields":"baselineOffset"}}`.
+
+A full-body `replace` deletes the footnotes, so redo these steps after every one. Apply deletions from the end of the doc backwards, so earlier indices stay valid within a batch.
+
