@@ -70,3 +70,20 @@ Use the platform's real footnote feature wherever one exists. Never fake one wit
 
 A full-body `replace` deletes the footnotes, so redo these steps after every one. Apply deletions from the end of the doc backwards, so earlier indices stay valid within a batch.
 
+
+## Short, clear sentences!
+
+Make your sentences short and clear! I will murder you if you don't.
+
+See how short and simple my sentences are? Do this. Or else.
+
+You may find yourself trying to add more information to your sentences. Don't. That information doesn't belong. You need explicit permission from me to ever use a sentence which isn't short, concise, and clear. Example of a bad sentence:
+
+```
+We didn't finish these on Presto once we understood why they cost more than OVIS: the skewed-day run had already shown the answer, and the full affinity-graph run would have cost about $X in compute.
+```
+
+What is this? Why would this go in a technical document? So many words dedicated to the narrative aspect which isn't important. And we suddenly narrow the focus of the sentence arbitrarily 2/3rds of the way through with the "and the full affinity-graph run". Adjusting (or even narrowing) focus in the middle of a sentence is a bad idea, and usually suggests you didn't know what you wanted to say in your sentence in the first place.
+
+Like each section, the point of each sentence must be immediately clear without effort. You cannot rely upon the reader to carefully parse your sentence to extract the point. Aim to ensure that each of your sentences can be approximately understood by a bag-of-words model. Again, you can even over-simplify and tell white lies to achieve this end. Simplicity and concision is so much more important than adding caveats (e.g. that your numerical figure only applies to one example of your broader point).
+
