@@ -1,0 +1,313 @@
+#!/usr/bin/env python3
+"""Place Metamate 3 work in a specific checkout, and see what each checkout holds.
+
+Metamate's web composer cannot start a chat in ~/checkout2..4 (its folder
+picker offers only fbsource/configerator/www under /data/users, and nothing
+defaults per window), so threads that belong in a particular checkout are
+created here with agentcloudctl, Metamate's supported command-line client. A
+created thread is an ordinary top-level chat: it shows in the web inbox and is
+used there like any other.
+
+The places are the devserver rows of bin-macos/workspaces, the one table that
+maps hosts and checkouts to workspaces. A place is named by its nvs session
+(CCO-checkout2) or a short form (cco:2, cco2).
+
+  mm-checkout list [--json] [--no-vcs]
+  mm-checkout new PLACE|auto [--host cco|ftw] [--harness H] [--model M]
+                  [--effort E] [--title T] [--repo fbsource|configerator]
+                  [--json] [--prompt TEXT | --prompt-file PATH]
+
+`auto` picks the first place with no running or waiting thread and no
+uncommitted changes.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence
+
+WEB_URL = "https://agentcloud.internalmeta.com"
+UUID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+VCS_TIMEOUT_S = 30
+
+
+@dataclass(frozen=True)
+class Place:
+    name: str
+    host: str
+    checkout: str
+
+    @property
+    def label(self) -> str:
+        return self.name.split("-", 1)[0].lower()
+
+    @property
+    def number(self) -> str:
+        return re.sub(r"\D", "", Path(self.checkout).name)
+
+    def aliases(self) -> List[str]:
+        return [self.name.lower(), f"{self.label}:{self.number}", f"{self.label}{self.number}"]
+
+    def workspace(self, repo: str) -> str:
+        return f"{self.checkout}/{repo}"
+
+
+@dataclass
+class Thread:
+    session_id: str
+    title: str
+    harness: str
+    running: bool
+    awaiting_person: bool
+    status_state: Optional[str]
+
+
+@dataclass
+class VcsState:
+    commit: Optional[str] = None
+    dirty: Optional[int] = None
+    error: Optional[str] = None
+
+
+@dataclass
+class PlaceReport:
+    place: Place
+    threads: List[Thread] = field(default_factory=list)
+    vcs: Optional[VcsState] = None
+
+    @property
+    def busy(self) -> bool:
+        return any(t.running or t.awaiting_person for t in self.threads)
+
+    @property
+    def free(self) -> bool:
+        return not self.busy and (self.vcs is None or self.vcs.dirty == 0)
+
+
+def agentcloudctl() -> str:
+    return os.environ.get("AGENTCLOUDCTL", "agentcloudctl")
+
+
+def workspaces_table() -> Path:
+    override = os.environ.get("MM_CHECKOUT_WORKSPACES")
+    if override:
+        return Path(override)
+    return Path(__file__).resolve().parent.parent / "bin-macos" / "workspaces"
+
+
+def load_places() -> List[Place]:
+    out = subprocess.run([str(workspaces_table()), "--json"], check=True, capture_output=True, text=True).stdout
+    rows = json.loads(out)["workspaces"]
+    return [
+        Place(name=row["nvsSession"], host=row["host"], checkout=row["checkout"].rstrip("/"))
+        for row in rows
+        if row.get("kind") == "devserver"
+    ]
+
+
+def resolve_place(places: Sequence[Place], name: str) -> Place:
+    wanted = name.lower()
+    for place in places:
+        if wanted in place.aliases():
+            return place
+    known = ", ".join(p.name for p in places)
+    raise SystemExit(f"mm-checkout: unknown place {name!r}; known: {known}")
+
+
+def run_ctl(args: Sequence[str], timeout: Optional[int] = None) -> str:
+    proc = subprocess.run([agentcloudctl(), *args], capture_output=True, text=True, timeout=timeout)
+    if proc.returncode != 0:
+        detail = "\n".join(l for l in proc.stderr.splitlines() if not l.startswith("note:")).strip()
+        raise SystemExit(f"mm-checkout: agentcloudctl {args[0]} failed ({proc.returncode}): {detail}")
+    return proc.stdout
+
+
+def is_live_root(row: Dict[str, Any]) -> bool:
+    """Not archived (`archived_at_unix_ms`) and not a sub-agent (`parent`, or a `tree.root` elsewhere)."""
+    if row.get("archived") is True or row.get("archived_at_unix_ms") is not None or row.get("parent"):
+        return False
+    return (row.get("tree") or {}).get("root", row.get("session_id")) == row.get("session_id")
+
+
+def owned_root_sessions() -> List[Dict[str, Any]]:
+    return [r for r in json.loads(run_ctl(["list"], timeout=120)) if is_live_root(r)]
+
+
+def thread_from_row(row: Dict[str, Any]) -> Thread:
+    return Thread(
+        session_id=row["session_id"],
+        title=row.get("title") or (row.get("status") or {}).get("headline") or "",
+        harness=row.get("harness") or "",
+        running=bool(row.get("running")),
+        awaiting_person=bool(row.get("awaiting_person")),
+        status_state=(row.get("status") or {}).get("state"),
+    )
+
+
+def in_place(row: Dict[str, Any], place: Place) -> bool:
+    workspace = (row.get("workspace") or "").rstrip("/")
+    on_host = place.host in (row.get("attached_nodes") or [])
+    return on_host and (workspace == place.checkout or workspace.startswith(place.checkout + "/"))
+
+
+def vcs_state(place: Place, repo: str) -> VcsState:
+    script = (
+        f"cd {shlex.quote(place.workspace(repo))} && "
+        "sl log -r . -T '{node|short} {desc|firstline}\\n' && "
+        "echo __DIRTY__ $(sl status -mard | wc -l)"
+    )
+    try:
+        proc = subprocess.run(
+            [agentcloudctl(), "node", "exec", "--node", place.host, "--", "sh", "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=VCS_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return VcsState(error="timed out")
+    if proc.returncode != 0:
+        return VcsState(error=(proc.stderr.strip().splitlines() or ["failed"])[-1])
+    commit, dirty = None, None
+    for line in proc.stdout.splitlines():
+        if line.startswith("__DIRTY__"):
+            dirty = int(line.split()[1])
+        elif line.strip() and commit is None:
+            commit = line.strip()
+    return VcsState(commit=commit, dirty=dirty)
+
+
+def report(places: Sequence[Place], with_vcs: bool, repo: str) -> List[PlaceReport]:
+    rows = owned_root_sessions()
+    reports = [PlaceReport(p, [thread_from_row(r) for r in rows if in_place(r, p)]) for p in places]
+    if with_vcs:
+        with ThreadPoolExecutor(max_workers=len(reports) or 1) as pool:
+            for rep, vcs in zip(reports, pool.map(lambda r: vcs_state(r.place, repo), reports)):
+                rep.vcs = vcs
+    return reports
+
+
+def report_json(rep: PlaceReport) -> Dict[str, Any]:
+    return {
+        "place": rep.place.name,
+        "host": rep.place.host,
+        "checkout": rep.place.checkout,
+        "busy": rep.busy,
+        "free": rep.free,
+        "vcs": None if rep.vcs is None else rep.vcs.__dict__,
+        "threads": [
+            {**t.__dict__, "url": f"{WEB_URL}/{t.session_id}"} for t in rep.threads
+        ],
+    }
+
+
+def print_reports(reports: Sequence[PlaceReport]) -> None:
+    for rep in reports:
+        flag = "busy" if rep.busy else ("free" if rep.free else "idle")
+        line = f"{rep.place.name:<15} {flag:<5}"
+        if rep.vcs is not None:
+            if rep.vcs.error:
+                line += f"  vcs: {rep.vcs.error}"
+            else:
+                line += f"  {rep.vcs.commit or '?'}  ({rep.vcs.dirty} uncommitted)"
+        print(line)
+        for t in rep.threads:
+            state = "running" if t.running else ("needs you" if t.awaiting_person else (t.status_state or "idle"))
+            print(f"    {state:<9} {t.harness:<11} {t.title[:60]}  {WEB_URL}/{t.session_id}")
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    reports = report(load_places(), with_vcs=not args.no_vcs, repo=args.repo)
+    if args.json:
+        print(json.dumps([report_json(r) for r in reports], indent=2))
+    else:
+        print_reports(reports)
+    return 0
+
+
+def pick_free(places: Sequence[Place], host: Optional[str], repo: str) -> Place:
+    candidates = [p for p in places if host is None or p.label == host.lower()]
+    for rep in report(candidates, with_vcs=True, repo=repo):
+        if rep.free:
+            return rep.place
+    raise SystemExit("mm-checkout: no free checkout" + (f" on {host}" if host else ""))
+
+
+def harness_kind(name: str) -> str:
+    """agentcloudctl's spelling: session rows say `claude_code`, the CLI takes `claude-code`."""
+    return name.strip().lower().replace("_", "-")
+
+
+def read_prompt(args: argparse.Namespace) -> Optional[str]:
+    if args.prompt_file:
+        return Path(args.prompt_file).read_text()
+    return args.prompt
+
+
+def cmd_new(args: argparse.Namespace) -> int:
+    places = load_places()
+    place = pick_free(places, args.host, args.repo) if args.place == "auto" else resolve_place(places, args.place)
+    workspace = place.workspace(args.repo)
+    ctl_args = [
+        "create",
+        "--node-id", place.host,
+        "--workspace", workspace,
+        "--startup-folder", "project",
+        "--harness", harness_kind(args.harness),
+    ]
+    for flag, value in (("--model", args.model), ("--effort", args.effort), ("--title", args.title)):
+        if value:
+            ctl_args += [flag, value]
+    prompt = read_prompt(args)
+    if prompt:
+        ctl_args += ["--prompt", prompt]
+    match = UUID.search(run_ctl(ctl_args, timeout=180))
+    if match is None:
+        raise SystemExit("mm-checkout: agentcloudctl create printed no session id")
+    session_id = match.group(0)
+    url = f"{WEB_URL}/{session_id}"
+    if args.json:
+        print(json.dumps({"session_id": session_id, "url": url, "place": place.name, "workspace": workspace}))
+    else:
+        print(f"{place.name}  {workspace}\n{url}")
+    return 0
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = argparse.ArgumentParser(prog="mm-checkout", description=__doc__.split("\n\n")[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_list = sub.add_parser("list", help="each checkout's Metamate threads and working-copy state")
+    p_list.add_argument("--json", action="store_true")
+    p_list.add_argument("--no-vcs", action="store_true", help="skip the per-checkout sl reads")
+    p_list.add_argument("--repo", default="fbsource")
+    p_list.set_defaults(func=cmd_list)
+
+    p_new = sub.add_parser("new", help="start a Metamate thread in a checkout")
+    p_new.add_argument("place", help="CCO-checkout2, cco:2, cco2, or auto")
+    p_new.add_argument("--host", help="with auto: only consider this host label (cco, ftw)")
+    p_new.add_argument("--harness", default="claude-code")
+    p_new.add_argument("--model")
+    p_new.add_argument("--effort")
+    p_new.add_argument("--title")
+    p_new.add_argument("--repo", default="fbsource")
+    p_new.add_argument("--json", action="store_true")
+    group = p_new.add_mutually_exclusive_group()
+    group.add_argument("--prompt")
+    group.add_argument("--prompt-file")
+    p_new.set_defaults(func=cmd_new)
+
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
