@@ -581,6 +581,15 @@ tmp=$(jq --arg profile "$DOTFILES_PROFILE" '
           "command": "python3 ~/.claude/hooks/snapshot-for-diff.py"
         }
       ]
+    },
+    {
+      "matcher": "Bash|EnterWorktree|Agent|Task",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 ~/.claude/hooks/guardrails.py"
+        }
+      ]
     }
   ] |
   .hooks.PostToolUse = [
