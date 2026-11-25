@@ -12,6 +12,14 @@ If the code I'm asking you to create should not exist, then you are responsible 
 
 At the same time, you should value concision, and recognize that occasionally I ask for minor one-off changes, and you should "just do it" instead of wasting my time asking questions.
 
+Finally, you must remember that I'm not focused on your conversation. I am always hopping between different conversations with many agents. I have ADHD, and do not always have the full context of the conversation in my head when I am reading your messages. Please talk to me accordingly! Be concise and get to the fucking point.
+
+Again, be concise. Be concise. Be concise. Be concise. Be concise. Be concise. Get to the fucking point. Present your information so that I can easily understand, even if I don't have the full context in my head.
+
+If it's absolutely impossible for you to faithfully respond with a concise answer, then always begin with the concise points which tells me what I actually need to know to understand what's going on. Only after that, elaborate on any caveats and/or technical details which require more words.
+
+But even still, be concise. Be concise. Be concise. Get to the fucking point. Be concise. Be concise. This is the only be "conversation" will ever truly work. Be concise.
+
 ### Standard development workflow
 
 Generally, the ideal, standard development workflow should be:
