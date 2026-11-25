@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""Keep the skills named in agent_config/metamate-skills.list installed in Metamate 3.
+
+Metamate sessions load skills from the person's Metamate settings, not from
+~/.claude/skills or ~/.agents/skills (agentcloud spec 2783), so a dotfiles skill
+reaches Metamate's own agent, Codex and Muse only as a catalog skill installed
+for Agentcloud. For each listed skill this:
+
+  - creates a private ("Only Me") catalog skill on first sight, under the
+    skill's own name, or `mk-<name>` when that name is taken by someone else
+    (catalog names are global);
+  - installs it for Metamate 3;
+  - publishes a new revision and makes it the stable (served) one whenever the
+    skill's files change;
+  - uninstalls a skill dropped from the list (its catalog copy stays).
+
+State (alias, content hash, revision per skill) lives in
+$XDG_STATE_HOME/metamate-skills/state.json.
+
+  metamate-skills-sync [--dry-run]
+"""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence
+
+DOTFILES = Path(__file__).resolve().parent.parent
+SKILLS_DIR = DOTFILES / "agent_config" / "skills"
+LIST_FILE = DOTFILES / "agent_config" / "metamate-skills.list"
+PREFIX = "mk-"
+SKIP_PARTS = {"__pycache__", "node_modules"}
+
+
+@dataclass
+class Entry:
+    alias: str
+    hash: str
+    revision: str
+
+
+@dataclass(frozen=True)
+class Step:
+    action: str  # create | revise | uninstall
+    name: str
+    alias: Optional[str] = None
+
+
+def state_path() -> Path:
+    base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+    return base / "metamate-skills" / "state.json"
+
+
+def load_state() -> Dict[str, Entry]:
+    path = state_path()
+    if not path.exists():
+        return {}
+    return {name: Entry(**e) for name, e in json.loads(path.read_text()).items()}
+
+
+def save_state(state: Dict[str, Entry]) -> None:
+    path = state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({n: asdict(e) for n, e in sorted(state.items())}, indent=2) + "\n")
+    tmp.replace(path)
+
+
+def listed_skills(list_file: Path = LIST_FILE) -> List[str]:
+    names = [l.strip() for l in list_file.read_text().splitlines()]
+    return [n for n in names if n and not n.startswith("#")]
+
+
+def skill_files(skill_dir: Path) -> List[Dict[str, str]]:
+    files = []
+    for path in sorted(skill_dir.rglob("*")):
+        rel = path.relative_to(skill_dir)
+        if not path.is_file() or any(p.startswith(".") or p in SKIP_PARTS for p in rel.parts):
+            continue
+        files.append({"path": str(rel), "content": path.read_text()})
+    if not any(f["path"] == "SKILL.md" for f in files):
+        raise SystemExit(f"metamate-skills-sync: {skill_dir} has no SKILL.md")
+    return files
+
+
+def with_name(files: List[Dict[str, str]], alias: str) -> List[Dict[str, str]]:
+    """The file set with SKILL.md's frontmatter `name:` set to the catalog alias."""
+    out = []
+    for f in files:
+        if f["path"] == "SKILL.md":
+            content = re.sub(r"(?m)^name:.*$", f"name: {alias}", f["content"], count=1)
+            f = {"path": f["path"], "content": content}
+        out.append(f)
+    return out
+
+
+def content_hash(files: List[Dict[str, str]]) -> str:
+    return hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
+
+
+def plan(listed: Sequence[str], hashes: Dict[str, str], state: Dict[str, Entry]) -> List[Step]:
+    steps: List[Step] = []
+    for name in listed:
+        entry = state.get(name)
+        if entry is None:
+            steps.append(Step("create", name))
+        elif entry.hash != hashes[name]:
+            steps.append(Step("revise", name, entry.alias))
+    for name, entry in sorted(state.items()):
+        if name not in listed:
+            steps.append(Step("uninstall", name, entry.alias))
+    return steps
+
+
+def meta(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run([os.environ.get("META_CLI", "meta"), *args], capture_output=True, text=True, timeout=300)
+
+
+def meta_ok(*args: str) -> str:
+    proc = meta(*args)
+    if proc.returncode != 0:
+        raise SystemExit(f"metamate-skills-sync: meta {' '.join(args[:2])} failed: {proc.stderr.strip() or proc.stdout.strip()}")
+    return proc.stdout
+
+
+def files_json(files: List[Dict[str, str]]) -> str:
+    handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+    with handle:
+        json.dump(files, handle)
+    return handle.name
+
+
+def newest_revision(alias: str) -> Optional[Dict[str, object]]:
+    proc = meta("skills.sdk", "list-revisions", f"--alias={alias}", "--output=json")
+    if proc.returncode != 0:
+        return None
+    data = json.loads(proc.stdout)
+    rows = data.get("data", data) if isinstance(data, dict) else data
+    return rows[0] if rows else None
+
+
+def owned_by_me(alias: str) -> bool:
+    newest = newest_revision(alias)
+    return newest is not None and newest.get("author") == getpass.getuser()
+
+
+def set_stable(alias: str, revision: str) -> None:
+    meta_ok("skills.sdk", "set-stable", f"--alias={alias}", f"--revision={revision}")
+
+
+def revise(alias: str, files: List[Dict[str, str]]) -> str:
+    path = files_json(with_name(files, alias))
+    try:
+        meta_ok("skills.sdk", "revise", f"--files-json-file=file://{path}", f"--alias={alias}",
+                "--revision-title=dotfiles sync", "--no-embedded-base")
+    finally:
+        os.unlink(path)
+    newest = newest_revision(alias)
+    if newest is None:
+        raise SystemExit(f"metamate-skills-sync: no revisions listed for {alias} after revise")
+    revision = str(newest["revision_id"])
+    set_stable(alias, revision)
+    return revision
+
+
+def create(name: str, files: List[Dict[str, str]]) -> Entry:
+    for alias in (name, PREFIX + name):
+        if owned_by_me(alias):
+            return Entry(alias=alias, hash=content_hash(files), revision=revise(alias, files))
+        path = files_json(with_name(files, alias))
+        try:
+            proc = meta("skills.sdk", "create", f"--files-json-file=file://{path}", "--visibility=Only Me", "--output=json")
+        finally:
+            os.unlink(path)
+        if proc.returncode == 0:
+            newest = newest_revision(alias)
+            revision = str(newest["revision_id"]) if newest else ""
+            if revision:
+                set_stable(alias, revision)
+            meta_ok("skills.sdk", "install", f"--alias={alias}", "--harness=agentcloud")
+            return Entry(alias=alias, hash=content_hash(files), revision=revision)
+        if not re.search(r"taken|exists|already", proc.stderr + proc.stdout, re.IGNORECASE):
+            raise SystemExit(f"metamate-skills-sync: create {alias} failed: {proc.stderr.strip() or proc.stdout.strip()}")
+    raise SystemExit(f"metamate-skills-sync: both {name} and {PREFIX + name} are taken in the catalog")
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = argparse.ArgumentParser(prog="metamate-skills-sync", description=__doc__.split("\n\n")[0])
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+
+    listed = listed_skills()
+    files = {name: skill_files(SKILLS_DIR / name) for name in listed}
+    hashes = {name: content_hash(f) for name, f in files.items()}
+    state = load_state()
+    steps = plan(listed, hashes, state)
+    if not steps:
+        print("metamate-skills-sync: up to date")
+        return 0
+    for step in steps:
+        print(f"{step.action:<9} {step.name}" + (f" ({step.alias})" if step.alias else ""))
+        if args.dry_run:
+            continue
+        if step.action == "create":
+            state[step.name] = create(step.name, files[step.name])
+        elif step.action == "revise":
+            assert step.alias is not None
+            state[step.name] = Entry(step.alias, hashes[step.name], revise(step.alias, files[step.name]))
+        else:
+            assert step.alias is not None
+            meta_ok("skills.sdk", "uninstall", f"--alias={step.alias}", "--harness=agentcloud")
+            del state[step.name]
+        save_state(state)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

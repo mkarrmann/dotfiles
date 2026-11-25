@@ -1,0 +1,16 @@
+# Skills from agent_config/skills to keep installed in Matt's Metamate 3
+# settings, one directory name per line. bin/metamate-skills-sync uploads each
+# as a private ("Only Me") catalog skill, installs it for Metamate 3, publishes
+# a new revision when its files change, and uninstalls a skill dropped from
+# this list (the catalog copy is kept).
+#
+# Why a list: Metamate sessions take their skills from settings, not from
+# ~/.claude/skills (agentcloud spec 2783). Hosted Claude Code still finds the
+# ~/checkoutN/.claude/skills links sync.sh makes, so this list is for what the
+# other harnesses need -- Metamate's own agent, Codex, Muse -- and for chats
+# with no checkout. Each entry costs context in every Metamate session.
+
+metamate-checkouts
+personal-development-setup-and-env
+reviewing-changes
+show-in-nvim
