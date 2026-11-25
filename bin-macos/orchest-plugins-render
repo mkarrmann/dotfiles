@@ -68,7 +68,7 @@ jq --argjson table "$table" --arg sentinel "$SENTINEL" '
       then
         if .id == "obsidian-notes"
         then .config.attribution = { byNvimSession: $byNvimSession }
-        elif .id == "orchest-omnigent-bridge"
+        elif .id == "orchest-omnigent-bridge" or .id == "orchest-metamate-bridge"
         then .config.attribution = { byHostAndCwd: $byHostAndCwd, byCwd: $byCwd }
         else error("plugin \(.id) carries the sentinel but this renderer has no attribution shape for it")
         end
