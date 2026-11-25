@@ -203,6 +203,15 @@ skill_scope() {
   fi
 }
 
+# A workspace root (~/checkoutN) carries every skill, global ones included:
+# Metamate 3 starts its hosted Claude Code with a per-session CLAUDE_CONFIG_DIR
+# that links everything in ~/.claude except skills/ (agentcloud spec 2783), so
+# the workspace is the only place such a session finds them. A local session
+# sees a global skill at both levels and lists it once (verified 2026-11-24).
+skill_in_scope() {
+  [[ "$2" == workspace ]] || [[ "$(skill_scope "$1")" == "$2" ]]
+}
+
 skill_dirs() {
   local d
   shopt -s nullglob
@@ -228,7 +237,7 @@ link_skills_scoped() {
     target="$(readlink "$dst")"
     [[ "$target" == "$SKILLS_SRC/"* ]] || continue
     name="$(basename "$dst")"
-    if [[ "$scope" == "none" ]] || [[ ! -e "${target%/}/SKILL.md" ]] || [[ "$(skill_scope "$name")" != "$scope" ]]; then
+    if [[ "$scope" == "none" ]] || [[ ! -e "${target%/}/SKILL.md" ]] || ! skill_in_scope "$name" "$scope"; then
       rm "$dst"
       echo "removed skill link $dst"
     fi
@@ -239,7 +248,7 @@ link_skills_scoped() {
 
   while IFS= read -r src; do
     name="$(basename "$src")"
-    [[ "$(skill_scope "$name")" == "$scope" ]] || continue
+    skill_in_scope "$name" "$scope" || continue
     link_one "$src" "$dst_parent/$name"
   done < <(skill_dirs)
 }
@@ -472,7 +481,7 @@ if [[ "$DOTFILES_PROFILE" == work ]]; then
       continue
     fi
     seen_ws="${seen_ws}${seen_ws:+$'\n'}${ws_real}"
-    link_skills_scoped "$ws_real/.claude/skills" meta
+    link_skills_scoped "$ws_real/.claude/skills" workspace
     # Workspace-layout rules belong to the checkout, not to every machine, so they
     # live here rather than in global-development-preferences.md. Both names are
     # needed and neither duplicates the other: Claude Code reads only CLAUDE.md

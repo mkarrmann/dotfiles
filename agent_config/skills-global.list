@@ -1,5 +1,6 @@
 # Skills that stay in ~/.claude/skills and are therefore advertised in every
-# directory, including non-Meta trees such as ~/repos/*.
+# directory, including non-Meta trees such as ~/repos/*. They are also linked
+# into each ~/checkoutN/.claude/skills, for Metamate 3's hosted Claude Code.
 #
 # Everything else in agent_config/skills/ — including all of
 # meta-powertools-vendored/ — is linked only into ~/checkoutN/.claude/skills and

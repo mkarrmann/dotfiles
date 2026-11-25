@@ -138,6 +138,10 @@ found. `sync.sh` uses that to scope by workspace:
   Meta checkout. Workspace roots are detected as any `$HOME/*` directory
   containing an `fbsource/` or `configerator/` checkout, so a relocated
   or extra checkout is picked up without editing the script.
+- The global names are linked into `~/checkoutN/.claude/skills/` as well.
+  Metamate 3's hosted Claude Code loads no `~/.claude/skills` (its
+  per-session config folder links everything else), so the workspace is
+  where it finds them; a local session lists such a skill once.
 
 Keep the global list short: each entry costs context in every unrelated
 session.
