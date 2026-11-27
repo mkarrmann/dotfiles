@@ -114,6 +114,9 @@ CONNECTIONS_DB = "t3code:connection-runtime"
 # What the pairing page says when a link failed: newer releases name the
 # failure, 0.1.6 falls back to its form for pasting a token by hand.
 LINK_REFUSED = ("request a new pairing link", "missing its backend host or token", "Paste a one-time token")
+# Since 0.1.12 (eecb58c6d6) the pairing page asks before pairing; the helper
+# answers for the links it opens itself.
+LINK_CONFIRM = "Add backend"
 NAVIGATE_RETRY = 5.0
 LEGACY_PROJECT_CWD_PREFIX = "legacy-project-cwd:"
 HOME_RELATIVE = "~/"
@@ -677,6 +680,15 @@ def saved_environment_ids(devtools: DevTools) -> list[str]:
     ) or []
 
 
+def confirm_link(devtools: DevTools) -> None:
+    """Click the pairing page's confirmation, when it shows one."""
+    devtools.evaluate(
+        "(() => { const b = [...document.querySelectorAll('button')]"
+        f".find(b => b.innerText.trim() === {json.dumps(LINK_CONFIRM)} && !b.disabled);"
+        " if (b) b.click(); })()"
+    )
+
+
 def link(devtools: DevTools, origin: str, url: str, label: str, token: str, deadline: float) -> None:
     try:
         wanted = environment_id(url)
@@ -689,6 +701,7 @@ def link(devtools: DevTools, origin: str, url: str, label: str, token: str, dead
     def verdict() -> bool | None:
         if wanted in saved_environment_ids(devtools):
             return True
+        confirm_link(devtools)
         return False if link_refused(devtools.evaluate("document.body ? document.body.innerText : ''") or "") else None
 
     try:
