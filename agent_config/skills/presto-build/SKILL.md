@@ -65,7 +65,7 @@ Rules of thumb:
 
 ## IMPORTANT: When NOT to Build
 
-**Building C++ from source takes ~3 hours** (128K+ buck2 actions for an opt build). Before building, ask: **do I actually need a new binary, or can I reuse an existing one?**
+**Building and packaging C++ from source takes ~45 min before anything is deployed, even for a one-line change.** That is 25–34 min for the opt C++ fbpkg (~103k buck2 actions, often mostly cache misses on x86_64) plus ~9.5 min for the hybrid, measured 2026-11; see `presto-deploy` "C++ build time: where it goes and how to cut it". Before building, ask: **do I actually need a new binary, or can I reuse an existing one?**
 
 - **Deploying to a test cluster for testing?** → Do NOT build. Use `pt pcm deploy -pv <release_version>`. See `presto-deploy` skill.
 - **Running an A/B test toggling a config property?** → Do NOT build. Both arms use the same binary. Just deploy and toggle config.
@@ -74,13 +74,13 @@ Rules of thumb:
 
 **Build durations** (empirical, on devvm with RE):
 
-| Build type                                              | Command                    | Duration            |
-| ------------------------------------------------------- | -------------------------- | ------------------- |
-| Java module (incremental, default)                      | `presto-build -l <module>` | ~5 min              |
-| Java FB trunk only                                      | `presto-build -T`          | ~15 min             |
-| Java full (OSS subset + FB)                             | `presto-build`             | ~20-25 min          |
-| Java full + C++ dev binary (coordinator **and** worker) | `presto-build -n`          | ~Java + ~15 min C++ |
-| C++ opt (fbpkg)                                         | `presto-deploy -n`         | **~3 hours**        |
+| Build type                                              | Command                    | Duration                 |
+| ------------------------------------------------------- | -------------------------- | ------------------------ |
+| Java module (incremental, default)                      | `presto-build -l <module>` | ~5 min                   |
+| Java FB trunk only                                      | `presto-build -T`          | ~15 min                  |
+| Java full (OSS subset + FB)                             | `presto-build`             | ~20-25 min               |
+| Java full + C++ dev binary (coordinator **and** worker) | `presto-build -n`          | ~Java + ~15 min C++      |
+| C++ opt (fbpkg, remote) + hybrid                        | `presto-deploy -n`         | **25–34 min + ~9.5 min** |
 
 ## IMPORTANT: Builds Are Incremental By Default — Do NOT Force A Clean Rebuild
 
@@ -166,6 +166,7 @@ mpt -pl presto-tests -Dtest=TestLocalQueries#testIOExplainForUnsupportedStatemen
 **Targeted test runs in OSS trunk require `-Dsurefire.useManifestOnlyJar=false`.** Without it, surefire's forked VM dies with "Could not find or load main class org.apache.maven.surefire.booter.ForkedBooter" or "The forked VM terminated without properly saying goodbye". The OSS trunk's `out-of-tree-build` profile (`pom.xml`) symlinks `target/` to `${BUILD_ROOT}/presto-trunk/${project.groupId}:${project.artifactId}` — the `:` in that directory name (from `com.facebook.presto:presto-tests` etc.) breaks surefire's manifest-only booter jar load. Disabling the booter jar makes surefire pass the classpath directly via `-cp` and sidesteps the issue. Also add `-Dsurefire.failIfNoSpecifiedTests=false` so dependent modules built via `-am` don't error when the test pattern doesn't match anything in them.
 
 **Single tests in an OSS module outside `OSS_MODULES` (e.g. `presto-hive`).**
+
 - **Why the helpers don't work:**
   - `mpt` pins `-pl` to `_oss_modules`, which doesn't include `presto-hive`.
   - `presto-build -t -l presto-hive` adds `-am`, so it runs the test suites of every upstream module too.
@@ -212,17 +213,23 @@ presto-build -n -m tsan          # thread sanitizer
 presto-build -n -m dbgo          # debug optimized
 ```
 
-| Mode | Buck mode                | Optimization | LTO | BOLT PGO | FDO | Use case                                          |
-| ---- | ------------------------ | ------------ | --- | -------- | --- | ------------------------------------------------- |
-| dev  | (none)                   | -O0          | No  | No       | No  | Local iteration (default, fast)                   |
-| opt  | `@fbcode//mode/opt`      | -O3          | No  | No       | No  | Optimized local testing; fair for A/B comparisons |
-| asan | `@fbcode//mode/opt-asan` | -O3          | No  | No       | No  | Memory error detection                            |
-| tsan | `@fbcode//mode/opt-tsan` | -O3          | No  | No       | No  | Data race detection                               |
-| dbgo | `@fbcode//mode/dbgo`     | -Og          | No  | No       | No  | Debug with optimization                           |
+| Mode | Buck mode                | Optimization | LTO | BOLT PGO | FDO                                 | Use case                                                  |
+| ---- | ------------------------ | ------------ | --- | -------- | ----------------------------------- | --------------------------------------------------------- |
+| dev  | (none)                   | -O0          | No  | No       | No                                  | Local iteration (default, fast)                           |
+| opt  | `@fbcode//mode/opt`      | -O3          | No  | No       | Yes in the x86_64 fbpkg (see below) | Optimized local testing; least biased for A/B comparisons |
+| asan | `@fbcode//mode/opt-asan` | -O3          | No  | No       | No                                  | Memory error detection                                    |
+| tsan | `@fbcode//mode/opt-tsan` | -O3          | No  | No       | No                                  | Data race detection                                       |
+| dbgo | `@fbcode//mode/dbgo`     | -Og          | No  | No       | No                                  | Debug with optimization                                   |
 
 `bolt` mode is not available for local builds — it requires the fbpkg pipeline (`presto-deploy -n -m bolt`). BOLT uses `@mode/opt-clang-thinlto` which enables LTO, and the Prestissimo binary target has a BOLT profile that activates under LTO. See `presto-deploy` for details on when bolt vs opt matters.
 
-**`@mode/opt` is PGO-free.** The default AutoFDO profile was removed from fbcode in August 2024, and Prestissimo is not registered in the centralized AutoFDO refresh pipeline. BOLT only activates under LTO modes. So `@mode/opt` gives you -O3 with no profile-guided optimizations of any kind.
+**The opt fbpkg is not PGO-free on x86_64** (corrected 2026-11-26; this used to say it was):
+
+- `fbcode/fdo/constraints/registry.bzl` registers `fbcode//fb_presto_cpp:presto.presto_cpp` with a production-sampled AutoFDO profile, entry `_gen_presto_presto_cpp_nobolt_presto_server`, under the opt / linux / x86_64 constraints.
+- The fbpkg build shows it as `cfg:opt-linux-x86_64-...-fdo`.
+- BOLT still only activates under LTO modes, and aarch64 has no profile.
+- Unverified: whether a plain local `buck2 build @fbcode//mode/opt //fb_presto_cpp:main` also picks up the profile. The registry keys on the fbpkg target.
+- See `presto-deploy` "Build Type for Performance Testing" for what this means for A/B tests.
 
 ### C++ fbpkg Packaging
 

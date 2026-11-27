@@ -71,9 +71,9 @@ Deploying to a cluster is a live-environment change regardless of whether the ag
 
 **Clean tree required for `fbpkg build`.** Before ANY `fbpkg build` (C++ or hybrid), the fbsource tree MUST be clean — `fbpkg build` refuses to run with uncommitted/untracked changes ("Repo has uncommitted changes, refusing to run") and fails with an unhelpful `<unknown>` Rust backtrace + "could not extract hash". ANY dirty file anywhere in fbsource triggers it, even files unrelated to your change. Fix: `sl status`, commit your changes (a scratch/`HACK:` commit is fine), and `sl shelve`/remove unrelated working-tree files first. The `presto-deploy` script now pre-checks this and fails fast with a clear message.
 
-**Build modes and packaging — there is NO "only opt can be packaged" rule.** `fbcode/fb_presto_cpp/BUCK` defines packageable `fbpkg.builder` targets for **opt, bolt, asan, tsan, and dbgo** (`presto.presto_cpp`, `presto.presto_cpp_bolt`, `_asan`, `_tsan`, `_dbgo`). The default `presto.presto_cpp` target has **no `mode=`** set, so it inherits fbpkg's default (opt) — that is the only reason `presto-deploy -n` produces opt. The **one** unpackageable mode is buck's **dev (-O0)**: no fbpkg target exists for it (use `presto-build -n` for local-only dev binaries). Caveat: only opt and bolt carry `fbpkg_ci_schedules = [ci.continuous]`, so only their RE caches stay warm — a `dbgo`/`asan`/`tsan` fbpkg compiles cold and can be **slower** than the cache-warm opt build despite lower optimization.
+**Build modes and packaging — there is NO "only opt can be packaged" rule.** `fbcode/fb_presto_cpp/BUCK` defines packageable `fbpkg.builder` targets for **opt, bolt, asan, tsan, and dbgo** (`presto.presto_cpp`, `presto.presto_cpp_bolt`, `_asan`, `_tsan`, `_dbgo`). The default `presto.presto_cpp` target has **no `mode=`** set, so it inherits fbpkg's default (opt) — that is the only reason `presto-deploy -n` produces opt. The **one** unpackageable mode is buck's **dev (-O0)**: no fbpkg target exists for it (use `presto-build -n` for local-only dev binaries). Caveat: only opt and bolt carry `fbpkg_ci_schedules = [ci.continuous]`, so only their RE caches stay warm — a `dbgo`/`asan`/`tsan` fbpkg compiles cold and can be **slower** than the cache-warm opt build despite lower optimization. Even opt is often cold on x86_64 (29–83% cache hits measured); see "C++ build time: where it goes and how to cut it".
 
-**Always check for existing fbpkg versions before building from source.** Building a hybrid package from source takes 3+ hours (C++ opt compilation alone is ~3 hours). In most cases, a suitable package already exists.
+**Always check for existing fbpkg versions before building from source.** Building from source takes about 45 minutes before anything is deployed, even for a one-line change: 25–34 min for the C++ fbpkg plus ~9.5 min for the hybrid (measured over 4 builds, 2026-11-24..26). Each deploy then takes ~8 min. In most cases, a suitable package already exists.
 
 **FIRST decide: is the target cluster Prestissimo (C++ workers) or all-Java?** This determines the package type, and getting it wrong crash-loops the cluster (see "CRITICAL: Match the package to the cluster type" below). Batch (`*_batch*`, `*_bgm_*`) and verifier clusters are almost always **Prestissimo**.
 
@@ -81,7 +81,7 @@ Deploying to a cluster is a live-environment change regardless of whether the ag
 
 1. **No code changes to test?** Use `pt pcm deploy -pv <version>` with an existing **hybrid** version (e.g. resolve `cpp-prod`). Deploys in minutes.
 2. **Java-only (coordinator) change?** You STILL need a hybrid. Build Java, then **merge it with an existing C++ fbpkg** (`presto.presto_cpp`) into a hybrid and deploy the hybrid. Use `presto-deploy -J <java_hash> -n` (or `presto-deploy -n`). **Do NOT deploy a Java-only package to a Prestissimo cluster — it has no C++ `presto_server` binary, so every worker crash-loops and the cluster goes down.**
-3. **C++ change?** Build C++ + merge hybrid. Use `presto-deploy -n` (full ~3-hour build only if the opt C++ cache is cold).
+3. **C++ change?** Build C++ + merge hybrid. Use `presto-deploy -n` (~45 min end to end; see "C++ build time: where it goes and how to cut it" for faster options).
 
 **Decision tree for an all-Java cluster** (Java workers, no Prestissimo): deploy the **Java-only** `presto.presto` package — `presto-deploy` without `-n`. A hybrid is unnecessary here.
 
@@ -149,7 +149,7 @@ Run `presto-deploy`. The only step needing the user is `presto-deploy-finish tag
 
 1. **Verify** the cluster is a test cluster with an active reservation (`pt pcm test-cluster list --json`). Confirm whether it's **Prestissimo or all-Java** and pick the package type accordingly (see "CRITICAL: Match the package to the cluster type").
 
-2. **Build the right package.** The `-c` deploy step inside `presto-deploy` runs `pt pcm deploy`, which the agent *can* run against a non-production cluster — but deploying is a live-environment change, so build without `-c` unless the user has explicitly authorized the deploy:
+2. **Build the right package.** The `-c` deploy step inside `presto-deploy` runs `pt pcm deploy`, which the agent _can_ run against a non-production cluster — but deploying is a live-environment change, so build without `-c` unless the user has explicitly authorized the deploy:
 
    ```bash
    # Prestissimo cluster (hybrid REQUIRED — even for coordinator-only Java changes):
@@ -294,6 +294,68 @@ When `-n` is specified, the script builds a C++ fbpkg via `fbpkg build fbcode//f
 
 When both Java and C++ fbpkgs are produced, the script delegates to `fb_presto_cpp/scripts/build.sh` which merges them into a single `presto.presto` package containing the Java coordinator and C++ worker binary.
 
+Manual form: `fbcode/fb_presto_cpp/scripts/build.sh -c <presto_cpp_hash> -p <presto.presto version or tag of the Java base>`. It downloads both packages, re-archives `presto_server` + `presto_server.dwp` with the Java base (~30 GiB), compresses with zstd (~11 GiB), and uploads. That takes ~9.5 min. You can skip it for C++-only changes; see the next section.
+
+### C++ build time: where it goes and how to cut it
+
+Measured 2026-11-24..26 over 4 `fbpkg build fbcode//fb_presto_cpp:presto.presto_cpp --build-remote` runs, each a small change to `presto_cpp/main`. Re-measure if the build config changes.
+
+| Step                | Wall time           | What it does                                                                                                                                         |
+| ------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C++ fbpkg           | 25–34 min           | Two parallel Sandcastle jobs, one per architecture (`architectures = ["aarch64", "x86_64"]` in `fbcode/fb_presto_cpp/BUCK`). The CLI waits for both. |
+| Hybrid (`build.sh`) | ~9.5 min            | Download, re-archive, zstd and upload; see "Hybrid merge"                                                                                            |
+| `pt pcm deploy`     | ~7.6 min per deploy | ~0.6 min evaluating the local TW spec, then ~6.7 min of TW update while 100 workers download ~11 GiB and restart                                     |
+
+What each Sandcastle job spends its time on:
+
+| Phase                                                                         | x86_64                                                     | aarch64                                         |
+| ----------------------------------------------------------------------------- | ---------------------------------------------------------- | ----------------------------------------------- |
+| Sandcastle setup + building the fbpkg tool                                    | ~2 min                                                     | ~2 min                                          |
+| buck build (`bxl`)                                                            | 11–18.5 min                                                | 5.6–12 min                                      |
+| RE cache hits                                                                 | **29–83%** (~71k of ~103k actions re-ran in 3 of 4 builds) | 75–99%                                          |
+| archive + SHA1 of the ~24–25 GiB blob (`presto_server` + `presto_server.dwp`) | ~1.2 min                                                   | ~1.2 min                                        |
+| Dumbo upload of that blob                                                     | 2.3–8.4 min                                                | 6.8–**24** min (depends on the Sandcastle host) |
+
+- **x86_64 is usually the slow job (3 of 4 builds).** Dropping aarch64 would have saved time only once, when the aarch64 upload took 24 min.
+- **The x86 critical path is one slow cache miss, then a local link and dwp.**
+  - The miss is `fbcode//deeplearning/fbgemm:fbgemm_autovec` `EmbeddingSpMDMAutovec.cc` (7–8 min to compile) or a Rust thrift genrule (up to 11 min).
+  - Then `cxx_link_executable` runs locally on the Sandcastle host (1–4.3 min) and `dwp_executable` too (1.7–2.3 min).
+  - With a warm cache the whole buck build takes ~5.6 min.
+- **Why x86 misses the cache: AutoFDO.** `presto.presto_cpp` on x86_64 compiles every C++ file with a presto-specific AutoFDO profile.
+  - Where it's defined: `fbcode/fdo/constraints/registry.bzl`, entry `_gen_presto_presto_cpp_nobolt_presto_server`. The profile is `fbcode/fdo/autofdo/fb_presto_cpp/main/_gen_presto_presto_cpp_nobolt_presto_server/BUCK`, refreshed by a Dataswarm bot. The build configuration shows it as `cfg:opt-linux-x86_64-...-fdo`.
+  - aarch64 builds use no profile.
+  - After you rebase across a profile refresh, nothing is cached until someone builds that exact profile and source. Recent `presto.presto_cpp` builds are ad hoc, by `twsvcscm`, at varied bases. `ci.continuous` does **not** reliably keep x86 warm.
+  - Even on an unchanged base, the hit rate varied between 29% and 83%. Cache expiry between builds is the likely cause (83% after 17 h, 31% after 22 h), but it is unverified.
+
+**Levers, best first:**
+
+1. **One build, many arms.** Put every A/B variant behind config switches in one binary and select arms at deploy time with `pt pcm deploy -l`. This is by far the biggest lever.
+2. **Skip the hybrid for C++-only changes (~−9.5 min per build). Unverified: needs one trial deploy.**
+   - `cpp_worker_job` in `tupperware/config/presto/include/tupperware.cinc` (~line 1300) already deploys a bare `presto.presto_cpp:<uuid>` to workers when `cpp_worker_version` doesn't start with `0.`. Production pushes use this path.
+   - Batch clusters hardcode `cpp_worker_version=None` in `include/tupperware_configs/warehouse/batch_native.cinc` (~line 220).
+   - In a never-landed `HACK:` commit, set it with the existing helper `presto.include.raptor.cpp_config.cinc` `get_presto_cpp_version()[0]`. That helper reads `PRESTO_CPP_VERSION` and is also used by `testing/t1_test.cinc`.
+   - Then deploy `PRESTO_CPP_VERSION=<presto_cpp uuid> pt pcm deploy -l -pv <any hybrid with the right Java coordinator> ...`.
+   - Unknown: the `presto.presto_cpp` blob is stored almost uncompressed (25.9 GB, vs ~11 GiB for the hybrid), so the per-worker download may make the TW update slower.
+3. **Build x86_64 only (saves 0–16 min, and avoids slow aarch64 upload hosts).** `fbpkg build` has no architecture flag, so edit `architectures = ["x86_64"]` for `presto.presto_cpp` in `fbcode/fb_presto_cpp/BUCK`, in a `HACK:` commit that is never submitted.
+4. **Don't rebase between rounds unless you need to.** Rebasing across an AutoFDO profile refresh recompiles all x86 C++ (~70k remote actions, about +6 min on the critical path). Staying on one base doesn't guarantee a warm cache either.
+
+**Not worth it:**
+
+- **Building on the devserver (no `--build-remote`):** compiles still run on RE, the link and dwp still run locally, and the 24 GiB upload then goes over the devserver's link (~60 MB/s observed, so ~7 min).
+- **Dropping the dwp:** it would shrink the package and remove the dwp step, but Strobelight may need it to attribute inlined frames.
+- **Disabling FDO:** the binary would stop resembling production.
+
+**Diagnosing a slow build:**
+
+```bash
+# The fbpkg build log prints "Sandcastle nonce: <nonce>" and a bos_builds URL
+scutil get-info <nonce> -v json      # one job per architecture: start/finish/elapsed/host
+scutil get-log <job_id> -i 2         # step 2 = "Run artifact building targets": buck progress,
+                                     # "Cache hits", "Commands:", archive/hash/Dumbo upload timings
+# The buck2 bxl build's trace id is on the "Buck UI: .../buck2/<uuid>" line after the bxl command
+buck2 log critical-path --trace-id <uuid>   # downloads the remote event log from Manifold
+```
+
 ## Cluster Reservation
 
 A test cluster must be reserved before deploying to it.
@@ -377,35 +439,41 @@ For A/B performance comparisons, use `opt` (default), **not `bolt`**. BOLT's pro
 
 Prestissimo's build modes and their PGO characteristics:
 
-| Mode                      | Optimization | LTO     | BOLT PGO                  | FDO | Fair for A/B? |
-| ------------------------- | ------------ | ------- | ------------------------- | --- | ------------- |
-| `@mode/opt`               | -O3          | No      | No                        | No  | **Yes**       |
-| `@mode/opt-clang-thinlto` | -O3          | ThinLTO | **Yes** (trained on prod) | No  | No            |
-| `bolt` fbpkg mode         | -O3          | ThinLTO | **Yes**                   | No  | No            |
+| Mode                                    | Optimization | LTO     | BOLT PGO                  | AutoFDO (x86_64 only)          | Fair for A/B?           |
+| --------------------------------------- | ------------ | ------- | ------------------------- | ------------------------------ | ----------------------- |
+| `presto.presto_cpp` fbpkg (`@mode/opt`) | -O3          | No      | No                        | **Yes** (prod-sampled profile) | **Least biased option** |
+| `@mode/opt-clang-thinlto`               | -O3          | ThinLTO | **Yes** (trained on prod) | Yes                            | No                      |
+| `bolt` fbpkg mode                       | -O3          | ThinLTO | **Yes**                   | Yes                            | No                      |
 
-`@mode/opt` is the clean optimized mode -- no profile-guided optimizations of any kind. The default AutoFDO profile was removed from fbcode in August 2024, Prestissimo is not registered in the centralized AutoFDO refresh pipeline, and BOLT only activates under LTO modes. The `presto.presto_cpp` fbpkg is built with `@mode/opt`, so it's PGO-free.
+**`presto.presto_cpp` is not PGO-free on x86_64** (corrected 2026-11-26; this section used to say it was):
+
+- `fbcode/fdo/constraints/registry.bzl` registers `fbcode//fb_presto_cpp:presto.presto_cpp` with an AutoFDO (CSSPGO) profile, entry `_gen_presto_presto_cpp_nobolt_presto_server`, under the default opt / linux / x86_64 constraints.
+- The profile is sampled from production `presto.presto_cpp` and refreshed by a Dataswarm bot. The build configuration shows it as `cfg:opt-linux-x86_64-...-fdo`.
+- `presto.presto_cpp_bolt` has its own profile, `_gen_presto_presto_cpp_presto_server`, plus BOLT.
+- aarch64 builds have neither.
+- So opt is the least biased _packaged_ build, but the same argument made below about BOLT applies in weaker form. Code paths that are cold in production, such as a feature that is off in prod, get less profile-guided optimization, which can overstate the cost of new code.
+- No stock fbpkg target builds x86_64 without FDO. Treat it as a caveat when reading results rather than something to remove.
 
 **Important nuance for config-toggle A/B tests** (e.g., HTTPS on/off, session property change): Even though both arms use the identical binary, PGO (BOLT) bias does NOT cancel out if the config toggle changes which code paths are hot. BOLT optimizes instruction layout for production code paths. If the toggle changes which paths are exercised (e.g., disabling HTTPS removes TLS encryption from the hot path), BOLT unfairly optimizes the production-config arm. **Always use opt builds for any A/B experiment, including config-toggle tests.**
 
 **Getting an opt hybrid for deployment:**
 
-The `presto.presto_cpp` fbpkg builder has `fbpkg_ci_schedules = [ci.continuous]`, keeping the opt C++ build warm in RE cache. To produce a deployable opt hybrid:
+The `presto.presto_cpp` fbpkg builder has `fbpkg_ci_schedules = [ci.continuous]`, but that does not keep x86_64 warm in practice (see "C++ build time: where it goes and how to cut it"). To produce a deployable opt hybrid:
 
 ```bash
-# 1. Build opt C++ (instant if CI cache is warm)
-fbpkg build fbcode//fb_presto_cpp:presto.presto_cpp
-# -> prints hash like "presto.presto_cpp:<hash>"
+# 1. Build opt C++ (25-34 min measured, even for a one-file change; clean tree required)
+fbpkg build fbcode//fb_presto_cpp:presto.presto_cpp --ephemeral --build-remote
+# -> prints "presto.presto_cpp:<hash>"
 
-# 2. Merge with Java coordinator to create deployable hybrid (~5 min)
-~/checkout1/fbsource/fbcode/fb_presto_cpp/scripts/build.sh <hash>
-# -> prints hybrid hash like "presto.presto:<hybrid_hash>"
+# 2. Merge with the Java coordinator to create a deployable hybrid (~9.5 min)
+<checkout>/fbsource/fbcode/fb_presto_cpp/scripts/build.sh -c <hash> -p <java base version or tag, e.g. 6484>
+# -> prints "presto.presto:<hybrid_hash>" and a version tag
+
+# 3. Deploy the opt hybrid (~7.6 min)
+pt pcm deploy -c <cluster> -pv <hybrid_version> -r "opt build" -f -ni -dt 0
 ```
 
-NOTE: Replace `~/checkout1/fbsource` with the actual checkout root (e.g., `~/checkout2/fbsource` or `~/checkout3/fbsource`) if working from a non-primary workspace.
-
-# 3. Deploy the opt hybrid
-
-pt pcm deploy -c <cluster> -pv <hybrid_version> -r "opt build" -f -ni -dt 0
+Replace `<checkout>` with the current workspace root (e.g. `~/checkout2`).
 
 ````
 
@@ -690,6 +758,7 @@ presto-deploy-finish restart <cluster>
 | Java build fails compiling a broken trunk **test** source (e.g. `TestSliceDictionaryColumnWriter.java` "incompatible types")             | Pre-existing broken test in trunk, unrelated to your change. `mvn install` compiles test sources even under `-DskipTests`. Use `-Dmaven.test.skip=true` (skips test compilation). `presto-deploy` now does this by default.                                                                                                                                                                                                                     |
 | Java build fails `maven-dependency-plugin:analyze-only` "Dependency problems found" (e.g. `presto-hdfs-core`, `presto-client`)           | Side effect of skipping test compilation: test-scoped deps look "unused". A package build needs no dependency analysis. Add `-Dmdep.analyze.skip=true`. `presto-deploy` now does this by default.                                                                                                                                                                                                                                               |
 | C++ fbpkg is opt but I wanted a cheaper build                                                                                            | opt/bolt/asan/tsan/dbgo all package (`-m <mode>`). But only opt/bolt are cache-warm (`ci.continuous`); dbgo/asan/tsan compile cold and are often slower. dev (-O0) has no fbpkg target — use `presto-build -n` for local-only.                                                                                                                                                                                                                  |
+| C++ fbpkg build takes 25–35 min even for a one-line change                                                                               | Expected: the time goes to x86 cache misses (AutoFDO profile), the local link and dwp, the 24 GiB upload, and waiting on the aarch64 job. See "C++ build time: where it goes and how to cut it" for levers and the `scutil` / `buck2 log critical-path` commands to diagnose a specific build.                                                                                                                                                  |
 | C++ fbpkg hash empty                                                                                                                     | Check `fbpkg build fbcode//fb_presto_cpp:<target>` output directly                                                                                                                                                                                                                                                                                                                                                                              |
 | Cluster shows old version after deploy                                                                                                   | Run `presto-deploy-finish accelerate <cluster>`                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `presto --smc` connection refused                                                                                                        | Cluster may still be restarting; check `tw.real job status tsp_<region>/presto/<cluster>.worker`                                                                                                                                                                                                                                                                                                                                                |
