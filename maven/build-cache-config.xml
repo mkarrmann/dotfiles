@@ -1,0 +1,28 @@
+<cache xmlns="http://maven.apache.org/BUILD-CACHE-CONFIG/1.4.0">
+  <configuration>
+    <enabled>true</enabled>
+    <hashAlgorithm>XX</hashAlgorithm>
+    <local><maxBuildsCached>2</maxBuildsCached></local>
+  </configuration>
+  <input>
+    <plugins>
+      <plugin artifactId="exec-maven-plugin"><effectivePom><excludeProperties><excludeProperty>arguments</excludeProperty></excludeProperties></effectivePom></plugin>
+      <plugin artifactId="maven-checkstyle-plugin"><effectivePom><excludeProperties><excludeProperty>cacheFile</excludeProperty></excludeProperties></effectivePom></plugin>
+      <plugin artifactId="modernizer-maven-plugin"><effectivePom><excludeProperties><excludeProperty>violationsFiles</excludeProperty></excludeProperties></effectivePom></plugin>
+      <plugin artifactId="dependency-check-maven"><effectivePom><excludeProperties><excludeProperty>suppressionFiles</excludeProperty></excludeProperties></effectivePom></plugin>
+    </plugins>
+  </input>
+  <executionControl>
+    <runAlways>
+      <goalsLists><goalsList artifactId="maven-install-plugin"><goals><goal>install</goal></goals></goalsList></goalsLists>
+    </runAlways>
+    <reconcile><plugins>
+      <plugin artifactId="maven-surefire-plugin" goal="test"><reconciles>
+        <reconcile propertyName="skip" skipValue="true"/>
+        <reconcile propertyName="skipExec" skipValue="true"/>
+        <reconcile propertyName="skipTests" skipValue="true"/>
+        <reconcile propertyName="testFailureIgnore" skipValue="true"/>
+      </reconciles></plugin>
+    </plugins></reconcile>
+  </executionControl>
+</cache>

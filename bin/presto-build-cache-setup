@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Install the Maven build cache that mpi/mfi in ~/.localrc use, under
+# $BUILD_ROOT/maven-build-cache:
+#   dist/   Maven 3.9.12 (the extension needs 3.9; the system mvn is older)
+#   ext/    the build-cache extension, built from Matt's fork (branch
+#           meta-patches: >2 GiB files, shade's reduced POM, reflink copies)
+#           plus its runtime dependencies, in ext/lib-<commit>; ext/lib links
+#           to the current one
+#   config.xml -> dotfiles maven/build-cache-config.xml
+#   cache/  the shared cache itself
+# Idempotent; rerun after the fork changes. ~/.localrc falls back to plain
+# mvn when dist/ is missing, so a devserver without this still builds.
+set -euo pipefail
+
+BUILD_ROOT=${BUILD_ROOT:-/data/users/$USER/builds}
+C=$BUILD_ROOT/maven-build-cache
+DOTFILES=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+MAVEN_VERSION=3.9.12
+EXT_VERSION=1.3.0
+FORK=${MBC_FORK:-$HOME/repos/maven-build-cache-extension}
+FORK_URL=https://github.com/mkarrmann/maven-build-cache-extension.git
+FORK_REF=${MBC_FORK_REF:-meta-patches}
+NEXUS=https://maven.thefacebook.com/nexus/content/groups/public
+MVN=$C/dist/apache-maven-$MAVEN_VERSION/bin/mvn
+TOOLS_REPO=$C/m2-tools
+
+log() { printf '%s\n' "$*" >&2; }
+
+mkdir -p "$C/dist" "$C/ext" "$C/cache"
+
+if [[ ! -x "$MVN" ]]; then
+  log "fetching Maven $MAVEN_VERSION"
+  zip=$C/dist/apache-maven-$MAVEN_VERSION-bin.zip
+  curl -sSf -o "$zip" "$NEXUS/org/apache/maven/apache-maven/$MAVEN_VERSION/apache-maven-$MAVEN_VERSION-bin.zip"
+  unzip -q -o "$zip" -d "$C/dist"
+fi
+
+if [[ ! -d "$FORK/.git" ]]; then
+  log "cloning $FORK_URL into $FORK"
+  git clone -q "$FORK_URL" "$FORK"
+fi
+commit=$(git -C "$FORK" rev-parse --verify -q "$FORK_REF^{commit}" || git -C "$FORK" rev-parse --verify -q "origin/$FORK_REF^{commit}") ||
+  { log "no $FORK_REF in $FORK; fetch it first"; exit 1; }
+
+# Each build of the extension gets its own ext/lib-<commit> and ext/lib is a
+# symlink to the current one. ~/.localrc puts the resolved directory on the
+# classpath, so a running build keeps the jars it started with: the JVM opens
+# some of them lazily, and replacing them underneath it would break it. Old
+# directories are removed once no running process names them.
+in_use() { grep -qaF -- "$1/" /proc/[0-9]*/cmdline 2>/dev/null; }
+
+lib=$C/ext/lib-${commit:0:12}
+if [[ -f "$lib/maven-build-cache-extension-$EXT_VERSION.jar" ]]; then
+  log "extension already built at ${commit:0:12}"
+else
+  log "building the extension at $commit"
+  src=$(mktemp -d "$C/ext/src.XXXXXX")
+  tmp=$(mktemp -d "$C/ext/tmp.XXXXXX")
+  trap 'rm -rf "$src" "$tmp"' EXIT
+  git -C "$FORK" archive "$commit" | tar -x -C "$src"
+  "$MVN" -q -B -f "$src/pom.xml" -Dmaven.repo.local="$TOOLS_REPO" -DskipTests -Drat.skip=true -Dcheckstyle.skip \
+    -Dspotless.check.skip=true -Dspotless.apply.skip=true -Denforcer.skip=true package
+  "$MVN" -q -B -f "$src/pom.xml" -Dmaven.repo.local="$TOOLS_REPO" dependency:copy-dependencies \
+    -DincludeScope=runtime -DoutputDirectory="$tmp"
+  cp "$src/target/maven-build-cache-extension-$EXT_VERSION.jar" "$tmp/"
+  chmod 755 "$tmp"
+  rm -rf "$lib"
+  mv "$tmp" "$lib"
+fi
+
+if [[ -d "$C/ext/lib" && ! -L "$C/ext/lib" ]]; then
+  if in_use "$C/ext/lib"; then
+    log "$C/ext/lib is a directory a running Maven build still uses; rerun when it finishes"
+    exit 1
+  fi
+  rm -rf "$C/ext/lib"
+fi
+ln -sfn "${lib##*/}" "$C/ext/lib.new" && mv -T "$C/ext/lib.new" "$C/ext/lib"
+for d in "$C"/ext/lib-*; do
+  if [[ "$d" != "$lib" ]] && ! in_use "$d"; then rm -rf "$d"; fi
+done
+rm -f "$C/ext/VERSION"
+
+ln -sfn "$DOTFILES/maven/build-cache-config.xml" "$C/config.xml"
+log "ready: $MVN, extension ${commit:0:12}, config -> $(readlink "$C/config.xml"), cache $C/cache"
