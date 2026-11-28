@@ -76,6 +76,25 @@ Safety properties, all covered by the tests:
 3. If a workspace was skipped for a running build, say so and offer to rerun
    later rather than waiting on it.
 
+## Duplicate build outputs: `dedupe-builds`
+
+Most of the build trees are the same bytes many times over: plugin
+directories each carry the same dependency jars, every workspace builds the
+same multi-GB plugin zips, and `mvn install` copies each artifact again into
+the Maven repository. On 2026-11-27 that was 398G of duplicates in 665G.
+
+`~/dotfiles/bin/dedupe-builds` makes identical files share disk blocks on btrfs
+(`FIDEDUPERANGE`; the kernel verifies the bytes, contents and mtimes don't
+change). It scans `$BUILD_ROOT` and `~/.m2/repository` by default, keeps an
+index in `~/.local/state/dedupe-builds/` so reruns only read new files, and
+`--dry-run` reports without changing anything. `_mbc_install` in `~/.localrc`
+(`mpi`/`mfi`) runs it detached after every build; the log is
+`~/.local/state/dedupe-builds/last.log`, and `PRESTO_DEDUPE=0` disables it.
+It frees space without deleting anything, so it needs no go-ahead.
+
+`du` counts shared and compressed blocks at full size, so it overstates what
+deleting would free. Use `compsize -x <dir>` for real disk usage.
+
 ## What it leaves alone, and the other big consumers
 
 Report these with sizes and let Matt decide; none is safe to delete blindly.
