@@ -7,7 +7,9 @@
 #           plus its runtime dependencies, in ext/lib-<commit>; ext/lib links
 #           to the current one
 #   config.xml -> dotfiles maven/build-cache-config.xml
-#   cache/  the shared cache itself
+#   cache-<commit>/  the shared cache, one per extension build: entries saved
+#           by an older build can lack what a newer one restores (the fork's
+#           reduced-POM fix silently installed full POMs from older entries)
 # Idempotent; rerun after the fork changes. ~/.localrc falls back to plain
 # mvn when dist/ is missing, so a devserver without this still builds.
 set -euo pipefail
@@ -26,7 +28,7 @@ TOOLS_REPO=$C/m2-tools
 
 log() { printf '%s\n' "$*" >&2; }
 
-mkdir -p "$C/dist" "$C/ext" "$C/cache"
+mkdir -p "$C/dist" "$C/ext"
 
 if [[ ! -x "$MVN" ]]; then
   log "fetching Maven $MAVEN_VERSION"
@@ -47,7 +49,10 @@ commit=$(git -C "$FORK" rev-parse --verify -q "$FORK_REF^{commit}" || git -C "$F
 # classpath, so a running build keeps the jars it started with: the JVM opens
 # some of them lazily, and replacing them underneath it would break it. Old
 # directories are removed once no running process names them.
-in_use() { grep -qaF -- "$1/" /proc/[0-9]*/cmdline 2>/dev/null; }
+in_use() {
+  cat /proc/[0-9]*/cmdline 2>/dev/null | tr '\0=:' '\n\n\n' |
+    P="$1" awk 'BEGIN { p = ENVIRON["P"] } $0 == p || index($0, p "/") == 1 { found = 1; exit } END { exit !found }'
+}
 
 lib=$C/ext/lib-${commit:0:12}
 if [[ -f "$lib/maven-build-cache-extension-$EXT_VERSION.jar" ]]; then
@@ -76,10 +81,12 @@ if [[ -d "$C/ext/lib" && ! -L "$C/ext/lib" ]]; then
   rm -rf "$C/ext/lib"
 fi
 ln -sfn "${lib##*/}" "$C/ext/lib.new" && mv -T "$C/ext/lib.new" "$C/ext/lib"
-for d in "$C"/ext/lib-*; do
-  if [[ "$d" != "$lib" ]] && ! in_use "$d"; then rm -rf "$d"; fi
+cache=$C/cache-${commit:0:12}
+mkdir -p "$cache"
+for d in "$C"/ext/lib-* "$C"/cache-* "$C/cache"; do
+  if [[ -e "$d" && "$d" != "$lib" && "$d" != "$cache" ]] && ! in_use "$d"; then rm -rf "$d"; fi
 done
 rm -f "$C/ext/VERSION"
 
 ln -sfn "$DOTFILES/maven/build-cache-config.xml" "$C/config.xml"
-log "ready: $MVN, extension ${commit:0:12}, config -> $(readlink "$C/config.xml"), cache $C/cache"
+log "ready: $MVN, extension ${commit:0:12}, config -> $(readlink "$C/config.xml"), cache $cache"
