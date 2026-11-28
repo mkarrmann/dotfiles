@@ -5,6 +5,11 @@
     <local><maxBuildsCached>2</maxBuildsCached></local>
   </configuration>
   <input>
+    <global>
+      <excludes>
+        <exclude glob="node_modules" entryType="DIRECTORY"/>
+      </excludes>
+    </global>
     <plugins>
       <plugin artifactId="exec-maven-plugin"><effectivePom><excludeProperties><excludeProperty>arguments</excludeProperty></excludeProperties></effectivePom></plugin>
       <plugin artifactId="maven-checkstyle-plugin"><effectivePom><excludeProperties><excludeProperty>cacheFile</excludeProperty></excludeProperties></effectivePom></plugin>
