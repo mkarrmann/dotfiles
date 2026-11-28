@@ -1,0 +1,316 @@
+#!/usr/bin/env python3
+"""
+Share the disk blocks of identical build outputs on btrfs.
+
+Presto Java builds write the same bytes many times: every plugin directory
+carries its own copy of the same dependency jars, every workspace builds the
+same plugin zips, and `mvn install` copies each artifact again into the
+workspace's Maven repository with plain streams that never reflink. On
+2026-11-27 that was 398G of duplicates in 665G of build output.
+
+This asks the kernel to make identical files share extents (FIDEDUPERANGE).
+The kernel compares the bytes itself under a lock and refuses ranges that
+differ, so a wrong guess here costs a read, never data. Contents and mtimes
+do not change and the files stay independent: writing to one copies on write.
+
+Candidates are files of equal size whose sampled hash matches. An index in
+~/.local/state/dedupe-builds remembers which files were already shared with
+which source, keyed by inode, size and mtime, so a rerun only reads what
+changed since. Concurrent runs are serialized by a lock; a second run exits.
+"""
+
+from __future__ import annotations
+
+import argparse
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+import errno
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import sqlite3
+import stat
+import struct
+import sys
+import time
+from typing import Iterable, Iterator
+
+FIDEDUPERANGE = 0xC0189436
+FILE_DEDUPE_RANGE_DIFFERS = 1
+DEDUPE_CHUNK = 16 << 20
+SAMPLE = 1 << 20
+RANGE_HEADER = struct.Struct("=QQHHI")
+RANGE_INFO = struct.Struct("=qQQiI")
+
+USER = os.environ.get("USER", "")
+DEFAULT_ROOTS = (f"/data/users/{USER}/builds", str(Path.home() / ".m2/repository"))
+DEFAULT_STATE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "dedupe-builds"
+
+
+@dataclass(frozen=True)
+class FileId:
+    dev: int
+    ino: int
+    size: int
+    mtime_ns: int
+
+    def key(self) -> str:
+        return f"{self.dev}:{self.ino}:{self.size}:{self.mtime_ns}"
+
+
+@dataclass(frozen=True)
+class Entry:
+    path: str
+    fid: FileId
+
+
+@dataclass
+class Summary:
+    files: int = 0
+    candidates: int = 0
+    groups: int = 0
+    hashed: int = 0
+    deduped_files: int = 0
+    already_shared: int = 0
+    differing_files: int = 0
+    errors: int = 0
+    bytes_shared: int = 0
+    bytes_possible: int = 0
+    freed: int = 0
+    seconds: float = 0.0
+
+
+class Unsupported(Exception):
+    pass
+
+
+def scan(roots: Iterable[str], min_size: int, min_age_s: float) -> Iterator[Entry]:
+    cutoff_ns = time.time_ns() - int(min_age_s * 1e9)
+    seen: set[tuple[int, int]] = set()
+    for root in roots:
+        try:
+            root_dev = os.lstat(root).st_dev
+        except FileNotFoundError:
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            kept = []
+            for d in dirnames:
+                try:
+                    st = os.lstat(os.path.join(dirpath, d))
+                except OSError:
+                    continue
+                if stat.S_ISDIR(st.st_mode) and st.st_dev == root_dev:
+                    kept.append(d)
+            dirnames[:] = kept
+            for name in filenames:
+                path = os.path.join(dirpath, name)
+                try:
+                    st = os.lstat(path)
+                except OSError:
+                    continue
+                if not stat.S_ISREG(st.st_mode) or st.st_size < min_size or st.st_mtime_ns > cutoff_ns:
+                    continue
+                if (st.st_dev, st.st_ino) in seen:
+                    continue
+                seen.add((st.st_dev, st.st_ino))
+                yield Entry(path, FileId(st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns))
+
+
+def sampled_digest(path: str, size: int) -> bytes:
+    h = hashlib.blake2b(digest_size=16)
+    with open(path, "rb") as f:
+        if size <= 3 * SAMPLE:
+            h.update(f.read())
+        else:
+            for off in (0, size // 2, size - SAMPLE):
+                f.seek(off)
+                h.update(f.read(SAMPLE))
+    return h.digest()
+
+
+def dedupe_into(src: str, dst: str, size: int) -> tuple[int, bool]:
+    """Share dst's extents with src. Returns (bytes shared, whether any range differed)."""
+    shared = 0
+    differed = False
+    with open(src, "rb") as s, open(dst, "rb") as d:
+        off = 0
+        while off < size:
+            length = min(DEDUPE_CHUNK, size - off)
+            buf = bytearray(RANGE_HEADER.pack(off, length, 1, 0, 0) + RANGE_INFO.pack(d.fileno(), off, 0, 0, 0))
+            try:
+                fcntl.ioctl(s.fileno(), FIDEDUPERANGE, buf)
+            except OSError as e:
+                if e.errno in (errno.EOPNOTSUPP, errno.ENOTTY, errno.EXDEV):
+                    raise Unsupported(f"{dst}: {e.strerror}") from e
+                raise
+            _, _, deduped, status, _ = RANGE_INFO.unpack_from(buf, RANGE_HEADER.size)
+            if status == FILE_DEDUPE_RANGE_DIFFERS:
+                differed = True
+            elif status < 0:
+                raise OSError(-status, os.strerror(-status), dst)
+            else:
+                shared += deduped
+            off += length
+    return shared, differed
+
+
+class Index:
+    def __init__(self, path: Path) -> None:
+        self.db = sqlite3.connect(path)
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, fid TEXT NOT NULL, digest BLOB, shared_with TEXT)"
+        )
+
+    def load(self) -> dict[str, tuple[str, bytes | None, str | None]]:
+        return {p: (f, d, s) for p, f, d, s in self.db.execute("SELECT path, fid, digest, shared_with FROM files")}
+
+    def save(self, rows: Iterable[tuple[str, str, bytes | None, str | None]]) -> None:
+        with self.db:
+            self.db.execute("DELETE FROM files")
+            self.db.executemany("INSERT INTO files VALUES (?, ?, ?, ?)", rows)
+
+
+def free_bytes(path: str) -> int:
+    st = os.statvfs(path)
+    return st.f_bavail * st.f_frsize
+
+
+def run(roots: list[str], state: Path, min_size: int, min_age_s: float, jobs: int, dry_run: bool, log) -> Summary:
+    t0 = time.monotonic()
+    summary = Summary()
+    state.mkdir(parents=True, exist_ok=True)
+    lock = open(state / "lock", "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log("another dedupe-builds run holds the lock; exiting")
+        return summary
+    index = Index(state / "index.sqlite")
+    known = index.load()
+    free_before = free_bytes(roots[0])
+
+    by_size: dict[int, list[Entry]] = defaultdict(list)
+    for e in scan(roots, min_size, min_age_s):
+        summary.files += 1
+        by_size[e.fid.size].append(e)
+    candidates = [e for es in by_size.values() if len(es) > 1 for e in es]
+    summary.candidates = len(candidates)
+
+    digests: dict[str, bytes] = {}
+    to_hash = []
+    for e in candidates:
+        prev = known.get(e.path)
+        if prev and prev[0] == e.fid.key() and prev[1] is not None:
+            digests[e.path] = prev[1]
+        else:
+            to_hash.append(e)
+
+    def hash_one(e: Entry) -> tuple[str, bytes | None]:
+        try:
+            return e.path, sampled_digest(e.path, e.fid.size)
+        except OSError:
+            return e.path, None
+
+    with ThreadPoolExecutor(jobs) as pool:
+        for path, digest in pool.map(hash_one, to_hash):
+            if digest is not None:
+                digests[path] = digest
+                summary.hashed += 1
+    log(f"scanned {summary.files} files, {summary.candidates} same-size candidates, hashed {summary.hashed}")
+
+    groups: dict[tuple[int, bytes], list[Entry]] = defaultdict(list)
+    for e in candidates:
+        if e.path in digests:
+            groups[(e.fid.size, digests[e.path])].append(e)
+    groups = {k: v for k, v in groups.items() if len(v) > 1}
+    summary.groups = len(groups)
+
+    shared_with: dict[str, str | None] = {}
+    work: list[tuple[Entry, Entry]] = []
+    for members in groups.values():
+        previous_sources = [known[m.path][2] for m in members if m.path in known and known[m.path][0] == m.fid.key()]
+        live = {m.fid.key(): m for m in members}
+        src = next((live[s] for s in previous_sources if s in live), None) or min(members, key=lambda m: (m.fid.mtime_ns, m.path))
+        shared_with[src.path] = None
+        for m in members:
+            if m is src:
+                continue
+            prev = known.get(m.path)
+            if prev and prev[0] == m.fid.key() and prev[2] == src.fid.key():
+                shared_with[m.path] = src.fid.key()
+                summary.already_shared += 1
+            else:
+                work.append((src, m))
+                summary.bytes_possible += m.fid.size
+
+    if dry_run:
+        log(f"dry run: {len(work)} files ({summary.bytes_possible / 2**30:.1f}G) would be shared")
+    else:
+        def dedupe_one(pair: tuple[Entry, Entry]) -> tuple[Entry, Entry, int, bool, str | None]:
+            src, dst = pair
+            try:
+                n, differed = dedupe_into(src.path, dst.path, dst.fid.size)
+                return src, dst, n, differed, None
+            except Unsupported:
+                raise
+            except OSError as e:
+                return src, dst, 0, False, str(e)
+
+        with ThreadPoolExecutor(jobs) as pool:
+            for src, dst, n, differed, err in pool.map(dedupe_one, work):
+                if err:
+                    summary.errors += 1
+                    log(f"error: {err}")
+                    continue
+                summary.deduped_files += 1
+                summary.bytes_shared += n
+                summary.differing_files += int(differed)
+                shared_with[dst.path] = src.fid.key()
+
+    rows = []
+    for e in candidates:
+        if e.path in digests:
+            rows.append((e.path, e.fid.key(), digests[e.path], shared_with.get(e.path)))
+    index.save(rows)
+    summary.freed = free_bytes(roots[0]) - free_before
+    summary.seconds = round(time.monotonic() - t0, 1)
+    return summary
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
+    p.add_argument("roots", nargs="*", default=list(DEFAULT_ROOTS), help="directories to scan (default: %(default)s)")
+    p.add_argument("--min-size", type=int, default=1 << 20, help="skip files smaller than this many bytes")
+    p.add_argument("--min-age", type=float, default=120, help="skip files modified in the last N seconds")
+    p.add_argument("--jobs", type=int, default=8)
+    p.add_argument("--state-dir", type=Path, default=DEFAULT_STATE)
+    p.add_argument("--dry-run", action="store_true", help="report what would be shared; change nothing")
+    p.add_argument("--json", action="store_true", help="print the summary as JSON")
+    p.add_argument("-q", "--quiet", action="store_true")
+    a = p.parse_args()
+    roots = [r for r in a.roots if os.path.isdir(r)]
+    if not roots:
+        print("dedupe-builds: no existing roots", file=sys.stderr)
+        return 2
+    log = (lambda _msg: None) if a.quiet else (lambda msg: print(msg, file=sys.stderr, flush=True))
+    try:
+        s = run(roots, a.state_dir, a.min_size, a.min_age, a.jobs, a.dry_run, log)
+    except Unsupported as e:
+        print(f"dedupe-builds: filesystem does not support dedupe: {e}", file=sys.stderr)
+        return 3
+    if a.json:
+        print(json.dumps(s.__dict__))
+    elif not a.quiet:
+        print(
+            f"shared {s.bytes_shared / 2**30:.1f}G across {s.deduped_files} files "
+            f"({s.already_shared} already shared, {s.differing_files} partly different, {s.errors} errors); "
+            f"free space {s.freed / 2**30:+.1f}G in {s.seconds}s"
+        )
+    return 1 if s.errors else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
